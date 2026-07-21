@@ -32,6 +32,7 @@ import {
   adminAiProviderListOutputSchema,
   adminAiProviderMutationOutputSchema,
   adminAiProviderPublishInputSchema,
+  adminAiProviderPublishNowInputSchema,
   adminAiProviderRevisionHistoryInputSchema,
   adminAiProviderRevisionHistoryOutputSchema,
   adminAiProviderRevisionOutputSchema,
@@ -88,12 +89,39 @@ export const adminAiProvidersRouter = router({
         authMethod: ctx.authMethod,
         reason: input.reason,
         replacementSecrets:
-          input.secret?.operation === 'replace' ? [input.secret.value] : undefined,
+          input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
+            ? [input.secret.value]
+            : undefined,
         serverDB: ctx.serverDB,
         targetId: input.mode === 'create' ? input.providerKey : input.id,
       });
       try {
         return await createService(ctx.serverDB).applyProviderImmediate(ctx.userId!, input);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  /**
+   * Banner "retry publish": re-run connection test when revision===0, then publish.
+   * Same guard combo as applyImmediate (PUBLISH + reauth + rate-limit).
+   */
+  publishNow: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
+    .input(adminAiProviderPublishNowInputSchema)
+    .output(adminAiProviderApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertDangerousReauth({
+        action: 'admin.aiProviders.publishNow',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+      });
+      try {
+        return await createService(ctx.serverDB).publishNow(ctx.userId!, input);
       } catch (error) {
         return mapServiceError(error);
       }
@@ -133,7 +161,10 @@ export const adminAiProvidersRouter = router({
           authMethod: ctx.authMethod,
           existingSecretTargetId: null,
           reason: input.reason,
-          replacementSecrets: input.secret?.operation === 'replace' ? [input.secret.value] : [],
+          replacementSecrets:
+            input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
+              ? [input.secret.value]
+              : [],
           serverDB: ctx.serverDB,
           targetId: input.providerKey,
         });
@@ -241,7 +272,10 @@ export const adminAiProvidersRouter = router({
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
           reason: input.reason,
-          replacementSecrets: input.secret?.operation === 'replace' ? [input.secret.value] : [],
+          replacementSecrets:
+            input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
+              ? [input.secret.value]
+              : [],
           serverDB: ctx.serverDB,
           targetId: input.id,
         });

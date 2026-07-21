@@ -131,7 +131,9 @@ export class AiCatalogAdminService {
     secretMutation?: AiSecretMutation,
   ): Promise<string> => {
     const credentialValues: unknown[] = [];
-    if (secretMutation?.operation === 'replace') credentialValues.push(secretMutation.value);
+    if (secretMutation?.operation === 'replace' || secretMutation?.operation === 'merge') {
+      credentialValues.push(secretMutation.value);
+    }
     if (providerId) {
       const provider = await new PlatformAiCatalogRepository(this.db).getProvider(providerId);
       if (provider?.encryptedKeyVaults) {
@@ -228,7 +230,7 @@ export class AiCatalogAdminService {
         settings,
         values.source,
       );
-      if (secret?.operation === 'replace') {
+      if (secret?.operation === 'replace' || secret?.operation === 'merge') {
         validateAiCatalogCredentialShape(
           runtimeProvider,
           typeof secret.value === 'string' ? { apiKey: secret.value } : secret.value,
@@ -309,7 +311,7 @@ export class AiCatalogAdminService {
           settings,
           before.source,
         );
-        if (secret?.operation === 'replace') {
+        if (secret?.operation === 'replace' || secret?.operation === 'merge') {
           validateAiCatalogCredentialShape(
             runtimeProvider,
             typeof secret.value === 'string' ? { apiKey: secret.value } : secret.value,
@@ -696,6 +698,100 @@ export class AiCatalogAdminService {
     this.publication.rollbackProvider(actorUserId, input);
 
   /**
+   * For first publish (revision 0): re-run connectivity test when credentials + ≥1
+   * enabled model are present so applyImmediate can land without a separate UI test step.
+   * revision > 0 skips auto retest (allowStaleConnectionTest handles non-secret edits).
+   */
+  private prepareFirstPublishConnectionTest = async (
+    actorUserId: string,
+    providerId: string,
+    reason: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+    const detail = await this.getDetail(providerId);
+    if (detail.baseRevision > 0) return { ok: true };
+    const hasEnabledModel = detail.draft.models.some((m) => m.enabled);
+    const hasCredentials = detail.draft.secret.configured;
+    if (!hasEnabledModel || !hasCredentials) {
+      return {
+        ok: false,
+        reason: !hasEnabledModel
+          ? 'At least one model must be enabled before first publish'
+          : 'Provider secret must be configured before first publish',
+      };
+    }
+    const test = await this.testProvider(actorUserId, { id: providerId, reason });
+    if (test.status !== 'success') {
+      return {
+        ok: false,
+        reason: test.sanitizedMessage || 'Connection test failed before first publish',
+      };
+    }
+    return { ok: true };
+  };
+
+  private tryPublishImmediate = async (
+    actorUserId: string,
+    providerId: string,
+    reason: string,
+    options?: { softFail?: boolean },
+  ) => {
+    let detail = await this.getDetail(providerId);
+
+    if (detail.baseRevision === 0) {
+      const prep = await this.prepareFirstPublishConnectionTest(actorUserId, providerId, reason);
+      if (!prep.ok) {
+        detail = await this.getDetail(providerId);
+        return {
+          auditId: null as string | null,
+          draft: detail.draft,
+          published: false,
+          publishError: prep.reason,
+          revision: detail.baseRevision,
+        };
+      }
+      detail = await this.getDetail(providerId);
+    }
+
+    try {
+      const published = await this.publishProvider(actorUserId, {
+        allowStaleConnectionTest: detail.baseRevision > 0,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        reason,
+      });
+      const after = await this.getDetail(providerId);
+      return {
+        auditId: published.auditId as string | null,
+        draft: after.draft,
+        published: true,
+        publishError: null as string | null,
+        revision: published.revision,
+      };
+    } catch (error) {
+      if (options?.softFail || error instanceof AiCatalogValidationError) {
+        const after = await this.getDetail(providerId);
+        const reasonText =
+          error instanceof AiCatalogValidationError
+            ? error.issues.join('; ')
+            : error instanceof Error
+              ? error.message
+              : 'Publish failed';
+        if (options?.softFail || after.baseRevision === 0) {
+          return {
+            auditId: null as string | null,
+            draft: after.draft,
+            published: false,
+            publishError: reasonText,
+            revision: after.baseRevision,
+          };
+        }
+      }
+      throw error;
+    }
+  };
+
+  /**
    * Apply a provider draft mutation then publish immediately.
    * Sequential (draft then publish); publish failure leaves a visible draft (no silent half-state).
    */
@@ -714,38 +810,33 @@ export class AiCatalogAdminService {
       providerId = input.id;
     }
 
-    const detail = await this.getDetail(providerId);
-    try {
-      const published = await this.publishProvider(actorUserId, {
-        // First publish still requires a fresh connection test; subsequent admin UI
-        // auto-publish may use a stale test when only non-secret fields changed.
-        allowStaleConnectionTest: detail.baseRevision > 0,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: providerId,
-        reason: input.reason,
-      });
+    // Create always soft-fails publish validation; updates soft-fail only on first-publish path
+    // (revision 0). Already-published update failures still throw for UI visibility (M1).
+    const softFail = input.mode === 'create';
+    const result = await this.tryPublishImmediate(actorUserId, providerId, input.reason, {
+      softFail,
+    });
+    // For update on revision>0 that fails validation, rethrow so adapter/toast surfaces it.
+    if (!result.published && input.mode === 'update') {
       const after = await this.getDetail(providerId);
-      return {
-        auditId: published.auditId,
-        draft: after.draft,
-        published: true,
-        revision: published.revision,
-      };
-    } catch (error) {
-      // Create often lacks models/connection test; keep draft and report unpublished.
-      // Updates on an already-live provider must still surface publish failures.
-      if (error instanceof AiCatalogValidationError && input.mode === 'create') {
-        const after = await this.getDetail(providerId);
-        return {
-          auditId: null,
-          draft: after.draft,
-          published: false,
-          revision: after.baseRevision,
-        };
+      if (after.baseRevision > 0 && result.publishError) {
+        throw new AiCatalogValidationError([result.publishError]);
       }
-      throw error;
     }
+    return {
+      auditId: result.auditId,
+      draft: result.draft,
+      published: result.published,
+      publishError: result.publishError,
+      revision: result.revision,
+    };
+  };
+
+  /**
+   * Retry publish for banner (re-run connection test when revision === 0, then publish).
+   */
+  publishNow = async (actorUserId: string, input: { id: string; reason: string }) => {
+    return this.tryPublishImmediate(actorUserId, input.id, input.reason, { softFail: true });
   };
 
   /**
@@ -771,7 +862,7 @@ export class AiCatalogAdminService {
     },
   ) => {
     const { operation, providerId, reason, expectedDraftToken } = input;
-    let token = expectedDraftToken;
+    const token = expectedDraftToken;
 
     switch (operation) {
       case 'create': {
@@ -816,32 +907,34 @@ export class AiCatalogAdminService {
         break;
       }
       case 'batchToggle': {
+        // Single detail snapshot for model map; refresh draft token per mutation only.
+        let snapshot = await this.getDetail(providerId);
+        let draftToken = snapshot.draftToken;
+        const modelsById = new Map(snapshot.draft.models.map((m) => [m.id, m]));
         for (const modelId of input.modelIds ?? []) {
-          const ctx = await this.getModelDraftContext(providerId);
-          const model = (await this.getDetail(providerId)).draft.models.find(
-            (m) => m.id === modelId,
-          );
+          const model = modelsById.get(modelId);
           if (!model) throw new AiCatalogNotFoundError();
           await this.updateModel(actorUserId, {
             enabled: input.enabled!,
-            expectedDraftToken: ctx.draftToken,
+            expectedDraftToken: draftToken,
             expectedRevision: model.revision,
             id: modelId,
             providerId,
             reason,
           });
+          snapshot = await this.getDetail(providerId);
+          draftToken = snapshot.draftToken;
+          for (const m of snapshot.draft.models) modelsById.set(m.id, m);
         }
         break;
       }
       case 'batchUpdate': {
+        let snapshot = await this.getDetail(providerId);
+        let draftToken = snapshot.draftToken;
+        const modelsById = new Map(snapshot.draft.models.map((m) => [m.id, m]));
         for (const item of input.models ?? []) {
-          const ctx = await this.getModelDraftContext(providerId);
-          token = ctx.draftToken;
-          const current = (await this.getDetail(providerId)).draft.models.find(
-            (m) => m.id === item.id,
-          );
+          const current = modelsById.get(item.id);
           if (!current) {
-            // Create when missing (remote model import path)
             await this.createModel(actorUserId, {
               abilities: item.abilities as CreateModelInput['abilities'],
               config: item.config as CreateModelInput['config'],
@@ -850,7 +943,7 @@ export class AiCatalogAdminService {
               description: item.description as CreateModelInput['description'],
               displayName: item.displayName as CreateModelInput['displayName'],
               enabled: item.enabled as CreateModelInput['enabled'],
-              expectedDraftToken: token,
+              expectedDraftToken: draftToken,
               modelKey: item.id,
               parameters: item.parameters as CreateModelInput['parameters'],
               pricing: item.pricing as CreateModelInput['pricing'],
@@ -859,39 +952,44 @@ export class AiCatalogAdminService {
               settings: item.settings as CreateModelInput['settings'],
               type: item.type as CreateModelInput['type'],
             });
-            continue;
+          } else {
+            await this.updateModel(actorUserId, {
+              abilities: item.abilities as UpdateModelInput['abilities'],
+              config: item.config as UpdateModelInput['config'],
+              contextWindowTokens:
+                item.contextWindowTokens as UpdateModelInput['contextWindowTokens'],
+              description: item.description as UpdateModelInput['description'],
+              displayName: item.displayName as UpdateModelInput['displayName'],
+              enabled: item.enabled as UpdateModelInput['enabled'],
+              expectedDraftToken: draftToken,
+              expectedRevision: current.revision,
+              id: item.id,
+              parameters: item.parameters as UpdateModelInput['parameters'],
+              pricing: item.pricing as UpdateModelInput['pricing'],
+              providerId,
+              reason,
+              settings: item.settings as UpdateModelInput['settings'],
+              type: item.type as UpdateModelInput['type'],
+            });
           }
-          await this.updateModel(actorUserId, {
-            abilities: item.abilities as UpdateModelInput['abilities'],
-            config: item.config as UpdateModelInput['config'],
-            contextWindowTokens:
-              item.contextWindowTokens as UpdateModelInput['contextWindowTokens'],
-            description: item.description as UpdateModelInput['description'],
-            displayName: item.displayName as UpdateModelInput['displayName'],
-            enabled: item.enabled as UpdateModelInput['enabled'],
-            expectedDraftToken: token,
-            expectedRevision: current.revision,
-            id: item.id,
-            parameters: item.parameters as UpdateModelInput['parameters'],
-            pricing: item.pricing as UpdateModelInput['pricing'],
-            providerId,
-            reason,
-            settings: item.settings as UpdateModelInput['settings'],
-            type: item.type as UpdateModelInput['type'],
-          });
+          snapshot = await this.getDetail(providerId);
+          draftToken = snapshot.draftToken;
+          modelsById.clear();
+          for (const m of snapshot.draft.models) modelsById.set(m.id, m);
         }
         break;
       }
       case 'clear': {
-        const detail = await this.getDetail(providerId);
-        for (const model of detail.draft.models) {
-          const ctx = await this.getModelDraftContext(providerId);
+        let snapshot = await this.getDetail(providerId);
+        const modelIds = snapshot.draft.models.map((m) => m.id);
+        for (const modelId of modelIds) {
           await this.deleteModel(actorUserId, {
-            expectedDraftToken: ctx.draftToken,
-            id: model.id,
+            expectedDraftToken: snapshot.draftToken,
+            id: modelId,
             providerId,
             reason,
           });
+          snapshot = await this.getDetail(providerId);
         }
         break;
       }
@@ -900,18 +998,16 @@ export class AiCatalogAdminService {
       }
     }
 
-    const detail = await this.getDetail(providerId);
-    const published = await this.publishProvider(actorUserId, {
-      allowStaleConnectionTest: detail.baseRevision > 0,
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: providerId,
-      reason,
+    const publishResult = await this.tryPublishImmediate(actorUserId, providerId, reason, {
+      softFail: true,
     });
+    const after = await this.getDetail(providerId);
     return {
-      auditId: published.auditId,
-      draftToken: (await this.getDetail(providerId)).draftToken,
-      revision: published.revision,
+      auditId: publishResult.auditId,
+      draftToken: after.draftToken,
+      published: publishResult.published,
+      publishError: publishResult.publishError,
+      revision: publishResult.revision,
     };
   };
 }

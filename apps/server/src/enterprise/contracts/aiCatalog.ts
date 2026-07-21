@@ -97,6 +97,16 @@ export const aiSecretMutationSchema = z.discriminatedUnion('operation', [
       value: z.union([z.string().min(1).max(32_768), aiStructuredCredentialSchema]),
     })
     .strict(),
+  /**
+   * Overlay non-empty credential fields onto the existing vault.
+   * Empty strings are ignored; unsubmitted fields are retained (no delete semantics).
+   */
+  z
+    .object({
+      operation: z.literal('merge'),
+      value: z.union([z.string().min(1).max(32_768), aiStructuredCredentialSchema]),
+    })
+    .strict(),
   z.object({ operation: z.literal('clear') }).strict(),
 ]);
 
@@ -474,7 +484,16 @@ export const adminAiProviderApplyImmediateOutputSchema = z
      * (e.g. create without models / connection test). Client must not treat as silent success for live catalog.
      */
     published: z.boolean(),
+    /** Structured human-safe reason when published is false (never secrets). */
+    publishError: z.string().max(500).nullable().optional(),
     revision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const adminAiProviderPublishNowInputSchema = z
+  .object({
+    id: z.string().min(1),
+    reason: z.string().trim().min(1).max(2000),
   })
   .strict();
 
@@ -485,9 +504,11 @@ export const adminAiProviderApplyImmediateInputSchema = z.discriminatedUnion('mo
 
 export const adminAiModelApplyImmediateOutputSchema = z
   .object({
-    auditId: z.string().min(1),
+    auditId: z.string().min(1).nullable(),
     draftToken: z.string().length(64),
-    revision: z.number().int().positive(),
+    published: z.boolean(),
+    publishError: z.string().max(500).nullable().optional(),
+    revision: z.number().int().nonnegative(),
   })
   .strict();
 
