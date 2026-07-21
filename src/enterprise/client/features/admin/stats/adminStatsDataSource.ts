@@ -21,32 +21,30 @@ const rememberUsersFromUsage = (records: Array<{ userDisplay?: string; userId?: 
   }
 };
 
-const asUsageRecords = (rows: Awaited<ReturnType<typeof adminStatsService.usageFindByMonth>>) => {
-  rememberUsersFromUsage(rows);
-  return rows as unknown as UsageRecordItem[];
-};
-
-const asUsageLogs = (
-  logs: Awaited<ReturnType<typeof adminStatsService.usageFindAndGroupByDay>>,
-) => {
-  for (const log of logs) {
-    rememberUsersFromUsage(log.records ?? []);
-  }
-  return logs as unknown as UsageLog[];
-};
-
 /** Platform-global stats data source for admin.stats (scoped SWR keys). */
 export const adminGlobalStatsDataSource: StatsDataSource = {
   countAgents: (params) => adminStatsService.countAgents(params),
   countMessages: (params) => adminStatsService.countMessages(params),
   countTopics: (params) => adminStatsService.countTopics(params),
-  findAndGroupByDay: async (mo) => asUsageLogs(await adminStatsService.usageFindAndGroupByDay(mo)),
-  findByMonth: async (mo) => asUsageRecords(await adminStatsService.usageFindByMonth(mo)),
+  findAndGroupByDay: async (mo) => {
+    const logs = await adminStatsService.usageFindAndGroupByDay(mo);
+    for (const log of logs) {
+      rememberUsersFromUsage(log.records ?? []);
+    }
+    // Rows are UsageRecordItem & { userDisplay }; assignable to UsageLog.
+    return logs as UsageLog[];
+  },
+  findByMonth: async (mo) => {
+    const rows = await adminStatsService.usageFindByMonth(mo);
+    rememberUsersFromUsage(rows);
+    return rows as UsageRecordItem[];
+  },
   getHeatmaps: () => adminStatsService.getHeatmaps(),
   getMaxTaskDuration: () => adminStatsService.getMaxTaskDuration(),
   getTokenHeatmaps: () => adminStatsService.getTokenHeatmaps(),
   rankAgents: (limit) => adminStatsService.rankAgents(limit),
-  rankModels: (limit) => adminStatsService.rankModels(limit),
+  // Server default limit (10); no limit param on StatsDataSource.rankModels.
+  rankModels: () => adminStatsService.rankModels(),
   rankTopics: (limit) => adminStatsService.rankTopics(limit),
   scopeKey: ADMIN_GLOBAL_STATS_SCOPE,
 };
