@@ -13,6 +13,7 @@ import ProviderMenu from '@/routes/(main)/settings/provider/ProviderMenu';
 import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import { AdminProviderSettingsStoreProvider } from './AdminProviderSettingsStore';
+import DraftPublishBanner from './DraftPublishBanner';
 
 const styles = createStaticStyles(({ css }) => ({
   advancedLink: css`
@@ -127,6 +128,7 @@ const AdminProviderSettingsLayout = memo(() => {
       <div className={styles.body}>
         <ProviderMenu mobile={false} onProviderSelect={onProviderSelect} />
         <div className={styles.content}>
+          <DraftPublishBanner />
           {id ? (
             <ProviderDetailPageComponent id={id} onProviderSelect={onProviderSelect} />
           ) : (
