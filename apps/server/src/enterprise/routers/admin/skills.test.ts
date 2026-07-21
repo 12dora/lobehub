@@ -673,6 +673,6 @@ describe('admin.skills.applyImmediate', () => {
         reason: 'force bad version',
         versionId: 'missing-version-id',
       }),
-    ).rejects.toMatchObject({ code: expect.stringMatching(/NOT_FOUND|PRECONDITION|INTERNAL/) });
+    ).rejects.toMatchObject({ code: expect.stringMatching(/NOT_FOUND|PRECONDITION/) });
   });
 });

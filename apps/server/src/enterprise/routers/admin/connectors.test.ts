@@ -715,24 +715,9 @@ describe('admin.connectors.applyImmediate closed loop (service)', () => {
         },
       ],
     });
-    // When outbound preflight succeeds, published is true; otherwise soft-fail still leaves draft.
-    if (withTools.published) {
-      expect(withTools.revision).toBeGreaterThan(0);
-    } else {
-      // Retry publishNow after tools are on draft (mirrors banner path).
-      const detail = await service.getDraft(soft.draft.id);
-      const now = await service.publishNow('admin-user', {
-        id: soft.draft.id,
-        reason: 'publish after tools',
-      });
-      // Prefer success; if environment still blocks outbound, require explicit publishError.
-      if (!now.published) {
-        expect(now.publishError).toBeTruthy();
-        expect(detail.draft.tools.length).toBeGreaterThan(0);
-      } else {
-        expect(now.revision).toBeGreaterThan(0);
-      }
-    }
+    // Mocked outbound preflight succeeds → closed loop must land published.
+    expect(withTools.published).toBe(true);
+    expect(withTools.revision).toBeGreaterThan(0);
   });
 
   it('applyImmediate update throws with publishError when already published and publish fails', async () => {

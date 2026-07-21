@@ -16,6 +16,10 @@ import {
 import { buildApplyImmediateVersionPayload } from './controller';
 import type { AdminSkillCreateInput } from './types';
 
+type ApplyImmediateVersionPayload = NonNullable<
+  ReturnType<typeof buildApplyImmediateVersionPayload>
+>;
+
 const styles = createStaticStyles(({ css }) => ({
   body: css`
     display: flex;
@@ -48,13 +52,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 /** Create identity + optional version payload for applyImmediate create. */
 export type AdminSkillCreateWithVersionInput = AdminSkillCreateInput & {
-  version?: {
-    content: string;
-    contentRef: string | null;
-    manifest: unknown;
-    resources: unknown[];
-    version: string;
-  };
+  version?: ApplyImmediateVersionPayload;
 };
 
 export interface CreateSkillModalProps {
