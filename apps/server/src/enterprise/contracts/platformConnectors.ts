@@ -1093,6 +1093,61 @@ export const adminConnectorRevisionOutputSchema = z
   .object({ auditId: connectorIdSchema, revision: z.number().int().positive() })
   .strict();
 
+/** Draft mutation + immediate publish (admin UI parity; single rate-limit unit). */
+export const adminConnectorApplyImmediateOutputSchema = z
+  .object({
+    auditId: z.string().min(1).nullable(),
+    draft: adminConnectorDraftSchema,
+    draftToken: z.string().length(64),
+    /**
+     * false when draft was written but publish validation blocked first publish
+     * (e.g. create without enabled tools / connection not ready). Client must not treat as silent live success.
+     */
+    published: z.boolean(),
+    /** Structured human-safe reason when published is false (never secrets). */
+    publishError: z.string().max(500).nullable().optional(),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const adminConnectorPublishNowInputSchema = z
+  .object({
+    id: connectorIdSchema,
+    reason: reasonSchema,
+  })
+  .strict();
+
+/** Create branches (credentialMode) + update, each tagged with mode for applyImmediate. */
+export const adminConnectorApplyImmediateInputSchema = z.union([
+  connectorCreateBaseSchema
+    .extend({ credentialMode: z.literal('none'), mode: z.literal('create') })
+    .strict(),
+  connectorCreateBaseSchema
+    .extend({
+      credentialMode: z.literal('shared_service_account'),
+      mode: z.literal('create'),
+      sharedSecret: connectorSharedSecretMutationSchema.optional(),
+    })
+    .strict(),
+  connectorCreateBaseSchema
+    .extend({
+      credentialMode: z.literal('per_user_oauth'),
+      mode: z.literal('create'),
+      oauthClientSecret: connectorOAuthClientSecretMutationSchema.optional(),
+      oauthConfig: adminConnectorOAuthConfigInputSchema,
+    })
+    .strict(),
+  adminConnectorUpdateDraftInputSchema.extend({ mode: z.literal('update') }).strict(),
+]);
+
+export type AdminConnectorApplyImmediateInput = z.input<
+  typeof adminConnectorApplyImmediateInputSchema
+>;
+export type AdminConnectorApplyImmediateOutput = z.output<
+  typeof adminConnectorApplyImmediateOutputSchema
+>;
+export type AdminConnectorPublishNowInput = z.input<typeof adminConnectorPublishNowInputSchema>;
+
 export const connectorBindingSchema = z
   .object({
     connectedAt: z.date().nullable(),

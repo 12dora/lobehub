@@ -3,11 +3,13 @@ import type { z } from 'zod';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type {
+  adminConnectorApplyImmediateInputSchema,
   adminConnectorArchiveInputSchema,
   adminConnectorCreateDraftInputSchema,
   adminConnectorDiscoverInputSchema,
   adminConnectorListInputSchema,
   adminConnectorPublishInputSchema,
+  adminConnectorPublishNowInputSchema,
   adminConnectorRevokeAllBindingsInputSchema,
   adminConnectorRollbackInputSchema,
   adminConnectorTestInputSchema,
@@ -25,6 +27,9 @@ import { ConnectorCatalogDiscoveryService } from './discoveryService';
 import { ConnectorCatalogDraftService } from './draftService';
 import { PlatformConnectorContractError } from './errors';
 import { ConnectorCatalogPublicationService } from './publicationService';
+
+type ApplyImmediateInput = z.input<typeof adminConnectorApplyImmediateInputSchema>;
+type PublishNowInput = z.input<typeof adminConnectorPublishNowInputSchema>;
 
 export class ConnectorCatalogService {
   readonly read: ConnectorCatalogReadService;
@@ -130,6 +135,100 @@ export class ConnectorCatalogService {
     actorUserId: string,
     input: z.input<typeof adminConnectorRevokeAllBindingsInputSchema>,
   ) => this.publication.revokeAllBindings(actorUserId, input);
+
+  /**
+   * Attempt publish; soft-fail returns published:false + publishError (never secrets).
+   * When softFail is false and baseRevision > 0, rethrows so the UI can surface failures.
+   */
+  private tryPublishImmediate = async (
+    actorUserId: string,
+    connectorId: string,
+    reason: string,
+    options?: { softFail?: boolean },
+  ) => {
+    const detail = await this.getDraft(connectorId);
+    try {
+      const published = await this.publish(actorUserId, {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: connectorId,
+        reason,
+      });
+      const after = await this.getDraft(connectorId);
+      return {
+        auditId: published.auditId as string | null,
+        draft: after.draft,
+        draftToken: after.draftToken,
+        published: true,
+        publishError: null as string | null,
+        revision: published.revision,
+      };
+    } catch (error) {
+      const after = await this.getDraft(connectorId);
+      const reasonText =
+        error instanceof PlatformConnectorContractError
+          ? error.code
+          : error instanceof Error
+            ? error.message.slice(0, 500)
+            : 'Publish failed';
+      if (options?.softFail || after.baseRevision === 0) {
+        return {
+          auditId: null as string | null,
+          draft: after.draft,
+          draftToken: after.draftToken,
+          published: false,
+          publishError: reasonText,
+          revision: after.baseRevision,
+        };
+      }
+      throw error;
+    }
+  };
+
+  /**
+   * Apply a connector draft mutation then publish immediately (admin settings UI parity).
+   * Create soft-fails when publish validation fails; update on already-published throws on publish fail.
+   */
+  applyImmediate = async (actorUserId: string, input: ApplyImmediateInput) => {
+    let connectorId: string;
+    let softFail: boolean;
+
+    if (input.mode === 'create') {
+      softFail = true;
+      const { mode: _mode, ...createInput } = input;
+      const created = await this.createDraft(
+        actorUserId,
+        createInput as z.input<typeof adminConnectorCreateDraftInputSchema>,
+      );
+      connectorId = created.draft.id;
+    } else {
+      const { mode: _mode, ...updateInput } = input;
+      await this.updateDraft(actorUserId, updateInput);
+      connectorId = input.id;
+      const afterUpdate = await this.getDraft(connectorId);
+      softFail = afterUpdate.baseRevision === 0;
+    }
+
+    const result = await this.tryPublishImmediate(actorUserId, connectorId, input.reason, {
+      softFail,
+    });
+
+    // Align with W10-P: update on already-published must surface publish failures.
+    if (!result.published && input.mode === 'update') {
+      const after = await this.getDraft(connectorId);
+      if (after.baseRevision > 0 && result.publishError) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      }
+    }
+
+    return result;
+  };
+
+  /**
+   * Banner "retry publish": re-run publish with soft-fail.
+   */
+  publishNow = async (actorUserId: string, input: PublishNowInput) =>
+    this.tryPublishImmediate(actorUserId, input.id, input.reason, { softFail: true });
 }
 
 export type {
