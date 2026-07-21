@@ -63,13 +63,19 @@ describe('adminNavMeta', () => {
     expect(canAccessAdminPath('/admin/ai/providers/p1', updater)).toBe(true);
   });
 
-  it('shows and guards managed resources with policy read permission only', () => {
+  it('guards managed resources by policy read; surfaces the unified-management nav item', () => {
     expect(canAccessAdminPath('/admin/managed-resources', [])).toBe(false);
     expect(canAccessAdminPath('/admin/managed-resources', [PLATFORM_PERMISSIONS.POLICY_READ])).toBe(
       true,
     );
+    // `settings` + `managed-resources` are now hidden back-compat routes; the visible surface
+    // is the merged `unified-management` tab (shell-only gate, each in-page tab self-gates).
+    expect(canAccessAdminPath('/admin/unified', [])).toBe(true);
     const nav = filterAdminNavByPermissions(ADMIN_NAV_ITEMS, [PLATFORM_PERMISSIONS.POLICY_READ]);
-    expect(nav.map((item) => item.id)).toContain('managed-resources');
+    const ids = nav.map((item) => item.id);
+    expect(ids).toContain('unified-management');
+    expect(ids).not.toContain('managed-resources');
+    expect(ids).not.toContain('settings');
   });
 
   it('unknown nested path has no catalog entry (admin 404)', () => {

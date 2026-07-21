@@ -29,6 +29,7 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/users');
     expect(paths).toContain('/admin/users/:id');
     expect(paths).toContain('/admin/managed-resources');
+    expect(paths).toContain('/admin/unified');
     expect(paths).toContain('/admin/ai/providers');
     expect(paths).toContain('/admin/ai/providers/:id');
     expect(paths).toContain('/admin/ai/service-model');
@@ -55,6 +56,7 @@ describe('createAdminRouteTree', () => {
     expect(matchRoutes(routes, '/admin/users')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/users/u-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/managed-resources')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/unified')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/ai/providers/p-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/skills/s-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/connectors/c-1')).toBeTruthy();

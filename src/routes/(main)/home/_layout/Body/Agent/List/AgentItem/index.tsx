@@ -1,5 +1,5 @@
 import { type SidebarAgentItem } from '@lobechat/types';
-import { ActionIcon, Icon } from '@lobehub/ui';
+import { ActionIcon, Flexbox, Icon, Tag } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { Loader2, PinIcon } from 'lucide-react';
 import { type CSSProperties, type DragEvent } from 'react';
@@ -79,7 +79,10 @@ interface AgentItemProps {
 }
 
 const AgentItem = memo<AgentItemProps>(({ item, style, className, onNavigate }) => {
-  const { id, avatar, backgroundColor, title, pinned, slug, userId, visibility } = item;
+  const { id, avatar, backgroundColor, title, pinned, slug, userId, visibility, platform } = item;
+  // Platform-managed (org-distributed) agents are read-only: the server rejects every mutation,
+  // so we hide mutating menu actions and mark the row with a "内置" tag so it reads as managed.
+  const managed = platform?.managed === true;
   // Unread count is server-computed (topics.status === 'unread') and carried on
   // the sidebar list item, so it stays accurate across agents whose topics
   // aren't loaded into the chat store on this client.
@@ -97,6 +100,23 @@ const AgentItem = memo<AgentItemProps>(({ item, style, className, onNavigate }) 
 
   // Get display title with fallback
   const displayTitle = title || t('untitledAgent');
+
+  // Managed agents get a "内置" tag next to the title (mirrors the group "群组" tag pattern) so the
+  // user can tell an org-distributed agent apart from their own. Plain string otherwise.
+  const titleNode = managed ? (
+    <Flexbox horizontal align="center" gap={4}>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {displayTitle}
+      </span>
+      <Tag size={'small'} style={{ flexShrink: 0 }}>
+        {/* `chat:agents.managedTag` not yet in typed resources — cast per repo convention for
+            proposed keys; drop the cast once the locale entry lands. Falls back to EN in dev. */}
+        {t('agents.managedTag' as never, { defaultValue: 'Built-in' })}
+      </Tag>
+    </Flexbox>
+  ) : (
+    displayTitle
+  );
 
   const agentUrl = usePreservedAgentUrl(id);
 
@@ -180,6 +200,7 @@ const AgentItem = memo<AgentItemProps>(({ item, style, className, onNavigate }) 
     backgroundColor: backgroundColor || undefined,
     group: undefined, // TODO: pass group from parent if needed
     id,
+    managed,
     openCreateGroupModal: handleOpenCreateGroupModal,
     pinned: pinned ?? false,
     slug,
@@ -206,7 +227,7 @@ const AgentItem = memo<AgentItemProps>(({ item, style, className, onNavigate }) 
         icon={avatarIcon}
         key={id}
         style={style}
-        title={displayTitle}
+        title={titleNode}
         onDoubleClick={handleDoubleClick}
         onDragEnd={handleDragEnd}
         onDragStart={handleDragStart}

@@ -1,9 +1,8 @@
 'use client';
 
-import { Alert, Flexbox, Icon, Tag, Text, TextArea } from '@lobehub/ui';
+import { Alert, Flexbox, Text } from '@lobehub/ui';
 import { Button, confirmModal, Select, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { CircleCheck, CircleDashed } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
@@ -23,24 +22,13 @@ import type { AdminManagedResourcesGetOutput } from '@/server/enterprise/contrac
 import type { ManagedResourcePolicyMap } from '@/types/platform/managedResources';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import RevisionBanner from '../primitives/RevisionBanner';
 import { publishManagedResourcePolicy, saveManagedResourceDraft } from './actions';
 import {
-  buildManagedResourceDiff,
   deriveManagedResourcePermissions,
-  fingerprintManagedResourcePolicy,
   getUnreadyEnforcedResources,
-  type ManagedResourceRebaseConflict,
   type ManagedResourceSaveState,
-  rebaseManagedResourceDraft,
-  resolveManagedResourcePrimaryAction,
 } from './controller';
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
-import {
-  clearManagedResourceLocalDraft,
-  loadManagedResourceLocalDraft,
-  saveManagedResourceLocalDraft,
-} from './localDraftStorage';
 import { createUnsavedNavigationDecision } from './unsavedNavigationDecision';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -55,24 +43,11 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgContainer};
   `,
-  cardHeader: css`
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    justify-content: space-between;
-  `,
   cardHeading: css`
     display: flex;
-    flex: 1;
     flex-direction: column;
     gap: 4px;
-
     min-width: 0;
-  `,
-  statusTag: css`
-    flex-shrink: 0;
-    align-self: flex-start;
-    margin: 0;
   `,
   control: css`
     display: flex;
@@ -103,7 +78,7 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     flex-wrap: wrap;
     gap: 12px;
-    align-items: flex-end;
+    align-items: center;
     justify-content: space-between;
 
     padding-block: 16px;
@@ -116,20 +91,6 @@ const styles = createStaticStyles(({ css }) => ({
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 12px;
   `,
-  impact: css`
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-
-    padding: 12px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadius};
-
-    background: ${cssVar.colorFillQuaternary};
-  `,
-  reason: css`
-    width: min(560px, 100%);
-  `,
   status: css`
     font-size: 12px;
     color: ${cssVar.colorTextSecondary};
@@ -138,7 +99,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 const MODE_VALUES = ['observe', 'ui-only', 'enforced'] as const;
 
-const ManagedResourcesPolicyPage = memo(() => {
+const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
   const { authMethod, permissions } = useAdminAccess();
   const platform = useEnterprisePlatform();
@@ -149,17 +110,27 @@ const ManagedResourcesPolicyPage = memo(() => {
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<ManagedResourceSaveState>('idle');
   const [actionError, setActionError] = useState<string | null>(null);
-  const [reason, setReason] = useState('');
-  const [reasonError, setReasonError] = useState(false);
   const [conflict, setConflict] = useState(false);
-  const [rebaseConflicts, setRebaseConflicts] = useState<ManagedResourceRebaseConflict[]>([]);
   const [activeBaseRevision, setActiveBaseRevision] = useState(0);
   const [activeDraftToken, setActiveDraftToken] = useState('');
   const hydratedRef = useRef(false);
-  const originalRef = useRef<ManagedResourcePolicyMap | null>(null);
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
-  const blocker = useBlocker(dirty);
+  // Direct-save UX: editing applies immediately; there is no local draft cache, so entering
+  // the tab is never spuriously "dirty" and leaving only prompts when there are real edits.
+  // Only guard real page exits — a same-path `?tab=` switch inside the unified page must not prompt.
+  const blocker = useBlocker(
+    useCallback(
+      ({
+        currentLocation,
+        nextLocation,
+      }: {
+        currentLocation: { pathname: string };
+        nextLocation: { pathname: string };
+      }) => dirty && currentLocation.pathname !== nextLocation.pathname,
+      [dirty],
+    ),
+  );
   useEffect(() => {
     if (blocker.state !== 'blocked') {
       leaveModalRef.current?.close();
@@ -209,18 +180,6 @@ const ManagedResourcesPolicyPage = memo(() => {
   useEffect(() => {
     if (!data || hydratedRef.current) return;
     hydratedRef.current = true;
-    const local = loadManagedResourceLocalDraft();
-    if (local) {
-      originalRef.current = local.original;
-      setDraft(local.draft);
-      setDirty(true);
-      setSaveState('dirty');
-      setActiveBaseRevision(local.baseRevision);
-      setActiveDraftToken(local.draftToken);
-      setConflict(local.baseRevision !== data.baseRevision || local.draftToken !== data.draftToken);
-      return;
-    }
-    originalRef.current = data.draft;
     setDraft(data.draft);
     setActiveBaseRevision(data.baseRevision);
     setActiveDraftToken(data.draftToken);
@@ -228,17 +187,6 @@ const ManagedResourcesPolicyPage = memo(() => {
     setSaveState('idle');
     setConflict(false);
   }, [data]);
-
-  useEffect(() => {
-    if (!dirty || !draft || !originalRef.current) return;
-    saveManagedResourceLocalDraft({
-      baseRevision: activeBaseRevision,
-      draft,
-      draftToken: activeDraftToken,
-      original: originalRef.current,
-      savedAt: new Date().toISOString(),
-    });
-  }, [activeBaseRevision, activeDraftToken, dirty, draft]);
 
   const updatePolicy = useCallback(
     (
@@ -256,29 +204,10 @@ const ManagedResourcesPolicyPage = memo(() => {
     [canUpdate, conflict],
   );
 
-  const diff = useMemo(
-    () => (data && draft ? buildManagedResourceDiff(data.published, draft) : []),
-    [data, draft],
-  );
   const unready = useMemo(
     () => (data && draft ? getUnreadyEnforcedResources(draft, data.readiness) : []),
     [data, draft],
   );
-  const primary = resolveManagedResourcePrimaryAction({
-    canPublish,
-    canUpdate,
-    conflict,
-    dirty,
-    hasChanges: diff.length > 0,
-    publishReady: unready.length === 0,
-    saveState,
-  });
-
-  const validateReason = useCallback(() => {
-    const valid = reason.trim().length > 0 && reason.trim().length <= 2000;
-    setReasonError(!valid);
-    return valid;
-  }, [reason]);
 
   const enterConflict = useCallback(() => {
     setConflict(true);
@@ -286,81 +215,51 @@ const ManagedResourcesPolicyPage = memo(() => {
     setActionError(t('managedResources.conflict.desc'));
   }, [t]);
 
+  // Refetch the authoritative policy and rebaseline (discards local edits — used after a conflict).
+  const handleRefresh = useCallback(async () => {
+    setActionError(null);
+    try {
+      const latest = await mutate();
+      if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
+      setDraft(latest.draft);
+      setActiveBaseRevision(latest.baseRevision);
+      setActiveDraftToken(latest.draftToken);
+      setDirty(false);
+      setSaveState('idle');
+      setConflict(false);
+    } catch {
+      setActionError(t('managedResources.errors.refresh'));
+    }
+  }, [mutate, t]);
+
+  // Direct save: persist the draft and publish it in one action (reason is auto-supplied).
   const handleSave = useCallback(async () => {
-    if (!data || !draft || !canUpdate || conflict || !validateReason()) return;
+    if (!data || !draft || !canUpdate || !canPublish || conflict || unready.length > 0) return;
+    const reason = t('managedResources.saveReason');
     setSaveState('saving');
     setActionError(null);
     try {
-      const result = await saveManagedResourceDraft({
-        input: {
-          draft,
-          expectedDraftToken: activeDraftToken,
-          reason: reason.trim(),
-        },
+      const saved = await saveManagedResourceDraft({
+        input: { draft, expectedDraftToken: activeDraftToken, reason },
         saveDraft: adminManagedResourcesService.saveDraft,
       });
-      clearManagedResourceLocalDraft();
-      originalRef.current = draft;
-      setActiveBaseRevision(result.baseRevision);
-      setActiveDraftToken(result.draftToken);
-      setDirty(false);
-      setSaveState('saved');
-      setReason('');
-      await mutate();
-    } catch (cause) {
-      const mapped = mapEnterpriseError(cause);
-      if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
-        enterConflict();
-        return;
-      }
-      setSaveState('failed');
-      setActionError(
-        mapped
-          ? t(mapped.i18nKey as never, { defaultValue: mapped.code })
-          : t('managedResources.errors.generic'),
-      );
-    }
-  }, [
-    activeDraftToken,
-    canUpdate,
-    conflict,
-    data,
-    draft,
-    enterConflict,
-    mutate,
-    reason,
-    t,
-    validateReason,
-  ]);
-
-  const handlePublish = useCallback(async () => {
-    if (
-      !data ||
-      !draft ||
-      !canPublish ||
-      dirty ||
-      conflict ||
-      unready.length > 0 ||
-      !validateReason()
-    ) {
-      return;
-    }
-    setSaveState('saving');
-    setActionError(null);
-    try {
+      // Persist the advanced CAS token/revision immediately: if the publish step below fails
+      // (e.g. cancelled reauth, catalog-not-ready), a Save retry must use the just-saved token,
+      // not the stale pre-save one — otherwise it would raise a spurious revision conflict.
+      setActiveBaseRevision(saved.baseRevision);
+      setActiveDraftToken(saved.draftToken);
       await publishManagedResourcePolicy({
         authMethod: authMethod ?? null,
         input: {
-          expectedDraftToken: activeDraftToken,
-          expectedRevision: activeBaseRevision,
-          reason: reason.trim(),
+          expectedDraftToken: saved.draftToken,
+          expectedRevision: saved.baseRevision,
+          reason,
         },
         publish: adminManagedResourcesService.publish,
         refreshCapabilities: platform.refresh,
       });
-      clearManagedResourceLocalDraft();
+      setDirty(false);
       setSaveState('saved');
-      setReason('');
       hydratedRef.current = false;
       await mutate();
     } catch (cause) {
@@ -377,180 +276,64 @@ const ManagedResourcesPolicyPage = memo(() => {
       );
     }
   }, [
-    activeBaseRevision,
     activeDraftToken,
     authMethod,
     canPublish,
+    canUpdate,
     conflict,
     data,
-    dirty,
     draft,
     enterConflict,
     mutate,
     platform,
-    reason,
     t,
     unready.length,
-    validateReason,
   ]);
-
-  const handleRebase = useCallback(async () => {
-    if (!draft || !originalRef.current) return;
-    setActionError(null);
-    try {
-      const latest = await mutate();
-      if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
-      const result = rebaseManagedResourceDraft({
-        latest: latest.draft,
-        local: draft,
-        original: originalRef.current,
-      });
-      originalRef.current = latest.draft;
-      setDraft(result.draft);
-      setActiveBaseRevision(latest.baseRevision);
-      setActiveDraftToken(latest.draftToken);
-      setDirty(
-        fingerprintManagedResourcePolicy(result.draft) !==
-          fingerprintManagedResourcePolicy(latest.draft),
-      );
-      setRebaseConflicts(result.conflicts);
-      setSaveState(result.conflicts.length > 0 ? 'failed' : 'dirty');
-      setConflict(result.conflicts.length > 0);
-      setActionError(result.conflicts.length > 0 ? t('managedResources.conflict.fields') : null);
-    } catch {
-      setActionError(t('managedResources.errors.refresh'));
-    }
-  }, [draft, mutate, t]);
-
-  const resolveRebaseConflicts = useCallback(
-    (resolution: 'latest' | 'local') => {
-      if (!draft || rebaseConflicts.length === 0) return;
-      const next = structuredClone(draft);
-      if (resolution === 'latest') {
-        for (const item of rebaseConflicts) {
-          const resource = next[item.resource];
-          if (item.field === 'managed') resource.managed = item.latestValue as boolean;
-          else resource.enforcementMode = item.latestValue as ManagedResourceEnforcementMode;
-        }
-      }
-      setDraft(next);
-      setDirty(
-        originalRef.current
-          ? fingerprintManagedResourcePolicy(next) !==
-              fingerprintManagedResourcePolicy(originalRef.current)
-          : true,
-      );
-      setRebaseConflicts([]);
-      setConflict(false);
-      setSaveState('dirty');
-      setActionError(null);
-    },
-    [draft, rebaseConflicts],
-  );
-
-  const handleDiscard = useCallback(async () => {
-    setActionError(null);
-    try {
-      const latest = await mutate();
-      if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
-      clearManagedResourceLocalDraft();
-      originalRef.current = latest.draft;
-      setDraft(latest.draft);
-      setActiveBaseRevision(latest.baseRevision);
-      setActiveDraftToken(latest.draftToken);
-      setDirty(false);
-      setSaveState('idle');
-      setRebaseConflicts([]);
-      setConflict(false);
-    } catch {
-      setActionError(t('managedResources.errors.refresh'));
-    }
-  }, [mutate, t]);
 
   const renderLoaded = (snapshot: AdminManagedResourcesGetOutput) => {
     if (!draft) return <Loading debugId="AdminManagedResources > Hydrate" />;
 
+    const canSave = canUpdate && canPublish;
+
     return (
       <AdminPageTemplate
         description={t('managedResources.desc')}
+        hideTitle={embedded}
         title={t('managedResources.title')}
         banner={
-          <>
-            <RevisionBanner
-              conflict={conflict}
-              draftRevision={activeBaseRevision}
-              publishedRevision={snapshot.baseRevision}
-              status={snapshot.status}
+          conflict ? (
+            <Alert
+              showIcon
+              description={t('managedResources.conflict.desc')}
+              message={t('managedResources.conflict.title')}
+              type="warning"
+              extra={
+                <Button type="primary" onClick={() => void handleRefresh()}>
+                  {t('managedResources.conflict.discard')}
+                </Button>
+              }
             />
-            {conflict ? (
-              <Alert
-                showIcon
-                message={t('managedResources.conflict.title')}
-                type="warning"
-                description={t(
-                  rebaseConflicts.length > 0
-                    ? 'managedResources.conflict.fields'
-                    : 'managedResources.conflict.desc',
-                )}
-                extra={
-                  <Flexbox horizontal gap={8}>
-                    {rebaseConflicts.length > 0 ? (
-                      <>
-                        <Button type="primary" onClick={() => resolveRebaseConflicts('local')}>
-                          {t('managedResources.conflict.keepLocal')}
-                        </Button>
-                        <Button onClick={() => resolveRebaseConflicts('latest')}>
-                          {t('managedResources.conflict.useLatest')}
-                        </Button>
-                      </>
-                    ) : (
-                      <Button type="primary" onClick={() => void handleRebase()}>
-                        {t('managedResources.conflict.rebase')}
-                      </Button>
-                    )}
-                    <Button onClick={() => void handleDiscard()}>
-                      {t('managedResources.conflict.discard')}
-                    </Button>
-                  </Flexbox>
-                }
-              />
-            ) : null}
-          </>
+          ) : null
         }
       >
-        {!canUpdate ? (
-          <Alert showIcon message={t('managedResources.readOnly')} type="info" />
-        ) : null}
+        {!canSave ? <Alert showIcon message={t('managedResources.readOnly')} type="info" /> : null}
 
         <div className={styles.grid}>
           {MANAGED_RESOURCE_KINDS.map((resource) => {
             const item = draft[resource];
-            const ready = snapshot.readiness[resource];
             return (
               <section className={styles.card} key={resource}>
-                <div className={styles.cardHeader}>
-                  <div className={styles.cardHeading}>
-                    <Text strong>{t(`managedResources.resource.${resource}` as never)}</Text>
-                    <Text fontSize={12} type="secondary">
-                      {t(`managedResources.resource.${resource}.desc` as never)}
-                    </Text>
-                  </div>
-                  <Tag
-                    className={styles.statusTag}
-                    color={ready ? 'success' : 'default'}
-                    icon={<Icon icon={ready ? CircleCheck : CircleDashed} size={12} />}
-                    size="small"
-                  >
-                    {ready
-                      ? t('managedResources.readiness.ready')
-                      : t('managedResources.readiness.notReady')}
-                  </Tag>
+                <div className={styles.cardHeading}>
+                  <Text strong>{t(`managedResources.resource.${resource}` as never)}</Text>
+                  <Text fontSize={12} type="secondary">
+                    {t(`managedResources.resource.${resource}.desc` as never)}
+                  </Text>
                 </div>
                 <div className={styles.controls}>
                   <label className={styles.control}>
                     <Switch
                       checked={item.managed}
-                      disabled={!canUpdate || conflict}
+                      disabled={!canSave || conflict}
                       onChange={(managed) => updatePolicy(resource, { managed })}
                     />
                     <Text>{t('managedResources.managed')}</Text>
@@ -560,7 +343,7 @@ const ManagedResourcesPolicyPage = memo(() => {
                       {t('managedResources.mode.label')}
                     </Text>
                     <Select
-                      disabled={!canUpdate || conflict || !item.managed}
+                      disabled={!canSave || conflict || !item.managed}
                       value={item.enforcementMode}
                       options={MODE_VALUES.map((mode) => ({
                         label: t(`managedResources.mode.${mode}` as never),
@@ -579,76 +362,33 @@ const ManagedResourcesPolicyPage = memo(() => {
           })}
         </div>
 
-        <Flexbox gap={8}>
-          <Text strong>{t('managedResources.impact.title')}</Text>
-          {diff.length === 0 ? (
-            <Alert message={t('managedResources.impact.empty')} type="info" />
-          ) : (
-            diff.map((row) => (
-              <div className={styles.impact} key={row.resource}>
-                <Text strong>{t(`managedResources.resource.${row.resource}` as never)}</Text>
-                <Text type="secondary">
-                  {t('managedResources.impact.change', {
-                    afterManaged: t(`managedResources.boolean.${row.after.managed}` as never),
-                    afterMode: t(`managedResources.mode.${row.after.enforcementMode}` as never),
-                    beforeManaged: t(`managedResources.boolean.${row.before.managed}` as never),
-                    beforeMode: t(`managedResources.mode.${row.before.enforcementMode}` as never),
-                  })}
-                </Text>
-              </div>
-            ))
-          )}
-          {unready.length > 0 ? (
-            <Alert
-              showIcon
-              type="warning"
-              message={t('managedResources.readiness.blocked', {
-                resources: unready
-                  .map((resource) => t(`managedResources.resource.${resource}` as never))
-                  .join(', '),
-              })}
-            />
-          ) : null}
-        </Flexbox>
+        {unready.length > 0 ? (
+          <Alert
+            showIcon
+            type="warning"
+            message={t('managedResources.readiness.blocked', {
+              resources: unready
+                .map((resource) => t(`managedResources.resource.${resource}` as never))
+                .join(', '),
+            })}
+          />
+        ) : null}
 
         <div className={styles.footer}>
-          <Flexbox className={styles.reason} gap={4}>
-            <Text strong>{t('managedResources.reason.label')}</Text>
-            <TextArea
-              maxLength={2000}
-              placeholder={t('managedResources.reason.placeholder')}
-              rows={2}
-              value={reason}
-              onChange={(event) => {
-                setReason(event.target.value);
-                setReasonError(false);
-              }}
-            />
-            {reasonError ? (
-              <Text type="danger">{t('managedResources.reason.required')}</Text>
-            ) : null}
+          <Flexbox gap={4}>
             <span className={styles.status}>
               {t(`managedResources.saveState.${saveState}` as never)}
             </span>
             {actionError ? <Text type="danger">{actionError}</Text> : null}
           </Flexbox>
-          {primary === 'save' || primary === 'retry' ? (
+          {canSave ? (
             <Button
+              disabled={!dirty || conflict || unready.length > 0}
               loading={saveState === 'saving'}
               type="primary"
               onClick={() => void handleSave()}
             >
-              {primary === 'retry'
-                ? t('managedResources.actions.retrySave')
-                : t('managedResources.actions.save')}
-            </Button>
-          ) : primary === 'publish' ? (
-            <Button
-              loading={saveState === 'saving'}
-              type="primary"
-              onClick={() => void handlePublish()}
-            >
-              {t('managedResources.actions.publish')}
+              {t('managedResources.actions.save')}
             </Button>
           ) : null}
         </div>
