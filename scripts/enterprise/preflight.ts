@@ -32,37 +32,45 @@ const requireString = (value: string | undefined, name: string): string => {
   return value;
 };
 
-const EVIDENCE_FILE_ORDER = [
-  'path-boundaries.json',
-  'migration-compat.json',
-  'enterprise-admin-e2e.json',
-  'upstream-rebase.json',
-  'failure-drills.json',
-  'backup-restore.json',
-  'app-rollback.json',
+/**
+ * Preflight discovers ONLY recognized gate envelopes:
+ * - `<evidence-dir>/envelopes/<gate>.envelope.json`
+ * Raw reports under `raw/` and any other JSON are ignored (never parsed as gates).
+ */
+const GATE_ENVELOPE_NAMES = [
+  'path-boundaries.envelope.json',
+  'migration-compat.envelope.json',
+  'enterprise-admin-e2e.envelope.json',
+  'upstream-rebase.envelope.json',
+  'failure-drills.envelope.json',
+  'backup-restore.envelope.json',
+  'app-rollback.envelope.json',
 ] as const;
 
 const loadEvidenceFromDir = async (directory: string) => {
   const absolute = path.resolve(directory);
-  const entries = await readdir(absolute);
-  const present = new Set(entries);
-  const evidence = [];
-  for (const name of EVIDENCE_FILE_ORDER) {
-    if (!present.has(name)) continue;
-    evidence.push(await loadGateEvidenceFile(path.join(absolute, name)));
+  const envelopesDir = path.join(absolute, 'envelopes');
+  try {
+    const entries = await readdir(envelopesDir);
+    const present = new Set(entries);
+    const evidence = [];
+    for (const name of GATE_ENVELOPE_NAMES) {
+      if (!present.has(name)) continue;
+      evidence.push(await loadGateEvidenceFile(path.join(envelopesDir, name)));
+    }
+    // Extra files under envelopes/ and any raw/ neighbors are ignored deliberately.
+    return evidence;
+  } catch {
+    // Fallback: only exact recognized *.envelope.json names in root (never raw/*.json).
+    const entries = await readdir(absolute);
+    const present = new Set(entries);
+    const evidence = [];
+    for (const name of GATE_ENVELOPE_NAMES) {
+      if (!present.has(name)) continue;
+      evidence.push(await loadGateEvidenceFile(path.join(absolute, name)));
+    }
+    return evidence;
   }
-  const extras = entries
-    .filter(
-      (name) =>
-        name.endsWith('.json') &&
-        !(EVIDENCE_FILE_ORDER as readonly string[]).includes(name) &&
-        !name.endsWith('.sig.json'),
-    )
-    .sort((a, b) => a.localeCompare(b, 'en'));
-  for (const name of extras) {
-    evidence.push(await loadGateEvidenceFile(path.join(absolute, name)));
-  }
-  return evidence;
 };
 
 const main = async () => {
