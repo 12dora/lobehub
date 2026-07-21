@@ -40,6 +40,7 @@ export {
   digestAllRequiredTables,
   digestAuditLogs,
   digestCanonicalRecords,
+  digestCanonicalValue,
   digestResourceRevisions,
   TABLE_DIGEST_ENCODING_VERSION,
   verifyPublicationPointers,

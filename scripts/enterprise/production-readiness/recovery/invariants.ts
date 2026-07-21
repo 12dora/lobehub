@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import { PUBLICATION_POINTER_SOURCES, RECOVERY_ENTERPRISE_TABLES } from '../inventory';
+import { canonicalize } from '../trust/canonical';
 
 export interface AggregateDigestResult {
   digest: string;
@@ -28,21 +29,20 @@ const sha256Hex = (value: string): string => createHash('sha256').update(value).
 
 export const TABLE_DIGEST_ENCODING_VERSION = 1 as const;
 
-/** Shared versioned encoder for every recovery authorization digest (no delimiter concat). */
+/**
+ * Shared versioned encoder for every recovery authorization digest.
+ * Uses recursive canonicalize (sorted nested keys; preserves nested structure).
+ * Never uses JSON.stringify replacer-array (which drops nested keys).
+ */
 export const digestCanonicalRecords = (
   kind: string,
   records: ReadonlyArray<Record<string, unknown>>,
 ): string => {
   const serialized = records
-    .map((record) =>
-      JSON.stringify(
-        record,
-        Object.keys(record).sort((a, b) => a.localeCompare(b, 'en')),
-      ),
-    )
+    .map((record) => canonicalize(record))
     .sort((a, b) => a.localeCompare(b, 'en'));
   return sha256Hex(
-    JSON.stringify({
+    canonicalize({
       encodingVersion: TABLE_DIGEST_ENCODING_VERSION,
       kind,
       recordCount: serialized.length,
@@ -50,6 +50,9 @@ export const digestCanonicalRecords = (
     }),
   );
 };
+
+/** SHA-256 of recursive canonical JSON (nested objects preserved). */
+export const digestCanonicalValue = (value: unknown): string => sha256Hex(canonicalize(value));
 
 export const digestResourceRevisions = async (
   client: PoolClient,
@@ -98,14 +101,9 @@ export const digestAuditLogs = async (client: PoolClient): Promise<AggregateDige
   const records = result.rows.map((row) => {
     let diffDigest: string | null = null;
     if (row.after_diff !== null && row.after_diff !== undefined) {
-      // SHA-256 over stable JSON of after_diff (never md5, never raw in digest package).
+      // Recursive canonical JSON then SHA-256 — never emit raw diff; preserve nested keys.
       const stable =
-        typeof row.after_diff === 'string'
-          ? row.after_diff
-          : JSON.stringify(
-              row.after_diff,
-              Object.keys(row.after_diff as object).sort((a, b) => a.localeCompare(b, 'en')),
-            );
+        typeof row.after_diff === 'string' ? row.after_diff : canonicalize(row.after_diff);
       diffDigest = sha256Hex(stable);
     }
     return {
@@ -140,15 +138,14 @@ const normalizeCell = (value: unknown): string | number | boolean | null => {
   }
   if (value instanceof Date) return value.toISOString();
   if (typeof value === 'object') {
-    // Stable JSON (sorted keys recursively)
-    return JSON.stringify(value, (_k, v) => {
-      if (v && typeof v === 'object' && !Array.isArray(v)) {
-        return Object.fromEntries(
-          Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b, 'en')),
-        );
-      }
-      return v;
-    });
+    // Recursive canonical JSON string (nested keys preserved and sorted).
+    try {
+      return canonicalize(value);
+    } catch {
+      // Non-plain objects (e.g. Buffer handled below)
+      if (Buffer.isBuffer(value)) return value.toString('base64');
+      return String(value);
+    }
   }
   if (typeof value === 'bigint') return value.toString();
   if (Buffer.isBuffer(value)) return value.toString('base64');
@@ -483,14 +480,75 @@ export const verifyPublicationPointers = async (
 
     if (source.kind === 'resource-revision') {
       const ownerCol = source.resourceOwnerColumn;
+      const typeCol = source.holderResourceTypeColumn;
+      const checksumCol = source.holderChecksumColumn;
+
+      // Probe optional holder columns (type/checksum) against real schema.
+      const hasTypeCol =
+        typeCol !== null
+          ? (
+              await client.query<{ exists: boolean }>(
+                `SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+                 ) AS exists`,
+                [source.table, typeCol],
+              )
+            ).rows[0]?.exists === true
+          : false;
+      const hasChecksumCol =
+        checksumCol !== null
+          ? (
+              await client.query<{ exists: boolean }>(
+                `SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+                 ) AS exists`,
+                [source.table, checksumCol],
+              )
+            ).rows[0]?.exists === true
+          : false;
+
+      // Fail closed if inventory requires a holder checksum/type column that is missing.
+      if (checksumCol !== null && !hasChecksumCol) {
+        return {
+          match: false,
+          detail: `missing-holder-checksum-column:${source.table}:${checksumCol}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+      if (typeCol !== null && !hasTypeCol) {
+        return {
+          match: false,
+          detail: `missing-holder-type-column:${source.table}:${typeCol}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+
+      const selectParts = [
+        `"${source.holderIdColumn}"::text AS holder_id`,
+        `"${ownerCol}"::text AS resource_owner_id`,
+        `"${source.pointerColumn}"::text AS pointer`,
+      ];
+      if (hasTypeCol && typeCol) {
+        selectParts.push(`"${typeCol}"::text AS holder_resource_type`);
+      } else {
+        selectParts.push(`NULL::text AS holder_resource_type`);
+      }
+      if (hasChecksumCol && checksumCol) {
+        selectParts.push(`"${checksumCol}"::text AS holder_checksum`);
+      } else {
+        selectParts.push(`NULL::text AS holder_checksum`);
+      }
+
       const rows = await client.query<{
+        holder_checksum: string | null;
         holder_id: string;
+        holder_resource_type: string | null;
         pointer: string;
         resource_owner_id: string;
       }>(
-        `SELECT "${source.holderIdColumn}"::text AS holder_id,
-                "${ownerCol}"::text AS resource_owner_id,
-                "${source.pointerColumn}"::text AS pointer
+        `SELECT ${selectParts.join(', ')}
          FROM "${source.table}"
          WHERE "${source.pointerColumn}" IS NOT NULL
          ORDER BY "${source.holderIdColumn}"::text`,
@@ -504,19 +562,41 @@ export const verifyPublicationPointers = async (
             pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
-        const expectedType: string = source.resourceType;
+        const expectedType: string =
+          hasTypeCol && row.holder_resource_type ? row.holder_resource_type : source.resourceType;
+        if (
+          hasTypeCol &&
+          row.holder_resource_type &&
+          row.holder_resource_type !== source.resourceType
+        ) {
+          return {
+            match: false,
+            detail: `holder-resource-type-mismatch:${source.table}:${row.holder_id}:${row.holder_resource_type}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+          };
+        }
+
         type RevRow = {
           checksum: string;
           resource_id: string;
           resource_type: string;
           revision: string;
         };
-        const resolvedQuery = await client.query<RevRow>(
-          `SELECT resource_type, resource_id, revision::text AS revision, checksum
-           FROM platform_resource_revisions
-           WHERE revision = $1 AND resource_id = $2 AND resource_type = $3`,
-          [Number(pointer), row.resource_owner_id, expectedType],
-        );
+        // When holder has checksum, match composite FK including checksum.
+        const resolvedQuery =
+          hasChecksumCol && row.holder_checksum
+            ? await client.query<RevRow>(
+                `SELECT resource_type, resource_id, revision::text AS revision, checksum
+                 FROM platform_resource_revisions
+                 WHERE revision = $1 AND resource_id = $2 AND resource_type = $3 AND checksum = $4`,
+                [Number(pointer), row.resource_owner_id, expectedType, row.holder_checksum],
+              )
+            : await client.query<RevRow>(
+                `SELECT resource_type, resource_id, revision::text AS revision, checksum
+                 FROM platform_resource_revisions
+                 WHERE revision = $1 AND resource_id = $2 AND resource_type = $3`,
+                [Number(pointer), row.resource_owner_id, expectedType],
+              );
         const resolvedCount = resolvedQuery.rowCount ?? 0;
         if (resolvedCount === 0) {
           return {
@@ -543,6 +623,13 @@ export const verifyPublicationPointers = async (
             pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
+        if (hasChecksumCol && row.holder_checksum && targetRow.checksum !== row.holder_checksum) {
+          return {
+            match: false,
+            detail: `holder-checksum-mismatch:${source.table}:${row.holder_id}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+          };
+        }
         const targetDigest = digestCanonicalRecords('resource-revision-target', [
           {
             checksum: targetRow.checksum,
@@ -552,7 +639,9 @@ export const verifyPublicationPointers = async (
           },
         ]);
         pointerRecords.push({
+          holder_checksum: row.holder_checksum,
           holder_id: row.holder_id,
+          holder_resource_type: row.holder_resource_type ?? expectedType,
           kind: 'resource-revision',
           pointer,
           resource_owner_id: row.resource_owner_id,
