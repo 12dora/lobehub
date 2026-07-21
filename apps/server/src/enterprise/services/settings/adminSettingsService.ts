@@ -375,13 +375,16 @@ export class AdminSettingsService {
   /**
    * Merge path→value patch into draft and publish immediately (W10-C).
    *
-   * Mode rules:
-   * - existing mode === 'user' (or no existing policy) → 'default'
-   * - existing mode === 'locked' → stay 'locked'
-   * - existing mode === 'default' → stay 'default'
-   * Visibility is never changed. schemaVersion comes from the registry.
+   * Mode rules (basis = **published** policy, not draft):
+   * - published mode === 'locked' → stay 'locked'
+   * - published mode === 'user' / missing → 'default'
+   * - published mode === 'default' → stay 'default'
+   * Visibility comes from published (fallback draft/visible). schemaVersion from registry.
    *
    * Rejects when draft differs from published on any path outside the patch.
+   *
+   * On publish failure, restore uses `saved.draftToken` (not a fresh getDraft token)
+   * so concurrent drafts are not overwritten; token mismatch abandons restore.
    */
   applyImmediate = async (params: {
     actorUserId: string;
@@ -465,14 +468,19 @@ export class AdminSettingsService {
         ]);
       }
 
-      const existing = nextDraft[path] ?? published[path];
-      const nextMode: SettingPolicyMode = existing?.mode === 'locked' ? 'locked' : 'default';
+      // Mode / visibility basis = published policy (ignore unpublished draft mode edits).
+      const publishedPolicy = published[path];
+      const draftPolicy = draft[path];
+      const nextMode: SettingPolicyMode = publishedPolicy?.mode === 'locked' ? 'locked' : 'default';
+      const nextVisibility = (publishedPolicy?.visibility ??
+        draftPolicy?.visibility ??
+        'visible') as SettingPolicyVisibility;
 
       nextDraft[path] = {
         mode: nextMode,
         schemaVersion: entry.schemaVersion,
         value: validated.value,
-        visibility: (existing?.visibility ?? 'visible') as SettingPolicyVisibility,
+        visibility: nextVisibility,
       };
     }
 
@@ -494,18 +502,34 @@ export class AdminSettingsService {
         reason,
       });
     } catch (error) {
-      // Best-effort restore so a failed publish does not leave an unpublished dirty draft
-      // that blocks subsequent applyImmediate calls.
+      // Best-effort restore: pin expectedDraftToken to *our* saveDraft result so a
+      // concurrent admin who saved during the publish-failure window is not overwritten.
       try {
-        const current = await this.getDraft();
         await this.saveDraft({
           actorUserId: params.actorUserId,
           draft: priorDraft,
-          expectedDraftToken: current.draftToken,
+          expectedDraftToken: saved.draftToken,
           reason: `${reason} (restore after publish failure)`,
         });
-      } catch {
-        /* restore is best-effort */
+      } catch (restoreError) {
+        const abandoned =
+          restoreError instanceof PlatformRevisionConflictError
+            ? 'concurrent_draft_write'
+            : 'restore_failed';
+        try {
+          await this.auditAppend(this.db, {
+            action: 'admin.settings.applyImmediate',
+            actorUserId: params.actorUserId,
+            afterDiff: { abandonedRestore: abandoned },
+            beforeDiff: null,
+            reason: `${reason} (restore abandoned: ${abandoned})`,
+            result: 'failure',
+            targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+            targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+          });
+        } catch {
+          /* best-effort */
+        }
       }
       throw error;
     }
