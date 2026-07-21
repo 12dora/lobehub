@@ -34,7 +34,7 @@ import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
-import { PlatformSecretService } from '../../security/secret';
+import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
 import { IdentityProviderValidationError } from '../../services/identityProvider/discoveryValidator';
 import { IdentityProviderPublicationService } from '../../services/identityProvider/publicationService';
 import { IdentityProviderSecretStore } from '../../services/identityProvider/secretStore';
@@ -43,6 +43,15 @@ import {
   createAdminIdentityProviderRuntime,
   isIdentityProviderFeatureEnabled,
 } from './identityProvidersSupport';
+
+const enterpriseCodeFromError = (error: unknown): string | null => {
+  if (error instanceof PlatformSecretError) return error.code;
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' ? code : null;
+  }
+  return null;
+};
 
 const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
   try {
@@ -56,7 +65,28 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
             : PLATFORM_ERROR_CODES.PLATFORM_OIDC_DISCOVERY_FAILED,
       });
     }
+    // Real path when ENABLE_DATABASE_OIDC=1 without PLATFORM_MASTER_KEY:
+    // PlatformSecretService.fromEnvOrThrowIfEnterprise throws PlatformSecretError
+    // (message is a prose string; stable code lives on `.code`).
+    const enterpriseCode = enterpriseCodeFromError(error);
+    if (enterpriseCode === PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED) {
+      return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED });
+    }
+    if (enterpriseCode === PLATFORM_ERROR_CODES.PLATFORM_SECRET_NOT_READABLE) {
+      return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_NOT_READABLE });
+    }
     const message = error instanceof Error ? error.message : '';
+    // Legacy string throws from support helpers (APP_URL gap, explicit SECRET_REQUIRED).
+    if (message.includes('PLATFORM_SECRET_REQUIRED') || message === 'PLATFORM_SECRET_REQUIRED') {
+      return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED });
+    }
+    // APP_URL missing is a deploy-time config gap; preserve stable message for setup guidance UI.
+    if (message.includes('PLATFORM_APP_URL_INVALID') || message === 'PLATFORM_APP_URL_INVALID') {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+        message: 'PLATFORM_APP_URL_INVALID',
+      });
+    }
     if (message.includes('REVISION_CONFLICT') || message.includes('revision changed')) {
       return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT });
     }

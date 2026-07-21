@@ -421,6 +421,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'query',
+    path: 'admin.easyauth.getStatus',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.IDENTITY_READ] },
+  },
+  {
+    kind: 'query',
     path: 'admin.easyauth.getSyncStatus',
     permission: {
       mode: 'any',
