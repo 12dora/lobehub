@@ -23,6 +23,7 @@ describe('platform system roles', () => {
 
   it('user_admin can manage users but not AI providers', () => {
     const codes = PLATFORM_ROLE_PERMISSIONS[PLATFORM_SYSTEM_ROLES.USER_ADMIN];
+    expect(codes).toContain(PLATFORM_PERMISSIONS.USER_CREATE);
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_BAN);
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_DELETE);
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_ROLE_MANAGE);
@@ -49,6 +50,7 @@ describe('platform system roles', () => {
     expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_READ);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.POLICY_UPDATE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_BAN);
+    expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_CREATE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_DELETE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE);
   });

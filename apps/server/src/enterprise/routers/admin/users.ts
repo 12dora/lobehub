@@ -11,6 +11,8 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
   adminUsersBanInputSchema,
   adminUsersBanOutputSchema,
+  adminUsersCreateInputSchema,
+  adminUsersCreateOutputSchema,
   adminUsersDeleteInputSchema,
   adminUsersDeleteOutputSchema,
   adminUsersGetAuditTrailInputSchema,
@@ -32,7 +34,9 @@ import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
 import {
+  AdminUserEmailConflictError,
   AdminUserNotFoundError,
+  AdminUserPasswordAuthDisabledError,
   AdminUserSelfBanError,
   AdminUserSelfDeleteError,
   AdminUserService,
@@ -63,6 +67,20 @@ const mapServiceError = (error: unknown): never => {
     throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
       details: { reason: 'self_delete' },
+      httpCode: 'BAD_REQUEST',
+    });
+  }
+  if (error instanceof AdminUserEmailConflictError) {
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: error.reasonCode },
+      httpCode: 'BAD_REQUEST',
+    });
+  }
+  if (error instanceof AdminUserPasswordAuthDisabledError) {
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: error.reasonCode },
       httpCode: 'BAD_REQUEST',
     });
   }
@@ -161,6 +179,21 @@ export const adminUsersRouter = router({
       } catch (error) {
         return mapServiceError(error);
       }
+    }),
+
+  create: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.USER_CREATE))
+    .input(adminUsersCreateInputSchema)
+    .output(adminUsersCreateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withReauth(ctx as never, 'admin.users.create', undefined, input.reason, async () => {
+        const service = new AdminUserService(ctx.serverDB);
+        try {
+          return await service.createUser({ actorUserId: ctx.userId!, input });
+        } catch (error) {
+          return mapServiceError(error);
+        }
+      });
     }),
 
   ban: adminBase

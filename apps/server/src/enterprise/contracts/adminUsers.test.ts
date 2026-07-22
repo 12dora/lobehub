@@ -10,6 +10,8 @@ import {
   ADMIN_USERS_LIST_DEFAULT_LIMIT,
   ADMIN_USERS_LIST_MAX_LIMIT,
   adminUsersBanInputSchema,
+  adminUsersCreateInputSchema,
+  adminUsersCreateOutputSchema,
   adminUsersGetAuditTrailInputSchema,
   adminUsersGetInputSchema,
   adminUsersGetOutputSchema,
@@ -211,6 +213,69 @@ describe('adminUsersUnbanInputSchema', () => {
   it('requires reason', () => {
     expect(() => adminUsersUnbanInputSchema.parse({ userId: 'u1' })).toThrow();
     expect(adminUsersUnbanInputSchema.parse({ reason: 'ok', userId: 'u1' }).reason).toBe('ok');
+  });
+});
+
+describe('adminUsersCreateInputSchema', () => {
+  const base = {
+    email: 'user@example.com',
+    fullName: 'User',
+    password: 'longenough',
+    reason: 'provision',
+  };
+
+  it('trims and lowercases email', () => {
+    const parsed = adminUsersCreateInputSchema.parse({
+      ...base,
+      email: '  New.User@Example.COM ',
+    });
+    expect(parsed.email).toBe('new.user@example.com');
+  });
+
+  it('enforces password bounds (8–64) mirroring Better Auth config', () => {
+    expect(() => adminUsersCreateInputSchema.parse({ ...base, password: 'a'.repeat(7) })).toThrow();
+    expect(adminUsersCreateInputSchema.parse({ ...base, password: 'a'.repeat(8) }).password).toBe(
+      'a'.repeat(8),
+    );
+    expect(adminUsersCreateInputSchema.parse({ ...base, password: 'a'.repeat(64) }).password).toBe(
+      'a'.repeat(64),
+    );
+    expect(() =>
+      adminUsersCreateInputSchema.parse({ ...base, password: 'a'.repeat(65) }),
+    ).toThrow();
+  });
+
+  it('validates optional username charset', () => {
+    expect(adminUsersCreateInputSchema.parse(base).username).toBeUndefined();
+    expect(adminUsersCreateInputSchema.parse({ ...base, username: 'ok.user-1' }).username).toBe(
+      'ok.user-1',
+    );
+    expect(() => adminUsersCreateInputSchema.parse({ ...base, username: 'bad name!' })).toThrow();
+  });
+
+  it('rejects unknown keys (strict)', () => {
+    expect(() =>
+      adminUsersCreateInputSchema.parse({ ...base, passwordHash: 'x' } as never),
+    ).toThrow();
+  });
+});
+
+describe('adminUsersCreateOutputSchema', () => {
+  it('accepts the safe shape and never carries a password', () => {
+    const ok = adminUsersCreateOutputSchema.parse({
+      created: true,
+      email: 'user@example.com',
+      userId: 'user_abc',
+    });
+    expect(ok.created).toBe(true);
+    expect(() =>
+      adminUsersCreateOutputSchema.parse({
+        created: true,
+        email: 'user@example.com',
+        password: 'leak',
+        userId: 'user_abc',
+      } as never),
+    ).toThrow();
   });
 });
 

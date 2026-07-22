@@ -70,14 +70,15 @@ describe('admin procedure authorization registry', () => {
     // + connector governance (getGovernance query + setSharedAuthorization
     //   + updateBuiltinToolPolicy mutations) = 156
     // + admin.users hard-delete (1 mutation) = 157
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(157);
+    // + admin.users.create (1 mutation) = 158
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(158);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(67);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(90);
-    expect(mutationPaths).toHaveLength(90);
+    ).toHaveLength(91);
+    expect(mutationPaths).toHaveLength(91);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

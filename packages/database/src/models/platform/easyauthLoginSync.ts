@@ -78,8 +78,12 @@ export const syncEasyauthOnLogin = async (db: LobeChatDatabase, userId: string):
       .select({ accountId: account.accountId, providerId: account.providerId })
       .from(account)
       .where(eq(account.userId, userId));
-    const preferred = accounts.find((r) => /authentik|oidc|sso|dingtalk/i.test(r.providerId));
-    const externalUserId = preferred?.accountId ?? accounts[0]?.accountId;
+    // Credential accounts are LOCAL identities (accountId = local user id) —
+    // never send them to EasyAuth as external subject ids. Credential-only
+    // users skip the sync entirely (snapshot/roles stay untouched).
+    const external = accounts.filter((r) => r.providerId !== 'credential');
+    const preferred = external.find((r) => /authentik|oidc|sso|dingtalk/i.test(r.providerId));
+    const externalUserId = preferred?.accountId ?? external[0]?.accountId;
     if (!externalUserId) return;
 
     const url = `${baseUrl}/api/v1/apps/${encodeURIComponent(appKey)}/users/${encodeURIComponent(externalUserId)}/permissions`;

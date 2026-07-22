@@ -75,7 +75,12 @@ export const createSecondaryStorage = () => {
   const redisConfig = getRedisConfig();
   if (!isRedisEnabled(redisConfig)) return undefined;
 
-  const secondaryStorageKeyPrefix = 'better-auth:';
+  // Namespace keys per instance when AUTH_COOKIE_PREFIX is set, so deployments
+  // sharing one Redis never read each other's session entries. When unset, the
+  // prefix stays byte-identical to the historical value.
+  const secondaryStorageKeyPrefix = authEnv.AUTH_COOKIE_PREFIX
+    ? `better-auth:${authEnv.AUTH_COOKIE_PREFIX}:`
+    : 'better-auth:';
 
   const buildKey = (key: string) => `${secondaryStorageKeyPrefix}${key}`;
 
