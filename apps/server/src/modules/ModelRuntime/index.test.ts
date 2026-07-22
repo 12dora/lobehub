@@ -672,6 +672,124 @@ describe('initModelRuntimeFromDB managed model guard', () => {
       else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
     }
   });
+
+  it('uses the platform path when the catalog resolves the provider (hit)', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    const resolveSpy = vi
+      .spyOn(AiCatalogExecutionResolver.prototype, 'resolveProviderExecutionConfig')
+      .mockResolvedValue({
+        allowedModels: [{ modelKey: 'managed-chat', type: 'chat' }],
+        config: {},
+        keyVaults: { apiKey: 'platform-secret', baseURL: 'https://platform.example/v1' },
+        providerKey: 'openai',
+        revision: 2,
+        runtimeProvider: 'openai',
+      });
+
+    try {
+      // Empty db would fail the user path — success + platform baseURL proves platform hit.
+      const runtime = await initModelRuntimeFromDB({} as never, 'user-1', 'openai');
+      expect(runtime['_runtime']).toBeInstanceOf(LobeOpenAI);
+      expect(runtime['_runtime'].baseURL).toBe('https://platform.example/v1');
+      expect(resolveSpy).toHaveBeenCalledOnce();
+
+      // Platform allowlist hooks must be present.
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      runtime['_runtime'] = { chat: providerChat } as never;
+      await expect(runtime.chat({ messages: [], model: 'deny-chat' })).rejects.toMatchObject({
+        errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+      });
+      expect(providerChat).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('falls back to the user config path on PLATFORM_NOT_FOUND (no platform hooks)', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    const notFound = Object.assign(new Error('PLATFORM_NOT_FOUND'), {
+      code: 'PLATFORM_NOT_FOUND',
+    });
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockRejectedValue(notFound);
+
+    // User self-built provider row (BYOK). keyVaults null → empty secrets (env fallback ok).
+    const providerRow = {
+      checkModel: null,
+      config: { enableResponseApi: true },
+      description: null,
+      enabled: true,
+      fetchOnClient: false,
+      id: 'oai',
+      keyVaults: null,
+      logo: null,
+      name: 'oai',
+      settings: { sdkType: 'openai' },
+      source: 'custom',
+    };
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({ limit: async () => [providerRow] }),
+        }),
+      }),
+    };
+
+    try {
+      const runtime = await initModelRuntimeFromDB(db as never, 'user-1', 'oai');
+      expect(runtime['_runtime']).toBeInstanceOf(LobeOpenAI);
+
+      // Fallback must NOT attach platform allowlist hooks — arbitrary models still work.
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      runtime['_runtime'] = { chat: providerChat } as never;
+      await expect(
+        runtime.chat({ messages: [], model: 'any-custom-model' }),
+      ).resolves.toBeInstanceOf(Response);
+      expect(providerChat).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('rethrows non-PLATFORM_NOT_FOUND platform errors without user fallback', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    const secretError = Object.assign(new Error('PLATFORM_SECRET_REQUIRED'), {
+      code: 'PLATFORM_SECRET_REQUIRED',
+    });
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockRejectedValue(secretError);
+
+    try {
+      // Empty db would produce a different failure if user fallback ran — expect original error.
+      await expect(initModelRuntimeFromDB({} as never, 'user-1', 'openai')).rejects.toMatchObject({
+        code: 'PLATFORM_SECRET_REQUIRED',
+      });
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
 });
 
 /**

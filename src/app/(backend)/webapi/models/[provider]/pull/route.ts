@@ -4,7 +4,11 @@ import { ChatErrorType } from '@lobechat/types';
 import { checkAuth } from '@/app/(backend)/middleware/auth';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
-import { isPlatformManagedAiEnabled } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
+import {
+  getEmptyPlatformAiRuntimeState,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiRuntimeState,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createErrorResponse } from '@/utils/errorResponse';
 
 import { resolveValidWorkspaceIdFromRequest } from '../../../_utils/workspace';
@@ -14,11 +18,20 @@ export const POST = checkAuth(async (req, { params, userId, serverDB }) => {
 
   try {
     if (isPlatformManagedAiEnabled()) {
-      return Response.json(
-        { errorType: PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_PULL_DISABLED },
-        { status: 403 },
-      );
+      // Platform providers keep pull disabled. User self-built / BYOK providers
+      // (not in the platform catalog) fall through to the user runtime path.
+      const platformState = await resolvePlatformAiRuntimeState({
+        db: serverDB,
+        upstreamState: getEmptyPlatformAiRuntimeState(),
+      });
+      if (platformState.enabledAiProviders.some((item) => item.id === provider)) {
+        return Response.json(
+          { errorType: PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_PULL_DISABLED },
+          { status: 403 },
+        );
+      }
     }
+
     const workspaceId = await resolveValidWorkspaceIdFromRequest({ req, serverDB, userId });
 
     // Read user's provider config from database
