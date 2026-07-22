@@ -430,6 +430,52 @@ export class AdminUserModel {
   };
 
   /**
+   * Count how many of the given Better Auth session ids belong to the user.
+   * Used to reject targeted revoke requests that reference foreign/unknown ids.
+   */
+  countSessionsBelongingToUser = async (params: {
+    sessionIds: string[];
+    userId: string;
+  }): Promise<number> => {
+    if (params.sessionIds.length === 0) return 0;
+    const rows = await this.db
+      .select({ id: session.id })
+      .from(session)
+      .where(and(eq(session.userId, params.userId), inArray(session.id, params.sessionIds)));
+    return rows.length;
+  };
+
+  /**
+   * Delete a specific set of Better Auth sessions for a user (targeted revoke).
+   * Only rows owned by the user are deleted. Returns number of deleted rows.
+   * Never advances the global auth epoch — callers keep the user's other sessions alive.
+   */
+  revokeSpecificSessions = async (params: {
+    sessionIds: string[];
+    userId: string;
+  }): Promise<number> => {
+    if (params.sessionIds.length === 0) return 0;
+    const deleted = await this.db
+      .delete(session)
+      .where(and(eq(session.userId, params.userId), inArray(session.id, params.sessionIds)))
+      .returning({ id: session.id });
+    return deleted.length;
+  };
+
+  /**
+   * Hard delete a user row. FK cascade removes every owned record (sessions, accounts,
+   * messages, topics, agents, files, RBAC grants, …); `set null` audit references are
+   * detached rather than blocked. Returns true when a row was deleted.
+   */
+  hardDeleteUser = async (userId: string): Promise<boolean> => {
+    const deleted = await this.db
+      .delete(users)
+      .where(eq(users.id, userId))
+      .returning({ id: users.id });
+    return deleted.length > 0;
+  };
+
+  /**
    * Assert a Better Auth session row exists, belongs to the user, and is unexpired.
    * Returns true if valid; never selects tokens.
    */

@@ -1,8 +1,9 @@
 'use client';
 
-import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { Info } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -18,8 +19,18 @@ const styles = createStaticStyles(({ css }) => ({
     align-items: center;
     justify-content: space-between;
   `,
+  heading: css`
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  `,
   hint: css`
     color: ${cssVar.colorTextSecondary};
+  `,
+  infoIcon: css`
+    cursor: help;
+    display: inline-flex;
+    color: ${cssVar.colorTextTertiary};
   `,
   roleCard: css`
     display: flex;
@@ -30,67 +41,92 @@ const styles = createStaticStyles(({ css }) => ({
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadius};
   `,
+  roleCardHeader: css`
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+  `,
 }));
 
 interface AccessTabProps {
   canManageRoles: boolean;
-  onReplaceRoles?: () => void;
+  /** Whether the actor may revoke this specific role (e.g. only super admins revoke super_admin). */
+  canRevokeRole?: (roleName: string) => boolean;
+  /** Revoke a single global role by name. */
+  onRevokeRole?: (roleName: string) => void;
+  onUpdatePermissions?: () => void;
   user: AdminUsersGetOutput;
 }
 
-const AccessTab = memo<AccessTabProps>(({ user, canManageRoles, onReplaceRoles }) => {
-  const { t } = useTranslation('admin');
+const AccessTab = memo<AccessTabProps>(
+  ({ user, canManageRoles, onUpdatePermissions, onRevokeRole, canRevokeRole }) => {
+    const { t } = useTranslation('admin');
 
-  return (
-    <Flexbox gap={16}>
-      <div className={styles.header}>
-        <Text as="h3" style={{ fontWeight: 600, margin: 0 }}>
-          {t('users.access.globalRoles')}
-        </Text>
-        {canManageRoles && onReplaceRoles ? (
-          <Button size="small" type="primary" onClick={onReplaceRoles}>
-            {t('users.actions.replaceRoles')}
-          </Button>
-        ) : null}
-      </div>
-      <Text className={styles.hint}>{t('users.access.workspaceNote')}</Text>
-      {user.roles.length === 0 ? (
-        <Text type="secondary">{t('users.access.noRoles')}</Text>
-      ) : (
-        <Flexbox gap={8}>
-          {user.roles.map((role) => (
-            <div className={styles.roleCard} key={role.id}>
-              <Flexbox horizontal align="center" gap={8}>
-                <Tag>
-                  {role.displayName ||
-                    t(`users.roles.${role.name}` as never, { defaultValue: role.name })}
-                </Tag>
+    return (
+      <Flexbox gap={16}>
+        <div className={styles.header}>
+          <div className={styles.heading}>
+            <Text as="h3" style={{ fontWeight: 600, margin: 0 }}>
+              {t('users.access.globalRoles')}
+            </Text>
+            <Tooltip title={t('users.access.workspaceNote')}>
+              <span className={styles.infoIcon}>
+                <Icon icon={Info} size={14} />
+              </span>
+            </Tooltip>
+          </div>
+          {canManageRoles && onUpdatePermissions ? (
+            <Button size="small" type="primary" onClick={onUpdatePermissions}>
+              {t('users.actions.replaceRoles')}
+            </Button>
+          ) : null}
+        </div>
+        {user.roles.length === 0 ? (
+          <Text type="secondary">{t('users.access.noRoles')}</Text>
+        ) : (
+          <Flexbox gap={8}>
+            {user.roles.map((role) => (
+              <div className={styles.roleCard} key={role.id}>
+                <div className={styles.roleCardHeader}>
+                  <Flexbox horizontal align="center" gap={8}>
+                    <Tag>
+                      {role.displayName ||
+                        t(`users.roles.${role.name}` as never, { defaultValue: role.name })}
+                    </Tag>
+                    <Text type="secondary">
+                      {role.expiresAt
+                        ? t('users.access.expires', { date: formatAdminDateTime(role.expiresAt) })
+                        : t('users.access.noExpiry')}
+                    </Text>
+                  </Flexbox>
+                  {canManageRoles && onRevokeRole && (canRevokeRole?.(role.name) ?? true) ? (
+                    <Button danger size="small" type="text" onClick={() => onRevokeRole(role.name)}>
+                      {t('users.modals.revokeRole.confirm')}
+                    </Button>
+                  ) : null}
+                </div>
                 <Text type="secondary">
-                  {role.expiresAt
-                    ? t('users.access.expires', { date: formatAdminDateTime(role.expiresAt) })
-                    : t('users.access.noExpiry')}
+                  {t(`users.roles.desc.${role.name}` as never, {
+                    defaultValue: role.displayName || role.name,
+                  })}
                 </Text>
-              </Flexbox>
-              <Text type="secondary">
-                {t(`users.roles.desc.${role.name}` as never, {
-                  defaultValue: role.displayName || role.name,
-                })}
-              </Text>
-              <Text type="secondary">
-                {t(`users.roles.impact.${role.name}` as never, { defaultValue: '' })}
-              </Text>
-            </div>
-          ))}
-        </Flexbox>
-      )}
-      {canManageRoles ? (
-        <Text className={styles.hint}>{t('users.access.lastSuperNote')}</Text>
-      ) : (
-        <Text type="secondary">{t('users.access.noPermission')}</Text>
-      )}
-    </Flexbox>
-  );
-});
+                <Text type="secondary">
+                  {t(`users.roles.impact.${role.name}` as never, { defaultValue: '' })}
+                </Text>
+              </div>
+            ))}
+          </Flexbox>
+        )}
+        {canManageRoles ? (
+          <Text className={styles.hint}>{t('users.access.lastSuperNote')}</Text>
+        ) : (
+          <Text type="secondary">{t('users.access.noPermission')}</Text>
+        )}
+      </Flexbox>
+    );
+  },
+);
 
 AccessTab.displayName = 'AdminUserAccessTab';
 

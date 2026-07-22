@@ -91,7 +91,8 @@ const roleCases = [
     role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
   },
   {
-    expectedBeforeO04System: 15,
+    // Recount after admin.users.delete (USER_DELETE) = 16
+    expectedBeforeO04System: 16,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
   },

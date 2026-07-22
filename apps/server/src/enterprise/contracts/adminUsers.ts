@@ -252,6 +252,12 @@ export const adminUsersRevokeSessionsInputSchema = z
     /** When true, also revoke the actor's current session if actor === target. Default false. */
     includeCurrent: z.boolean().optional(),
     reason: reasonSchema,
+    /**
+     * Targeted revoke: revoke only these specific Better Auth session ids (must belong to
+     * the target user). When present, the global security epoch is NOT advanced — only the
+     * listed rows are deleted. Absent = revoke all sessions (existing behavior).
+     */
+    sessionIds: z.array(z.string().min(1).max(128)).min(1).max(50).optional(),
     userId: userIdSchema,
   })
   .strict();
@@ -267,11 +273,43 @@ export const adminUsersRevokeSessionsOutputSchema = z
 
 export type AdminUsersRevokeSessionsOutput = z.infer<typeof adminUsersRevokeSessionsOutputSchema>;
 
+// ── delete (hard delete) ──────────────────────────────────────────────────────
+
+/**
+ * Irreversible hard delete: removes the user row so every FK-cascade owned record
+ * (sessions, accounts, messages, topics, agents, files, RBAC grants, …) is wiped.
+ * Blocked for the actor's own account and the last permanent super admin.
+ */
+export const adminUsersDeleteInputSchema = z
+  .object({
+    reason: reasonSchema,
+    userId: userIdSchema,
+  })
+  .strict();
+
+export type AdminUsersDeleteInput = z.infer<typeof adminUsersDeleteInputSchema>;
+
+export const adminUsersDeleteOutputSchema = z
+  .object({
+    deleted: z.literal(true),
+    userId: z.string(),
+  })
+  .strict();
+
+export type AdminUsersDeleteOutput = z.infer<typeof adminUsersDeleteOutputSchema>;
+
 // ── replaceGlobalRoles ──────────────────────────────────────────────────────
 
 export const adminUsersReplaceGlobalRolesInputSchema = z
   .object({
     expiresAt: z.coerce.date().optional(),
+    /**
+     * Role names whose existing grants must be left untouched (expiry preserved) instead
+     * of deleted + re-inserted. Used by single-role revoke so removing one role never
+     * silently strips a time-boxed expiry from the remaining grants. Must be a subset of
+     * roleNames.
+     */
+    preserveRoleNames: z.array(adminUserAssignableRoleNameSchema).max(16).optional(),
     reason: reasonSchema,
     roleNames: z.array(adminUserAssignableRoleNameSchema).max(16),
     userId: userIdSchema,

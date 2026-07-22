@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, SearchBar } from '@lobehub/ui';
+import { SearchBar } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, type ReactNode } from 'react';
@@ -16,22 +16,25 @@ const styles = createStaticStyles(({ css }) => ({
   root: css`
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 8px;
     align-items: center;
 
     padding-block: 8px;
     padding-inline: 0;
   `,
   search: css`
-    flex: 1;
-    min-width: 220px;
-    max-width: 360px;
+    flex: 0 1 260px;
+    min-width: 180px;
+    max-width: 320px;
   `,
   slot: css`
     display: flex;
+    flex: 1;
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+
+    min-width: 0;
   `,
 }));
 
@@ -79,7 +82,6 @@ const FilterBar = memo<FilterBarProps>(({ values, onChange, extra, searchPlaceho
           {t('primitives.filterBar.clear')}
         </Button>
       ) : null}
-      <Flexbox flex={1} style={{ minWidth: 0 }} />
     </div>
   );
 });
