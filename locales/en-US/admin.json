@@ -1572,6 +1572,7 @@
   "users.modals.revoke.impactSelf": "By default your current session is retained. Check “also revoke current session” only if you intend to sign yourself out.",
   "users.modals.revoke.impactSelfDefault": "Other sessions will be revoked. Your current session is retained unless you opt in below.",
   "users.modals.revoke.impactSingle": "This session will be signed out immediately.",
+  "users.modals.revoke.impactSingleSelf": "This session will be signed out immediately. If it is the session you are using now, you will be signed out.",
   "users.modals.revoke.includeCurrent": "Also revoke my current session (you will need to sign in again)",
   "users.modals.revoke.includeCurrentWarning": "This will sign you out after confirm. You will need to sign in again.",
   "users.modals.revoke.title": "Revoke sessions",

@@ -51,6 +51,8 @@ const styles = createStaticStyles(({ css }) => ({
 
 interface AccessTabProps {
   canManageRoles: boolean;
+  /** Whether the actor may revoke this specific role (e.g. only super admins revoke super_admin). */
+  canRevokeRole?: (roleName: string) => boolean;
   /** Revoke a single global role by name. */
   onRevokeRole?: (roleName: string) => void;
   onUpdatePermissions?: () => void;
@@ -58,7 +60,7 @@ interface AccessTabProps {
 }
 
 const AccessTab = memo<AccessTabProps>(
-  ({ user, canManageRoles, onUpdatePermissions, onRevokeRole }) => {
+  ({ user, canManageRoles, onUpdatePermissions, onRevokeRole, canRevokeRole }) => {
     const { t } = useTranslation('admin');
 
     return (
@@ -98,7 +100,7 @@ const AccessTab = memo<AccessTabProps>(
                         : t('users.access.noExpiry')}
                     </Text>
                   </Flexbox>
-                  {canManageRoles && onRevokeRole ? (
+                  {canManageRoles && onRevokeRole && (canRevokeRole?.(role.name) ?? true) ? (
                     <Button danger size="small" type="text" onClick={() => onRevokeRole(role.name)}>
                       {t('users.modals.revokeRole.confirm')}
                     </Button>

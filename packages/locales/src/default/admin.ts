@@ -994,6 +994,8 @@ export default {
   'users.modals.revoke.titleSingle': 'Revoke session',
   'users.modals.revoke.confirmSingle': 'Revoke',
   'users.modals.revoke.impactSingle': 'This session will be signed out immediately.',
+  'users.modals.revoke.impactSingleSelf':
+    'This session will be signed out immediately. If it is the session you are using now, you will be signed out.',
   'users.modals.revoke.desc': 'End Better Auth sessions and advance the security epoch.',
   'users.modals.revoke.impactSelf':
     'By default your current session is retained. Check “also revoke current session” only if you intend to sign yourself out.',

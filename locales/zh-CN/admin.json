@@ -1572,6 +1572,7 @@
   "users.modals.revoke.impactSelf": "默认保留你当前会话。仅在需要把自己登出时勾选“同时撤销当前会话”。",
   "users.modals.revoke.impactSelfDefault": "将撤销其他会话。除非你在下方选择，否则保留当前会话。",
   "users.modals.revoke.impactSingle": "该会话将立即失效。",
+  "users.modals.revoke.impactSingleSelf": "该会话将立即失效；若这是你当前正在使用的会话，你将被登出。",
   "users.modals.revoke.includeCurrent": "同时撤销我的当前会话（需要重新登录）",
   "users.modals.revoke.includeCurrentWarning": "确认后你将被登出，需要重新登录。",
   "users.modals.revoke.title": "撤销会话",

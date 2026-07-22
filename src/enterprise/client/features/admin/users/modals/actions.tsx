@@ -283,6 +283,7 @@ export const openRevokeSessionsModal = (params: {
 /** Revoke a single session by id (confirm-only, targeted). */
 export const openRevokeSingleSessionModal = (params: {
   authMethod?: AdminReauthAuthMethod;
+  isSelf?: boolean;
   onConfirm: (input: Omit<AdminUsersRevokeSessionsInput, 'userId'>) => Promise<void>;
   sessionId: string;
   targetLabel: string;
@@ -293,7 +294,9 @@ export const openRevokeSingleSessionModal = (params: {
     autoReason: AUTO_REASON.revokeOne,
     danger: true,
     hideReason: true,
-    impact: t('users.modals.revoke.impactSingle'),
+    impact: params.isSelf
+      ? t('users.modals.revoke.impactSingleSelf')
+      : t('users.modals.revoke.impactSingle'),
     submitLabel: t('users.modals.revoke.confirmSingle'),
     targetLabel: params.targetLabel,
     title: t('users.modals.revoke.titleSingle'),
@@ -468,7 +471,13 @@ export const openRevokeRoleModal = (params: {
     submitLabel: t('users.modals.revokeRole.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.revokeRole.title'),
-    buildPayload: (reason) => ({ reason, roleNames: params.remainingRoleNames }),
+    // Preserve the remaining grants untouched (keep their expiry) — only the revoked
+    // role is removed; never silently make a temporary grant permanent.
+    buildPayload: (reason) => ({
+      preserveRoleNames: params.remainingRoleNames,
+      reason,
+      roleNames: params.remainingRoleNames,
+    }),
     onSubmit: async (payload) => {
       await params.onConfirm(payload as Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>);
       toast.success(t('users.toast.roleRevokeSuccess'));

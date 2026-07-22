@@ -51,7 +51,7 @@ const SessionsTab = memo<SessionsTabProps>(({ user, canRevoke, onRevokeAll, onRe
         <Text as="h3" style={{ fontWeight: 600, margin: 0 }}>
           {t('users.sessions.title', { count: user.sessionCount })}
         </Text>
-        {canRevoke && onRevokeAll && user.sessions.length > 0 ? (
+        {canRevoke && onRevokeAll ? (
           <Button danger size="small" type="default" onClick={onRevokeAll}>
             {t('users.sessions.openRevoke')}
           </Button>

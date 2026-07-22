@@ -647,6 +647,7 @@ export class AdminUserService {
         const replaced = await rbacService.replaceUserGlobalRoles({
           actorUserId,
           expiresAt: input.expiresAt,
+          preserveRoleNames: input.preserveRoleNames,
           reason: input.reason,
           roleNames: input.roleNames,
           skipAudit: true,
