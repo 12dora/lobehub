@@ -125,16 +125,10 @@ export function buildAnalyticsConfig(options: { desktop?: boolean } = {}): Analy
     };
   }
 
-  if (
-    options.desktop &&
-    process.env.NEXT_PUBLIC_DESKTOP_PROJECT_ID &&
-    process.env.NEXT_PUBLIC_DESKTOP_UMAMI_BASE_URL
-  ) {
-    config.desktop = {
-      baseUrl: process.env.NEXT_PUBLIC_DESKTOP_UMAMI_BASE_URL,
-      projectId: process.env.NEXT_PUBLIC_DESKTOP_PROJECT_ID,
-    };
-  }
+  // AIHub: built-in telemetry removed — desktop Umami analytics is never configured, even when
+  // NEXT_PUBLIC_DESKTOP_PROJECT_ID / NEXT_PUBLIC_DESKTOP_UMAMI_BASE_URL are set. The `desktop`
+  // option is kept for signature compatibility but intentionally does not enable any tracker.
+  void options;
 
   return config;
 }

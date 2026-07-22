@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe('Analytics managed setting row', () => {
-  it('keeps the exact unmanaged interaction when the policy flag is off', () => {
+  it('forces the telemetry switch off regardless of the stored setting (telemetry removed)', () => {
     const updateGeneralConfig = vi.fn();
     useUserStore.setState({
       settings: { general: { telemetry: true } },
@@ -53,9 +53,10 @@ describe('Analytics managed setting row', () => {
     vi.spyOn(platformMetaModule, 'usePlatformSettingMeta').mockReturnValue(meta());
 
     render(<Analytics />, { wrapper });
-    fireEvent.click(screen.getByRole('switch'));
 
-    expect(updateGeneralConfig).toHaveBeenCalledWith({ telemetry: false });
+    // Even with telemetry:true in the store, the anonymous-usage switch renders OFF because the
+    // telemetry selector is hard-forced to false (built-in telemetry removed).
+    expect(screen.getByRole('switch')).not.toBeChecked();
   });
 
   it('removes the complete label, description and control when hidden', () => {
