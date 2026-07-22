@@ -5,6 +5,7 @@ import { mutate } from 'swr';
 
 import {
   type AdminUsersBanInput,
+  type AdminUsersCreateInput,
   type AdminUsersDeleteInput,
   type AdminUsersGetAuditTrailInput,
   type AdminUsersListInput,
@@ -85,6 +86,12 @@ export const refreshAdminUserDetail = async (userId: string) => {
 };
 
 export const useAdminUserMutations = () => {
+  const createUser = useCallback(async (input: AdminUsersCreateInput) => {
+    const result = await adminUsersService.create(input);
+    await refreshAdminUsersList();
+    return result;
+  }, []);
+
   const banUser = useCallback(async (input: AdminUsersBanInput) => {
     const result = await adminUsersService.ban(input);
     await refreshAdminUsersList();
@@ -120,5 +127,5 @@ export const useAdminUserMutations = () => {
     return result;
   }, []);
 
-  return { banUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser };
+  return { banUser, createUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser };
 };

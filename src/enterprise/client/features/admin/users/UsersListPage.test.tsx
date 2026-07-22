@@ -2,7 +2,7 @@
  * Real FilterBar + list filter/cursor tests with SWR key evidence (UI-R4).
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,6 +34,9 @@ const evidence = vi.hoisted(() => ({
   /** Real SWR only re-fetches when the key changes. */
   lastSerializedSwrKey: null as string | null,
   listMock: vi.fn(),
+  /** Actor permission snapshot consumed by the AdminAccessProvider mock. */
+  actorPermissions: [] as string[],
+  openCreateUserModalMock: vi.fn(),
 }));
 
 const { listCalls, swrKeys, mutateMock, listMock } = evidence;
@@ -82,10 +85,23 @@ vi.mock('@/enterprise/client/services/adminUsers', () => ({
   },
 }));
 
+vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
+  useAdminAccess: () => ({
+    authMethod: 'better-auth',
+    permissions: evidence.actorPermissions,
+    roles: [],
+  }),
+}));
+
+vi.mock('./modals/CreateUserModal', () => ({
+  openCreateUserModal: (params: unknown) => evidence.openCreateUserModalMock(params),
+}));
+
 vi.mock('../primitives/AdminPageTemplate', () => ({
-  default: ({ children, title, toolbar }: any) => (
+  default: ({ actions, children, title, toolbar }: any) => (
     <div>
       <h1>{title}</h1>
+      {actions ? <div data-testid="actions">{actions}</div> : null}
       <div data-testid="toolbar">{toolbar}</div>
       {children}
     </div>
@@ -97,12 +113,30 @@ vi.mock('../primitives/StatusBadge', () => ({
 }));
 
 vi.mock('../primitives/DataTable', () => ({
-  default: ({ dataSource, cursorPagination, emptyDescription, loading, error }: any) => {
+  default: ({ columns, dataSource, cursorPagination, emptyDescription, loading, error }: any) => {
     if (loading) return <div>loading</div>;
     if (error) return <div role="alert">error</div>;
     if (!dataSource?.length) return <div>{emptyDescription ?? 'empty'}</div>;
     return (
       <div>
+        <div data-testid="table-rows">
+          {dataSource.map((row: any) => (
+            <div data-testid={`row-${row.id}`} key={row.id}>
+              {(columns as any[] | undefined)?.map((col) => {
+                const value = col.dataIndex != null ? row[col.dataIndex] : undefined;
+                const content = col.render ? col.render(value, row) : value;
+                return (
+                  <div
+                    data-testid={`cell-${String(col.key ?? col.dataIndex)}`}
+                    key={String(col.key ?? col.dataIndex)}
+                  >
+                    {content}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
         <button type="button" onClick={cursorPagination?.onNext}>
           next
         </button>
@@ -125,8 +159,10 @@ vi.mock('@lobehub/ui', async () => {
         'value': value ?? '',
         'onChange': (e: any) => onInputChange?.(e.target.value),
       }),
-    Tag: ({ children }: any) => React.createElement('span', null, children),
+    Tag: ({ children, ...rest }: any) => React.createElement('span', rest, children),
     Text: ({ children }: any) => React.createElement('span', null, children),
+    Tooltip: ({ children, title }: any) =>
+      React.createElement('div', { 'data-tooltip': title }, children),
   };
 });
 
@@ -190,6 +226,8 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
     listCalls.length = 0;
     swrKeys.length = 0;
     evidence.lastSerializedSwrKey = null;
+    evidence.actorPermissions = [];
+    evidence.openCreateUserModalMock.mockReset();
     mutateMock.mockReset();
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
@@ -441,5 +479,91 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
     expect((soleKey as unknown[])[1]).toBe('alice');
     expect(isNoCursorKey(soleKey)).toBe(true);
     expect(cursorFromKey(soleKey)).toBe('');
+  });
+});
+
+describe('UsersListPage create-user entry (USER_CREATE gate)', () => {
+  beforeEach(() => {
+    evidence.lastSerializedSwrKey = null;
+    evidence.actorPermissions = [];
+    evidence.openCreateUserModalMock.mockReset();
+  });
+
+  const renderPage = () =>
+    render(
+      <MemoryRouter>
+        <UsersListPage />
+      </MemoryRouter>,
+    );
+
+  it('hides the create button without USER_CREATE', () => {
+    evidence.actorPermissions = ['platform_user:delete:all'];
+    renderPage();
+    expect(screen.queryByText('users.list.create')).toBeNull();
+    expect(screen.queryByTestId('actions')).toBeNull();
+  });
+
+  it('shows the create button with USER_CREATE and opens the modal on click', () => {
+    evidence.actorPermissions = ['platform_user:create:all'];
+    renderPage();
+
+    const button = screen.getByText('users.list.create');
+    expect(button).toBeTruthy();
+
+    fireEvent.click(button);
+    expect(evidence.openCreateUserModalMock).toHaveBeenCalledTimes(1);
+    const params = evidence.openCreateUserModalMock.mock.calls[0][0] as {
+      authMethod?: string;
+      onSubmit?: unknown;
+    };
+    expect(params.authMethod).toBe('better-auth');
+    expect(typeof params.onSubmit).toBe('function');
+  });
+});
+
+describe('UsersListPage source tags (local / SSO)', () => {
+  beforeEach(() => {
+    evidence.lastSerializedSwrKey = null;
+    evidence.actorPermissions = [];
+    // Reset to credential-only baseline for each case.
+    sampleList.items[0].providerIds = ['credential'];
+  });
+
+  const renderPage = () =>
+    render(
+      <MemoryRouter>
+        <UsersListPage />
+      </MemoryRouter>,
+    );
+
+  it('shows only Local user for credential-only accounts', () => {
+    sampleList.items[0].providerIds = ['credential'];
+    renderPage();
+
+    const cell = screen.getByTestId('cell-source');
+    expect(within(cell).getByTestId('user-source-local')).toBeTruthy();
+    expect(within(cell).getByText('users.source.local')).toBeTruthy();
+    expect(within(cell).queryByTestId('user-source-sso')).toBeNull();
+  });
+
+  it('shows only SSO user for non-credential provider accounts', () => {
+    sampleList.items[0].providerIds = ['authentik'];
+    renderPage();
+
+    const cell = screen.getByTestId('cell-source');
+    expect(within(cell).queryByTestId('user-source-local')).toBeNull();
+    expect(within(cell).getByTestId('user-source-sso')).toBeTruthy();
+    expect(within(cell).getByText('users.source.sso')).toBeTruthy();
+  });
+
+  it('shows both Local and SSO tags when credential and SSO are linked', () => {
+    sampleList.items[0].providerIds = ['credential', 'authentik'];
+    renderPage();
+
+    const cell = screen.getByTestId('cell-source');
+    expect(within(cell).getByTestId('user-source-local')).toBeTruthy();
+    expect(within(cell).getByTestId('user-source-sso')).toBeTruthy();
+    expect(within(cell).getByText('users.source.local')).toBeTruthy();
+    expect(within(cell).getByText('users.source.sso')).toBeTruthy();
   });
 });
