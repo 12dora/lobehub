@@ -33,6 +33,7 @@ export const createLambdaAdminAgentsClient = (): AdminAgentsClient => ({
   archive: (input) => lambdaClient.admin.agents.archive.mutate(input),
   cancelRollout: (input) => lambdaClient.admin.agents.rollouts.cancel.mutate(input),
   create: (input) => lambdaClient.admin.agents.create.mutate(input),
+  delete: (input) => lambdaClient.admin.agents.delete.mutate(input),
   get: (input) => lambdaClient.admin.agents.get.query(input),
   getDependents: (input) => lambdaClient.admin.agents.getDependents.query(input),
   getRollout: (input) => lambdaClient.admin.agents.rollouts.get.query(input),

@@ -18,6 +18,8 @@ import type {
   adminAiModelUpdateInputSchema,
   adminAiProviderArchiveInputSchema,
   adminAiProviderCreateDraftInputSchema,
+  adminAiProviderDeleteInputSchema,
+  adminAiProviderDeleteOutputSchema,
   adminAiProviderGetInputSchema,
   adminAiProviderGetOutputSchema,
   adminAiProviderListInputSchema,
@@ -56,6 +58,8 @@ export type AdminAiModelReorderOutput = z.infer<typeof adminAiModelReorderOutput
 export type AdminAiModelUpdateInput = z.infer<typeof adminAiModelUpdateInputSchema>;
 export type AdminAiProviderArchiveInput = z.infer<typeof adminAiProviderArchiveInputSchema>;
 export type AdminAiProviderCreateDraftInput = z.infer<typeof adminAiProviderCreateDraftInputSchema>;
+export type AdminAiProviderDeleteInput = z.infer<typeof adminAiProviderDeleteInputSchema>;
+export type AdminAiProviderDeleteOutput = z.infer<typeof adminAiProviderDeleteOutputSchema>;
 export type AdminAiProviderGetInput = z.infer<typeof adminAiProviderGetInputSchema>;
 export type AdminAiProviderGetOutput = z.infer<typeof adminAiProviderGetOutputSchema>;
 export type AdminAiProviderListInput = z.infer<typeof adminAiProviderListInputSchema>;

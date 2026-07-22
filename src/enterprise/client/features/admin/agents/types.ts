@@ -20,6 +20,8 @@ import type {
   AdminPlatformAgentAssignmentUpsertOutput,
   AdminPlatformAgentCreateInput,
   AdminPlatformAgentCreateOutput,
+  AdminPlatformAgentDeleteInput,
+  AdminPlatformAgentDeleteOutput,
   AdminPlatformAgentDependentsInput,
   AdminPlatformAgentDependentsOutput,
   AdminPlatformAgentGetInput,
@@ -67,6 +69,8 @@ export type {
   AdminPlatformAgentAssignmentUpsertOutput,
   AdminPlatformAgentCreateInput,
   AdminPlatformAgentCreateOutput,
+  AdminPlatformAgentDeleteInput,
+  AdminPlatformAgentDeleteOutput,
   AdminPlatformAgentDependentsInput,
   AdminPlatformAgentDependentsOutput,
   AdminPlatformAgentGetInput,
@@ -151,6 +155,7 @@ export interface AdminAgentsClient {
   ) => Promise<AdminPlatformAgentRolloutCancelOutput>;
   capabilities: AdminAgentsClientCapabilities;
   create: (input: AdminPlatformAgentCreateInput) => Promise<AdminPlatformAgentCreateOutput>;
+  delete: (input: AdminPlatformAgentDeleteInput) => Promise<AdminPlatformAgentDeleteOutput>;
   get: (input: AdminPlatformAgentGetInput) => Promise<AdminPlatformAgentGetOutput>;
   getDependents: (
     input: AdminPlatformAgentDependentsInput,
