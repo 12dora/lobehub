@@ -463,6 +463,73 @@ export class AdminUserModel {
   };
 
   /**
+   * Case-insensitive duplicate check on email / normalizedEmail.
+   * Returns the owning user id when the address is already taken.
+   */
+  findUserIdByEmail = async (email: string): Promise<string | null> => {
+    const normalized = email.trim().toLowerCase();
+    const [row] = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        or(
+          sql`lower(${users.email}) = ${normalized}`,
+          sql`lower(${users.normalizedEmail}) = ${normalized}`,
+        ),
+      )
+      .limit(1);
+    return row?.id ?? null;
+  };
+
+  /** Existence probe for generated-id collision retry on create. */
+  userIdExists = async (userId: string): Promise<boolean> => {
+    const [row] = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return Boolean(row);
+  };
+
+  /**
+   * Insert an admin-provisioned credential user + Better Auth credential account.
+   * `passwordHash` must already be hashed (Better Auth scrypt) — never a raw password.
+   * Email is verified and onboarding finished, matching platform seed conventions.
+   * The account row's accountId is the LOCAL user id (Better Auth credential
+   * convention) — never the email, so EasyAuth external-id resolvers can't
+   * mistake it for an SSO subject id.
+   */
+  createCredentialUser = async (params: {
+    accountId: string;
+    email: string;
+    fullName: string;
+    normalizedEmail: string;
+    passwordHash: string;
+    userId: string;
+    username?: string | null;
+  }): Promise<void> => {
+    const now = new Date();
+    await this.db.insert(users).values({
+      email: params.email,
+      emailVerified: true,
+      fullName: params.fullName,
+      id: params.userId,
+      normalizedEmail: params.normalizedEmail,
+      onboarding: { finishedAt: now.toISOString(), version: 1 },
+      username: params.username ?? null,
+    });
+    await this.db.insert(account).values({
+      accountId: params.userId,
+      createdAt: now,
+      id: params.accountId,
+      password: params.passwordHash,
+      providerId: 'credential',
+      updatedAt: now,
+      userId: params.userId,
+    });
+  };
+
+  /**
    * Hard delete a user row. FK cascade removes every owned record (sessions, accounts,
    * messages, topics, agents, files, RBAC grants, …); `set null` audit references are
    * detached rather than blocked. Returns true when a row was deleted.
