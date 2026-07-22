@@ -3,12 +3,13 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { AdminUsersGetOutput } from '@/enterprise/client/services/adminUsers';
 
 import StatusBadge from '../../primitives/StatusBadge';
+import UserSourceTags from '../UserSourceTags';
 import { formatAdminDateTime } from '../utils';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -52,6 +53,7 @@ const OverviewTab = memo<OverviewTabProps>(
     const { t } = useTranslation('admin');
     const isBanned = user.status === 'banned';
     const showActions = canBan || canDelete;
+    const providerIds = useMemo(() => user.providers.map((p) => p.providerId), [user.providers]);
 
     return (
       <div className={styles.section}>
@@ -70,6 +72,10 @@ const OverviewTab = memo<OverviewTabProps>(
           <dt>{t('users.overview.status')}</dt>
           <dd>
             <StatusBadge status={user.status} />
+          </dd>
+          <dt>{t('users.overview.source')}</dt>
+          <dd>
+            <UserSourceTags providerIds={providerIds} />
           </dd>
           {user.banned ? (
             <>
