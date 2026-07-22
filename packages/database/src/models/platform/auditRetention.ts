@@ -62,6 +62,8 @@ export type ExportArtifactRetentionCandidate = {
   filterSnapshot: PlatformAuditExportItem['filterSnapshot'];
   finishedAt: Date | null;
   id: string;
+  /** Actual export kind — legal-hold policy must branch on this, never filter heuristics. */
+  kind: PlatformAuditExportItem['kind'];
   /** Stable keyset timestamp: finishedAt, coalesced to createdAt only for legacy rows. */
   sortAt: Date;
   status: PlatformAuditExportItem['status'];
@@ -302,6 +304,7 @@ export class PlatformAuditRetentionRepository {
         filterSnapshot: platformAuditExports.filterSnapshot,
         finishedAt: platformAuditExports.finishedAt,
         id: platformAuditExports.id,
+        kind: platformAuditExports.kind,
         sortAt: sortAtExpr.as('sort_at'),
         status: platformAuditExports.status,
         storageKey: platformAuditExports.storageKey,

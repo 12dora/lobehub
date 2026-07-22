@@ -65,6 +65,8 @@ describe('PlatformAuditRetentionRepository.listExportArtifactCandidates', () => 
     expect(page.items.map((i) => i.id)).toEqual(['paex_ret_live']);
     expect(page.items[0]?.storageKey).toBeTruthy();
     expect(page.items[0]?.sortAt).toBeInstanceOf(Date);
+    // Legal-hold policy branches on actual kind — must be selected through.
+    expect(page.items[0]?.kind).toBe('operation_logs');
   });
 
   it('eligibility uses finishedAt (not createdAt): recently completed long-ago-created is not purged', async () => {

@@ -385,6 +385,287 @@ describe('audit retention worker', () => {
     expect(row[0]?.artifactBytes).toBe(20);
   });
 
+  it('export artifacts: skips purge when filter actorUserId matches user hold', async () => {
+    const exportId = 'export-held-actor';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"operation_log"}\n'));
+
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 12,
+      artifactChecksum: 'sha256:held-actor',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {
+        actorUserId: userA,
+        from: oldDate.toISOString(),
+        to: oldDate.toISOString(),
+      },
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'operation_logs',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+    await serverDB.insert(platformAuditLegalHolds).values({
+      createdBy: actor,
+      id: 'hold-export-actor',
+      reason: 'actor evidence hold',
+      scopeId: userA,
+      scopeType: 'user',
+      status: 'active',
+    });
+
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'held actor export', scope: 'export_artifacts' },
+    });
+    await drainRetentionJobs();
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    expect(run.status).toBe('completed');
+    expect(run.counts.exportArtifactsScanned).toBe(1);
+    expect(run.counts.skippedLegalHold).toBe(1);
+    expect(run.counts.exportArtifactsDeleted ?? 0).toBe(0);
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    const row = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row[0]?.status).toBe('completed');
+    expect(row[0]?.storageKey).toBe(storageKey);
+  });
+
+  it('export artifacts: skips purge when filter topicId matches topic hold', async () => {
+    const exportId = 'export-held-topic';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    const heldTopicId = 'topic-export-held';
+    storage.objects.set(storageKey, Buffer.from('{"type":"conversation_topic"}\n'));
+
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 14,
+      artifactChecksum: 'sha256:held-topic',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {
+        from: oldDate.toISOString(),
+        to: oldDate.toISOString(),
+        topicId: heldTopicId,
+        userId: userA,
+      },
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'conversations',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+    await serverDB.insert(platformAuditLegalHolds).values({
+      createdBy: actor,
+      id: 'hold-export-topic',
+      reason: 'topic evidence hold',
+      scopeId: heldTopicId,
+      scopeType: 'topic',
+      status: 'active',
+    });
+
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'held topic export', scope: 'export_artifacts' },
+    });
+    await drainRetentionJobs();
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    expect(run.status).toBe('completed');
+    expect(run.counts.exportArtifactsScanned).toBe(1);
+    expect(run.counts.skippedLegalHold).toBe(1);
+    expect(run.counts.exportArtifactsDeleted ?? 0).toBe(0);
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    const row = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row[0]?.status).toBe('completed');
+    expect(row[0]?.storageKey).toBe(storageKey);
+  });
+
+  it('export artifacts: skips purge for broad op-log filter when any scoped hold exists', async () => {
+    const exportId = 'export-held-broad';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"operation_log"}\n'));
+
+    // Time/action-only freeze — can include evidence for any held actor/target.
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 10,
+      artifactChecksum: 'sha256:held-broad',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {
+        action: 'admin.settings.publish',
+        from: oldDate.toISOString(),
+        to: oldDate.toISOString(),
+      },
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'operation_logs',
+      requestedBy: actor,
+      rowCount: 3,
+      status: 'completed',
+      storageKey,
+    });
+    await serverDB.insert(platformAuditLegalHolds).values({
+      createdBy: actor,
+      id: 'hold-export-broad-user',
+      reason: 'unrelated-looking user hold still covers broad exports',
+      scopeId: userA,
+      scopeType: 'user',
+      status: 'active',
+    });
+
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'broad held export', scope: 'export_artifacts' },
+    });
+    await drainRetentionJobs();
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    expect(run.status).toBe('completed');
+    expect(run.counts.exportArtifactsScanned).toBe(1);
+    expect(run.counts.skippedLegalHold).toBe(1);
+    expect(run.counts.exportArtifactsDeleted ?? 0).toBe(0);
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    const row = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row[0]?.status).toBe('completed');
+    expect(row[0]?.storageKey).toBe(storageKey);
+  });
+
+  it('export artifacts: skips purge for operation_logs with only q/time filter under user hold', async () => {
+    // Regression: `q` is valid on operation_logs. Kind must come from the row,
+    // not filter heuristics that treat `q` as conversation-like (under-retain).
+    const exportId = 'export-held-oplog-q';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"operation_log"}\n'));
+
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 10,
+      artifactChecksum: 'sha256:held-oplog-q',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {
+        from: oldDate.toISOString(),
+        q: 'settings',
+        to: oldDate.toISOString(),
+      },
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'operation_logs',
+      requestedBy: actor,
+      rowCount: 2,
+      status: 'completed',
+      storageKey,
+    });
+    await serverDB.insert(platformAuditLegalHolds).values({
+      createdBy: actor,
+      id: 'hold-export-oplog-q-user',
+      reason: 'user hold must cover broad operation_logs q exports',
+      scopeId: userA,
+      scopeType: 'user',
+      status: 'active',
+    });
+
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'oplog q held export', scope: 'export_artifacts' },
+    });
+    await drainRetentionJobs();
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    expect(run.status).toBe('completed');
+    expect(run.counts.exportArtifactsScanned).toBe(1);
+    expect(run.counts.skippedLegalHold).toBe(1);
+    expect(run.counts.exportArtifactsDeleted ?? 0).toBe(0);
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    const row = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row[0]?.status).toBe('completed');
+    expect(row[0]?.storageKey).toBe(storageKey);
+  });
+
+  it('export artifacts: purges when exact conversation userId is disjoint from user holds', async () => {
+    // Provable disjoint: conversations export pinned to userA cannot include userB-only holds.
+    const exportId = 'export-disjoint-user';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"conversation_topic"}\n'));
+
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 11,
+      artifactChecksum: 'sha256:disjoint-user',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {
+        from: oldDate.toISOString(),
+        to: oldDate.toISOString(),
+        userId: userA,
+      },
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'conversations',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+    await serverDB.insert(platformAuditLegalHolds).values({
+      createdBy: actor,
+      id: 'hold-export-other-user',
+      reason: 'hold on a different user only',
+      scopeId: actor,
+      scopeType: 'user',
+      status: 'active',
+    });
+
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'disjoint user export', scope: 'export_artifacts' },
+    });
+    await drainRetentionJobs();
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    expect(run.status).toBe('completed');
+    expect(run.counts.exportArtifactsScanned).toBe(1);
+    expect(run.counts.skippedLegalHold ?? 0).toBe(0);
+    expect(run.counts.exportArtifactsDeleted).toBe(1);
+    expect(storage.objects.has(storageKey)).toBe(false);
+
+    const row = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row[0]?.status).toBe('expired');
+    expect(row[0]?.storageKey).toBeNull();
+  });
+
   it('cancel mid-flight stops the domain run and job', async () => {
     const service = new AdminAuditRetentionService(serverDB, { storage });
     const created = await service.run({
