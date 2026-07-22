@@ -48,9 +48,10 @@ vi.mock('@lobehub/ui', async () => {
     Avatar: () => null,
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
     Icon: () => null,
-    Tag: ({ children }: any) => React.createElement('span', null, children),
+    Tag: ({ children, ...rest }: any) => React.createElement('span', rest, children),
     Text: ({ children, as: As, ...rest }: any) => React.createElement(As || 'span', rest, children),
-    Tooltip: ({ children }: any) => React.createElement('div', null, children),
+    Tooltip: ({ children, title }: any) =>
+      React.createElement('div', { 'data-tooltip': title }, children),
   };
 });
 
@@ -240,6 +241,9 @@ describe('UserDetailPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Bob' })).toBeTruthy();
     expect(within(screen.getByTestId('description')).getByText('bob@example.com')).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/secret-hash|session-token-leak/);
+    // Credential-only sample → local source tag only
+    expect(screen.getByTestId('user-source-local')).toBeTruthy();
+    expect(screen.queryByTestId('user-source-sso')).toBeNull();
   });
 
   it('shows loading before data', () => {
