@@ -105,6 +105,7 @@ import {
 import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
+import { patchBuiltinManifestWithGovernance } from '@/libs/mcp/patchManifestGovernance';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import {
@@ -126,6 +127,7 @@ import {
   buildManagedConnectorManifests,
   buildPinnedManagedConnectorManifests,
 } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+import { resolveConnectorGovernance } from '@/server/enterprise/services/connectorGovernance/resolve';
 import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getEffectiveMemorySettings,
@@ -2874,6 +2876,38 @@ export class AiAgentService {
         disabledPluginIdSet.size,
       );
 
+      // ── Org connector governance (org-mandate layer) ──────────────────────
+      // Resolved ONCE per run; the resolver fails open to per-user behavior.
+      // While active:
+      //  - builtin manifests are patched from the org builtin tool permission
+      //    matrix (`applyBuiltinGovernance` below) — REPLACING per-user
+      //    connector_tools semantics for builtin identifiers (matrix miss →
+      //    the manifest's static default, same as an unsynced user today);
+      //  - LobeHub Skill / Composio manifests are advertised under the
+      //    designated shared OAuth owner's identity, so every user sees the
+      //    owner's authorized toolkits (execution substitutes the same
+      //    identity in BuiltinToolsExecutor).
+      // Inactive governance keeps today's per-user behavior byte-identical.
+      // User rows are never written by any of this.
+      const connectorGovernance = await resolveConnectorGovernance(this.db);
+      const applyBuiltinGovernance = (manifest: LobeToolManifest): LobeToolManifest =>
+        connectorGovernance.active
+          ? (patchBuiltinManifestWithGovernance(
+              manifest as any,
+              connectorGovernance.builtinToolPolicies,
+            ) as LobeToolManifest)
+          : manifest;
+      const sharedAuthOwnerUserId = connectorGovernance.active
+        ? connectorGovernance.sharedAuthOwnerUserId
+        : null;
+      const useSharedAuthOwner = !!sharedAuthOwnerUserId && sharedAuthOwnerUserId !== this.userId;
+      const skillMarketService = useSharedAuthOwner
+        ? new MarketService({ userInfo: { userId: sharedAuthOwnerUserId! } })
+        : this.marketService;
+      const skillComposioService = useSharedAuthOwner
+        ? new ComposioService({ db: this.db, userId: sharedAuthOwnerUserId! })
+        : this.composioService;
+
       // 5a-1. Resolve Connectors. Enforced mode builds manifests exclusively
       // from immutable Published revisions; personal endpoint/schema/credentials
       // are never read or used. Feature-off/non-enforced keeps the exact legacy path.
@@ -2958,20 +2992,21 @@ export class AiAgentService {
         return info?.abilities?.functionCall ?? true;
       };
 
-      // 5c. Fetch LobeHub Skills manifests
+      // 5c. Fetch LobeHub Skills manifests (under the governance-effective
+      // identity: shared OAuth owner while managed, else the invoking user)
       if (!platformOperationPin) {
         try {
-          lobehubSkillManifests = await this.marketService.getLobehubSkillManifests();
+          lobehubSkillManifests = await skillMarketService.getLobehubSkillManifests();
         } catch (error) {
           log('execAgent: failed to fetch lobehub skill manifests: %O', error);
         }
       }
       log('execAgent: got %d lobehub skill manifests', lobehubSkillManifests.length);
 
-      // 5d. Fetch Composio tool manifests from database
+      // 5d. Fetch Composio tool manifests from database (same effective identity)
       if (!platformOperationPin) {
         try {
-          composioManifests = await this.composioService.getComposioManifests();
+          composioManifests = await skillComposioService.getComposioManifests();
         } catch (error) {
           log('execAgent: failed to fetch composio manifests: %O', error);
         }
@@ -3283,6 +3318,12 @@ export class AiAgentService {
         },
         model,
         provider,
+        // Org-mandate layer: while connector governance is active, every
+        // builtin manifest the engine hands to the model carries the org
+        // builtin tool permission matrix (disabled block / needs_approval
+        // intervention / explicit auto). Undefined when inactive so the
+        // engine path stays byte-identical to today.
+        transformBuiltinManifest: connectorGovernance.active ? applyBuiltinGovernance : undefined,
       });
 
       // 5f. Generate tools and manifest map
@@ -3384,7 +3425,14 @@ export class AiAgentService {
         // device tools are only activator-discoverable in device-capable sessions
         if (stripDeviceTools && isDeviceToolIdentifier(tool.identifier)) continue;
         if (tool.discoverable !== false && !toolManifestMap[tool.identifier]) {
-          toolManifestMap[tool.identifier] = tool.manifest as LobeToolManifest;
+          // Org-mandate layer: `toolManifestMap` feeds the runtime
+          // humanIntervention guard (GeneralChatAgent) and activator
+          // discovery, so builtin manifests ingested here must carry the
+          // governance matrix too. (The engine-seeded entries above are
+          // already patched via `transformBuiltinManifest`.)
+          toolManifestMap[tool.identifier] = applyBuiltinGovernance(
+            tool.manifest as LobeToolManifest,
+          );
         }
         // Snapshot the server-authored origin together with the manifest. This is security
         // provenance, not a name-based guess: createServerToolsEngine gives builtins precedence
@@ -3411,7 +3459,9 @@ export class AiAgentService {
         agentRuntimeMode === 'local' &&
         !toolManifestMap[LocalSystemManifest.identifier]
       ) {
-        toolManifestMap[LocalSystemManifest.identifier] = LocalSystemManifest as LobeToolManifest;
+        toolManifestMap[LocalSystemManifest.identifier] = applyBuiltinGovernance(
+          LocalSystemManifest as LobeToolManifest,
+        );
         toolSourceMap[LocalSystemManifest.identifier] = 'builtin';
       }
 

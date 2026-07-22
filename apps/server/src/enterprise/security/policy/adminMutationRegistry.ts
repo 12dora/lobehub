@@ -396,11 +396,22 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Roll back published connector configuration.',
     { outbound: safeOutbound, reauth: recentReauth },
   ),
+  'admin.connectors.setSharedAuthorization': dangerousMutation(
+    'admin.connectors.setSharedAuthorization',
+    'high',
+    'Designate or clear the org-wide shared connector OAuth identity.',
+    { reauth: recentReauth },
+  ),
   'admin.connectors.test': regularMutation(
     'admin.connectors.test',
     'medium',
     'Test a connector through the guarded remote boundary.',
     { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
+  ),
+  'admin.connectors.updateBuiltinToolPolicy': regularMutation(
+    'admin.connectors.updateBuiltinToolPolicy',
+    'medium',
+    'Replace the org builtin connector tool permission matrix and publish.',
   ),
   'admin.connectors.updateDraft': regularMutation(
     'admin.connectors.updateDraft',

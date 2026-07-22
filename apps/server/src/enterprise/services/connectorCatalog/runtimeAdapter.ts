@@ -135,6 +135,17 @@ export interface PlatformConnectorRuntimeAdapterDependencies {
 export interface PlatformConnectorRuntimeInvocation {
   agentId: string;
   arguments: string | Record<string, unknown>;
+  /**
+   * Org connector-governance shared OAuth identity: when set, the
+   * per_user_oauth binding is loaded and refreshed for THIS user id (the
+   * governance-designated shared auth owner) instead of the invoking
+   * `userId`, so every user runs on the owner's authorization. The binding
+   * ownership guard then compares against this effective identity — it still
+   * fails closed on any binding belonging to a third identity. Absent →
+   * per-user behavior, byte-identical to today. Audit / journal records keep
+   * the invoking `userId` (the actual actor).
+   */
+  effectiveBindingUserId?: string;
   humanApproved: boolean;
   proof: ConnectorOperationProof;
   toolCallId: string;
@@ -238,8 +249,10 @@ export class PlatformConnectorRuntimeAdapter {
           tokenExpiresAt.getTime() - now.getTime() <= DEFAULT_REFRESH_WINDOW_MS &&
           this.dependencies.refreshBinding
         ) {
+          // Refresh runs under the effective binding identity: the shared
+          // auth owner while governance designates one, else the invoking user.
           await this.dependencies.refreshBinding(
-            invocation.userId,
+            invocation.effectiveBindingUserId ?? invocation.userId,
             connector.id,
             snapshot.proof.publishedRevision,
           );
@@ -448,10 +461,15 @@ export class PlatformConnectorRuntimeAdapter {
     publishedRevision: number,
     allowedScopes: string[],
   ): Promise<PlatformUserConnectorBindingItem> => {
-    const binding = await this.dependencies.bindingLoader(invocation.userId, connectorId);
+    // Effective binding identity: the governance-designated shared auth owner
+    // when set, else the invoking user. The ownership guard below MUST keep
+    // comparing against this identity (not be removed) so a genuine mismatch —
+    // a binding belonging to a third identity — still fails closed.
+    const bindingUserId = invocation.effectiveBindingUserId ?? invocation.userId;
+    const binding = await this.dependencies.bindingLoader(bindingUserId, connectorId);
     if (
       !binding ||
-      binding.userId !== invocation.userId ||
+      binding.userId !== bindingUserId ||
       binding.connectorId !== connectorId ||
       binding.publishedRevision === null ||
       binding.publishedRevision !== publishedRevision ||

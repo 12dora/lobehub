@@ -513,6 +513,20 @@ export default {
   'managedResources.saveState.idle': 'No unsaved changes',
   'managedResources.saveState.saved': 'Saved',
   'managedResources.saveState.saving': 'Saving…',
+  'managedResources.sharedOAuth.active': 'Shared',
+  'managedResources.sharedOAuth.activeDesc':
+    'While connectors are platform-managed, all users share the designated OAuth authorizations. User-owned authorizations are kept and resume when sharing stops.',
+  'managedResources.sharedOAuth.clear': 'Stop sharing',
+  'managedResources.sharedOAuth.disableConfirm':
+    'Users will go back to their own OAuth authorizations. No user data is deleted. Continue?',
+  'managedResources.sharedOAuth.enable': 'Share my authorizations',
+  'managedResources.sharedOAuth.enableConfirm':
+    'Your OAuth authorizations (connector logins) will be used by every user in the organization while connectors are platform-managed. Continue?',
+  'managedResources.sharedOAuth.perUser': 'Per user',
+  'managedResources.sharedOAuth.perUserDesc':
+    'Each user authorizes OAuth connectors from their own settings. Takes effect only when connectors are platform-managed.',
+  'managedResources.sharedOAuth.saved': 'Shared authorization updated',
+  'managedResources.sharedOAuth.title': 'Org-shared OAuth',
   'managedResources.title': 'Managed resources',
   'managedResources.unsavedLeave': 'You have unsaved managed resource changes. Leave anyway?',
   'managedResources.unsavedConfirm': 'Leave without saving',
@@ -559,8 +573,6 @@ export default {
     'Platform connectors support HTTP MCP servers only — stdio runs on user devices and cannot be provided org-wide.',
   'aiConnectorSettings.oauthViaAdvanced':
     'Per-user OAuth platform connectors need the full OAuth configuration \u2014 create them in the advanced catalog (Admin \u2192 Connectors).',
-  'aiConnectorSettings.orgNotice':
-    'Changes here apply to every user. OAuth connectors are authorized by each user from their own settings; built-in tool permissions are managed per user.',
   'aiSkillSettings.advancedCatalog': 'Advanced catalog management',
   'aiSkillSettings.orgDefault.label': 'Enabled by default',
   'aiSkillSettings.orgDefault.mandatoryHint':

@@ -2,7 +2,6 @@
 
 import { builtinSkills as bundledBuiltinSkills } from '@lobechat/builtin-skills';
 import type { SkillListItem, SkillResourceTreeNode } from '@lobechat/types';
-import { Alert } from '@lobehub/ui';
 import { toast } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
 import { useCallback, useMemo } from 'react';
@@ -31,6 +30,7 @@ const REASONS = {
   connectorCreate: 'Create platform connector from admin settings',
   connectorDelete: 'Remove platform connector from admin settings',
   connectorDiscover: 'Discover connector tools from admin settings',
+  builtinToolPolicy: 'Update org builtin tool policy from admin settings',
   connectorPolicy: 'Update connector tool policy from admin settings',
   skillDelete: 'Remove organization skill from admin settings',
   skillDistribution: 'Set organization skill default from admin settings',
@@ -138,6 +138,14 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     () => adminConnectorsService.list({ limit: 100 }),
     { revalidateOnFocus: false },
   );
+  // Org governance: builtin tool permission matrix + shared OAuth designation.
+  const governanceSWR = useClientDataSWR(
+    connectorsEnabled ? 'admin-tool-scope/connectors/governance' : null,
+    () => adminConnectorsService.getGovernance(),
+    { revalidateOnFocus: false },
+  );
+  const governance = governanceSWR.data;
+  const builtinToolPolicies = governance?.doc.builtinToolPolicies;
   const connectorListItems = connectorsListSWR.data?.items ?? [];
   const connectorDetailKey = connectorListItems.map((item) => item.id).join('|');
   const connectorDetailsSWR = useClientDataSWR(
@@ -179,13 +187,15 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
           name: string;
           parameters?: Record<string, unknown>;
         }[];
+        const identifierPolicies = builtinToolPolicies?.[tool.identifier];
         const tools: ConnectorTool[] = api.map((entry) => ({
           crudType: inferCrudType(entry.name),
           description: entry.description ?? null,
           displayName: entry.name,
           id: `${BUILTIN_ROW_PREFIX}${tool.identifier}:${entry.name}`,
           inputSchema: (entry.parameters ?? null) as Record<string, unknown> | null,
-          permission: ConnectorToolPermission.auto,
+          permission: (identifierPolicies?.[entry.name] ??
+            ConnectorToolPermission.auto) as ConnectorToolPermission,
           toolName: entry.name,
           userConnectorId: `${BUILTIN_ROW_PREFIX}${tool.identifier}`,
         }));
@@ -230,7 +240,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       }));
 
     return [...builtinRows, ...platformRows];
-  }, [builtinTools, connectorDetails]);
+  }, [builtinToolPolicies, builtinTools, connectorDetails]);
 
   // ── shared refresh / list state ───────────────────────────────────────────
   const retry = useCallback(() => {
@@ -475,9 +485,29 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
   }, []);
 
   // ── connector policy writes ───────────────────────────────────────────────
+  // Builtin rows edit the ORG governance matrix (platform_connector_governance);
+  // they fall back to read-only only while the governance doc hasn't loaded.
   const isConnectorReadOnly = useCallback(
-    (connector: ConnectorWithTools) => connector.id.startsWith(BUILTIN_ROW_PREFIX),
-    [],
+    (connector: ConnectorWithTools) => connector.id.startsWith(BUILTIN_ROW_PREFIX) && !governance,
+    [governance],
+  );
+
+  const updateBuiltinPolicies = useCallback(
+    async (
+      patch: (
+        policies: NonNullable<typeof builtinToolPolicies>,
+      ) => NonNullable<typeof builtinToolPolicies>,
+    ) => {
+      const current = await adminConnectorsService.getGovernance();
+      await adminConnectorsService.updateBuiltinToolPolicy({
+        expectedRevision: current.revision,
+        policies: patch(current.doc.builtinToolPolicies ?? {}),
+        reason: REASONS.builtinToolPolicy,
+      });
+      await governanceSWR.mutate();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [governanceSWR.mutate],
   );
 
   const applyConnectorToolsPatch = useCallback(
@@ -505,6 +535,16 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
 
   const updateToolPermission = useCallback(
     async (toolId: string, permission: ConnectorToolPermission) => {
+      if (toolId.startsWith(BUILTIN_ROW_PREFIX)) {
+        // `admin-builtin:<identifier>:<toolName>` → org governance matrix entry.
+        const [, identifier, ...nameParts] = toolId.split(':');
+        const toolName = nameParts.join(':');
+        await updateBuiltinPolicies((policies) => ({
+          ...policies,
+          [identifier]: { ...policies[identifier], [toolName]: permission },
+        }));
+        return;
+      }
       if (!toolId.startsWith(PLATFORM_TOOL_PREFIX)) return;
       const [, connectorId, ...toolKeyParts] = toolId.split(':');
       const toolKey = toolKeyParts.join(':');
@@ -513,12 +553,21 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
         tools.map((tool) => (tool.toolKey === toolKey ? { ...tool, ...policy } : tool)),
       );
     },
-    [applyConnectorToolsPatch],
+    [applyConnectorToolsPatch, updateBuiltinPolicies],
   );
 
   const resetConnectorPermissions = useCallback(
     async (connectorId: string) => {
-      if (connectorId.startsWith(BUILTIN_ROW_PREFIX)) return;
+      if (connectorId.startsWith(BUILTIN_ROW_PREFIX)) {
+        // Reset = drop this builtin's org overrides so every tool reverts to auto.
+        const identifier = connectorId.slice(BUILTIN_ROW_PREFIX.length);
+        await updateBuiltinPolicies((policies) => {
+          const next = { ...policies };
+          delete next[identifier];
+          return next;
+        });
+        return;
+      }
       await applyConnectorToolsPatch(connectorId, (tools) =>
         tools.map((tool) => ({
           ...tool,
@@ -527,7 +576,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
         })),
       );
     },
-    [applyConnectorToolsPatch],
+    [applyConnectorToolsPatch, updateBuiltinPolicies],
   );
 
   const deleteConnector = useCallback(
@@ -638,24 +687,8 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     [retry, t],
   );
 
-  const connectorNotice = useMemo(
-    () =>
-      view === 'connector' ? (
-        <Alert
-          showIcon
-          type="info"
-          message={t('aiConnectorSettings.orgNotice', {
-            defaultValue:
-              'Changes here apply to every user. OAuth connectors are authorized by each user from their own settings; built-in tool permissions are managed per user.',
-          })}
-        />
-      ) : undefined,
-    [t, view],
-  );
-
   return useMemo<AdminToolScope>(
     () => ({
-      connectorNotice,
       connectors,
       deleteConnector,
       deleteOrgSkill,
@@ -678,7 +711,6 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       useOrgSkillDetail,
     }),
     [
-      connectorNotice,
       connectors,
       deleteConnector,
       deleteOrgSkill,

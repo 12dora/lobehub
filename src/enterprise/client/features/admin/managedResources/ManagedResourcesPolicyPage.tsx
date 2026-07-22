@@ -31,6 +31,7 @@ import {
   toManagedResourceUiMode,
 } from './controller';
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
+import SharedOAuthAuthorizationControl from './SharedOAuthAuthorizationControl';
 import { createUnsavedNavigationDecision } from './unsavedNavigationDecision';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -328,6 +329,9 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
                     onChange={(mode) => updateUiMode(resource, mode as ManagedResourceUiMode)}
                   />
                 </div>
+                {resource === 'connectors' ? (
+                  <SharedOAuthAuthorizationControl disabled={!canSave || conflict} />
+                ) : null}
               </section>
             );
           })}

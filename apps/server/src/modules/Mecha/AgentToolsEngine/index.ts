@@ -79,6 +79,7 @@ export const createServerToolsEngine = (
     defaultToolIds,
     excludeIdentifiers,
     manifestContext,
+    transformBuiltinManifest,
   } = config;
 
   // Get plugin manifests from installed plugins (from database)
@@ -100,13 +101,22 @@ export const createServerToolsEngine = (
   // a sub-agent run server-side that skipped this would still be handed
   // `callSubAgent`, letting the model recurse into nested sub-agents that the
   // runtime then rejects — a dead loop that ends in the inactivity watchdog.
-  const builtinManifests = builtinToolsOverride
+  const resolvedBuiltinManifests = builtinToolsOverride
     .map((tool) =>
       manifestContext && tool.resolveManifest
         ? tool.resolveManifest(manifestContext)
         : tool.manifest,
     )
     .filter((m): m is BuiltinToolManifest => !!m) as LobeToolManifest[];
+
+  // Org-mandate layer (connector governance): patch builtin manifests LAST,
+  // after context resolution, so the org's builtin tool permission matrix
+  // always wins over the static manifest defaults. Only builtins go through —
+  // plugin / additional manifests carry their per-user permission patches from
+  // their own build sites.
+  const builtinManifests = transformBuiltinManifest
+    ? resolvedBuiltinManifests.map((manifest) => transformBuiltinManifest(manifest))
+    : resolvedBuiltinManifests;
 
   // Combine all manifests, then drop anything whose identifier the caller
   // has explicitly forbidden for this turn. The post-merge filter closes
@@ -163,6 +173,7 @@ export const createServerAgentToolsEngine = (
     manifestContext,
     model,
     provider,
+    transformBuiltinManifest,
   } = params;
 
   if (exactBuiltinToolIds) {
@@ -182,6 +193,7 @@ export const createServerAgentToolsEngine = (
           rules: Object.fromEntries([...exactIds].map((id) => [id, true])),
         }),
         manifestContext,
+        transformBuiltinManifest,
       },
     );
   }
@@ -339,6 +351,8 @@ export const createServerAgentToolsEngine = (
     // Conversation context for context-aware builtin manifests (scope /
     // isSubAgent), e.g. hiding lobe-agent's callSubAgent in sub-agent / group runs.
     manifestContext,
+    // Org-mandate layer: connector governance builtin permission matrix.
+    transformBuiltinManifest,
     enableChecker: createEnableChecker({
       // Allow lobe-activator to dynamically enable tools at runtime (e.g., lobe-creds, lobe-cron).
       // Only in agent mode; chat/custom modes can't let the activator bypass their fixed set.

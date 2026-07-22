@@ -4,6 +4,7 @@ export * from './aiCatalog';
 export * from './auditLog';
 export * from './branding';
 export * from './checksum';
+export * from './connectorGovernance';
 export * from './easyauthGrantSnapshot';
 export * from './easyauthLoginSync';
 export * from './errors';

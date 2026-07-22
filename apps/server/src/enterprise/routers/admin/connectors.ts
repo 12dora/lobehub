@@ -33,6 +33,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
+import { adminConnectorGovernanceProcedures } from './connectorsGovernance';
 import {
   assertAdminConnectorRuntimeDependency,
   assertConnectorDangerousReauth,
@@ -67,6 +68,8 @@ const replacementSecrets = (input: {
 ];
 
 export const adminConnectorsRouter = router({
+  ...adminConnectorGovernanceProcedures,
+
   /**
    * Create/update draft then publish in one procedure (admin settings UI parity).
    * Requires UPDATE+PUBLISH (or CREATE+PUBLISH for create mode). Rate-limit: 1 unit.

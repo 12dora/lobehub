@@ -1,6 +1,11 @@
 import type { z } from 'zod';
 
 import type {
+  adminConnectorGovernanceGetOutputSchema,
+  adminConnectorSetSharedAuthorizationInputSchema,
+  adminConnectorUpdateBuiltinToolPolicyInputSchema,
+} from '@/server/enterprise/contracts/platformConnectorGovernance';
+import type {
   adminConnectorApplyImmediateInputSchema,
   adminConnectorApplyImmediateOutputSchema,
   adminConnectorArchiveInputSchema,
@@ -48,6 +53,15 @@ export type AdminConnectorDraftMutationOutput = z.infer<
   typeof adminConnectorDraftMutationOutputSchema
 >;
 export type AdminConnectorGetOutput = z.infer<typeof adminConnectorGetOutputSchema>;
+export type AdminConnectorGovernanceGetOutput = z.infer<
+  typeof adminConnectorGovernanceGetOutputSchema
+>;
+export type AdminConnectorSetSharedAuthorizationInput = z.infer<
+  typeof adminConnectorSetSharedAuthorizationInputSchema
+>;
+export type AdminConnectorUpdateBuiltinToolPolicyInput = z.infer<
+  typeof adminConnectorUpdateBuiltinToolPolicyInputSchema
+>;
 export type AdminConnectorGetPublishedBatchInput = z.infer<
   typeof adminConnectorGetPublishedBatchInputSchema
 >;

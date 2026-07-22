@@ -72,13 +72,15 @@ const roleCases = [
   },
   {
     // Recount after W10 (creds/applyImmediate procedures) + admin.skills.parseImportSource = 96
-    expectedBeforeO04System: 96,
+    // + connector governance (getGovernance/setSharedAuthorization/updateBuiltinToolPolicy) = 99
+    expectedBeforeO04System: 99,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
   },
   {
     // Recount after W10: creds reads (5) + easyauth status (1) + stats reads (12) = 57
-    expectedBeforeO04System: 57,
+    // + admin.connectors.getGovernance (CONNECTOR_READ) = 58
+    expectedBeforeO04System: 58,
     expectedO04SystemPaths: o04SystemReadProcedurePaths,
     role: PLATFORM_SYSTEM_ROLES.AUDITOR,
   },
