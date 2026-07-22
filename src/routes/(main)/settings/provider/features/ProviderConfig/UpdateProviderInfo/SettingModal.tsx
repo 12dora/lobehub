@@ -79,10 +79,11 @@ const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
       // The "请求格式" dropdown may carry the synthetic `openai-responses` value; translate it
       // into the real sdkType. Only the sdkType is taken here — the enableResponseApi flag is
       // decided below in a way that never clobbers an existing manual toggle.
-      const isResponsesOption = values.settings?.sdkType === OPENAI_RESPONSES_SDK_OPTION;
-      const { sdkType } = resolveRequestFormat(
-        values.settings?.sdkType as RequestFormatOptionValue | undefined,
-      );
+      // The form's sdkType field carries RequestFormatOptionValue (may be the synthetic
+      // `openai-responses`), wider than the persisted AiProviderSettings union.
+      const formSdkType = values.settings?.sdkType as RequestFormatOptionValue | undefined;
+      const isResponsesOption = formSdkType === OPENAI_RESPONSES_SDK_OPTION;
+      const { sdkType } = resolveRequestFormat(formSdkType);
 
       const finalValues: UpdateAiProviderParams = {
         ...values,
