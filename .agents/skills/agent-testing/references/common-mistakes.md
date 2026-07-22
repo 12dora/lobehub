@@ -427,3 +427,13 @@ live branch, measure the target URL/bundle, and use that path if it renders curr
 code. Only keep a harness as supporting evidence; the primary UI evidence must come
 from the product surface, or the report must clearly fail/block after every known
 path is measured.
+
+## Never run destructive auth/admin tests against a live shared instance
+
+**Wrong approach:** Driving automated admin-feature tests (ban/unban, password reset, session revoke, user delete) against a live, human-used deployment's seeded accounts — e.g. logging into the long-lived local demo instance with curl/headless browsers and exercising ban→unban on the same account the human uses.
+
+**Why it happens:** The shared instance is already up and seeded, so it looks like the cheapest test target.
+
+**What it breaks:** Ban/password-reset style actions advance server-side auth-invalidation cutoffs; every existing session of that account is permanently invalidated, silently logging the human out over and over. Root-caused on 2026-07-22: "frequent logouts" on a demo instance were test-induced auth invalidations, not a session bug.
+
+**Correct approach:** Spin up an isolated instance (own database, own Redis DB index, own cookie prefix) for destructive tests, or create throwaway accounts — never the shared seeded accounts. If a shared account was affected, clear the invalidation cutoff and re-seed afterwards.
