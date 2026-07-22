@@ -54,19 +54,38 @@ export type PlatformAuditLegalHoldStatus = 'active' | 'released';
 /**
  * Typed filter snapshot frozen at export create time.
  * Later workers must honor this snapshot, not re-read live query params.
+ * Policy caps (revision / max rows / artifact retention) are frozen here so
+ * mid-flight policy edits cannot change the contract of an in-flight export.
  */
 export interface PlatformAuditExportFilterSnapshot {
   action?: string;
   actions?: string[];
   actorUserId?: string;
   actorUserIds?: string[];
+  /**
+   * Artifact retention days frozen from policy at create (non-secret; public).
+   * Worker uses this to compute expiresAt rather than live policy.
+   */
+  exportArtifactRetentionDays?: number;
+  /** Inclusive lower bound ISO-8601 (frozen at create). */
   from?: string;
   keyword?: string;
+  /**
+   * Max evidence rows frozen from policy at create (non-secret; public).
+   * Worker hard-fails if this cap would be exceeded.
+   */
+  maxExportRows?: number;
+  /** Policy revision frozen at create (non-secret; public). */
+  policyRevision?: number;
+  /** Title-only conversation search (never body). */
+  q?: string;
+  requestId?: string;
   result?: PlatformAuditResult;
   results?: PlatformAuditResult[];
   sessionId?: string;
   targetId?: string;
   targetType?: string;
+  /** Exclusive upper bound ISO-8601 (frozen at create). */
   to?: string;
   topicId?: string;
   userId?: string;

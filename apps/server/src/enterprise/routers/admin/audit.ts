@@ -1,5 +1,5 @@
 /**
- * admin.audit.* — A2 admin audit backend surface.
+ * admin.audit.* — A2 evidence query + A3 export surface.
  *
  * Endpoints:
  * - policy.get / policy.update
@@ -7,8 +7,7 @@
  * - conversations.list / get / messages
  * - users.search / summary / timeline
  * - legalHolds.list / get / create / release
- *
- * No export / retention endpoints in this batch.
+ * - exports.create / list / get / download / cancel
  */
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -31,6 +30,16 @@ import {
   adminAuditEventsListOutputSchema,
   adminAuditEventsStatsInputSchema,
   adminAuditEventsStatsOutputSchema,
+  adminAuditExportsCancelInputSchema,
+  adminAuditExportsCancelOutputSchema,
+  adminAuditExportsCreateInputSchema,
+  adminAuditExportsCreateOutputSchema,
+  adminAuditExportsDownloadInputSchema,
+  adminAuditExportsDownloadOutputSchema,
+  adminAuditExportsGetInputSchema,
+  adminAuditExportsGetOutputSchema,
+  adminAuditExportsListInputSchema,
+  adminAuditExportsListOutputSchema,
   adminAuditLegalHoldsCreateInputSchema,
   adminAuditLegalHoldsCreateOutputSchema,
   adminAuditLegalHoldsGetInputSchema,
@@ -53,7 +62,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
-import { AdminAuditService } from '../../services/audit';
+import { AdminAuditExportService, AdminAuditService } from '../../services/audit';
 import { PlatformAuditService } from '../../services/platformAudit';
 
 const adminBase = authedProcedure
@@ -65,6 +74,7 @@ const auditRead = adminBase.use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDI
 const auditConversationRead = adminBase.use(
   withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ),
 );
+const auditExport = adminBase.use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_EXPORT));
 const auditPolicyUpdate = adminBase.use(
   withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_POLICY_UPDATE),
 );
@@ -74,6 +84,9 @@ const auditLegalHoldManage = adminBase.use(
 
 const assertAuditDangerousReauth = async (params: {
   action:
+    | 'admin.audit.exports.cancel'
+    | 'admin.audit.exports.create'
+    | 'admin.audit.exports.download'
     | 'admin.audit.legalHolds.create'
     | 'admin.audit.legalHolds.release'
     | 'admin.audit.policy.update';
@@ -283,6 +296,102 @@ const legalHoldsRouter = router({
     }),
 });
 
+/** Server-derived permissions from withPlatformPermission — never client-supplied. */
+const platformAuthPermissions = (ctx: {
+  platformAuth?: { permissions?: readonly string[] };
+}): readonly string[] | undefined => ctx.platformAuth?.permissions;
+
+const exportsRouter = router({
+  cancel: auditExport
+    .input(adminAuditExportsCancelInputSchema)
+    .output(adminAuditExportsCancelOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertAuditDangerousReauth({
+        action: 'admin.audit.exports.cancel',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+        targetType: 'audit_export',
+      });
+      const service = new AdminAuditExportService(ctx.serverDB);
+      return service.cancel({
+        actorPermissions: platformAuthPermissions(ctx),
+        actorUserId: ctx.userId!,
+        input,
+      });
+    }),
+
+  create: auditExport
+    .input(adminAuditExportsCreateInputSchema)
+    .output(adminAuditExportsCreateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertAuditDangerousReauth({
+        action: 'admin.audit.exports.create',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetType: 'audit_export',
+      });
+      const service = new AdminAuditExportService(ctx.serverDB);
+      return service.create({
+        actorPermissions: platformAuthPermissions(ctx),
+        actorUserId: ctx.userId!,
+        input,
+      });
+    }),
+
+  download: auditExport
+    .input(adminAuditExportsDownloadInputSchema)
+    .output(adminAuditExportsDownloadOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertAuditDangerousReauth({
+        action: 'admin.audit.exports.download',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+        targetType: 'audit_export',
+      });
+      const service = new AdminAuditExportService(ctx.serverDB);
+      return service.download({
+        actorPermissions: platformAuthPermissions(ctx),
+        actorUserId: ctx.userId!,
+        input,
+      });
+    }),
+
+  get: auditExport
+    .input(adminAuditExportsGetInputSchema)
+    .output(adminAuditExportsGetOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const service = new AdminAuditExportService(ctx.serverDB);
+      return service.get({
+        actorPermissions: platformAuthPermissions(ctx),
+        actorUserId: ctx.userId!,
+        id: input.id,
+      });
+    }),
+
+  list: auditExport
+    .input(adminAuditExportsListInputSchema)
+    .output(adminAuditExportsListOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const service = new AdminAuditExportService(ctx.serverDB);
+      return service.list({
+        actorPermissions: platformAuthPermissions(ctx),
+        actorUserId: ctx.userId!,
+        input,
+      });
+    }),
+});
+
 /**
  * Compatibility aliases `list` / `get` → events.list / events.get.
  * Keep shapes aligned with the events surface (list omits diffs; get returns full stored diffs).
@@ -290,6 +399,7 @@ const legalHoldsRouter = router({
 export const adminAuditRouter = router({
   conversations: conversationsRouter,
   events: eventsRouter,
+  exports: exportsRouter,
   get: auditRead
     .input(adminAuditEventsGetInputSchema)
     .output(adminAuditEventsGetOutputSchema)

@@ -74,14 +74,15 @@ describe('admin procedure authorization registry', () => {
     // + admin.aiProviders.delete (1 mutation) = 159
     // + admin.agents.delete (1 mutation) = 160
     // + admin.audit A2 (16 procedures: 13 queries + 3 mutations; list/get retained) = 176
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(176);
+    // + admin.audit A3 exports (2 queries + 3 mutations) = 181
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(181);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(80);
+    ).toHaveLength(82);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(96);
-    expect(mutationPaths).toHaveLength(96);
+    ).toHaveLength(99);
+    expect(mutationPaths).toHaveLength(99);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -224,15 +225,32 @@ describe('admin procedure authorization registry', () => {
       ['admin.system.requestRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
       ['admin.system.retryJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
     ]);
-    expect(
-      ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.some((entry) =>
-        'permission' in entry
-          ? (entry.permission.permissions as readonly PlatformPermission[]).includes(
-              PLATFORM_PERMISSIONS.AUDIT_EXPORT,
-            )
-          : false,
-      ),
-    ).toBe(false);
+    // A3: exactly five admin.audit.exports.* procedures, all gated by AUDIT_EXPORT.
+    const auditExportEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(
+      (entry) => 'path' in entry && entry.path.startsWith('admin.audit.exports.'),
+    );
+    expect(auditExportEntries.map((entry) => entry.path).sort()).toEqual([
+      'admin.audit.exports.cancel',
+      'admin.audit.exports.create',
+      'admin.audit.exports.download',
+      'admin.audit.exports.get',
+      'admin.audit.exports.list',
+    ]);
+    for (const entry of auditExportEntries) {
+      expect(entry).toMatchObject({
+        permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT] },
+      });
+    }
+    // No other procedures should claim AUDIT_EXPORT outside the export surface.
+    const auditExportElsewhere = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(
+      (entry) =>
+        'permission' in entry &&
+        !entry.path.startsWith('admin.audit.exports.') &&
+        (entry.permission.permissions as readonly PlatformPermission[]).includes(
+          PLATFORM_PERMISSIONS.AUDIT_EXPORT,
+        ),
+    );
+    expect(auditExportElsewhere).toEqual([]);
 
     const dangerousReauthGaps = Object.values(ADMIN_MUTATION_REGISTRY).filter(
       (entry) => entry.dangerous && entry.controls.reauth.status === 'gap',

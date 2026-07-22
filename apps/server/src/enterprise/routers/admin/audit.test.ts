@@ -7,7 +7,13 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { platformAuditLogs, platformAuditPolicies } from '@/database/schemas/platform';
+import {
+  platformAuditExports,
+  platformAuditLegalHolds,
+  platformAuditLogs,
+  platformAuditPolicies,
+  platformJobs,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 
@@ -31,12 +37,18 @@ beforeEach(async () => {
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   await fixture.setup(db);
   await db.delete(platformAuditLogs);
+  await db.delete(platformAuditLegalHolds);
+  await db.delete(platformAuditExports);
+  await db.delete(platformJobs);
   await db.delete(platformAuditPolicies);
 });
 
 afterEach(async () => {
   await fixture.cleanup(db);
   await db.delete(platformAuditLogs);
+  await db.delete(platformAuditLegalHolds);
+  await db.delete(platformAuditExports);
+  await db.delete(platformJobs);
   await db.delete(platformAuditPolicies);
   vi.unstubAllEnvs();
 });
@@ -66,6 +78,78 @@ describe('admin.audit router', () => {
     await expect(
       superAdmin.audit.conversations.list({ userId: fixture.actors.normal }),
     ).resolves.toMatchObject({ items: expect.any(Array) });
+  });
+
+  it('allows auditor operation_logs export but denies conversation export without conversation_read', async () => {
+    const contexts = await fixture.createContexts(db);
+    const auditor = createCaller(contexts.auditor as never);
+    const superAdmin = createCaller(contexts.superAdmin as never);
+
+    const from = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    const to = new Date();
+
+    await expect(
+      auditor.audit.exports.create({
+        from,
+        kind: 'operation_logs',
+        reason: 'auditor op log export',
+        to,
+      }),
+    ).resolves.toMatchObject({ kind: 'operation_logs', status: 'pending' });
+
+    await expect(
+      auditor.audit.exports.create({
+        from,
+        kind: 'conversations',
+        reason: 'auditor conversation export denied',
+        to,
+        userId: fixture.actors.normal,
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    const superExport = await superAdmin.audit.exports.create({
+      from,
+      kind: 'conversations',
+      reason: 'super conversation export',
+      to,
+      userId: fixture.actors.normal,
+    });
+    expect(superExport).toMatchObject({ kind: 'conversations', status: 'pending' });
+    // Frozen non-secret policy caps are public on the projection
+    expect(superExport.filterSnapshot).toMatchObject({
+      maxExportRows: expect.any(Number),
+      policyRevision: expect.any(Number),
+      exportArtifactRetentionDays: expect.any(Number),
+    });
+
+    // Export-only auditor must not get/list conversation exports created by privileged actor
+    await expect(auditor.audit.exports.get({ id: superExport.id })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+
+    await expect(auditor.audit.exports.list({ kind: 'conversations' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+
+    const auditorList = await auditor.audit.exports.list({ limit: 50 });
+    expect(auditorList.items.every((i) => i.kind === 'operation_logs')).toBe(true);
+    expect(auditorList.items.some((i) => i.id === superExport.id)).toBe(false);
+  });
+
+  it('requires reauth for exports.create and policy.update', async () => {
+    const contexts = await fixture.createContexts(db);
+    const stale = createCaller(contexts.staleReauthSuper as never);
+    const from = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const to = new Date();
+
+    await expect(
+      stale.audit.exports.create({
+        from,
+        kind: 'operation_logs',
+        reason: 'stale reauth export',
+        to,
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
   });
 
   it('requires reauth for policy.update and legalHolds.create', async () => {
