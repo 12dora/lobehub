@@ -299,6 +299,31 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.audit.exports.cancel',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.audit.exports.create',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.audit.exports.download',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.exports.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.exports.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT] },
+  },
+  {
     kind: 'query',
     path: 'admin.audit.get',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },

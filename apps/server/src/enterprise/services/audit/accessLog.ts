@@ -17,6 +17,11 @@ export type AuditAccessAction =
   | 'admin.audit.events.get'
   | 'admin.audit.events.list'
   | 'admin.audit.events.stats'
+  | 'admin.audit.exports.cancel'
+  | 'admin.audit.exports.create'
+  | 'admin.audit.exports.download'
+  | 'admin.audit.exports.get'
+  | 'admin.audit.exports.list'
   | 'admin.audit.get'
   | 'admin.audit.legalHolds.create'
   | 'admin.audit.legalHolds.get'
@@ -51,11 +56,15 @@ export const buildAuditFilterSummary = (params: {
   from?: Date | null;
   hasQ?: boolean;
   includeBody?: boolean;
+  /** Export kind only (structured enum string — never free text). */
+  kind?: string | null;
   limit?: number;
   requestId?: string | null;
   result?: string | null;
   results?: string[] | null;
   scopeType?: string | null;
+  /** Export status filter (structured enum string). */
+  status?: string | null;
   targetId?: string | null;
   targetType?: string | null;
   to?: Date | null;
@@ -70,12 +79,14 @@ export const buildAuditFilterSummary = (params: {
   if (params.from != null) summary.fromPresent = true;
   if (params.hasQ != null) summary.hasQ = params.hasQ;
   if (params.includeBody != null) summary.includeBody = params.includeBody;
+  if (params.kind != null) summary.kind = params.kind;
   if (params.limit != null) summary.limit = params.limit;
   if (params.requestId != null) summary.requestIdPresent = true;
   if (params.result != null || (params.results != null && params.results.length > 0)) {
     summary.resultPresent = true;
   }
   if (params.scopeType != null) summary.scopeType = params.scopeType;
+  if (params.status != null) summary.status = params.status;
   if (params.targetId != null) summary.targetIdPresent = true;
   if (params.targetType != null) summary.targetTypePresent = true;
   if (params.to != null) summary.toPresent = true;

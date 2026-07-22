@@ -35,6 +35,15 @@ describe('PlatformAuditExportModel', () => {
     expect(row.storageKey).toBeNull();
   });
 
+  it('setJobId links a platform job while pending', async () => {
+    const row = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
+    const linked = await model.setJobId(row.id, 'pjob_link_1');
+    expect(linked?.jobId).toBe('pjob_link_1');
+    // re-affirm same job
+    const again = await model.setJobId(row.id, 'pjob_link_1');
+    expect(again?.jobId).toBe('pjob_link_1');
+  });
+
   it('requires non-null requestedBy on create', async () => {
     await expect(
       model.create({

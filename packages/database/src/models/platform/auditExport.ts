@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, or } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditExport,
@@ -10,7 +10,12 @@ import {
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 
-export type { PlatformAuditExportItem };
+export type {
+  PlatformAuditExportFilterSnapshot,
+  PlatformAuditExportItem,
+  PlatformAuditExportKind,
+  PlatformAuditExportStatus,
+};
 
 export interface CreatePlatformAuditExportParams {
   filterSnapshot?: PlatformAuditExportFilterSnapshot;
@@ -99,6 +104,27 @@ export class PlatformAuditExportModel {
       .from(platformAuditExports)
       .where(eq(platformAuditExports.id, id))
       .limit(1);
+    return row;
+  };
+
+  /**
+   * Soft-link a platform_jobs row after enqueue.
+   * Allows pending rows with null jobId, or re-affirming the same jobId.
+   */
+  setJobId = async (id: string, jobId: string): Promise<PlatformAuditExportItem | undefined> => {
+    if (!jobId) throw new Error('jobId is required');
+    const now = new Date();
+    const [row] = await this.db
+      .update(platformAuditExports)
+      .set({ jobId, updatedAt: now })
+      .where(
+        and(
+          eq(platformAuditExports.id, id),
+          eq(platformAuditExports.status, 'pending'),
+          or(isNull(platformAuditExports.jobId), eq(platformAuditExports.jobId, jobId)),
+        ),
+      )
+      .returning();
     return row;
   };
 
