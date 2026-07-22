@@ -20,6 +20,7 @@ import type { AuthMethod } from '@/libs/trpc/lambda/context';
 
 import type {
   AdminUsersBanInput,
+  AdminUsersDeleteInput,
   AdminUsersGetAuditTrailInputParsed,
   AdminUsersListInputParsed,
   AdminUsersReplaceGlobalRolesInput,
@@ -47,6 +48,15 @@ export class AdminUserSelfBanError extends Error {
   constructor(message = 'Cannot ban yourself') {
     super(message);
     this.name = 'AdminUserSelfBanError';
+  }
+}
+
+export class AdminUserSelfDeleteError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+
+  constructor(message = 'Cannot delete yourself') {
+    super(message);
+    this.name = 'AdminUserSelfDeleteError';
   }
 }
 
@@ -365,6 +375,60 @@ export class AdminUserService {
       throw new AdminUserNotFoundError();
     }
 
+    // ── Targeted revoke: delete only the listed session rows (no epoch advance) ──
+    if (input.sessionIds && input.sessionIds.length > 0) {
+      const uniqueIds = [...new Set(input.sessionIds)];
+      try {
+        const revokedCount = await this.db.transaction(async (tx) => {
+          const model = new AdminUserModel(tx);
+          const belonging = await model.countSessionsBelongingToUser({
+            sessionIds: uniqueIds,
+            userId: input.userId,
+          });
+          if (belonging !== uniqueIds.length) {
+            // Some ids are foreign/unknown — reject without leaking which.
+            throw new InvalidRetainedSessionError('retained_session_invalid');
+          }
+
+          const count = await model.revokeSpecificSessions({
+            sessionIds: uniqueIds,
+            userId: input.userId,
+          });
+
+          await this.appendAuditInDb(tx, {
+            action: 'admin.users.revokeSessions',
+            actorUserId,
+            afterDiff: { mode: 'targeted', requested: uniqueIds.length, revokedCount: count },
+            reason: input.reason,
+            result: 'success',
+            targetId: input.userId,
+            targetType: 'user',
+          });
+
+          return count;
+        });
+
+        // Targeted revoke keeps the user's other sessions alive — do not touch OIDC epoch.
+        await this.publishUserSecurityInvalidation(input.userId);
+
+        return { revokedCount, userId: input.userId };
+      } catch (error) {
+        if (error instanceof InvalidRetainedSessionError) {
+          await this.appendAuditBestEffort({
+            action: 'admin.users.revokeSessions',
+            actorUserId,
+            afterDiff: { error: error.reasonCode, mode: 'targeted', retainedSessionAttempt: true },
+            reason: input.reason,
+            result: 'denied',
+            targetId: input.userId,
+            targetType: 'user',
+          });
+          throw error;
+        }
+        throw error;
+      }
+    }
+
     /**
      * includeCurrent=false (actor===target with trusted sessionId):
      * delete other BA sessions, advance authInvalidatedAt, record retained
@@ -452,6 +516,96 @@ export class AdminUserService {
     }
   };
 
+  /**
+   * Irreversible hard delete of a user and all FK-cascade owned data.
+   * Blocks self-delete and the last permanent super admin. The audit row is written
+   * inside the same transaction and survives (audit log ids are not FK-linked to users).
+   */
+  deleteUser = async (params: { actorUserId: string; input: AdminUsersDeleteInput }) => {
+    const { actorUserId, input } = params;
+
+    if (input.userId === actorUserId) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.delete',
+        actorUserId,
+        afterDiff: { error: 'self_delete' },
+        reason: input.reason,
+        result: 'denied',
+        targetId: input.userId,
+        targetType: 'user',
+      });
+      throw new AdminUserSelfDeleteError();
+    }
+
+    const pre = await this.users.findBanState(input.userId);
+    if (!pre) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.delete',
+        actorUserId,
+        afterDiff: { error: 'not_found' },
+        reason: input.reason,
+        result: 'failure',
+        targetId: input.userId,
+        targetType: 'user',
+      });
+      throw new AdminUserNotFoundError();
+    }
+
+    try {
+      await this.db.transaction(async (tx) => {
+        // Serialize with concurrent super-admin mutations (same lock as ban).
+        await tx.execute(
+          sql`SELECT id FROM rbac_roles WHERE name = ${PLATFORM_SYSTEM_ROLES.SUPER_ADMIN} AND workspace_id IS NULL FOR UPDATE`,
+        );
+
+        const model = new AdminUserModel(tx);
+        const rbac = new RbacModel(tx as LobeChatDatabase, actorUserId);
+        if (await rbac.isGlobalSuperAdmin(input.userId)) {
+          const count = await rbac.countActiveSuperAdmins();
+          if (count <= 1) throw new LastSuperAdminError();
+        }
+
+        // Audit before the cascade so intent is recorded even if delete throws.
+        await this.appendAuditInDb(tx, {
+          action: 'admin.users.delete',
+          actorUserId,
+          afterDiff: { deleted: true },
+          reason: input.reason,
+          result: 'success',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+
+        const ok = await model.hardDeleteUser(input.userId);
+        if (!ok) throw new AdminUserNotFoundError();
+      });
+
+      try {
+        await revokeOIDCArtifactsByUserId(this.db, input.userId);
+      } catch {
+        // User row is gone; residual OIDC artifacts are already orphaned.
+      }
+
+      await this.publishUserSecurityInvalidation(input.userId);
+
+      return { deleted: true as const, userId: input.userId };
+    } catch (error) {
+      if (error instanceof LastSuperAdminError || error instanceof LastSuperAdminProtectionError) {
+        await this.appendAuditBestEffort({
+          action: 'admin.users.delete',
+          actorUserId,
+          afterDiff: { error: 'last_super_admin' },
+          reason: input.reason,
+          result: 'denied',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+        throw error instanceof LastSuperAdminError ? error : new LastSuperAdminError();
+      }
+      throw error;
+    }
+  };
+
   replaceGlobalRoles = async (params: {
     actorUserId: string;
     input: AdminUsersReplaceGlobalRolesInput;
@@ -493,6 +647,7 @@ export class AdminUserService {
         const replaced = await rbacService.replaceUserGlobalRoles({
           actorUserId,
           expiresAt: input.expiresAt,
+          preserveRoleNames: input.preserveRoleNames,
           reason: input.reason,
           roleNames: input.roleNames,
           skipAudit: true,

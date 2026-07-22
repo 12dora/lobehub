@@ -11,6 +11,8 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
   adminUsersBanInputSchema,
   adminUsersBanOutputSchema,
+  adminUsersDeleteInputSchema,
+  adminUsersDeleteOutputSchema,
   adminUsersGetAuditTrailInputSchema,
   adminUsersGetAuditTrailOutputSchema,
   adminUsersGetInputSchema,
@@ -32,6 +34,7 @@ import { assertRecentReauth } from '../../guards/reauth';
 import {
   AdminUserNotFoundError,
   AdminUserSelfBanError,
+  AdminUserSelfDeleteError,
   AdminUserService,
   InvalidRetainedSessionError,
 } from '../../services/adminUserService';
@@ -53,6 +56,13 @@ const mapServiceError = (error: unknown): never => {
     throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
       details: { reason: 'self_ban' },
+      httpCode: 'BAD_REQUEST',
+    });
+  }
+  if (error instanceof AdminUserSelfDeleteError) {
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: 'self_delete' },
       httpCode: 'BAD_REQUEST',
     });
   }
@@ -181,6 +191,27 @@ export const adminUsersRouter = router({
           return mapServiceError(error);
         }
       });
+    }),
+
+  delete: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.USER_DELETE))
+    .input(adminUsersDeleteInputSchema)
+    .output(adminUsersDeleteOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withReauth(
+        ctx as never,
+        'admin.users.delete',
+        input.userId,
+        input.reason,
+        async () => {
+          const service = new AdminUserService(ctx.serverDB);
+          try {
+            return await service.deleteUser({ actorUserId: ctx.userId!, input });
+          } catch (error) {
+            return mapServiceError(error);
+          }
+        },
+      );
     }),
 
   revokeSessions: adminBase

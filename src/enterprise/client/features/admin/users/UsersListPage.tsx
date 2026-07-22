@@ -1,8 +1,8 @@
 'use client';
 
-import { Avatar, DatePicker, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
-import type { TableColumnsType } from 'antd';
+import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -25,6 +25,9 @@ const DEFAULT_LIST_LIMIT = 50;
 const DEBOUNCE_MS = 300;
 
 const styles = createStaticStyles(({ css }) => ({
+  filterControl: css`
+    flex: 0 0 auto;
+  `,
   identity: css`
     display: flex;
     gap: 10px;
@@ -242,60 +245,54 @@ const UsersListPage = memo(() => {
           values={filterBarValues}
           extra={
             <>
-              <Select
+              <div className={styles.filterControl} style={{ width: 150 }}>
+                <Select
+                  allowClear
+                  aria-label={t('users.list.filters.status')}
+                  placeholder={t('users.list.filters.status')}
+                  style={{ width: '100%' }}
+                  value={filters.status || undefined}
+                  options={[
+                    { label: t('users.status.active'), value: 'active' },
+                    { label: t('users.status.banned'), value: 'banned' },
+                  ]}
+                  onChange={(v) => patchFilters({ status: (v as string | undefined) || '' })}
+                />
+              </div>
+              <div className={styles.filterControl} style={{ width: 160 }}>
+                <Select
+                  allowClear
+                  aria-label={t('users.list.filters.role')}
+                  placeholder={t('users.list.filters.role')}
+                  style={{ width: '100%' }}
+                  value={filters.role || undefined}
+                  options={ROLE_OPTIONS.map((r) => ({
+                    label: t(`users.roles.${r}` as never, { defaultValue: r }),
+                    value: r,
+                  }))}
+                  onChange={(v) => patchFilters({ role: (v as string | undefined) || '' })}
+                />
+              </div>
+              <DatePicker.RangePicker
                 allowClear
-                aria-label={t('users.list.filters.status')}
-                placeholder={t('users.list.filters.status')}
-                style={{ minWidth: 140 }}
-                value={filters.status || undefined}
-                options={[
-                  { label: t('users.status.active'), value: 'active' },
-                  { label: t('users.status.banned'), value: 'banned' },
+                aria-label={t('users.list.filters.createdRange')}
+                style={{ width: 250, flex: '0 0 auto' }}
+                placeholder={[
+                  t('users.list.filters.createdFrom'),
+                  t('users.list.filters.createdTo'),
                 ]}
-                onChange={(v) => patchFilters({ status: (v as string | undefined) || '' })}
-              />
-              <Select
-                allowClear
-                aria-label={t('users.list.filters.role')}
-                placeholder={t('users.list.filters.role')}
-                style={{ minWidth: 160 }}
-                value={filters.role || undefined}
-                options={ROLE_OPTIONS.map((r) => ({
-                  label: t(`users.roles.${r}` as never, { defaultValue: r }),
-                  value: r,
-                }))}
-                onChange={(v) => patchFilters({ role: (v as string | undefined) || '' })}
-              />
-              <DatePicker
-                allowClear
-                aria-label={t('users.list.filters.createdFrom')}
-                placeholder={t('users.list.filters.createdFrom')}
-                value={filters.createdFrom ? dayjs(filters.createdFrom) : null}
-                onChange={(d) => {
-                  const raw = Array.isArray(d) ? d[0] : d;
-                  const from = raw ? dayjs(raw).startOf('day') : null;
+                value={[
+                  filters.createdFrom ? dayjs(filters.createdFrom) : null,
+                  filters.createdTo ? dayjs(filters.createdTo) : null,
+                ]}
+                onChange={(range) => {
+                  const from = range?.[0] ? dayjs(range[0]).startOf('day') : null;
+                  const to = range?.[1] ? dayjs(range[1]).endOf('day') : null;
                   setQueryState((prev) => ({
                     cursorStack: [],
                     filters: {
                       ...prev.filters,
                       createdFrom: from ? from.toISOString() : '',
-                    },
-                    limit: prev.limit,
-                  }));
-                }}
-              />
-              <DatePicker
-                allowClear
-                aria-label={t('users.list.filters.createdTo')}
-                placeholder={t('users.list.filters.createdTo')}
-                value={filters.createdTo ? dayjs(filters.createdTo) : null}
-                onChange={(d) => {
-                  const raw = Array.isArray(d) ? d[0] : d;
-                  const to = raw ? dayjs(raw).endOf('day') : null;
-                  setQueryState((prev) => ({
-                    cursorStack: [],
-                    filters: {
-                      ...prev.filters,
                       createdTo: to ? to.toISOString() : '',
                     },
                     limit: prev.limit,

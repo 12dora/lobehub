@@ -784,6 +784,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_BAN] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.users.delete',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_DELETE] },
+  },
+  {
     kind: 'query',
     path: 'admin.users.get',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_READ] },

@@ -58,6 +58,8 @@ export class PlatformRbacService {
     allowSuperAdmin?: boolean;
     /** Optional assignment expiry (written to rbac_user_roles.expires_at). */
     expiresAt?: Date | null;
+    /** Role names whose existing grants are left untouched (expiry preserved). */
+    preserveRoleNames?: string[];
     reason: string;
     roleNames: string[];
     /**
@@ -102,6 +104,7 @@ export class PlatformRbacService {
     try {
       await this.rbac.replaceGlobalUserRoles(params.targetUserId, roleIds, {
         expiresAt: params.expiresAt ?? null,
+        preserveRoleNames: params.preserveRoleNames,
         protectLastSuperAdmin: true,
       });
     } catch (error) {
