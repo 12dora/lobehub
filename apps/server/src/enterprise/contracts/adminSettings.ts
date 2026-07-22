@@ -35,6 +35,7 @@ export const adminSettingsGetDraftOutputSchema = z.object({
   publishedPolicies: z.record(settingDraftPolicySchema),
   registry: z.array(
     z.object({
+      builtInDefault: z.unknown().optional(),
       control: z.string(),
       descriptionKey: z.string(),
       group: z.string(),

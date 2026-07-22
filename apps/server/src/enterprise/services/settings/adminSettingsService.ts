@@ -198,6 +198,7 @@ export class AdminSettingsService {
       draftToken: this.draftToken(bundle),
       publishedPolicies,
       registry: settingsRegistry.list().map((e) => ({
+        builtInDefault: e.builtInDefault,
         control: e.control,
         descriptionKey: e.descriptionKey,
         group: e.group,
