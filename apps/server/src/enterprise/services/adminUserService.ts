@@ -2,24 +2,30 @@
  * Admin user management service (M04).
  * Orchestrates AdminUserModel + PlatformRbacService + atomic audit + auth invalidation.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
+import { hashPassword } from 'better-auth/crypto';
 import { sql } from 'drizzle-orm';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { AIHUB_ACCESS_PERMISSION } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { AdminUserModel } from '@/database/models/adminUser';
 import {
   type CreatePlatformAuditLogParams,
   PlatformAuditLogModel,
 } from '@/database/models/platform';
+import { EasyauthGrantSnapshotModel } from '@/database/models/platform/easyauthGrantSnapshot';
 import { LastSuperAdminProtectionError, RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
+import { getGlobalRoleIdsByName } from '@/database/utils/seedPlatformRoles';
+import { authEnv } from '@/envs/auth';
 import { revokeOIDCArtifactsByUserId } from '@/libs/oidc-provider/access-control';
 import type { AuthMethod } from '@/libs/trpc/lambda/context';
 
 import type {
   AdminUsersBanInput,
+  AdminUsersCreateInput,
   AdminUsersDeleteInput,
   AdminUsersGetAuditTrailInputParsed,
   AdminUsersListInputParsed,
@@ -61,6 +67,36 @@ export class AdminUserSelfDeleteError extends Error {
 }
 
 /**
+ * Duplicate email (or username) on admin credential-user create.
+ * Maps to public PLATFORM_INVALID_INPUT with a machine-readable reason.
+ */
+export class AdminUserEmailConflictError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+  readonly reasonCode: 'email_taken' | 'username_taken';
+
+  constructor(reasonCode: 'email_taken' | 'username_taken' = 'email_taken') {
+    super(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    this.name = 'AdminUserEmailConflictError';
+    this.reasonCode = reasonCode;
+  }
+}
+
+/**
+ * Email/password auth is disabled instance-wide (AUTH_DISABLE_EMAIL_PASSWORD),
+ * so an admin-provisioned credential user could never sign in. Rejected before
+ * any write. Maps to public PLATFORM_INVALID_INPUT with a machine-readable reason.
+ */
+export class AdminUserPasswordAuthDisabledError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+  readonly reasonCode = 'password_auth_disabled' as const;
+
+  constructor() {
+    super(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    this.name = 'AdminUserPasswordAuthDisabledError';
+  }
+}
+
+/**
  * Invalid retained-session candidate on revokeSessions (missing / expired / foreign).
  * Maps to public PLATFORM_INVALID_INPUT without leaking whether a foreign session exists.
  */
@@ -85,6 +121,34 @@ export class InvalidRetainedSessionError extends Error {
 export const fingerprintQuery = (query: string | undefined): string | null => {
   if (!query) return null;
   return createHash('sha256').update(query).digest('hex').slice(0, 16);
+};
+
+const generateEntityId = (prefix: string): string => prefix + randomBytes(6).toString('hex');
+
+/**
+ * Walk the error cause chain for a Postgres unique violation (23505).
+ * Returns the constraint hint (constraint name or message) — never row values.
+ */
+const findUniqueViolation = (error: unknown): { constraint: string } | null => {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    const candidate = current as {
+      cause?: unknown;
+      code?: unknown;
+      constraint?: unknown;
+      message?: unknown;
+    };
+    if (candidate.code === '23505') {
+      return {
+        constraint:
+          typeof candidate.constraint === 'string'
+            ? candidate.constraint
+            : String(candidate.message ?? ''),
+      };
+    }
+    current = candidate.cause;
+  }
+  return null;
 };
 
 export class AdminUserService {
@@ -511,6 +575,124 @@ export class AdminUserService {
           targetType: 'user',
         });
         throw error;
+      }
+      throw error;
+    }
+  };
+
+  /**
+   * Create a credential (email + password) user with base platform access.
+   * Users row + Better Auth credential account + EasyAuth access snapshot +
+   * `platform_user` role + success audit commit in ONE transaction. The raw
+   * password is hashed (Better Auth scrypt) before the transaction; neither the
+   * password nor its hash ever reaches audit rows, logs, or error messages.
+   */
+  createUser = async (params: { actorUserId: string; input: AdminUsersCreateInput }) => {
+    const { actorUserId, input } = params;
+    // Contract already trims + lowercases; email doubles as normalizedEmail.
+    const email = input.email;
+
+    // Email/password sign-in is disabled instance-wide — a credential user could
+    // never log in. Reject before any write (mirrors the email-conflict path).
+    if (authEnv.AUTH_DISABLE_EMAIL_PASSWORD) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.create',
+        actorUserId,
+        afterDiff: { error: 'password_auth_disabled' },
+        reason: input.reason,
+        result: 'failure',
+        targetType: 'user',
+      });
+      throw new AdminUserPasswordAuthDisabledError();
+    }
+
+    const conflict = async (reasonCode: 'email_taken' | 'username_taken') => {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.create',
+        actorUserId,
+        afterDiff: { error: reasonCode },
+        reason: input.reason,
+        result: 'failure',
+        targetType: 'user',
+      });
+      return new AdminUserEmailConflictError(reasonCode);
+    };
+
+    if (await this.users.findUserIdByEmail(email)) {
+      throw await conflict('email_taken');
+    }
+
+    // Hash outside the transaction (scrypt is CPU-bound); write-only material.
+    const passwordHash = await hashPassword(input.password);
+
+    try {
+      const userId = await this.db.transaction(async (tx) => {
+        const model = new AdminUserModel(tx);
+
+        let newUserId = generateEntityId('user_');
+        for (let attempt = 0; attempt < 5 && (await model.userIdExists(newUserId)); attempt += 1) {
+          newUserId = generateEntityId('user_');
+        }
+
+        await model.createCredentialUser({
+          accountId: generateEntityId('acct_'),
+          email,
+          fullName: input.fullName,
+          normalizedEmail: email,
+          passwordHash,
+          userId: newUserId,
+          username: input.username ?? null,
+        });
+
+        // Base access snapshot so resolvePlatformAccessStatus grants aihub.access.
+        await new EasyauthGrantSnapshotModel(tx).upsert({
+          accessGranted: true,
+          appKey: process.env.EASYAUTH_APP_KEY || 'aihub',
+          catalogVersion: 1,
+          degraded: false,
+          externalUserId: newUserId,
+          grants: [{ permission: AIHUB_ACCESS_PERMISSION }],
+          grantVersion: 1,
+          groups: [],
+          snapshotVersion: 'admin-create',
+          userId: newUserId,
+        });
+
+        // platform_user global role (mirrors easyauthSync.persistSyncOutcome).
+        const roleIdsByName = await getGlobalRoleIdsByName(tx, [
+          PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+        ]);
+        const roleIds = [roleIdsByName.get(PLATFORM_SYSTEM_ROLES.PLATFORM_USER)].filter(
+          (id): id is string => Boolean(id),
+        );
+        const txRbac = new RbacModel(tx as LobeChatDatabase, actorUserId);
+        await txRbac.replaceGlobalUserRoles(newUserId, roleIds, {
+          preserveRoleNames: [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN],
+          protectLastSuperAdmin: true,
+        });
+
+        // NEVER put the password, its hash, or derived material in the audit row.
+        await this.appendAuditInDb(tx, {
+          action: 'admin.users.create',
+          actorUserId,
+          afterDiff: { created: true },
+          reason: input.reason,
+          result: 'success',
+          targetId: newUserId,
+          targetType: 'user',
+        });
+
+        return newUserId;
+      });
+
+      return { created: true as const, email, userId };
+    } catch (error) {
+      // Duplicate-check + insert race: map pg unique violations to the same error.
+      const violation = findUniqueViolation(error);
+      if (violation) {
+        throw await conflict(
+          violation.constraint.includes('username') ? 'username_taken' : 'email_taken',
+        );
       }
       throw error;
     }

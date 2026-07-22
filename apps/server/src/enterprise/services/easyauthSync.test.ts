@@ -5,7 +5,7 @@ import { AIHUB_ACCESS_PERMISSION } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import { RbacModel } from '@/database/models/rbac';
-import { permissions, rolePermissions, roles, userRoles, users } from '@/database/schemas';
+import { account, permissions, rolePermissions, roles, userRoles, users } from '@/database/schemas';
 import { platformAuditLogs, platformEasyauthGrantSnapshots } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
@@ -24,6 +24,7 @@ const userId = 'easyauth-sync-user';
 const cleanup = async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformEasyauthGrantSnapshots);
+  await db.delete(account);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);
@@ -412,6 +413,95 @@ describe('EasyauthSyncService', () => {
         result: 'failure',
       },
     ]);
+  });
+
+  it('skips credential-only users: no EasyAuth lookup, snapshot and roles preserved', async () => {
+    // Admin-created credential user: local account (accountId = local user id),
+    // 'admin-create' snapshot with base access, platform_user role.
+    await db.insert(account).values({
+      accountId: userId,
+      id: 'acct-sync-cred',
+      password: 'scrypt-hash-placeholder',
+      providerId: 'credential',
+      userId,
+    });
+    await db.insert(platformEasyauthGrantSnapshots).values({
+      accessGranted: true,
+      appKey: 'aihub',
+      externalUserId: userId,
+      grants: [{ permission: AIHUB_ACCESS_PERMISSION }],
+      grantVersion: 1,
+      snapshotVersion: 'admin-create',
+      userId,
+    });
+    const platformUserRole = await db.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.PLATFORM_USER), isNull(t.workspaceId)),
+    });
+    await db.insert(userRoles).values({ roleId: platformUserRole!.id, userId, workspaceId: null });
+
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    const fetch = vi.fn(async () => sampleSnapshot({ grants: [], groups: [] }));
+    client.fetchPermissionSnapshot = fetch;
+
+    const result = await new EasyauthSyncService(db, { client }).syncUser({ userId });
+
+    // The local email/user id never reaches EasyAuth; access snapshot survives.
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ accessGranted: true, degraded: false, source: 'cache' });
+
+    const snapshots = await db.select().from(platformEasyauthGrantSnapshots);
+    expect(snapshots).toMatchObject([
+      { accessGranted: true, snapshotVersion: 'admin-create', userId },
+    ]);
+    const grants = await db.query.userRoles.findMany({
+      where: (t, { eq }) => eq(t.userId, userId),
+    });
+    expect(grants).toHaveLength(1);
+  });
+
+  it('resolves the external id from a linked SSO account, ignoring the credential row', async () => {
+    await db.insert(account).values([
+      {
+        accountId: userId,
+        id: 'acct-sync-cred-2',
+        password: 'scrypt-hash-placeholder',
+        providerId: 'credential',
+        userId,
+      },
+      { accountId: 'ak_uid_1', id: 'acct-sync-ak', providerId: 'authentik', userId },
+    ]);
+
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    const fetch = vi.fn(async () => sampleSnapshot());
+    client.fetchPermissionSnapshot = fetch;
+
+    const result = await new EasyauthSyncService(db, { client }).syncUser({ userId });
+
+    expect(fetch).toHaveBeenCalledWith('ak_uid_1');
+    expect(result.source).toBe('easyauth');
+    expect(result.accessGranted).toBe(true);
+    expect(result.rolesApplied).toContain(PLATFORM_SYSTEM_ROLES.PLATFORM_USER);
   });
 
   it('revokes managed roles when EasyAuth returns empty grants', async () => {

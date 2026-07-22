@@ -111,9 +111,13 @@ const resolveExternalUserId = async (
     .from(account)
     .where(eq(account.userId, userId));
 
-  const preferred = rows.find((r) => /authentik|oidc|sso|dingtalk/i.test(r.providerId));
+  // Credential accounts are LOCAL identities (accountId = local user id) —
+  // never send them to EasyAuth as external subject ids. Credential-only users
+  // resolve to null, which callers treat as a clean skip (cache / skipped).
+  const external = rows.filter((r) => r.providerId !== 'credential');
+  const preferred = external.find((r) => /authentik|oidc|sso|dingtalk/i.test(r.providerId));
   if (preferred?.accountId) return preferred.accountId;
-  if (rows[0]?.accountId) return rows[0].accountId;
+  if (external[0]?.accountId) return external[0].accountId;
   return null;
 };
 

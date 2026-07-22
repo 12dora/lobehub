@@ -720,6 +720,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Ban a user and revoke access.',
     { reauth: recentReauth },
   ),
+  'admin.users.create': dangerousMutation(
+    'admin.users.create',
+    'critical',
+    'Provision a new user account with sign-in access.',
+    { reauth: recentReauth },
+  ),
   'admin.users.delete': dangerousMutation(
     'admin.users.delete',
     'critical',
