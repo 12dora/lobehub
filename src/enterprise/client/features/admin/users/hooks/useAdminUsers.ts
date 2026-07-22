@@ -5,6 +5,7 @@ import { mutate } from 'swr';
 
 import {
   type AdminUsersBanInput,
+  type AdminUsersDeleteInput,
   type AdminUsersGetAuditTrailInput,
   type AdminUsersListInput,
   type AdminUsersReplaceGlobalRolesInput,
@@ -98,6 +99,13 @@ export const useAdminUserMutations = () => {
     return result;
   }, []);
 
+  const deleteUser = useCallback(async (input: AdminUsersDeleteInput) => {
+    const result = await adminUsersService.deleteUser(input);
+    // User row is gone — refresh the list; the detail key resolves to not-found.
+    await refreshAdminUsersList();
+    return result;
+  }, []);
+
   const revokeSessions = useCallback(async (input: AdminUsersRevokeSessionsInput) => {
     const result = await adminUsersService.revokeSessions(input);
     await refreshAdminUsersList();
@@ -112,5 +120,5 @@ export const useAdminUserMutations = () => {
     return result;
   }, []);
 
-  return { banUser, replaceGlobalRoles, revokeSessions, unbanUser };
+  return { banUser, deleteUser, replaceGlobalRoles, revokeSessions, unbanUser };
 };
