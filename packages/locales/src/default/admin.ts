@@ -56,9 +56,10 @@ export default {
   'agentCatalog.conflict.title': 'Local draft conflicts with the server',
   'agentCatalog.create.creating': 'Creating…',
   'agentCatalog.create.defaultInbox': 'Manage the existing default Inbox identity',
-  'agentCatalog.create.key': 'Agent key',
+  // User-facing label for the create form field; wire still submits as `agentKey`.
+  'agentCatalog.create.key': 'Assistant name',
   'agentCatalog.create.reason': 'Reason',
-  'agentCatalog.create.submit': 'Create Agent',
+  'agentCatalog.create.submit': 'Create Assistant',
   'agentCatalog.defaultInbox': 'Default Inbox',
   'agentCatalog.defaultSwitch.description':
     'This atomically replaces the organization default Inbox for future operations. Existing conversations keep their internal inbox identity.',

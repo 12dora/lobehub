@@ -56,7 +56,7 @@
   "agentCatalog.conflict.title": "本地草稿与服务端冲突",
   "agentCatalog.create.creating": "创建中…",
   "agentCatalog.create.defaultInbox": "接管现有默认 Inbox 身份",
-  "agentCatalog.create.key": "助理 Key",
+  "agentCatalog.create.key": "助理名称",
   "agentCatalog.create.reason": "原因",
   "agentCatalog.create.submit": "创建助理",
   "agentCatalog.defaultInbox": "默认 Inbox",
