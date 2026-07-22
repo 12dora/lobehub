@@ -58,14 +58,17 @@ vi.mock('@/envs/app', () => ({
   },
 }));
 
+const authEnvMock = vi.hoisted(() => ({
+  AUTH_COOKIE_PREFIX: undefined as string | undefined,
+  AUTH_DISABLE_EMAIL_PASSWORD: false,
+  AUTH_EMAIL_VERIFICATION: true,
+  AUTH_ENABLE_MAGIC_LINK: false,
+  AUTH_SECRET: 'test-secret',
+  AUTH_SSO_PROVIDERS: '',
+}));
+
 vi.mock('@/envs/auth', () => ({
-  authEnv: {
-    AUTH_DISABLE_EMAIL_PASSWORD: false,
-    AUTH_EMAIL_VERIFICATION: true,
-    AUTH_ENABLE_MAGIC_LINK: false,
-    AUTH_SECRET: 'test-secret',
-    AUTH_SSO_PROVIDERS: '',
-  },
+  authEnv: authEnvMock,
 }));
 
 vi.mock('@/libs/better-auth/email-templates', () => ({
@@ -121,6 +124,7 @@ describe('defineConfig', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    authEnvMock.AUTH_COOKIE_PREFIX = undefined;
     process.env = { ...originalEnv, NODE_ENV: 'test' };
     delete process.env.HTTP_PROXY;
     delete process.env.http_proxy;
@@ -202,6 +206,25 @@ describe('defineConfig', () => {
         type: 'string',
       },
     });
+  });
+
+  it('omits advanced.cookiePrefix when AUTH_COOKIE_PREFIX is unset (default cookie names)', async () => {
+    const { defineConfig } = await import('./define-config');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    expect(options.advanced).not.toHaveProperty('cookiePrefix');
+  });
+
+  it('namespaces cookies via advanced.cookiePrefix when AUTH_COOKIE_PREFIX is set', async () => {
+    authEnvMock.AUTH_COOKIE_PREFIX = 'aihub-3011';
+    const { defineConfig } = await import('./define-config');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    expect(options.advanced.cookiePrefix).toBe('aihub-3011');
   });
 
   it('should respect NO_PROXY when configuring the development proxy dispatcher', async () => {

@@ -3,14 +3,15 @@ import { getCookieCache } from 'better-auth/cookies';
 const COOKIE_CACHE_MAX_AGE_MS = 2 * 60 * 1000;
 const CLOCK_SKEW_MS = 5000;
 const MAX_FORWARDED_COOKIE_BYTES = 4096;
-const SESSION_COOKIE_NAMES = new Set([
-  '__Secure-better-auth.dont_remember',
-  '__Secure-better-auth.session_data',
-  '__Secure-better-auth.session_token',
-  'better-auth.dont_remember',
-  'better-auth.session_data',
-  'better-auth.session_token',
-]);
+// Mirrors Better Auth's `advanced.cookiePrefix` (AUTH_COOKIE_PREFIX); defaults
+// to the stock 'better-auth' names when the env is unset.
+const COOKIE_PREFIX = process.env.AUTH_COOKIE_PREFIX || 'better-auth';
+const SESSION_COOKIE_NAMES = new Set(
+  ['dont_remember', 'session_data', 'session_token'].flatMap((cookieName) => [
+    `${COOKIE_PREFIX}.${cookieName}`,
+    `__Secure-${COOKIE_PREFIX}.${cookieName}`,
+  ]),
+);
 
 interface ProxySession {
   session: Record<string, unknown>;
@@ -103,6 +104,7 @@ const readSignedCookieCache = async (headers: Headers): Promise<ProxySession | n
   const secret = process.env.AUTH_SECRET;
   if (!secret || !PUBLIC_AUTH_ORIGIN) return null;
   const cache = await getCookieCache(headers, {
+    cookiePrefix: COOKIE_PREFIX,
     isSecure: PUBLIC_AUTH_ORIGIN.protocol === 'https:',
     secret,
     strategy: 'compact',

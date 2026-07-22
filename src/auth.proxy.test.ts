@@ -31,6 +31,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.APP_URL;
   delete process.env.INTERNAL_APP_URL;
+  delete process.env.AUTH_COOKIE_PREFIX;
 });
 
 describe('edge-safe proxy auth', () => {
@@ -107,6 +108,42 @@ describe('edge-safe proxy auth', () => {
           cookie: 'better-auth.session_token=token; better-auth.session_data.0=chunk',
         },
         redirect: 'error',
+      }),
+    );
+  });
+
+  it('honors AUTH_COOKIE_PREFIX for the cookie cache and the forwarded allowlist', async () => {
+    process.env.AUTH_COOKIE_PREFIX = 'aihub-3011';
+    const proxyAuth = await loadProxyAuth({
+      appUrl: 'https://public.example.test',
+      internalUrl: 'http://identity-internal:3210',
+    });
+    getCookieCache.mockResolvedValue(null);
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify(cachedSession()), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      }),
+    );
+    const prefixedHeaders = new Headers({
+      cookie:
+        'better-auth.session_token=stale-default; aihub-3011.session_token=token; __Secure-aihub-3011.session_data=signed',
+    });
+
+    await expect(proxyAuth.api.getSession({ headers: prefixedHeaders })).resolves.toMatchObject({
+      user: { id: 'user-1' },
+    });
+    expect(getCookieCache).toHaveBeenCalledWith(
+      prefixedHeaders,
+      expect.objectContaining({ cookiePrefix: 'aihub-3011' }),
+    );
+    // Only cookies under the configured prefix are forwarded to the internal origin.
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('http://identity-internal:3210/api/auth/get-session?disableCookieCache=true'),
+      expect.objectContaining({
+        headers: {
+          cookie: 'aihub-3011.session_token=token; __Secure-aihub-3011.session_data=signed',
+        },
       }),
     );
   });

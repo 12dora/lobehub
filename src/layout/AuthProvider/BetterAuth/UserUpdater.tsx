@@ -7,6 +7,37 @@ import { useSession } from '@/libs/better-auth/auth-client';
 import { useUserStore } from '@/store/user';
 import { type LobeUser } from '@/types/user';
 
+interface SessionErrorLike {
+  status?: number;
+}
+
+/**
+ * Decide the next signed-in state from the latest `useSession` snapshot.
+ *
+ * - A successful response containing a user is authoritative: signed in.
+ *   (Better-auth also preserves the previous session data on non-401 errors,
+ *   which lands here and correctly keeps the user signed in.)
+ * - A successful empty response (no user, no error) is authoritative: signed out.
+ * - A definitive 401 means the session is gone: signed out.
+ * - Any other error (network failure while the server restarts, 5xx, …) is
+ *   transient: keep the last known state instead of flipping a signed-in user
+ *   to signed-out and bouncing them to /signin. Better-auth refetches (focus,
+ *   refresh manager) and will deliver an authoritative answer later.
+ */
+export const resolveIsSignedIn = (options: {
+  error: SessionErrorLike | null | undefined;
+  hasUser: boolean;
+  prevIsSignedIn: boolean;
+}): boolean => {
+  const { error, hasUser, prevIsSignedIn } = options;
+
+  if (hasUser) return true;
+  if (!error) return false;
+  if (error.status === 401) return false;
+
+  return prevIsSignedIn;
+};
+
 /**
  * Sync Better-Auth session state to Zustand store
  */
@@ -14,7 +45,11 @@ const UserUpdater = memo(() => {
   const { data: session, isPending, error } = useSession();
 
   const isLoaded = !isPending;
-  const isSignedIn = !!session?.user && !error;
+  const isSignedIn = resolveIsSignedIn({
+    error,
+    hasUser: !!session?.user,
+    prevIsSignedIn: !!useUserStore.getState().isSignedIn,
+  });
 
   const betterAuthUser = session?.user;
   const useStoreUpdater = createStoreUpdater(useUserStore);
@@ -56,9 +91,13 @@ const UserUpdater = memo(() => {
       return;
     }
 
-    // Clear user data when session becomes unavailable
-    useUserStore.setState({ user: undefined });
-  }, [betterAuthUser]);
+    // Clear user data only on an authoritative signed-out (empty session or
+    // 401). During a transient session-fetch error we keep the last known
+    // profile so the UI doesn't flash to a logged-out state.
+    if (!isSignedIn) {
+      useUserStore.setState({ user: undefined });
+    }
+  }, [betterAuthUser, isSignedIn]);
 
   return null;
 });
