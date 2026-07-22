@@ -19,7 +19,7 @@ import { deriveAdminAgentPermissions } from './controller';
 import { openCreateAgentModal } from './openCreateAgentModal';
 import { openDeleteAgentModal } from './openDeleteAgentModal';
 import type { AdminAgentListItem } from './types';
-import { refreshAdminAgentLists, useAdminAgentListPagination } from './useAdminAgents';
+import { useAdminAgentListPagination } from './useAdminAgents';
 
 const styles = createStaticStyles(({ css }) => ({
   identity: css`
@@ -27,6 +27,25 @@ const styles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 2px;
     min-width: 0;
+  `,
+  /**
+   * Keep search + status + Search button on one row at normal desktop widths.
+   * Mirrors FilterBar's flex row (wrap only when the viewport is truly narrow).
+   */
+  toolbar: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  `,
+  toolbarSearch: css`
+    flex: 0 1 260px;
+    min-width: 180px;
+    max-width: 320px;
+  `,
+  toolbarStatus: css`
+    flex: 0 0 160px;
+    min-width: 140px;
   `,
 }));
 
@@ -46,6 +65,7 @@ const AgentListPage = memo(() => {
     [searchParams, status],
   );
   const list = useAdminAgentListPagination(input, agentPermissions.canRead);
+  const refreshList = list.refresh;
   const filtered = Boolean(input.query || input.status);
   const columns = useMemo<TableColumnsType<AdminAgentListItem>>(
     () => [
@@ -110,8 +130,9 @@ const AgentListPage = memo(() => {
                         agentId: item.identity.id,
                         authMethod: authMethod ?? undefined,
                         displayName: item.displayName,
+                        // Bound infinite mutate — global predicate refresh misses useSWRInfinite pages.
                         onDeleted: () => {
-                          void refreshAdminAgentLists();
+                          void refreshList();
                         },
                       });
                     }}
@@ -124,7 +145,7 @@ const AgentListPage = memo(() => {
           ]
         : []),
     ],
-    [t, agentPermissions.canDelete, authMethod],
+    [t, agentPermissions.canDelete, authMethod, refreshList],
   );
   const patch = (key: 'q' | 'status', value?: string) => {
     const next = new URLSearchParams(searchParams);
@@ -134,7 +155,13 @@ const AgentListPage = memo(() => {
   };
   const createAgent = () =>
     openCreateAgentModal(async (id) => {
-      await refreshAdminAgentLists();
+      // Coherent with delete: revalidate the infinite list via the bound mutate, then navigate.
+      // Refresh failure must not block entry into the new assistant detail.
+      try {
+        await refreshList();
+      } catch {
+        // list will revalidate on next visit / focus; navigation is still valid post-create
+      }
       navigate(`/admin/agents/${encodeURIComponent(id)}`);
     });
   const clearFilters = () => {
@@ -154,32 +181,36 @@ const AgentListPage = memo(() => {
         ) : null
       }
       toolbar={
-        <Flexbox horizontal align="center" gap={8} wrap="wrap">
-          <Input
-            allowClear
-            aria-label={t('agentCatalog.list.search')}
-            placeholder={t('agentCatalog.list.search')}
-            style={{ minWidth: 240 }}
-            value={queryDraft}
-            onChange={(event) => setQueryDraft(event.target.value)}
-            onPressEnter={() => patch('q', queryDraft.trim() || undefined)}
-          />
-          <Select
-            allowClear
-            aria-label={t('agentCatalog.list.status')}
-            placeholder={t('agentCatalog.list.status')}
-            style={{ minWidth: 160 }}
-            value={status}
-            options={(['draft', 'published', 'archived'] as const).map((value) => ({
-              label: t(`agentCatalog.status.${value}` as never),
-              value,
-            }))}
-            onChange={(value) => patch('status', value as string | undefined)}
-          />
+        <div className={styles.toolbar} data-testid="agent-list-toolbar">
+          <div className={styles.toolbarSearch}>
+            <Input
+              allowClear
+              aria-label={t('agentCatalog.list.search')}
+              placeholder={t('agentCatalog.list.search')}
+              style={{ width: '100%' }}
+              value={queryDraft}
+              onChange={(event) => setQueryDraft(event.target.value)}
+              onPressEnter={() => patch('q', queryDraft.trim() || undefined)}
+            />
+          </div>
+          <div className={styles.toolbarStatus}>
+            <Select
+              allowClear
+              aria-label={t('agentCatalog.list.status')}
+              placeholder={t('agentCatalog.list.status')}
+              style={{ width: '100%' }}
+              value={status}
+              options={(['draft', 'published', 'archived'] as const).map((value) => ({
+                label: t(`agentCatalog.status.${value}` as never),
+                value,
+              }))}
+              onChange={(value) => patch('status', value as string | undefined)}
+            />
+          </div>
           <Button onClick={() => patch('q', queryDraft.trim() || undefined)}>
             {t('agentCatalog.list.applySearch')}
           </Button>
-        </Flexbox>
+        </div>
       }
     >
       <AsyncBoundary

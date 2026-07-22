@@ -10,6 +10,12 @@ import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import { getAdminAgentErrorMessage } from './errorPresentation';
 
+/**
+ * Stable, non-localized audit reason for create. Server still requires a non-empty reason;
+ * locale-independent text keeps the audit trail consistent (mirrors delete).
+ */
+export const CREATE_AGENT_REASON = 'Platform assistant created from admin console';
+
 interface CreateAgentContentProps {
   onCreated: (id: string) => Promise<void>;
 }
@@ -17,8 +23,8 @@ interface CreateAgentContentProps {
 export const CreateAgentContent = ({ onCreated }: CreateAgentContentProps) => {
   const { t } = useTranslation('admin');
   const { close } = useModalContext();
+  // UI labels this as "assistant name"; wire still sends `agentKey` to the backend contract.
   const [agentKey, setAgentKey] = useState('');
-  const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,9 +33,9 @@ export const CreateAgentContent = ({ onCreated }: CreateAgentContentProps) => {
     setError(null);
     try {
       const result = await adminAgentsService.create({
-        agentKey,
+        agentKey: agentKey.trim(),
         isDefault: false,
-        reason,
+        reason: CREATE_AGENT_REASON,
         systemKey: null,
       });
       await onCreated(result.identity.id);
@@ -46,19 +52,15 @@ export const CreateAgentContent = ({ onCreated }: CreateAgentContentProps) => {
     <Flexbox gap={16}>
       <Flexbox gap={6}>
         <Text>{t('agentCatalog.create.key')}</Text>
-        <Input value={agentKey} onChange={(event) => setAgentKey(event.target.value)} />
-      </Flexbox>
-      <Flexbox gap={6}>
-        <Text>{t('agentCatalog.create.reason')}</Text>
-        <Input value={reason} onChange={(event) => setReason(event.target.value)} />
+        <Input
+          aria-label={t('agentCatalog.create.key')}
+          value={agentKey}
+          onChange={(event) => setAgentKey(event.target.value)}
+        />
       </Flexbox>
       {error ? <Text type="danger">{error}</Text> : null}
       <Flexbox horizontal justify="flex-end">
-        <Button
-          disabled={busy || !agentKey.trim() || !reason.trim()}
-          type="primary"
-          onClick={() => void submit()}
-        >
+        <Button disabled={busy || !agentKey.trim()} type="primary" onClick={() => void submit()}>
           {busy ? t('agentCatalog.create.creating') : t('agentCatalog.create.submit')}
         </Button>
       </Flexbox>
