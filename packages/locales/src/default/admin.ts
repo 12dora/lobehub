@@ -567,6 +567,13 @@ export default {
     'Edits save and publish as platform defaults. Users inherit these values unless they override them.',
   'aiServiceModel.noWritePermission':
     'You need settings update and publish permissions to edit platform defaults.',
+  'aiInfraError.rateLimited': 'Too many admin actions — try again shortly.',
+  'aiInfraError.reauthCancelled': 'Re-authentication cancelled.',
+  'aiInfraError.reauthRequired': 'Re-authentication required.',
+  'aiInfraError.reauthUnavailable': 'Re-authentication unavailable for this session.',
+  'aiInfraError.saveFailed': 'Save failed.',
+  'aiInfraError.validationFailed': 'Validation failed — draft kept, not published.',
+  'aiInfraError.validationFailedCount': 'Validation failed ({{count}} issues).',
   'aiMemory.page.title': 'Memory settings',
   'aiMemory.page.desc': 'Platform default memory preferences. Changes publish immediately.',
   'aiMemory.autoPublishNote':
