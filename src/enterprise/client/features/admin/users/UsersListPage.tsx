@@ -25,6 +25,9 @@ const DEFAULT_LIST_LIMIT = 50;
 const DEBOUNCE_MS = 300;
 
 const styles = createStaticStyles(({ css }) => ({
+  filterControl: css`
+    flex: 0 0 auto;
+  `,
   identity: css`
     display: flex;
     gap: 10px;
@@ -242,34 +245,38 @@ const UsersListPage = memo(() => {
           values={filterBarValues}
           extra={
             <>
-              <Select
-                allowClear
-                aria-label={t('users.list.filters.status')}
-                placeholder={t('users.list.filters.status')}
-                style={{ minWidth: 140 }}
-                value={filters.status || undefined}
-                options={[
-                  { label: t('users.status.active'), value: 'active' },
-                  { label: t('users.status.banned'), value: 'banned' },
-                ]}
-                onChange={(v) => patchFilters({ status: (v as string | undefined) || '' })}
-              />
-              <Select
-                allowClear
-                aria-label={t('users.list.filters.role')}
-                placeholder={t('users.list.filters.role')}
-                style={{ minWidth: 160 }}
-                value={filters.role || undefined}
-                options={ROLE_OPTIONS.map((r) => ({
-                  label: t(`users.roles.${r}` as never, { defaultValue: r }),
-                  value: r,
-                }))}
-                onChange={(v) => patchFilters({ role: (v as string | undefined) || '' })}
-              />
+              <div className={styles.filterControl} style={{ width: 150 }}>
+                <Select
+                  allowClear
+                  aria-label={t('users.list.filters.status')}
+                  placeholder={t('users.list.filters.status')}
+                  style={{ width: '100%' }}
+                  value={filters.status || undefined}
+                  options={[
+                    { label: t('users.status.active'), value: 'active' },
+                    { label: t('users.status.banned'), value: 'banned' },
+                  ]}
+                  onChange={(v) => patchFilters({ status: (v as string | undefined) || '' })}
+                />
+              </div>
+              <div className={styles.filterControl} style={{ width: 160 }}>
+                <Select
+                  allowClear
+                  aria-label={t('users.list.filters.role')}
+                  placeholder={t('users.list.filters.role')}
+                  style={{ width: '100%' }}
+                  value={filters.role || undefined}
+                  options={ROLE_OPTIONS.map((r) => ({
+                    label: t(`users.roles.${r}` as never, { defaultValue: r }),
+                    value: r,
+                  }))}
+                  onChange={(v) => patchFilters({ role: (v as string | undefined) || '' })}
+                />
+              </div>
               <DatePicker.RangePicker
                 allowClear
                 aria-label={t('users.list.filters.createdRange')}
-                style={{ minWidth: 240 }}
+                style={{ width: 250, flex: '0 0 auto' }}
                 placeholder={[
                   t('users.list.filters.createdFrom'),
                   t('users.list.filters.createdTo'),
