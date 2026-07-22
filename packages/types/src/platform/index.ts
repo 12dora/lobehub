@@ -1,6 +1,7 @@
 export * from './agents';
 export * from './branding';
 export * from './capabilities';
+export * from './connectorGovernance';
 export * from './errors';
 export * from './featureFlags';
 export * from './identityProvider';

@@ -9,12 +9,15 @@ import type {
   AdminConnectorCreateDraftInput,
   AdminConnectorDeleteDraftInput,
   AdminConnectorDiscoverInput,
+  AdminConnectorGovernanceGetOutput,
   AdminConnectorListInput,
   AdminConnectorPublishInput,
   AdminConnectorPublishNowInput,
   AdminConnectorRevokeAllBindingsInput,
   AdminConnectorRollbackInput,
+  AdminConnectorSetSharedAuthorizationInput,
   AdminConnectorTestInput,
+  AdminConnectorUpdateBuiltinToolPolicyInput,
   AdminConnectorUpdateDraftInput,
 } from '../features/admin/connectors/types';
 import { withAdminAiInfraErrorToast } from './adminAiInfraAdapter/errors';
@@ -60,8 +63,18 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
 
   get = async (input: { id: string }) => lambdaClient.admin.connectors.get.query(input);
 
+  getGovernance = async (): Promise<AdminConnectorGovernanceGetOutput> =>
+    lambdaClient.admin.connectors.getGovernance.query();
+
   getPublishedBatch = async (input: { ids: string[] }) =>
     lambdaClient.admin.connectors.getPublishedBatch.query(input);
+
+  /** Dangerous: switches whose OAuth identity every managed user runs with (reauth + toast). */
+  setSharedAuthorization = async (input: AdminConnectorSetSharedAuthorizationInput) =>
+    withToastAndReauth(() => lambdaClient.admin.connectors.setSharedAuthorization.mutate(input));
+
+  updateBuiltinToolPolicy = async (input: AdminConnectorUpdateBuiltinToolPolicyInput) =>
+    withToastAndReauth(() => lambdaClient.admin.connectors.updateBuiltinToolPolicy.mutate(input));
 
   list = async (input: AdminConnectorListInput) => lambdaClient.admin.connectors.list.query(input);
 

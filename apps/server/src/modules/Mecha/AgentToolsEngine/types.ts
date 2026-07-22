@@ -57,6 +57,15 @@ export interface ServerAgentToolsEngineConfig {
    * static manifests. Mirrors the frontend `ToolsEngineConfig.manifestContext`.
    */
   manifestContext?: BuiltinToolResolveContext;
+  /**
+   * Org-mandate layer (connector governance): applied to every BUILTIN
+   * manifest AFTER context resolution, so an org builtin tool permission
+   * matrix ('disabled' block / 'needs_approval' intervention / explicit
+   * 'auto') is reflected in the manifests the engine hands to the model.
+   * Plugin / additional manifests are NOT passed through — their per-user
+   * permission patches happen at their own build sites.
+   */
+  transformBuiltinManifest?: (manifest: LobeToolManifest) => LobeToolManifest;
 }
 
 /**
@@ -139,4 +148,10 @@ export interface ServerCreateAgentToolsEngineParams {
   model: string;
   /** Provider name for function calling compatibility check */
   provider: string;
+  /**
+   * Org-mandate layer (connector governance) applied to builtin manifests.
+   * Forwarded to `createServerToolsEngine` — see
+   * `ServerAgentToolsEngineConfig.transformBuiltinManifest`.
+   */
+  transformBuiltinManifest?: (manifest: LobeToolManifest) => LobeToolManifest;
 }

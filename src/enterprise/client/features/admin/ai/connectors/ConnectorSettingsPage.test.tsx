@@ -18,6 +18,11 @@ const mocks = vi.hoisted(() => ({
     deleteDraft: vi.fn(),
     discover: vi.fn(),
     get: vi.fn(),
+    getGovernance: vi.fn(async () => ({
+      doc: { builtinToolPolicies: {}, sharedAuthorization: { ownerUserId: null } },
+      managedActive: false,
+      revision: 0,
+    })),
     list: vi.fn(async () => ({ items: [], nextCursor: null })),
   },
   skills: {
@@ -62,7 +67,7 @@ beforeEach(() => {
 
 describe('Admin ConnectorSettingsPage', () => {
   it(
-    'renders the user-parity connector surface with the org-wide notice',
+    'renders the user-parity connector surface without the per-user caveat notice',
     { timeout: 30_000 },
     async () => {
       render(<ConnectorSettingsPage />, { wrapper: AppProviders });
@@ -72,10 +77,9 @@ describe('Admin ConnectorSettingsPage', () => {
         await screen.findByText('Built-in Tools', {}, { timeout: 10_000 }),
       ).toBeInTheDocument();
 
-      // Org notice alert (admin:aiConnectorSettings.orgNotice defaultValue).
-      expect(
-        await screen.findByText(/Changes here apply to every user/, {}, { timeout: 10_000 }),
-      ).toBeInTheDocument();
+      // The per-user caveat notice is gone: org governance now makes builtin
+      // permissions and shared OAuth genuinely global.
+      expect(screen.queryByText(/Changes here apply to every user/)).toBeNull();
 
       // Left header: "Connectors" title plus the add-custom-connector + store buttons.
       expect(screen.getByText('Connectors')).toBeInTheDocument();

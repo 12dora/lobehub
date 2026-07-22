@@ -12,6 +12,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
+import { resolveConnectorGovernance } from '../connectorGovernance/resolve';
 import { PlatformAuditService } from '../platformAudit';
 import { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorOutboundPolicyProvider } from './connectorOutboundPolicy';
@@ -598,6 +599,18 @@ export const executeManagedConnectorTool = async (params: {
       });
     }
 
+    // Org-wide shared OAuth identity (connector governance): while the
+    // connectors managed policy is enforced with a designated owner,
+    // per_user_oauth executions load/refresh the OWNER's platform binding so
+    // every user shares that one authorization. Resolved once per execution;
+    // the resolver fails open, so a governance read failure degrades to the
+    // per-user default. User bindings are never written from here.
+    const governance = await resolveConnectorGovernance(params.db);
+    const effectiveBindingUserId =
+      governance.active && governance.sharedAuthOwnerUserId
+        ? governance.sharedAuthOwnerUserId
+        : undefined;
+
     const snapshots = getSnapshots(params.db);
     const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise(
       params.env ?? process.env,
@@ -680,6 +693,9 @@ export const executeManagedConnectorTool = async (params: {
     const result = await adapter.execute({
       agentId: params.agentId,
       arguments: params.arguments,
+      // Shared-auth owner binding identity (see governance resolution above);
+      // undefined keeps the per-user binding path byte-identical to today.
+      effectiveBindingUserId,
       humanApproved,
       proof: toConnectorOperationProof(proof),
       toolCallId: params.toolCallId,

@@ -38,6 +38,7 @@ const prefixes = {
   platformAiProviders: 'pap',
   platformAuditLogs: 'paud',
   platformBranding: 'pbr',
+  platformConnectorGovernance: 'pcg',
   platformConnectors: 'pcn',
   platformConnectorOAuthStates: 'pcos',
   platformConnectorSecrets: 'pcs',

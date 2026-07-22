@@ -17,7 +17,10 @@ const mocks = vi.hoisted(() => ({
     deleteDraft: vi.fn(),
     discover: vi.fn(),
     get: vi.fn(),
+    getGovernance: vi.fn(),
     list: vi.fn(),
+    setSharedAuthorization: vi.fn(),
+    updateBuiltinToolPolicy: vi.fn(),
   },
   skills: {
     applyImmediate: vi.fn(),
@@ -143,6 +146,12 @@ beforeEach(() => {
   vi.spyOn(toast, 'error').mockImplementation(() => '' as never);
   mocks.skills.list.mockResolvedValue({ items: [], nextCursor: null });
   mocks.connectors.list.mockResolvedValue({ items: [], nextCursor: null });
+  mocks.connectors.getGovernance.mockResolvedValue({
+    doc: { builtinToolPolicies: {}, sharedAuthorization: { ownerUserId: null } },
+    managedActive: false,
+    revision: 0,
+  });
+  mocks.connectors.updateBuiltinToolPolicy.mockResolvedValue({ revision: 1 });
 });
 
 afterEach(() => {
@@ -330,7 +339,8 @@ describe('useAdminGlobalToolScope', () => {
       expect(builtinRows.length).toBeGreaterThan(0);
       for (const row of builtinRows) {
         expect(row.sourceType).toBe('builtin');
-        expect(result.current.isConnectorReadOnly(row)).toBe(true);
+        // Governance loaded → builtin matrix is editable org-wide.
+        expect(result.current.isConnectorReadOnly(row)).toBe(false);
       }
       const builtinTool = builtinRows.find((row) => row.tools.length > 0)?.tools[0];
       expect(builtinTool?.id.startsWith('admin-builtin:')).toBe(true);

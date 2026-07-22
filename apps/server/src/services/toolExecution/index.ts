@@ -1,3 +1,4 @@
+import { builtinTools } from '@lobechat/builtin-tools';
 import { type ChatToolPayload } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import debug from 'debug';
@@ -10,6 +11,7 @@ import {
 } from '@/libs/mcp/connectorPermissionCheck';
 import { platformSafeMcpService } from '@/server/enterprise/services/connectorCatalog/legacyMcpTransport';
 import { executeManagedConnectorTool } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+import { resolveConnectorGovernance } from '@/server/enterprise/services/connectorGovernance/resolve';
 import { deviceGateway } from '@/server/services/deviceGateway';
 import { contentBlocksToString } from '@/server/services/mcp/contentProcessor';
 import {
@@ -28,6 +30,19 @@ import {
 } from './types';
 
 const log = debug('lobe-server:tool-execution-service');
+
+/**
+ * Builtin in-process tool identifiers (e.g. `lobe-web-browsing`) — the domain
+ * of the org connector-governance builtin permission matrix. Sourced from the
+ * `@lobechat/builtin-tools` registry, the same registry the builtin executor
+ * branch resolves manifests from, so LobeHub Skill / Composio / MCP
+ * identifiers never match.
+ */
+let builtinToolIdentifiers: Set<string> | undefined;
+const isBuiltinToolIdentifier = (identifier: string): boolean => {
+  builtinToolIdentifiers ??= new Set(builtinTools.map((tool) => tool.identifier));
+  return builtinToolIdentifiers.has(identifier);
+};
 
 interface ToolExecutionServiceDeps {
   builtinToolsExecutor: BuiltinToolsExecutor;
@@ -109,15 +124,34 @@ export class ToolExecutionService {
     // hard-block 'disabled' here (and needs_approval in headless/qstash context
     // since the manifest's humanIntervention auto-rejects them there already).
     if (context.serverDB && context.userId && identifier && apiName) {
-      const permission = await getConnectorToolPermission(
-        context.serverDB,
-        context.userId,
-        identifier,
-        apiName,
-        context.workspaceId,
-      );
+      // Org connector governance (org-mandate layer): while the connectors
+      // managed policy is enforced, BUILTIN in-process tools take their
+      // permission from the org matrix INSTEAD of per-user connector_tools
+      // rows — a matrix miss falls back to the builtin manifest's static
+      // default (same as an unsynced user today), and user rows are never
+      // consulted for that call. Non-builtin identifiers (MCP connectors,
+      // LobeHub Skills, Composio) keep the per-user path. Inactive governance
+      // (or resolver failure — it fails open) is byte-identical to the
+      // per-user behavior.
+      const governance = await resolveConnectorGovernance(context.serverDB);
+      const governedBuiltin =
+        governance.active && type !== 'mcp' && isBuiltinToolIdentifier(identifier);
+      const permission = governedBuiltin
+        ? (governance.builtinToolPolicies[identifier]?.[apiName] ?? null)
+        : await getConnectorToolPermission(
+            context.serverDB,
+            context.userId,
+            identifier,
+            apiName,
+            context.workspaceId,
+          );
       if (permission === ConnectorToolPermission.disabled) {
-        log('Tool %s:%s is disabled by user — blocking execution', identifier, apiName);
+        log(
+          'Tool %s:%s is disabled (%s) — blocking execution',
+          identifier,
+          apiName,
+          governedBuiltin ? 'org governance' : 'by user',
+        );
         const blocked = buildBlockedToolResponse(apiName);
         return { ...blocked, executionTime: 0 };
       }

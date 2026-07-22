@@ -523,6 +523,54 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     await vi.waitFor(() => expect(harness.dependencies.journal.cancel).toHaveBeenCalledTimes(4));
   });
 
+  it('loads and refreshes the shared owner binding when effectiveBindingUserId is set', async () => {
+    // Org connector governance designates 'owner-1' as the shared auth
+    // identity: the binding must be loaded (and refreshed) for the OWNER, not
+    // the invoking user, and the ownership guard must accept the owner's
+    // binding. Expiry within the refresh window forces the refresh path.
+    const harness = createHarness('per_user_oauth');
+    vi.mocked(harness.dependencies.bindingLoader).mockResolvedValue(
+      binding({ expiresAt: new Date('2029-01-01T00:00:30Z'), userId: 'owner-1' }),
+    );
+
+    await expect(
+      harness.adapter.execute({ ...invocation, effectiveBindingUserId: 'owner-1' }),
+    ).resolves.toMatchObject({ success: true });
+
+    expect(harness.dependencies.bindingLoader).toHaveBeenCalledWith('owner-1', 'connector-1');
+    expect(harness.dependencies.bindingLoader).not.toHaveBeenCalledWith('user-1', 'connector-1');
+    expect(harness.dependencies.refreshBinding).toHaveBeenCalledWith(
+      'owner-1',
+      'connector-1',
+      proof.publishedRevision,
+    );
+  });
+
+  it('still rejects bindings of a third identity under an effectiveBindingUserId', async () => {
+    // The ownership guard compares against the EFFECTIVE identity — a binding
+    // belonging to anyone else (a third user, or even the invoking user while
+    // the org mandates the shared owner) must keep failing closed.
+    for (const bindingUserId of ['intruder', 'user-1']) {
+      const harness = createHarness('per_user_oauth');
+      vi.mocked(harness.dependencies.bindingLoader).mockResolvedValue(
+        binding({ userId: bindingUserId }),
+      );
+      await expect(
+        harness.adapter.execute({ ...invocation, effectiveBindingUserId: 'owner-1' }),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+      expect(harness.resolveSecretRef).not.toHaveBeenCalled();
+      expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps the per-user binding path when no effectiveBindingUserId is provided', async () => {
+    const harness = createHarness('per_user_oauth');
+
+    await expect(harness.adapter.execute(invocation)).resolves.toMatchObject({ success: true });
+
+    expect(harness.dependencies.bindingLoader).toHaveBeenCalledWith('user-1', 'connector-1');
+  });
+
   it('fails closed without outbound when a slow publication check outlives the reservation', async () => {
     const harness = createHarness('shared_service_account');
     vi.mocked(harness.dependencies.journal.arm).mockRejectedValueOnce(

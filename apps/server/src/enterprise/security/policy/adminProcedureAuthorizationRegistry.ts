@@ -321,6 +321,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'query',
+    path: 'admin.connectors.getGovernance',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ] },
+  },
+  {
+    kind: 'query',
     path: 'admin.connectors.getPublishedBatch',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ] },
   },
@@ -351,8 +356,18 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'mutation',
+    path: 'admin.connectors.setSharedAuthorization',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_UPDATE] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.connectors.test',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_TEST] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.connectors.updateBuiltinToolPolicy',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_UPDATE] },
   },
   {
     kind: 'mutation',

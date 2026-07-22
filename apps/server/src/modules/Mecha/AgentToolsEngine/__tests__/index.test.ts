@@ -144,6 +144,32 @@ describe('createServerToolsEngine', () => {
     expect(availablePlugins).toContain('additional-tool');
   });
 
+  it('applies transformBuiltinManifest to builtin manifests only (org-mandate layer)', () => {
+    const context = createMockContext();
+    const engine = createServerToolsEngine(context, {
+      transformBuiltinManifest: (manifest) =>
+        ({
+          ...manifest,
+          api: (manifest.api ?? []).map((api: any) => ({
+            ...api,
+            description: `[GOVERNED] ${api.description}`,
+          })),
+        }) as LobeToolManifest,
+    });
+
+    const manifests = engine.getEnabledPluginManifests([
+      WebBrowsingManifest.identifier,
+      'test-plugin',
+    ]);
+
+    // Builtin manifests go through the transform…
+    const webBrowsing = manifests.get(WebBrowsingManifest.identifier) as any;
+    expect(webBrowsing?.api?.[0]?.description).toMatch(/^\[GOVERNED\] /);
+    // …plugin manifests do NOT (their per-user patches happen elsewhere).
+    const plugin = manifests.get('test-plugin') as any;
+    expect(plugin?.api?.[0]?.description).toBe('Test API');
+  });
+
   it('drops device manifests from every source when excludeIdentifiers is set ()', () => {
     // Simulate a plugin + an additional manifest that claim the device
     // identifiers. The pre-merge `buildAllowedBuiltinTools` filter only

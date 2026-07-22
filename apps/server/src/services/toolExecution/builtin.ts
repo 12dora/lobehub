@@ -4,6 +4,7 @@ import { type ChatToolPayload } from '@lobechat/types';
 import { detectTruncatedJSON, safeParseJSON } from '@lobechat/utils';
 import debug from 'debug';
 
+import { resolveConnectorGovernance } from '@/server/enterprise/services/connectorGovernance/resolve';
 import { ComposioService } from '@/server/services/composio';
 import { MarketService } from '@/server/services/market';
 
@@ -44,12 +45,50 @@ const collectRuntimeApiNames = (runtime: Record<string, any>): string[] => {
 };
 
 export class BuiltinToolsExecutor implements IToolExecutor {
+  private readonly db: LobeChatDatabase;
+  private readonly userId: string;
   private marketService: MarketService;
   private composioService: ComposioService;
+  /** Shared-identity services, memoized per governance-designated owner. */
+  private sharedAuthServices?: {
+    composioService: ComposioService;
+    marketService: MarketService;
+    ownerUserId: string;
+  };
 
   constructor(db: LobeChatDatabase, userId: string) {
+    this.db = db;
+    this.userId = userId;
     this.marketService = new MarketService({ userInfo: { userId } });
     this.composioService = new ComposioService({ db, userId });
+  }
+
+  /**
+   * Org-mandated shared OAuth identity (connector governance): while the org
+   * connectors managed policy is enforced with a designated shared auth
+   * owner, LobeHub Skill / Composio executions run under the OWNER's
+   * authorizations instead of the invoking user's. The constructor is sync,
+   * so governance is resolved lazily here — once per Skill/Composio execution
+   * (the resolver fails open to per-user behavior). User rows / bindings are
+   * never written by this substitution.
+   */
+  private async resolveEffectiveServices(): Promise<{
+    composioService: ComposioService;
+    marketService: MarketService;
+  }> {
+    const governance = await resolveConnectorGovernance(this.db);
+    const ownerUserId = governance.active ? governance.sharedAuthOwnerUserId : null;
+    if (!ownerUserId || ownerUserId === this.userId) {
+      return { composioService: this.composioService, marketService: this.marketService };
+    }
+    if (this.sharedAuthServices?.ownerUserId !== ownerUserId) {
+      this.sharedAuthServices = {
+        composioService: new ComposioService({ db: this.db, userId: ownerUserId }),
+        marketService: new MarketService({ userInfo: { userId: ownerUserId } }),
+        ownerUserId,
+      };
+    }
+    return this.sharedAuthServices;
   }
 
   async execute(
@@ -98,9 +137,10 @@ export class BuiltinToolsExecutor implements IToolExecutor {
       args,
     );
 
-    // Route LobeHub Skills to MarketService
+    // Route LobeHub Skills to MarketService (under the governance-effective identity)
     if (source === 'lobehubSkill') {
-      return this.marketService.executeLobehubSkill({
+      const { marketService } = await this.resolveEffectiveServices();
+      return marketService.executeLobehubSkill({
         args,
         context: {
           topicId: context.topicId,
@@ -110,9 +150,10 @@ export class BuiltinToolsExecutor implements IToolExecutor {
       });
     }
 
-    // Route Composio tools to ComposioService
+    // Route Composio tools to ComposioService (under the governance-effective identity)
     if (source === 'composio') {
-      return this.composioService.executeComposioTool({
+      const { composioService } = await this.resolveEffectiveServices();
+      return composioService.executeComposioTool({
         args,
         identifier,
         toolSlug: apiName,

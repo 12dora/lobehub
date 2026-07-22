@@ -23,7 +23,7 @@ const connectorToolKeySchema = z
   .max(200)
   .regex(/^[A-Za-z0-9][\w.:/-]{0,199}$/u, CONNECTOR_TOOL_VALIDATION_CODES.invalidOperation);
 export { containsConnectorCredentialMaterial };
-const reasonSchema = z
+export const reasonSchema = z
   .string()
   .trim()
   .min(1)
