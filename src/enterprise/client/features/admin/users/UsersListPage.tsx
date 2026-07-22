@@ -1,7 +1,7 @@
 'use client';
 
 import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
-import { Select } from '@lobehub/ui/base-ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import dayjs from 'dayjs';
@@ -9,7 +9,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
+import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { AdminUsersListOutput } from '@/enterprise/client/services/adminUsers';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -17,8 +19,10 @@ import DataTable from '../primitives/DataTable';
 import FilterBar from '../primitives/FilterBar';
 import { type AdminFilterValues, createEmptyAdminFilters } from '../primitives/filterBar.utils';
 import StatusBadge from '../primitives/StatusBadge';
-import { useFetchAdminUsersList } from './hooks/useAdminUsers';
-import { displayUserName, formatAdminDateTime } from './utils';
+import { useAdminUserMutations, useFetchAdminUsersList } from './hooks/useAdminUsers';
+import { openCreateUserModal } from './modals/CreateUserModal';
+import UserSourceTags from './UserSourceTags';
+import { displayUserName, formatAdminDateTime, hasPermission } from './utils';
 
 type AdminUserListItem = AdminUsersListOutput['items'][number];
 const DEFAULT_LIST_LIMIT = 50;
@@ -60,6 +64,10 @@ const emptyQuery = (): ListQueryState => ({
 const UsersListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
+  const { permissions, authMethod } = useAdminAccess();
+  const { createUser } = useAdminUserMutations();
+
+  const canCreate = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_CREATE);
 
   const [queryState, setQueryState] = useState<ListQueryState>(emptyQuery);
   // Local search draft for debounce — committed query lives in queryState.filters.query
@@ -177,12 +185,10 @@ const UsersListPage = memo(() => {
       },
       {
         dataIndex: 'providerIds',
-        key: 'providers',
-        title: t('users.list.columns.providers'),
-        render: (ids: string[]) =>
-          ids.length
-            ? ids.map((id) => t(`users.providers.${id}` as never, { defaultValue: id })).join(', ')
-            : '—',
+        key: 'source',
+        title: t('users.list.columns.source'),
+        width: 160,
+        render: (ids: string[]) => <UserSourceTags providerIds={ids ?? []} />,
       },
       {
         dataIndex: 'createdAt',
@@ -235,10 +241,24 @@ const UsersListPage = memo(() => {
     }));
   }, []);
 
+  const openCreate = useCallback(() => {
+    openCreateUserModal({
+      authMethod,
+      onSubmit: createUser,
+    });
+  }, [authMethod, createUser]);
+
   return (
     <AdminPageTemplate
       description={t('users.list.desc')}
       title={t('users.list.title')}
+      actions={
+        canCreate ? (
+          <Button type="primary" onClick={openCreate}>
+            {t('users.list.create')}
+          </Button>
+        ) : undefined
+      }
       toolbar={
         <FilterBar
           searchPlaceholder={t('users.list.searchPlaceholder')}

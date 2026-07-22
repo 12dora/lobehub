@@ -2,6 +2,8 @@ import { lambdaClient } from '@/libs/trpc/client';
 import type {
   AdminUsersBanInput,
   AdminUsersBanOutput,
+  AdminUsersCreateInput,
+  AdminUsersCreateOutput,
   AdminUsersDeleteInput,
   AdminUsersDeleteOutput,
   AdminUsersGetAuditTrailInput,
@@ -37,6 +39,10 @@ class AdminUsersService {
     return lambdaClient.admin.users.getAuditTrail.query(input);
   };
 
+  create = async (input: AdminUsersCreateInput): Promise<AdminUsersCreateOutput> => {
+    return lambdaClient.admin.users.create.mutate(input);
+  };
+
   ban = async (input: AdminUsersBanInput): Promise<AdminUsersBanOutput> => {
     return lambdaClient.admin.users.ban.mutate(input);
   };
@@ -67,6 +73,8 @@ export const adminUsersService = new AdminUsersService();
 export type {
   AdminUsersBanInput,
   AdminUsersBanOutput,
+  AdminUsersCreateInput,
+  AdminUsersCreateOutput,
   AdminUsersDeleteInput,
   AdminUsersDeleteOutput,
   AdminUsersGetAuditTrailInput,
