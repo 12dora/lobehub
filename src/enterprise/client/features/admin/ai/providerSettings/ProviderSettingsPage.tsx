@@ -6,6 +6,8 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router';
 
+import SettingContainer from '@/features/Setting/SettingContainer';
+import SettingsContextProvider from '@/routes/(main)/settings/_layout/ContextProvider';
 import ProviderGrid from '@/routes/(main)/settings/provider/(list)/ProviderGrid';
 import ProviderDetailPageComponent from '@/routes/(main)/settings/provider/detail';
 import { ProviderSettingsContext } from '@/routes/(main)/settings/provider/features/ModelList/ProviderSettingsContext';
@@ -30,14 +32,6 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     flex: 1;
     min-height: 0;
-  `,
-  content: css`
-    overflow: auto;
-    flex: 1;
-
-    min-width: 0;
-    padding-block: 16px 24px;
-    padding-inline: 24px;
   `,
   shell: css`
     display: flex;
@@ -127,14 +121,14 @@ const AdminProviderSettingsLayout = memo(() => {
       </div>
       <div className={styles.body}>
         <ProviderMenu mobile={false} onProviderSelect={onProviderSelect} />
-        <div className={styles.content}>
+        <SettingContainer flex={1} maxWidth={1024} padding={24} style={{ minHeight: 0 }}>
           <DraftPublishBanner />
           {id ? (
             <ProviderDetailPageComponent id={id} onProviderSelect={onProviderSelect} />
           ) : (
             <ProviderGrid onProviderSelect={onProviderSelect} />
           )}
-        </div>
+        </SettingContainer>
       </div>
     </div>
   );
@@ -148,7 +142,11 @@ const AdminProviderSettingsLayout = memo(() => {
 const ProviderSettingsPage = memo(() => (
   <AdminProviderSettingsStoreProvider>
     <AdminProviderSettingsContextBridge>
-      <AdminProviderSettingsLayout />
+      {/* Provide the settings context the user-side OpenAI detail consumes; without it
+          `useSettingsContext()` throws and AdminErrorBoundary shows 管理后台错误. */}
+      <SettingsContextProvider value={{ showOpenAIApiKey: true, showOpenAIProxyUrl: true }}>
+        <AdminProviderSettingsLayout />
+      </SettingsContextProvider>
     </AdminProviderSettingsContextBridge>
   </AdminProviderSettingsStoreProvider>
 ));
