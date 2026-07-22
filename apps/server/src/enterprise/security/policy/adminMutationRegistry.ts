@@ -709,6 +709,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Ban a user and revoke access.',
     { reauth: recentReauth },
   ),
+  'admin.users.delete': dangerousMutation(
+    'admin.users.delete',
+    'critical',
+    'Irreversibly hard delete a user and all owned data.',
+    { reauth: recentReauth },
+  ),
   'admin.users.replaceGlobalRoles': dangerousMutation(
     'admin.users.replaceGlobalRoles',
     'critical',

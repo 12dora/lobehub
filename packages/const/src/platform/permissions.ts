@@ -10,6 +10,7 @@ export const PLATFORM_PERMISSIONS = {
   USER_READ: 'platform_user:read:all',
   USER_UPDATE: 'platform_user:update:all',
   USER_BAN: 'platform_user:ban:all',
+  USER_DELETE: 'platform_user:delete:all',
   USER_SESSION_REVOKE: 'platform_user:session_revoke:all',
   USER_ROLE_MANAGE: 'platform_user:role_manage:all',
 
