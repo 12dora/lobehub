@@ -6,10 +6,10 @@ import type { RouteObject } from 'react-router';
 import AdminErrorBoundary from '@/enterprise/client/features/admin/gates/AdminErrorBoundary';
 import AdminRootGate from '@/enterprise/client/features/admin/gates/AdminRootGate';
 import NotFoundPage from '@/enterprise/client/features/admin/pages/NotFoundPage';
-import OverviewPage from '@/enterprise/client/features/admin/pages/OverviewPage';
 import PlaceholderPage from '@/enterprise/client/features/admin/pages/PlaceholderPage';
 import { ADMIN_NAV_FLAT } from '@/enterprise/client/nav/adminNavMeta';
 
+const OverviewPage = lazy(() => import('@/enterprise/client/features/admin/pages/OverviewPage'));
 const UsersListPage = lazy(() => import('@/enterprise/client/features/admin/users/UsersListPage'));
 const UserDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/users/UserDetailPage'),
@@ -212,7 +212,7 @@ export const createAdminRouteTree = (): RouteObject[] => {
     {
       children: [
         {
-          element: <OverviewPage />,
+          element: withLazy(<OverviewPage />),
           handle: {
             admin: {
               id: 'overview',
