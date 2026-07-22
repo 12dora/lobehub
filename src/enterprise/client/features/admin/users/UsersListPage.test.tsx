@@ -118,21 +118,6 @@ vi.mock('@lobehub/ui', async () => {
   const React = await import('react');
   return {
     Avatar: () => null,
-    DatePicker: ({ onChange, 'aria-label': aria, placeholder }: any) =>
-      React.createElement(
-        'button',
-        {
-          'type': 'button',
-          'aria-label': aria || placeholder,
-          'onClick': () => {
-            const dayjs = require('dayjs');
-            const isTo = String(aria || '').includes('createdTo');
-            const d = dayjs(isTo ? '2024-01-31' : '2024-01-15');
-            onChange?.(isTo ? d.endOf('day') : d.startOf('day'));
-          },
-        },
-        aria || placeholder,
-      ),
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
     SearchBar: ({ value, onInputChange, placeholder }: any) =>
       React.createElement('input', {
@@ -143,6 +128,26 @@ vi.mock('@lobehub/ui', async () => {
     Tag: ({ children }: any) => React.createElement('span', null, children),
     Text: ({ children }: any) => React.createElement('span', null, children),
   };
+});
+
+vi.mock('antd', async () => {
+  const React = await import('react');
+  const RangePicker = ({ onChange, 'aria-label': aria }: any) =>
+    React.createElement(
+      'button',
+      {
+        'type': 'button',
+        'aria-label': aria,
+        'onClick': () => {
+          const dayjs = require('dayjs');
+          onChange?.([dayjs('2024-01-15'), dayjs('2024-01-31')]);
+        },
+      },
+      aria,
+    );
+  const DatePicker: any = () => null;
+  DatePicker.RangePicker = RangePicker;
+  return { DatePicker };
 });
 
 vi.mock('@lobehub/ui/base-ui', async () => {
@@ -254,9 +259,8 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
     fireEvent.click(screen.getByText('primitives.filterBar.clear'));
     await waitFor(() => expect((listCalls.at(-1) as { role?: string }).role).toBeUndefined());
 
-    // date-only
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdFrom'));
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdTo'));
+    // date-only (single range picker sets both bounds at once)
+    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
     await waitFor(() => expect(screen.getByText('primitives.filterBar.clear')).toBeTruthy());
     fireEvent.click(screen.getByText('primitives.filterBar.clear'));
     await waitFor(() => {
@@ -268,8 +272,7 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
 
   it('createdFrom/createdTo use complete start/end of day Date and ISO boundaries', async () => {
     renderPage();
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdFrom'));
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdTo'));
+    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
 
     await waitFor(() => {
       const withBoth = [...listCalls]
@@ -357,7 +360,7 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
     // date range
     listMark = listCalls.length;
     keyMark = swrKeys.length;
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdFrom'));
+    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
     await waitFor(() => {
       assertExactlyOneNoCursor(
         listMark,

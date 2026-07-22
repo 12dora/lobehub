@@ -1,8 +1,8 @@
 'use client';
 
-import { Avatar, DatePicker, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
-import type { TableColumnsType } from 'antd';
+import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -266,36 +266,26 @@ const UsersListPage = memo(() => {
                 }))}
                 onChange={(v) => patchFilters({ role: (v as string | undefined) || '' })}
               />
-              <DatePicker
+              <DatePicker.RangePicker
                 allowClear
-                aria-label={t('users.list.filters.createdFrom')}
-                placeholder={t('users.list.filters.createdFrom')}
-                value={filters.createdFrom ? dayjs(filters.createdFrom) : null}
-                onChange={(d) => {
-                  const raw = Array.isArray(d) ? d[0] : d;
-                  const from = raw ? dayjs(raw).startOf('day') : null;
+                aria-label={t('users.list.filters.createdRange')}
+                style={{ minWidth: 240 }}
+                placeholder={[
+                  t('users.list.filters.createdFrom'),
+                  t('users.list.filters.createdTo'),
+                ]}
+                value={[
+                  filters.createdFrom ? dayjs(filters.createdFrom) : null,
+                  filters.createdTo ? dayjs(filters.createdTo) : null,
+                ]}
+                onChange={(range) => {
+                  const from = range?.[0] ? dayjs(range[0]).startOf('day') : null;
+                  const to = range?.[1] ? dayjs(range[1]).endOf('day') : null;
                   setQueryState((prev) => ({
                     cursorStack: [],
                     filters: {
                       ...prev.filters,
                       createdFrom: from ? from.toISOString() : '',
-                    },
-                    limit: prev.limit,
-                  }));
-                }}
-              />
-              <DatePicker
-                allowClear
-                aria-label={t('users.list.filters.createdTo')}
-                placeholder={t('users.list.filters.createdTo')}
-                value={filters.createdTo ? dayjs(filters.createdTo) : null}
-                onChange={(d) => {
-                  const raw = Array.isArray(d) ? d[0] : d;
-                  const to = raw ? dayjs(raw).endOf('day') : null;
-                  setQueryState((prev) => ({
-                    cursorStack: [],
-                    filters: {
-                      ...prev.filters,
                       createdTo: to ? to.toISOString() : '',
                     },
                     limit: prev.limit,
