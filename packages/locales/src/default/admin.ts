@@ -697,14 +697,11 @@ export default {
   'notFound.title': 'Page not found',
   'overview.desc':
     'Platform-wide snapshot: users, activity, token usage, rankings, and shortcuts into deeper admin tools.',
-  'overview.heatmap.title': 'Activity heatmap',
   'overview.kpi.agents': 'Agents ({{scope}})',
   'overview.kpi.messages': 'Messages ({{scope}})',
   'overview.kpi.topics': 'Topics ({{scope}})',
   'overview.kpi.usersActive': 'Active users ({{days}}d)',
   'overview.kpi.usersTotal': 'Total users',
-  'overview.placeholderNote':
-    'Module pages appear in the navigation when your role grants access. Some areas are placeholders until their modules ship.',
   'overview.quickLinks.providersDesc': 'Configure model providers and platform credentials.',
   'overview.quickLinks.providersTitle': 'AI providers',
   'overview.quickLinks.statsDesc': 'Full heatmaps, rankings, and usage breakdowns.',
@@ -729,6 +726,7 @@ export default {
     'Daily token consumption will appear here once users start chatting this month.',
   'overview.usage.emptyTitle': 'No token usage this month',
   'overview.usage.title': 'Token usage this month',
+  'overview.usageTrend.series': 'Tokens',
   'page.backHome': 'Back to app',
   'page.forbidden.desc': 'You do not have permission to open this page.',
   'page.forbidden.title': 'Forbidden',

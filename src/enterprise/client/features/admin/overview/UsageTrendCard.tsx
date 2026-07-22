@@ -16,6 +16,12 @@ const UsageTrendCard = memo(() => {
   const { data, isLoading } = useOverviewUsageTrend();
   const loading = isLoading || !data;
   const empty = !loading && isEmptyTokenTrend(data);
+  // Localized series key so chart tooltip / legend never show bare English "tokens".
+  const seriesName = t('overview.usageTrend.series');
+  const chartData = (data ?? []).map((point) => ({
+    day: point.day,
+    [seriesName]: point.tokens,
+  }));
 
   return (
     <section className={styles.card}>
@@ -29,8 +35,8 @@ const UsageTrendCard = memo(() => {
         </div>
       ) : (
         <AreaChart
-          categories={['tokens']}
-          data={data ?? []}
+          categories={[seriesName]}
+          data={chartData}
           index="day"
           showLegend={false}
           valueFormatter={(num) => formatTokenNumber(num)}

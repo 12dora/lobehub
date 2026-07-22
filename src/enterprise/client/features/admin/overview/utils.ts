@@ -47,9 +47,3 @@ export const isEmptyRank = (
   if (!items?.length) return true;
   return items.every((item) => !item.count);
 };
-
-/** True when heatmap has no active days (level > 0). */
-export const isEmptyHeatmap = (data: Array<{ level?: number }> | undefined | null): boolean => {
-  if (!data?.length) return true;
-  return data.every((item) => !item.level || item.level <= 0);
-};

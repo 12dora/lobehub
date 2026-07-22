@@ -4,7 +4,6 @@ import type { UsageLog } from '@/types/usage/usageRecord';
 
 import {
   currentMonthKey,
-  isEmptyHeatmap,
   isEmptyRank,
   isEmptyTokenTrend,
   overviewWindowStartDate,
@@ -62,13 +61,5 @@ describe('isEmptyRank', () => {
     expect(isEmptyRank([])).toBe(true);
     expect(isEmptyRank([{ count: 0 }, { count: null }])).toBe(true);
     expect(isEmptyRank([{ count: 3 }])).toBe(false);
-  });
-});
-
-describe('isEmptyHeatmap', () => {
-  it('is empty when no active levels', () => {
-    expect(isEmptyHeatmap(undefined)).toBe(true);
-    expect(isEmptyHeatmap([{ level: 0 }, { level: 0 }])).toBe(true);
-    expect(isEmptyHeatmap([{ level: 2 }])).toBe(false);
   });
 });
