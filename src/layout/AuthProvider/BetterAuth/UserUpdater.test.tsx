@@ -111,4 +111,115 @@ describe('UserUpdater', () => {
 
     expect(useUserStore.getState().user).toBeUndefined();
   });
+
+  describe('transient session-fetch errors', () => {
+    it('signs in on an authoritative session with a user', () => {
+      useSessionMock.mockReturnValue(sampleSession());
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+      expect(useUserStore.getState().isLoaded).toBe(true);
+    });
+
+    it('signs out on an authoritative empty session (no user, no error)', () => {
+      useUserStore.setState({ isSignedIn: true, user: { id: 'u1', email: 'a@b.com' } });
+
+      useSessionMock.mockReturnValue({ data: null, isPending: false, error: null });
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(false);
+      expect(useUserStore.getState().user).toBeUndefined();
+    });
+
+    it('signs out on a definitive 401 response', () => {
+      useUserStore.setState({ isSignedIn: true, user: { id: 'u1', email: 'a@b.com' } });
+
+      useSessionMock.mockReturnValue({
+        data: null,
+        error: { status: 401, statusText: 'Unauthorized' },
+        isPending: false,
+      });
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(false);
+      expect(useUserStore.getState().user).toBeUndefined();
+    });
+
+    it('holds the signed-in state on a 5xx error instead of bouncing to signed-out', () => {
+      useUserStore.setState({
+        isSignedIn: true,
+        user: { id: 'u1', email: 'a@b.com', interests: ['x'] },
+      });
+
+      // e.g. server restarting: refetch fails with 500 and no session data
+      useSessionMock.mockReturnValue({
+        data: null,
+        error: { status: 500, statusText: 'Internal Server Error' },
+        isPending: false,
+      });
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+      // profile must also survive the transient error
+      expect(useUserStore.getState().user?.id).toBe('u1');
+      expect(useUserStore.getState().user?.interests).toEqual(['x']);
+    });
+
+    it('holds the signed-in state on a network failure (error without status)', () => {
+      useUserStore.setState({ isSignedIn: true, user: { id: 'u1', email: 'a@b.com' } });
+
+      // better-auth's query .catch() path surfaces the raw fetch error (no status)
+      useSessionMock.mockReturnValue({
+        data: null,
+        error: new TypeError('Failed to fetch'),
+        isPending: false,
+      });
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+      expect(useUserStore.getState().user?.id).toBe('u1');
+    });
+
+    it('stays signed in when better-auth preserves stale session data alongside a non-401 error', () => {
+      useUserStore.setState({ isSignedIn: true });
+
+      useSessionMock.mockReturnValue({
+        ...sampleSession(),
+        error: { status: 503, statusText: 'Service Unavailable' },
+      });
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+      expect(useUserStore.getState().user?.id).toBe('u1');
+    });
+
+    it('does not assert signed-in from a transient error when the user was signed out', () => {
+      useSessionMock.mockReturnValue({
+        data: null,
+        error: { status: 500, statusText: 'Internal Server Error' },
+        isPending: false,
+      });
+      render(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(false);
+    });
+
+    it('recovers to signed-in when an authoritative session follows a transient error', () => {
+      useUserStore.setState({ isSignedIn: true, user: { id: 'u1', email: 'a@b.com' } });
+
+      useSessionMock.mockReturnValue({
+        data: null,
+        error: { status: 500, statusText: 'Internal Server Error' },
+        isPending: false,
+      });
+      const { rerender } = render(<UserUpdater />);
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+
+      useSessionMock.mockReturnValue(sampleSession());
+      rerender(<UserUpdater />);
+
+      expect(useUserStore.getState().isSignedIn).toBe(true);
+      expect(useUserStore.getState().user?.id).toBe('u1');
+    });
+  });
 });

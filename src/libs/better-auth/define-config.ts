@@ -299,6 +299,10 @@ export function defineConfig(
 
     socialProviders,
     advanced: {
+      // Optional per-instance cookie namespace (AUTH_COOKIE_PREFIX): lets multiple
+      // deployments on the same host coexist in the port-blind browser cookie jar.
+      // When unset, the key is omitted so Better Auth keeps its default names.
+      ...(authEnv.AUTH_COOKIE_PREFIX ? { cookiePrefix: authEnv.AUTH_COOKIE_PREFIX } : {}),
       database: {
         /**
          * Align Better Auth user IDs with our shared idGenerator for consistency.

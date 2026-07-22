@@ -785,6 +785,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'mutation',
+    path: 'admin.users.create',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_CREATE] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.users.delete',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.USER_DELETE] },
   },

@@ -30,5 +30,62 @@ export const getAdminUsersMutationErrorKey = (error: unknown): string => {
   return 'users.errors.generic';
 };
 
+/**
+ * tRPC zod input-validation failures reach the client as a TRPCClientError with
+ * `data.code === 'BAD_REQUEST'` and no enterprise `errorData` body (the lambda
+ * errorFormatter only attaches `errorData` when the cause carries one).
+ */
+const isTRPCBadRequest = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const data = (error as { data?: { code?: unknown } }).data;
+  return data?.code === 'BAD_REQUEST';
+};
+
+/**
+ * Create-specific mapping layered over the shared path: the server signals rejections
+ * as PLATFORM_INVALID_INPUT with a machine-readable `details.reason`.
+ */
+export const getAdminUsersCreateErrorKey = (error: unknown): string => {
+  const mapped = mapEnterpriseError(error);
+  if (mapped?.code === 'PLATFORM_INVALID_INPUT') {
+    if (mapped.details?.reason === 'email_taken') return 'users.errors.emailTaken';
+    if (mapped.details?.reason === 'username_taken') return 'users.errors.usernameTaken';
+    if (mapped.details?.reason === 'password_auth_disabled') {
+      return 'users.errors.passwordAuthDisabled';
+    }
+  }
+  // Safety net: server-side zod rejected input the client-side mirror let through —
+  // show the actionable invalid-input copy instead of the generic failure.
+  if (!mapped && isTRPCBadRequest(error)) return 'users.errors.invalidInput';
+  return getAdminUsersMutationErrorKey(error);
+};
+
 export const hasPermission = (granted: readonly string[], required: string): boolean =>
   granted.includes(required);
+
+/** Better Auth credential (email/password) provider id. */
+export const CREDENTIAL_PROVIDER_ID = 'credential';
+
+export interface UserSourceFlags {
+  /** Has a local email/password account. */
+  hasLocal: boolean;
+  /** Has any non-credential provider (OIDC / SSO / social). */
+  hasSso: boolean;
+  /** Distinct non-credential provider ids (for SSO tooltip). */
+  ssoProviderIds: string[];
+}
+
+/**
+ * Derive local vs SSO source flags from Better Auth account provider ids.
+ * `'credential'` → local; any other provider id → SSO. Both may be true when linked.
+ */
+export const deriveUserSources = (providerIds: readonly string[]): UserSourceFlags => {
+  const ssoProviderIds = [
+    ...new Set(providerIds.filter((id) => id !== CREDENTIAL_PROVIDER_ID && id.length > 0)),
+  ];
+  return {
+    hasLocal: providerIds.includes(CREDENTIAL_PROVIDER_ID),
+    hasSso: ssoProviderIds.length > 0,
+    ssoProviderIds,
+  };
+};

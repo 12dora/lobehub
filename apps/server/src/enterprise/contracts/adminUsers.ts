@@ -2,8 +2,10 @@
  * Centralized Zod contracts for `admin.users` (M04).
  * Procedures must import these schemas — do not redefine inputs/outputs inline.
  *
- * Dates are real `Date` values (superjson over tRPC). Secrets, tokens, passwords,
- * and account scope payloads are never part of these shapes.
+ * Dates are real `Date` values (superjson over tRPC). Secrets, tokens, and account
+ * scope payloads are never part of these shapes. The create INPUT carries an initial
+ * password (hashed server-side, never stored raw); passwords never appear in any
+ * output, list, or audit shape.
  */
 import { z } from 'zod';
 
@@ -272,6 +274,43 @@ export const adminUsersRevokeSessionsOutputSchema = z
   .strict();
 
 export type AdminUsersRevokeSessionsOutput = z.infer<typeof adminUsersRevokeSessionsOutputSchema>;
+
+// ── create (credential user) ────────────────────────────────────────────────
+
+/**
+ * Admin-provisioned credential (email + password) user. The password bounds mirror
+ * Better Auth's `minPasswordLength` / `maxPasswordLength` in
+ * `src/libs/better-auth/define-config.ts` so the user can change it later.
+ * The password is input-only — it must never be echoed in outputs or audits.
+ */
+export const adminUsersCreateInputSchema = z
+  .object({
+    email: z.string().trim().toLowerCase().email().max(255),
+    fullName: z.string().trim().min(1).max(100),
+    password: z.string().min(8).max(64),
+    reason: reasonSchema,
+    username: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[\w.-]+$/)
+      .optional(),
+  })
+  .strict();
+
+export type AdminUsersCreateInput = z.infer<typeof adminUsersCreateInputSchema>;
+
+/** Never returns the password or its hash. */
+export const adminUsersCreateOutputSchema = z
+  .object({
+    created: z.literal(true),
+    email: z.string(),
+    userId: z.string(),
+  })
+  .strict();
+
+export type AdminUsersCreateOutput = z.infer<typeof adminUsersCreateOutputSchema>;
 
 // ── delete (hard delete) ──────────────────────────────────────────────────────
 

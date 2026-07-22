@@ -36,42 +36,50 @@ declare global {
       AUTH_COGNITO_SECRET?: string;
 
       AUTH_COGNITO_USERPOOL_ID?: string;
+      // ===== Better Auth ===== //
+      /**
+       * Optional per-instance auth namespace. Sets Better Auth's cookie prefix
+       * (cookie names become `<prefix>.session_token` etc.) and namespaces the
+       * Redis secondary-storage keys, so multiple deployments on the same host
+       * (cookies are port-blind) or sharing a Redis don't clobber each other's
+       * sessions. When unset, behavior is identical to the defaults.
+       */
+      AUTH_COOKIE_PREFIX?: string;
       AUTH_DISABLE_EMAIL_PASSWORD?: string;
-      AUTH_EMAIL_VERIFICATION?: string;
 
+      AUTH_EMAIL_VERIFICATION?: string;
       AUTH_ENABLE_MAGIC_LINK?: string;
       AUTH_FEISHU_APP_ID?: string;
-      AUTH_FEISHU_APP_SECRET?: string;
 
+      AUTH_FEISHU_APP_SECRET?: string;
       AUTH_GENERIC_OIDC_ID?: string;
       AUTH_GENERIC_OIDC_ISSUER?: string;
-      AUTH_GENERIC_OIDC_SECRET?: string;
 
+      AUTH_GENERIC_OIDC_SECRET?: string;
       AUTH_GITHUB_ID?: string;
       AUTH_GITHUB_SECRET?: string;
+
       // ===== Auth Provider Credentials ===== //
       AUTH_GOOGLE_ID?: string;
-
       AUTH_GOOGLE_SECRET?: string;
       AUTH_KEYCLOAK_ID?: string;
+
       AUTH_KEYCLOAK_ISSUER?: string;
-
       AUTH_KEYCLOAK_SECRET?: string;
-      AUTH_LOGTO_ID?: string;
 
+      AUTH_LOGTO_ID?: string;
       AUTH_LOGTO_ISSUER?: string;
       AUTH_LOGTO_SECRET?: string;
-      AUTH_MICROSOFT_AUTHORITY_URL?: string;
 
+      AUTH_MICROSOFT_AUTHORITY_URL?: string;
       AUTH_MICROSOFT_ID?: string;
       AUTH_MICROSOFT_SECRET?: string;
-      AUTH_MICROSOFT_TENANT_ID?: string;
 
+      AUTH_MICROSOFT_TENANT_ID?: string;
       AUTH_OKTA_ID?: string;
       AUTH_OKTA_ISSUER?: string;
-      AUTH_OKTA_SECRET?: string;
 
-      // ===== Better Auth ===== //
+      AUTH_OKTA_SECRET?: string;
       AUTH_SECRET?: string;
       AUTH_SSO_PROVIDERS?: string;
       AUTH_TRUSTED_ORIGINS?: string;
@@ -109,6 +117,13 @@ export const getAuthConfig = () => {
     clientPrefix: 'NEXT_PUBLIC_',
     client: {},
     server: {
+      // RFC 6265 cookie-name token safety: also used in Redis key prefixes and
+      // the auth.proxy cookie-forward allowlist, so keep it strictly [A-Za-z0-9_-].
+      AUTH_COOKIE_PREFIX: z
+        .string()
+        .regex(/^[\w-]+$/)
+        .max(40)
+        .optional(),
       AUTH_SECRET: z.string().optional(),
       AUTH_SSO_PROVIDERS: z.string().optional().default(''),
       AUTH_TRUSTED_ORIGINS: z.string().optional(),
@@ -199,6 +214,8 @@ export const getAuthConfig = () => {
     },
 
     runtimeEnv: {
+      // Empty string keeps default behavior (same as unset).
+      AUTH_COOKIE_PREFIX: process.env.AUTH_COOKIE_PREFIX || undefined,
       AUTH_EMAIL_VERIFICATION: process.env.AUTH_EMAIL_VERIFICATION === '1',
       AUTH_ENABLE_MAGIC_LINK: process.env.AUTH_ENABLE_MAGIC_LINK === '1',
       AUTH_SECRET: process.env.AUTH_SECRET,
