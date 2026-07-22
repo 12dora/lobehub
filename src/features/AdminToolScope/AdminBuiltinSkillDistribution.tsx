@@ -1,0 +1,58 @@
+'use client';
+
+import { Text } from '@lobehub/ui';
+import { Segmented } from '@lobehub/ui/base-ui';
+import { memo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+
+import type { AdminSkillDistribution, AdminToolScope } from './index';
+
+const ORDERED: AdminSkillDistribution[] = ['optional', 'default', 'mandatory'];
+
+/**
+ * Admin-only affordance under the builtin-skill header: sets the org-wide
+ * distribution (optional / default / mandatory) for a builtin skill. Rendered
+ * exclusively when the AdminToolScope is active.
+ */
+const AdminBuiltinSkillDistribution = memo<{
+  identifier: string;
+  scope: AdminToolScope;
+}>(({ identifier, scope }) => {
+  const { t } = useTranslation('admin');
+  const [busy, setBusy] = useState(false);
+  const value = scope.getBuiltinSkillDistribution(identifier);
+
+  return (
+    <div
+      style={{
+        alignItems: 'center',
+        borderBlockEnd: '1px solid var(--ant-color-border-secondary)',
+        display: 'flex',
+        gap: 12,
+        justifyContent: 'space-between',
+        paddingBlock: 10,
+        paddingInline: 24,
+      }}
+    >
+      <Text type="secondary">{t('skillCatalog.detail.identity.distribution')}</Text>
+      <Segmented<AdminSkillDistribution>
+        disabled={busy}
+        size="small"
+        value={value}
+        options={ORDERED.map((d) => ({
+          label: t(`skillCatalog.distribution.${d}` as never),
+          value: d,
+        }))}
+        onChange={(next) => {
+          if (next === value) return;
+          setBusy(true);
+          void scope.setBuiltinSkillDistribution(identifier, next).finally(() => setBusy(false));
+        }}
+      />
+    </div>
+  );
+});
+
+AdminBuiltinSkillDistribution.displayName = 'AdminBuiltinSkillDistribution';
+
+export default AdminBuiltinSkillDistribution;

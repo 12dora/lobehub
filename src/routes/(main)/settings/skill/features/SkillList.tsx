@@ -21,7 +21,7 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
-import { useFetchInstalledPlugins } from '@/hooks/useFetchInstalledPlugins';
+import { useAdminToolScope } from '@/features/AdminToolScope';
 import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
 import { useToolStore } from '@/store/tool';
 import {
@@ -95,16 +95,19 @@ const LegacySkillList = memo<SkillListProps>(
   ({ managed = false, onSelect, onDeleteSelected, selectedIdentifier, viewMode = 'connector' }) => {
     const { t } = useTranslation('setting');
     const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+    // Non-null only under the admin panel: swaps every user-scoped datum for
+    // the org-global catalog while the rendered UI stays byte-identical.
+    const adminScope = useAdminToolScope();
 
     const isLobehubSkillEnabled = useServerConfigStore(serverConfigSelectors.enableLobehubSkill);
     const isComposioEnabled = useServerConfigStore(serverConfigSelectors.enableComposio);
-    const allLobehubSkillServers = useToolStore(lobehubSkillStoreSelectors.getServers, isEqual);
-    const allComposioServers = useToolStore(composioStoreSelectors.getServers, isEqual);
-    const installedPluginList = useToolStore(pluginSelectors.installedPluginMetaList, isEqual);
-    const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
-    const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+    const storeLobehubSkillServers = useToolStore(lobehubSkillStoreSelectors.getServers, isEqual);
+    const storeComposioServers = useToolStore(composioStoreSelectors.getServers, isEqual);
+    const storePluginList = useToolStore(pluginSelectors.installedPluginMetaList, isEqual);
+    const storeMarketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
+    const storeUserAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
     const builtinSkills = useToolStore((s) => s.builtinSkills, isEqual);
-    const customConnectors = useToolStore(connectorSelectors.customConnectors, isEqual);
+    const storeCustomConnectors = useToolStore(connectorSelectors.customConnectors, isEqual);
     const isConnectorsInit = useToolStore((s) => s.isConnectorsInit);
     const fetchConnectors = useToolStore((s) => s.fetchConnectors);
     const allBuiltinTools = useToolStore((s) => s.builtinTools, isEqual);
@@ -113,29 +116,50 @@ const LegacySkillList = memo<SkillListProps>(
       isEqual,
     );
 
+    const allLobehubSkillServers = adminScope ? [] : storeLobehubSkillServers;
+    const allComposioServers = adminScope ? [] : storeComposioServers;
+    const installedPluginList = adminScope ? [] : storePluginList;
+    const marketAgentSkills = adminScope ? [] : storeMarketAgentSkills;
+    const userAgentSkills = adminScope ? adminScope.orgSkills : storeUserAgentSkills;
+    const customConnectors = adminScope
+      ? adminScope.connectors.filter((c) => c.sourceType === 'custom')
+      : storeCustomConnectors;
+
     const [
       useFetchLobehubSkillConnections,
       useFetchUserComposioConnections,
       useFetchAgentSkills,
       useFetchUninstalledBuiltinTools,
+      useFetchInstalledPluginsHook,
     ] = useToolStore((s) => [
       s.useFetchLobehubSkillConnections,
       s.useFetchUserComposioConnections,
       s.useFetchAgentSkills,
       s.useFetchUninstalledBuiltinTools,
+      s.useFetchInstalledPlugins,
     ]);
 
-    useFetchInstalledPlugins();
+    useFetchInstalledPluginsHook(!adminScope);
+
     // Keep each SWR handle so a failed skill fetch surfaces error + Retry instead
-    // of a fake-empty list (each hook syncs into the store only on success —
-    //
-    const lobehubSkillsSWR = useFetchLobehubSkillConnections(isLobehubSkillEnabled);
-    const composioSWR = useFetchUserComposioConnections(isComposioEnabled);
-    const agentSkillsSWR = useFetchAgentSkills(true);
-    const builtinToolsSWR = useFetchUninstalledBuiltinTools(true);
-    const skillsError =
-      lobehubSkillsSWR.error ?? composioSWR.error ?? agentSkillsSWR.error ?? builtinToolsSWR.error;
+    // of a fake-empty list (each hook syncs into the store only on success).
+    // Under the admin scope all user-scoped fetches are disabled; list state
+    // comes from the injected org datasource instead.
+    const lobehubSkillsSWR = useFetchLobehubSkillConnections(isLobehubSkillEnabled && !adminScope);
+    const composioSWR = useFetchUserComposioConnections(isComposioEnabled && !adminScope);
+    const agentSkillsSWR = useFetchAgentSkills(!adminScope);
+    const builtinToolsSWR = useFetchUninstalledBuiltinTools(!adminScope);
+    const skillsError = adminScope
+      ? adminScope.listError
+      : (lobehubSkillsSWR.error ??
+        composioSWR.error ??
+        agentSkillsSWR.error ??
+        builtinToolsSWR.error);
     const reloadSkills = () => {
+      if (adminScope) {
+        adminScope.retry();
+        return;
+      }
       void lobehubSkillsSWR.mutate();
       void composioSWR.mutate();
       void agentSkillsSWR.mutate();
@@ -145,8 +169,8 @@ const LegacySkillList = memo<SkillListProps>(
     // Load custom connectors (new connector store) so user-added OAuth MCP
     // connectors appear in the Connectors tab list.
     useEffect(() => {
-      if (!isConnectorsInit) fetchConnectors();
-    }, [isConnectorsInit, fetchConnectors]);
+      if (!adminScope && !isConnectorsInit) fetchConnectors();
+    }, [adminScope, isConnectorsInit, fetchConnectors]);
 
     const getLobehubSkillServerByProvider = (providerId: string) => {
       return allLobehubSkillServers.find((server) => server.identifier === providerId);
@@ -161,6 +185,9 @@ const LegacySkillList = memo<SkillListProps>(
     };
 
     const isBuiltinToolInstalled = (identifier: string) => {
+      // Admin scope: org-wide availability from the platform catalog (builtin
+      // in-process tools have no org toggle and always report available).
+      if (adminScope) return adminScope.isBuiltinSkillEnabled(identifier);
       return !uninstalledBuiltinTools.includes(identifier);
     };
 
@@ -321,6 +348,7 @@ const LegacySkillList = memo<SkillListProps>(
         integrations: sortedIntegrations,
       };
     }, [
+      adminScope,
       installedPluginList,
       isLobehubSkillEnabled,
       isComposioEnabled,

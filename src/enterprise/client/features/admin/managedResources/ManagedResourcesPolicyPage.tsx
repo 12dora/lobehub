@@ -1,7 +1,7 @@
 'use client';
 
 import { Alert, Flexbox, Text } from '@lobehub/ui';
-import { Button, confirmModal, Select, Switch } from '@lobehub/ui/base-ui';
+import { Button, confirmModal, Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -9,10 +9,7 @@ import { useBlocker } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
-import type {
-  ManagedResourceEnforcementMode,
-  ManagedResourceKind,
-} from '@/const/platform/managedResources';
+import type { ManagedResourceKind } from '@/const/platform/managedResources';
 import { MANAGED_RESOURCE_KINDS } from '@/const/platform/managedResources';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
@@ -25,8 +22,13 @@ import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { publishManagedResourcePolicy, saveManagedResourceDraft } from './actions';
 import {
   deriveManagedResourcePermissions,
+  fromManagedResourceUiMode,
   getUnreadyEnforcedResources,
+  MANAGED_RESOURCE_NAV_LABEL_KEY,
   type ManagedResourceSaveState,
+  type ManagedResourceUiMode,
+  normalizeManagedResourcePolicyMap,
+  toManagedResourceUiMode,
 } from './controller';
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
 import { createUnsavedNavigationDecision } from './unsavedNavigationDecision';
@@ -43,32 +45,14 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgContainer};
   `,
-  cardHeading: css`
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  `,
-  control: css`
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  `,
-  controlLabel: css`
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  `,
-  controls: css`
+  row: css`
     display: flex;
     flex-wrap: wrap;
     gap: 12px 20px;
-    align-items: flex-end;
+    align-items: center;
     justify-content: space-between;
 
-    margin-block-start: 4px;
-    padding-block-start: 12px;
-    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+    min-width: 0;
   `,
   footer: css`
     position: sticky;
@@ -88,7 +72,9 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   grid: css`
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+
+    /* Cards stay readable; do not force all five into one cramped row. */
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 12px;
   `,
   status: css`
@@ -97,7 +83,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const MODE_VALUES = ['observe', 'ui-only', 'enforced'] as const;
+const UI_MODE_VALUES = ['user', 'platform'] as const satisfies readonly ManagedResourceUiMode[];
 
 const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
@@ -188,15 +174,11 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     setConflict(false);
   }, [data]);
 
-  const updatePolicy = useCallback(
-    (
-      resource: ManagedResourceKind,
-      patch: Partial<ManagedResourcePolicyMap[ManagedResourceKind]>,
-    ) => {
+  const updateUiMode = useCallback(
+    (resource: ManagedResourceKind, mode: ManagedResourceUiMode) => {
       if (!canUpdate || conflict) return;
-      setDraft((current) =>
-        current ? { ...current, [resource]: { ...current[resource], ...patch } } : current,
-      );
+      const next = fromManagedResourceUiMode(mode);
+      setDraft((current) => (current ? { ...current, [resource]: next } : current));
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
@@ -205,7 +187,12 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   );
 
   const unready = useMemo(
-    () => (data && draft ? getUnreadyEnforcedResources(draft, data.readiness) : []),
+    () =>
+      data && draft
+        ? // Evaluate readiness against the canonical platform-managed form so historical
+          // true+ui-only (shown as platform) still requires catalog readiness before save.
+          getUnreadyEnforcedResources(normalizeManagedResourcePolicyMap(draft), data.readiness)
+        : [],
     [data, draft],
   );
 
@@ -236,13 +223,16 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   const handleSave = useCallback(async () => {
     if (!data || !draft || !canUpdate || !canPublish || conflict || unready.length > 0) return;
     const reason = t('managedResources.saveReason');
+    // Collapse legacy true+ui-only / true+observe combinations into the two canonical pairs.
+    const normalizedDraft = normalizeManagedResourcePolicyMap(draft);
     setSaveState('saving');
     setActionError(null);
     try {
       const saved = await saveManagedResourceDraft({
-        input: { draft, expectedDraftToken: activeDraftToken, reason },
+        input: { draft: normalizedDraft, expectedDraftToken: activeDraftToken, reason },
         saveDraft: adminManagedResourcesService.saveDraft,
       });
+      setDraft(normalizedDraft);
       // Persist the advanced CAS token/revision immediately: if the publish step below fails
       // (e.g. cancelled reauth, catalog-not-ready), a Save retry must use the just-saved token,
       // not the stale pre-save one — otherwise it would raise a spurious revision conflict.
@@ -321,41 +311,22 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
         <div className={styles.grid}>
           {MANAGED_RESOURCE_KINDS.map((resource) => {
             const item = draft[resource];
+            const uiMode = toManagedResourceUiMode(item);
             return (
               <section className={styles.card} key={resource}>
-                <div className={styles.cardHeading}>
-                  <Text strong>{t(`managedResources.resource.${resource}` as never)}</Text>
-                  <Text fontSize={12} type="secondary">
-                    {t(`managedResources.resource.${resource}.desc` as never)}
-                  </Text>
-                </div>
-                <div className={styles.controls}>
-                  <label className={styles.control}>
-                    <Switch
-                      checked={item.managed}
-                      disabled={!canSave || conflict}
-                      onChange={(managed) => updatePolicy(resource, { managed })}
-                    />
-                    <Text>{t('managedResources.managed')}</Text>
-                  </label>
-                  <div className={styles.controlLabel}>
-                    <Text fontSize={12} type="secondary">
-                      {t('managedResources.mode.label')}
-                    </Text>
-                    <Select
-                      disabled={!canSave || conflict || !item.managed}
-                      value={item.enforcementMode}
-                      options={MODE_VALUES.map((mode) => ({
-                        label: t(`managedResources.mode.${mode}` as never),
-                        value: mode,
-                      }))}
-                      onChange={(mode) =>
-                        updatePolicy(resource, {
-                          enforcementMode: mode as ManagedResourceEnforcementMode,
-                        })
-                      }
-                    />
-                  </div>
+                <div className={styles.row}>
+                  <Text strong>{t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)}</Text>
+                  <Select
+                    aria-label={`${t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)} ${t('managedResources.uiMode.label')}`}
+                    disabled={!canSave || conflict}
+                    style={{ minWidth: 160 }}
+                    value={uiMode}
+                    options={UI_MODE_VALUES.map((mode) => ({
+                      label: t(`managedResources.uiMode.${mode}` as never),
+                      value: mode,
+                    }))}
+                    onChange={(mode) => updateUiMode(resource, mode as ManagedResourceUiMode)}
+                  />
                 </div>
               </section>
             );
@@ -368,7 +339,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
             type="warning"
             message={t('managedResources.readiness.blocked', {
               resources: unready
-                .map((resource) => t(`managedResources.resource.${resource}` as never))
+                .map((resource) => t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never))
                 .join(', '),
             })}
           />

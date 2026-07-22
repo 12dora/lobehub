@@ -71,17 +71,20 @@ const roleCases = [
     role: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
   },
   {
-    expectedBeforeO04System: 76,
+    // Recount after W10 (creds/applyImmediate procedures) + admin.skills.parseImportSource = 96
+    expectedBeforeO04System: 96,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
   },
   {
-    expectedBeforeO04System: 39,
+    // Recount after W10: creds reads (5) + easyauth status (1) + stats reads (12) = 57
+    expectedBeforeO04System: 57,
     expectedO04SystemPaths: o04SystemReadProcedurePaths,
     role: PLATFORM_SYSTEM_ROLES.AUDITOR,
   },
   {
-    expectedBeforeO04System: 27,
+    // Recount after admin.easyauth.getStatus = 28
+    expectedBeforeO04System: 28,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
   },

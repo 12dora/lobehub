@@ -14,6 +14,7 @@ import {
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useAdminToolScope } from '@/features/AdminToolScope';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { createLobehubSkillDetailModal } from '@/features/SkillStore/SkillDetail';
 import { usePermission } from '@/hooks/usePermission';
@@ -36,6 +37,7 @@ interface LobehubSkillItemProps {
 
 const LobehubSkillItem = memo<LobehubSkillItemProps>(
   ({ provider, server, isSelected, onSelect, onDelete }) => {
+    const adminScope = useAdminToolScope();
     const { t } = useTranslation('setting');
     const { allowed: canCreate, reason: createReason } = usePermission('create_content');
     const { allowed: canEdit, reason: editReason } = usePermission('edit_own_content');
@@ -287,6 +289,9 @@ const LobehubSkillItem = memo<LobehubSkillItemProps>(
     // button that opens the OAuth flow inline, so users can tell what is connected
     // and aren't left staring at a blank detail panel wondering if it's a bug.
     const renderNavExtra = () => {
+      // Admin org scope: OAuth connections are per-user; the catalog row carries
+      // no personal connect affordance.
+      if (adminScope) return null;
       if (isConnecting || isWaitingAuth) {
         return <Button disabled icon={<Icon spin icon={Loader2} />} size="small" type="text" />;
       }
@@ -330,7 +335,8 @@ const LobehubSkillItem = memo<LobehubSkillItemProps>(
           // Only connected connectors open the detail panel. When disconnected,
           // the row is inert and the only affordance is the inline Connect button —
           // otherwise clicking opens a blank detail panel that reads as a bug.
-          onClick={isConnected ? onSelect : undefined}
+          // Admin org scope: always selectable (detail shows the catalog entry).
+          onClick={adminScope || isConnected ? onSelect : undefined}
         />
       );
     }

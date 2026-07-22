@@ -59,6 +59,17 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 interface AgentSkillDetailProps {
   skillId: string;
+  /**
+   * Datasource override (admin org catalog). Must be referentially stable for
+   * the lifetime of a mount — the default remains the user agent-skill fetch.
+   */
+  useFetchDetail?: (skillId: string) => {
+    data?: {
+      resourceTree?: SkillResourceTreeNode[];
+      skillDetail?: any;
+    };
+    isLoading: boolean;
+  };
 }
 
 const buildContentMap = (nodes: SkillResourceTreeNode[] = []): Record<string, string> => {
@@ -76,10 +87,11 @@ const buildContentMap = (nodes: SkillResourceTreeNode[] = []): Record<string, st
   return map;
 };
 
-const AgentSkillDetail = memo<AgentSkillDetailProps>(({ skillId }) => {
+const AgentSkillDetail = memo<AgentSkillDetailProps>(({ skillId, useFetchDetail }) => {
   const { t } = useTranslation('setting');
   const [selectedFile, setSelectedFile] = useState('SKILL.md');
-  const { data, isLoading } = useToolStore((s) => s.useFetchAgentSkillDetail)(skillId);
+  const useFetchAgentSkillDetail = useToolStore((s) => s.useFetchAgentSkillDetail);
+  const { data, isLoading } = (useFetchDetail ?? useFetchAgentSkillDetail)(skillId);
 
   const skillDetail = data?.skillDetail;
   const resourceTree = data?.resourceTree;

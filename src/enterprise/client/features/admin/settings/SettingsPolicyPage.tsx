@@ -1,7 +1,7 @@
 'use client';
 
 import { Alert, Flexbox, Input, Text } from '@lobehub/ui';
-import { Button, Select, Switch } from '@lobehub/ui/base-ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -25,10 +25,14 @@ import {
   clearConflictDraft,
   deriveSettingsPermissions,
   fingerprintDraft,
+  fromSettingsPolicyUiMode,
   loadConflictDraft,
+  normalizeSettingsPolicyDraft,
   resolvePrimaryAction,
   saveConflictDraft,
   type SaveState,
+  type SettingsPolicyUiMode,
+  toSettingsPolicyUiMode,
 } from './settingsPolicyController';
 
 type DraftMap = AdminSettingsGetDraftOutput['draft'];
@@ -141,7 +145,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const MODE_VALUES = ['user', 'default', 'locked'] as const;
+const UI_MODE_VALUES = ['user', 'platform'] as const satisfies readonly SettingsPolicyUiMode[];
 
 // The admin "Service model" page (/admin/ai/service-model) already owns model/service
 // assignments. These groups/paths are hidden here to avoid a duplicate editing surface
@@ -479,14 +483,17 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     }
     setSaveState('saving');
     setSaveError(null);
+    // Collapse historical default/locked (+ any visibility) into locked+hidden / user+visible.
+    const normalizedDraft = normalizeSettingsPolicyDraft(draft);
     try {
       const result = await adminSettingsService.saveDraft({
-        draft,
+        draft: normalizedDraft,
         expectedDraftToken: activeDraftToken,
         reason: t('settingsPolicy.saveReason'),
       });
       clearLocalDraft(data.registryVersion, activeBaseRevision);
       clearConflictDraft();
+      setDraft(normalizedDraft);
       setDirty(false);
       setSaveState('saved');
       setValidatedFingerprint(null);
@@ -494,7 +501,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       setValidatedBaseRevision(null);
       setActiveBaseRevision(result.baseRevision);
       setActiveDraftToken(result.draftToken);
-      originalBaseDraftRef.current = draft;
+      originalBaseDraftRef.current = normalizedDraft;
       dispatchConflict({ type: 'CLEAR' });
       hydratedRef.current = false;
       await mutate();
@@ -1007,29 +1014,20 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                         </div>
                         <div className={styles.row}>
                           <Select
+                            aria-label={t('settingsPolicy.uiMode.label')}
                             disabled={!canUpdate}
-                            style={{ minWidth: 120 }}
-                            value={policy.mode}
-                            options={MODE_VALUES.map((value) => ({
-                              label: t(`settingsPolicy.mode.${value}` as never),
+                            style={{ minWidth: 160 }}
+                            value={toSettingsPolicyUiMode(policy)}
+                            options={UI_MODE_VALUES.map((value) => ({
+                              label: t(`settingsPolicy.uiMode.${value}` as never),
                               value,
                             }))}
                             onChange={(v) =>
-                              updatePolicy(entry.path, { mode: v as DraftPolicy['mode'] })
+                              updatePolicy(entry.path, {
+                                ...fromSettingsPolicyUiMode(v as SettingsPolicyUiMode),
+                              })
                             }
                           />
-                          <Flexbox horizontal align="center" gap={6}>
-                            <Text type="secondary">{t('settingsPolicy.hidden')}</Text>
-                            <Switch
-                              checked={policy.visibility === 'hidden'}
-                              disabled={!canUpdate}
-                              onChange={(checked: boolean) =>
-                                updatePolicy(entry.path, {
-                                  visibility: checked ? 'hidden' : 'visible',
-                                })
-                              }
-                            />
-                          </Flexbox>
                         </div>
                       </div>
                       <Text type="secondary">

@@ -139,12 +139,16 @@ const BrandingPage = memo(() => {
   useEffect(() => {
     if (!data) return;
     const snapshotKey = `${data.baseRevision}:${data.draftToken}:${data.published?.revision ?? ''}`;
-    if (observedServerSnapshot.current === snapshotKey) return;
-    observedServerSnapshot.current = snapshotKey;
+    // After unmount/StrictMode cleanup the store is reset but this ref can still hold the
+    // same snapshot key (mark-before-hydrate). Always rehydrate when draft is empty so
+    // Inputs refill after leave→re-enter, HMR, or StrictMode double-invoke.
     if (!draft) {
+      observedServerSnapshot.current = snapshotKey;
       hydrate(data);
       return;
     }
+    if (observedServerSnapshot.current === snapshotKey) return;
+    observedServerSnapshot.current = snapshotKey;
     if (data.draftToken !== draftToken || data.baseRevision !== baseRevision) {
       if (editorState === 'idle') hydrate(data);
       else markConflict();
@@ -185,6 +189,9 @@ const BrandingPage = memo(() => {
   useEffect(
     () => () => {
       leaveModal.current?.destroy();
+      // Clear observation so a remount with the same SWR snapshot can hydrate again
+      // even if the module-level store was already emptied by reset().
+      observedServerSnapshot.current = null;
       reset();
     },
     [reset],
@@ -209,6 +216,7 @@ const BrandingPage = memo(() => {
           'desktop',
           'desktopIcon',
           'desktopProductName',
+          'effectiveCurrent',
           'email',
           'emailFrom',
           'emailSenderName',
@@ -498,6 +506,7 @@ const BrandingPage = memo(() => {
           <BrandingFields
             disabled={!canUpdate || conflict || busy}
             draft={draft}
+            effective={branding}
             labels={labels}
             storageConfigured={data.storageConfigured}
             onPatch={patch}
@@ -535,6 +544,7 @@ const BrandingPage = memo(() => {
           <Text type="secondary">{t('branding.preview.description')}</Text>
           <BrandingPreview
             draft={draft}
+            effective={branding}
             title={t('branding.preview.frameTitle')}
             copy={{
               defaultAgent: t('branding.preview.defaultAgent'),

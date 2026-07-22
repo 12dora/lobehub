@@ -9,6 +9,8 @@ import { Plus, SquareArrowOutUpRight, Trash2, Unplug } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useAdminToolScope } from '@/features/AdminToolScope';
+import AdminBuiltinSkillDistribution from '@/features/AdminToolScope/AdminBuiltinSkillDistribution';
 import { ConnectorDetail } from '@/features/Connectors';
 import { useSkillConnect } from '@/features/SkillStore/SkillList/LobeHub/useSkillConnect';
 import { usePermission } from '@/hooks/usePermission';
@@ -195,6 +197,7 @@ const LegacySkillDetail = memo<SkillDetailProps>(
     const { t: ts } = useTranslation('setting');
     const [syncing, setSyncing] = useState(false);
     const [noManifest, setNoManifest] = useState(false);
+    const adminScope = useAdminToolScope();
 
     const { allowed: canCreate } = usePermission('create_content');
     const { allowed: canEdit } = usePermission('edit_own_content');
@@ -206,7 +209,10 @@ const LegacySkillDetail = memo<SkillDetailProps>(
     const installBuiltinTool = useToolStore((s) => s.installBuiltinTool);
     const uninstallBuiltinTool = useToolStore((s) => s.uninstallBuiltinTool);
     const deleteAgentSkill = useToolStore((s) => s.deleteAgentSkill);
-    const connector = useToolStore(connectorSelectors.connectorByIdentifier(identifier));
+    const storeConnector = useToolStore(connectorSelectors.connectorByIdentifier(identifier));
+    const connector = adminScope
+      ? adminScope.connectors.find((c) => c.identifier === identifier)
+      : storeConnector;
 
     // For lobehub-connector: get the server's tool list from the store
     const lobehubServer = useToolStore(
@@ -225,9 +231,12 @@ const LegacySkillDetail = memo<SkillDetailProps>(
       (s) => s.builtinSkills?.find((sk) => sk.identifier === identifier),
       isEqual,
     );
-    const isBuiltinInstalled = useToolStore(
+    const storeBuiltinInstalled = useToolStore(
       builtinToolSelectors.isBuiltinToolInstalled(identifier),
     );
+    const isBuiltinInstalled = adminScope
+      ? adminScope.isBuiltinSkillEnabled(identifier)
+      : storeBuiltinInstalled;
 
     const isConnectorType =
       type === 'builtin' ||
@@ -240,6 +249,9 @@ const LegacySkillDetail = memo<SkillDetailProps>(
     const noPermissionsTitle = getNoPermissionsTitle(identifier, type, ts);
 
     const renderConnectorLifecycleAction = (onDisconnected?: () => void) => {
+      // Per-user OAuth lifecycle (connect/disconnect) has no org-wide meaning;
+      // the admin surface shows the catalog entry without personal actions.
+      if (adminScope && (type === 'lobehub-connector' || composioApp)) return null;
       if (type === 'lobehub-connector') {
         return (
           <LobehubConnectorAction
@@ -262,7 +274,9 @@ const LegacySkillDetail = memo<SkillDetailProps>(
     };
 
     useEffect(() => {
-      if (!shouldSyncConnectorDefinition({ isConnectorType, managed })) {
+      // Admin scope: connector rows are synthesized from the org catalog and
+      // builtin manifests — never sync per-user connector rows from here.
+      if (adminScope || !shouldSyncConnectorDefinition({ isConnectorType, managed })) {
         setNoManifest(false);
         setSyncing(false);
         return;
@@ -305,6 +319,7 @@ const LegacySkillDetail = memo<SkillDetailProps>(
 
       ensureConnector();
     }, [
+      adminScope,
       fetchConnectors,
       identifier,
       isConnectorType,
@@ -321,6 +336,10 @@ const LegacySkillDetail = memo<SkillDetailProps>(
       confirmModal({
         okButtonProps: { danger: true },
         onOk: async () => {
+          if (adminScope) {
+            await adminScope.toggleBuiltinSkill(identifier, false);
+            return;
+          }
           await uninstallBuiltinTool(identifier);
         },
         title: t('store.actions.confirmUninstall'),
@@ -331,7 +350,11 @@ const LegacySkillDetail = memo<SkillDetailProps>(
       confirmModal({
         okButtonProps: { danger: true },
         onOk: async () => {
-          await deleteAgentSkill(identifier);
+          if (adminScope) {
+            await adminScope.deleteOrgSkill(identifier);
+          } else {
+            await deleteAgentSkill(identifier);
+          }
           onDelete?.();
         },
         title: t('store.actions.confirmUninstall'),
@@ -373,7 +396,10 @@ const LegacySkillDetail = memo<SkillDetailProps>(
                 </div>
               }
             >
-              <AgentSkillDetail skillId={identifier} />
+              <AgentSkillDetail
+                skillId={identifier}
+                useFetchDetail={adminScope?.useOrgSkillDetail}
+              />
             </Suspense>
           </div>
         </div>
@@ -403,13 +429,22 @@ const LegacySkillDetail = memo<SkillDetailProps>(
                   disabled={!canCreate}
                   icon={<Plus size={14} />}
                   size="small"
-                  onClick={() => installBuiltinTool(identifier)}
+                  onClick={() => {
+                    if (adminScope) {
+                      void adminScope.toggleBuiltinSkill(identifier, true);
+                      return;
+                    }
+                    void installBuiltinTool(identifier);
+                  }}
                 >
                   {t('store.actions.install')}
                 </Button>
               )}
             </div>
           </div>
+          {adminScope ? (
+            <AdminBuiltinSkillDistribution identifier={identifier} scope={adminScope} />
+          ) : null}
           {builtinSkill?.content && (
             <div style={{ padding: '16px 24px' }}>
               <Markdown variant="chat">{builtinSkill.content}</Markdown>

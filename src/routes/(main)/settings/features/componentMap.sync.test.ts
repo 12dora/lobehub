@@ -29,10 +29,7 @@ describe('componentMap desktop sync', () => {
       'utf8',
     );
     const workspaceRoute = readFileSync(
-      path.resolve(
-        process.cwd(),
-        'src/routes/(main)/[workspaceSlug]/settings/connector/index.tsx',
-      ),
+      path.resolve(process.cwd(), 'src/routes/(main)/[workspaceSlug]/settings/connector/index.tsx'),
       'utf8',
     );
 

@@ -3,6 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ConnectorCredentials, OIDCConfig } from '@/database/schemas';
 import { ConnectorSourceType } from '@/database/schemas';
+import { useAdminToolScope } from '@/features/AdminToolScope';
 import DevModal from '@/features/PluginDevModal';
 import { useToolStore } from '@/store/tool';
 import { connectorSelectors } from '@/store/tool/slices/connector';
@@ -96,6 +97,7 @@ const cleanRecord = (record?: Record<string, string>): Record<string, string> | 
  */
 const CustomConnectorModal = memo<CustomConnectorModalProps>(
   ({ open, onClose, connectorId, legacyPlugin, onEditSuccess }) => {
+    const adminScope = useAdminToolScope();
     const createConnector = useToolStore((s) => s.createConnector);
     const updateConnector = useToolStore((s) => s.updateConnector);
     const getConnectorForEdit = useToolStore((s) => s.getConnectorForEdit);
@@ -200,7 +202,10 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
       };
     }, [isEditMode, isMigrationMode, legacyPlugin, connector, editFetchedData]);
 
-    const handleSave = async (value: LobeToolCustomPlugin, ctx?: { oauthPopup?: Window | null }) => {
+    const handleSave = async (
+      value: LobeToolCustomPlugin,
+      ctx?: { oauthPopup?: Window | null },
+    ) => {
       // ── Migration mode ────────────────────────────────────────────────────
       // Promote a legacy `user_installed_plugins.type='customPlugin'` row into
       // a `user_connectors` row. Server `connector.create` is idempotent on
@@ -248,6 +253,21 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
       const isHttp = mcp.type !== 'stdio';
       const authType = mcp.auth?.type;
 
+      // ── Admin org scope ───────────────────────────────────────────────────
+      // Same form, org-wide persistence: the submission becomes a platform
+      // connector (draft + immediate publish). Per-user OAuth popups and user
+      // connector rows are never touched from the admin panel.
+      if (adminScope) {
+        await adminScope.submitCustomConnector({
+          auth: mcp.auth,
+          identifier,
+          serverUrl: isHttp ? mcp.url?.trim() : undefined,
+          transport: (mcp.type ?? 'http') as 'http' | 'stdio',
+        });
+        onEditSuccess?.();
+        return;
+      }
+
       // ── Edit mode ─────────────────────────────────────────────────────────
       if (isEditMode && connectorId) {
         const newUrl = isHttp ? mcp.url?.trim() : undefined;
@@ -269,7 +289,7 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
         // submitted before `connector` resolves, but this keeps it safe.
         const headers = cleanRecord(mcp.headers);
         if (connector) {
-          const nextMetadata: Record<string, unknown> = { ...(connector.metadata ?? {}) };
+          const nextMetadata: Record<string, unknown> = { ...connector.metadata };
           if (headers) nextMetadata.customHeaders = headers;
           else delete nextMetadata.customHeaders;
           patch.metadata = nextMetadata;
@@ -325,7 +345,11 @@ const CustomConnectorModal = memo<CustomConnectorModalProps>(
         mcpServerUrl: isHttp ? mcp.url?.trim() : undefined,
         mcpStdioConfig: isHttp
           ? undefined
-          : { args: mcp.args ?? [], command: (mcp.command ?? '').trim(), env: cleanRecord(mcp.env) },
+          : {
+              args: mcp.args ?? [],
+              command: (mcp.command ?? '').trim(),
+              env: cleanRecord(mcp.env),
+            },
         name: identifier,
         sourceType: ConnectorSourceType.custom,
       };

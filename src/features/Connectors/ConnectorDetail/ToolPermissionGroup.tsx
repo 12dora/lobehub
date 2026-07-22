@@ -55,11 +55,13 @@ interface ToolPermissionGroupProps {
   label: string;
   onBatchPermission: (toolIds: string[], permission: ConnectorToolPermission) => void;
   onPermissionChange: (toolId: string, permission: ConnectorToolPermission) => void;
+  /** Display-only mode (e.g. builtin tools in the admin org scope). */
+  readOnly?: boolean;
   tools: ConnectorTool[];
 }
 
 const ToolPermissionGroup = memo<ToolPermissionGroupProps>(
-  ({ label, tools, onPermissionChange, onBatchPermission }) => {
+  ({ label, tools, onPermissionChange, onBatchPermission, readOnly }) => {
     const { t } = useTranslation('tool');
     const [expanded, setExpanded] = useState(true);
 
@@ -94,17 +96,19 @@ const ToolPermissionGroup = memo<ToolPermissionGroupProps>(
             <span className={styles.badge}>{tools.length}</span>
           </div>
 
-          <DropdownMenu items={batchItems}>
-            <Button
-              size="small"
-              style={{ fontSize: 12, height: 26 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <MoreHorizontalIcon size={12} />
-              {t('connector.permission.custom', 'Custom')}
-              <ChevronDownIcon size={12} />
-            </Button>
-          </DropdownMenu>
+          {!readOnly && (
+            <DropdownMenu items={batchItems}>
+              <Button
+                size="small"
+                style={{ fontSize: 12, height: 26 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MoreHorizontalIcon size={12} />
+                {t('connector.permission.custom', 'Custom')}
+                <ChevronDownIcon size={12} />
+              </Button>
+            </DropdownMenu>
+          )}
         </div>
 
         {expanded && (
@@ -112,6 +116,7 @@ const ToolPermissionGroup = memo<ToolPermissionGroupProps>(
             {tools.map((tool) => (
               <ToolPermissionRow
                 key={tool.id}
+                readOnly={readOnly}
                 tool={tool}
                 onPermissionChange={onPermissionChange}
               />

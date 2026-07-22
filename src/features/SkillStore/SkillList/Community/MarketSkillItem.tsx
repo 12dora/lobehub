@@ -9,6 +9,7 @@ import { lazy, memo, Suspense, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import ImperativeModal from '@/components/ImperativeModal';
+import { useAdminToolScope } from '@/features/AdminToolScope';
 import { usePermission } from '@/hooks/usePermission';
 import { agentSkillService } from '@/services/skill';
 import { useToolStore } from '@/store/tool';
@@ -47,8 +48,16 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
   const { allowed: canCreate } = usePermission('create_content');
   const { allowed: canEdit } = usePermission('edit_own_content');
 
-  const installed = useToolStore(agentSkillsSelectors.isAgentSkill(identifier));
-  const installedSkill = useToolStore(agentSkillsSelectors.getAgentSkillByIdentifier(identifier));
+  // Admin org scope: install/uninstall targets the platform catalog instead of
+  // the signed-in user's skills.
+  const adminScope = useAdminToolScope();
+  const storeInstalled = useToolStore(agentSkillsSelectors.isAgentSkill(identifier));
+  const storeInstalledSkill = useToolStore(
+    agentSkillsSelectors.getAgentSkillByIdentifier(identifier),
+  );
+  const orgSkill = adminScope?.orgSkills.find((skill) => skill.identifier === identifier);
+  const installed = adminScope ? Boolean(orgSkill) : storeInstalled;
+  const installedSkill = adminScope ? orgSkill : storeInstalledSkill;
   const [refreshAgentSkills, deleteAgentSkill] = useToolStore((s) => [
     s.refreshAgentSkills,
     s.deleteAgentSkill,
@@ -58,14 +67,18 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
     if (!canCreate || installing || installed) return;
     setInstalling(true);
     try {
-      await agentSkillService.importFromMarket(identifier);
-      await refreshAgentSkills();
+      if (adminScope) {
+        await adminScope.installFromMarket(identifier);
+      } else {
+        await agentSkillService.importFromMarket(identifier);
+        await refreshAgentSkills();
+      }
     } catch {
       // silently fail
     } finally {
       setInstalling(false);
     }
-  }, [canCreate, identifier, installing, installed, refreshAgentSkills]);
+  }, [adminScope, canCreate, identifier, installing, installed, refreshAgentSkills]);
 
   const handleUninstall = useCallback(() => {
     if (!canEdit || !installedSkill) return;
@@ -75,11 +88,15 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
       okButtonProps: { danger: true },
       okText: t('store.actions.uninstall'),
       onOk: async () => {
+        if (adminScope) {
+          await adminScope.deleteOrgSkill(installedSkill.id);
+          return;
+        }
         await deleteAgentSkill(installedSkill.id);
       },
       title: t('store.actions.uninstall'),
     });
-  }, [canEdit, installedSkill, deleteAgentSkill, t, tc]);
+  }, [adminScope, canEdit, installedSkill, deleteAgentSkill, t, tc]);
 
   const handleDownload = useCallback(async () => {
     if (!installedSkill?.zipFileHash) return;

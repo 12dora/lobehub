@@ -1,14 +1,13 @@
 'use client';
 
-import { createStaticStyles } from 'antd-style';
 import isEqual from 'fast-deep-equal';
 import { memo, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
-import AsyncError from '@/components/AsyncError';
-import Loading from '@/components/Loading/BrandTextLoading';
-import { ManagedResourceNotice, useManagedResource } from '@/features/ManagedResources';
+import { useAdminToolScope } from '@/features/AdminToolScope';
+import { ManagedResourceBoundary, ManagedResourceNotice } from '@/features/ManagedResources';
 import NavHeader from '@/features/NavHeader';
+import { masterDetailSurfaceStyles } from '@/features/SettingsCatalogSurface';
 import { useToolStore } from '@/store/tool';
 import { agentSkillsSelectors, builtinToolSelectors } from '@/store/tool/selectors';
 
@@ -17,18 +16,7 @@ import SkillDetail, { type ToolDetailType } from './features/SkillDetail';
 import { type SkillViewMode } from './features/SkillList';
 import { resolveInitialToolSelection, type SelectedTool } from './initialSelection';
 
-const styles = createStaticStyles(({ css }) => ({
-  detail: css`
-    overflow-y: auto;
-    flex: 1;
-  `,
-  root: css`
-    overflow: hidden;
-    display: flex;
-    flex: 1;
-    height: 100%;
-  `,
-}));
+const styles = masterDetailSurfaceStyles;
 
 interface ToolSettingsProps {
   /** Organization-managed connector mode keeps only per-user OAuth binding. */
@@ -41,7 +29,16 @@ interface ToolSettingsProps {
   viewMode: SkillViewMode;
 }
 
+/**
+ * Canonical settings surface for skills/connectors. Admin AI pages compose the
+ * same MasterDetailSettingsSurface + catalog list/detail chrome with an
+ * injectable admin datasource (admin.skills / admin.connectors).
+ */
 export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false }) => {
+  // Under the admin panel (AdminToolScopeProvider) the exact same surface is
+  // rendered with an org-global datasource; the settings NavHeader is replaced
+  // by the admin layout chrome.
+  const adminScope = useAdminToolScope();
   const [searchParams, setSearchParams] = useSearchParams();
   const querySkillIdentifier = searchParams.get('skill');
   const [selected, setSelected] = useState<SelectedTool | null>(null);
@@ -141,7 +138,10 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
 
   return (
     <>
-      <NavHeader />
+      {!adminScope && <NavHeader />}
+      {adminScope?.connectorNotice ? (
+        <div style={{ padding: '12px 16px 0' }}>{adminScope.connectorNotice}</div>
+      ) : null}
       {managed ? (
         <div style={{ padding: '12px 16px 0' }}>
           <ManagedResourceNotice
@@ -176,14 +176,17 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
 
 ToolSettings.displayName = 'ToolSettings';
 
-const Page = memo(() => {
-  const { error, loading, managed, refresh } = useManagedResource('skills');
-
-  if (error) return <AsyncError error={error} variant="page" onRetry={() => void refresh()} />;
-  if (loading) return <Loading debugId="Settings > Skill > Managed policy" />;
-
-  return <ToolSettings managed={managed} viewMode="skill" />;
-});
+/**
+ * Personal + workspace skill settings entry.
+ * Platform-managed skills are blocked here (and again by SettingsContent for
+ * personal tabs) so deep links cannot keep a configuration surface open.
+ * Published skill consumption in agent runtime is unaffected.
+ */
+const Page = memo(() => (
+  <ManagedResourceBoundary resource="skills">
+    <ToolSettings managed={false} viewMode="skill" />
+  </ManagedResourceBoundary>
+));
 
 Page.displayName = 'SkillSettings';
 

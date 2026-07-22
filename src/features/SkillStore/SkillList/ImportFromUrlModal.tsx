@@ -10,7 +10,12 @@ import { useTranslation } from 'react-i18next';
 import { usePermission } from '@/hooks/usePermission';
 import { useToolStore } from '@/store/tool';
 
-const ImportFromUrlContent = memo(() => {
+export interface ImportFromUrlModalOptions {
+  /** Persistence override (admin org catalog); default imports into the user's skills. */
+  onImport?: (input: { url: string }) => Promise<void>;
+}
+
+const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ onImport }) => {
   const { t } = useTranslation(['setting', 'common']);
   const { close, setCanDismissByClickOutside } = useModalContext();
   const { message } = App.useApp();
@@ -32,7 +37,7 @@ const ImportFromUrlContent = memo(() => {
     setError(null);
 
     try {
-      await importAgentSkillFromUrl({ url: trimmed });
+      await (onImport ?? importAgentSkillFromUrl)({ url: trimmed });
       message.success(t('agentSkillModal.importSuccess'));
       close();
     } catch (err: any) {
@@ -88,9 +93,9 @@ const ImportFromUrlContent = memo(() => {
 
 ImportFromUrlContent.displayName = 'ImportFromUrlContent';
 
-export const openImportFromUrlModal = (): ModalInstance =>
+export const openImportFromUrlModal = (options?: ImportFromUrlModalOptions): ModalInstance =>
   createModal({
-    content: <ImportFromUrlContent />,
+    content: <ImportFromUrlContent onImport={options?.onImport} />,
     footer: null,
     maskClosable: true,
     styles: { header: { display: 'none' } },

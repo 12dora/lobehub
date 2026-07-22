@@ -236,4 +236,34 @@ describe('BrandingPage interactions', () => {
     await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalledTimes(2));
     expect(screen.getByText('branding.status.draftSaved')).toBeInTheDocument();
   });
+
+  it('rehydrates draft inputs after store reset with the same server snapshot', async () => {
+    renderPage();
+    expect(await screen.findByDisplayValue('Published Brand')).toBeInTheDocument();
+
+    // Simulate StrictMode/unmount cleanup: reset empties the module store while the page
+    // still holds an observed snapshot key for the same SWR-cached data.
+    act(() => {
+      useBrandingEditorStore.getState().reset();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('Published Brand')).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('branding.fields.name')).toHaveValue('Published Brand');
+  });
+
+  it('refills inputs when remounting onto a warm SWR cache of the same revision', async () => {
+    const first = renderPage();
+    expect(await screen.findByDisplayValue('Published Brand')).toBeInTheDocument();
+    first.unmount();
+    // Cleanup reset() leaves the store empty; remount must hydrate from the same snapshot.
+    expect(useBrandingEditorStore.getState().draft).toBeNull();
+
+    renderPage();
+    expect(await screen.findByDisplayValue('Published Brand')).toBeInTheDocument();
+    expect(screen.getByLabelText('branding.fields.pageTitleTemplate')).toHaveValue(
+      '%s · Published Brand',
+    );
+  });
 });

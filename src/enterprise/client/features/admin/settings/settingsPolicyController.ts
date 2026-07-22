@@ -9,6 +9,38 @@ export type DraftMap = AdminSettingsGetDraftOutput['draft'];
 export type DraftPolicy = DraftMap[string];
 export type SaveState = 'idle' | 'saving' | 'saved' | 'failed';
 
+/**
+ * Admin UI collapses mode+visibility into two states:
+ * - user: mode user + visibility visible (users control the setting)
+ * - platform: mode locked + visibility hidden (admin value forced; user control hidden)
+ * Runtime may still honor historical `default` via applyImmediate — do not strip server support.
+ */
+export type SettingsPolicyUiMode = 'platform' | 'user';
+
+/** Historical default/locked → platform; user → user. */
+export const toSettingsPolicyUiMode = (policy: {
+  mode: string;
+  visibility?: string;
+}): SettingsPolicyUiMode => (policy.mode === 'user' ? 'user' : 'platform');
+
+/** Canonical write form for the two-state UI. */
+export const fromSettingsPolicyUiMode = (
+  mode: SettingsPolicyUiMode,
+): Pick<DraftPolicy, 'mode' | 'visibility'> =>
+  mode === 'platform'
+    ? { mode: 'locked', visibility: 'hidden' }
+    : { mode: 'user', visibility: 'visible' };
+
+/** Normalize every draft entry on save so legacy default/locked become locked+hidden. */
+export const normalizeSettingsPolicyDraft = (draft: DraftMap): DraftMap =>
+  Object.fromEntries(
+    Object.entries(draft).map(([path, policy]) => {
+      if (!policy) return [path, policy];
+      const ui = toSettingsPolicyUiMode(policy);
+      return [path, { ...policy, ...fromSettingsPolicyUiMode(ui) }];
+    }),
+  ) as DraftMap;
+
 export type SettingsPermissionMode = {
   canPublish: boolean;
   canUpdate: boolean;

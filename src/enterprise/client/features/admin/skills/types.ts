@@ -18,6 +18,8 @@ import type {
   adminSkillListVersionsInputSchema,
   adminSkillListVersionsOutputSchema,
   adminSkillMutationOutputSchema,
+  adminSkillParseImportSourceInputSchema,
+  adminSkillParseImportSourceOutputSchema,
   adminSkillPublicationOutputSchema,
   adminSkillPublishInputSchema,
   adminSkillPublishNowInputSchema,
@@ -45,6 +47,12 @@ export type AdminSkillListOutput = z.infer<typeof adminSkillListOutputSchema>;
 export type AdminSkillListVersionsInput = z.infer<typeof adminSkillListVersionsInputSchema>;
 export type AdminSkillListVersionsOutput = z.infer<typeof adminSkillListVersionsOutputSchema>;
 export type AdminSkillMutationOutput = z.infer<typeof adminSkillMutationOutputSchema>;
+export type AdminSkillParseImportSourceInput = z.infer<
+  typeof adminSkillParseImportSourceInputSchema
+>;
+export type AdminSkillParseImportSourceOutput = z.infer<
+  typeof adminSkillParseImportSourceOutputSchema
+>;
 export type AdminSkillPublicationOutput = z.infer<typeof adminSkillPublicationOutputSchema>;
 export type AdminSkillPublishInput = z.infer<typeof adminSkillPublishInputSchema>;
 export type AdminSkillPublishNowInput = z.infer<typeof adminSkillPublishNowInputSchema>;

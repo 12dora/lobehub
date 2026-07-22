@@ -75,10 +75,13 @@ export const useCategory = () => {
     managedResources,
   );
   const canConfigureModel = isManagedResourceConfigurationAvailable('aiModels', managedResources);
-  // Managed Skills remain navigable as a read-only Published Catalog. Only a
-  // failed/pending capability snapshot hides the entry fail-closed.
-  const canOpenSkill = !managedResources.loading && !managedResources.error;
-  const canOpenConnector = !managedResources.loading && !managedResources.error;
+  // Platform-managed skills/connectors hide ordinary user settings entries.
+  // Per-user OAuth (if needed later) must not reuse these config surfaces.
+  const canConfigureSkill = isManagedResourceConfigurationAvailable('skills', managedResources);
+  const canConfigureConnector = isManagedResourceConfigurationAvailable(
+    'connectors',
+    managedResources,
+  );
   const { hideDocs, showApiKeyManage, showProvider } = useServerConfigStore(featureFlagsSelectors);
   const [avatar, username] = useUserStore((s) => [
     userProfileSelectors.userAvatar(s),
@@ -172,12 +175,12 @@ export const useCategory = () => {
         key: SettingsTabs.ServiceModel,
         label: t('tab.serviceModel'),
       },
-      canOpenSkill && {
+      canConfigureSkill && {
         icon: SkillsIcon,
         key: SettingsTabs.Skill,
         label: t('tab.skill'),
       },
-      canOpenConnector && {
+      canConfigureConnector && {
         icon: Blocks,
         key: SettingsTabs.Connector,
         label: t('tab.connector'),
@@ -260,10 +263,10 @@ export const useCategory = () => {
     mobile,
     showApiKeyManage,
     showProvider,
-    canOpenConnector,
+    canConfigureConnector,
     canConfigureModel,
     canConfigureProvider,
-    canOpenSkill,
+    canConfigureSkill,
     isDevMode,
     avatarUrl,
     username,

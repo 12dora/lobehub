@@ -9,6 +9,20 @@ import { useUserStore } from '@/store/user';
 
 import { useCategory } from './useCategory';
 
+const managedResourcesRef = vi.hoisted(() => ({
+  current: {
+    capabilities: {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
+    },
+    error: null as Error | null,
+    loading: false,
+  },
+}));
+
 vi.hoisted(() => {
   Object.defineProperty(globalThis, 'localStorage', {
     configurable: true,
@@ -30,6 +44,14 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
+}));
+
+vi.mock('@/features/ManagedResources', () => ({
+  isManagedResourceConfigurationAvailable: (
+    resource: keyof typeof managedResourcesRef.current.capabilities,
+    snapshot: typeof managedResourcesRef.current,
+  ) => !snapshot.loading && !snapshot.error && !snapshot.capabilities[resource],
+  useManagedResourceCapabilities: () => managedResourcesRef.current,
 }));
 
 const createWrapper = (showProvider: boolean) => {
@@ -58,6 +80,17 @@ const initialUserStoreState = useUserStore.getState();
 afterEach(() => {
   navigate.mockReset();
   useUserStore.setState(initialUserStoreState, true);
+  managedResourcesRef.current = {
+    capabilities: {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
+    },
+    error: null,
+    loading: false,
+  };
 });
 
 describe('mobile settings useCategory', () => {
@@ -85,5 +118,19 @@ describe('mobile settings useCategory', () => {
     const keys = result.current.flatMap((group) => group.items.map((item) => item.key));
 
     expect(keys).not.toContain(SettingsTabs.Provider);
+  });
+
+  it('hides Skill and Connector when platform-managed', () => {
+    managedResourcesRef.current.capabilities.skills = true;
+    managedResourcesRef.current.capabilities.connectors = true;
+
+    const { result } = renderHook(() => useCategory(), {
+      wrapper: createWrapper(true),
+    });
+
+    const keys = result.current.flatMap((group) => group.items.map((item) => item.key));
+
+    expect(keys).not.toContain(SettingsTabs.Skill);
+    expect(keys).not.toContain(SettingsTabs.Connector);
   });
 });

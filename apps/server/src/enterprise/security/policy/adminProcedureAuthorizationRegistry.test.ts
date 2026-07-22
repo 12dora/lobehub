@@ -66,14 +66,15 @@ describe('admin procedure authorization registry', () => {
     // + W10-P applyImmediate/publishNow (3) + W10-C settings.applyImmediate (1)
     // + W10-D skills/connectors applyImmediate+publishNow (4)
     // + admin.easyauth.getStatus (1 query) = 152
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(152);
+    // + admin.skills.parseImportSource (1 mutation) = 153
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(153);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(66);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(86);
-    expect(mutationPaths).toHaveLength(86);
+    ).toHaveLength(87);
+    expect(mutationPaths).toHaveLength(87);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

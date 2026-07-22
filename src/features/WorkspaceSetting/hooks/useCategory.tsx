@@ -20,6 +20,10 @@ import { useTranslation } from 'react-i18next';
 
 import { useIsWorkspaceOwner } from '@/business/client/hooks/useIsWorkspaceOwner';
 import { useShowWorkspaceApiKey } from '@/business/client/hooks/useShowWorkspaceApiKey';
+import {
+  isManagedResourceConfigurationAvailable,
+  useManagedResourceCapabilities,
+} from '@/features/ManagedResources';
 import { WorkspaceSettingsTabs } from '@/types/workspaceSettings';
 
 export enum WorkspaceSettingsGroupKey {
@@ -47,6 +51,17 @@ export const useWorkspaceSettingCategory = (): WorkspaceSettingCategoryGroup[] =
   const { t: tSubscription } = useTranslation('subscription');
   const showApiKey = useShowWorkspaceApiKey();
   const isOwner = useIsWorkspaceOwner();
+  const managedResources = useManagedResourceCapabilities();
+  const canConfigureProvider = isManagedResourceConfigurationAvailable(
+    'aiProviders',
+    managedResources,
+  );
+  const canConfigureModel = isManagedResourceConfigurationAvailable('aiModels', managedResources);
+  const canConfigureSkill = isManagedResourceConfigurationAvailable('skills', managedResources);
+  const canConfigureConnector = isManagedResourceConfigurationAvailable(
+    'connectors',
+    managedResources,
+  );
 
   return useMemo(
     () =>
@@ -105,22 +120,22 @@ export const useWorkspaceSettingCategory = (): WorkspaceSettingCategoryGroup[] =
         },
         {
           items: [
-            {
+            canConfigureProvider && {
               icon: Brain,
               key: WorkspaceSettingsTabs.Provider,
               label: t('tab.provider'),
             },
-            {
+            canConfigureModel && {
               icon: Sparkles,
               key: WorkspaceSettingsTabs.ServiceModel,
               label: t('tab.serviceModel'),
             },
-            {
+            canConfigureSkill && {
               icon: SkillsIcon,
               key: WorkspaceSettingsTabs.Skill,
               label: t('workspaceSetting.tab.skill'),
             },
-            {
+            canConfigureConnector && {
               icon: Blocks,
               key: WorkspaceSettingsTabs.Connector,
               label: t('workspaceSetting.tab.connector'),
@@ -135,7 +150,7 @@ export const useWorkspaceSettingCategory = (): WorkspaceSettingCategoryGroup[] =
             // (the link is owned by `userId`, not the workspace), and reaching a
             // workspace's agents happens via the scope selector on the *personal*
             // Messenger page. There is nothing workspace-level to configure here.
-          ],
+          ].filter(Boolean) as WorkspaceSettingCategoryItem[],
           key: WorkspaceSettingsGroupKey.Agent,
           title: t('workspaceSetting.group.agent'),
         },
@@ -163,6 +178,16 @@ export const useWorkspaceSettingCategory = (): WorkspaceSettingCategoryGroup[] =
           title: t('workspaceSetting.group.admin'),
         },
       ].filter(Boolean) as WorkspaceSettingCategoryGroup[],
-    [t, tAuth, tSubscription, showApiKey, isOwner],
+    [
+      t,
+      tAuth,
+      tSubscription,
+      showApiKey,
+      isOwner,
+      canConfigureProvider,
+      canConfigureModel,
+      canConfigureSkill,
+      canConfigureConnector,
+    ],
   );
 };

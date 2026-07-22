@@ -5,10 +5,23 @@ import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { type ChangeEvent, memo, useEffect, useRef, useState } from 'react';
 
+import type { RuntimeBranding } from '@/enterprise/client/providers/runtimeBranding';
 import type {
   AdminBrandingDraft,
   AdminBrandingUploadAssetInput,
 } from '@/server/enterprise/contracts/adminBranding';
+
+/**
+ * Product-default assets shown as the effective preview when neither the draft
+ * nor the published runtime branding provides a URL (built-ins ship as static
+ * files, not runtime URLs).
+ */
+const DEFAULT_ASSET_PREVIEW: Record<'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogImageUrl', string> = {
+  faviconUrl: '/favicon.ico',
+  iconUrl: '/icons/icon-192x192.png',
+  logoUrl: '/icons/icon-192x192.png',
+  ogImageUrl: '/og/og.webp',
+};
 
 const styles = createStaticStyles(({ css }) => ({
   field: css`
@@ -93,6 +106,9 @@ const TextField = memo<TextFieldProps>(
 TextField.displayName = 'BrandingTextField';
 
 interface AssetFieldProps extends Omit<TextFieldProps, 'onChange' | 'type'> {
+  /** Effective runtime/default URL shown as preview while the draft is empty. */
+  effectiveLabel?: string;
+  effectiveUrl?: string;
   kind: AssetKind;
   onChange: (value: string | null) => void;
   onUpload: (kind: AssetKind, file: File) => void;
@@ -103,9 +119,11 @@ interface AssetFieldProps extends Omit<TextFieldProps, 'onChange' | 'type'> {
 const AssetField = memo<AssetFieldProps>((props) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
+  const previewUrl = props.value ?? props.effectiveUrl;
+  const isEffectivePreview = !props.value && Boolean(props.effectiveUrl);
   useEffect(() => {
     setPreviewFailed(false);
-  }, [props.value]);
+  }, [previewUrl]);
   const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -113,15 +131,18 @@ const AssetField = memo<AssetFieldProps>((props) => {
   };
   return (
     <div className={styles.field}>
-      <TextField {...props} />
+      <TextField {...props} placeholder={props.placeholder ?? props.effectiveUrl} />
       <div className={styles.upload}>
-        {props.value && !previewFailed ? (
+        {previewUrl && !previewFailed ? (
           <img
             alt=""
             className={styles.thumbnail}
-            src={props.value}
+            src={previewUrl}
             onError={() => setPreviewFailed(true)}
           />
+        ) : null}
+        {previewUrl && !previewFailed && isEffectivePreview && props.effectiveLabel ? (
+          <span className={styles.meta}>{props.effectiveLabel}</span>
         ) : null}
         <Button
           disabled={props.disabled || !props.storageConfigured}
@@ -146,6 +167,8 @@ AssetField.displayName = 'BrandingAssetField';
 export interface BrandingFieldsProps {
   disabled: boolean;
   draft: AdminBrandingDraft;
+  /** Effective runtime branding — prefiled as placeholder/preview so empty draft fields still show current values. */
+  effective?: RuntimeBranding;
   labels: Record<string, string>;
   onPatch: (patch: Partial<AdminBrandingDraft>) => void;
   onUpload: (kind: AssetKind, file: File) => void;
@@ -153,11 +176,12 @@ export interface BrandingFieldsProps {
 }
 
 export const BrandingFields = memo<BrandingFieldsProps>(
-  ({ disabled, draft, labels, onPatch, onUpload, storageConfigured }) => {
+  ({ disabled, draft, effective, labels, onPatch, onUpload, storageConfigured }) => {
     const field = (key: keyof AdminBrandingDraft, type?: TextFieldProps['type']) => (
       <TextField
         disabled={disabled}
         label={labels[key]}
+        placeholder={(effective?.[key as keyof RuntimeBranding] as string | null) ?? undefined}
         type={type}
         value={draft[key] as string | null}
         onChange={(value) => onPatch({ [key]: value })}
@@ -166,6 +190,8 @@ export const BrandingFields = memo<BrandingFieldsProps>(
     const asset = (key: 'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogImageUrl', kind: AssetKind) => (
       <AssetField
         disabled={disabled}
+        effectiveLabel={labels.effectiveCurrent}
+        effectiveUrl={effective?.[key] ?? DEFAULT_ASSET_PREVIEW[key]}
         kind={kind}
         label={labels[key]}
         meta={labels.immediate}
