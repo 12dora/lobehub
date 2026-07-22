@@ -332,6 +332,24 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Change an AI provider draft.',
     { reauth: conditionalReauth },
   ),
+  'admin.audit.legalHolds.create': dangerousMutation(
+    'admin.audit.legalHolds.create',
+    'high',
+    'Create a platform audit legal hold with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.legalHolds.release': dangerousMutation(
+    'admin.audit.legalHolds.release',
+    'high',
+    'Release a platform audit legal hold with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.policy.update': dangerousMutation(
+    'admin.audit.policy.update',
+    'high',
+    'Update platform audit policy with CAS, reason, and recent reauth.',
+    { reauth: recentReauth },
+  ),
   'admin.branding.publish': dangerousMutation(
     'admin.branding.publish',
     'high',

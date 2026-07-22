@@ -265,12 +265,92 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'query',
-    path: 'admin.audit.get',
+    path: 'admin.audit.conversations.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.conversations.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.conversations.messages',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.events.facets',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
   },
   {
     kind: 'query',
+    path: 'admin.audit.events.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.events.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.events.stats',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.audit.legalHolds.create',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.legalHolds.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.legalHolds.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.audit.legalHolds.release',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE] },
+  },
+  {
+    kind: 'query',
     path: 'admin.audit.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.policy.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.audit.policy.update',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_POLICY_UPDATE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.users.search',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.users.summary',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.users.timeline',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
   },
   { kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true },

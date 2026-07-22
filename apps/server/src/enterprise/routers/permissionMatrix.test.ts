@@ -73,27 +73,32 @@ const roleCases = [
   {
     // Recount after W10 (creds/applyImmediate procedures) + admin.skills.parseImportSource = 96
     // + connector governance (getGovernance/setSharedAuthorization/updateBuiltinToolPolicy) = 99
-    expectedBeforeO04System: 99,
+    // + admin.audit A2 AUDIT_READ surface (policy/events/users beyond list+get) = 109
+    expectedBeforeO04System: 109,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
   },
   {
     // Recount after W10: creds reads (5) + easyauth status (1) + stats reads (12) = 57
     // + admin.connectors.getGovernance (CONNECTOR_READ) = 58
-    expectedBeforeO04System: 58,
+    // + admin.audit A2 AUDIT_READ (policy.get, events.*, users.*) = 66
+    // Conversation / legal-hold / policy.update remain super_admin-only.
+    expectedBeforeO04System: 66,
     expectedO04SystemPaths: o04SystemReadProcedurePaths,
     role: PLATFORM_SYSTEM_ROLES.AUDITOR,
   },
   {
     // Recount after admin.easyauth.getStatus = 28
-    expectedBeforeO04System: 28,
+    // + admin.audit A2 AUDIT_READ surface = 36
+    expectedBeforeO04System: 36,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
   },
   {
     // Recount after admin.users.delete (USER_DELETE) = 16
     // + admin.users.create (USER_CREATE) = 17
-    expectedBeforeO04System: 17,
+    // + admin.audit A2 AUDIT_READ surface = 25
+    expectedBeforeO04System: 25,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
   },

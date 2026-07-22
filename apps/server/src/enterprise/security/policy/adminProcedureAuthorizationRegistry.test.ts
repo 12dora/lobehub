@@ -73,14 +73,15 @@ describe('admin procedure authorization registry', () => {
     // + admin.users.create (1 mutation) = 158
     // + admin.aiProviders.delete (1 mutation) = 159
     // + admin.agents.delete (1 mutation) = 160
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(160);
+    // + admin.audit A2 (16 procedures: 13 queries + 3 mutations; list/get retained) = 176
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(176);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(67);
+    ).toHaveLength(80);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(93);
-    expect(mutationPaths).toHaveLength(93);
+    ).toHaveLength(96);
+    expect(mutationPaths).toHaveLength(96);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
