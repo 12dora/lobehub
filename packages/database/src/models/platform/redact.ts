@@ -126,6 +126,18 @@ const isExplicitCredentialScalar = (value: string): boolean =>
     !SECRET_PLACEHOLDER_PATTERN.test(value) &&
     !isDocumentationPlaceholder(value));
 
+/**
+ * Stricter scalar check for fully-formed auth shapes (`Authorization: …`,
+ * `bearer <value>`, `token=<value>`): a complete credential assignment is
+ * refused even when its value merely LOOKS like documentation ("fake-token") —
+ * only structural placeholders (`<your-token>`, `your_*`) stay excused.
+ */
+const isCredentialAssignmentValue = (value: string): boolean =>
+  isKnownSecretScalar(value) ||
+  (SECRET_SCALAR_PATTERN.test(value) &&
+    !SECRET_PLACEHOLDER_PATTERN.test(value) &&
+    !YOUR_PLACEHOLDER_PREFIXES.some((prefix) => value.toLowerCase().startsWith(prefix)));
+
 const containsSecretValueShape = (value: string): boolean => {
   if (
     EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
@@ -135,7 +147,7 @@ const containsSecretValueShape = (value: string): boolean => {
     return true;
   }
   return [...value.matchAll(BEARER_VALUE_PATTERN)].some((match) =>
-    match[1] ? isExplicitCredentialScalar(match[1]) : false,
+    match[1] ? isCredentialAssignmentValue(match[1]) : false,
   );
 };
 
@@ -224,7 +236,7 @@ const INLINE_SECRET_ASSIGNMENT_PATTERN =
 const stringContainsSensitiveAssignment = (value: string): boolean =>
   [...value.matchAll(INLINE_SECRET_ASSIGNMENT_PATTERN)].some((match) => {
     const assignedValue = match[1] ?? match[2] ?? match[3];
-    return assignedValue ? isExplicitCredentialScalar(assignedValue) : false;
+    return assignedValue ? isCredentialAssignmentValue(assignedValue) : false;
   });
 
 const SIGNED_URL_QUERY_KEYS = new Set([
