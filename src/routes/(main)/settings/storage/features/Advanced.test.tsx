@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -149,8 +149,8 @@ describe('AdvancedActions', () => {
     expect(screen.getByText('analytics.title')).toBeDefined();
     expect(screen.getByText('analytics.telemetry.title')).toBeDefined();
 
-    fireEvent.click(screen.getByRole('switch'));
-
-    expect(updateGeneralConfig).toHaveBeenCalledWith({ telemetry: false });
+    // Even with telemetry:true in the store, the anonymous-usage switch renders OFF because the
+    // telemetry selector is hard-forced to false (built-in telemetry removed).
+    expect(screen.getByRole('switch')).not.toBeChecked();
   });
 });

@@ -35,44 +35,46 @@ export const getAnalyticsConfig = () => {
       REACT_SCAN_MONITOR_API_KEY: z.string().optional(),
     },
     runtimeEnv: {
+      // AIHub: built-in LobeHub telemetry is removed. Every third-party tracker is hard-disabled
+      // and its key cleared regardless of environment variables, so no analytics/phone-home data
+      // is ever emitted. Do not re-enable by setting the corresponding env vars — they are ignored.
       // Plausible Analytics
-      ENABLED_PLAUSIBLE_ANALYTICS: !!process.env.PLAUSIBLE_DOMAIN,
-      PLAUSIBLE_DOMAIN: process.env.PLAUSIBLE_DOMAIN,
-      PLAUSIBLE_SCRIPT_BASE_URL: process.env.PLAUSIBLE_SCRIPT_BASE_URL || 'https://plausible.io',
+      ENABLED_PLAUSIBLE_ANALYTICS: false,
+      PLAUSIBLE_DOMAIN: undefined,
+      PLAUSIBLE_SCRIPT_BASE_URL: 'https://plausible.io',
 
       // Posthog Analytics
-      ENABLED_POSTHOG_ANALYTICS: !!process.env.POSTHOG_KEY,
-      POSTHOG_KEY: process.env.POSTHOG_KEY,
-      POSTHOG_HOST: process.env.POSTHOG_HOST || 'https://app.posthog.com',
-      DEBUG_POSTHOG_ANALYTICS: process.env.DEBUG_POSTHOG_ANALYTICS === '1',
+      ENABLED_POSTHOG_ANALYTICS: false,
+      POSTHOG_KEY: undefined,
+      POSTHOG_HOST: 'https://app.posthog.com',
+      DEBUG_POSTHOG_ANALYTICS: false,
 
       // Umami Analytics
-      ENABLED_UMAMI_ANALYTICS: !!process.env.UMAMI_WEBSITE_ID,
-      UMAMI_SCRIPT_URL: process.env.UMAMI_SCRIPT_URL || 'https://analytics.umami.is/script.js',
-      UMAMI_WEBSITE_ID: process.env.UMAMI_WEBSITE_ID,
+      ENABLED_UMAMI_ANALYTICS: false,
+      UMAMI_SCRIPT_URL: 'https://analytics.umami.is/script.js',
+      UMAMI_WEBSITE_ID: undefined,
 
       // Clarity Analytics
-      ENABLED_CLARITY_ANALYTICS: !!process.env.CLARITY_PROJECT_ID,
-      CLARITY_PROJECT_ID: process.env.CLARITY_PROJECT_ID,
+      ENABLED_CLARITY_ANALYTICS: false,
+      CLARITY_PROJECT_ID: undefined,
 
       // Vercel Analytics
-      ENABLE_VERCEL_ANALYTICS: process.env.ENABLE_VERCEL_ANALYTICS === '1',
-      DEBUG_VERCEL_ANALYTICS: process.env.DEBUG_VERCEL_ANALYTICS === '1',
+      ENABLE_VERCEL_ANALYTICS: false,
+      DEBUG_VERCEL_ANALYTICS: false,
 
       // Google Analytics
-      ENABLE_GOOGLE_ANALYTICS: !!process.env.GOOGLE_ANALYTICS_MEASUREMENT_ID,
-      GOOGLE_ANALYTICS_MEASUREMENT_ID: process.env.GOOGLE_ANALYTICS_MEASUREMENT_ID,
+      ENABLE_GOOGLE_ANALYTICS: false,
+      GOOGLE_ANALYTICS_MEASUREMENT_ID: undefined,
 
       // X Ads
-      ENABLED_X_ADS: !!process.env.X_ADS_PIXEL_ID,
-      X_ADS_PIXEL_ID: process.env.X_ADS_PIXEL_ID,
-      X_ADS_LOGIN_OR_SIGNUP_CLICKED_EVENT_ID: process.env.X_ADS_LOGIN_OR_SIGNUP_CLICKED_EVENT_ID,
-      X_ADS_MAIN_PAGE_VIEW_EVENT_ID: process.env.X_ADS_MAIN_PAGE_VIEW_EVENT_ID,
-      X_ADS_PURCHASE_EVENT_ID: process.env.X_ADS_PURCHASE_EVENT_ID,
+      ENABLED_X_ADS: false,
+      X_ADS_PIXEL_ID: undefined,
+      X_ADS_LOGIN_OR_SIGNUP_CLICKED_EVENT_ID: undefined,
+      X_ADS_MAIN_PAGE_VIEW_EVENT_ID: undefined,
+      X_ADS_PURCHASE_EVENT_ID: undefined,
 
       // React Scan Monitor
-      // https://dashboard.react-scan.com
-      REACT_SCAN_MONITOR_API_KEY: process.env.REACT_SCAN_MONITOR_API_KEY,
+      REACT_SCAN_MONITOR_API_KEY: undefined,
     },
   });
 };

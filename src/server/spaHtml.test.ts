@@ -69,14 +69,12 @@ describe('buildAnalyticsConfig', () => {
     delete process.env.NEXT_PUBLIC_DESKTOP_UMAMI_BASE_URL;
   });
 
-  it('includes desktop analytics only when opted in', () => {
+  it('never configures desktop analytics — telemetry is removed (AIHub)', () => {
     process.env.NEXT_PUBLIC_DESKTOP_PROJECT_ID = 'pid';
     process.env.NEXT_PUBLIC_DESKTOP_UMAMI_BASE_URL = 'https://umami.example.com';
 
     expect(buildAnalyticsConfig().desktop).toBeUndefined();
-    expect(buildAnalyticsConfig({ desktop: true }).desktop).toEqual({
-      baseUrl: 'https://umami.example.com',
-      projectId: 'pid',
-    });
+    // Even when explicitly opted in, no desktop tracker config is emitted.
+    expect(buildAnalyticsConfig({ desktop: true }).desktop).toBeUndefined();
   });
 });
