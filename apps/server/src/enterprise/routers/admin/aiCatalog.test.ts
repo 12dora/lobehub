@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -696,5 +696,109 @@ describe('admin AI catalog permission and reauth gates', () => {
     } finally {
       resetSharedAdminMutationRateLimiter();
     }
+  });
+
+  const seedDeletableProvider = async (providerKey: string) => {
+    const caller = await callerFor(ids.aiAdmin);
+    const provider = await caller.aiProviders.createDraft({
+      displayName: providerKey,
+      enabled: true,
+      providerKey,
+      reason: 'seed deletable draft',
+      secret: { operation: 'replace', value: `del-credential-${providerKey}` },
+      settings: { sdkType: 'openai' },
+    });
+    const detail = await caller.aiProviders.get({ id: provider.id });
+    await caller.aiModels.create({
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'seed deletable model',
+      type: 'chat',
+    });
+    return { caller, providerId: provider.id };
+  };
+
+  const providerRows = (providerId: string) =>
+    db.select().from(platformAiProviders).where(eq(platformAiProviders.id, providerId));
+  const modelRows = (providerId: string) =>
+    db.select().from(platformAiModels).where(eq(platformAiModels.providerId, providerId));
+  const secretRows = (providerId: string) =>
+    db
+      .select()
+      .from(platformAiProviderSecrets)
+      .where(eq(platformAiProviderSecrets.providerId, providerId));
+  const revisionRows = (providerId: string) =>
+    db
+      .select()
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'provider'),
+          eq(platformResourceRevisions.resourceId, providerId),
+        ),
+      );
+
+  it('hard-deletes a draft provider with its models and secret, and writes a success audit', async () => {
+    const { caller, providerId } = await seedDeletableProvider('delete-draft');
+
+    await expect(
+      caller.aiProviders.delete({ id: providerId, reason: 'remove test provider' }),
+    ).resolves.toEqual({ deleted: true });
+
+    expect(await providerRows(providerId)).toHaveLength(0);
+    expect(await modelRows(providerId)).toHaveLength(0);
+    expect(await secretRows(providerId)).toHaveLength(0);
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.some(
+        ({ action, result, targetId }) =>
+          action === 'admin.aiProviders.delete' && result === 'success' && targetId === providerId,
+      ),
+    ).toBe(true);
+  });
+
+  it('hard-deletes a published provider and removes its revision-log rows', async () => {
+    const { providerId } = await seedPublishableProvider('delete-published');
+    // Published provider owns at least one revision row.
+    expect((await revisionRows(providerId)).length).toBeGreaterThan(0);
+
+    const caller = await callerFor(ids.aiAdmin);
+    await expect(
+      caller.aiProviders.delete({ id: providerId, reason: 'remove published provider' }),
+    ).resolves.toEqual({ deleted: true });
+
+    expect(await providerRows(providerId)).toHaveLength(0);
+    expect(await modelRows(providerId)).toHaveLength(0);
+    expect(await revisionRows(providerId)).toHaveLength(0);
+  });
+
+  it('rejects a stale-reauth delete before mutating and records a denied audit', async () => {
+    const { providerId } = await seedDeletableProvider('delete-stale-reauth');
+    const stale = await callerFor(ids.aiAdmin, { authenticatedAt: null });
+
+    await expect(
+      stale.aiProviders.delete({ id: providerId, reason: 'stale reauth delete' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    expect(await providerRows(providerId)).toHaveLength(1);
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.some(
+        ({ action, result }) => action === 'admin.aiProviders.delete' && result === 'denied',
+      ),
+    ).toBe(true);
+  });
+
+  it('denies an ordinary user without AI_PROVIDER_DELETE', async () => {
+    const { providerId } = await seedDeletableProvider('delete-forbidden');
+    const ordinary = await callerFor(ids.normal);
+
+    await expect(
+      ordinary.aiProviders.delete({ id: providerId, reason: 'no permission' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    expect(await providerRows(providerId)).toHaveLength(1);
   });
 });

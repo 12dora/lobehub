@@ -26,6 +26,8 @@ import {
   adminAiProviderApplyImmediateOutputSchema,
   adminAiProviderArchiveInputSchema,
   adminAiProviderCreateDraftInputSchema,
+  adminAiProviderDeleteInputSchema,
+  adminAiProviderDeleteOutputSchema,
   adminAiProviderGetInputSchema,
   adminAiProviderGetOutputSchema,
   adminAiProviderListInputSchema,
@@ -143,6 +145,27 @@ export const adminAiProvidersRouter = router({
       });
       try {
         return await createService(ctx.serverDB).archiveProvider(ctx.userId!, input);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  delete: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE))
+    .input(adminAiProviderDeleteInputSchema)
+    .output(adminAiProviderDeleteOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertDangerousReauth({
+        action: 'admin.aiProviders.delete',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+      });
+      try {
+        return await createService(ctx.serverDB).deleteProvider(ctx.userId!, input);
       } catch (error) {
         return mapServiceError(error);
       }

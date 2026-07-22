@@ -17,6 +17,7 @@ import type {
   AdminPlatformAgentAssignmentRemoveInput,
   AdminPlatformAgentAssignmentUpsertInput,
   AdminPlatformAgentCreateInput,
+  AdminPlatformAgentDeleteInput,
   AdminPlatformAgentDependentsInput,
   AdminPlatformAgentListInput,
   AdminPlatformAgentSetDefaultInboxInput,
@@ -554,6 +555,44 @@ export class PlatformAgentAdminService {
       }),
       targetId: input.agentId,
     });
+
+  /**
+   * Irreversibly hard-delete a platform agent and every row it owns (versions, assignments,
+   * materializations). Default / system agents are refused — their pointer must be reassigned via
+   * setDefaultInbox first, since a hard delete has no replacement path. The user's local `agents`
+   * rows are preserved (materialization FK points the other way).
+   */
+  delete = async (actorUserId: string, input: AdminPlatformAgentDeleteInput) =>
+    this.atomicMutation({
+      action: 'admin.agents.delete',
+      actorUserId,
+      reason: input.reason,
+      run: async (tx) => {
+        const repository = new PlatformAgentCatalogRepository(tx);
+        // Same lock order as archive (ADM-01/ADM-02): default-inbox singleton → per-Agent
+        // reference lock (serializes assignment/materialization writers so none can orphan the
+        // parent between the child deletes and the identity delete) → the identity row itself.
+        await acquirePlatformDefaultInboxLock(tx);
+        await acquirePlatformAgentReferenceLock(tx, input.agentId);
+        const locked = await repository.lockIdentity(input.agentId);
+        if (!locked || locked.migrationRequired) throw new PlatformAgentNotFoundError();
+        if (
+          typeof input.expectedRevision === 'number' &&
+          locked.revision !== input.expectedRevision
+        ) {
+          throw new PlatformAgentRevisionConflictError();
+        }
+        // A hard delete cannot reassign the default pointer, so refuse the default / any system
+        // agent (the default-inbox row also auto-rebuilds only through setDefaultInbox).
+        if (locked.isDefault || locked.systemKey !== null) {
+          throw new PlatformAgentDefaultRequiredError();
+        }
+        await repository.hardDeleteAgentCascade(locked.id);
+        return { agentKey: locked.agentKey, deleted: true as const };
+      },
+      summarize: (result) => ({ agentKey: result.agentKey }),
+      targetId: input.agentId,
+    }).then(() => ({ deleted: true as const }));
 
   getDependents = async (input: AdminPlatformAgentDependentsInput) => {
     const repository = new PlatformAgentCatalogRepository(this.db);

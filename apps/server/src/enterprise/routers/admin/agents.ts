@@ -22,6 +22,8 @@ import {
   adminPlatformAgentAssignmentUpsertOutputSchema,
   adminPlatformAgentCreateInputSchema,
   adminPlatformAgentCreateOutputSchema,
+  adminPlatformAgentDeleteInputSchema,
+  adminPlatformAgentDeleteOutputSchema,
   adminPlatformAgentDependentsInputSchema,
   adminPlatformAgentDependentsOutputSchema,
   adminPlatformAgentGetInputSchema,
@@ -344,6 +346,28 @@ export const adminAgentsRouter = router({
       assertAgentFeatureEnabled();
       try {
         return await new PlatformAgentAdminService(ctx.serverDB).create(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  delete: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_DELETE))
+    .input(adminPlatformAgentDeleteInputSchema)
+    .output(adminPlatformAgentDeleteOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.delete',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).delete(ctx.userId!, input);
       } catch (error) {
         return mapAgentServiceError(error);
       }

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -520,5 +520,70 @@ describe('adminAgentsRouter security gates', () => {
       await db.execute(sql.raw('DROP TRIGGER rr2_reject_rollout_job ON platform_jobs'));
       await db.execute(sql.raw('DROP FUNCTION rr2_reject_rollout_job()'));
     }
+  });
+});
+
+describe('adminAgentsRouter hard delete', () => {
+  const agentRows = (agentId: string) =>
+    db.select().from(platformAgents).where(eq(platformAgents.id, agentId));
+
+  it('hard-deletes a draft agent and writes a success audit', async () => {
+    const creator = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
+    const created = await creator.create({ agentKey: 'delete-me', reason: 'seed for delete' });
+    const deleter = await callerFor({ authenticatedAt: new Date(), userId: ids.deleter });
+
+    await expect(
+      deleter.delete({ agentId: created.identity.id, reason: 'remove test agent' }),
+    ).resolves.toEqual({ deleted: true });
+
+    expect(await agentRows(created.identity.id)).toHaveLength(0);
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.some(
+        ({ action, result, targetId }) =>
+          action === 'admin.agents.delete' &&
+          result === 'success' &&
+          targetId === created.identity.id,
+      ),
+    ).toBe(true);
+  });
+
+  it('denies a caller without AGENT_DELETE', async () => {
+    const normal = await callerFor({ authenticatedAt: new Date(), userId: ids.normal });
+    await expect(
+      normal.delete({ agentId: 'any-agent', reason: 'no permission' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('rejects a stale-reauth delete before mutating and records a denied audit', async () => {
+    const creator = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
+    const created = await creator.create({ agentKey: 'delete-stale', reason: 'seed for delete' });
+    const staleDeleter = await callerFor({ authenticatedAt: null, userId: ids.deleter });
+
+    await expect(
+      staleDeleter.delete({ agentId: created.identity.id, reason: 'stale reauth delete' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    expect(await agentRows(created.identity.id)).toHaveLength(1);
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.some(({ action, result }) => action === 'admin.agents.delete' && result === 'denied'),
+    ).toBe(true);
+  });
+
+  it('refuses to hard-delete the default Inbox agent', async () => {
+    await db.insert(platformAgents).values({
+      agentKey: 'default-inbox-agent',
+      id: 'default-inbox-agent',
+      isDefault: true,
+      systemKey: 'default-inbox',
+      title: 'Default Inbox',
+    });
+    const deleter = await callerFor({ authenticatedAt: new Date(), userId: ids.deleter });
+
+    await expect(
+      deleter.delete({ agentId: 'default-inbox-agent', reason: 'try delete default' }),
+    ).rejects.toThrow();
+    expect(await agentRows('default-inbox-agent')).toHaveLength(1);
   });
 });

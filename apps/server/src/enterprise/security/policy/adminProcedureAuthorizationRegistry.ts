@@ -67,6 +67,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_CREATE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.agents.delete',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_DELETE] },
+  },
+  {
     kind: 'query',
     path: 'admin.agents.get',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_READ] },
@@ -212,6 +217,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     kind: 'mutation',
     path: 'admin.aiProviders.createDraft',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.aiProviders.delete',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE] },
   },
   {
     kind: 'query',

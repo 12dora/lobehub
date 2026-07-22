@@ -830,4 +830,102 @@ describe('PlatformAgentCatalogRepository', () => {
       expect(await repository.listMaterializedAgentIds(USER_B)).toEqual(new Set(['m10-owner-b']));
     });
   });
+
+  it('hard-deletes an agent with all owned rows while preserving the user local agent', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'hard-delete-me',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    // Publish the pointer so the delete must detach current_version_id + defeat the version
+    // immutability trigger (migration 0140 escape hatch).
+    await repository.pointToVersionCas({
+      agentId: agent.id,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      versionId: version!.id,
+    });
+    await repository.createAssignment({
+      agentId: agent.id,
+      enabled: true,
+      mode: 'default',
+      pinnedVersionId: null,
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+    await serverDB.insert(agents).values({ id: 'm10-local-a', title: 'Local A', userId: USER_A });
+    await repository.upsertMaterialization({
+      materializedAgentId: 'm10-local-a',
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version!.checksum,
+      platformAgentVersionId: version!.id,
+      userId: USER_A,
+    });
+
+    // The escape hatch is transaction-local, so the cascade must run inside one transaction.
+    await serverDB.transaction((tx) =>
+      new PlatformAgentCatalogRepository(tx).hardDeleteAgentCascade(agent.id),
+    );
+
+    expect(await repository.getIdentity(agent.id)).toBeUndefined();
+    expect(
+      await serverDB
+        .select()
+        .from(platformAgentVersions)
+        .where(eq(platformAgentVersions.agentId, agent.id)),
+    ).toHaveLength(0);
+    expect(
+      await serverDB
+        .select()
+        .from(platformAgentAssignments)
+        .where(eq(platformAgentAssignments.agentId, agent.id)),
+    ).toHaveLength(0);
+    expect(
+      await serverDB
+        .select()
+        .from(platformUserAgentMaterializations)
+        .where(eq(platformUserAgentMaterializations.platformAgentId, agent.id)),
+    ).toHaveLength(0);
+    // The user's local agent is preserved — the materialization FK points the other way.
+    expect(await serverDB.select().from(agents).where(eq(agents.id, 'm10-local-a'))).toHaveLength(
+      1,
+    );
+  });
+
+  it('keeps platform_agent_versions immutable outside the guarded delete path', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'still-immutable',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    // A plain DELETE without the opt-in GUC is still rejected by the immutability trigger.
+    await expect(
+      serverDB.delete(platformAgentVersions).where(eq(platformAgentVersions.id, version!.id)),
+    ).rejects.toThrow();
+    // The row survives — the trigger blocked the unguarded delete.
+    expect(
+      await serverDB
+        .select()
+        .from(platformAgentVersions)
+        .where(eq(platformAgentVersions.id, version!.id)),
+    ).toHaveLength(1);
+  });
 });

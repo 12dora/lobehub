@@ -394,6 +394,21 @@ export const adminPlatformAgentArchiveInputSchema = z
 
 export const adminPlatformAgentArchiveOutputSchema = adminPlatformAgentMutationOutputSchema;
 
+/**
+ * Hard-delete a platform agent and every row it owns. CAS-light: the list row carries no draft
+ * token, so only an optional revision guard is accepted. Default / system agents are refused
+ * server-side (their pointer must be reassigned via setDefaultInbox first).
+ */
+export const adminPlatformAgentDeleteInputSchema = z
+  .object({
+    agentId: idSchema,
+    expectedRevision: revisionSchema.optional(),
+    reason: reasonSchema,
+  })
+  .strict();
+
+export const adminPlatformAgentDeleteOutputSchema = z.object({ deleted: z.literal(true) }).strict();
+
 const platformAgentPointerCasSchema = z
   .object({
     agentId: idSchema,
@@ -693,6 +708,8 @@ export type AdminPlatformAgentArchiveInput = z.input<typeof adminPlatformAgentAr
 export type AdminPlatformAgentArchiveOutput = z.output<
   typeof adminPlatformAgentArchiveOutputSchema
 >;
+export type AdminPlatformAgentDeleteInput = z.input<typeof adminPlatformAgentDeleteInputSchema>;
+export type AdminPlatformAgentDeleteOutput = z.output<typeof adminPlatformAgentDeleteOutputSchema>;
 export type AdminPlatformAgentAssignmentCreateInput = z.input<
   typeof adminPlatformAgentAssignmentCreateInputSchema
 >;
