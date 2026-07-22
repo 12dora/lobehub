@@ -10,8 +10,17 @@ import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { GET } from './route';
 
 const bridgeMocks = vi.hoisted(() => ({
+  getEmptyPlatformAiRuntimeState: vi.fn(() => ({
+    enabledAiModels: [],
+    enabledAiProviders: [],
+    enabledChatAiProviders: [],
+    enabledImageAiProviders: [],
+    enabledVideoAiProviders: [],
+    runtimeConfig: {},
+  })),
   isPlatformManagedAiEnabled: vi.fn(),
   listPlatformPublishedModels: vi.fn(),
+  resolvePlatformAiRuntimeState: vi.fn(),
 }));
 
 vi.mock('@/app/(backend)/middleware/auth/utils', () => ({
@@ -227,6 +236,14 @@ describe('GET handler', () => {
   describe('success cases', () => {
     it('returns only published catalog models without initializing a provider runtime', async () => {
       bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(true);
+      bridgeMocks.resolvePlatformAiRuntimeState.mockResolvedValue({
+        enabledAiModels: [],
+        enabledAiProviders: [{ id: 'openai', name: 'OpenAI', source: 'builtin' }],
+        enabledChatAiProviders: [],
+        enabledImageAiProviders: [],
+        enabledVideoAiProviders: [],
+        runtimeConfig: {},
+      });
       bridgeMocks.listPlatformPublishedModels.mockResolvedValue([
         {
           abilities: {},
@@ -248,6 +265,33 @@ describe('GET handler', () => {
         expect.any(Object),
         'openai',
       );
+    });
+
+    it('falls back to the user runtime when the provider is not in the platform catalog', async () => {
+      bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(true);
+      bridgeMocks.resolvePlatformAiRuntimeState.mockResolvedValue({
+        enabledAiModels: [],
+        enabledAiProviders: [{ id: 'openai', name: 'OpenAI', source: 'builtin' }],
+        enabledChatAiProviders: [],
+        enabledImageAiProviders: [],
+        enabledVideoAiProviders: [],
+        runtimeConfig: {},
+      });
+
+      const mockModelList = [{ id: 'custom-model', name: 'Custom' }];
+      const mockRuntime: LobeRuntimeAI = {
+        baseURL: 'https://user.example/v1',
+        chat: vi.fn(),
+        models: vi.fn().mockResolvedValue(mockModelList),
+      };
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValue(new ModelRuntime(mockRuntime));
+
+      const response = await GET(request, { params: Promise.resolve({ provider: 'oai' }) });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(mockModelList);
+      expect(initModelRuntimeFromDB).toHaveBeenCalled();
+      expect(bridgeMocks.listPlatformPublishedModels).not.toHaveBeenCalled();
     });
 
     it('should return model list on success', async () => {

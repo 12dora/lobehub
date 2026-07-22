@@ -492,28 +492,23 @@ export const initModelRuntimeWithUserPayload = (
  * const response = await modelRuntime.chat({ messages, model });
  * ```
  */
-export const initModelRuntimeFromDB = async (
+const isPlatformNotFoundError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === 'PLATFORM_NOT_FOUND') return true;
+  return error instanceof Error && error.message === 'PLATFORM_NOT_FOUND';
+};
+
+/**
+ * User-owned (BYOK / self-built) provider path: reads the user's AiProvider row +
+ * keyVaults. Never attaches platform allowlist hooks or platform secrets.
+ */
+const initUserModelRuntimeFromDB = async (
   db: LobeChatDatabase,
   userId: string,
   provider: string,
   workspaceId?: string,
 ): Promise<ModelRuntime> => {
-  if (isPlatformManagedAiEnabled()) {
-    const providerConfig = await resolvePlatformAiExecutionConfig(db, provider);
-    const runtimeProvider = providerConfig.runtimeProvider;
-    const payload = buildPayloadFromKeyVaults(
-      providerConfig.keyVaults as ProviderKeyVaults,
-      runtimeProvider,
-    );
-    const businessHooks = getBusinessModelRuntimeHooks(userId, provider, workspaceId);
-    const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
-    const hooks = mergeModelRuntimeHooks(
-      createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
-      mergeModelRuntimeHooks(businessHooks, tracingHooks),
-    );
-    return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
-  }
-
   // 1. Get user's provider configuration from database
   const aiProviderModel = new AiProviderModel(db, userId, workspaceId);
 
@@ -542,7 +537,42 @@ export const initModelRuntimeFromDB = async (
   const hooks = mergeModelRuntimeHooks(businessHooks, tracingHooks);
 
   // 6. Initialize ModelRuntime with the payload and hooks
+  // Note: providerConfig.config (e.g. enableResponseApi) is returned by getAiProviderById
+  // and remains available to callers that read runtime state elsewhere; this path does not
+  // strip config — payload/hooks construction only consumes keyVaults + sdkType (pre-existing).
   return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
+};
+
+export const initModelRuntimeFromDB = async (
+  db: LobeChatDatabase,
+  userId: string,
+  provider: string,
+  workspaceId?: string,
+): Promise<ModelRuntime> => {
+  if (isPlatformManagedAiEnabled()) {
+    try {
+      const providerConfig = await resolvePlatformAiExecutionConfig(db, provider);
+      const runtimeProvider = providerConfig.runtimeProvider;
+      const payload = buildPayloadFromKeyVaults(
+        providerConfig.keyVaults as ProviderKeyVaults,
+        runtimeProvider,
+      );
+      const businessHooks = getBusinessModelRuntimeHooks(userId, provider, workspaceId);
+      const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
+      const hooks = mergeModelRuntimeHooks(
+        createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
+        mergeModelRuntimeHooks(businessHooks, tracingHooks),
+      );
+      return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
+    } catch (error) {
+      // Platform catalog governs platform providers only. User self-built / BYOK providers
+      // are absent from the catalog → fall back to the user's own config. Other platform
+      // errors (secrets, allowlist, etc.) still fail closed.
+      if (!isPlatformNotFoundError(error)) throw error;
+    }
+  }
+
+  return initUserModelRuntimeFromDB(db, userId, provider, workspaceId);
 };
 
 /**

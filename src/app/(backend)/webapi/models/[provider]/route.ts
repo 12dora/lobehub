@@ -5,8 +5,10 @@ import { NextResponse } from 'next/server';
 import { checkAuth } from '@/app/(backend)/middleware/auth';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import {
+  getEmptyPlatformAiRuntimeState,
   isPlatformManagedAiEnabled,
   listPlatformPublishedModels,
+  resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createErrorResponse } from '@/utils/errorResponse';
 
@@ -59,8 +61,18 @@ export const GET = checkAuth(async (req, { params, userId, serverDB }) => {
 
   try {
     if (isPlatformManagedAiEnabled()) {
-      return NextResponse.json(await listPlatformPublishedModels(serverDB, provider));
+      // Platform catalog membership (enabled published providers). Equivalent to
+      // PLATFORM_NOT_FOUND on resolve: missing/disabled providers are not listed here.
+      // Platform hit → return published models (may be empty). Miss → user BYOK path.
+      const platformState = await resolvePlatformAiRuntimeState({
+        db: serverDB,
+        upstreamState: getEmptyPlatformAiRuntimeState(),
+      });
+      if (platformState.enabledAiProviders.some((item) => item.id === provider)) {
+        return NextResponse.json(await listPlatformPublishedModels(serverDB, provider));
+      }
     }
+
     const workspaceId = await resolveValidWorkspaceIdFromRequest({ req, serverDB, userId });
 
     // Read user's provider config from database
