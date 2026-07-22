@@ -1,3 +1,4 @@
+import { mergeArrayById } from '@lobechat/utils';
 import type {
   AiModelSortMap,
   AiProviderModelListItem,
@@ -5,6 +6,7 @@ import type {
   ToggleAiModelEnableParams,
   UpdateAiModelParams,
 } from 'model-bank';
+import { AiModelSourceEnum, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
 import type { AdminAiProviderGetOutput } from '@/enterprise/client/features/admin/ai/types';
@@ -383,8 +385,38 @@ export class AdminAiModelService {
     id: string,
     _params?: GetAiProviderModelListParams,
   ): Promise<AiProviderModelListItem[]> => {
-    const detail = await getDetail(id);
-    return detail.draft.models.map(mapModelListItem);
+    // Built-in model catalog from client-side model-bank, mirroring the server repo's
+    // fetchBuiltinModels fallback so every provider shows its full model list even before
+    // a platform DB row exists. Providers whose models are genuinely remote-fetched have an
+    // empty built-in list here and keep loading from the cloud — that path is untouched.
+    const builtinModels = LOBE_DEFAULT_MODEL_LIST.filter((model) => model.providerId === id).map(
+      (model): AiProviderModelListItem => ({
+        ...model,
+        enabled: model.enabled || false,
+        source: AiModelSourceEnum.Builtin,
+      }),
+    );
+
+    // Platform DB (draft) models. A built-in that has never been configured has no platform
+    // row, so getDetail throws "Platform provider not found" — treat that as zero DB models
+    // (like getAiProviderById) instead of failing the whole model list.
+    let dbModels: AiProviderModelListItem[] = [];
+    try {
+      const detail = await getDetail(id);
+      dbModels = detail.draft.models.map(mapModelListItem);
+    } catch {
+      // No platform row yet → built-ins only.
+    }
+
+    // DB rows override built-ins by id; the type always comes from the built-in card
+    // (remote/DB rows may lack a reliable type), matching the server merge.
+    const merged = mergeArrayById(builtinModels, dbModels) as AiProviderModelListItem[];
+    const builtinTypeById = new Map(builtinModels.map((model) => [model.id, model.type]));
+    for (const model of merged) {
+      const builtinType = builtinTypeById.get(model.id);
+      if (builtinType) model.type = builtinType;
+    }
+    return merged;
   };
 
   getAiModelById = async (id: string) => {
