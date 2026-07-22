@@ -987,6 +987,13 @@
       "when": 1784700000000,
       "tag": "0140_platform_agent_version_delete_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1784739021483,
+      "tag": "0141_platform_audit_admin_foundation",
+      "breakpoints": true
     }
   ],
   "version": "6"

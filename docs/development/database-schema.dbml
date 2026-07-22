@@ -1774,6 +1774,115 @@ table platform_ai_providers {
   }
 }
 
+table platform_audit_exports {
+  id text [pk, not null]
+  kind varchar(32) [not null]
+  status varchar(32) [not null, default: 'pending']
+  filter_snapshot jsonb [not null, default: `{}`]
+  job_id text
+  includes_message_bodies boolean [not null, default: false]
+  artifact_checksum text
+  storage_key text
+  artifact_bytes bigint
+  row_count integer
+  expires_at "timestamp with time zone"
+  error jsonb
+  requested_by text [not null]
+  started_at "timestamp with time zone"
+  finished_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (status, created_at) [name: 'platform_audit_exports_status_created_at_idx']
+    (kind, created_at) [name: 'platform_audit_exports_kind_created_at_idx']
+    requested_by [name: 'platform_audit_exports_requested_by_idx']
+    expires_at [name: 'platform_audit_exports_expires_at_idx']
+    job_id [name: 'platform_audit_exports_job_id_unique', unique]
+
+
+
+
+
+  }
+}
+
+table platform_audit_legal_holds {
+  id text [pk, not null]
+  scope_type varchar(32) [not null]
+  scope_id text
+  status varchar(16) [not null, default: 'active']
+  reason text [not null]
+  created_by text [not null]
+  released_by text
+  release_reason text
+  released_at "timestamp with time zone"
+  expires_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (status, scope_type, scope_id) [name: 'platform_audit_legal_holds_status_scope_idx']
+    (scope_type, scope_id) [name: 'platform_audit_legal_holds_scope_idx']
+    created_by [name: 'platform_audit_legal_holds_created_by_idx']
+    expires_at [name: 'platform_audit_legal_holds_expires_at_idx']
+    scope_type [name: 'platform_audit_legal_holds_active_global_unique', unique]
+    (scope_type, scope_id) [name: 'platform_audit_legal_holds_active_scope_unique', unique]
+
+
+
+
+  }
+}
+
+table platform_audit_policies {
+  id text [pk, not null]
+  revision integer [not null, default: 0]
+  operation_log_retention_days integer [not null, default: 365]
+  conversation_retention_days integer [not null, default: 180]
+  export_artifact_retention_days integer [not null, default: 7]
+  content_access_mode varchar(32) [not null, default: 'metadata_only']
+  message_body_in_export boolean [not null, default: false]
+  max_export_rows integer [not null, default: 50000]
+  max_list_window_days integer [not null, default: 90]
+  redaction_profile varchar(32) [not null, default: 'strict']
+  updated_by text
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+}
+
+table platform_audit_retention_runs {
+  id text [pk, not null]
+  mode varchar(16) [not null]
+  scope varchar(32) [not null]
+  cutoff_at "timestamp with time zone" [not null]
+  policy_revision integer [not null]
+  status varchar(32) [not null, default: 'pending']
+  counts jsonb [not null, default: `{}`]
+  progress_done integer [not null, default: 0]
+  progress_total integer
+  job_id text
+  error jsonb
+  requested_by text [not null]
+  started_at "timestamp with time zone"
+  finished_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (status, created_at) [name: 'platform_audit_retention_runs_status_created_at_idx']
+    (scope, created_at) [name: 'platform_audit_retention_runs_scope_created_at_idx']
+    requested_by [name: 'platform_audit_retention_runs_requested_by_idx']
+    job_id [name: 'platform_audit_retention_runs_job_id_unique', unique]
+
+
+
+
+
+
+  }
+}
+
 table platform_audit_logs {
   id text [pk, not null]
   actor_user_id text
@@ -1796,6 +1905,10 @@ table platform_audit_logs {
     (target_type, target_id) [name: 'platform_audit_logs_target_type_id_idx']
     action [name: 'platform_audit_logs_action_idx']
     request_id [name: 'platform_audit_logs_request_id_idx']
+    (actor_user_id, created_at, id) [name: 'platform_audit_logs_actor_created_at_id_idx']
+    (action, created_at, id) [name: 'platform_audit_logs_action_created_at_id_idx']
+    (result, created_at, id) [name: 'platform_audit_logs_result_created_at_id_idx']
+    (created_at, id) [name: 'platform_audit_logs_created_at_id_idx']
   }
 }
 

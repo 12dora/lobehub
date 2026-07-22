@@ -131,4 +131,106 @@ describe('PlatformAuditLogModel', () => {
     const stored = await auditModel.findById(row.id);
     expect(JSON.stringify(stored)).not.toMatch(/opaque-/i);
   });
+
+  it('filters by actor/action/result/time and isolates actors', async () => {
+    const tEarly = new Date('2026-06-01T00:00:00.000Z');
+    const tMid = new Date('2026-07-01T00:00:00.000Z');
+    const tLate = new Date('2026-08-01T00:00:00.000Z');
+
+    await serverDB.insert(platformAuditLogs).values([
+      {
+        action: 'platform.settings.publish',
+        actorUserId: 'admin-1',
+        createdAt: tEarly,
+        id: 'paud_filter_early',
+        result: 'success',
+        targetType: 'settings',
+      },
+      {
+        action: 'platform.settings.publish',
+        actorUserId: 'admin-1',
+        createdAt: tMid,
+        id: 'paud_filter_mid',
+        result: 'failure',
+        targetType: 'settings',
+      },
+      {
+        action: 'platform.branding.publish',
+        actorUserId: 'admin-2',
+        createdAt: tLate,
+        id: 'paud_filter_late',
+        result: 'denied',
+        targetType: 'branding',
+      },
+    ]);
+
+    const byActor = await auditModel.list({ actorUserId: 'admin-1' });
+    expect(byActor.items.map((r) => r.id).toSorted()).toEqual([
+      'paud_filter_early',
+      'paud_filter_mid',
+    ]);
+    expect(byActor.items.every((r) => r.actorUserId === 'admin-1')).toBe(true);
+
+    const byAction = await auditModel.list({ action: 'platform.branding.publish' });
+    expect(byAction.items.map((r) => r.id)).toEqual(['paud_filter_late']);
+
+    const byResult = await auditModel.list({ result: 'failure' });
+    expect(byResult.items.map((r) => r.id)).toEqual(['paud_filter_mid']);
+
+    const byWindow = await auditModel.list({
+      from: new Date('2026-06-15T00:00:00.000Z'),
+      to: new Date('2026-07-15T00:00:00.000Z'),
+    });
+    expect(byWindow.items.map((r) => r.id)).toEqual(['paud_filter_mid']);
+
+    const multi = await auditModel.list({
+      actions: ['platform.settings.publish'],
+      results: ['success', 'failure'],
+    });
+    expect(multi.items.map((r) => r.id).toSorted()).toEqual([
+      'paud_filter_early',
+      'paud_filter_mid',
+    ]);
+  });
+
+  it('returns bounded facets and stats over a time window', async () => {
+    await serverDB.insert(platformAuditLogs).values([
+      {
+        action: 'a.publish',
+        actorUserId: 'admin-1',
+        id: 'paud_facet_1',
+        result: 'success',
+        targetType: 'settings',
+      },
+      {
+        action: 'a.publish',
+        actorUserId: 'admin-1',
+        id: 'paud_facet_2',
+        result: 'success',
+        targetType: 'settings',
+      },
+      {
+        action: 'b.rollback',
+        actorUserId: 'admin-2',
+        id: 'paud_facet_3',
+        result: 'failure',
+        targetType: 'settings',
+      },
+      {
+        action: 'c.denied',
+        actorUserId: 'admin-2',
+        id: 'paud_facet_4',
+        result: 'denied',
+        targetType: 'settings',
+      },
+    ]);
+
+    const facets = await auditModel.getFacets({ limit: 10 });
+    expect(facets.actions.find((b) => b.value === 'a.publish')?.count).toBe(2);
+    expect(facets.results.find((b) => b.value === 'success')?.count).toBe(2);
+    expect(facets.actions.length).toBeLessThanOrEqual(10);
+
+    const stats = await auditModel.getStats();
+    expect(stats).toEqual({ denied: 1, failure: 1, success: 2, total: 4 });
+  });
 });
