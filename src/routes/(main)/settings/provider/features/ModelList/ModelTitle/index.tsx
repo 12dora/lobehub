@@ -165,6 +165,7 @@ const ModelTitle = memo<ModelFetcherProps>(
                             .getState()
                             .aiProviderModelList.map((model) => model.id),
                           showDeployName,
+                          store: aiInfraStoreApi,
                         });
                       }}
                     />

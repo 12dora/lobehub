@@ -7,7 +7,11 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { usePermission } from '@/hooks/usePermission';
-import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
+import {
+  aiProviderSelectors,
+  useAiInfraStoreApi,
+  useScopedAiInfraStore as useAiInfraStore,
+} from '@/store/aiInfra';
 
 import { createSettingModal } from './SettingModal';
 
@@ -15,6 +19,7 @@ const UpdateProviderInfo = memo(() => {
   const { t } = useTranslation('modelProvider');
 
   const providerConfig = useAiInfraStore(aiProviderSelectors.activeProviderConfig, isEqual);
+  const aiInfraStoreApi = useAiInfraStoreApi();
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
 
   return (
@@ -31,6 +36,7 @@ const UpdateProviderInfo = memo(() => {
           createSettingModal({
             id: providerConfig.id,
             initialValues: providerConfig,
+            store: aiInfraStoreApi,
           });
         }}
       />

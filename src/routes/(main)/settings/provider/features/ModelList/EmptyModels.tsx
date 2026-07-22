@@ -80,6 +80,7 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
                   .getState()
                   .aiProviderModelList.map((model) => model.id),
                 showDeployName,
+                store: aiInfraStoreApi,
               });
             }}
           >

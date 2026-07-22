@@ -127,6 +127,10 @@ export default {
   'createNewAiProvider.sdkType.required': 'Please select SDK type',
   'createNewAiProvider.sdkType.title': 'Request Format',
   'createNewAiProvider.title': 'Create Custom AI Provider',
+  'detail.notFound.backToList': 'Back to provider list',
+  'detail.notFound.desc':
+    'This provider does not exist or is not available in the current scope. It may have been deleted, or the link is invalid.',
+  'detail.notFound.title': 'Provider not found',
   'github.personalAccessToken.desc':
     'Enter your GitHub PAT. Click [here](https://github.com/settings/tokens) to create one.',
   'github.personalAccessToken.placeholder': 'ghp_xxxxxx',

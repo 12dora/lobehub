@@ -20,7 +20,12 @@ import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
-import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
+import {
+  type AiInfraStoreApi,
+  AiInfraStoreProvider,
+  aiProviderSelectors,
+  useScopedAiInfraStore as useAiInfraStore,
+} from '@/store/aiInfra';
 import {
   type AiProviderDetailItem,
   type AiProviderSettings,
@@ -244,9 +249,20 @@ const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
 
 SettingContent.displayName = 'SettingContent';
 
-export const createSettingModal = (props: SettingContentProps): ModalInstance =>
-  createModal({
-    content: <SettingContent {...props} />,
+/**
+ * Imperative update-provider modal. Content mounts under ModalHost outside the page
+ * AiInfraStoreProvider tree — callers must pass the scoped store API.
+ */
+export const createSettingModal = (
+  props: SettingContentProps & { store: AiInfraStoreApi },
+): ModalInstance => {
+  const { store, ...contentProps } = props;
+  return createModal({
+    content: (
+      <AiInfraStoreProvider store={store}>
+        <SettingContent {...contentProps} />
+      </AiInfraStoreProvider>
+    ),
     footer: null,
     maskClosable: true,
 
@@ -258,3 +274,4 @@ export const createSettingModal = (props: SettingContentProps): ModalInstance =>
     ),
     width: 'min(90vw, 640px)',
   });
+};
