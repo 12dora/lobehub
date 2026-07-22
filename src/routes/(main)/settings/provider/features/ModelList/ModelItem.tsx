@@ -13,7 +13,11 @@ import { ModelInfoTags } from '@/components/ModelSelect';
 import NewModelBadge from '@/components/ModelSelect/NewModelBadge';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
-import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
+import {
+  aiModelSelectors,
+  useAiInfraStoreApi,
+  useScopedAiInfraStore as useAiInfraStore,
+} from '@/store/aiInfra';
 import { formatPriceByCurrency } from '@/utils/format';
 import {
   getAudioInputUnitRate,
@@ -83,6 +87,7 @@ const ModelItem = memo<ModelItemProps>(
     const { t } = useTranslation(['modelProvider', 'components', 'models', 'common']);
     const { modelEditable, showDeployName } = use(ProviderSettingsContext);
     const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
+    const aiInfraStoreApi = useAiInfraStoreApi();
 
     const [activeAiProvider, isModelLoading, toggleModelEnabled, removeAiModel] = useAiInfraStore(
       (s) => [
@@ -200,7 +205,7 @@ const ModelItem = memo<ModelItemProps>(
             onClick={(e) => {
               e.stopPropagation();
               if (!canManageProvider) return;
-              createModelConfigModal({ id, showDeployName });
+              createModelConfigModal({ id, showDeployName, store: aiInfraStoreApi });
             }}
           />
           {source !== AiModelSourceEnum.Builtin && (

@@ -5,11 +5,22 @@ import { createModal, type ModalInstance } from '@lobehub/ui/base-ui';
 import { t } from 'i18next';
 import { BrainIcon } from 'lucide-react';
 
+import { type AiInfraStoreApi, AiInfraStoreProvider } from '@/store/aiInfra';
+
 import CreateNewProviderContent from './Content';
 
-export const createCreateNewProviderModal = (): ModalInstance =>
+/**
+ * Imperative create-provider modal. Content mounts under ModalHost (outside the page
+ * React tree), so callers must pass the scoped AiInfraStoreApi; we re-provide it here.
+ * On the user settings page the global singleton is passed — zero behavior change.
+ */
+export const createCreateNewProviderModal = (store: AiInfraStoreApi): ModalInstance =>
   createModal({
-    content: <CreateNewProviderContent />,
+    content: (
+      <AiInfraStoreProvider store={store}>
+        <CreateNewProviderContent />
+      </AiInfraStoreProvider>
+    ),
     footer: null,
     maskClosable: true,
     styles: {
