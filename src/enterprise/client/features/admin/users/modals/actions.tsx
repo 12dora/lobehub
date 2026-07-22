@@ -16,6 +16,7 @@ import {
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type {
   AdminUsersBanInput,
+  AdminUsersDeleteInput,
   AdminUsersReplaceGlobalRolesInput,
   AdminUsersRevokeSessionsInput,
   AdminUsersUnbanInput,
@@ -60,6 +61,19 @@ const ALL_ASSIGNABLE: PlatformSystemRoleName[] = [
 
 const t = (key: string, opts?: Record<string, unknown>) =>
   String(i18n.t(key as never, { ns: 'admin', ...opts }));
+
+/**
+ * Fixed audit reasons for confirm-only actions (no free-form reason field).
+ * The server still bounds these as a non-empty reason — stable, non-localized strings
+ * keep the audit trail consistent across locales.
+ */
+const AUTO_REASON = {
+  delete: 'User hard-deleted from admin console',
+  revokeAll: 'All sessions revoked from admin console',
+  revokeOne: 'Session revoked from admin console',
+  roleRevoke: 'Global role revoked from admin console',
+  roles: 'Global roles updated from admin console',
+} as const;
 
 export const getEligibleAssignableRoles = (
   actorRoles: readonly { name: string }[],
@@ -226,6 +240,7 @@ const RevokeSelfExtra = memo<{
 });
 RevokeSelfExtra.displayName = 'RevokeSelfExtra';
 
+/** Revoke every session (confirm-only). Self keeps the current session unless opted in. */
 export const openRevokeSessionsModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   isSelf: boolean;
@@ -244,19 +259,45 @@ export const openRevokeSessionsModal = (params: {
 
   openReasonModal({
     authMethod: params.authMethod,
+    autoReason: AUTO_REASON.revokeAll,
     danger: true,
-    description: t('users.modals.revoke.desc'),
+    hideReason: true,
     impact: params.isSelf
       ? t('users.modals.revoke.impactSelfDefault')
       : t('users.modals.revoke.impactOther'),
-    submitLabel: t('users.modals.revoke.confirm'),
+    submitLabel: t('users.modals.revoke.confirmAll'),
     targetLabel: params.targetLabel,
-    title: t('users.modals.revoke.title'),
+    title: t('users.modals.revoke.titleAll'),
     extra: params.isSelf ? ({ locked }) => <ControlledRevoke locked={locked} /> : undefined,
     buildPayload: (reason) => ({
       includeCurrent: params.isSelf ? includeCurrent : true,
       reason,
     }),
+    onSubmit: async (payload) => {
+      await params.onConfirm(payload as Omit<AdminUsersRevokeSessionsInput, 'userId'>);
+      toast.success(t('users.toast.revokeSuccess'));
+    },
+  });
+};
+
+/** Revoke a single session by id (confirm-only, targeted). */
+export const openRevokeSingleSessionModal = (params: {
+  authMethod?: AdminReauthAuthMethod;
+  onConfirm: (input: Omit<AdminUsersRevokeSessionsInput, 'userId'>) => Promise<void>;
+  sessionId: string;
+  targetLabel: string;
+  userId: string;
+}) => {
+  openReasonModal({
+    authMethod: params.authMethod,
+    autoReason: AUTO_REASON.revokeOne,
+    danger: true,
+    hideReason: true,
+    impact: t('users.modals.revoke.impactSingle'),
+    submitLabel: t('users.modals.revoke.confirmSingle'),
+    targetLabel: params.targetLabel,
+    title: t('users.modals.revoke.titleSingle'),
+    buildPayload: (reason) => ({ reason, sessionIds: [params.sessionId] }),
     onSubmit: async (payload) => {
       await params.onConfirm(payload as Omit<AdminUsersRevokeSessionsInput, 'userId'>);
       toast.success(t('users.toast.revokeSuccess'));
@@ -296,7 +337,6 @@ const RolesExtra = memo<{
           </Text>
         </div>
       ))}
-      <Text className={styles.hint}>{tr('users.modals.roles.lastSuperNote')}</Text>
       {hasSuper ? (
         <Text className={styles.hint}>{tr('users.modals.roles.superAdminNoExpiry')}</Text>
       ) : (
@@ -365,8 +405,8 @@ export const openReplaceRolesModal = (params: {
 
   openReasonModal({
     authMethod: params.authMethod,
-    description: t('users.modals.roles.desc'),
-    impact: t('users.modals.roles.impact'),
+    autoReason: AUTO_REASON.roles,
+    hideReason: true,
     submitLabel: t('users.modals.roles.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.roles.title'),
@@ -403,6 +443,60 @@ export const openReplaceRolesModal = (params: {
     onSubmit: async (payload) => {
       await params.onConfirm(payload as Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>);
       toast.success(t('users.toast.rolesSuccess'));
+    },
+  });
+};
+
+/**
+ * Revoke a single global role (confirm-only). Implemented as a full replace with the
+ * revoked role removed — the server keeps its last-super-admin protection.
+ */
+export const openRevokeRoleModal = (params: {
+  authMethod?: AdminReauthAuthMethod;
+  onConfirm: (input: Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>) => Promise<void>;
+  remainingRoleNames: PlatformSystemRoleName[];
+  revokedRoleLabel: string;
+  targetLabel: string;
+  userId: string;
+}) => {
+  openReasonModal({
+    authMethod: params.authMethod,
+    autoReason: AUTO_REASON.roleRevoke,
+    danger: true,
+    hideReason: true,
+    impact: t('users.modals.revokeRole.impact', { role: params.revokedRoleLabel }),
+    submitLabel: t('users.modals.revokeRole.confirm'),
+    targetLabel: params.targetLabel,
+    title: t('users.modals.revokeRole.title'),
+    buildPayload: (reason) => ({ reason, roleNames: params.remainingRoleNames }),
+    onSubmit: async (payload) => {
+      await params.onConfirm(payload as Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>);
+      toast.success(t('users.toast.roleRevokeSuccess'));
+    },
+  });
+};
+
+/** Irreversible hard delete of a user and all owned data (confirm-only). */
+export const openDeleteUserModal = (params: {
+  authMethod?: AdminReauthAuthMethod;
+  onConfirm: (input: Omit<AdminUsersDeleteInput, 'userId'>) => Promise<void>;
+  targetLabel: string;
+  userId: string;
+}) => {
+  openReasonModal({
+    authMethod: params.authMethod,
+    autoReason: AUTO_REASON.delete,
+    danger: true,
+    description: t('users.modals.delete.desc'),
+    hideReason: true,
+    impact: t('users.modals.delete.impact'),
+    submitLabel: t('users.modals.delete.confirm'),
+    targetLabel: params.targetLabel,
+    title: t('users.modals.delete.title'),
+    buildPayload: (reason) => ({ reason }),
+    onSubmit: async (payload) => {
+      await params.onConfirm(payload as Omit<AdminUsersDeleteInput, 'userId'>);
+      toast.success(t('users.toast.deleteSuccess'));
     },
   });
 };

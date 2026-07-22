@@ -53,10 +53,17 @@ export interface ReasonModalContentProps {
    */
   abortControllerRef?: React.MutableRefObject<AbortController | null>;
   authMethod?: AdminReauthAuthMethod;
+  /**
+   * Fixed reason recorded in the audit trail when the reason input is hidden.
+   * Required (non-empty) whenever `hideReason` is true — the server still bounds it.
+   */
+  autoReason?: string;
   buildPayload: (reason: string) => unknown;
   danger?: boolean;
   description?: string;
   extra?: ReactNode | ((api: { locked: boolean; phase: ReasonModalPhase }) => ReactNode);
+  /** Confirm-only mode: hide the reason textarea and submit `autoReason` instead. */
+  hideReason?: boolean;
   impact?: string;
   /** Called when phase changes (tests / parent). */
   onPhaseChange?: (phase: ReasonModalPhase) => void;
@@ -70,9 +77,11 @@ export interface ReasonModalContentProps {
 export const ReasonModalContent = memo<ReasonModalContentProps>(
   ({
     authMethod,
+    autoReason,
     danger,
     description,
     extra,
+    hideReason,
     impact,
     buildPayload,
     onSubmit,
@@ -125,7 +134,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     }, [abortRef]);
 
     const locked = phase !== 'idle';
-    const canSubmit = reason.trim().length > 0 && phase === 'idle';
+    const canSubmit = (hideReason || reason.trim().length > 0) && phase === 'idle';
 
     const handleClose = useCallback(() => {
       // Immediate abort — Escape/close must not wait for unmount cleanup.
@@ -144,7 +153,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
 
     const handleSubmit = useCallback(async () => {
       if (phase !== 'idle') return;
-      const trimmed = reason.trim();
+      const trimmed = hideReason ? (autoReason ?? '').trim() : reason.trim();
       if (!trimmed) {
         setErrorKeySafe('users.modals.reasonRequired');
         return;
@@ -212,8 +221,10 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     }, [
       abortRef,
       authMethod,
+      autoReason,
       buildPayload,
       close,
+      hideReason,
       onSubmit,
       phase,
       reason,
@@ -234,17 +245,19 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
           <strong>{t('users.modals.target')}</strong> {targetLabel}
         </Text>
         {impact ? <Text type="secondary">{impact}</Text> : null}
-        <div className={styles.field}>
-          <Text>{t('users.modals.reasonLabel')}</Text>
-          <TextArea
-            disabled={locked}
-            maxLength={2000}
-            placeholder={t('users.modals.reasonPlaceholder')}
-            rows={3}
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-          />
-        </div>
+        {hideReason ? null : (
+          <div className={styles.field}>
+            <Text>{t('users.modals.reasonLabel')}</Text>
+            <TextArea
+              disabled={locked}
+              maxLength={2000}
+              placeholder={t('users.modals.reasonPlaceholder')}
+              rows={3}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </div>
+        )}
         {extraNode}
         {phase === 'reauthing' ? (
           <Text role="status" type="secondary">
