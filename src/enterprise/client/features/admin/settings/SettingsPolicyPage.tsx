@@ -338,10 +338,13 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       const published = data?.publishedPolicies[path];
       if (published) return published;
       const entry = registryByPath.get(path);
+      // Seed the editor with the current effective baseline (built-in default) so the form
+      // default-loads the current value instead of rendering blank. This is display-only —
+      // it is NOT written into `draft`, so it does not mark the form dirty.
       return {
         mode: 'user',
         schemaVersion: entry?.schemaVersion ?? 1,
-        value: undefined,
+        value: entry?.builtInDefault,
         visibility: 'visible',
       };
     },
