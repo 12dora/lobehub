@@ -10,12 +10,17 @@ import { useLocation } from 'react-router';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
-import { type CreateAiProviderParams } from '@/types/aiProvider';
+import { type AiProviderSettings, type CreateAiProviderParams } from '@/types/aiProvider';
 
 import { KeyVaultsConfigKey, LLMProviderApiTokenKey, LLMProviderBaseUrlKey } from '../../const';
 import { providerSettingsPath } from '../../providerRouteBase';
 import { CUSTOM_PROVIDER_SDK_OPTIONS } from '../customProviderSdkOptions';
-import { normalizeProviderSettings } from '../providerSettings';
+import {
+  normalizeProviderSettings,
+  OPENAI_RESPONSES_SDK_OPTION,
+  type RequestFormatOptionValue,
+  resolveRequestFormat,
+} from '../providerSettings';
 
 const SectionTitle = memo<{ children: React.ReactNode }>(({ children }) => (
   <Text fontSize={13} type={'secondary'} weight={500}>
@@ -38,13 +43,26 @@ const CreateNewProviderContent = memo(() => {
     setLoading(true);
 
     try {
-      const finalValues = {
+      // The "请求格式" dropdown may carry the synthetic `openai-responses` value; resolve it
+      // into the real sdkType + the config.enableResponseApi flag before persisting.
+      const { enableResponseApi, sdkType } = resolveRequestFormat(
+        values.settings?.sdkType as RequestFormatOptionValue | undefined,
+      );
+
+      const finalValues: CreateAiProviderParams = {
         ...values,
         name: values.name || values.id,
         settings: normalizeProviderSettings({
-          nextSettings: values.settings,
+          nextSettings: { ...values.settings, sdkType } as AiProviderSettings,
         }) as CreateAiProviderParams['settings'],
       };
+
+      if (enableResponseApi !== undefined) {
+        finalValues.config = {
+          ...(finalValues.config as Record<string, unknown> | undefined),
+          enableResponseApi,
+        };
+      }
 
       await createNewAiProvider(finalValues);
       setLoading(false);
@@ -139,7 +157,12 @@ const CreateNewProviderContent = memo(() => {
             placeholder={t('createNewAiProvider.sdkType.placeholder')}
             variant={'filled'}
             optionRender={({ label, value }) => {
-              const iconProvider = value === 'router' ? 'newapi' : (value as string);
+              const iconProvider =
+                value === 'router'
+                  ? 'newapi'
+                  : value === OPENAI_RESPONSES_SDK_OPTION
+                    ? 'openai'
+                    : (value as string);
               return (
                 <Flexbox horizontal align={'center'} gap={8}>
                   <ProviderIcon provider={iconProvider} size={18} />

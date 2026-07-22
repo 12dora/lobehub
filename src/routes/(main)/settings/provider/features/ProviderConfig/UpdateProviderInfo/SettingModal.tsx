@@ -20,12 +20,23 @@ import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
-import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
-import { type AiProviderDetailItem, type UpdateAiProviderParams } from '@/types/aiProvider';
+import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
+import {
+  type AiProviderDetailItem,
+  type AiProviderSettings,
+  type UpdateAiProviderParams,
+} from '@/types/aiProvider';
 
 import { providerSettingsPath } from '../../../providerRouteBase';
 import { CUSTOM_PROVIDER_SDK_OPTIONS } from '../../customProviderSdkOptions';
-import { isResponsesApiSupportedSdkType, normalizeProviderSettings } from '../../providerSettings';
+import {
+  isResponsesApiSupportedSdkType,
+  normalizeProviderSettings,
+  OPENAI_RESPONSES_SDK_OPTION,
+  type RequestFormatOptionValue,
+  resolveRequestFormat,
+  toRequestFormatOption,
+} from '../../providerSettings';
 
 interface SettingContentProps {
   id: string;
@@ -60,23 +71,45 @@ const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
     setLoading(true);
 
     try {
+      // The "请求格式" dropdown may carry the synthetic `openai-responses` value; translate it
+      // into the real sdkType. Only the sdkType is taken here — the enableResponseApi flag is
+      // decided below in a way that never clobbers an existing manual toggle.
+      const isResponsesOption = values.settings?.sdkType === OPENAI_RESPONSES_SDK_OPTION;
+      const { sdkType } = resolveRequestFormat(
+        values.settings?.sdkType as RequestFormatOptionValue | undefined,
+      );
+
       const finalValues: UpdateAiProviderParams = {
         ...values,
         settings: normalizeProviderSettings({
-          nextSettings: values.settings,
+          nextSettings: { ...values.settings, sdkType } as AiProviderSettings,
           previousSettings: initialValues.settings,
         }) as UpdateAiProviderParams['settings'],
       };
 
-      const nextSdkType = finalValues.settings?.sdkType;
-      if (nextSdkType && !isResponsesApiSupportedSdkType(nextSdkType)) {
+      // Decide config.enableResponseApi WITHOUT wiping an existing choice (the provider detail
+      // does not carry config, so we must not force it off blindly):
+      // - the synthetic "OpenAI Response" option turns it on;
+      // - switching to an SDK that cannot use the Responses API clears a stale flag (original
+      //   behavior);
+      // - plain OpenAI / router keep whatever the ProviderConfig "使用 Responses API 规范"
+      //   toggle already set.
+      const resolvedSdkType = finalValues.settings?.sdkType;
+      let nextEnableResponseApi: boolean | undefined;
+      if (isResponsesOption) {
+        nextEnableResponseApi = true;
+      } else if (resolvedSdkType && !isResponsesApiSupportedSdkType(resolvedSdkType)) {
+        nextEnableResponseApi = false;
+      }
+
+      if (nextEnableResponseApi !== undefined) {
         const previousConfig = (initialValues as { config?: UpdateAiProviderParams['config'] })
           .config;
 
         finalValues.config = {
           ...previousConfig,
           ...finalValues.config,
-          enableResponseApi: false,
+          enableResponseApi: nextEnableResponseApi,
         };
       }
 
@@ -105,12 +138,24 @@ const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
     });
   };
 
+  // Seed the "请求格式" dropdown with the synthetic Responses option when the existing provider
+  // is OpenAI SDK + Responses API, so the edit form round-trips. The provider detail does not
+  // carry `config`, so read the effective flag from the runtime config selector.
+  const enableResponseApi = useAiInfraStore(aiProviderSelectors.isProviderEnableResponseApi(id));
+  const formInitialValues = {
+    ...initialValues,
+    settings: {
+      ...initialValues.settings,
+      sdkType: toRequestFormatOption(initialValues.settings?.sdkType, enableResponseApi),
+    },
+  } as AiProviderDetailItem;
+
   return (
     <Flexbox>
       <Form
         colon={false}
         form={form}
-        initialValues={initialValues}
+        initialValues={formInitialValues}
         layout={'vertical'}
         scrollToFirstError={{ behavior: 'instant', block: 'end', focus: true }}
         onFinish={onFinish}
@@ -162,7 +207,12 @@ const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
               placeholder={t('createNewAiProvider.sdkType.placeholder')}
               variant={'filled'}
               optionRender={({ label, value }) => {
-                const iconProvider = value === 'router' ? 'newapi' : (value as string);
+                const iconProvider =
+                  value === 'router'
+                    ? 'newapi'
+                    : value === OPENAI_RESPONSES_SDK_OPTION
+                      ? 'openai'
+                      : (value as string);
                 return (
                   <Flexbox horizontal align={'center'} gap={8}>
                     <ProviderIcon provider={iconProvider} size={18} />
