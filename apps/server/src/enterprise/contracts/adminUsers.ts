@@ -303,6 +303,13 @@ export type AdminUsersDeleteOutput = z.infer<typeof adminUsersDeleteOutputSchema
 export const adminUsersReplaceGlobalRolesInputSchema = z
   .object({
     expiresAt: z.coerce.date().optional(),
+    /**
+     * Role names whose existing grants must be left untouched (expiry preserved) instead
+     * of deleted + re-inserted. Used by single-role revoke so removing one role never
+     * silently strips a time-boxed expiry from the remaining grants. Must be a subset of
+     * roleNames.
+     */
+    preserveRoleNames: z.array(adminUserAssignableRoleNameSchema).max(16).optional(),
     reason: reasonSchema,
     roleNames: z.array(adminUserAssignableRoleNameSchema).max(16),
     userId: userIdSchema,

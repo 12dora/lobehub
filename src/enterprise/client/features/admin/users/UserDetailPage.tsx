@@ -16,6 +16,7 @@ import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import StatusBadge from '../primitives/StatusBadge';
 import { useAdminUserMutations, useFetchAdminUserDetail } from './hooks/useAdminUsers';
 import {
+  getEligibleAssignableRoles,
   openBanUserModal,
   openDeleteUserModal,
   openReplaceRolesModal,
@@ -81,6 +82,11 @@ const UserDetailPage = memo(() => {
   const canManageRoles = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_ROLE_MANAGE);
   const canReadAudit = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
 
+  // Same eligibility the replace-permissions modal uses: non-super actors cannot
+  // revoke the super_admin role, so don't offer a button the server would reject.
+  const eligibleRoleNames = new Set<string>(getEligibleAssignableRoles(actorRoles));
+  const canRevokeRoleName = (roleName: string) => eligibleRoleNames.has(roleName);
+
   const { data, error, isLoading, mutate } = useFetchAdminUserDetail(userId);
   const { banUser, unbanUser, deleteUser, revokeSessions, replaceGlobalRoles } =
     useAdminUserMutations();
@@ -144,6 +150,7 @@ const UserDetailPage = memo(() => {
       if (!data || !userId) return;
       openRevokeSingleSessionModal({
         authMethod,
+        isSelf: data.isSelf,
         sessionId,
         targetLabel: displayUserName(data),
         userId,
@@ -289,6 +296,7 @@ const UserDetailPage = memo(() => {
         {tab === 'access' ? (
           <AccessTab
             canManageRoles={canManageRoles}
+            canRevokeRole={canRevokeRoleName}
             user={data}
             onRevokeRole={canManageRoles ? openRevokeRole : undefined}
             onUpdatePermissions={canManageRoles ? openUpdatePermissions : undefined}

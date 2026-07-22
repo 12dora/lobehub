@@ -282,3 +282,47 @@ describe('admin.users.revokeSessions (targeted)', () => {
     expect(await db.query.session.findFirst({ where: eq(session.id, 'foreign-1') })).toBeTruthy();
   });
 });
+
+describe('admin.users.replaceGlobalRoles (per-role revoke preserves expiry)', () => {
+  const grantWithExpiry = async (userId: string, roleName: string, expiresAt: Date) => {
+    const role = await db.query.roles.findFirst({
+      where: (t, { and, eq: e, isNull }) => and(e(t.name, roleName), isNull(t.workspaceId)),
+    });
+    if (!role) throw new Error(roleName);
+    await db.insert(userRoles).values({ expiresAt, roleId: role.id, userId, workspaceId: null });
+  };
+
+  it('keeps the remaining role expiry when one role is revoked via preserveRoleNames', async () => {
+    // target starts with platform_user (permanent, from beforeEach). Add a temporary auditor.
+    const auditorExpiry = new Date(Date.now() + 30 * 24 * 3600 * 1000);
+    await grantWithExpiry(IDS.target, PLATFORM_SYSTEM_ROLES.AUDITOR, auditorExpiry);
+
+    const roleId = async (name: string) => {
+      const r = await db.query.roles.findFirst({
+        where: (t, { and, eq: e, isNull }) => and(e(t.name, name), isNull(t.workspaceId)),
+      });
+      return r!.id;
+    };
+    const auditorRoleId = await roleId(PLATFORM_SYSTEM_ROLES.AUDITOR);
+    const platformUserRoleId = await roleId(PLATFORM_SYSTEM_ROLES.PLATFORM_USER);
+
+    const caller = createAdminCaller(await ctx(IDS.super));
+    // Revoke platform_user; keep auditor untouched (preserve its finite expiry).
+    await caller.users.replaceGlobalRoles({
+      preserveRoleNames: [PLATFORM_SYSTEM_ROLES.AUDITOR],
+      reason: 'revoke platform_user',
+      roleNames: [PLATFORM_SYSTEM_ROLES.AUDITOR],
+      userId: IDS.target,
+    });
+
+    const grants = await db.query.userRoles.findMany({
+      where: eq(userRoles.userId, IDS.target),
+    });
+    const platformUserGrant = grants.find((g) => g.roleId === platformUserRoleId);
+    const auditorGrant = grants.find((g) => g.roleId === auditorRoleId);
+    expect(platformUserGrant).toBeUndefined();
+    expect(auditorGrant).toBeTruthy();
+    // Expiry must be preserved, NOT wiped to permanent.
+    expect(auditorGrant?.expiresAt?.getTime()).toBe(auditorExpiry.getTime());
+  });
+});
