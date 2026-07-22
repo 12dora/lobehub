@@ -11,6 +11,8 @@
 
 import {
   encodeRetentionCursor,
+  type PlatformAuditExportFilterSnapshot,
+  type PlatformAuditExportKind,
   PlatformAuditExportModel,
   type PlatformAuditLegalHoldItem,
   PlatformAuditLegalHoldModel,
@@ -197,13 +199,134 @@ const topicHeld = (
   return false;
 };
 
+const hasAnyScopedHold = (index: HoldIndex): boolean =>
+  index.users.size > 0 ||
+  index.topics.size > 0 ||
+  index.sessions.size > 0 ||
+  index.workspaces.size > 0;
+
+/**
+ * Conservative legal-hold gate for derived export artifacts.
+ *
+ * Exports are frozen evidence packages. Prefer over-retention: if the frozen
+ * filter can include evidence under any active legal hold, skip purge.
+ *
+ * Policy branches on the actual export `kind` (`operation_logs` vs
+ * `conversations` / `user_timeline`), never on filter-field heuristics.
+ * (`q` is valid for operation-log exports and must not reclassify them.)
+ *
+ * Covered:
+ * - Exact scopes: userId, actorUserId(s), topicId, sessionId, workspaceId
+ * - Whitelisted / over-skip targetType+targetId (mirrors operationLogHeld)
+ * - Broad operation-log filters when any non-global hold exists
+ * - Broad conversation/user_timeline filters when topic/session/workspace holds
+ *   could still fall inside the export (userId/q without a tighter pin)
+ * - Partially narrowed filters that still cannot exclude remaining hold classes
+ */
 const exportArtifactHeld = (
   index: HoldIndex,
-  filterSnapshot: { userId?: string } | null | undefined,
+  kind: PlatformAuditExportKind,
+  filterSnapshot: PlatformAuditExportFilterSnapshot | null | undefined,
 ): boolean => {
   if (index.global) return true;
-  const userId = filterSnapshot?.userId;
-  if (userId && index.users.has(userId)) return true;
+  if (!hasAnyScopedHold(index)) return false;
+
+  const f = filterSnapshot ?? {};
+
+  // Exact identity / scope fields frozen on the export.
+  if (f.userId && index.users.has(f.userId)) return true;
+  if (f.actorUserId && index.users.has(f.actorUserId)) return true;
+  if (f.actorUserIds?.some((id) => index.users.has(id))) return true;
+  if (f.topicId && index.topics.has(f.topicId)) return true;
+  if (f.sessionId && index.sessions.has(f.sessionId)) return true;
+  if (f.workspaceId && index.workspaces.has(f.workspaceId)) return true;
+
+  // Whitelisted targetType+targetId, plus over-skip for unknown/missing types.
+  if (f.targetId) {
+    const tt = f.targetType;
+    if (tt && isHoldTargetType(tt)) {
+      if (tt === 'user' && index.users.has(f.targetId)) return true;
+      if (tt === 'session' && index.sessions.has(f.targetId)) return true;
+      if (tt === 'topic' && index.topics.has(f.targetId)) return true;
+      if (tt === 'workspace' && index.workspaces.has(f.targetId)) return true;
+    } else if (
+      index.users.has(f.targetId) ||
+      index.sessions.has(f.targetId) ||
+      index.topics.has(f.targetId) ||
+      index.workspaces.has(f.targetId)
+    ) {
+      return true;
+    }
+  }
+
+  const hasActorPin = Boolean(f.actorUserId) || Boolean(f.actorUserIds?.length);
+  const hasTopicPin = Boolean(f.topicId);
+  const hasSessionPin = Boolean(f.sessionId);
+  const hasWorkspacePin = Boolean(f.workspaceId);
+  const hasAnyTargetPin = Boolean(f.targetId) && Boolean(f.targetType);
+  const hasHoldTargetPin =
+    Boolean(f.targetId) && Boolean(f.targetType) && isHoldTargetType(f.targetType!);
+
+  const isOperationLogs = kind === 'operation_logs';
+  const isConversationKind = kind === 'conversations' || kind === 'user_timeline';
+
+  // Broad operation-log filters (time/action/result/q, or empty): any scoped hold.
+  // Do not infer kind from `q` — it is a valid operation_logs filter field.
+  if (isOperationLogs && !hasActorPin && !hasAnyTargetPin) {
+    return true;
+  }
+
+  // Broad conversation / user_timeline: userId or title query without a tighter pin
+  // can include held topics, sessions, or workspaces under that user.
+  if (
+    isConversationKind &&
+    !hasTopicPin &&
+    !hasSessionPin &&
+    !hasWorkspacePin &&
+    (index.topics.size > 0 || index.sessions.size > 0 || index.workspaces.size > 0)
+  ) {
+    return true;
+  }
+
+  if (isOperationLogs) {
+    // Actor pin without hold-relevant target pin: held users can still appear as
+    // targets; held topics/sessions/workspaces can appear as targets.
+    if (hasActorPin && !hasHoldTargetPin) {
+      if (index.users.size > 0) return true;
+      if (index.topics.size > 0 || index.sessions.size > 0 || index.workspaces.size > 0) {
+        return true;
+      }
+    }
+    // Hold-relevant target pin without actor pin: held users can appear as actors.
+    if (hasHoldTargetPin && !hasActorPin && index.users.size > 0) {
+      return true;
+    }
+    // Non-hold target type (e.g. settings) without actor pin: held users as actors.
+    if (hasAnyTargetPin && !hasHoldTargetPin && !hasActorPin && index.users.size > 0) {
+      return true;
+    }
+  }
+
+  if (isConversationKind) {
+    // Exact topic pin does not prove session/workspace membership is free of holds.
+    if (hasTopicPin && (index.sessions.size > 0 || index.workspaces.size > 0)) {
+      return true;
+    }
+    // Exact session pin does not prove nested topics/workspaces are free of holds.
+    if (hasSessionPin && !hasTopicPin && (index.topics.size > 0 || index.workspaces.size > 0)) {
+      return true;
+    }
+    // Exact workspace pin does not prove nested topics/sessions are free of holds.
+    if (
+      hasWorkspacePin &&
+      !hasTopicPin &&
+      !hasSessionPin &&
+      (index.topics.size > 0 || index.sessions.size > 0)
+    ) {
+      return true;
+    }
+  }
+
   return false;
 };
 
@@ -795,7 +918,7 @@ const processExportArtifacts = async (
     };
 
     for (const art of page.items) {
-      if (exportArtifactHeld(holds, art.filterSnapshot)) {
+      if (exportArtifactHeld(holds, art.kind, art.filterSnapshot)) {
         delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
         continue;
       }
@@ -803,7 +926,7 @@ const processExportArtifacts = async (
       if (!params.execute) continue;
 
       const holdsNow = await loadHoldIndex(params.db);
-      if (exportArtifactHeld(holdsNow, art.filterSnapshot)) {
+      if (exportArtifactHeld(holdsNow, art.kind, art.filterSnapshot)) {
         delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
         continue;
       }
