@@ -26,6 +26,7 @@ import {
   type adminAiModelReorderInputSchema,
   type adminAiModelUpdateInputSchema,
   type adminAiProviderCreateDraftInputSchema,
+  type adminAiProviderDeleteInputSchema,
   type adminAiProviderUpdateDraftInputSchema,
   aiModelDraftSchema,
   type AiProviderDraft,
@@ -67,6 +68,7 @@ type UpdateProviderInput = z.infer<typeof adminAiProviderUpdateDraftInputSchema>
 type CreateModelInput = z.infer<typeof adminAiModelCreateInputSchema>;
 type UpdateModelInput = z.infer<typeof adminAiModelUpdateInputSchema>;
 type DeleteModelInput = z.infer<typeof adminAiModelDeleteInputSchema>;
+type DeleteProviderInput = z.infer<typeof adminAiProviderDeleteInputSchema>;
 type ReorderModelsInput = z.infer<typeof adminAiModelReorderInputSchema>;
 
 export interface AiCatalogAdminServiceOptions {
@@ -532,6 +534,71 @@ export class AiCatalogAdminService {
     } catch (error) {
       await this.appendFailureAudit({
         action: 'admin.aiModels.deleteFromDraft',
+        actorUserId,
+        reason,
+        targetId: id,
+      });
+      throw error;
+    }
+  };
+
+  /**
+   * Hard-delete a provider and every row it owns: models (RESTRICT FK), unified revision-log
+   * entries (no FK), and the provider itself (encrypted secret versions cascade). Draft-only /
+   * never-published providers delete freely; a provider whose models are still referenced by a
+   * published agent or setting is refused with {@link AiCatalogResourceInUseError}.
+   */
+  deleteProvider = async (actorUserId: string, input: DeleteProviderInput) => {
+    const { expectedRevision, id, reason: rawReason } = input;
+    const reason = await this.sanitizeReason(rawReason, id);
+    try {
+      await this.db.transaction(async (tx) => {
+        const repository = new PlatformAiCatalogRepository(tx);
+        const provider = await repository.lockProvider(id);
+        if (!provider) throw new AiCatalogNotFoundError();
+        if (typeof expectedRevision === 'number' && provider.revision !== expectedRevision) {
+          throw new PlatformRevisionConflictError('Provider changed before delete', {
+            currentRevision: provider.revision,
+            expectedRevision,
+            resourceId: id,
+            resourceType: 'provider',
+          });
+        }
+        // Refuse when any owned model is still referenced by a published agent / setting.
+        const models = await repository.listModels(id);
+        const dependents: AiCatalogDependent[] = [];
+        for (const model of models) {
+          const modelDependents = await resolveAiCatalogDependents(
+            tx,
+            provider.providerKey,
+            model.modelKey,
+          );
+          dependents.push(...modelDependents);
+        }
+        if (dependents.some((item) => item.blocking)) {
+          throw new AiCatalogResourceInUseError(dependents);
+        }
+        await repository.deleteProviderModels(id);
+        await repository.deleteProviderRevisions(id);
+        await repository.deleteProvider(id);
+        await new PlatformAuditService(tx).append({
+          action: 'admin.aiProviders.delete',
+          actorUserId,
+          beforeDiff: {
+            modelCount: models.length,
+            providerId: id,
+            providerKey: provider.providerKey,
+          },
+          reason,
+          result: 'success',
+          targetId: id,
+          targetType: 'provider',
+        });
+      });
+      return { deleted: true as const };
+    } catch (error) {
+      await this.appendFailureAudit({
+        action: 'admin.aiProviders.delete',
         actorUserId,
         reason,
         targetId: id,

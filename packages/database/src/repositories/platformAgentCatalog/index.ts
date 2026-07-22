@@ -384,6 +384,39 @@ export class PlatformAgentCatalogRepository {
     return row;
   };
 
+  /**
+   * Hard-delete a platform agent and every row it owns. Callers must construct this repository
+   * with the mutation transaction and hold the identity row lock first.
+   *
+   * Order matters because every child FK is `restrict` and version rows are immutable:
+   * 1. detach `currentVersionId` (RESTRICT FK) and demote to `archived` so the published-pointer
+   *    trigger + CHECK constraint stay satisfied while the pointer is nulled;
+   * 2. delete owner-scoped materializations (the user's local `agents` row is preserved — that FK
+   *    points the other way);
+   * 3. delete assignments (clears both the agent and pinned-version FKs);
+   * 4. flip the transaction-local escape hatch so the version-immutability trigger permits DELETE,
+   *    then delete the immutable version rows;
+   * 5. delete the identity row.
+   */
+  hardDeleteAgentCascade = async (agentId: string): Promise<void> => {
+    await this.db
+      .update(platformAgents)
+      .set({ currentVersionId: null, publishedAt: null, status: 'archived', updatedAt: new Date() })
+      .where(eq(platformAgents.id, agentId));
+    await this.db
+      .delete(platformUserAgentMaterializations)
+      .where(eq(platformUserAgentMaterializations.platformAgentId, agentId));
+    await this.db
+      .delete(platformAgentAssignments)
+      .where(eq(platformAgentAssignments.agentId, agentId));
+    // Transaction-scoped guard release (see migration 0140): version rows are otherwise immutable.
+    await this.db.execute(
+      sql`select set_config('lobe.allow_platform_agent_version_delete', 'on', true)`,
+    );
+    await this.db.delete(platformAgentVersions).where(eq(platformAgentVersions.agentId, agentId));
+    await this.db.delete(platformAgents).where(eq(platformAgents.id, agentId));
+  };
+
   pointToVersionCas = async (params: {
     agentId: string;
     expectedDraftSequence: number;

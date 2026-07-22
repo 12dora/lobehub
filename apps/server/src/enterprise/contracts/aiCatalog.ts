@@ -293,6 +293,20 @@ export const adminAiProviderPublishInputSchema = z
 
 export const adminAiProviderArchiveInputSchema = adminAiProviderPublishInputSchema;
 
+/**
+ * Hard-delete a provider (and all its models, secrets, and revisions).
+ * CAS-light: the list row carries no draft token, so only an optional revision guard is accepted.
+ */
+export const adminAiProviderDeleteInputSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative().optional(),
+    id: z.string().min(1),
+    reason: z.string().trim().min(1).max(2000),
+  })
+  .strict();
+
+export const adminAiProviderDeleteOutputSchema = z.object({ deleted: z.literal(true) }).strict();
+
 export const adminAiProviderRollbackInputSchema = adminAiProviderPublishInputSchema
   .extend({ targetRevision: z.number().int().positive() })
   .strict();

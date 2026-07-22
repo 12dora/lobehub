@@ -67,6 +67,38 @@ export class PlatformAiCatalogRepository {
     return row;
   };
 
+  /** Hard-delete all models under a provider (satisfies the RESTRICT FK before deleting the provider). */
+  deleteProviderModels = async (providerId: string): Promise<number> => {
+    const rows = await this.db
+      .delete(platformAiModels)
+      .where(eq(platformAiModels.providerId, providerId))
+      .returning({ id: platformAiModels.id });
+    return rows.length;
+  };
+
+  /** Hard-delete the unified revision-log rows for a provider (no FK — must be removed explicitly). */
+  deleteProviderRevisions = async (providerId: string): Promise<number> => {
+    const rows = await this.db
+      .delete(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'provider'),
+          eq(platformResourceRevisions.resourceId, providerId),
+        ),
+      )
+      .returning({ id: platformResourceRevisions.id });
+    return rows.length;
+  };
+
+  /** Hard-delete a provider row; encrypted secret versions cascade automatically. */
+  deleteProvider = async (id: string): Promise<PlatformAiProviderItem | undefined> => {
+    const [row] = await this.db
+      .delete(platformAiProviders)
+      .where(eq(platformAiProviders.id, id))
+      .returning();
+    return row;
+  };
+
   getModel = async (providerId: string, id: string): Promise<PlatformAiModelItem | undefined> => {
     const [row] = await this.db
       .select()

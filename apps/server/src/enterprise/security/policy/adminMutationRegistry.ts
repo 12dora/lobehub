@@ -195,6 +195,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     { reauth: recentReauth },
   ),
   'admin.agents.create': regularMutation('admin.agents.create', 'medium', 'Create an agent draft.'),
+  'admin.agents.delete': dangerousMutation(
+    'admin.agents.delete',
+    'critical',
+    'Hard delete a platform agent and all its versions, assignments, and materializations.',
+    { reauth: recentReauth },
+  ),
   'admin.agents.publish': dangerousMutation(
     'admin.agents.publish',
     'high',
@@ -289,6 +295,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'medium',
     'Create an AI provider draft.',
     { reauth: conditionalReauth },
+  ),
+  'admin.aiProviders.delete': dangerousMutation(
+    'admin.aiProviders.delete',
+    'high',
+    'Permanently delete an AI provider and all its models, secrets, and revisions.',
+    { reauth: recentReauth },
   ),
   'admin.aiProviders.publish': dangerousMutation(
     'admin.aiProviders.publish',

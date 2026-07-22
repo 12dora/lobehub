@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -6,6 +7,7 @@ import { checksumPayload } from '../../models/platform/checksum';
 import {
   platformAiModels,
   platformAiProviders,
+  platformAiProviderSecrets,
   platformResourceRevisions,
 } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
@@ -194,5 +196,53 @@ describe('PlatformAiCatalogRepository', () => {
         [beta.id, 1],
       ]),
     );
+  });
+
+  it('hard-deletes a provider with its models, revisions, and cascaded secrets', async () => {
+    const alpha = await repository.createProvider({ displayName: 'Alpha', providerKey: 'alpha' });
+    const beta = await repository.createProvider({ displayName: 'Beta', providerKey: 'beta' });
+    await repository.createModel({ modelKey: 'chat', providerId: alpha.id });
+    await repository.createModel({ modelKey: 'image', providerId: alpha.id });
+    await repository.createModel({ modelKey: 'chat', providerId: beta.id });
+    await serverDB.insert(platformAiProviderSecrets).values({
+      ciphertext: 'cipher',
+      fingerprint: 'fp-alpha',
+      providerId: alpha.id,
+    });
+    const payload = { models: [], provider: { providerKey: 'alpha' } };
+    await serverDB.insert(platformResourceRevisions).values([
+      {
+        checksum: checksumPayload(payload),
+        payload,
+        resourceId: alpha.id,
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        checksum: checksumPayload(payload),
+        payload,
+        resourceId: beta.id,
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+    ]);
+
+    expect(await repository.deleteProviderModels(alpha.id)).toBe(2);
+    expect(await repository.deleteProviderRevisions(alpha.id)).toBe(1);
+    expect(await repository.deleteProvider(alpha.id)).toMatchObject({ id: alpha.id });
+
+    // Alpha and everything it owns is gone; Beta and its children are untouched.
+    expect(await repository.getProvider(alpha.id)).toBeUndefined();
+    expect(await repository.listModels(alpha.id)).toHaveLength(0);
+    expect(
+      await serverDB
+        .select()
+        .from(platformAiProviderSecrets)
+        .where(eq(platformAiProviderSecrets.providerId, alpha.id)),
+    ).toHaveLength(0);
+    expect(await repository.getProvider(beta.id)).toMatchObject({ id: beta.id });
+    expect(await repository.listModels(beta.id)).toHaveLength(1);
   });
 });
