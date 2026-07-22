@@ -253,9 +253,19 @@ export const isCredentialBearingUrl = (value: string): boolean => {
   }
 };
 
+/** Candidate URLs sharing one non-whitespace run beyond this: assume adversarial, fail closed. */
+const MAX_NESTED_URL_CANDIDATES = 32;
+/** Longest single URL candidate we scan; unterminated longer runs fail closed. */
+const MAX_URL_CANDIDATE_LENGTH = 4096;
+
 const stringContainsCredentialUrl = (value: string): boolean => {
   const separator = '://';
   let searchFrom = 0;
+  // Linearity guard: candidates nested inside one non-whitespace run are
+  // bounded, so total work stays O(n + candidates × candidate-length) with a
+  // fail-closed answer instead of quadratic scanning on adversarial input.
+  let runEnd = -1;
+  let nestedCandidates = 0;
   while (searchFrom < value.length) {
     const separatorIndex = value.indexOf(separator, searchFrom);
     if (separatorIndex < 0) return false;
@@ -267,10 +277,19 @@ const stringContainsCredentialUrl = (value: string): boolean => {
     }
 
     if (schemeStart < separatorIndex && /[a-z]/iu.test(value[schemeStart])) {
+      nestedCandidates = separatorIndex < runEnd ? nestedCandidates + 1 : 1;
+      if (nestedCandidates > MAX_NESTED_URL_CANDIDATES) return true;
       let urlEnd = separatorIndex + separator.length;
-      while (urlEnd < value.length && !/[\s<>"']/u.test(value[urlEnd])) urlEnd += 1;
+      const scanLimit = Math.min(value.length, urlEnd + MAX_URL_CANDIDATE_LENGTH);
+      while (urlEnd < scanLimit && !/[\s<>"']/u.test(value[urlEnd])) urlEnd += 1;
+      if (urlEnd === scanLimit && urlEnd < value.length && !/[\s<>"']/u.test(value[urlEnd])) {
+        return true;
+      }
       if (isCredentialBearingUrl(value.slice(schemeStart, urlEnd))) return true;
-      searchFrom = urlEnd;
+      runEnd = Math.max(runEnd, urlEnd);
+      // Continue just past this separator so a credential URL nested inside the
+      // candidate (e.g. "https://a|redis://user:pass@b") is still inspected.
+      searchFrom = separatorIndex + separator.length;
       continue;
     }
     searchFrom = separatorIndex + separator.length;
