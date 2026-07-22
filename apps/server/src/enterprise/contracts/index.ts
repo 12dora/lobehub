@@ -1,3 +1,4 @@
+export * from './adminAudit';
 export * from './adminManagedResources';
 export * from './adminSettings';
 export * from './adminUsers';
