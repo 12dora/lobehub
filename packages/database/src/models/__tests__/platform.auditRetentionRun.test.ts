@@ -61,7 +61,7 @@ describe('PlatformAuditRetentionRunModel', () => {
         cutoffAt: new Date(),
         mode: 'dry_run',
         policyRevision: 0,
-        // @ts-expect-error intentional
+        // Empty string is typed as string but rejected at runtime.
         requestedBy: '',
         scope: 'operation_logs',
       }),
@@ -71,7 +71,7 @@ describe('PlatformAuditRetentionRunModel', () => {
       model.create({
         cutoffAt: new Date(),
         mode: 'dry_run',
-        // @ts-expect-error intentional
+        // Negative revision is typed as number but rejected at runtime.
         policyRevision: -1,
         requestedBy: 'admin-1',
         scope: 'operation_logs',
@@ -219,5 +219,19 @@ describe('PlatformAuditRetentionRunModel', () => {
 
   it('get returns undefined for missing ids', async () => {
     await expect(model.get('parr_missing')).resolves.toBeUndefined();
+  });
+
+  it('setJobId links pending runs and is idempotent for same jobId', async () => {
+    const run = await model.create({
+      cutoffAt: new Date('2025-01-01T00:00:00.000Z'),
+      mode: 'dry_run',
+      policyRevision: 0,
+      requestedBy: 'admin-1',
+      scope: 'operation_logs',
+    });
+    const linked = await model.setJobId(run.id, 'pjob_ret_link');
+    expect(linked?.jobId).toBe('pjob_ret_link');
+    const again = await model.setJobId(run.id, 'pjob_ret_link');
+    expect(again?.jobId).toBe('pjob_ret_link');
   });
 });

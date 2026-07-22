@@ -54,7 +54,7 @@ describe('PlatformAuditLegalHoldModel', () => {
   it('requires non-null createdBy', async () => {
     await expect(
       model.create({
-        // @ts-expect-error intentional
+        // Empty string is typed as string but rejected at runtime.
         createdBy: '',
         reason: 'x',
         scopeId: 'user-a',
@@ -103,7 +103,7 @@ describe('PlatformAuditLegalHoldModel', () => {
 
     await expect(
       model.release(hold.id, {
-        // @ts-expect-error intentional
+        // Empty string is typed as string but rejected at runtime.
         releaseReason: '',
         releasedBy: 'admin-2',
       }),
@@ -112,7 +112,7 @@ describe('PlatformAuditLegalHoldModel', () => {
     await expect(
       model.release(hold.id, {
         releaseReason: 'case closed',
-        // @ts-expect-error intentional
+        // Empty string is typed as string but rejected at runtime.
         releasedBy: '',
       }),
     ).rejects.toThrow(/releasedBy/);

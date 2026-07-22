@@ -9,7 +9,7 @@ import type { PlatformAuditResult } from '../../schemas/platform/common';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { redactSensitive } from './redact';
 
-export type { PlatformAuditLogItem };
+export type { PlatformAuditLogItem, PlatformAuditResult };
 
 export interface CreatePlatformAuditLogParams {
   action: string;

@@ -30,6 +30,13 @@ export type AuditAccessAction =
   | 'admin.audit.list'
   | 'admin.audit.policy.get'
   | 'admin.audit.policy.update'
+  | 'admin.audit.retention.cancel'
+  | 'admin.audit.retention.dryRun'
+  | 'admin.audit.retention.getRun'
+  | 'admin.audit.retention.listRuns'
+  | 'admin.audit.retention.run'
+  | 'admin.audit.retention.status'
+  | 'admin.audit.retention.worker'
   | 'admin.audit.users.search'
   | 'admin.audit.users.summary'
   | 'admin.audit.users.timeline';
@@ -59,11 +66,15 @@ export const buildAuditFilterSummary = (params: {
   /** Export kind only (structured enum string — never free text). */
   kind?: string | null;
   limit?: number;
+  /** Retention mode only (structured enum string). */
+  mode?: string | null;
   requestId?: string | null;
   result?: string | null;
   results?: string[] | null;
+  /** Retention scope only (structured enum string). */
+  scope?: string | null;
   scopeType?: string | null;
-  /** Export status filter (structured enum string). */
+  /** Export/retention status filter (structured enum string). */
   status?: string | null;
   targetId?: string | null;
   targetType?: string | null;
@@ -81,10 +92,12 @@ export const buildAuditFilterSummary = (params: {
   if (params.includeBody != null) summary.includeBody = params.includeBody;
   if (params.kind != null) summary.kind = params.kind;
   if (params.limit != null) summary.limit = params.limit;
+  if (params.mode != null) summary.mode = params.mode;
   if (params.requestId != null) summary.requestIdPresent = true;
   if (params.result != null || (params.results != null && params.results.length > 0)) {
     summary.resultPresent = true;
   }
+  if (params.scope != null) summary.scope = params.scope;
   if (params.scopeType != null) summary.scopeType = params.scopeType;
   if (params.status != null) summary.status = params.status;
   if (params.targetId != null) summary.targetIdPresent = true;

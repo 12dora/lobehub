@@ -229,7 +229,7 @@ export class AdminAuditExportService {
       let includesMessageBodies = false;
       if (params.input.kind === 'conversations' && params.input.includeMessageBodies) {
         if (policy.contentAccessMode !== 'content_allowed' || !policy.messageBodyInExport) {
-          throwEnterpriseError({
+          return throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
             details: {
               reason: 'message_body_in_export_not_allowed',
@@ -382,7 +382,7 @@ export class AdminAuditExportService {
           targetId: params.id,
           targetType: 'audit_export',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -438,7 +438,7 @@ export class AdminAuditExportService {
           targetId: params.input.id,
           targetType: 'audit_export',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -464,7 +464,7 @@ export class AdminAuditExportService {
           targetId: row.id,
           targetType: 'audit_export',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           details: { reason: 'export_expired' },
           httpCode: 'NOT_FOUND',
@@ -483,7 +483,7 @@ export class AdminAuditExportService {
           targetId: row.id,
           targetType: 'audit_export',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
           details: { reason: 'export_not_ready', status: row.status },
           httpCode: 'BAD_REQUEST',
@@ -560,7 +560,7 @@ export class AdminAuditExportService {
           targetId: params.input.id,
           targetType: 'audit_export',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -582,7 +582,7 @@ export class AdminAuditExportService {
           targetId: existing.id,
           targetType: 'audit_export',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
           details: { reason: 'export_already_terminal', status: existing.status },
           httpCode: 'BAD_REQUEST',

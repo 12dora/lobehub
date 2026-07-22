@@ -37,6 +37,11 @@ import {
 } from './exportStorage';
 
 export interface ProcessNextAuditExportOptions {
+  /**
+   * Test seam: after domain `complete` succeeds, before `jobs.complete`.
+   * Used to simulate final-step lease loss without cancelling the domain.
+   */
+  afterDomainComplete?: (info: { exportId: string; jobId: string }) => Promise<void> | void;
   leaseMs?: number;
   storage?: AuditExportArtifactStorage;
   workerId: string;
@@ -49,10 +54,19 @@ export interface ProcessNextAuditExportResult {
   outcome?: 'cancelled' | 'completed' | 'failed' | 'retry' | 'skipped';
 }
 
+/** Explicit domain/job cancellation only — never lease loss. */
 class AuditExportCancelledError extends Error {
   constructor() {
     super('AUDIT_EXPORT_CANCELLED');
     this.name = 'AuditExportCancelledError';
+  }
+}
+
+/** Checkpoint returned null / lease owner changed — do not cancel domain or job. */
+export class AuditExportLeaseLostError extends Error {
+  constructor() {
+    super('AUDIT_EXPORT_LEASE_LOST');
+    this.name = 'AuditExportLeaseLostError';
   }
 }
 
@@ -243,7 +257,7 @@ export const processNextAuditExportJob = async (
       if (!job || job.status === 'cancelled') {
         throw new AuditExportCancelledError();
       }
-      // Renew lease + progress
+      // Renew lease + progress — null means lease loss, NOT user cancellation.
       const cp = await jobs.checkpoint({
         jobId: claimed.id,
         leaseMs,
@@ -251,7 +265,7 @@ export const processNextAuditExportJob = async (
         workerId: options.workerId,
       });
       if (!cp) {
-        throw new AuditExportCancelledError();
+        throw new AuditExportLeaseLostError();
       }
     };
 
@@ -331,7 +345,11 @@ export const processNextAuditExportJob = async (
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
     }
 
-    await jobs.complete({
+    if (options.afterDomainComplete) {
+      await options.afterDomainComplete({ exportId, jobId: claimed.id });
+    }
+
+    const jobDone = await jobs.complete({
       jobId: claimed.id,
       resultSummary: {
         artifactBytes: uploaded.artifactBytes,
@@ -340,9 +358,20 @@ export const processNextAuditExportJob = async (
       },
       workerId: options.workerId,
     });
+    if (!jobDone) {
+      // Domain already terminal-completed; lease ownership lost — do not report clean
+      // completion, cancel, or delete the object (reclaiming owner finishes platform job).
+      return { claimed: true, exportId, jobId: claimed.id, outcome: 'skipped' };
+    }
 
     return { claimed: true, exportId, jobId: claimed.id, outcome: 'completed' };
   } catch (error) {
+    if (error instanceof AuditExportLeaseLostError) {
+      // Lease loss is NOT user cancellation — leave domain + platform job as-is for reclaim.
+      // Do not touch storage: a reclaiming worker uses the same deterministic key.
+      return { claimed: true, exportId, jobId: claimed.id, outcome: 'skipped' };
+    }
+
     if (error instanceof AuditExportCancelledError) {
       await exportsModel.cancel(exportId);
       await jobs.cancel(claimed.id);

@@ -114,6 +114,9 @@ export class PlatformAuditLegalHoldModel {
       status: 'active',
     };
     const [row] = await this.db.insert(platformAuditLegalHolds).values(values).returning();
+    if (!row) {
+      throw new Error('Failed to create platform audit legal hold');
+    }
     return row;
   };
 
@@ -195,6 +198,23 @@ export class PlatformAuditLegalHoldModel {
       .where(and(eq(platformAuditLegalHolds.id, id), eq(platformAuditLegalHolds.status, 'active')))
       .returning();
     return row;
+  };
+
+  /**
+   * All active, non-expired legal holds (any scope).
+   * Used by retention workers to index user/session/topic/workspace/global holds.
+   */
+  listActive = async (): Promise<PlatformAuditLegalHoldItem[]> => {
+    const now = new Date();
+    const notExpired = or(
+      isNull(platformAuditLegalHolds.expiresAt),
+      gt(platformAuditLegalHolds.expiresAt, now),
+    )!;
+    return this.db
+      .select()
+      .from(platformAuditLegalHolds)
+      .where(and(eq(platformAuditLegalHolds.status, 'active'), notExpired))
+      .orderBy(desc(platformAuditLegalHolds.createdAt));
   };
 
   /**

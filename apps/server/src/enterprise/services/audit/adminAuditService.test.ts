@@ -103,7 +103,13 @@ describe('AdminAuditService', () => {
         userId: userA,
       },
     });
-    expect(page.items[0]!.content).toBe(ordinary);
+    expect(page.contentAccessMode).toBe('content_allowed');
+    const item = page.items[0];
+    expect(item).toBeDefined();
+    if (!item || !('content' in item)) {
+      throw new Error('expected content_allowed message item with body');
+    }
+    expect(item.content).toBe(ordinary);
   });
 
   it('masks credentials only in message body', async () => {
@@ -135,9 +141,15 @@ describe('AdminAuditService', () => {
       actorUserId: actor,
       input: { includeBody: true, limit: 5, topicId: 't2', userId: userA },
     });
-    expect(page.items[0]!.content).toContain('ACME Corp');
-    expect(page.items[0]!.content).not.toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
-    expect(page.items[0]!.content).toContain('[REDACTED]');
+    expect(page.contentAccessMode).toBe('content_allowed');
+    const item = page.items[0];
+    expect(item).toBeDefined();
+    if (!item || !('content' in item)) {
+      throw new Error('expected content_allowed message item with body');
+    }
+    expect(item.content).toContain('ACME Corp');
+    expect(item.content).not.toContain('sk-abcdefghijklmnopqrstuvwxyz012345');
+    expect(item.content).toContain('[REDACTED]');
   });
 
   it('denies conversation access when policy is disabled and self-audits as denied', async () => {
@@ -195,8 +207,13 @@ describe('AdminAuditService', () => {
       input: { includeBody: true, limit: 5, topicId: 't3', userId: userA },
     });
     expect(page.contentAccessMode).toBe('metadata_only');
-    expect(page.items[0]).not.toHaveProperty('content');
-    expect(page.items[0]!.hasContent).toBe(true);
+    const item = page.items[0];
+    expect(item).toBeDefined();
+    if (!item || !('hasContent' in item)) {
+      throw new Error('expected metadata-only message item');
+    }
+    expect(item).not.toHaveProperty('content');
+    expect(item.hasContent).toBe(true);
   });
 
   it('writes self-audit without free-text q or message body', async () => {
