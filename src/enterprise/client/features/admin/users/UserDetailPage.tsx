@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import type { PlatformSystemRoleName } from '@/const/platform/roles';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
@@ -16,13 +17,15 @@ import StatusBadge from '../primitives/StatusBadge';
 import { useAdminUserMutations, useFetchAdminUserDetail } from './hooks/useAdminUsers';
 import {
   openBanUserModal,
+  openDeleteUserModal,
   openReplaceRolesModal,
+  openRevokeRoleModal,
   openRevokeSessionsModal,
+  openRevokeSingleSessionModal,
   openUnbanUserModal,
 } from './modals/actions';
 import AccessTab from './tabs/AccessTab';
 import AuditTab from './tabs/AuditTab';
-import DangerZone from './tabs/DangerZone';
 import OverviewTab from './tabs/OverviewTab';
 import SessionsTab from './tabs/SessionsTab';
 import { displayUserName, hasPermission } from './utils';
@@ -73,12 +76,14 @@ const UserDetailPage = memo(() => {
   const [tab, setTab] = useState<DetailTab>('overview');
 
   const canBan = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_BAN);
+  const canDelete = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_DELETE);
   const canRevoke = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_SESSION_REVOKE);
   const canManageRoles = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_ROLE_MANAGE);
   const canReadAudit = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
 
   const { data, error, isLoading, mutate } = useFetchAdminUserDetail(userId);
-  const { banUser, unbanUser, revokeSessions, replaceGlobalRoles } = useAdminUserMutations();
+  const { banUser, unbanUser, deleteUser, revokeSessions, replaceGlobalRoles } =
+    useAdminUserMutations();
 
   const openBan = useCallback(() => {
     if (!data || !userId || data.isSelf) return;
@@ -106,7 +111,21 @@ const UserDetailPage = memo(() => {
     });
   }, [authMethod, data, mutate, unbanUser, userId]);
 
-  const openRevoke = useCallback(() => {
+  const openDelete = useCallback(() => {
+    if (!data || !userId || data.isSelf) return;
+    openDeleteUserModal({
+      authMethod,
+      targetLabel: displayUserName(data),
+      userId,
+      onConfirm: async (input) => {
+        await deleteUser({ ...input, userId });
+        // The user is gone — return to the list.
+        navigate('/admin/users');
+      },
+    });
+  }, [authMethod, data, deleteUser, navigate, userId]);
+
+  const openRevokeAll = useCallback(() => {
     if (!data || !userId) return;
     openRevokeSessionsModal({
       authMethod,
@@ -120,7 +139,24 @@ const UserDetailPage = memo(() => {
     });
   }, [authMethod, data, mutate, revokeSessions, userId]);
 
-  const openRoles = useCallback(() => {
+  const openRevokeSingle = useCallback(
+    (sessionId: string) => {
+      if (!data || !userId) return;
+      openRevokeSingleSessionModal({
+        authMethod,
+        sessionId,
+        targetLabel: displayUserName(data),
+        userId,
+        onConfirm: async (input) => {
+          await revokeSessions({ ...input, userId });
+          await mutate();
+        },
+      });
+    },
+    [authMethod, data, mutate, revokeSessions, userId],
+  );
+
+  const openUpdatePermissions = useCallback(() => {
     if (!data || !userId) return;
     openReplaceRolesModal({
       actorRoles,
@@ -134,6 +170,30 @@ const UserDetailPage = memo(() => {
       },
     });
   }, [actorRoles, authMethod, data, mutate, replaceGlobalRoles, userId]);
+
+  const openRevokeRole = useCallback(
+    (roleName: string) => {
+      if (!data || !userId) return;
+      const remaining = data.roles
+        .map((r) => r.name)
+        .filter((name) => name !== roleName) as PlatformSystemRoleName[];
+      const revoked = data.roles.find((r) => r.name === roleName);
+      const revokedRoleLabel =
+        revoked?.displayName || t(`users.roles.${roleName}` as never, { defaultValue: roleName });
+      openRevokeRoleModal({
+        authMethod,
+        remainingRoleNames: remaining,
+        revokedRoleLabel,
+        targetLabel: displayUserName(data),
+        userId,
+        onConfirm: async (input) => {
+          await replaceGlobalRoles({ ...input, userId });
+          await mutate();
+        },
+      });
+    },
+    [authMethod, data, mutate, replaceGlobalRoles, t, userId],
+  );
 
   // ── State ordering (UI-R1-03) ────────────────────────────────────────────
   // 1) Loading (no settled data)
@@ -216,34 +276,34 @@ const UserDetailPage = memo(() => {
       }
     >
       <div className={styles.panel}>
-        {tab === 'overview' ? <OverviewTab user={data} /> : null}
+        {tab === 'overview' ? (
+          <OverviewTab
+            canBan={canBan}
+            canDelete={canDelete}
+            user={data}
+            onBan={canBan ? openBan : undefined}
+            onDelete={canDelete ? openDelete : undefined}
+            onUnban={canBan ? openUnban : undefined}
+          />
+        ) : null}
         {tab === 'access' ? (
           <AccessTab
             canManageRoles={canManageRoles}
             user={data}
-            onReplaceRoles={canManageRoles ? openRoles : undefined}
+            onRevokeRole={canManageRoles ? openRevokeRole : undefined}
+            onUpdatePermissions={canManageRoles ? openUpdatePermissions : undefined}
           />
         ) : null}
         {tab === 'sessions' ? (
           <SessionsTab
             canRevoke={canRevoke}
             user={data}
-            onOpenRevoke={canRevoke ? openRevoke : undefined}
+            onRevokeAll={canRevoke ? openRevokeAll : undefined}
+            onRevokeSession={canRevoke ? openRevokeSingle : undefined}
           />
         ) : null}
         {tab === 'audit' ? (
           <AuditTab canReadAudit={canReadAudit} enabled={tab === 'audit'} userId={userId} />
-        ) : null}
-
-        {(canBan || canRevoke) && (tab === 'overview' || tab === 'sessions') ? (
-          <DangerZone
-            canBan={canBan}
-            canRevoke={canRevoke}
-            user={data}
-            onBan={canBan && !data.isSelf && data.status !== 'banned' ? openBan : undefined}
-            onRevoke={canRevoke ? openRevoke : undefined}
-            onUnban={canBan && !data.isSelf && data.status === 'banned' ? openUnban : undefined}
-          />
         ) : null}
       </div>
     </AdminPageTemplate>

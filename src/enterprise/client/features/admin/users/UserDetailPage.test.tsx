@@ -47,8 +47,10 @@ vi.mock('@lobehub/ui', async () => {
   return {
     Avatar: () => null,
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
+    Icon: () => null,
     Tag: ({ children }: any) => React.createElement('span', null, children),
     Text: ({ children, as: As, ...rest }: any) => React.createElement(As || 'span', rest, children),
+    Tooltip: ({ children }: any) => React.createElement('div', null, children),
   };
 });
 
@@ -112,14 +114,20 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 
 const openBan = vi.fn();
 const openUnban = vi.fn();
+const openDelete = vi.fn();
 const openRevoke = vi.fn();
+const openRevokeSingle = vi.fn();
 const openRoles = vi.fn();
+const openRevokeRole = vi.fn();
 
 vi.mock('./modals/actions', () => ({
   openBanUserModal: (...a: unknown[]) => openBan(...a),
   openUnbanUserModal: (...a: unknown[]) => openUnban(...a),
+  openDeleteUserModal: (...a: unknown[]) => openDelete(...a),
   openRevokeSessionsModal: (...a: unknown[]) => openRevoke(...a),
+  openRevokeSingleSessionModal: (...a: unknown[]) => openRevokeSingle(...a),
   openReplaceRolesModal: (...a: unknown[]) => openRoles(...a),
+  openRevokeRoleModal: (...a: unknown[]) => openRevokeRole(...a),
   getEligibleAssignableRoles: (roles: { name: string }[]) => {
     const isSuper = roles.some((r) => r.name === 'super_admin');
     const all = [
@@ -152,6 +160,7 @@ vi.mock('./hooks/useAdminUsers', () => ({
   },
   useAdminUserMutations: () => ({
     banUser: banMock,
+    deleteUser: vi.fn(),
     replaceGlobalRoles: replaceRolesMock,
     revokeSessions: revokeMock,
     unbanUser: vi.fn(),
@@ -205,12 +214,16 @@ describe('UserDetailPage', () => {
     banMock.mockReset();
     revokeMock.mockReset();
     openBan.mockReset();
+    openDelete.mockReset();
     openRevoke.mockReset();
+    openRevokeSingle.mockReset();
     openRoles.mockReset();
+    openRevokeRole.mockReset();
     mutateMock.mockReset();
     permissionsRef.current = [
       PLATFORM_PERMISSIONS.USER_READ,
       PLATFORM_PERMISSIONS.USER_BAN,
+      PLATFORM_PERMISSIONS.USER_DELETE,
       PLATFORM_PERMISSIONS.USER_SESSION_REVOKE,
       PLATFORM_PERMISSIONS.USER_ROLE_MANAGE,
     ];
@@ -260,24 +273,28 @@ describe('UserDetailPage', () => {
     expect(mutateMock).toHaveBeenCalled();
   });
 
-  it('hides ban for self and passes isSelf to revoke from danger zone', () => {
+  it('hides ban/delete for self on overview and passes isSelf to revoke-all', () => {
     detailState = {
       data: { ...baseUser, isSelf: true },
       error: undefined,
       isLoading: false,
     };
     renderDetail();
-    expect(screen.getByText('users.danger.selfBanHidden')).toBeTruthy();
+    // Overview account actions are hidden for self — no ban/delete buttons.
+    expect(screen.getByText('users.overview.selfActionsHidden')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'users.actions.ban' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'users.actions.delete' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'users.actions.revokeSessions' }));
+    // Revoke-all lives on the sessions tab and still carries isSelf.
+    fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.sessions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'users.sessions.openRevoke' }));
     expect(openRevoke).toHaveBeenCalledTimes(1);
     expect(openRevoke.mock.calls[0]![0].isSelf).toBe(true);
     expect(banMock).not.toHaveBeenCalled();
     expect(revokeMock).not.toHaveBeenCalled();
   });
 
-  it('passes isSelf false for other users from sessions link and danger zone', () => {
+  it('passes isSelf false for other users from the sessions revoke-all button', () => {
     renderDetail();
     fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.sessions' }));
     fireEvent.click(screen.getByRole('button', { name: 'users.sessions.openRevoke' }));
@@ -286,11 +303,38 @@ describe('UserDetailPage', () => {
     );
   });
 
+  it('opens delete for other users from overview', () => {
+    renderDetail();
+    fireEvent.click(screen.getByRole('button', { name: 'users.actions.delete' }));
+    expect(openDelete).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-bob' }));
+  });
+
+  it('opens single-session revoke from a session card', () => {
+    renderDetail();
+    fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.sessions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'users.sessions.revokeOne' }));
+    expect(openRevokeSingle).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'sess-1', userId: 'u-bob' }),
+    );
+  });
+
+  it('opens per-role revoke from the access tab with the remaining roles', () => {
+    renderDetail();
+    fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.access' }));
+    fireEvent.click(screen.getByRole('button', { name: 'users.modals.revokeRole.confirm' }));
+    expect(openRevokeRole).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-bob', remainingRoleNames: [] }),
+    );
+  });
+
   it('hides write actions without permissions', () => {
     permissionsRef.current = [PLATFORM_PERMISSIONS.USER_READ];
     renderDetail();
     expect(screen.queryByRole('button', { name: 'users.actions.ban' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'users.actions.revokeSessions' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'users.actions.delete' })).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.sessions' }));
+    expect(screen.queryByRole('button', { name: 'users.sessions.openRevoke' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'users.sessions.revokeOne' })).toBeNull();
   });
 
   it('does not request audit without permission', async () => {
