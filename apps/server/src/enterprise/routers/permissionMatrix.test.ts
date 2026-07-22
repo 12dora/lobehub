@@ -82,8 +82,9 @@ const roleCases = [
     // Recount after W10: creds reads (5) + easyauth status (1) + stats reads (12) = 57
     // + admin.connectors.getGovernance (CONNECTOR_READ) = 58
     // + admin.audit A2 AUDIT_READ (policy.get, events.*, users.*) = 66
-    // Conversation / legal-hold / policy.update remain super_admin-only.
-    expectedBeforeO04System: 66,
+    // + admin.audit A3 exports (AUDIT_EXPORT: 2 queries + 3 mutations) = 71
+    // Conversation / legal-hold / policy.update / retention remain super_admin-only.
+    expectedBeforeO04System: 71,
     expectedO04SystemPaths: o04SystemReadProcedurePaths,
     role: PLATFORM_SYSTEM_ROLES.AUDITOR,
   },

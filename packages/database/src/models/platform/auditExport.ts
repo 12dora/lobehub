@@ -95,6 +95,9 @@ export class PlatformAuditExportModel {
       status: 'pending',
     };
     const [row] = await this.db.insert(platformAuditExports).values(values).returning();
+    if (!row) {
+      throw new Error('Failed to create platform audit export');
+    }
     return row;
   };
 
@@ -291,6 +294,34 @@ export class PlatformAuditExportModel {
             eq(platformAuditExports.status, 'completed'),
             eq(platformAuditExports.status, 'pending'),
             eq(platformAuditExports.status, 'running'),
+          ),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
+  /**
+   * Retention artifact clear: mark expired and clear private storageKey while
+   * retaining checksum / bytes / filter snapshot / metadata history.
+   * Preserves original finishedAt (completion time) — never overwrites it.
+   * Accepts completed or already-expired rows (idempotent storageKey clear).
+   */
+  clearArtifactStorage = async (id: string): Promise<PlatformAuditExportItem | undefined> => {
+    const now = new Date();
+    const [row] = await this.db
+      .update(platformAuditExports)
+      .set({
+        status: 'expired',
+        storageKey: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(platformAuditExports.id, id),
+          or(
+            eq(platformAuditExports.status, 'completed'),
+            eq(platformAuditExports.status, 'expired'),
           ),
         ),
       )

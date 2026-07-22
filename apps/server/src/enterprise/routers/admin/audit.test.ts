@@ -12,6 +12,7 @@ import {
   platformAuditLegalHolds,
   platformAuditLogs,
   platformAuditPolicies,
+  platformAuditRetentionRuns,
   platformJobs,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
@@ -39,6 +40,7 @@ beforeEach(async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformAuditLegalHolds);
   await db.delete(platformAuditExports);
+  await db.delete(platformAuditRetentionRuns);
   await db.delete(platformJobs);
   await db.delete(platformAuditPolicies);
 });
@@ -48,6 +50,7 @@ afterEach(async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformAuditLegalHolds);
   await db.delete(platformAuditExports);
+  await db.delete(platformAuditRetentionRuns);
   await db.delete(platformJobs);
   await db.delete(platformAuditPolicies);
   vi.unstubAllEnvs();
@@ -242,5 +245,54 @@ describe('admin.audit router', () => {
     const contexts = await fixture.createContexts(db);
     const auditor = createCaller(contexts.auditor as never);
     await expect(auditor.audit.legalHolds.list({})).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('allows super_admin retention but denies auditor without AUDIT_RETENTION_OPERATE', async () => {
+    const contexts = await fixture.createContexts(db);
+    const auditor = createCaller(contexts.auditor as never);
+    const superAdmin = createCaller(contexts.superAdmin as never);
+
+    await expect(
+      auditor.audit.retention.dryRun({ reason: 'auditor denied', scope: 'operation_logs' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(auditor.audit.retention.listRuns({})).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+
+    const dry = await superAdmin.audit.retention.dryRun({
+      reason: 'super dry run',
+      scope: 'operation_logs',
+    });
+    expect(dry.items).toHaveLength(1);
+    expect(dry.items[0]).toMatchObject({ mode: 'dry_run', status: 'pending' });
+
+    const got = await superAdmin.audit.retention.getRun({ id: dry.items[0]!.id });
+    expect(got.id).toBe(dry.items[0]!.id);
+    const status = await superAdmin.audit.retention.status({ id: dry.items[0]!.id });
+    expect(status.id).toBe(dry.items[0]!.id);
+
+    const listed = await superAdmin.audit.retention.listRuns({ limit: 10 });
+    expect(listed.items.some((i) => i.id === dry.items[0]!.id)).toBe(true);
+  });
+
+  it('requires reauth for retention.dryRun / run / cancel', async () => {
+    const contexts = await fixture.createContexts(db);
+    const stale = createCaller(contexts.staleReauthSuper as never);
+    const fresh = createCaller(contexts.superAdmin as never);
+
+    await expect(
+      stale.audit.retention.dryRun({ reason: 'stale reauth', scope: 'operation_logs' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(
+      stale.audit.retention.run({ reason: 'stale reauth', scope: 'conversations' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    const created = await fresh.audit.retention.run({
+      reason: 'fresh reauth run',
+      scope: 'export_artifacts',
+    });
+    await expect(
+      stale.audit.retention.cancel({ id: created.items[0]!.id, reason: 'stale cancel' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
   });
 });

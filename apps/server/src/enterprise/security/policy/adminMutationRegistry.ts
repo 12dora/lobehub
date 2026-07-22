@@ -368,6 +368,24 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Update platform audit policy with CAS, reason, and recent reauth.',
     { reauth: recentReauth },
   ),
+  'admin.audit.retention.cancel': dangerousMutation(
+    'admin.audit.retention.cancel',
+    'high',
+    'Cancel a platform audit retention run with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.retention.dryRun': dangerousMutation(
+    'admin.audit.retention.dryRun',
+    'high',
+    'Start a platform audit retention dry-run with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.retention.run': dangerousMutation(
+    'admin.audit.retention.run',
+    'high',
+    'Start a platform audit retention execute run with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
   'admin.branding.publish': dangerousMutation(
     'admin.branding.publish',
     'high',

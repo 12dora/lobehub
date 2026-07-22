@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -48,7 +49,7 @@ describe('PlatformAuditExportModel', () => {
     await expect(
       model.create({
         kind: 'operation_logs',
-        // @ts-expect-error intentional contract violation
+        // Empty string is typed as string but rejected at runtime.
         requestedBy: '',
       }),
     ).rejects.toThrow(/requestedBy is required/);
@@ -210,5 +211,37 @@ describe('PlatformAuditExportModel', () => {
 
   it('get returns undefined for missing ids', async () => {
     await expect(model.get('paex_missing')).resolves.toBeUndefined();
+  });
+
+  it('clearArtifactStorage clears storageKey, sets expired, preserves finishedAt and metadata', async () => {
+    const created = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
+    await model.markRunning(created.id);
+    const finishedAt = new Date('2026-03-15T12:00:00.000Z');
+    const completed = await model.complete(created.id, {
+      artifactBytes: 99,
+      artifactChecksum: 'sha256:keep-me',
+      expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+      rowCount: 3,
+      storageKey: 'audit-exports/keep/meta.jsonl',
+    });
+    // Pin a known completion time (complete() stamps now).
+    await serverDB
+      .update(platformAuditExports)
+      .set({ finishedAt })
+      .where(eq(platformAuditExports.id, created.id));
+
+    const cleared = await model.clearArtifactStorage(created.id);
+    expect(cleared?.status).toBe('expired');
+    expect(cleared?.storageKey).toBeNull();
+    expect(cleared?.artifactChecksum).toBe('sha256:keep-me');
+    expect(cleared?.artifactBytes).toBe(99);
+    expect(cleared?.rowCount).toBe(3);
+    expect(cleared?.filterSnapshot).toEqual(completed?.filterSnapshot ?? {});
+    expect(cleared?.finishedAt?.toISOString()).toBe(finishedAt.toISOString());
+
+    // Idempotent clear on already-expired row with null key
+    const again = await model.clearArtifactStorage(created.id);
+    expect(again?.status).toBe('expired');
+    expect(again?.finishedAt?.toISOString()).toBe(finishedAt.toISOString());
   });
 });

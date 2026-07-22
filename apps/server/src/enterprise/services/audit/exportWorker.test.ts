@@ -555,4 +555,63 @@ describe('audit export worker', () => {
     expect(done.status).toBe('completed');
     expect(done.rowCount).toBe(1);
   });
+
+  it('final jobs.complete lease loss does not report clean completion or cancel export', async () => {
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-final-lease-1',
+      result: 'success',
+      targetType: 'settings',
+    });
+
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'final complete lease loss',
+        to: window.to,
+      },
+    });
+    const jobId = created.jobId!;
+
+    const result = await processNextAuditExportJob(serverDB, {
+      afterDomainComplete: async () => {
+        // Steal lease after domain terminal complete, before jobs.complete ownership check.
+        await serverDB
+          .update(platformJobs)
+          .set({
+            leaseOwner: 'thief',
+            leaseUntil: new Date(Date.now() + 120_000),
+          })
+          .where(eq(platformJobs.id, jobId));
+      },
+      storage,
+      workerId: 'export-final-lease-loser',
+    });
+
+    expect(result.outcome).toBe('skipped');
+    expect(result.outcome).not.toBe('completed');
+    expect(result.outcome).not.toBe('cancelled');
+
+    const got = await service.get({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      id: created.id,
+    });
+    // Domain completed; lease loss must not cancel or strip the artifact.
+    expect(got.status).toBe('completed');
+    expect(got.status).not.toBe('cancelled');
+    expect(storage.objects.has(buildAuditExportStorageKey(created.id))).toBe(true);
+
+    const [job] = await serverDB.select().from(platformJobs).where(eq(platformJobs.id, jobId));
+    expect(job?.status).toBe('running');
+    expect(job?.status).not.toBe('succeeded');
+    expect(job?.status).not.toBe('cancelled');
+    expect(job?.leaseOwner).toBe('thief');
+  });
 });

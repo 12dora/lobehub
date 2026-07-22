@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, or } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditRetentionRun,
@@ -11,7 +11,12 @@ import {
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 
-export type { PlatformAuditRetentionRunItem };
+export type {
+  PlatformAuditRetentionCounts,
+  PlatformAuditRetentionMode,
+  PlatformAuditRetentionRunItem,
+  PlatformAuditRetentionScope,
+};
 
 /** Stored scopes only — `all` is a service-layer fan-out, never persisted. */
 const STORED_SCOPES: readonly PlatformAuditRetentionScope[] = [
@@ -66,13 +71,14 @@ const parseCursor = (cursor: string | undefined): { createdAt: Date; id: string 
   return { createdAt, id };
 };
 
-const assertStoredScope = (scope: string): asserts scope is PlatformAuditRetentionScope => {
+/** Function declaration required for assertion narrowing (TS2775). */
+function assertStoredScope(scope: string): asserts scope is PlatformAuditRetentionScope {
   if (!(STORED_SCOPES as readonly string[]).includes(scope)) {
     throw new Error(
       `Invalid retention scope "${scope}": stored runs must use a single scope (operation_logs | conversations | export_artifacts), not "all"`,
     );
   }
-};
+}
 
 /**
  * Retention dry-run / execute run repository with progress tracking.
@@ -107,6 +113,9 @@ export class PlatformAuditRetentionRunModel {
       status: 'pending',
     };
     const [row] = await this.db.insert(platformAuditRetentionRuns).values(values).returning();
+    if (!row) {
+      throw new Error('Failed to create platform audit retention run');
+    }
     return row;
   };
 
@@ -116,6 +125,30 @@ export class PlatformAuditRetentionRunModel {
       .from(platformAuditRetentionRuns)
       .where(eq(platformAuditRetentionRuns.id, id))
       .limit(1);
+    return row;
+  };
+
+  /**
+   * Soft-link a platform_jobs row after enqueue.
+   * Allows pending rows with null jobId, or re-affirming the same jobId.
+   */
+  setJobId = async (
+    id: string,
+    jobId: string,
+  ): Promise<PlatformAuditRetentionRunItem | undefined> => {
+    if (!jobId) throw new Error('jobId is required');
+    const now = new Date();
+    const [row] = await this.db
+      .update(platformAuditRetentionRuns)
+      .set({ jobId, updatedAt: now })
+      .where(
+        and(
+          eq(platformAuditRetentionRuns.id, id),
+          eq(platformAuditRetentionRuns.status, 'pending'),
+          or(isNull(platformAuditRetentionRuns.jobId), eq(platformAuditRetentionRuns.jobId, jobId)),
+        ),
+      )
+      .returning();
     return row;
   };
 
@@ -280,4 +313,8 @@ export class PlatformAuditRetentionRunModel {
       .returning();
     return row;
   };
+
+  /** True when the retention run is in a terminal lifecycle state. */
+  static isTerminal = (status: PlatformAuditRetentionRunStatus): boolean =>
+    status === 'completed' || status === 'failed' || status === 'cancelled';
 }

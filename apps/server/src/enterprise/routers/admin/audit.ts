@@ -1,5 +1,5 @@
 /**
- * admin.audit.* — A2 evidence query + A3 export surface.
+ * admin.audit.* — A2 evidence query + A3 export/retention surface.
  *
  * Endpoints:
  * - policy.get / policy.update
@@ -8,6 +8,7 @@
  * - users.search / summary / timeline
  * - legalHolds.list / get / create / release
  * - exports.create / list / get / download / cancel
+ * - retention.dryRun / run / listRuns / getRun / status / cancel
  */
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -51,6 +52,16 @@ import {
   adminAuditPolicyGetOutputSchema,
   adminAuditPolicyUpdateInputSchema,
   adminAuditPolicyUpdateOutputSchema,
+  adminAuditRetentionCancelInputSchema,
+  adminAuditRetentionCancelOutputSchema,
+  adminAuditRetentionCreateInputSchema,
+  adminAuditRetentionCreateOutputSchema,
+  adminAuditRetentionGetRunInputSchema,
+  adminAuditRetentionGetRunOutputSchema,
+  adminAuditRetentionListRunsInputSchema,
+  adminAuditRetentionListRunsOutputSchema,
+  adminAuditRetentionStatusInputSchema,
+  adminAuditRetentionStatusOutputSchema,
   adminAuditUsersSearchInputSchema,
   adminAuditUsersSearchOutputSchema,
   adminAuditUsersSummaryInputSchema,
@@ -62,7 +73,11 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
-import { AdminAuditExportService, AdminAuditService } from '../../services/audit';
+import {
+  AdminAuditExportService,
+  AdminAuditRetentionService,
+  AdminAuditService,
+} from '../../services/audit';
 import { PlatformAuditService } from '../../services/platformAudit';
 
 const adminBase = authedProcedure
@@ -75,6 +90,9 @@ const auditConversationRead = adminBase.use(
   withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ),
 );
 const auditExport = adminBase.use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_EXPORT));
+const auditRetentionOperate = adminBase.use(
+  withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE),
+);
 const auditPolicyUpdate = adminBase.use(
   withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_POLICY_UPDATE),
 );
@@ -89,7 +107,10 @@ const assertAuditDangerousReauth = async (params: {
     | 'admin.audit.exports.download'
     | 'admin.audit.legalHolds.create'
     | 'admin.audit.legalHolds.release'
-    | 'admin.audit.policy.update';
+    | 'admin.audit.policy.update'
+    | 'admin.audit.retention.cancel'
+    | 'admin.audit.retention.dryRun'
+    | 'admin.audit.retention.run';
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
@@ -392,6 +413,85 @@ const exportsRouter = router({
     }),
 });
 
+const retentionRouter = router({
+  cancel: auditRetentionOperate
+    .input(adminAuditRetentionCancelInputSchema)
+    .output(adminAuditRetentionCancelOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertAuditDangerousReauth({
+        action: 'admin.audit.retention.cancel',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+        targetType: 'audit_retention_run',
+      });
+      const service = new AdminAuditRetentionService(ctx.serverDB);
+      return service.cancel({ actorUserId: ctx.userId!, input });
+    }),
+
+  dryRun: auditRetentionOperate
+    .input(adminAuditRetentionCreateInputSchema)
+    .output(adminAuditRetentionCreateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertAuditDangerousReauth({
+        action: 'admin.audit.retention.dryRun',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetType: 'audit_retention_run',
+      });
+      const service = new AdminAuditRetentionService(ctx.serverDB);
+      return service.dryRun({ actorUserId: ctx.userId!, input });
+    }),
+
+  getRun: auditRetentionOperate
+    .input(adminAuditRetentionGetRunInputSchema)
+    .output(adminAuditRetentionGetRunOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const service = new AdminAuditRetentionService(ctx.serverDB);
+      return service.getRun({ actorUserId: ctx.userId!, id: input.id });
+    }),
+
+  listRuns: auditRetentionOperate
+    .input(adminAuditRetentionListRunsInputSchema)
+    .output(adminAuditRetentionListRunsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const service = new AdminAuditRetentionService(ctx.serverDB);
+      return service.listRuns({ actorUserId: ctx.userId!, input });
+    }),
+
+  run: auditRetentionOperate
+    .input(adminAuditRetentionCreateInputSchema)
+    .output(adminAuditRetentionCreateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertAuditDangerousReauth({
+        action: 'admin.audit.retention.run',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetType: 'audit_retention_run',
+      });
+      const service = new AdminAuditRetentionService(ctx.serverDB);
+      return service.run({ actorUserId: ctx.userId!, input });
+    }),
+
+  /** Alias of getRun for frontend polling convenience. */
+  status: auditRetentionOperate
+    .input(adminAuditRetentionStatusInputSchema)
+    .output(adminAuditRetentionStatusOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const service = new AdminAuditRetentionService(ctx.serverDB);
+      return service.status({ actorUserId: ctx.userId!, id: input.id });
+    }),
+});
+
 /**
  * Compatibility aliases `list` / `get` → events.list / events.get.
  * Keep shapes aligned with the events surface (list omits diffs; get returns full stored diffs).
@@ -424,5 +524,6 @@ export const adminAuditRouter = router({
       });
     }),
   policy: policyRouter,
+  retention: retentionRouter,
   users: usersRouter,
 });

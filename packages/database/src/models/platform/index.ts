@@ -7,6 +7,7 @@ export * from './auditExport';
 export * from './auditLegalHold';
 export * from './auditLog';
 export * from './auditPolicy';
+export * from './auditRetention';
 export * from './auditRetentionRun';
 export * from './branding';
 export * from './checksum';

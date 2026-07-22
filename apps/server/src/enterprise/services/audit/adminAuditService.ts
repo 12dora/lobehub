@@ -4,7 +4,7 @@
  * Credential-only masking for conversation bodies; no extra read-time redaction on operation diffs.
  */
 
-import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import {
   maskAuditConversationEvidence,
   PlatformAuditConversationModel,
@@ -100,9 +100,9 @@ const isDeniedError = (error: unknown): boolean => {
   return (
     code === PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED ||
     code === PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED ||
-    code === PLATFORM_ERROR_CODES.ADMIN_ACCESS_DENIED ||
-    code === PLATFORM_ERROR_CODES.ADMIN_FEATURE_DISABLED ||
-    code === PLATFORM_ERROR_CODES.ADMIN_REAUTH_REQUIRED
+    code === ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED ||
+    code === ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED ||
+    code === ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED
   );
 };
 
@@ -205,10 +205,10 @@ export class AdminAuditService {
           targetId: before.id,
           targetType: 'audit_policy',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
           details: {
-            currentRevision: error.details?.currentRevision,
+            currentRevision: error.details?.currentRevision ?? null,
             expectedRevision: params.input.expectedRevision,
           },
           httpCode: 'CONFLICT',
@@ -318,7 +318,7 @@ export class AdminAuditService {
           targetId: params.id,
           targetType: 'audit_event',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -512,7 +512,7 @@ export class AdminAuditService {
           targetId: params.input.topicId,
           targetType: 'topic',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -736,7 +736,7 @@ export class AdminAuditService {
           targetId: params.userId,
           targetType: 'user',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -875,7 +875,7 @@ export class AdminAuditService {
           targetId: params.id,
           targetType: 'legal_hold',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -969,7 +969,7 @@ export class AdminAuditService {
           targetId: params.input.id,
           targetType: 'legal_hold',
         });
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });

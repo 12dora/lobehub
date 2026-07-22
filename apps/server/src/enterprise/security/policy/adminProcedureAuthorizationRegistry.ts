@@ -364,6 +364,36 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_POLICY_UPDATE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.audit.retention.cancel',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.audit.retention.dryRun',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.retention.getRun',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.retention.listRuns',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.audit.retention.run',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.audit.retention.status',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE] },
+  },
+  {
     kind: 'query',
     path: 'admin.audit.users.search',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },

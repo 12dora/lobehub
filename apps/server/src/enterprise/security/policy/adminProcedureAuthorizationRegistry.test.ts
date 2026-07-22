@@ -75,14 +75,15 @@ describe('admin procedure authorization registry', () => {
     // + admin.agents.delete (1 mutation) = 160
     // + admin.audit A2 (16 procedures: 13 queries + 3 mutations; list/get retained) = 176
     // + admin.audit A3 exports (2 queries + 3 mutations) = 181
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(181);
+    // + admin.audit A3 retention (3 queries + 3 mutations) = 187
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(187);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(82);
+    ).toHaveLength(85);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(99);
-    expect(mutationPaths).toHaveLength(99);
+    ).toHaveLength(102);
+    expect(mutationPaths).toHaveLength(102);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -251,6 +252,33 @@ describe('admin procedure authorization registry', () => {
         ),
     );
     expect(auditExportElsewhere).toEqual([]);
+
+    // A3 retention: six admin.audit.retention.* procedures, all gated by AUDIT_RETENTION_OPERATE.
+    const auditRetentionEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(
+      (entry) => 'path' in entry && entry.path.startsWith('admin.audit.retention.'),
+    );
+    expect(auditRetentionEntries.map((entry) => entry.path).sort()).toEqual([
+      'admin.audit.retention.cancel',
+      'admin.audit.retention.dryRun',
+      'admin.audit.retention.getRun',
+      'admin.audit.retention.listRuns',
+      'admin.audit.retention.run',
+      'admin.audit.retention.status',
+    ]);
+    for (const entry of auditRetentionEntries) {
+      expect(entry).toMatchObject({
+        permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE] },
+      });
+    }
+    const auditRetentionElsewhere = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(
+      (entry) =>
+        'permission' in entry &&
+        !entry.path.startsWith('admin.audit.retention.') &&
+        (entry.permission.permissions as readonly PlatformPermission[]).includes(
+          PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE,
+        ),
+    );
+    expect(auditRetentionElsewhere).toEqual([]);
 
     const dangerousReauthGaps = Object.values(ADMIN_MUTATION_REGISTRY).filter(
       (entry) => entry.dangerous && entry.controls.reauth.status === 'gap',
