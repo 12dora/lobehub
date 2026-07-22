@@ -48,6 +48,11 @@ export const platformAuditLogs = pgTable(
     index('platform_audit_logs_target_type_id_idx').on(t.targetType, t.targetId),
     index('platform_audit_logs_action_idx').on(t.action),
     index('platform_audit_logs_request_id_idx').on(t.requestId),
+    // Composite keyset indexes for admin list filters (actor/action/result + time + id).
+    index('platform_audit_logs_actor_created_at_id_idx').on(t.actorUserId, t.createdAt, t.id),
+    index('platform_audit_logs_action_created_at_id_idx').on(t.action, t.createdAt, t.id),
+    index('platform_audit_logs_result_created_at_id_idx').on(t.result, t.createdAt, t.id),
+    index('platform_audit_logs_created_at_id_idx').on(t.createdAt, t.id),
   ],
 );
 
