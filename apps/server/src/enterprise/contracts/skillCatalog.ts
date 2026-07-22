@@ -443,6 +443,62 @@ export const adminSkillApplyImmediateInputSchema = z.discriminatedUnion('mode', 
     .strict(),
 ]);
 
+/** Parse a skill package from URL / GitHub repo / uploaded ZIP without persisting anything. */
+export const adminSkillParseImportSourceInputSchema = z.discriminatedUnion('source', [
+  z
+    .object({
+      source: z.literal('url'),
+      url: z
+        .string()
+        .trim()
+        .min(1)
+        .max(2048)
+        .refine((value) => {
+          try {
+            const parsed = new URL(value);
+            return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+          } catch {
+            return false;
+          }
+        }, 'url must be a valid http(s) URL'),
+    })
+    .strict(),
+  z
+    .object({
+      /** Same formats the user GitHub importer accepts: owner/repo, github.com/owner/repo[/tree|blob/...]. */
+      repoUrl: z.string().trim().min(1).max(2048),
+      source: z.literal('github'),
+    })
+    .strict(),
+  z
+    .object({
+      fileName: z.string().trim().min(1).max(255),
+      source: z.literal('zip'),
+      /** Base64-encoded ZIP payload; decoded size is capped at 20MB by the handler. */
+      zipBase64: z.string().min(1).max(30_000_000),
+    })
+    .strict(),
+]);
+
+export const adminSkillParseImportSourceOutputSchema = z
+  .object({
+    content: z.string().max(1_048_576),
+    description: z.string().max(4000).nullable(),
+    displayName: z.string().min(1).max(200),
+    resources: skillResourcesSchema,
+    /** true when parsed resources were dropped (count cap, binary/oversize file or invalid path). */
+    resourcesTruncated: z.boolean().optional(),
+    sourceMeta: z
+      .object({
+        kind: z.enum(['github', 'url', 'zip']),
+        origin: z.string().min(1).max(2048),
+      })
+      .strict()
+      .optional(),
+    suggestedSkillKey: skillKeySchema,
+  })
+  .strict();
+
 export const publishedSkillSchema = z
   .object({
     checksum: checksumSchema,
@@ -512,6 +568,12 @@ export type AdminSkillApplyImmediateInput = z.infer<typeof adminSkillApplyImmedi
 export type AdminSkillApplyImmediateOutput = z.infer<typeof adminSkillApplyImmediateOutputSchema>;
 export type AdminSkillCreateInput = z.infer<typeof adminSkillCreateInputSchema>;
 export type AdminSkillCreateVersionInput = z.infer<typeof adminSkillCreateVersionInputSchema>;
+export type AdminSkillParseImportSourceInput = z.infer<
+  typeof adminSkillParseImportSourceInputSchema
+>;
+export type AdminSkillParseImportSourceOutput = z.infer<
+  typeof adminSkillParseImportSourceOutputSchema
+>;
 export type AdminSkillPublishNowInput = z.infer<typeof adminSkillPublishNowInputSchema>;
 export type AdminSkillUpdateDraftInput = z.infer<typeof adminSkillUpdateDraftInputSchema>;
 export type ImmutableSkillVersion = z.infer<typeof immutableSkillVersionSchema>;

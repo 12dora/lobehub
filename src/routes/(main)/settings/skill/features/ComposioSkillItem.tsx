@@ -16,6 +16,7 @@ import {
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useAdminToolScope } from '@/features/AdminToolScope';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { usePermission } from '@/hooks/usePermission';
 import { useToolStore } from '@/store/tool';
@@ -41,6 +42,7 @@ interface ComposioSkillItemProps {
 
 const ComposioSkillItem = memo<ComposioSkillItemProps>(
   ({ serverType, server, isSelected, onSelect }) => {
+    const adminScope = useAdminToolScope();
     const { t } = useTranslation('setting');
     const { allowed: canCreate, reason: createReason } = usePermission('create_content');
     const { allowed: canEdit, reason: editReason } = usePermission('edit_own_content');
@@ -343,6 +345,8 @@ const ComposioSkillItem = memo<ComposioSkillItemProps>(
     // Re-authorize; not connected → Connect. All open the OAuth flow inline so
     // users can tell what is connected instead of hitting a blank detail panel.
     const renderNavExtra = () => {
+      // Admin org scope: OAuth connections are per-user; no personal connect CTA.
+      if (adminScope) return null;
       if (isConnecting || isWaitingAuth) {
         return <Button disabled icon={<Icon spin icon={Loader2} />} size="small" type="text" />;
       }
@@ -402,7 +406,7 @@ const ComposioSkillItem = memo<ComposioSkillItemProps>(
           // (disconnected / pending / error) the row is inert and the only
           // affordance is the inline Connect / Re-authorize button — otherwise
           // clicking opens a blank detail panel that reads as a bug.
-          onClick={isConnected ? onSelect : undefined}
+          onClick={adminScope || isConnected ? onSelect : undefined}
         />
       );
     }

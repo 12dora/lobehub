@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { ConnectorToolPermission } from '@/database/schemas';
 import { ConnectorSourceType } from '@/database/schemas';
+import { useAdminToolScope } from '@/features/AdminToolScope';
 import { useToolStore } from '@/store/tool';
 import { connectorSelectors } from '@/store/tool/slices/connector';
 
@@ -26,23 +27,46 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
     const { t } = useTranslation('tool');
     const { t: ts } = useTranslation('setting');
     const [customModalOpen, setCustomModalOpen] = useState(false);
+    const adminScope = useAdminToolScope();
 
-    const connector = useToolStore(connectorSelectors.connectorById(connectorId));
-    const { readTools, createTools, updateTools, deleteTools } = useToolStore(
-      connectorSelectors.connectorToolsGrouped(connectorId),
-    );
-    const syncing = useToolStore(connectorSelectors.isSyncing(connectorId));
+    const storeConnector = useToolStore(connectorSelectors.connectorById(connectorId));
+    const storeGrouped = useToolStore(connectorSelectors.connectorToolsGrouped(connectorId));
+    const storeSyncing = useToolStore(connectorSelectors.isSyncing(connectorId));
 
     const syncConnectorTools = useToolStore((s) => s.syncConnectorTools);
     const syncBuiltinTool = useToolStore((s) => s.syncBuiltinTool);
     const syncPluginTools = useToolStore((s) => s.syncPluginTools);
-    const resetConnectorPermissions = useToolStore((s) => s.resetConnectorPermissions);
+    const storeResetConnectorPermissions = useToolStore((s) => s.resetConnectorPermissions);
     const disconnectConnector = useToolStore((s) => s.disconnectConnector);
-    const deleteConnector = useToolStore((s) => s.deleteConnector);
+    const storeDeleteConnector = useToolStore((s) => s.deleteConnector);
     const uninstallBuiltinTool = useToolStore((s) => s.uninstallBuiltinTool);
     const uninstallMCPPlugin = useToolStore((s) => s.uninstallMCPPlugin);
     const fetchConnectors = useToolStore((s) => s.fetchConnectors);
-    const updateToolPermission = useToolStore((s) => s.updateToolPermission);
+    const storeUpdateToolPermission = useToolStore((s) => s.updateToolPermission);
+
+    // Admin scope: rows come from the org catalog / builtin manifests, and
+    // permission writes target the platform connector policy.
+    const adminConnector = adminScope?.connectors.find((c) => c.id === connectorId);
+    const connector = adminScope ? adminConnector : storeConnector;
+    const { readTools, createTools, updateTools, deleteTools } = adminScope
+      ? {
+          createTools: adminConnector?.tools.filter((tl) => tl.crudType === 'write') ?? [],
+          deleteTools: adminConnector?.tools.filter((tl) => tl.crudType === 'delete') ?? [],
+          readTools: adminConnector?.tools.filter((tl) => tl.crudType === 'read') ?? [],
+          updateTools: adminConnector?.tools.filter((tl) => tl.crudType === 'update') ?? [],
+        }
+      : storeGrouped;
+    const syncing = adminScope ? false : storeSyncing;
+    const permissionsReadOnly = Boolean(
+      adminScope && connector && adminScope.isConnectorReadOnly(connector),
+    );
+    const updateToolPermission = adminScope
+      ? adminScope.updateToolPermission
+      : storeUpdateToolPermission;
+    const resetConnectorPermissions = adminScope
+      ? adminScope.resetConnectorPermissions
+      : storeResetConnectorPermissions;
+    const deleteConnector = adminScope ? adminScope.deleteConnector : storeDeleteConnector;
 
     const isMcpConnector = connector?.sourceType === ConnectorSourceType.custom;
     const isBuiltin = connector?.sourceType === ConnectorSourceType.builtin;
@@ -128,11 +152,13 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
           <div style={{ fontSize: 14, fontWeight: 500 }}>{connectorName}</div>
           <div style={{ display: 'flex', gap: 8 }}>
             {/* Reset permissions: restore all tools to auto (fully open) */}
-            <Button size="small" onClick={() => resetConnectorPermissions(connectorId)}>
-              {t('connector.resetPermissions', 'Reset permissions')}
-            </Button>
-            {/* Sync/Refresh: re-sync tool list from manifest */}
-            {!managed ? (
+            {!permissionsReadOnly && (
+              <Button size="small" onClick={() => resetConnectorPermissions(connectorId)}>
+                {t('connector.resetPermissions', 'Reset permissions')}
+              </Button>
+            )}
+            {/* Sync/Refresh: re-sync tool list from manifest (per-user rows only) */}
+            {!managed && !adminScope ? (
               <Button
                 icon={<RefreshCwIcon size={14} />}
                 loading={syncing}
@@ -143,17 +169,42 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
               </Button>
             ) : null}
             {/* Edit button for custom MCP connectors — only http type has a server URL to edit */}
-            {!managed && isMcpConnector && connector?.mcpConnectionType === 'http' && (
-              <Button
-                icon={<PencilIcon size={14} />}
-                size="small"
-                onClick={() => setCustomModalOpen(true)}
-              >
-                {t('connector.edit', 'Edit')}
-              </Button>
-            )}
-            {lifecycleActions !== undefined ? (
+            {!managed &&
+              !adminScope &&
+              isMcpConnector &&
+              connector?.mcpConnectionType === 'http' && (
+                <Button
+                  icon={<PencilIcon size={14} />}
+                  size="small"
+                  onClick={() => setCustomModalOpen(true)}
+                >
+                  {t('connector.edit', 'Edit')}
+                </Button>
+              )}
+            {lifecycleActions !== undefined && lifecycleActions !== null ? (
               lifecycleActions
+            ) : adminScope ? (
+              // Admin org scope: platform connectors can be removed org-wide;
+              // builtin rows are catalog facts with no lifecycle actions.
+              isMcpConnector ? (
+                <Button
+                  danger
+                  icon={<Trash2 size={14} />}
+                  size="small"
+                  onClick={() => {
+                    confirmModal({
+                      okButtonProps: { danger: true },
+                      onOk: async () => {
+                        await deleteConnector(connectorId);
+                        onDelete?.();
+                      },
+                      title: t('connector.deleteConfirm', 'Delete this connector?'),
+                    });
+                  }}
+                >
+                  {t('connector.delete', 'Delete')}
+                </Button>
+              ) : null
             ) : !managed ? (
               <>
                 {/* Disconnect / Delete for custom MCP connectors */}
@@ -220,24 +271,28 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
             <div style={{ flex: 1, overflowY: 'auto' }}>
               <ToolPermissionGroup
                 label={t('connector.readOnlyTools', 'Read-only tools')}
+                readOnly={permissionsReadOnly}
                 tools={readTools}
                 onBatchPermission={handleBatchPermission}
                 onPermissionChange={updateToolPermission}
               />
               <ToolPermissionGroup
                 label={t('connector.createTools', 'Create tools')}
+                readOnly={permissionsReadOnly}
                 tools={createTools}
                 onBatchPermission={handleBatchPermission}
                 onPermissionChange={updateToolPermission}
               />
               <ToolPermissionGroup
                 label={t('connector.updateTools', 'Update tools')}
+                readOnly={permissionsReadOnly}
                 tools={updateTools}
                 onBatchPermission={handleBatchPermission}
                 onPermissionChange={updateToolPermission}
               />
               <ToolPermissionGroup
                 label={t('connector.deleteTools', 'Delete tools')}
+                readOnly={permissionsReadOnly}
                 tools={deleteTools}
                 onBatchPermission={handleBatchPermission}
                 onPermissionChange={updateToolPermission}
@@ -250,7 +305,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
           )}
 
           {/* Edit modal — only http connectors have a server URL to edit */}
-          {!managed && isMcpConnector && connector?.mcpConnectionType === 'http' && (
+          {!managed && !adminScope && isMcpConnector && connector?.mcpConnectionType === 'http' && (
             <CustomConnectorModal
               connectorId={connectorId}
               open={customModalOpen}

@@ -636,6 +636,21 @@ export const ADMIN_MUTATION_REGISTRY = {
     'medium',
     'Append an immutable platform skill version.',
   ),
+  'admin.skills.parseImportSource': regularMutation(
+    'admin.skills.parseImportSource',
+    'low',
+    'Parse a skill package from a remote source or upload without persisting any state.',
+    {
+      audit: notApplicable(
+        'The parse-only preview writes no platform state; the follow-up applyImmediate carries the audit.',
+      ),
+      lastKnownGood: validationNoLkg,
+      outbound: enforced(
+        'Remote fetches use the SSRF-safe fetch boundary with private-network blocking and a bounded timeout; repository downloads target the fixed GitHub archive host.',
+      ),
+      reason: notApplicable('The parse-only preview does not persist business configuration.'),
+    },
+  ),
   'admin.skills.publish': dangerousMutation(
     'admin.skills.publish',
     'high',

@@ -45,9 +45,9 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
-  Select: ({ disabled, onChange, options, value }: any) => (
+  Select: ({ 'aria-label': ariaLabel, disabled, onChange, options, value }: any) => (
     <select
-      aria-label="policy-mode"
+      aria-label={ariaLabel ?? 'policy-mode'}
       disabled={disabled}
       value={value}
       onChange={(event) => onChange?.(event.target.value)}
@@ -58,15 +58,6 @@ vi.mock('@lobehub/ui/base-ui', () => ({
         </option>
       ))}
     </select>
-  ),
-  Switch: ({ checked, disabled, onChange }: any) => (
-    <input
-      aria-label="visibility-toggle"
-      checked={checked}
-      disabled={disabled}
-      type="checkbox"
-      onChange={(event) => onChange?.(event.target.checked)}
-    />
   ),
 }));
 
@@ -216,11 +207,11 @@ describe('SettingsPolicyPage', () => {
       render(<SettingsPolicyPage />);
       const editor = await screen.findByLabelText('editor-font.title:general.fontSize');
       expect(editor).toHaveProperty('disabled', editorsDisabled);
-      expect(screen.getByLabelText('policy-mode')).toHaveProperty('disabled', editorsDisabled);
-      expect(screen.getByLabelText('visibility-toggle')).toHaveProperty(
+      expect(screen.getByLabelText('settingsPolicy.uiMode.label')).toHaveProperty(
         'disabled',
         editorsDisabled,
       );
+      expect(screen.queryByLabelText('visibility-toggle')).toBeNull();
       const validate = screen.queryByRole('button', { name: 'settingsPolicy.validate' });
       expect(validate !== null).toBe(canValidate);
       if (canValidate) expect(validate).toBeEnabled();
@@ -236,6 +227,34 @@ describe('SettingsPolicyPage', () => {
       expect(screen.queryByRole('button', { name: 'settingsPolicy.publish' })).toBeNull();
     },
   );
+
+  it('shows the two-state management mode and normalizes legacy default on save', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.data = makeData(1);
+    // makeData uses mode default → UI shows platform managed
+    render(<SettingsPolicyPage />);
+    const modeSelect = await screen.findByLabelText('settingsPolicy.uiMode.label');
+    expect(modeSelect).toHaveProperty('value', 'platform');
+    expect(screen.queryByLabelText('visibility-toggle')).toBeNull();
+
+    // Touch value so draft is dirty and save is primary
+    fireEvent.change(screen.getByLabelText('editor-font.title:general.fontSize'), {
+      target: { value: 'kept' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
+
+    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalled());
+    const payload = mocks.saveDraft.mock.calls[0]?.[0];
+    expect(payload.draft['general.fontSize']).toMatchObject({
+      mode: 'locked',
+      value: 'kept',
+      visibility: 'hidden',
+    });
+  });
 
   it('blocks stale save, fetches the latest base, persists conflict, and requires rebase', async () => {
     mocks.permissions = [

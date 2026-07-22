@@ -1,18 +1,13 @@
 'use client';
 
-import { Center, Empty, Flexbox, SearchBar, Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
-import { SkillsIcon } from '@lobehub/ui/icons';
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
-import AsyncError from '@/components/AsyncError';
-import Loading from '@/components/Loading/BrandTextLoading';
 import { usePublishedSkillCatalog } from '@/enterprise/client/features/skills';
 import { useToolStore } from '@/store/tool';
 
-import PlatformSkillItem from './PlatformSkillItem';
+import SkillCatalogListView, { type SkillCatalogListEntry } from './catalog/SkillCatalogListView';
 import type { ToolDetailType } from './SkillDetail';
 
 interface PlatformSkillListProps {
@@ -27,6 +22,11 @@ const parsePage = (value: string | null) => {
   return Number.isInteger(page) && page > 0 ? page : 1;
 };
 
+/**
+ * User managed skill list — binds platform.skills published catalog into the
+ * shared SkillCatalogListView. Admin pages inject admin.skills via their own
+ * parent and never share this hook (no draft/secret leakage).
+ */
 const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIdentifier }) => {
   const { t } = useTranslation('setting');
   const runtimeManaged = useToolStore((state) => state.platformSkillRuntimeManaged);
@@ -35,18 +35,33 @@ const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIden
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get('q')?.trim() ?? '';
   const requestedPage = parsePage(searchParams.get('page'));
+
+  const items: SkillCatalogListEntry[] = useMemo(
+    () =>
+      (catalog.data?.skills ?? []).map((skill) => ({
+        description: skill.description,
+        displayName: skill.displayName,
+        distribution: skill.distribution,
+        id: skill.skillKey,
+        skillKey: skill.skillKey,
+        source: skill.source,
+        translateBadges: true,
+        version: skill.version,
+      })),
+    [catalog.data?.skills],
+  );
+
   const filteredSkills = useMemo(() => {
     const normalized = query.toLocaleLowerCase();
-    if (!normalized) return catalog.data?.skills ?? [];
-    return (catalog.data?.skills ?? []).filter((skill) =>
+    if (!normalized) return items;
+    return items.filter((skill) =>
       `${skill.displayName} ${skill.skillKey} ${skill.description ?? ''}`
         .toLocaleLowerCase()
         .includes(normalized),
     );
-  }, [catalog.data?.skills, query]);
+  }, [items, query]);
   const pageCount = Math.max(1, Math.ceil(filteredSkills.length / PAGE_SIZE));
   const page = Math.min(requestedPage, pageCount);
-  const pageSkills = filteredSkills.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const locatedSelectionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -56,9 +71,7 @@ const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIden
     locatedSelectionRef.current = locationKey;
     let nextPage = page;
     if (selectedIdentifier) {
-      const selectedIndex = filteredSkills.findIndex(
-        (skill) => skill.skillKey === selectedIdentifier,
-      );
+      const selectedIndex = filteredSkills.findIndex((skill) => skill.id === selectedIdentifier);
       if (selectedIndex >= 0) nextPage = Math.floor(selectedIndex / PAGE_SIZE) + 1;
     }
     if (requestedPage === nextPage) return;
@@ -98,83 +111,51 @@ const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIden
     setSearchParams(nextParams, { replace: true });
   };
 
-  if (runtimeStatus === 'error' || (catalog.error && !catalog.data?.skills.length)) {
-    return (
-      <Center paddingBlock={48}>
-        <AsyncError error={catalog.error} variant="block" onRetry={() => void catalog.mutate()} />
-      </Center>
-    );
-  }
-  if (runtimeStatus === 'loading' || (catalog.isLoading && !catalog.data)) {
-    return <Loading debugId="Settings > Skill > Published catalog" />;
-  }
-  if (runtimeStatus !== 'ready' || !catalog.data?.skills.length) {
-    return (
-      <Center paddingBlock={48}>
-        <Empty
-          description={t('platformSkills.empty.desc')}
-          icon={SkillsIcon}
-          title={t('platformSkills.empty.title')}
-        />
-      </Center>
-    );
-  }
-  const catalogData = catalog.data;
+  // Match prior UX: hard error when runtime/catalog failed with nothing to show.
+  const hardError =
+    runtimeStatus === 'error' || (catalog.error && !catalog.data?.skills.length)
+      ? catalog.error
+      : catalog.error && catalog.data?.skills.length
+        ? catalog.error
+        : undefined;
+  const isLoading = runtimeStatus === 'loading' || (catalog.isLoading && !catalog.data);
+  // Treat non-ready (except error) without data as loading so we don't flash empty.
+  const showLoading =
+    isLoading || (runtimeStatus !== 'ready' && runtimeStatus !== 'error' && !catalog.data);
+  // Only pass items when ready (or soft-error with partial data).
+  const listItems =
+    runtimeStatus === 'ready' || (catalog.data?.skills.length && runtimeStatus !== 'error')
+      ? items
+      : [];
 
   return (
-    <Flexbox gap={8}>
-      <SearchBar
-        allowClear
-        aria-label={t('platformSkills.search.label')}
-        placeholder={t('platformSkills.search.placeholder')}
-        value={query}
-        onInputChange={setQuery}
-      />
-      {catalog.error ? (
-        <AsyncError error={catalog.error} variant="block" onRetry={() => void catalog.mutate()} />
-      ) : null}
-      {filteredSkills.length === 0 ? (
-        <Center paddingBlock={32}>
-          <Empty
-            description={t('platformSkills.search.emptyDesc')}
-            icon={SkillsIcon}
-            title={t('platformSkills.search.emptyTitle')}
-          />
-        </Center>
-      ) : (
-        pageSkills.map((skill) => (
-          <PlatformSkillItem
-            isSelected={selectedIdentifier === skill.skillKey}
-            key={`${catalogData.revision}:${skill.skillKey}`}
-            skill={skill}
-            onSelect={() => onSelect?.(skill.skillKey, 'platform-skill')}
-          />
-        ))
-      )}
-      {filteredSkills.length > PAGE_SIZE ? (
-        <Flexbox horizontal align="center" justify="space-between" paddingBlock={8}>
-          <Button
-            aria-label={t('platformSkills.pagination.previous')}
-            disabled={page <= 1}
-            size="small"
-            onClick={() => setPage(page - 1)}
-          >
-            {t('platformSkills.pagination.previous')}
-          </Button>
-          <Text type="secondary">
-            {t('platformSkills.pagination.status', { page, pages: pageCount })}
-          </Text>
-          <Button
-            aria-label={t('platformSkills.pagination.next')}
-            disabled={page >= pageCount}
-            size="small"
-            onClick={() => setPage(page + 1)}
-          >
-            {t('platformSkills.pagination.next')}
-          </Button>
-        </Flexbox>
-      ) : null}
-    </Flexbox>
+    <SkillCatalogListView
+      emptyDesc={t('platformSkills.empty.desc')}
+      emptyTitle={t('platformSkills.empty.title')}
+      error={hardError}
+      isLoading={showLoading}
+      items={listItems}
+      loadingDebugId="Settings > Skill > Published catalog"
+      query={query}
+      searchEmptyDesc={t('platformSkills.search.emptyDesc')}
+      searchEmptyTitle={t('platformSkills.search.emptyTitle')}
+      searchLabel={t('platformSkills.search.label')}
+      searchPlaceholder={t('platformSkills.search.placeholder')}
+      selectedId={selectedIdentifier}
+      setQuery={setQuery}
+      pagination={{
+        labels: {
+          next: t('platformSkills.pagination.next'),
+          previous: t('platformSkills.pagination.previous'),
+          status: (p, pages) => t('platformSkills.pagination.status', { page: p, pages }),
+        },
+        page,
+        pageSize: PAGE_SIZE,
+        setPage,
+      }}
+      onRetry={() => void catalog.mutate()}
+      onSelect={(id) => onSelect?.(id, 'platform-skill')}
+    />
   );
 });
 

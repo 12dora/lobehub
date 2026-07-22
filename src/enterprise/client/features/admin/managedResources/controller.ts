@@ -4,9 +4,55 @@ import {
 } from '@/const/platform/managedResources';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import type {
+  ManagedResourcePolicyItem,
   ManagedResourcePolicyMap,
   ManagedResourceReadinessMap,
 } from '@/types/platform/managedResources';
+
+/**
+ * Admin UI collapses the legacy (managed × enforcementMode) matrix into two modes:
+ * - user: users configure themselves; platform presets are not forced (managed false + observe)
+ * - platform: hide user settings entry and enforce admin presets (managed true + enforced)
+ */
+export type ManagedResourceUiMode = 'platform' | 'user';
+
+/** Map each managed resource card label to the matching admin side-nav i18n key. */
+export const MANAGED_RESOURCE_NAV_LABEL_KEY = {
+  agents: 'nav.agents',
+  aiModels: 'nav.aiServiceModel',
+  aiProviders: 'nav.aiProviders',
+  connectors: 'nav.aiConnectors',
+  skills: 'nav.aiSkills',
+} as const satisfies Record<ManagedResourceKind, string>;
+
+/**
+ * Read historical policies into the two-state UI.
+ * true+ui-only and true+enforced → platform; true+observe / unmanaged → user.
+ */
+export const toManagedResourceUiMode = (item: ManagedResourcePolicyItem): ManagedResourceUiMode => {
+  if (item.managed && (item.enforcementMode === 'enforced' || item.enforcementMode === 'ui-only')) {
+    return 'platform';
+  }
+  return 'user';
+};
+
+/** Canonical write form for the two-state UI (also used to normalize on save). */
+export const fromManagedResourceUiMode = (
+  mode: ManagedResourceUiMode,
+): ManagedResourcePolicyItem =>
+  mode === 'platform'
+    ? { enforcementMode: 'enforced', managed: true }
+    : { enforcementMode: 'observe', managed: false };
+
+export const normalizeManagedResourcePolicyMap = (
+  policy: ManagedResourcePolicyMap,
+): ManagedResourcePolicyMap =>
+  Object.fromEntries(
+    MANAGED_RESOURCE_KINDS.map((resource) => [
+      resource,
+      fromManagedResourceUiMode(toManagedResourceUiMode(policy[resource])),
+    ]),
+  ) as ManagedResourcePolicyMap;
 
 export type ManagedResourceSaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'failed';
 

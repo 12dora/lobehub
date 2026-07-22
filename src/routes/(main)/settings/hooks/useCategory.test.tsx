@@ -115,15 +115,27 @@ describe('settings useCategory', () => {
     expect(keys).not.toContain(SettingsTabs.Provider);
   });
 
-  it('keeps Skill navigation visible as a read-only catalog when managed', () => {
+  it('hides Skill navigation when skills are platform-managed', () => {
     managedResourcesRef.current.capabilities.skills = true;
 
+    expect(getItemKeys()).not.toContain(SettingsTabs.Skill);
+  });
+
+  it('hides Connector navigation when connectors are platform-managed', () => {
+    managedResourcesRef.current.capabilities.connectors = true;
+
+    expect(getItemKeys()).not.toContain(SettingsTabs.Connector);
+  });
+
+  it('keeps Skill and Connector navigation when not platform-managed', () => {
     expect(getItemKeys()).toContain(SettingsTabs.Skill);
+    expect(getItemKeys()).toContain(SettingsTabs.Connector);
   });
 
   it('hides Skill navigation while the capability snapshot is unavailable', () => {
     managedResourcesRef.current.loading = true;
 
     expect(getItemKeys()).not.toContain(SettingsTabs.Skill);
+    expect(getItemKeys()).not.toContain(SettingsTabs.Connector);
   });
 });

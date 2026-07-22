@@ -10,6 +10,7 @@ import { DownloadIcon, MoreHorizontalIcon, Plus, Trash2 } from 'lucide-react';
 import { lazy, memo, Suspense, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useAdminToolScope } from '@/features/AdminToolScope';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { createBuiltinAgentSkillDetailModal } from '@/features/SkillStore/SkillDetail';
 import { usePermission } from '@/hooks/usePermission';
@@ -42,13 +43,30 @@ const AgentSkillItem = memo<AgentSkillItemProps>(({ skill, isSelected, onSelect 
   const { allowed: canEdit } = usePermission('edit_own_content');
 
   const isBuiltin = isBuiltinSkill(skill);
+  const adminScope = useAdminToolScope();
 
   const deleteAgentSkill = useToolStore((s) => s.deleteAgentSkill);
-  const [installBuiltinTool, uninstallBuiltinTool, isBuiltinInstalled] = useToolStore((s) => [
-    s.installBuiltinTool,
-    s.uninstallBuiltinTool,
-    isBuiltin ? builtinToolSelectors.isBuiltinToolInstalled(skill.identifier)(s) : true,
-  ]);
+  const [storeInstallBuiltinTool, storeUninstallBuiltinTool, storeBuiltinInstalled] = useToolStore(
+    (s) => [
+      s.installBuiltinTool,
+      s.uninstallBuiltinTool,
+      isBuiltin ? builtinToolSelectors.isBuiltinToolInstalled(skill.identifier)(s) : true,
+    ],
+  );
+  // Admin org scope: builtin availability reflects the platform catalog and
+  // toggles write the org-wide distribution instead of user settings.
+  const isBuiltinInstalled =
+    adminScope && isBuiltin
+      ? adminScope.isBuiltinSkillEnabled(skill.identifier)
+      : storeBuiltinInstalled;
+  const installBuiltinTool = (identifier: string) =>
+    adminScope
+      ? adminScope.toggleBuiltinSkill(identifier, true)
+      : storeInstallBuiltinTool(identifier);
+  const uninstallBuiltinTool = (identifier: string) =>
+    adminScope
+      ? adminScope.toggleBuiltinSkill(identifier, false)
+      : storeUninstallBuiltinTool(identifier);
 
   const title = isBuiltin
     ? t(`tools.builtins.${skill.identifier}.title`, { defaultValue: skill.name })
@@ -81,7 +99,8 @@ const AgentSkillItem = memo<AgentSkillItemProps>(({ skill, isSelected, onSelect 
         } else {
           setLoading(true);
           try {
-            await deleteAgentSkill(skill.id);
+            if (adminScope) await adminScope.deleteOrgSkill(skill.id);
+            else await deleteAgentSkill(skill.id);
           } finally {
             setLoading(false);
           }

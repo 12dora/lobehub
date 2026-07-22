@@ -21,6 +21,8 @@ import {
   adminSkillListVersionsInputSchema,
   adminSkillListVersionsOutputSchema,
   adminSkillMutationOutputSchema,
+  adminSkillParseImportSourceInputSchema,
+  adminSkillParseImportSourceOutputSchema,
   adminSkillPublicationOutputSchema,
   adminSkillPublishInputSchema,
   adminSkillPublishNowInputSchema,
@@ -33,6 +35,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
+import { parseSkillImportSource } from './skillsImportParse';
 import {
   assertSkillDangerousReauth,
   assertSkillFeatureEnabled,
@@ -226,6 +229,19 @@ export const adminSkillsRouter = router({
       } catch (error) {
         return mapSkillServiceError(error);
       }
+    }),
+
+  /**
+   * Parse a skill package from URL / GitHub repo / uploaded ZIP without persisting anything.
+   * Read-only preview for the admin import flow; publish org-wide via applyImmediate.
+   */
+  parseImportSource: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SKILL_CREATE))
+    .input(adminSkillParseImportSourceInputSchema)
+    .output(adminSkillParseImportSourceOutputSchema)
+    .mutation(async ({ input }) => {
+      assertSkillFeatureEnabled();
+      return parseSkillImportSource(input);
     }),
 
   publish: adminBase

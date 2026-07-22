@@ -484,6 +484,9 @@ export default {
   'managedResources.mode.label': 'How it applies',
   'managedResources.mode.observe': 'Observe (no user impact)',
   'managedResources.mode.ui-only': 'Hide from users',
+  'managedResources.uiMode.label': 'Management mode',
+  'managedResources.uiMode.platform': 'Platform managed',
+  'managedResources.uiMode.user': 'User customizable',
   'managedResources.readiness.blocked':
     'These resources need platform configuration before they can be enforced: {{resources}}.',
   'managedResources.readiness.notReady': 'Not ready',
@@ -492,11 +495,12 @@ export default {
   'managedResources.reason.label': 'Change reason',
   'managedResources.reason.placeholder': 'Explain why this policy is changing…',
   'managedResources.reason.required': 'Enter a reason (1–2000 characters).',
+  // Card titles use nav.* keys; keep resource.* for notices / impact copy.
   'managedResources.resource.agents': 'Agents',
   'managedResources.resource.agents.desc': 'Platform agent definitions and configuration.',
-  'managedResources.resource.aiModels': 'Models',
+  'managedResources.resource.aiModels': 'Service models',
   'managedResources.resource.aiModels.desc': 'Which models users can use.',
-  'managedResources.resource.aiProviders': 'AI providers',
+  'managedResources.resource.aiProviders': 'Providers',
   'managedResources.resource.aiProviders.desc':
     'AI providers available on the platform and their keys.',
   'managedResources.resource.connectors': 'Connectors',
@@ -551,6 +555,12 @@ export default {
   'aiProviderSettings.draftBanner.title': 'Changes saved as draft — not live yet',
   'aiProviderSettings.description':
     'Manage global platform AI providers. Changes publish immediately.',
+  'aiConnectorSettings.httpOnly':
+    'Platform connectors support HTTP MCP servers only — stdio runs on user devices and cannot be provided org-wide.',
+  'aiConnectorSettings.oauthViaAdvanced':
+    'Per-user OAuth platform connectors need the full OAuth configuration \u2014 create them in the advanced catalog (Admin \u2192 Connectors).',
+  'aiConnectorSettings.orgNotice':
+    'Changes here apply to every user. OAuth connectors are authorized by each user from their own settings; built-in tool permissions are managed per user.',
   'aiSkillSettings.advancedCatalog': 'Advanced catalog management',
   'aiSkillSettings.orgDefault.label': 'Enabled by default',
   'aiSkillSettings.orgDefault.mandatoryHint':
@@ -599,6 +609,8 @@ export default {
   'aiSkillSettings.import.title': 'Import skill from URL',
   'aiSkillSettings.import.url': 'URL',
   'aiSkillSettings.import.urlRequired': 'Enter a URL.',
+  'aiSkillSettings.list.loadError':
+    'Could not load the org skill catalog. Showing built-in defaults; retry to load published skills.',
   'aiSkillSettings.select.desc': 'Select a skill from the list, or list a new one.',
   'aiSkillSettings.select.title': 'Select a skill',
   'aiConnectorSettings.advancedCatalog': 'Advanced catalog management',
@@ -1120,9 +1132,13 @@ export default {
   'settingsPolicy.saveState.saving': 'Saving draft…',
   'settingsPolicy.saveState.saved': 'Draft saved',
   'settingsPolicy.saveState.failed': 'Save failed',
+  // Legacy mode labels (preview / impact still may reference raw mode values).
   'settingsPolicy.mode.user': 'User',
   'settingsPolicy.mode.default': 'Default',
   'settingsPolicy.mode.locked': 'Locked',
+  'settingsPolicy.uiMode.label': 'Management mode',
+  'settingsPolicy.uiMode.platform': 'Platform managed',
+  'settingsPolicy.uiMode.user': 'User customizable',
   'settingsPolicy.groups.general': 'General',
   'settingsPolicy.groups.memory': 'Memory',
   'settingsPolicy.groups.tool': 'Tools',
@@ -1450,6 +1466,7 @@ export default {
   'branding.fields.desktop': 'Desktop package',
   'branding.fields.desktopIcon': 'Desktop package icon',
   'branding.fields.desktopProductName': 'Desktop product name',
+  'branding.fields.effectiveCurrent': 'Currently in effect',
   'branding.fields.email': 'Email display',
   'branding.fields.emailFrom': 'From address',
   'branding.fields.emailSenderName': 'Sender name',

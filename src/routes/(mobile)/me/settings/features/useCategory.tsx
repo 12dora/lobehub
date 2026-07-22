@@ -21,6 +21,10 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { type CellProps } from '@/components/Cell';
+import {
+  isManagedResourceConfigurationAvailable,
+  useManagedResourceCapabilities,
+} from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { SettingsTabs } from '@/store/global/initialState';
 import {
@@ -54,6 +58,17 @@ export const useCategory = (): CategoryGroup[] => {
   const { hideDocs, showApiKeyManage, showProvider } = useServerConfigStore(featureFlagsSelectors);
   const enableBusinessFeatures = useServerConfigStore(serverConfigSelectors.enableBusinessFeatures);
   const isDevMode = useUserStore((s) => userGeneralSettingsSelectors.config(s).isDevMode);
+  const managedResources = useManagedResourceCapabilities();
+  const canConfigureProvider = isManagedResourceConfigurationAvailable(
+    'aiProviders',
+    managedResources,
+  );
+  const canConfigureModel = isManagedResourceConfigurationAvailable('aiModels', managedResources);
+  const canConfigureSkill = isManagedResourceConfigurationAvailable('skills', managedResources);
+  const canConfigureConnector = isManagedResourceConfigurationAvailable(
+    'connectors',
+    managedResources,
+  );
 
   return useMemo(() => {
     const navigateTo = (key: SettingsTabs) =>
@@ -104,14 +119,18 @@ export const useCategory = (): CategoryGroup[] => {
       // Provider settings should not depend on Advanced tools: new users may need
       // non-LobeHub providers, and desktop users often bring their own API keys.
       showProvider &&
+        canConfigureProvider &&
         makeItem({ icon: Brain, key: SettingsTabs.Provider, label: t('setting:tab.provider') }),
-      makeItem({
-        icon: Sparkles,
-        key: SettingsTabs.ServiceModel,
-        label: t('setting:tab.serviceModel'),
-      }),
-      makeItem({ icon: SkillsIcon, key: SettingsTabs.Skill, label: t('setting:tab.skill') }),
-      makeItem({ icon: Blocks, key: SettingsTabs.Connector, label: t('setting:tab.connector') }),
+      canConfigureModel &&
+        makeItem({
+          icon: Sparkles,
+          key: SettingsTabs.ServiceModel,
+          label: t('setting:tab.serviceModel'),
+        }),
+      canConfigureSkill &&
+        makeItem({ icon: SkillsIcon, key: SettingsTabs.Skill, label: t('setting:tab.skill') }),
+      canConfigureConnector &&
+        makeItem({ icon: Blocks, key: SettingsTabs.Connector, label: t('setting:tab.connector') }),
       makeItem({ icon: BrainCircuit, key: SettingsTabs.Memory, label: t('setting:tab.memory') }),
       makeItem({ icon: KeyRound, key: SettingsTabs.Creds, label: t('setting:tab.creds') }),
       showApiKeyManage &&
@@ -140,5 +159,17 @@ export const useCategory = (): CategoryGroup[] => {
       { items: agent, key: SettingsGroupKey.Agent, title: t('setting:group.aiConfig') },
       { items: system, key: SettingsGroupKey.System, title: t('setting:group.system') },
     ].filter((group) => group.items.length > 0);
-  }, [t, enableBusinessFeatures, hideDocs, showApiKeyManage, showProvider, isDevMode, navigate]);
+  }, [
+    t,
+    enableBusinessFeatures,
+    hideDocs,
+    showApiKeyManage,
+    showProvider,
+    isDevMode,
+    navigate,
+    canConfigureProvider,
+    canConfigureModel,
+    canConfigureSkill,
+    canConfigureConnector,
+  ]);
 };

@@ -19,6 +19,8 @@ import type {
   AdminSkillListVersionsInput,
   AdminSkillListVersionsOutput,
   AdminSkillMutationOutput,
+  AdminSkillParseImportSourceInput,
+  AdminSkillParseImportSourceOutput,
   AdminSkillPublicationOutput,
   AdminSkillPublishInput,
   AdminSkillPublishNowInput,
@@ -81,6 +83,15 @@ class AdminSkillsService {
   listVersions = async (
     input: AdminSkillListVersionsInput,
   ): Promise<AdminSkillListVersionsOutput> => lambdaClient.admin.skills.listVersions.query(input);
+
+  /**
+   * Parse a skill package from URL / GitHub / uploaded ZIP without persisting anything.
+   * Feed the result into applyImmediate (mode: 'create') to publish org-wide.
+   */
+  parseImportSource = async (
+    input: AdminSkillParseImportSourceInput,
+  ): Promise<AdminSkillParseImportSourceOutput> =>
+    withToastAndReauth(() => lambdaClient.admin.skills.parseImportSource.mutate(input));
 
   publish = async (input: AdminSkillPublishInput): Promise<AdminSkillPublicationOutput> =>
     lambdaClient.admin.skills.publish.mutate(input);

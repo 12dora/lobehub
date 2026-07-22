@@ -14,7 +14,12 @@ import { lambdaClient } from '@/libs/trpc/client/lambda';
 import { uploadService } from '@/services/upload';
 import { useToolStore } from '@/store/tool';
 
-const UploadSkillContent = memo(() => {
+export interface UploadSkillModalOptions {
+  /** Persistence override (admin org catalog): receives the raw File before any user-scoped upload. */
+  onImportFile?: (file: File) => Promise<void>;
+}
+
+const UploadSkillContent = memo<UploadSkillModalOptions>(({ onImportFile }) => {
   const { t } = useTranslation(['setting', 'common']);
   const { close, setCanDismissByClickOutside } = useModalContext();
   const { message } = App.useApp();
@@ -33,6 +38,12 @@ const UploadSkillContent = memo(() => {
     setError(null);
 
     try {
+      if (onImportFile) {
+        await onImportFile(file);
+        message.success(t('agentSkillModal.importSuccess'));
+        close();
+        return;
+      }
       const { data: metadata } = await uploadService.uploadFileToS3(file, {
         directory: 'skills',
       });
@@ -135,9 +146,9 @@ const UploadSkillContent = memo(() => {
 
 UploadSkillContent.displayName = 'UploadSkillContent';
 
-export const openUploadSkillModal = (): ModalInstance =>
+export const openUploadSkillModal = (options?: UploadSkillModalOptions): ModalInstance =>
   createModal({
-    content: <UploadSkillContent />,
+    content: <UploadSkillContent onImportFile={options?.onImportFile} />,
     footer: null,
     maskClosable: true,
     styles: { header: { display: 'none' } },

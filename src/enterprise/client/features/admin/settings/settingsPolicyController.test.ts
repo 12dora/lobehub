@@ -7,7 +7,10 @@ import {
   buildChangePreview,
   deriveSettingsPermissions,
   fingerprintDraft,
+  fromSettingsPolicyUiMode,
+  normalizeSettingsPolicyDraft,
   resolvePrimaryAction,
+  toSettingsPolicyUiMode,
 } from './settingsPolicyController';
 
 describe('settingsPolicyController', () => {
@@ -227,5 +230,22 @@ describe('settingsPolicyController', () => {
       },
     });
     expect(left).toBe(right);
+  });
+
+  it('maps legacy mode/visibility into the two-state UI and normalizes on save', () => {
+    expect(toSettingsPolicyUiMode({ mode: 'user', visibility: 'hidden' })).toBe('user');
+    expect(toSettingsPolicyUiMode({ mode: 'default', visibility: 'visible' })).toBe('platform');
+    expect(toSettingsPolicyUiMode({ mode: 'locked', visibility: 'visible' })).toBe('platform');
+    expect(fromSettingsPolicyUiMode('user')).toEqual({ mode: 'user', visibility: 'visible' });
+    expect(fromSettingsPolicyUiMode('platform')).toEqual({ mode: 'locked', visibility: 'hidden' });
+
+    const normalized = normalizeSettingsPolicyDraft({
+      a: { mode: 'default', schemaVersion: 1, value: 14, visibility: 'visible' },
+      b: { mode: 'locked', schemaVersion: 1, value: true, visibility: 'visible' },
+      c: { mode: 'user', schemaVersion: 1, value: 'x', visibility: 'hidden' },
+    });
+    expect(normalized.a).toMatchObject({ mode: 'locked', visibility: 'hidden', value: 14 });
+    expect(normalized.b).toMatchObject({ mode: 'locked', visibility: 'hidden', value: true });
+    expect(normalized.c).toMatchObject({ mode: 'user', visibility: 'visible', value: 'x' });
   });
 });

@@ -9,9 +9,13 @@ import type {
 import {
   buildManagedResourceDiff,
   deriveManagedResourcePermissions,
+  fromManagedResourceUiMode,
   getUnreadyEnforcedResources,
+  MANAGED_RESOURCE_NAV_LABEL_KEY,
+  normalizeManagedResourcePolicyMap,
   rebaseManagedResourceDraft,
   resolveManagedResourcePrimaryAction,
+  toManagedResourceUiMode,
 } from './controller';
 
 const policy = (): ManagedResourcePolicyMap => ({
@@ -52,6 +56,40 @@ describe('managed resource policy controller', () => {
     draft.skills = { enforcementMode: 'ui-only', managed: true };
 
     expect(getUnreadyEnforcedResources(draft, readiness())).toEqual(['aiProviders']);
+  });
+
+  it('maps legacy policies into the two-state UI and normalizes on save', () => {
+    expect(toManagedResourceUiMode({ enforcementMode: 'enforced', managed: true })).toBe(
+      'platform',
+    );
+    expect(toManagedResourceUiMode({ enforcementMode: 'ui-only', managed: true })).toBe('platform');
+    expect(toManagedResourceUiMode({ enforcementMode: 'observe', managed: true })).toBe('user');
+    expect(toManagedResourceUiMode({ enforcementMode: 'observe', managed: false })).toBe('user');
+    expect(fromManagedResourceUiMode('platform')).toEqual({
+      enforcementMode: 'enforced',
+      managed: true,
+    });
+    expect(fromManagedResourceUiMode('user')).toEqual({
+      enforcementMode: 'observe',
+      managed: false,
+    });
+
+    const draft = policy();
+    draft.skills = { enforcementMode: 'ui-only', managed: true };
+    draft.connectors = { enforcementMode: 'observe', managed: true };
+    const normalized = normalizeManagedResourcePolicyMap(draft);
+    expect(normalized.skills).toEqual({ enforcementMode: 'enforced', managed: true });
+    expect(normalized.connectors).toEqual({ enforcementMode: 'observe', managed: false });
+  });
+
+  it('aligns card labels with admin side-nav keys', () => {
+    expect(MANAGED_RESOURCE_NAV_LABEL_KEY).toEqual({
+      agents: 'nav.agents',
+      aiModels: 'nav.aiServiceModel',
+      aiProviders: 'nav.aiProviders',
+      connectors: 'nav.aiConnectors',
+      skills: 'nav.aiSkills',
+    });
   });
 
   it('builds a five-key impact diff without reporting unchanged resources', () => {

@@ -11,7 +11,12 @@ import { useTranslation } from 'react-i18next';
 import { usePermission } from '@/hooks/usePermission';
 import { useToolStore } from '@/store/tool';
 
-const ImportFromGithubContent = memo(() => {
+export interface ImportFromGithubModalOptions {
+  /** Persistence override (admin org catalog); default imports into the user's skills. */
+  onImport?: (input: { gitUrl: string }) => Promise<void>;
+}
+
+const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ onImport }) => {
   const { t } = useTranslation(['setting', 'common']);
   const { close, setCanDismissByClickOutside } = useModalContext();
   const { message } = App.useApp();
@@ -33,7 +38,7 @@ const ImportFromGithubContent = memo(() => {
     setError(null);
 
     try {
-      await importAgentSkillFromGitHub({ gitUrl: trimmed });
+      await (onImport ?? importAgentSkillFromGitHub)({ gitUrl: trimmed });
       message.success(t('agentSkillModal.importSuccess'));
       close();
     } catch (err: any) {
@@ -91,9 +96,9 @@ const ImportFromGithubContent = memo(() => {
 
 ImportFromGithubContent.displayName = 'ImportFromGithubContent';
 
-export const openImportFromGithubModal = (): ModalInstance =>
+export const openImportFromGithubModal = (options?: ImportFromGithubModalOptions): ModalInstance =>
   createModal({
-    content: <ImportFromGithubContent />,
+    content: <ImportFromGithubContent onImport={options?.onImport} />,
     footer: null,
     maskClosable: true,
     styles: { header: { display: 'none' } },
