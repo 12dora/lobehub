@@ -65,6 +65,13 @@ export default {
   'agentCatalog.defaultSwitch.submit': 'Set as default Inbox',
   'agentCatalog.defaultSwitch.success': 'Default Inbox switched.',
   'agentCatalog.defaultSwitch.title': 'Switch default Inbox',
+  'agentCatalog.delete.action': 'Delete',
+  'agentCatalog.delete.description':
+    'Permanently delete this platform assistant along with every version, assignment, and user materialization it owns. This cannot be undone.',
+  'agentCatalog.delete.impact':
+    'The default Inbox and system assistants cannot be hard-deleted — reassign the default first.',
+  'agentCatalog.delete.submit': 'Delete permanently',
+  'agentCatalog.delete.title': 'Delete assistant',
   'agentCatalog.dependency.connector.add': 'Add a published Connector',
   'agentCatalog.dependency.connector.addAction': 'Add Connector',
   'agentCatalog.dependency.connector.empty': 'No connector dependencies.',
@@ -118,6 +125,7 @@ export default {
   'agentCatalog.editor.systemRole': 'System role',
   'agentCatalog.editor.version': 'Version',
   'agentCatalog.list.applySearch': 'Search',
+  'agentCatalog.list.columns.actions': 'Actions',
   'agentCatalog.list.columns.agent': 'Agent',
   'agentCatalog.list.columns.assignments': 'Assignments',
   'agentCatalog.list.columns.scope': 'Identity',
@@ -209,6 +217,7 @@ export default {
   'agentCatalog.toast.actionFailed':
     'The Agent action could not start. Check your connection and try again.',
   'agentCatalog.toast.created': 'Agent draft created.',
+  'agentCatalog.toast.deleted': 'Assistant deleted.',
   'agentCatalog.toast.published': 'Agent version published.',
   'agentCatalog.toast.rolledBack': 'Agent version rolled back.',
   'agentCatalog.toast.saved': 'Agent version saved.',
@@ -235,6 +244,12 @@ export default {
     'Archive this Provider and remove it from the published organization catalog.',
   'aiCatalog.actions.archive.label': 'Archive Provider',
   'aiCatalog.actions.archive.title': 'Archive Provider',
+  'aiCatalog.actions.delete.desc':
+    'Permanently delete this Provider along with every model, secret, and revision it owns. This cannot be undone.',
+  'aiCatalog.actions.delete.impact':
+    'Deletion is blocked while any of its published models are still referenced by an agent or platform setting.',
+  'aiCatalog.actions.delete.label': 'Delete permanently',
+  'aiCatalog.actions.delete.title': 'Delete Provider',
   'aiCatalog.actions.deleteModel.desc':
     'Delete this model from the Provider draft. Published revisions remain in history.',
   'aiCatalog.actions.deleteModel.title': 'Delete model',
@@ -380,7 +395,9 @@ export default {
   'aiCatalog.modelEditor.settings': 'Settings (JSON)',
   'aiCatalog.modelEditor.type': 'Model type',
   'aiCatalog.providers.actions.create': 'Create Provider',
+  'aiCatalog.providers.actions.delete': 'Delete',
   'aiCatalog.providers.actions.viewModels': 'View models',
+  'aiCatalog.providers.columns.actions': 'Actions',
   'aiCatalog.providers.columns.enabled': 'Availability',
   'aiCatalog.providers.columns.provider': 'Provider',
   'aiCatalog.providers.columns.revision': 'Revision',
@@ -441,6 +458,7 @@ export default {
   'aiCatalog.toast.modelsReordered': 'Model order saved.',
   'aiCatalog.toast.modelUpdated': 'Model draft updated.',
   'aiCatalog.toast.providerCreated': 'Provider draft created.',
+  'aiCatalog.toast.providerDeleted': 'Provider deleted.',
   'aiCatalog.toast.published': 'Provider catalog revision published.',
   'aiCatalog.toast.rolledBack': 'Provider revision rolled back.',
   'aiCatalog.toast.secretUpdated': 'Provider Secret state updated.',

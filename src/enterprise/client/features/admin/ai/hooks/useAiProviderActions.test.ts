@@ -122,6 +122,7 @@ const data = {
 
 const permissions: AiCatalogPermissions = {
   canArchiveProvider: true,
+  canDeleteProvider: true,
   canCreateModel: true,
   canCreateProvider: false,
   canDeleteModel: true,

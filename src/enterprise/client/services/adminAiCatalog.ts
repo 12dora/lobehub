@@ -18,6 +18,8 @@ import type {
   AdminAiModelUpdateInput,
   AdminAiProviderArchiveInput,
   AdminAiProviderCreateDraftInput,
+  AdminAiProviderDeleteInput,
+  AdminAiProviderDeleteOutput,
   AdminAiProviderGetInput,
   AdminAiProviderGetOutput,
   AdminAiProviderListInput,
@@ -49,6 +51,10 @@ class AdminAiCatalogService {
 
   deleteModel = async (input: AdminAiModelDeleteInput): Promise<AdminAiModelDeleteOutput> =>
     lambdaClient.admin.aiModels.deleteFromDraft.mutate(input);
+
+  deleteProvider = async (
+    input: AdminAiProviderDeleteInput,
+  ): Promise<AdminAiProviderDeleteOutput> => lambdaClient.admin.aiProviders.delete.mutate(input);
 
   getProvider = async (input: AdminAiProviderGetInput): Promise<AdminAiProviderGetOutput> =>
     lambdaClient.admin.aiProviders.get.query(input);

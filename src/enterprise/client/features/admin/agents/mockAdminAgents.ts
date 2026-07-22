@@ -314,6 +314,20 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       records.set(id, { assignments: [], draftToken, identity, rollouts: [], versions: [] });
       return adminPlatformAgentCreateOutputSchema.parse({ draftToken, identity });
     },
+    delete: async (input) => {
+      const record = requireRecord(input.agentId);
+      if (
+        typeof input.expectedRevision === 'number' &&
+        record.identity.revision !== input.expectedRevision
+      ) {
+        throw new Error('PLATFORM_AGENT_REVISION_CONFLICT');
+      }
+      if (record.identity.isDefault || record.identity.systemKey !== null) {
+        throw new Error('PLATFORM_AGENT_DEFAULT_REPLACEMENT_REQUIRED');
+      }
+      records.delete(input.agentId);
+      return { deleted: true as const };
+    },
     get: async ({ id }) => {
       const record = requireRecord(id);
       return adminPlatformAgentGetOutputSchema.parse(

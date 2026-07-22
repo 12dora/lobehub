@@ -25,6 +25,7 @@ import {
   syncUrlBackedTextFilter,
 } from '../urlFilterController';
 import { openCreateProviderModal } from './openCreateProviderModal';
+import { openDeleteProviderModal } from './openDeleteProviderModal';
 
 const DEFAULT_LIMIT = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -42,7 +43,8 @@ const ProviderListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { authMethod, permissions } = useAdminAccess();
-  const { canCreateProvider, canReadProviders } = deriveAiCatalogPermissions(permissions);
+  const { canCreateProvider, canDeleteProvider, canReadProviders } =
+    deriveAiCatalogPermissions(permissions);
   const [searchParams, setSearchParams] = useSearchParams();
   const status = searchParams.get('status') as AdminAiProviderListInput['status'];
   const enabledParam = searchParams.get('enabled');
@@ -126,8 +128,38 @@ const ProviderListPage = memo(() => {
         key: 'revision',
         title: t('aiCatalog.providers.columns.revision'),
       },
+      ...(canDeleteProvider
+        ? [
+            {
+              key: 'actions',
+              title: t('aiCatalog.providers.columns.actions'),
+              width: 96,
+              render: (_: unknown, item: AdminAiProviderListItem) => (
+                <Button
+                  danger
+                  size="small"
+                  type="text"
+                  onClick={(event) => {
+                    // Row is clickable (navigates to detail) — keep the delete click local.
+                    event.stopPropagation();
+                    openDeleteProviderModal({
+                      authMethod: authMethod ?? undefined,
+                      displayName: item.displayName,
+                      providerId: item.id,
+                      onDeleted: () => {
+                        void mutate();
+                      },
+                    });
+                  }}
+                >
+                  {t('aiCatalog.providers.actions.delete')}
+                </Button>
+              ),
+            },
+          ]
+        : []),
     ],
-    [t],
+    [t, canDeleteProvider, authMethod, mutate],
   );
 
   const patchFilter = useCallback(

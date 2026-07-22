@@ -17,6 +17,7 @@ import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { deriveAdminAgentPermissions } from './controller';
 import { openCreateAgentModal } from './openCreateAgentModal';
+import { openDeleteAgentModal } from './openDeleteAgentModal';
 import type { AdminAgentListItem } from './types';
 import { refreshAdminAgentLists, useAdminAgentListPagination } from './useAdminAgents';
 
@@ -35,7 +36,7 @@ const readStatus = (value: string | null): AdminAgentListItem['identity']['statu
 const AgentListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
-  const { permissions } = useAdminAccess();
+  const { authMethod, permissions } = useAdminAccess();
   const agentPermissions = deriveAdminAgentPermissions(permissions);
   const [searchParams, setSearchParams] = useSearchParams();
   const [queryDraft, setQueryDraft] = useState(searchParams.get('q') ?? '');
@@ -87,8 +88,43 @@ const AgentListPage = memo(() => {
           </Tag>
         ),
       },
+      ...(agentPermissions.canDelete
+        ? [
+            {
+              key: 'actions',
+              title: t('agentCatalog.list.columns.actions'),
+              width: 96,
+              render: (_: unknown, item: AdminAgentListItem) => {
+                // Default / system assistants cannot be hard-deleted (server refuses too).
+                const deletable = !item.identity.isDefault && item.identity.systemKey === null;
+                if (!deletable) return null;
+                return (
+                  <Button
+                    danger
+                    size="small"
+                    type="text"
+                    onClick={(event) => {
+                      // Row is clickable (navigates to detail) — keep the delete click local.
+                      event.stopPropagation();
+                      openDeleteAgentModal({
+                        agentId: item.identity.id,
+                        authMethod: authMethod ?? undefined,
+                        displayName: item.displayName,
+                        onDeleted: () => {
+                          void refreshAdminAgentLists();
+                        },
+                      });
+                    }}
+                  >
+                    {t('agentCatalog.delete.action')}
+                  </Button>
+                );
+              },
+            },
+          ]
+        : []),
     ],
-    [t],
+    [t, agentPermissions.canDelete, authMethod],
   );
   const patch = (key: 'q' | 'status', value?: string) => {
     const next = new URLSearchParams(searchParams);
@@ -118,11 +154,12 @@ const AgentListPage = memo(() => {
         ) : null
       }
       toolbar={
-        <Flexbox horizontal gap={8} wrap="wrap">
+        <Flexbox horizontal align="center" gap={8} wrap="wrap">
           <Input
             allowClear
             aria-label={t('agentCatalog.list.search')}
             placeholder={t('agentCatalog.list.search')}
+            style={{ minWidth: 240 }}
             value={queryDraft}
             onChange={(event) => setQueryDraft(event.target.value)}
             onPressEnter={() => patch('q', queryDraft.trim() || undefined)}
@@ -131,6 +168,7 @@ const AgentListPage = memo(() => {
             allowClear
             aria-label={t('agentCatalog.list.status')}
             placeholder={t('agentCatalog.list.status')}
+            style={{ minWidth: 160 }}
             value={status}
             options={(['draft', 'published', 'archived'] as const).map((value) => ({
               label: t(`agentCatalog.status.${value}` as never),

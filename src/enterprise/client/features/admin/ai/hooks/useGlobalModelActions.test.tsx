@@ -63,6 +63,7 @@ vi.mock('./useAdminAiCatalog', () => ({
 
 const permissions = {
   canArchiveProvider: false,
+  canDeleteProvider: false,
   canCreateModel: true,
   canCreateProvider: false,
   canDeleteModel: true,
