@@ -925,8 +925,9 @@ export default {
   'users.tabs.audit': 'Audit',
   'users.actions.ban': 'Ban user',
   'users.actions.unban': 'Unban user',
+  'users.actions.delete': 'Delete user',
   'users.actions.revokeSessions': 'Revoke sessions',
-  'users.actions.replaceRoles': 'Replace roles',
+  'users.actions.replaceRoles': 'Update permissions',
   'users.overview.identity': 'Identity',
   'users.overview.id': 'User ID',
   'users.overview.email': 'Email',
@@ -939,7 +940,10 @@ export default {
   'users.overview.lastActiveAt': 'Last active',
   'users.overview.providers': 'Sign-in providers',
   'users.overview.noProviders': 'No linked sign-in providers',
-  'users.access.globalRoles': 'Global role packages',
+  'users.overview.accountActions': 'Account actions',
+  'users.overview.selfActionsHidden':
+    'You cannot ban or delete your own account from this console.',
+  'users.access.globalRoles': 'Permission management',
   'users.access.workspaceNote':
     'Workspace roles are managed in each workspace and are not replaceable here.',
   'users.access.noRoles': 'No global roles assigned',
@@ -957,6 +961,7 @@ export default {
   'users.sessions.expiresAt': 'Expires',
   'users.sessions.ip': 'IP',
   'users.sessions.userAgent': 'User agent',
+  'users.sessions.revokeOne': 'Revoke',
   'users.sessions.noPermission': 'You do not have permission to revoke sessions.',
   'users.audit.title': 'Audit trail',
   'users.audit.noPermission':
@@ -984,6 +989,11 @@ export default {
   'users.modals.unban.impact': 'The user will be able to sign in again after unban.',
   'users.modals.unban.confirm': 'Unban user',
   'users.modals.revoke.title': 'Revoke sessions',
+  'users.modals.revoke.titleAll': 'Revoke all sessions',
+  'users.modals.revoke.confirmAll': 'Revoke all',
+  'users.modals.revoke.titleSingle': 'Revoke session',
+  'users.modals.revoke.confirmSingle': 'Revoke',
+  'users.modals.revoke.impactSingle': 'This session will be signed out immediately.',
   'users.modals.revoke.desc': 'End Better Auth sessions and advance the security epoch.',
   'users.modals.revoke.impactSelf':
     'By default your current session is retained. Check “also revoke current session” only if you intend to sign yourself out.',
@@ -991,20 +1001,30 @@ export default {
   'users.modals.revoke.includeCurrent':
     'Also revoke my current session (you will need to sign in again)',
   'users.modals.revoke.confirm': 'Revoke sessions',
-  'users.modals.roles.title': 'Replace global roles',
+  'users.modals.roles.title': 'Update permissions',
   'users.modals.roles.desc': 'Replace all global role packages for this user.',
   'users.modals.roles.impact':
     'This is a full replace, not a merge. Workspace roles are not modified.',
-  'users.modals.roles.confirm': 'Replace roles',
+  'users.modals.roles.confirm': 'Update',
   'users.modals.roles.selectLabel': 'Role packages',
+  'users.modals.revokeRole.title': 'Revoke role',
+  'users.modals.revokeRole.confirm': 'Revoke',
+  'users.modals.revokeRole.impact': 'Revoke the “{{role}}” role for this user.',
+  'users.modals.delete.title': 'Delete user',
+  'users.modals.delete.desc': 'Permanently delete this user and every record they own.',
+  'users.modals.delete.impact':
+    'This cannot be undone. Sessions, messages, agents, files, and roles are all removed.',
+  'users.modals.delete.confirm': 'Delete user',
   'users.modals.roles.lastSuperNote':
     'Last permanent super admin protection is enforced by the server.',
   'users.modals.roles.expiryOptional': 'Optional shared expiry (not allowed for super admin)',
   'users.modals.roles.expiryFuture': 'Role expiry must be in the future',
   'users.toast.banSuccess': 'User banned',
   'users.toast.unbanSuccess': 'User unbanned',
+  'users.toast.deleteSuccess': 'User deleted',
   'users.toast.revokeSuccess': 'Sessions revoked',
-  'users.toast.rolesSuccess': 'Roles updated',
+  'users.toast.rolesSuccess': 'Permissions updated',
+  'users.toast.roleRevokeSuccess': 'Role revoked',
   'users.errors.reauthRequired':
     'Recent re-authentication is required for this action. Sign out and sign in again, then retry.',
   'users.errors.lastSuperAdmin': 'This action would remove the last permanent super admin.',
@@ -1033,7 +1053,7 @@ export default {
   'users.danger.selfBanHidden': 'You cannot ban your own account from this console.',
   'users.danger.selfRevokeNote':
     'Revoking your own sessions defaults to keeping the current session unless you explicitly choose otherwise.',
-  'users.sessions.openRevoke': 'Open revoke action',
+  'users.sessions.openRevoke': 'Revoke all',
   'users.sessions.selfRetainNote':
     'For your own account, revoke defaults to retaining the current session.',
   'users.modals.revoke.impactSelfDefault':
