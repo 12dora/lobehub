@@ -9,6 +9,8 @@ import superjson from 'superjson';
 import { isDesktop } from '@/const/version';
 import { type LambdaRouter } from '@/server/routers/lambda';
 
+import { shouldLogoutOnLambda401 } from '../utils/isAdminReauthRequiredError';
+
 const log = debug('lobe-image:lambda-client');
 
 // 401 error debouncing: prevent showing multiple login notifications in short time
@@ -61,8 +63,11 @@ const errorHandlingLink: TRPCLink<LambdaRouter> = () => {
                       timestamp: now,
                     });
                   }
-                } else {
-                  // Non-market 401: handle as before (LobeChat session expired)
+                } else if (
+                  shouldLogoutOnLambda401({ error: err, isMarketApi: false, status: 401 })
+                ) {
+                  // Genuine session expiry only — admin ADMIN_REAUTH_REQUIRED is a
+                  // step-up challenge handled by withAdminReauthRetry (must not logout).
                   const now = Date.now();
                   if (now - last401Time > MIN_401_INTERVAL) {
                     last401Time = now;

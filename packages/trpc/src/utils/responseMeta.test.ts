@@ -6,6 +6,8 @@ import {
 import { TRPCError } from '@trpc/server';
 import { describe, expect, it } from 'vitest';
 
+import { ADMIN_ERROR_CODES } from '@/const/platform/errorCodes';
+
 import { createResponseMeta } from './responseMeta';
 
 describe('createResponseMeta', () => {
@@ -103,6 +105,47 @@ describe('createResponseMeta', () => {
       new TRPCError({ code: 'BAD_REQUEST' }),
       new TRPCError({ code: TRPC_ERROR_CODE_UNAUTHORIZED }),
     ];
+    const result = createResponseMeta({
+      ctx: undefined,
+      errors,
+    });
+
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result.headers?.get(AUTH_REQUIRED_HEADER)).toBe('true');
+  });
+
+  it('should NOT set AUTH_REQUIRED_HEADER for structured ADMIN_REAUTH_REQUIRED step-up', () => {
+    const error = new TRPCError({
+      cause: {
+        data: {
+          code: ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED,
+          details: { reason: 'stale_authenticated_at' },
+        },
+      },
+      code: TRPC_ERROR_CODE_UNAUTHORIZED,
+      message: ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED,
+    });
+
+    const result = createResponseMeta({
+      ctx: undefined,
+      errors: [error],
+    });
+
+    expect(result.headers).toBeUndefined();
+  });
+
+  it('should still set AUTH_REQUIRED_HEADER when batch mixes reauth with real session 401', () => {
+    const errors = [
+      new TRPCError({
+        cause: {
+          data: { code: ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED },
+        },
+        code: TRPC_ERROR_CODE_UNAUTHORIZED,
+        message: ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED,
+      }),
+      new TRPCError({ code: TRPC_ERROR_CODE_UNAUTHORIZED }),
+    ];
+
     const result = createResponseMeta({
       ctx: undefined,
       errors,
