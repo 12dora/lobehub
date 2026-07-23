@@ -17,6 +17,8 @@ export interface BuildPlatformPublicSnapshotInput {
    */
   configRevision?: string;
   flags?: EnterpriseFeatureFlags;
+  /** Admin-managed open-registration toggle (M15). Defaults to open when omitted. */
+  openRegistration?: boolean;
   /** Whether a published work-account IdP is active (M11). */
   workAccountEnabled?: boolean;
 }
@@ -41,6 +43,8 @@ export const buildPlatformPublicSnapshot = (
     brandingRevision: branding?.revision ?? null,
     configRevision,
     login: {
+      // Registration is open unless an admin explicitly closed it.
+      openRegistration: input.openRegistration ?? true,
       // Work-account button only when OIDC feature is on AND a published IdP exists.
       workAccountEnabled: oidcOn && Boolean(input.workAccountEnabled),
     },

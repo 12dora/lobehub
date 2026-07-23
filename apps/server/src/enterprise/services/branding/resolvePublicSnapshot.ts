@@ -2,7 +2,9 @@ import debug from 'debug';
 
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import { getServerDB } from '@/database/core/db-adaptor';
+import { PlatformAuthSettingsModel } from '@/database/models/platform';
 import type { LobeChatDatabase } from '@/database/type';
+import type { PlatformAuthSettings } from '@/types/platform/authSettings';
 import type { PlatformBrandingPublished } from '@/types/platform/branding';
 
 import { buildPlatformPublicSnapshot } from '../platformPublicSnapshot';
@@ -12,26 +14,36 @@ const log = debug('lobe-server:platform-public-snapshot');
 
 export interface ResolvePlatformPublicSnapshotOptions {
   flags: EnterpriseFeatureFlags;
+  getAuthSettings?: (db: LobeChatDatabase) => Promise<PlatformAuthSettings>;
   getDatabase?: () => Promise<LobeChatDatabase>;
   getPublishedBranding?: (db: LobeChatDatabase) => Promise<PlatformBrandingPublished | null>;
 }
 
-/** Lazy DB boundary keeps the disabled feature path independent of database availability. */
+/**
+ * Lazy DB boundary keeps the disabled feature path independent of database availability.
+ * Branding is gated behind ENABLE_RUNTIME_BRANDING, but the login/registration projection
+ * is always read so the anonymous login page can hide the sign-up link when registration is
+ * closed — regardless of the branding flag.
+ */
 export const resolvePlatformPublicSnapshot = async ({
   flags,
   getDatabase = getServerDB,
   getPublishedBranding = (db) => new BrandingPublishedReadService(db).getPublished(),
+  getAuthSettings = (db) => new PlatformAuthSettingsModel(db).get(),
 }: ResolvePlatformPublicSnapshotOptions) => {
-  if (!flags.ENABLE_RUNTIME_BRANDING) return buildPlatformPublicSnapshot({ flags });
-
   try {
     const db = await getDatabase();
-    const branding = await getPublishedBranding(db);
+    const branding = flags.ENABLE_RUNTIME_BRANDING ? await getPublishedBranding(db) : null;
+    const authSettings = await getAuthSettings(db);
 
-    return buildPlatformPublicSnapshot({ branding, flags });
+    return buildPlatformPublicSnapshot({
+      branding,
+      flags,
+      openRegistration: authSettings.openRegistration,
+    });
   } catch (error) {
     log(
-      'published branding unavailable; using built-in fallback (%s)',
+      'published branding / auth settings unavailable; using built-in fallback (%s)',
       error instanceof Error ? error.name : 'UnknownError',
     );
     return buildPlatformPublicSnapshot({ flags });

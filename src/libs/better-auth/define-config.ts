@@ -22,6 +22,7 @@ import {
   getVerificationOTPEmailTemplate,
 } from '@/libs/better-auth/email-templates';
 import { emailWhitelist } from '@/libs/better-auth/plugins/email-whitelist';
+import { registrationGuard } from '@/libs/better-auth/plugins/registration-guard';
 import { initBetterAuthSSOProviders } from '@/libs/better-auth/sso';
 import {
   buildPlatformIdentityProvider,
@@ -329,6 +330,7 @@ export function defineConfig(
     plugins: [
       ...customOptions.plugins,
       emailWhitelist(),
+      registrationGuard(),
       expo(),
       admin(),
       // Email OTP plugin for mobile verification

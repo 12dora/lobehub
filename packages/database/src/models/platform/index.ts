@@ -2,6 +2,7 @@ export * from './accessStatus';
 export * from './adminMutationRate';
 export * from './aiCatalog';
 export * from './auditLog';
+export * from './authSettings';
 export * from './branding';
 export * from './checksum';
 export * from './connectorGovernance';

@@ -276,6 +276,16 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   { kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true },
   {
     kind: 'query',
+    path: 'admin.authSettings.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.IDENTITY_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.authSettings.update',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.IDENTITY_UPDATE] },
+  },
+  {
+    kind: 'query',
     path: 'admin.branding.getDraft',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.BRANDING_READ] },
   },

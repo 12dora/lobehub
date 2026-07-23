@@ -29,7 +29,7 @@ describe('platformRouter (read-only, flags default off)', () => {
       branding: null,
       brandingRevision: null,
       configRevision: '0',
-      login: { workAccountEnabled: false },
+      login: { openRegistration: true, workAccountEnabled: false },
       logoUrl: null,
       platformName: null,
     });
