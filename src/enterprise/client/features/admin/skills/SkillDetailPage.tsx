@@ -235,9 +235,6 @@ const VersionRow = memo<{
     <div className={styles.version}>
       <Flexbox gap={2}>
         <Text strong>{version.version}</Text>
-        <Text code ellipsis type="secondary">
-          {version.checksum.slice(0, 12)}…
-        </Text>
       </Flexbox>
       <Flexbox gap={2}>
         <Text type="secondary">{formatAdminDateTime(version.createdAt)}</Text>
@@ -303,7 +300,6 @@ const VersionDetail = memo<{
                 label={t('skillCatalog.detail.version.createdAt')}
                 value={formatAdminDateTime(data.createdAt)}
               />
-              <Field label={t('skillCatalog.detail.version.checksum')} value={data.checksum} />
               <Field
                 label={t('skillCatalog.detail.version.validator')}
                 value={data.validation?.validatorVersion ?? '—'}

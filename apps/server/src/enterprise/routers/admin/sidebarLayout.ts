@@ -41,7 +41,7 @@ export const adminSidebarLayoutRouter = router({
           action: 'admin.sidebarLayout.update',
           actorUserId: ctx.userId!,
           afterDiff: { hasLayout: Boolean(next.layout), mode: next.mode },
-          result: 'succeeded',
+          result: 'success',
           targetId: 'global',
           targetType: 'sidebarLayout',
         });

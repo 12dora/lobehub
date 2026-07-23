@@ -34,7 +34,7 @@ const createSnapshot = (
   },
   brandingRevision,
   configRevision,
-  login: { workAccountEnabled: false },
+  login: { openRegistration: true, workAccountEnabled: false },
   logoUrl: `/${brandingRevision}.png`,
   platformName: name,
 });

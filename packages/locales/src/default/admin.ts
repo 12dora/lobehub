@@ -867,7 +867,7 @@ export default {
   'skillCatalog.detail.dependents.versionDesc': 'Resources that depend on the selected version.',
   'skillCatalog.detail.identity.distribution': 'Distribution',
   'skillCatalog.detail.identity.enabled': 'Availability',
-  'skillCatalog.detail.identity.key': 'Internal key',
+  'skillCatalog.detail.identity.key': 'Skill code',
   'skillCatalog.detail.identity.revision': 'Draft revision',
   'skillCatalog.detail.identity.source': 'Source',
   'skillCatalog.detail.identity.status': 'Status',
@@ -1049,7 +1049,8 @@ export default {
   'users.access.noPermission': 'You do not have permission to change global roles.',
   'users.sessions.title': 'Sessions ({{count}})',
   'users.sessions.tokenNote':
-    'Session tokens are never shown. Revoking advances the security epoch for other credentials.',
+    'Session tokens are never shown. Revoking a session signs the user out on that device.',
+  'users.sessions.unknownDevice': 'Unknown device',
   'users.sessions.empty': 'No active sessions recorded',
   'users.sessions.id': 'Session ID',
   'users.sessions.createdAt': 'Created',
@@ -1091,7 +1092,8 @@ export default {
   'users.modals.revoke.impactSingle': 'This session will be signed out immediately.',
   'users.modals.revoke.impactSingleSelf':
     'This session will be signed out immediately. If it is the session you are using now, you will be signed out.',
-  'users.modals.revoke.desc': 'End Better Auth sessions and advance the security epoch.',
+  'users.modals.revoke.desc':
+    'Sign the user out of all sessions and require re-login on their other devices.',
   'users.modals.revoke.impactSelf':
     'By default your current session is retained. Check “also revoke current session” only if you intend to sign yourself out.',
   'users.modals.revoke.impactOther': 'All sessions for this user will be revoked.',
@@ -1165,7 +1167,7 @@ export default {
   'users.modals.roles.superAdminNoExpiry':
     'Super admin is permanent — expiry cannot be set with this role.',
   'users.roles.desc.super_admin':
-    'Local break-glass administrator with all platform permissions. Not managed by EasyAuth.',
+    'Local emergency administrator with full access to all platform permissions.',
   'users.roles.desc.user_admin':
     'Manage users, sessions, and global role packages (except super admin).',
   'users.roles.desc.ai_admin':
@@ -1458,7 +1460,7 @@ export default {
   'connectorCatalog.actions.discover': 'Discover tools',
   'connectorCatalog.actions.publish': 'Publish Connector',
   'connectorCatalog.actions.retrySave': 'Retry save',
-  'connectorCatalog.actions.revokeBindings': 'Revoke all user bindings',
+  'connectorCatalog.actions.revokeBindings': 'Revoke all user connections',
   'connectorCatalog.actions.rollback': 'Roll back revision',
   'connectorCatalog.actions.save': 'Save draft',
   'connectorCatalog.actions.test': 'Test connection',
@@ -1494,7 +1496,7 @@ export default {
   'connectorCatalog.editor.description': 'Description',
   'connectorCatalog.editor.displayName': 'Display name',
   'connectorCatalog.editor.enabled': 'Enabled',
-  'connectorCatalog.editor.endpoint': 'MCP endpoint',
+  'connectorCatalog.editor.endpoint': 'Server URL',
   'connectorCatalog.editor.issuer': 'OAuth issuer',
   'connectorCatalog.editor.oauthClientSecret': 'OAuth client secret replacement',
   'connectorCatalog.editor.oauthSection': 'Per-user OAuth configuration',

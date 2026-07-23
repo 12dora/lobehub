@@ -61,8 +61,6 @@ const OverviewTab = memo<OverviewTabProps>(
           {t('users.overview.identity')}
         </Text>
         <dl className={styles.dl}>
-          <dt>{t('users.overview.id')}</dt>
-          <dd>{user.id}</dd>
           <dt>{t('users.overview.email')}</dt>
           <dd>{user.email ?? '—'}</dd>
           <dt>{t('users.overview.username')}</dt>
