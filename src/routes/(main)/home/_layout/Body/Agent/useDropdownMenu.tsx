@@ -5,7 +5,9 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
+import { useSidebarLayoutPolicy } from '@/enterprise/client/hooks/useSidebarLayoutPolicy';
 import { openCustomizeSidebarModal } from '@/routes/(main)/home/_layout/Body/CustomizeSidebarModal';
+import { stripSidebarLayoutMenuItems } from '@/routes/(main)/home/_layout/Body/sidebarMenuGating';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { reorderSidebarItems } from '@/store/global/selectors/systemStatus';
@@ -47,6 +49,7 @@ export const useAgentActionsDropdownMenu = ({
 
   // Create menu items
   const { createSessionGroupMenuItem, configMenuItem } = useCreateMenuItems();
+  const managedSidebar = useSidebarLayoutPolicy().managed;
 
   return useMemo(() => {
     const createSessionGroupItem = createSessionGroupMenuItem();
@@ -62,7 +65,7 @@ export const useAgentActionsDropdownMenu = ({
       },
     }));
 
-    return [
+    const items = [
       createSessionGroupItem,
       configItem,
       { type: 'divider' as const },
@@ -95,6 +98,8 @@ export const useAgentActionsDropdownMenu = ({
         onClick: () => openCustomizeSidebarModal(),
       },
     ].filter(Boolean) as MenuProps['items'];
+
+    return stripSidebarLayoutMenuItems(items, managedSidebar);
   }, [
     agentPageSize,
     updateSystemStatus,
@@ -104,6 +109,7 @@ export const useAgentActionsDropdownMenu = ({
     isFirst,
     isLast,
     moveSection,
+    managedSidebar,
     visibleItems.length,
     t,
   ]);

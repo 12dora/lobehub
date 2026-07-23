@@ -18,4 +18,5 @@ export * from './managedResourcePolicy';
 export * from './redact';
 export * from './revision';
 export * from './settings';
+export * from './sidebarLayout';
 export * from './skillCatalog';

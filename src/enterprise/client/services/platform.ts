@@ -2,6 +2,7 @@ import { lambdaClient } from '@/libs/trpc/client';
 import { type PlatformCapabilities } from '@/types/platform/capabilities';
 import { type PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
 import { platformPublicSnapshotSchema } from '@/types/platform/publicSnapshot';
+import { type SidebarLayoutPolicy } from '@/types/platform/sidebarLayout';
 
 /**
  * Client adapters for platform.* procedures.
@@ -16,3 +17,7 @@ export const fetchPlatformPublicSnapshot = async (
   query: () => Promise<PlatformPublicSnapshot> = () =>
     lambdaClient.platform.getPublicSnapshot.query(),
 ): Promise<PlatformPublicSnapshot> => platformPublicSnapshotSchema.parse(await query());
+
+export const fetchPlatformSidebarLayoutPolicy = async (
+  query: () => Promise<SidebarLayoutPolicy> = () => lambdaClient.platform.getSidebarLayout.query(),
+): Promise<SidebarLayoutPolicy> => query();

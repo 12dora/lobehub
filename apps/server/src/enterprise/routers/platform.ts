@@ -1,10 +1,12 @@
 import { z } from 'zod';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { PlatformSidebarLayoutModel } from '@/database/models/platform';
 import { RbacModel } from '@/database/models/rbac';
 import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { platformPublicSnapshotSchema } from '@/types/platform/publicSnapshot';
+import { sidebarLayoutPolicySchema } from '@/types/platform/sidebarLayout';
 
 import { parseEasyauthConfig } from '../config/easyauth';
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
@@ -96,6 +98,20 @@ export const platformRouter = router({
     .query(async () =>
       resolvePlatformPublicSnapshot({ flags: parseEnterpriseFeatureFlags(process.env) }),
     ),
+
+  /**
+   * Home-sidebar layout policy for the current user (M15).
+   * When the platform manages the sidebar, `managed` is true and (if configured) `layout`
+   * carries the layout to apply; the client then hides its sidebar-customization controls.
+   */
+  getSidebarLayout: authedProcedure
+    .use(serverDatabase)
+    .output(sidebarLayoutPolicySchema)
+    .query(async ({ ctx }) => {
+      const policy = await new PlatformSidebarLayoutModel(ctx.serverDB).get();
+      const managed = policy.mode === 'platform';
+      return { layout: managed ? policy.layout : null, managed };
+    }),
 
   /**
    * aihub.access status for the current principal (login → "request access" page).
