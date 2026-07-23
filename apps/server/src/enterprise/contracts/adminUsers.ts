@@ -11,6 +11,8 @@ import { z } from 'zod';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 
+import { secretSafeAuditReasonSchema, strictDateSchema } from './shared';
+
 /** Default page size for list / audit trail. */
 export const ADMIN_USERS_LIST_DEFAULT_LIMIT = 50;
 /** Hard cap for list / audit trail limit. */
@@ -47,7 +49,7 @@ export type AdminUserStatus = z.infer<typeof adminUserStatusSchema>;
 /** Opaque keyset cursor string: `${createdAt.toISOString()}|${id}`. */
 export const adminUserCursorSchema = z.string().min(1).max(128);
 
-const reasonSchema = z.string().trim().min(1).max(2000);
+const reasonSchema = secretSafeAuditReasonSchema;
 
 const userIdSchema = z.string().min(1).max(128);
 
@@ -73,8 +75,8 @@ export const escapeLikePattern = (value: string): string =>
 
 export const adminUsersListInputSchema = z
   .object({
-    createdFrom: z.coerce.date().optional(),
-    createdTo: z.coerce.date().optional(),
+    createdFrom: strictDateSchema.optional(),
+    createdTo: strictDateSchema.optional(),
     cursor: adminUserCursorSchema.optional(),
     limit: z.number().int().min(1).max(ADMIN_USERS_LIST_MAX_LIMIT).optional(),
     /** Free-text search; server trims/normalizes. Never log the full value. */
@@ -202,7 +204,7 @@ export type AdminUsersGetOutput = z.infer<typeof adminUsersGetOutputSchema>;
 
 export const adminUsersBanInputSchema = z
   .object({
-    expiresAt: z.coerce.date().optional(),
+    expiresAt: strictDateSchema.optional(),
     reason: reasonSchema,
     userId: userIdSchema,
   })
@@ -341,7 +343,7 @@ export type AdminUsersDeleteOutput = z.infer<typeof adminUsersDeleteOutputSchema
 
 export const adminUsersReplaceGlobalRolesInputSchema = z
   .object({
-    expiresAt: z.coerce.date().optional(),
+    expiresAt: strictDateSchema.optional(),
     /**
      * Role names whose existing grants must be left untouched (expiry preserved) instead
      * of deleted + re-inserted. Used by single-role revoke so removing one role never
@@ -361,6 +363,35 @@ export const adminUsersReplaceGlobalRolesInputSchema = z
         message: 'expiresAt must be in the future',
         path: ['expiresAt'],
       });
+    }
+
+    if (new Set(val.roleNames).size !== val.roleNames.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'roleNames must not contain duplicates',
+        path: ['roleNames'],
+      });
+    }
+
+    if (val.preserveRoleNames) {
+      if (new Set(val.preserveRoleNames).size !== val.preserveRoleNames.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'preserveRoleNames must not contain duplicates',
+          path: ['preserveRoleNames'],
+        });
+      }
+      const desired = new Set(val.roleNames);
+      for (const roleName of val.preserveRoleNames) {
+        if (!desired.has(roleName)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'preserveRoleNames must be a subset of roleNames',
+            path: ['preserveRoleNames'],
+          });
+          break;
+        }
+      }
     }
   });
 

@@ -1,37 +1,19 @@
-import {
-  PLATFORM_AGENT_ASSIGNMENT_MODES,
-  PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES,
-  PLATFORM_AGENT_GLOBAL_TARGET_ID,
-  PLATFORM_AGENT_VERSION_POLICIES,
-} from '@lobechat/types';
 import { z } from 'zod';
 
+import {
+  platformAgentAssignmentCoreFields,
+  platformAgentAssignmentCoreSchema,
+  refinePlatformAgentAssignmentInvariants,
+} from './assignmentCore';
 import { draftTokenSchema, idSchema, reasonSchema, revisionSchema, safeText } from './common';
 import { platformAgentAssignmentSchema } from './domain';
 
-export const adminPlatformAgentAssignmentCreateInputSchema = z
-  .object({
-    agentId: idSchema,
-    enabled: z.boolean(),
-    mode: z.enum(PLATFORM_AGENT_ASSIGNMENT_MODES),
-    pinnedVersionId: idSchema.nullable(),
-    reason: reasonSchema,
-    targetId: idSchema,
-    targetType: z.enum(PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES),
-    versionPolicy: z.enum(PLATFORM_AGENT_VERSION_POLICIES),
-  })
-  .strict()
-  .superRefine((assignment, ctx) => {
-    if (
-      (assignment.targetType === 'global') !==
-      (assignment.targetId === PLATFORM_AGENT_GLOBAL_TARGET_ID)
-    ) {
-      ctx.addIssue({ code: 'custom', message: 'global assignment target is invalid' });
-    }
-    if ((assignment.versionPolicy === 'pinned') !== (assignment.pinnedVersionId !== null)) {
-      ctx.addIssue({ code: 'custom', message: 'pinned policy requires exactly one version' });
-    }
-  });
+export {
+  type PlatformAgentAssignmentCore,
+  platformAgentAssignmentCoreFields,
+  platformAgentAssignmentCoreSchema,
+  refinePlatformAgentAssignmentInvariants,
+} from './assignmentCore';
 
 export const adminPlatformAgentAssignmentListInputSchema = z
   .object({
@@ -52,28 +34,13 @@ export const adminPlatformAgentAssignmentUpsertInputSchema = z
   .object({
     agentId: idSchema,
     assignmentId: idSchema.optional(),
-    enabled: z.boolean(),
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    mode: z.enum(PLATFORM_AGENT_ASSIGNMENT_MODES),
-    pinnedVersionId: idSchema.nullable(),
     reason: reasonSchema,
-    targetId: idSchema,
-    targetType: z.enum(PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES),
-    versionPolicy: z.enum(PLATFORM_AGENT_VERSION_POLICIES),
+    ...platformAgentAssignmentCoreFields,
   })
   .strict()
-  .superRefine((assignment, ctx) => {
-    if (
-      (assignment.targetType === 'global') !==
-      (assignment.targetId === PLATFORM_AGENT_GLOBAL_TARGET_ID)
-    ) {
-      ctx.addIssue({ code: 'custom', message: 'global assignment target is invalid' });
-    }
-    if ((assignment.versionPolicy === 'pinned') !== (assignment.pinnedVersionId !== null)) {
-      ctx.addIssue({ code: 'custom', message: 'pinned policy requires exactly one version' });
-    }
-  });
+  .superRefine(refinePlatformAgentAssignmentInvariants);
 
 export const adminPlatformAgentAssignmentRemoveInputSchema = z
   .object({
@@ -91,32 +58,10 @@ export const adminPlatformAgentAssignmentRemoveOutputSchema = z
 
 export const adminPlatformAgentAssignmentUpsertOutputSchema = platformAgentAssignmentSchema;
 
-const platformAgentAssignmentPreviewDraftSchema = z
-  .object({
-    enabled: z.boolean(),
-    mode: z.enum(PLATFORM_AGENT_ASSIGNMENT_MODES),
-    pinnedVersionId: idSchema.nullable(),
-    targetId: idSchema,
-    targetType: z.enum(PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES),
-    versionPolicy: z.enum(PLATFORM_AGENT_VERSION_POLICIES),
-  })
-  .strict()
-  .superRefine((assignment, ctx) => {
-    if (
-      (assignment.targetType === 'global') !==
-      (assignment.targetId === PLATFORM_AGENT_GLOBAL_TARGET_ID)
-    ) {
-      ctx.addIssue({ code: 'custom', message: 'global assignment target is invalid' });
-    }
-    if ((assignment.versionPolicy === 'pinned') !== (assignment.pinnedVersionId !== null)) {
-      ctx.addIssue({ code: 'custom', message: 'pinned policy requires exactly one version' });
-    }
-  });
-
 export const adminPlatformAgentAssignmentPreviewInputSchema = z
   .object({
     agentId: idSchema,
-    assignment: platformAgentAssignmentPreviewDraftSchema,
+    assignment: platformAgentAssignmentCoreSchema,
   })
   .strict();
 

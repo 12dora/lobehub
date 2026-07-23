@@ -91,6 +91,27 @@ describe('adminBranding contracts', () => {
     ).toBe(false);
   });
 
+  it('rejects secret material in publication and upload reasons', () => {
+    const secretReason = 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz012345';
+    expect(
+      adminBrandingPublishInputSchema.safeParse({
+        expectedDraftToken: '0'.repeat(64),
+        expectedRevision: 0,
+        reason: secretReason,
+        requestId: crypto.randomUUID(),
+      }).success,
+    ).toBe(false);
+    expect(
+      adminBrandingUploadAssetInputSchema.safeParse({
+        bytesBase64: 'AAAA',
+        fileName: 'logo.png',
+        kind: 'logo',
+        reason: secretReason,
+        requestId: crypto.randomUUID(),
+      }).success,
+    ).toBe(false);
+  });
+
   it('caps inline upload envelopes before decoding', () => {
     expect(
       adminBrandingUploadAssetInputSchema.safeParse({

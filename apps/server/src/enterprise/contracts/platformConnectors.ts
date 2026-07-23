@@ -61,7 +61,6 @@ export {
   connectorOAuthStatePayloadSchema,
   connectorOAuthTokenResponseSchema,
 } from './platformConnectors/oauth';
-export { ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS } from './platformConnectors/permissions';
 export {
   type AdminConnectorApplyImmediateInput,
   adminConnectorApplyImmediateInputSchema,

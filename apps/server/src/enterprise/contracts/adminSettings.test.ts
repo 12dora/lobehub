@@ -58,4 +58,42 @@ describe('admin settings reason contract', () => {
       expect(result.success).toBe(false);
     }
   });
+
+  it('rejects secret material in publication comments', () => {
+    expect(
+      adminSettingsPublishInputSchema.safeParse({
+        comment: secretReason,
+        expectedDraftToken: draftToken,
+        expectedRevision: 0,
+        reason: safeReason,
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSettingsPublishInputSchema.safeParse({
+        comment: 'Safe publish note for audit trail',
+        expectedDraftToken: draftToken,
+        expectedRevision: 0,
+        reason: safeReason,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts empty publication comments and normalizes them to undefined', () => {
+    expect(
+      adminSettingsPublishInputSchema.parse({
+        comment: '',
+        expectedDraftToken: draftToken,
+        expectedRevision: 0,
+        reason: safeReason,
+      }).comment,
+    ).toBeUndefined();
+    expect(
+      adminSettingsPublishInputSchema.parse({
+        comment: '   ',
+        expectedDraftToken: draftToken,
+        expectedRevision: 0,
+        reason: safeReason,
+      }).comment,
+    ).toBeUndefined();
+  });
 });

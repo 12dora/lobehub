@@ -40,7 +40,6 @@ export {
   platformAgentPublicationOutputSchema,
 } from './platformAgents/adminLifecycle';
 export {
-  adminPlatformAgentAssignmentCreateInputSchema,
   adminPlatformAgentAssignmentListInputSchema,
   adminPlatformAgentAssignmentListOutputSchema,
   adminPlatformAgentAssignmentPreviewInputSchema,
@@ -83,7 +82,6 @@ export {
   adminPlatformAgentRolloutGetOutputSchema,
   adminPlatformAgentRolloutListInputSchema,
   adminPlatformAgentRolloutListOutputSchema,
-  adminPlatformAgentRolloutMutationInputSchema,
   adminPlatformAgentRolloutOutputSchema,
   adminPlatformAgentRolloutRetryInputSchema,
   adminPlatformAgentRolloutRetryOutputSchema,
@@ -97,7 +95,6 @@ export type {
   AdminPlatformAgentAppendVersionOutput,
   AdminPlatformAgentArchiveInput,
   AdminPlatformAgentArchiveOutput,
-  AdminPlatformAgentAssignmentCreateInput,
   AdminPlatformAgentAssignmentListInput,
   AdminPlatformAgentAssignmentListOutput,
   AdminPlatformAgentAssignmentPreviewInput,
@@ -128,7 +125,6 @@ export type {
   AdminPlatformAgentRolloutGetOutput,
   AdminPlatformAgentRolloutListInput,
   AdminPlatformAgentRolloutListOutput,
-  AdminPlatformAgentRolloutMutationInput,
   AdminPlatformAgentRolloutRetryInput,
   AdminPlatformAgentRolloutRetryOutput,
   AdminPlatformAgentRolloutRollbackInput,

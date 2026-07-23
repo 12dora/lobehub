@@ -30,7 +30,6 @@ import type {
   adminPlatformAgentVersionsListOutputSchema,
 } from './adminLifecycle';
 import type {
-  adminPlatformAgentAssignmentCreateInputSchema,
   adminPlatformAgentAssignmentListInputSchema,
   adminPlatformAgentAssignmentListOutputSchema,
   adminPlatformAgentAssignmentPreviewInputSchema,
@@ -53,7 +52,6 @@ import type {
   adminPlatformAgentRolloutGetOutputSchema,
   adminPlatformAgentRolloutListInputSchema,
   adminPlatformAgentRolloutListOutputSchema,
-  adminPlatformAgentRolloutMutationInputSchema,
   adminPlatformAgentRolloutRetryInputSchema,
   adminPlatformAgentRolloutRetryOutputSchema,
   adminPlatformAgentRolloutRollbackInputSchema,
@@ -74,9 +72,6 @@ export type AdminPlatformAgentArchiveOutput = z.output<
 >;
 export type AdminPlatformAgentDeleteInput = z.input<typeof adminPlatformAgentDeleteInputSchema>;
 export type AdminPlatformAgentDeleteOutput = z.output<typeof adminPlatformAgentDeleteOutputSchema>;
-export type AdminPlatformAgentAssignmentCreateInput = z.input<
-  typeof adminPlatformAgentAssignmentCreateInputSchema
->;
 export type AdminPlatformAgentAssignmentListInput = z.input<
   typeof adminPlatformAgentAssignmentListInputSchema
 >;
@@ -144,9 +139,6 @@ export type AdminPlatformAgentRolloutListInput = z.input<
 >;
 export type AdminPlatformAgentRolloutListOutput = z.output<
   typeof adminPlatformAgentRolloutListOutputSchema
->;
-export type AdminPlatformAgentRolloutMutationInput = z.input<
-  typeof adminPlatformAgentRolloutMutationInputSchema
 >;
 export type AdminPlatformAgentRolloutRetryInput = z.input<
   typeof adminPlatformAgentRolloutRetryInputSchema

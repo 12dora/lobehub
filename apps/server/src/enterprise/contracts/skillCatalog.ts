@@ -1,7 +1,7 @@
-import semver from 'semver';
 import { z } from 'zod';
 
 import { containsEnterpriseSecretMaterial } from '../security/redaction';
+import { isStrictSemVer } from './shared';
 
 const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
   if (containsEnterpriseSecretMaterial(value)) {
@@ -24,7 +24,7 @@ const skillVersionSchema = z
   .trim()
   .min(1)
   .max(64)
-  .refine((value) => semver.valid(value) === value, 'version must be valid SemVer');
+  .refine(isStrictSemVer, 'version must be valid SemVer');
 
 const checksumSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const reasonSchema = boundedSafeText(2000);

@@ -16,36 +16,111 @@ const providerKeySchema = z
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
 
 const modelKeySchema = z.string().trim().min(1).max(150);
-const validateNonSecretJson = (
-  value: unknown,
-  ctx: z.RefinementCtx,
-  path: Array<number | string> = [],
-): void => {
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => validateNonSecretJson(item, ctx, [...path, index]));
+
+/** Hard bounds for provider/model JSON config trees (iterative walk — no stack blow-up). */
+export const BOUNDED_JSON_MAX_DEPTH = 32;
+export const BOUNDED_JSON_MAX_NODES = 4096;
+export const BOUNDED_JSON_MAX_KEYS_PER_OBJECT = 256;
+export const BOUNDED_JSON_MAX_SERIALIZED_BYTES = 256 * 1024;
+
+type JsonWalkFrame = {
+  depth: number;
+  path: Array<number | string>;
+  value: unknown;
+};
+
+const validateNonSecretJson = (root: unknown, ctx: z.RefinementCtx): void => {
+  let serializedBytes: number;
+  try {
+    serializedBytes = Buffer.byteLength(JSON.stringify(root), 'utf8');
+  } catch {
+    ctx.addIssue({ code: 'custom', message: 'JSON value is not serializable' });
     return;
   }
-  if (!value || typeof value !== 'object') {
-    if (typeof value === 'string') {
-      if (containsSensitiveMaterial(value)) {
-        ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
-      }
-      if (isCredentialBearingUrl(value)) {
-        ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
-      }
-    }
+  if (serializedBytes > BOUNDED_JSON_MAX_SERIALIZED_BYTES) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `JSON exceeds max serialized size of ${BOUNDED_JSON_MAX_SERIALIZED_BYTES} bytes`,
+    });
     return;
   }
-  for (const [key, child] of Object.entries(value)) {
-    if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key)) {
+
+  const stack: JsonWalkFrame[] = [{ depth: 0, path: [], value: root }];
+  let nodes = 0;
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    nodes += 1;
+    if (nodes > BOUNDED_JSON_MAX_NODES) {
       ctx.addIssue({
         code: 'custom',
-        message: 'sensitive key is not allowed',
-        path: [...path, key],
+        message: `JSON exceeds max node count of ${BOUNDED_JSON_MAX_NODES}`,
+        path: frame.path,
       });
+      return;
+    }
+
+    const { value, path, depth } = frame;
+
+    if (Array.isArray(value)) {
+      // Depth limit applies to nested containers, not primitive leaves under a max-depth object.
+      if (depth > BOUNDED_JSON_MAX_DEPTH) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `JSON exceeds max depth of ${BOUNDED_JSON_MAX_DEPTH}`,
+          path,
+        });
+        return;
+      }
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        stack.push({ depth: depth + 1, path: [...path, index], value: value[index] });
+      }
       continue;
     }
-    validateNonSecretJson(child, ctx, [...path, key]);
+
+    if (!value || typeof value !== 'object') {
+      if (typeof value === 'string') {
+        if (containsSensitiveMaterial(value)) {
+          ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
+        }
+        if (isCredentialBearingUrl(value)) {
+          ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
+        }
+      }
+      continue;
+    }
+
+    if (depth > BOUNDED_JSON_MAX_DEPTH) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `JSON exceeds max depth of ${BOUNDED_JSON_MAX_DEPTH}`,
+        path,
+      });
+      return;
+    }
+
+    const entries = Object.entries(value);
+    if (entries.length > BOUNDED_JSON_MAX_KEYS_PER_OBJECT) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `JSON object exceeds max key count of ${BOUNDED_JSON_MAX_KEYS_PER_OBJECT}`,
+        path,
+      });
+      return;
+    }
+
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const [key, child] = entries[i]!;
+      if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'sensitive key is not allowed',
+          path: [...path, key],
+        });
+        continue;
+      }
+      stack.push({ depth: depth + 1, path: [...path, key], value: child });
+    }
   }
 };
 

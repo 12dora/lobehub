@@ -64,8 +64,8 @@ describe('adminUsersListInputSchema', () => {
     const from = new Date('2024-01-01T00:00:00.000Z');
     const to = new Date('2024-12-31T00:00:00.000Z');
     const parsed = adminUsersListInputSchema.parse({
-      createdFrom: from.toISOString(),
-      createdTo: to.toISOString(),
+      createdFrom: from,
+      createdTo: to,
       cursor: '2024-06-01T00:00:00.000Z|user_abc',
       limit: 10,
       role: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
@@ -74,6 +74,15 @@ describe('adminUsersListInputSchema', () => {
     expect(parsed.status).toBe('banned');
     expect(parsed.createdFrom).toEqual(from);
     expect(parsed.limit).toBe(10);
+  });
+
+  it('rejects boolean/null/number/string date coercion traps', () => {
+    for (const bad of [null, false, true, 0, 1, '2024-01-01T00:00:00.000Z'] as const) {
+      expect(adminUsersListInputSchema.safeParse({ createdFrom: bad as never }).success).toBe(
+        false,
+      );
+      expect(adminUsersListInputSchema.safeParse({ createdTo: bad as never }).success).toBe(false);
+    }
   });
 
   it('rejects unknown keys (strict)', () => {
@@ -211,6 +220,33 @@ describe('adminUsersBanInputSchema', () => {
     });
     expect(parsed.expiresAt?.getTime()).toBe(expiresAt.getTime());
   });
+
+  it('rejects secret material in ban reasons', () => {
+    expect(
+      adminUsersBanInputSchema.safeParse({
+        reason: 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz012345',
+        userId: 'u1',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminUsersBanInputSchema.safeParse({
+        reason: 'api_key=plain-secret-value-for-audit',
+        userId: 'u1',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects null/boolean expiresAt coercion traps', () => {
+    for (const bad of [null, false, true, 0] as const) {
+      expect(
+        adminUsersBanInputSchema.safeParse({
+          expiresAt: bad as never,
+          reason: 'temp ban',
+          userId: 'u1',
+        }).success,
+      ).toBe(false);
+    }
+  });
 });
 
 describe('adminUsersUnbanInputSchema', () => {
@@ -320,6 +356,68 @@ describe('adminUsersReplaceGlobalRolesInputSchema', () => {
         userId: 'u1',
       }),
     ).toThrow();
+  });
+
+  it('requires preserveRoleNames to be a subset of roleNames and rejects duplicates', () => {
+    // Invalid: preserve outside the desired set (would leave a role after empty replacement).
+    expect(
+      adminUsersReplaceGlobalRolesInputSchema.safeParse({
+        preserveRoleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER],
+        reason: 'revoke all',
+        roleNames: [],
+        userId: 'u1',
+      }).success,
+    ).toBe(false);
+
+    // Partial invalid subset.
+    expect(
+      adminUsersReplaceGlobalRolesInputSchema.safeParse({
+        preserveRoleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN],
+        reason: 'partial',
+        roleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER],
+        userId: 'u1',
+      }).success,
+    ).toBe(false);
+
+    // Valid empty preserve.
+    expect(
+      adminUsersReplaceGlobalRolesInputSchema.safeParse({
+        preserveRoleNames: [],
+        reason: 'replace',
+        roleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER],
+        userId: 'u1',
+      }).success,
+    ).toBe(true);
+
+    // Valid full subset.
+    expect(
+      adminUsersReplaceGlobalRolesInputSchema.safeParse({
+        preserveRoleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER],
+        reason: 'keep expiry',
+        roleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER, PLATFORM_SYSTEM_ROLES.USER_ADMIN],
+        userId: 'u1',
+      }).success,
+    ).toBe(true);
+
+    // Duplicate preserve / role names.
+    expect(
+      adminUsersReplaceGlobalRolesInputSchema.safeParse({
+        preserveRoleNames: [
+          PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+          PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+        ],
+        reason: 'dup',
+        roleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER],
+        userId: 'u1',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminUsersReplaceGlobalRolesInputSchema.safeParse({
+        reason: 'dup roles',
+        roleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER, PLATFORM_SYSTEM_ROLES.PLATFORM_USER],
+        userId: 'u1',
+      }).success,
+    ).toBe(false);
   });
 });
 

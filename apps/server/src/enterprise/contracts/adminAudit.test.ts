@@ -7,8 +7,11 @@ import {
   adminAuditEventsListInputSchema,
   adminAuditExportItemSchema,
   adminAuditExportsCreateInputSchema,
+  adminAuditLegalHoldsCreateInputSchema,
+  adminAuditLegalHoldsListInputSchema,
   adminAuditPolicyUpdateInputSchema,
   adminAuditUsersSearchInputSchema,
+  dateInputSchema,
 } from './adminAudit';
 
 describe('adminAudit contracts', () => {
@@ -127,5 +130,85 @@ describe('adminAudit contracts', () => {
         storageKey: 'platform-audit-exports/x/evidence.ndjson',
       }),
     ).toThrow();
+  });
+
+  it('rejects boolean/null/number/string date coercion traps', () => {
+    for (const bad of [null, false, true, 0, 1, '2026-01-01T00:00:00.000Z'] as const) {
+      expect(dateInputSchema.safeParse(bad).success).toBe(false);
+    }
+    const when = new Date('2026-01-01T00:00:00.000Z');
+    expect(dateInputSchema.parse(when)).toEqual(when);
+  });
+
+  it('validates legal-hold scopeType/scopeId pairs for list and create', () => {
+    const reason = 'Preserve evidence for litigation hold';
+
+    // Create matrix
+    expect(
+      adminAuditLegalHoldsCreateInputSchema.safeParse({
+        reason,
+        scopeType: 'global',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminAuditLegalHoldsCreateInputSchema.parse({
+        reason,
+        scopeId: null,
+        scopeType: 'global',
+      }).scopeId,
+    ).toBeNull();
+    expect(
+      adminAuditLegalHoldsCreateInputSchema.safeParse({
+        reason,
+        scopeId: 'unexpected',
+        scopeType: 'global',
+      }).success,
+    ).toBe(false);
+
+    for (const scopeType of ['user', 'session', 'topic', 'workspace'] as const) {
+      expect(
+        adminAuditLegalHoldsCreateInputSchema.safeParse({
+          reason,
+          scopeId: 'scope-1',
+          scopeType,
+        }).success,
+      ).toBe(true);
+      expect(
+        adminAuditLegalHoldsCreateInputSchema.safeParse({
+          reason,
+          scopeId: null,
+          scopeType,
+        }).success,
+      ).toBe(false);
+      expect(
+        adminAuditLegalHoldsCreateInputSchema.safeParse({
+          reason,
+          scopeType,
+        }).success,
+      ).toBe(false);
+    }
+
+    // List filter matrix
+    expect(adminAuditLegalHoldsListInputSchema.safeParse({ scopeType: 'global' }).success).toBe(
+      true,
+    );
+    expect(
+      adminAuditLegalHoldsListInputSchema.safeParse({
+        scopeId: 'unexpected',
+        scopeType: 'global',
+      }).success,
+    ).toBe(false);
+    // Type-only filter (scopeType without scopeId) is valid for list; UI sends this.
+    // Explicit null remains a contradictory pair and must still fail.
+    expect(adminAuditLegalHoldsListInputSchema.safeParse({ scopeType: 'user' }).success).toBe(true);
+    expect(
+      adminAuditLegalHoldsListInputSchema.safeParse({ scopeId: null, scopeType: 'user' }).success,
+    ).toBe(false);
+    expect(
+      adminAuditLegalHoldsListInputSchema.safeParse({
+        scopeId: 'user-1',
+        scopeType: 'user',
+      }).success,
+    ).toBe(true);
   });
 });
