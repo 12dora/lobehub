@@ -1,11 +1,8 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
 import { memo, type ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
 
-import PlatformSettingSourceBadge from './index';
+import ManagedMetaHeader from './ManagedMetaHeader';
 import { type PlatformSettingMetaState } from './usePlatformSettingMeta';
 
 export type ManagedSettingFieldRenderArgs = {
@@ -22,8 +19,6 @@ export const ManagedSettingFieldContent = memo<{
   children: (args: ManagedSettingFieldRenderArgs) => ReactNode;
   meta: PlatformSettingMetaState;
 }>(({ meta, children }) => {
-  const { t } = useTranslation('setting');
-
   if (meta.hidden) return null;
 
   const showBadge = meta.enabled && meta.status === 'ready';
@@ -32,42 +27,7 @@ export const ManagedSettingFieldContent = memo<{
 
   return (
     <div>
-      {showBadge ? (
-        <PlatformSettingSourceBadge
-          locked={meta.locked}
-          mode={meta.mode}
-          resetting={meta.resetting}
-          source={meta.source}
-          onReset={
-            meta.canReset
-              ? () => {
-                  void meta.reset();
-                }
-              : undefined
-          }
-        />
-      ) : null}
-      {meta.status === 'loading' ? (
-        <Text type="secondary">{t('platformSource.loadingMeta')}</Text>
-      ) : null}
-      {meta.status === 'error' ? (
-        <Button size="small" type="text" onClick={() => void meta.retry()}>
-          {t('platformSource.retryMeta')}
-        </Button>
-      ) : null}
-      {meta.resetError ? (
-        <Text type="danger">
-          {t('platformSource.resetFailed')}{' '}
-          <Button
-            disabled={meta.resetting}
-            size="small"
-            type="text"
-            onClick={() => void meta.reset()}
-          >
-            {t('platformSource.retryReset')}
-          </Button>
-        </Text>
-      ) : null}
+      <ManagedMetaHeader meta={meta} showBadge={showBadge} />
       {children({
         disabled,
         hidden: meta.hidden,
