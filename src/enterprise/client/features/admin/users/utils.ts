@@ -27,6 +27,8 @@ export const getAdminUsersMutationErrorKey = (error: unknown): string => {
   }
   if (mapped?.code === 'PLATFORM_NOT_FOUND') return 'users.errors.notFound';
   if (mapped?.code === 'PLATFORM_INVALID_INPUT') return 'users.errors.invalidInput';
+  // Shared CAS / optimistic-lock conflict (settings, branding, audit policy, …).
+  if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') return 'errors.revisionConflict';
   return 'users.errors.generic';
 };
 

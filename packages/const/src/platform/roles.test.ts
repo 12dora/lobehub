@@ -46,6 +46,7 @@ describe('platform system roles', () => {
   it('auditor is read-only on mutating user/AI actions', () => {
     const codes = PLATFORM_ROLE_PERMISSIONS[PLATFORM_SYSTEM_ROLES.AUDITOR];
     expect(codes).toContain(PLATFORM_PERMISSIONS.AUDIT_EXPORT);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.AUDIT_READ);
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_READ);
     expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_READ);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.POLICY_UPDATE);
@@ -53,6 +54,11 @@ describe('platform system roles', () => {
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_CREATE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_DELETE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE);
+    // Conversation body evidence and governance mutations are not default auditor grants.
+    expect(codes).not.toContain(PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ);
+    expect(codes).not.toContain(PLATFORM_PERMISSIONS.AUDIT_POLICY_UPDATE);
+    expect(codes).not.toContain(PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE);
+    expect(codes).not.toContain(PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE);
   });
 
   it('platform_user has no admin permissions', () => {

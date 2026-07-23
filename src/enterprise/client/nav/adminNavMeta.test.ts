@@ -104,6 +104,7 @@ describe('adminNavMeta', () => {
     expect(flatIds).not.toContain('skills-detail');
     expect(flatIds).not.toContain('connectors');
     expect(flatIds).not.toContain('audit');
+    expect(flatIds).not.toContain('audit-logs');
 
     expect(canAccessAdminPath('/admin/users', granted)).toBe(true);
     expect(canAccessAdminPath('/admin/users/abc', granted)).toBe(true);
@@ -127,5 +128,32 @@ describe('adminNavMeta', () => {
     expect(hasAllPermissions(['a', 'b'], ['a'])).toBe(true);
     expect(hasAllPermissions(['a'], ['a', 'b'])).toBe(false);
     expect(ADMIN_NAV_FLAT.some((i) => i.path.includes(':id'))).toBe(true);
+  });
+
+  it('registers audit group children with distinct permissions', () => {
+    expect(findAdminNavItemByPath('/admin/audit/logs')?.id).toBe('audit-logs');
+    expect(findAdminNavItemByPath('/admin/audit/logs')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.AUDIT_READ,
+    ]);
+    expect(findAdminNavItemByPath('/admin/audit/conversations')?.id).toBe('audit-conversations');
+    expect(findAdminNavItemByPath('/admin/audit/conversations/u1')?.id).toBe(
+      'audit-conversation-user',
+    );
+    expect(findAdminNavItemByPath('/admin/audit/conversations/u1/topics/t1')?.id).toBe(
+      'audit-conversation-topic',
+    );
+    expect(findAdminNavItemByPath('/admin/audit/exports')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.AUDIT_EXPORT,
+    ]);
+    expect(findAdminNavItemByPath('/admin/audit/holds')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE,
+    ]);
+    expect(findAdminNavItemByPath('/admin/audit/retention')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE,
+    ]);
+
+    const nav = filterAdminNavByPermissions(ADMIN_NAV_ITEMS, [PLATFORM_PERMISSIONS.AUDIT_READ]);
+    const audit = nav.find((item) => item.id === 'audit');
+    expect(audit?.children?.map((c) => c.id)).toEqual(['audit-logs']);
   });
 });

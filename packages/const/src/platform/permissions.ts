@@ -69,6 +69,17 @@ export const PLATFORM_PERMISSIONS = {
 
   AUDIT_READ: 'platform_audit:read:all',
   AUDIT_EXPORT: 'platform_audit:export:all',
+  /**
+   * Read conversation / message evidence for admin audit.
+   * Not granted to the default auditor package — super_admin (and explicit grants) only.
+   */
+  AUDIT_CONVERSATION_READ: 'platform_audit:conversation_read:all',
+  /** Update platform audit policy (content access, retention windows, etc.). */
+  AUDIT_POLICY_UPDATE: 'platform_audit:policy_update:all',
+  /** Run retention dry-run / execute jobs (no A2 HTTP surface yet). */
+  AUDIT_RETENTION_OPERATE: 'platform_audit:retention_operate:all',
+  /** Create / release / list legal holds. */
+  AUDIT_LEGAL_HOLD_MANAGE: 'platform_audit:legal_hold_manage:all',
 
   SYSTEM_READ: 'platform_system:read:all',
   SYSTEM_OPERATE: 'platform_system:operate:all',

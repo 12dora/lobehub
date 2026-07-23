@@ -121,6 +121,12 @@ export interface AdminAgentListPagination {
   loadMore: () => void;
   /** A later page (not the first) failed — surfaced inline without discarding settled content. */
   loadMoreError: boolean;
+  /**
+   * Revalidate every loaded infinite page via the bound `useSWRInfinite` mutate.
+   * Prefer this over the global key-predicate `refreshAdminAgentLists` after create/delete —
+   * global `mutate(filter)` does not reliably refresh infinite caches.
+   */
+  refresh: () => Promise<unknown>;
   retry: () => void;
 }
 
@@ -181,6 +187,9 @@ export const useAdminAgentListPagination = (
     loadMoreError: settled && Boolean(swr.error),
     items,
     loadMore: () => void swr.setSize((size) => size + 1),
+    // Bound infinite mutate — revalidates the active cursor pages, not a global key filter.
+    // Pass the stable SWR mutator directly so list consumers can put it in React deps.
+    refresh: swr.mutate,
     retry: () => void swr.mutate(),
   };
 };

@@ -72,6 +72,30 @@ const SystemPage = lazy(() => import('@/enterprise/client/features/admin/system'
 const GlobalStatsPage = lazy(
   () => import('@/enterprise/client/features/admin/stats/GlobalStatsPage'),
 );
+const AuditIndexRedirect = lazy(
+  () => import('@/enterprise/client/features/admin/audit/AuditIndexRedirect'),
+);
+const OperationLogsPage = lazy(
+  () => import('@/enterprise/client/features/admin/audit/operationLogs/OperationLogsPage'),
+);
+const ConversationsSearchPage = lazy(
+  () => import('@/enterprise/client/features/admin/audit/conversations/ConversationsSearchPage'),
+);
+const ConversationUserPage = lazy(
+  () => import('@/enterprise/client/features/admin/audit/conversations/ConversationUserPage'),
+);
+const ConversationTopicPage = lazy(
+  () => import('@/enterprise/client/features/admin/audit/conversations/ConversationTopicPage'),
+);
+const ExportsPage = lazy(
+  () => import('@/enterprise/client/features/admin/audit/exports/ExportsPage'),
+);
+const LegalHoldsPage = lazy(
+  () => import('@/enterprise/client/features/admin/audit/holds/LegalHoldsPage'),
+);
+const RetentionPage = lazy(
+  () => import('@/enterprise/client/features/admin/audit/retention/RetentionPage'),
+);
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -162,6 +186,30 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'stats': {
       return withLazy(<GlobalStatsPage />);
+    }
+    case 'audit': {
+      return withLazy(<AuditIndexRedirect />);
+    }
+    case 'audit-logs': {
+      return withLazy(<OperationLogsPage />);
+    }
+    case 'audit-conversations': {
+      return withLazy(<ConversationsSearchPage />);
+    }
+    case 'audit-conversation-user': {
+      return withLazy(<ConversationUserPage />);
+    }
+    case 'audit-conversation-topic': {
+      return withLazy(<ConversationTopicPage />);
+    }
+    case 'audit-exports': {
+      return withLazy(<ExportsPage />);
+    }
+    case 'audit-legal-holds': {
+      return withLazy(<LegalHoldsPage />);
+    }
+    case 'audit-retention': {
+      return withLazy(<RetentionPage />);
     }
     default: {
       return <PlaceholderPage />;

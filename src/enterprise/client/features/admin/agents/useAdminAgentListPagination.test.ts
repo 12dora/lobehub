@@ -162,4 +162,21 @@ describe('useAdminAgentListPagination', () => {
     renderHook(() => useAdminAgentListPagination({}, false));
     expect(infinite.captured.getKey(0, null)).toBeNull();
   });
+
+  it('exposes refresh as the bound useSWRInfinite mutate (not a global predicate)', async () => {
+    const mutate = vi.fn().mockResolvedValue([{ items: [item('a')], nextCursor: null }]);
+    infinite.impl.mockReturnValue({
+      data: [{ items: [item('a')], nextCursor: null }],
+      error: undefined,
+      isValidating: false,
+      mutate,
+      setSize: vi.fn(),
+      size: 1,
+    });
+    const { result } = renderHook(() => useAdminAgentListPagination({}, true));
+    // Same function reference as the infinite hook mutator — list create/delete must call this.
+    expect(result.current.refresh).toBe(mutate);
+    await result.current.refresh();
+    expect(mutate).toHaveBeenCalledOnce();
+  });
 });

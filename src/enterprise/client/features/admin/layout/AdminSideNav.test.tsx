@@ -71,11 +71,13 @@ describe('AdminSideNav (canonical NavItem)', () => {
     expect(screen.getByText('nav.overview')).toBeTruthy();
     expect(screen.getByText('nav.users')).toBeTruthy();
     expect(screen.getByText('nav.aiProviders')).toBeTruthy();
-    // Managed resources is now hidden from the nav (merged into the unified-management surface).
+    // Managed resources is hidden from the nav (merged into the unified-management surface).
     expect(screen.getByText('nav.unifiedManagement')).toBeTruthy();
     expect(screen.queryByText('nav.managedResources')).toBeNull();
     expect(screen.queryByText('nav.userDetail')).toBeNull();
+    // audit group only appears when at least one child permission is granted
     expect(screen.queryByText('nav.audit')).toBeNull();
+    expect(screen.queryByText('nav.auditLogs')).toBeNull();
   });
 
   it('link navigates via router (no full reload)', () => {
