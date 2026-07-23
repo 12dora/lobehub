@@ -1,6 +1,6 @@
 'use client';
 
-import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -64,48 +64,6 @@ const EasyauthStatusCard = memo<EasyauthStatusCardProps>(({ data, error, loading
 
       {data ? (
         <Flexbox gap={8}>
-          <Text className={styles.meta}>
-            {t('identityProviders.easyauth.baseUrl', { url: data.config.baseUrl })}
-          </Text>
-          <Text className={styles.meta}>
-            {t('identityProviders.easyauth.appKey', { key: data.config.appKey })}
-          </Text>
-          {data.config.portalUrl ? (
-            <Text className={styles.meta} type="secondary">
-              {t('identityProviders.easyauth.portalUrl', { url: data.config.portalUrl })}
-            </Text>
-          ) : null}
-          <Flexbox horizontal gap={6} wrap="wrap">
-            <Tag color={data.config.tokenConfigured ? 'green' : 'orange'}>
-              {data.config.tokenConfigured
-                ? t('identityProviders.easyauth.tokenConfigured')
-                : t('identityProviders.easyauth.tokenMissing')}
-            </Tag>
-            <Tag>
-              {t('identityProviders.easyauth.totalSnapshots', {
-                count: data.sync.totalCount,
-              })}
-            </Tag>
-            <Tag color="green">
-              {t('identityProviders.easyauth.accessGranted', {
-                count: data.sync.accessGrantedCount,
-              })}
-            </Tag>
-            <Tag color={data.sync.degradedCount > 0 ? 'orange' : 'default'}>
-              {t('identityProviders.easyauth.degraded', {
-                count: data.sync.degradedCount,
-              })}
-            </Tag>
-          </Flexbox>
-          {data.sync.latestFetchedAt ? (
-            <Text type="secondary">
-              {t('identityProviders.easyauth.latestFetchedAt', {
-                time: new Date(data.sync.latestFetchedAt).toLocaleString(),
-              })}
-            </Text>
-          ) : (
-            <Text type="secondary">{t('identityProviders.easyauth.noSnapshots')}</Text>
-          )}
           {!data.config.tokenConfigured ? (
             <Alert showIcon description={t('identityProviders.easyauth.tokenHint')} type="info" />
           ) : null}
