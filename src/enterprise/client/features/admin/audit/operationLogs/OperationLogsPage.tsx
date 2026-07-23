@@ -21,7 +21,13 @@ import {
 } from '../hooks/useAdminAudit';
 import AuditStatusTag from '../shared/AuditStatusTag';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
-import { formatAdminDateTime, hasPermission, truncateText } from '../shared/format';
+import {
+  auditActionLabel,
+  auditTargetTypeLabel,
+  formatAdminDateTime,
+  hasPermission,
+  truncateText,
+} from '../shared/format';
 import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
 import EventDetailDrawer from './EventDetailDrawer';
 
@@ -34,10 +40,6 @@ const styles = createStaticStyles(({ css }) => ({
     flex-wrap: wrap;
     gap: 6px;
     align-items: center;
-  `,
-  mono: css`
-    font-family: ${cssVar.fontFamilyCode};
-    font-size: 12px;
   `,
   statCard: css`
     cursor: pointer;
@@ -255,6 +257,7 @@ const OperationLogsPage = memo(() => {
         key: 'action',
         title: t('audit.logs.columns.action'),
         ellipsis: true,
+        render: (v: string) => auditActionLabel(t, v),
       },
       {
         dataIndex: 'actorUserId',
@@ -276,8 +279,7 @@ const OperationLogsPage = memo(() => {
         width: 180,
         render: (_, row) => (
           <Text ellipsis style={{ margin: 0 }} type="secondary">
-            {row.targetType}
-            {row.targetId ? ` / ${row.targetId}` : ''}
+            {auditTargetTypeLabel(t, row.targetType)}
           </Text>
         ),
       },
@@ -286,27 +288,6 @@ const OperationLogsPage = memo(() => {
         key: 'reason',
         title: t('audit.logs.columns.reason'),
         render: (v: string | null) => truncateText(v, 48),
-      },
-      {
-        dataIndex: 'requestId',
-        key: 'requestId',
-        title: t('audit.logs.columns.requestId'),
-        width: 160,
-        render: (v: string | null) =>
-          v ? (
-            <span
-              className={styles.mono}
-              title={v}
-              onClick={(e) => {
-                e.stopPropagation();
-                void navigator.clipboard?.writeText(v);
-              }}
-            >
-              {truncateText(v, 16)}
-            </span>
-          ) : (
-            '—'
-          ),
       },
     ],
     [t],
@@ -337,17 +318,17 @@ const OperationLogsPage = memo(() => {
 
   const actionOptions = useMemo(() => {
     const fromFacets = (facets?.actions ?? []).map((a) => ({
-      label: `${a.value} (${a.count})`,
+      label: `${auditActionLabel(t, a.value)} (${a.count})`,
       value: a.value,
     }));
     // Keep selected actions that dropped out of facets.
     for (const a of filters.actions) {
       if (!fromFacets.some((o) => o.value === a)) {
-        fromFacets.push({ label: a, value: a });
+        fromFacets.push({ label: auditActionLabel(t, a), value: a });
       }
     }
     return fromFacets;
-  }, [facets?.actions, filters.actions]);
+  }, [facets?.actions, filters.actions, t]);
 
   const clearAllFilters = useCallback(() => {
     setRequestIdDraft('');
@@ -435,7 +416,7 @@ const OperationLogsPage = memo(() => {
                     }}
                     onClick={() => toggleActionFacet(item.value)}
                   >
-                    {item.value} ({item.count})
+                    {auditActionLabel(t, item.value)} ({item.count})
                   </Tag>
                 );
               })}

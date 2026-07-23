@@ -4,6 +4,7 @@ import { Flexbox, Text } from '@lobehub/ui';
 import { Button, Switch, toast } from '@lobehub/ui/base-ui';
 import { Drawer, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
+import type { TFunction } from 'i18next';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
@@ -16,7 +17,7 @@ import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable from '../../primitives/DataTable';
 import { useAdminAuditMutations, useFetchAuditExportsList } from '../hooks/useAdminAudit';
 import AuditStatusTag from '../shared/AuditStatusTag';
-import { formatAdminDateTime, hasPermission } from '../shared/format';
+import { formatAdminDateTime, hasPermission, humanizeAuditToken } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
 import { formatAuditBytes } from '../shared/timeWindow';
 import CreateExportModal from './CreateExportModal';
@@ -48,10 +49,24 @@ const triggerBrowserDownload = (url: string) => {
   a.remove();
 };
 
-const formatFilterSnapshot = (snapshot: AdminAuditExportItem['filterSnapshot']) => {
+/** Internal caps / correlation ids that should not surface in the evidence summary. */
+const HIDDEN_FILTER_KEYS = new Set([
+  'exportArtifactRetentionDays',
+  'maxExportRows',
+  'policyRevision',
+  'requestId',
+]);
+
+const formatFilterSnapshot = (
+  snapshot: AdminAuditExportItem['filterSnapshot'],
+  t: TFunction<'admin'>,
+) => {
   return Object.entries(snapshot)
-    .filter(([, v]) => v !== undefined && v !== null && v !== '')
-    .map(([k, v]) => ({ key: k, value: Array.isArray(v) ? v.join(', ') : String(v) }));
+    .filter(([k, v]) => !HIDDEN_FILTER_KEYS.has(k) && v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => ({
+      key: t(`audit.exports.filter.${k}` as never, { defaultValue: humanizeAuditToken(k) }),
+      value: Array.isArray(v) ? v.join(', ') : String(v),
+    }));
 };
 
 const ExportsPage = memo(() => {
@@ -93,7 +108,6 @@ const ExportsPage = memo(() => {
           toast.success(
             t('audit.exports.download.toast', {
               bytes: formatAuditBytes(result.artifactBytes),
-              checksum: result.artifactChecksum ?? '—',
             }),
           );
         },
@@ -300,7 +314,7 @@ const ExportsPage = memo(() => {
             <Text style={{ fontWeight: 600, marginBlock: 12 }}>
               {t('audit.exports.detail.filters')}
             </Text>
-            {formatFilterSnapshot(detail.filterSnapshot).map((item) => (
+            {formatFilterSnapshot(detail.filterSnapshot, t).map((item) => (
               <div className={styles.row} key={item.key}>
                 <Text type="secondary">{item.key}</Text>
                 <span className={styles.mono}>{item.value}</span>
