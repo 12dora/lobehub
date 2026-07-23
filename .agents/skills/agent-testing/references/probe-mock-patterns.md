@@ -895,3 +895,17 @@ agents. Set` `agentRules: false` `in next.config to disable.` and leaves the wor
 - **Works**: name the ignored directory explicitly (`grep -rl "agentRules" node_modules`), which
   overrides the ignore, or call `/usr/bin/grep` directly. Before asserting "X exists nowhere",
   re-run the search with an explicit path into the dependency tree.
+
+### C6. Synthetic native-setter input fires the debounced query but an open-on-focus dropdown never renders
+
+- **Situation**: driving a React-controlled user-search input whose results render in a
+  dropdown that only mounts while the field is focused/"open". Setting the value via the
+  native setter + `dispatchEvent(new Event('input', {bubbles:true}))` DID update React state
+  (the debounced TRPC search request fired with the typed query and returned items), yet the
+  DOM contained zero result nodes — no list, no empty state — which reads like a rendering bug.
+- **Doesn't work**: judging "results don't render" from the synthetic-input path alone; the
+  dropdown's open state (focus/interaction-gated) never became true, so the data had nowhere
+  to render. Cause of the closed state not established beyond "no real focus/keyboard events".
+- **Works**: `agent-browser fill '<selector>' 'query'` (real CDP input) — the dropdown opened
+  and rendered the same data. Rule: before calling a fetch-then-no-render a product bug,
+  re-drive the input with real CDP typing; only report a bug if BOTH paths fail to render.
