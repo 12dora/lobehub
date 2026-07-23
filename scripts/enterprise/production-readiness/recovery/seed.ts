@@ -175,8 +175,6 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
        id text PRIMARY KEY, instance_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_instance_revision_states (
        id text PRIMARY KEY, instance_id text)`,
-    `CREATE TABLE IF NOT EXISTS platform_easyauth_grant_snapshots (
-       id text PRIMARY KEY, subject text)`,
     `CREATE TABLE IF NOT EXISTS platform_identity_provider_test_attempts (
        id text PRIMARY KEY, provider_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_identity_provider_instances (

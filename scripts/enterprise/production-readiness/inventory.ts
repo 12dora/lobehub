@@ -24,7 +24,6 @@ export const RECOVERY_ENTERPRISE_TABLES = [
   'platform_connector_tools',
   'platform_user_connector_bindings',
   'platform_connector_oauth_states',
-  'platform_easyauth_grant_snapshots',
   'platform_identity_providers',
   'platform_identity_provider_secrets',
   'platform_identity_provider_test_attempts',

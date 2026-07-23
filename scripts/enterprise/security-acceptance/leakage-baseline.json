@@ -351,11 +351,6 @@
       "path": "apps/server/src/enterprise/routers/admin/connectors.test.ts"
     },
     {
-      "category": "token-or-api-key",
-      "lineDigest": "2dc51634cead2421c1fb573ed30d6d7072eb42fbd70e421df376fd454347a4fd",
-      "path": "apps/server/src/enterprise/routers/admin/easyauth.test.ts"
-    },
-    {
       "category": "credential-assignment",
       "lineDigest": "208a3d378c1ddabb67610462fefc7f55e56480e4f2e47b0fb604f05a58903ece",
       "path": "apps/server/src/enterprise/routers/admin/users.adversarial.test.ts"
@@ -1159,21 +1154,6 @@
       "category": "credential-assignment",
       "lineDigest": "e6631d97046eaec7d97e9b4c2e30bd110604f8873301dbf99bcf860239dfe9c1",
       "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
-    },
-    {
-      "category": "generic-secret-material",
-      "lineDigest": "6bad3929334bbef05b220b9c87ec4566d590f76e21d97e129045eb442b58a87b",
-      "path": "apps/server/src/enterprise/services/easyauthSync.test.ts"
-    },
-    {
-      "category": "pem-private-key",
-      "lineDigest": "99e2fba732445de4ad6660e278f1d1fb53b4a417c1a5402fc6aad3cb5fbe1abb",
-      "path": "apps/server/src/enterprise/services/easyauthSync.test.ts"
-    },
-    {
-      "category": "token-or-api-key",
-      "lineDigest": "32488e3fd0b8ef34af276d042a7049f19b6d708e9dfdde52d7155e4edfc75943",
-      "path": "apps/server/src/enterprise/services/easyauthSync.test.ts"
     },
     {
       "category": "generic-secret-material",
