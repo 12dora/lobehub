@@ -165,10 +165,19 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
       [onChange, options],
     );
 
+    // `filter={null}`: results are already filtered server-side; base-ui's default filter
+    // matches the query against each option's value (the user id), which would hide every
+    // real match and leave only the "Use ID" row.
+    // `open`: only surface the popup once a query has matches (no empty box on focus).
+    const showDropdown = open && inputValue.trim().length > 0 && options.length > 0;
+
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220, ...style }}>
         <AutoComplete
           allowClear={allowClear}
+          disabled={disabled}
+          filter={null}
+          open={showDropdown}
           options={options}
           placeholder={placeholder ?? t('audit.shared.userSearchPlaceholder')}
           style={{ width: '100%' }}
@@ -197,9 +206,6 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
             setOpen(q.trim().length > 0);
             scheduleSearch(q);
           }}
-          disabled={disabled}
-          // Suppress the empty popup on focus; only surface it once a query has matches.
-          open={open && inputValue.trim().length > 0 && options.length > 0}
         />
         {errorHint ? (
           <span role="status" style={{ fontSize: 12, opacity: 0.75 }}>

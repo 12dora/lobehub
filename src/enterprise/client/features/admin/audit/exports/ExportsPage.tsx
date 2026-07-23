@@ -64,7 +64,9 @@ const formatFilterSnapshot = (
   return Object.entries(snapshot)
     .filter(([k, v]) => !HIDDEN_FILTER_KEYS.has(k) && v !== undefined && v !== null && v !== '')
     .map(([k, v]) => ({
-      key: t(`audit.exports.filter.${k}` as never, { defaultValue: humanizeAuditToken(k) }),
+      // Raw key stays unique for React; label may collide across locales.
+      key: k,
+      label: t(`audit.exports.filter.${k}` as never, { defaultValue: humanizeAuditToken(k) }),
       value: Array.isArray(v) ? v.join(', ') : String(v),
     }));
 };
@@ -316,7 +318,7 @@ const ExportsPage = memo(() => {
             </Text>
             {formatFilterSnapshot(detail.filterSnapshot, t).map((item) => (
               <div className={styles.row} key={item.key}>
-                <Text type="secondary">{item.key}</Text>
+                <Text type="secondary">{item.label}</Text>
                 <span className={styles.mono}>{item.value}</span>
               </div>
             ))}
