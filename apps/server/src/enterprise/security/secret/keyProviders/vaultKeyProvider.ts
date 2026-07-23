@@ -146,6 +146,11 @@ const validateSecretPath = (value: string): string => {
   return segments.map(encodeURIComponent).join('/');
 };
 
+const isLoopbackVaultHostname = (hostname: string): boolean => {
+  const host = hostname.replaceAll(/^\[|\]$/g, '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+};
+
 const validateAddress = (value: string): URL => {
   let address: URL;
   try {
@@ -162,6 +167,13 @@ const validateAddress = (value: string): URL => {
     (address.pathname !== '/' && address.pathname !== '')
   ) {
     throw secretInvalidInput('Vault address must be an HTTP(S) origin without credentials');
+  }
+  // Remote plaintext HTTP would put X-Vault-Token / AppRole secrets on the wire.
+  // HTTP is allowed only for explicit loopback development addresses.
+  if (address.protocol === 'http:' && !isLoopbackVaultHostname(address.hostname)) {
+    throw secretInvalidInput(
+      'Vault address must use HTTPS except for loopback development addresses',
+    );
   }
   return address;
 };

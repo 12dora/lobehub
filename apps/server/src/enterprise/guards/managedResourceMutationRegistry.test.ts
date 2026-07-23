@@ -4,6 +4,18 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { agentRouter } from '@/server/routers/lambda/agent';
+import { agentDocumentRouter } from '@/server/routers/lambda/agentDocument';
+import { agentGroupRouter } from '@/server/routers/lambda/agentGroup';
+import { agentSkillsRouter } from '@/server/routers/lambda/agentSkills';
+import { aiModelRouter } from '@/server/routers/lambda/aiModel';
+import { aiProviderRouter } from '@/server/routers/lambda/aiProvider';
+import { composioRouter } from '@/server/routers/lambda/composio';
+import { connectorRouter } from '@/server/routers/lambda/connector';
+import { homeRouter } from '@/server/routers/lambda/home';
+import { oauthDeviceFlowRouter } from '@/server/routers/lambda/oauthDeviceFlow';
+
+import { getManagedResourceGuardMetadata, withManagedResourceGuard } from './managedResource';
 import {
   AGENT_DOCUMENT_SKILL_MUTATION_RISKS,
   MANAGED_RESOURCE_MUTATION_REGISTRY,
@@ -23,6 +35,20 @@ const ROUTERS = [
   'oauthDeviceFlow',
 ] as const;
 
+/** Source-file router name → live router object (agentGroup mounts as `group` on lambda). */
+const LIVE_ROUTERS = {
+  agent: agentRouter,
+  agentDocument: agentDocumentRouter,
+  agentGroup: agentGroupRouter,
+  agentSkills: agentSkillsRouter,
+  aiModel: aiModelRouter,
+  aiProvider: aiProviderRouter,
+  composio: composioRouter,
+  connector: connectorRouter,
+  home: homeRouter,
+  oauthDeviceFlow: oauthDeviceFlowRouter,
+} as const;
+
 const extractMutationNames = (router: string, source: string): string[] => {
   const routerStart = source.indexOf('Router = router({');
   const routerEnd = source.indexOf('\n});', routerStart);
@@ -36,8 +62,22 @@ const extractMutationNames = (router: string, source: string): string[] => {
   });
 };
 
+type ProcedureUnderTest = {
+  _def?: {
+    middlewares?: readonly unknown[];
+    type?: unknown;
+  };
+};
+
+const getLiveProcedure = (procedure: string): ProcedureUnderTest | undefined => {
+  const [routerName, localName] = procedure.split('.') as [keyof typeof LIVE_ROUTERS, string];
+  const router = LIVE_ROUTERS[routerName];
+  if (!router || !localName) return undefined;
+  return (router._def.procedures as Record<string, ProcedureUnderTest>)[localName];
+};
+
 describe('managed-resource legacy mutation registry', () => {
-  it('classifies and wires every mutation in all registered source routers exactly once', async () => {
+  it('classifies every mutation and attaches guard metadata exactly once on the live procedure', async () => {
     const discovered: string[] = [];
 
     for (const router of ROUTERS) {
@@ -47,20 +87,47 @@ describe('managed-resource legacy mutation registry', () => {
       );
       const mutations = extractMutationNames(router, source);
       discovered.push(...mutations);
-      for (const procedure of mutations) {
-        expect(
-          source.includes(`withManagedResourceGuard('${procedure}')`) ||
-            source.includes(`withManagedResourceGuard('${procedure}',`),
-        ).toBe(true);
-      }
     }
 
-    expect(discovered).toHaveLength(99);
+    expect(discovered).toHaveLength(Object.keys(MANAGED_RESOURCE_MUTATION_REGISTRY).length);
     expect([...discovered].sort()).toEqual(Object.keys(MANAGED_RESOURCE_MUTATION_REGISTRY).sort());
-    for (const definition of Object.values(MANAGED_RESOURCE_MUTATION_REGISTRY)) {
+
+    for (const procedure of discovered as ManagedResourceMutationProcedure[]) {
+      const definition = MANAGED_RESOURCE_MUTATION_REGISTRY[procedure];
       expect(['deny', 'allow', 'exempt', 'input-sensitive']).toContain(definition.classification);
       expect(definition.reason.length).toBeGreaterThan(20);
+
+      const live = getLiveProcedure(procedure);
+      expect(live, `missing live lambda procedure ${procedure}`).toBeDefined();
+      const metadata = getManagedResourceGuardMetadata(live);
+      expect(metadata).toEqual([{ procedure }]);
+      expect(Object.isFrozen(metadata[0])).toBe(true);
     }
+  });
+
+  it('does not invent coverage from detached or comment-only guard strings', () => {
+    const detachedHelper = `
+      // withManagedResourceGuard('agent.updateAgentConfig')
+      const unused = "withManagedResourceGuard('agent.updateAgentConfig')";
+    `;
+    expect(detachedHelper.includes(`withManagedResourceGuard('agent.updateAgentConfig')`)).toBe(
+      true,
+    );
+
+    const bare = Object.assign(() => undefined, { _def: { middlewares: [] as unknown[] } });
+    expect(getManagedResourceGuardMetadata(bare)).toEqual([]);
+
+    const builder = withManagedResourceGuard('agent.updateAgentConfig') as {
+      _middlewares: readonly unknown[];
+    };
+    const middlewareFn = builder._middlewares.at(-1);
+    expect(typeof middlewareFn).toBe('function');
+    expect(Object.keys(middlewareFn as object)).toEqual([]);
+    expect(JSON.stringify({ middleware: middlewareFn })).toBe('{}');
+    const carrier = Object.assign(() => undefined, { _def: { middlewares: [middlewareFn] } });
+    expect(getManagedResourceGuardMetadata(carrier)).toEqual([
+      { procedure: 'agent.updateAgentConfig' },
+    ]);
   });
 
   it('keeps an explicit service/VFS risk inventory for every guarded agentDocument Skill write', () => {

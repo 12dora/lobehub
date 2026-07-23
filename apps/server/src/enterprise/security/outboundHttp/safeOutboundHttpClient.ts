@@ -495,7 +495,7 @@ const computeSecretBearing = (
   hasSensitiveHeaders(headers) ||
   hasSensitiveBody(body);
 
-/** Factory with G-07 defaults (private allowed, metadata blocked). */
+/** Factory with G-07 defaults (public-only; private requires explicit opt-in). */
 export const createSafeOutboundHttpClient = (
   options?: SafeOutboundHttpClientOptions,
 ): SafeOutboundHttpClient => new SafeOutboundHttpClient(options);

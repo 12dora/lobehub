@@ -29,10 +29,10 @@ import {
 export interface EnforceManagedResourceMutationOptions {
   auditAppend?: (params: {
     action: string;
-    actorUserId: null;
+    actorUserId: string | null;
     afterDiff: Record<string, unknown>;
     reason: null;
-    result: 'denied' | 'success';
+    result: 'denied' | 'failure' | 'success';
     targetId: string;
     targetType: string;
   }) => Promise<unknown>;
@@ -42,11 +42,14 @@ export interface EnforceManagedResourceMutationOptions {
   resolvePolicies?: () => Promise<ResolvedManagedResourcePolicies>;
 }
 
+type GuardAuditOutcome = 'would_deny' | 'denied' | 'catalog_not_ready';
+
 const appendGuardAuditBestEffort = async (params: {
+  actorUserId: string | null;
   db: LobeChatDatabase;
   mode: 'observe' | 'ui-only' | 'enforced';
   options: EnforceManagedResourceMutationOptions;
-  outcome: 'would_deny' | 'denied';
+  outcome: GuardAuditOutcome;
   procedure: ManagedResourceMutationProcedure;
   resource: string;
 }): Promise<void> => {
@@ -56,7 +59,8 @@ const appendGuardAuditBestEffort = async (params: {
   try {
     await append({
       action: 'managedResource.legacyMutation',
-      actorUserId: null,
+      // Trusted principal id only — never request input or credentials.
+      actorUserId: params.actorUserId,
       afterDiff: {
         enforcementMode: params.mode,
         outcome: params.outcome,
@@ -64,12 +68,13 @@ const appendGuardAuditBestEffort = async (params: {
         resource: params.resource,
       },
       reason: null,
-      result: params.outcome === 'denied' ? 'denied' : 'success',
+      // Observe-mode would_deny must not look like a successful mutation in result filters.
+      result: params.outcome === 'would_deny' ? 'failure' : 'denied',
       targetId: params.procedure,
       targetType: 'managed_policy',
     });
   } catch (error) {
-    // Guard observability is best-effort. Never include input, user id, or credentials.
+    // Guard observability is best-effort. Never include input or credentials.
     console.error('[managed-resource-guard] audit append failed', {
       errorClass: error instanceof Error ? error.name : 'UnknownError',
       procedure: params.procedure,
@@ -96,12 +101,13 @@ const recordGuardMetricBestEffort = (
 /**
  * Enforce a single explicitly classified legacy mutation.
  * No request input is accepted, logged, audited, or passed to metrics.
+ * Principal id is used only for audit attribution, never for authorization bypass.
  */
 export const enforceManagedResourceMutation = async (params: {
   db: LobeChatDatabase;
   isExemptInput?: () => boolean | Promise<boolean>;
   options?: EnforceManagedResourceMutationOptions;
-  /** Deliberately ignored for authorization: no ordinary-router role may bypass the guard. */
+  /** Audit attribution only — no ordinary-router role may bypass the guard. */
   principal?: { userId: string };
   procedure: ManagedResourceMutationProcedure;
 }): Promise<void> => {
@@ -124,7 +130,11 @@ export const enforceManagedResourceMutation = async (params: {
   const policy = resolved.published[definition.resource];
   const mode = resolved.effectiveModes[definition.resource];
   const metricSink = options.metricSink ?? getManagedResourceGuardMetricSink();
+  const actorUserId = params.principal?.userId ?? null;
 
+  // Published enforced policies fail closed during catalog outages. Non-skill resources
+  // temporarily report effective mode "unmanaged" when readiness is false (UI degrade);
+  // mutations must still deny with a distinct catalog_not_ready outcome.
   if (
     policy.managed &&
     policy.enforcementMode === 'enforced' &&
@@ -139,7 +149,21 @@ export const enforceManagedResourceMutation = async (params: {
       procedure: params.procedure,
       resource: definition.resource,
     });
-    return;
+    await appendGuardAuditBestEffort({
+      actorUserId,
+      db: params.db,
+      mode: 'enforced',
+      options,
+      outcome: 'catalog_not_ready',
+      procedure: params.procedure,
+      resource: definition.resource,
+    });
+    throwEnterpriseError({
+      code: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      details: { resource: definition.resource, reason: 'catalog_not_ready' },
+      httpCode: 'FORBIDDEN',
+      message: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+    });
   }
 
   if (mode === 'unmanaged') return;
@@ -157,6 +181,7 @@ export const enforceManagedResourceMutation = async (params: {
       resource: definition.resource,
     });
     await appendGuardAuditBestEffort({
+      actorUserId,
       db: params.db,
       mode,
       options,
@@ -175,6 +200,7 @@ export const enforceManagedResourceMutation = async (params: {
     resource: definition.resource,
   });
   await appendGuardAuditBestEffort({
+    actorUserId,
     db: params.db,
     mode,
     options,
@@ -236,13 +262,56 @@ export const isOrdinaryAgentDocumentPathPairInput = (input: unknown): boolean =>
   );
 };
 
+const MANAGED_RESOURCE_GUARD_METADATA = Symbol('managedResourceGuardMetadata');
+
+export interface ManagedResourceGuardMetadata {
+  procedure: ManagedResourceMutationProcedure;
+}
+
+const attachManagedResourceGuardMetadata = (
+  middleware: unknown,
+  metadata: ManagedResourceGuardMetadata,
+): void => {
+  if (typeof middleware !== 'function') {
+    throw new TypeError('Managed resource guard middleware must be a function');
+  }
+
+  Object.defineProperty(middleware, MANAGED_RESOURCE_GUARD_METADATA, {
+    configurable: false,
+    enumerable: false,
+    value: Object.freeze({ procedure: metadata.procedure }),
+    writable: false,
+  });
+};
+
+/**
+ * Read server-only managed-resource guard metadata from a final procedure middleware chain.
+ * The Symbol property is private and non-enumerable so it cannot become API output.
+ */
+export const getManagedResourceGuardMetadata = (
+  procedure: unknown,
+): readonly ManagedResourceGuardMetadata[] => {
+  if (typeof procedure !== 'function') return [];
+
+  const middlewares = (procedure as { _def?: { middlewares?: readonly unknown[] } })._def
+    ?.middlewares;
+  if (!Array.isArray(middlewares)) return [];
+
+  return middlewares.flatMap((middleware) => {
+    if (typeof middleware !== 'function') return [];
+    const descriptor = Object.getOwnPropertyDescriptor(middleware, MANAGED_RESOURCE_GUARD_METADATA);
+    if (!descriptor) return [];
+    return [descriptor.value as ManagedResourceGuardMetadata];
+  });
+};
+
 export const withManagedResourceGuard = (
   procedure: ManagedResourceMutationProcedure,
   options: ManagedResourceGuardMiddlewareOptions = {},
 ) => {
   const { isExemptInput } = options;
 
-  return trpc.middleware(async ({ ctx, getRawInput, next }) => {
+  const middleware = trpc.middleware(async ({ ctx, getRawInput, next }) => {
     const db = (ctx as { serverDB?: LobeChatDatabase }).serverDB;
     if (!db) throw new Error('ManagedResourceGuard requires serverDatabase middleware');
     await enforceManagedResourceMutation({
@@ -255,4 +324,8 @@ export const withManagedResourceGuard = (
     });
     return next();
   });
+
+  // Attach to the final function in the builder chain (same pattern as platformPermission).
+  attachManagedResourceGuardMetadata(middleware._middlewares.at(-1), { procedure });
+  return middleware;
 };

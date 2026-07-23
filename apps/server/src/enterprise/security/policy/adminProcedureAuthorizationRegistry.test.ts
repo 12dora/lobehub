@@ -63,10 +63,10 @@ describe('admin procedure authorization registry', () => {
     expect(() => reconcile()).not.toThrow();
 
     // Registry length after external access-module procedure removal.
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(188);
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(190);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(85);
+    ).toHaveLength(87);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
     ).toHaveLength(103);
@@ -79,7 +79,7 @@ describe('admin procedure authorization registry', () => {
   it('keeps metadata private, immutable, and attached to the final middleware chain', () => {
     const procedure = adminProcedures['audit.get'] as ProcedureUnderTest;
     const metadata = getPlatformPermissionMetadata(procedure);
-    const permissionMiddleware = procedure._def.middlewares.find((middleware) => {
+    const permissionMiddleware = procedure._def.middlewares.find((middleware: unknown) => {
       const carrier = Object.assign(() => undefined, { _def: { middlewares: [middleware] } });
       return getPlatformPermissionMetadata(carrier).length === 1;
     });
@@ -185,7 +185,7 @@ describe('admin procedure authorization registry', () => {
     }
   });
 
-  it('fails when the 71-mutation risk registry is missing or stale', () => {
+  it('fails when the 103-mutation risk registry is missing or stale', () => {
     expect(() => reconcile({ mutationPaths: mutationPaths.slice(1) })).toThrow(
       'missing mutation risk entry',
     );
@@ -277,7 +277,7 @@ describe('admin procedure authorization registry', () => {
     expect(regularReauthGaps.map(({ procedure }) => procedure).sort()).toEqual([]);
   });
 
-  it('attaches private rate-limit middleware metadata to all 71 live mutations', () => {
+  it('attaches private rate-limit middleware metadata to all 103 live mutations', () => {
     const missing: string[] = [];
     for (const path of mutationPaths) {
       const relative = path.slice('admin.'.length);
@@ -290,7 +290,7 @@ describe('admin procedure authorization registry', () => {
     expect(missing).toEqual([]);
 
     const sample = adminProcedures['aiProviders.test'] as ProcedureUnderTest;
-    const rateMiddleware = sample._def.middlewares.find((middleware) => {
+    const rateMiddleware = sample._def.middlewares.find((middleware: unknown) => {
       const carrier = Object.assign(() => undefined, { _def: { middlewares: [middleware] } });
       return getAdminMutationRateLimitMetadata(carrier).length === 1;
     });

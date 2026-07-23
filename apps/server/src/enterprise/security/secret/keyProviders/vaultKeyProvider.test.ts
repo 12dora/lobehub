@@ -678,6 +678,34 @@ describe('VaultKeyProvider', () => {
     expect(
       () =>
         new VaultKeyProvider({
+          address: 'http://vault.internal:8200',
+          auth: { method: 'token', token: TOKEN },
+        }),
+    ).toThrow(/https except for loopback/i);
+    expect(
+      () =>
+        new VaultKeyProvider({
+          address: 'https://vault.internal:8200',
+          auth: { method: 'token', token: TOKEN },
+        }),
+    ).not.toThrow();
+    expect(
+      () =>
+        new VaultKeyProvider({
+          address: 'http://127.0.0.1:8200',
+          auth: { method: 'token', token: TOKEN },
+        }),
+    ).not.toThrow();
+    expect(
+      () =>
+        new VaultKeyProvider({
+          address: 'http://localhost:8200',
+          auth: { method: 'token', token: TOKEN },
+        }),
+    ).not.toThrow();
+    expect(
+      () =>
+        new VaultKeyProvider({
           auth: { method: 'token', token: `${TOKEN}\nheader-injection` },
         }),
     ).toThrow(/token is missing or invalid/i);

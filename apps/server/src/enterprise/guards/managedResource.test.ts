@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -115,22 +116,29 @@ const materialize = async (
   await model.materializePublished({ policies, revision });
 };
 
+/** Append-only audit rows cannot be DELETE'd; TRUNCATE bypasses the row trigger. */
+const clearGuardTables = async () => {
+  await serverDB.execute(sql`
+    TRUNCATE TABLE
+      ${platformAuditLogs},
+      ${platformManagedResourcePolicies},
+      ${users}
+    RESTART IDENTITY CASCADE
+  `);
+};
+
 beforeEach(async () => {
   vi.clearAllMocks();
   clearManagedResourceReadinessForTest();
   vi.unstubAllEnvs();
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformManagedResourcePolicies);
-  await serverDB.delete(users);
+  await clearGuardTables();
 });
 
 afterEach(async () => {
   clearManagedResourceReadinessForTest();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformManagedResourcePolicies);
-  await serverDB.delete(users);
+  await clearGuardTables();
 });
 
 describe('ManagedResourceGuard policy matrix', () => {
@@ -157,7 +165,7 @@ describe('ManagedResourceGuard policy matrix', () => {
 
     it(`${resource}: observe and ui-only allow while recording sanitized would-deny`, async () => {
       for (const mode of ['observe', 'ui-only'] as const) {
-        await serverDB.delete(platformAuditLogs);
+        await serverDB.execute(sql`TRUNCATE TABLE ${platformAuditLogs} RESTART IDENTITY CASCADE`);
         await materialize(resource, { enforcementMode: mode, managed: true });
         const sink = new InMemoryManagedResourceGuardMetricSink();
         await expect(
@@ -168,6 +176,7 @@ describe('ManagedResourceGuard policy matrix', () => {
               metricSink: sink,
               readiness: readinessFor(resource, false),
             },
+            principal: { userId: 'actor-observe' },
             procedure: guardedProcedure[resource],
           }),
         ).resolves.toBeUndefined();
@@ -177,17 +186,18 @@ describe('ManagedResourceGuard policy matrix', () => {
         expect(audits).toHaveLength(1);
         expect(audits[0]).toMatchObject({
           action: 'managedResource.legacyMutation',
-          actorUserId: null,
+          actorUserId: 'actor-observe',
           reason: null,
-          result: 'success',
+          result: 'failure',
           targetId: guardedProcedure[resource],
           targetType: 'managed_policy',
         });
+        expect(audits[0]?.afterDiff).toMatchObject({ outcome: 'would_deny' });
         expect(JSON.stringify(audits)).not.toMatch(/credential|payload|secret|token|password/i);
       }
     });
 
-    it(`${resource}: enforced applies its declared catalog-outage behavior and denies when ready`, async () => {
+    it(`${resource}: enforced fails closed on catalog outage and denies when ready`, async () => {
       await materialize(resource, { enforcementMode: 'enforced', managed: true });
       const sink = new InMemoryManagedResourceGuardMetricSink();
       const catalogOutageDecision = () =>
@@ -198,19 +208,28 @@ describe('ManagedResourceGuard policy matrix', () => {
             metricSink: sink,
             readiness: readinessFor(resource, false),
           },
+          principal: { userId: 'actor-outage' },
           procedure: guardedProcedure[resource],
         });
 
+      await expect(catalogOutageDecision()).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        message: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      });
+      // Skills keep effective mode enforced (metric outcome "denied"); other resources
+      // degrade UI mode to unmanaged but still deny with catalog_not_ready.
+      const outageKey = Object.keys(sink.snapshot())[0] ?? '';
       if (resource === 'skills') {
-        await expect(catalogOutageDecision()).rejects.toMatchObject({
-          code: 'FORBIDDEN',
-          message: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
-        });
-        expect(Object.keys(sink.snapshot())[0]).toContain('denied');
+        expect(outageKey).toContain('denied');
       } else {
-        await expect(catalogOutageDecision()).resolves.toBeUndefined();
-        expect(Object.keys(sink.snapshot())[0]).toContain('catalog_not_ready');
+        expect(outageKey).toContain('catalog_not_ready');
       }
+      const outageAudits = await serverDB.select().from(platformAuditLogs);
+      expect(outageAudits.at(-1)).toMatchObject({
+        actorUserId: 'actor-outage',
+        result: 'denied',
+        targetId: guardedProcedure[resource],
+      });
 
       try {
         await enforceManagedResourceMutation({
@@ -220,6 +239,7 @@ describe('ManagedResourceGuard policy matrix', () => {
             metricSink: sink,
             readiness: readinessFor(resource, true),
           },
+          principal: { userId: 'actor-ready' },
           procedure: guardedProcedure[resource],
         });
         expect.unreachable('enforced mutation should be denied');
@@ -304,7 +324,7 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
     expect(audits).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          actorUserId: null,
+          actorUserId: 'direct-user',
           reason: null,
           result: 'denied',
           targetId: 'connector.delete',

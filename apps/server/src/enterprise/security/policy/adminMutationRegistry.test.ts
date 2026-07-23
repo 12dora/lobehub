@@ -25,8 +25,16 @@ interface MountedProperty {
 type ModuleResolver = (containingFile: string, moduleName: string) => Promise<string>;
 type SourceLoader = (file: string) => Promise<string>;
 
-const registryFile = fileURLToPath(new URL('./adminMutationRegistry.ts', import.meta.url));
-const serverSourceRoot = path.resolve(path.dirname(registryFile), '../../..');
+const registryDir = fileURLToPath(new URL('./adminMutationRegistry/', import.meta.url));
+const registryFile = path.join(registryDir, 'registry.ts');
+const registryEntryFiles = [
+  path.join(registryDir, 'entries.catalog.ts'),
+  path.join(registryDir, 'entries.auditConnectors.ts'),
+  path.join(registryDir, 'entries.identityAccess.ts'),
+  path.join(registryDir, 'entries.platform.ts'),
+];
+// policy/adminMutationRegistry → policy → security → enterprise → apps/server/src
+const serverSourceRoot = path.resolve(registryDir, '../../../..');
 const repositorySourceRoot = path.resolve(serverSourceRoot, '../../../src');
 const adminRouterFile = path.join(serverSourceRoot, 'enterprise/routers/admin.ts');
 const lambdaRouterFile = path.join(serverSourceRoot, 'routers/lambda/index.ts');
@@ -319,9 +327,14 @@ const resolveRepositoryModule: ModuleResolver = async (containingFile, moduleNam
   throw new Error(`Module not found: ${moduleName} from ${containingFile}`);
 };
 
-const discoverRegistryKeys = (source: string): string[] => {
+/** Collect procedure keys from a domain shard before they are spread into the combined registry. */
+const discoverObjectKeysNamed = (
+  filePath: string,
+  source: string,
+  exportName: string,
+): string[] => {
   const sourceFile = ts.createSourceFile(
-    registryFile,
+    filePath,
     source,
     ts.ScriptTarget.Latest,
     true,
@@ -332,7 +345,7 @@ const discoverRegistryKeys = (source: string): string[] => {
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
-      node.name.text === 'ADMIN_MUTATION_REGISTRY'
+      node.name.text === exportName
     ) {
       let initializer = node.initializer;
       while (initializer && ts.isSatisfiesExpression(initializer))
@@ -349,7 +362,59 @@ const discoverRegistryKeys = (source: string): string[] => {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  if (!keys) throw new Error('ADMIN_MUTATION_REGISTRY object was not found');
+  if (!keys) throw new Error(`${exportName} object was not found in ${filePath}`);
+  return keys;
+};
+
+const discoverRegistryKeysFromShards = async (): Promise<string[]> => {
+  const exportByFile: Record<string, string> = {
+    'entries.catalog.ts': 'ADMIN_MUTATION_ENTRIES_CATALOG',
+    'entries.auditConnectors.ts': 'ADMIN_MUTATION_ENTRIES_AUDIT_CONNECTORS',
+    'entries.identityAccess.ts': 'ADMIN_MUTATION_ENTRIES_IDENTITY_ACCESS',
+    'entries.platform.ts': 'ADMIN_MUTATION_ENTRIES_PLATFORM',
+  };
+  const keys: string[] = [];
+  for (const file of registryEntryFiles) {
+    const base = path.basename(file);
+    const exportName = exportByFile[base];
+    if (!exportName) throw new Error(`Unknown registry shard: ${base}`);
+    keys.push(...discoverObjectKeysNamed(file, await readFile(file, 'utf8'), exportName));
+  }
+  // Combined registry must only spread shards (no inline keys) so duplicates stay detectable per shard.
+  const registrySource = await readFile(registryFile, 'utf8');
+  const registryAst = ts.createSourceFile(
+    registryFile,
+    registrySource,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let sawCombined = false;
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'ADMIN_MUTATION_REGISTRY'
+    ) {
+      let initializer = node.initializer;
+      while (initializer && ts.isSatisfiesExpression(initializer))
+        initializer = initializer.expression;
+      while (initializer && ts.isAsExpression(initializer)) initializer = initializer.expression;
+      if (initializer && ts.isObjectLiteralExpression(initializer)) {
+        sawCombined = true;
+        for (const property of initializer.properties) {
+          if (!ts.isSpreadAssignment(property)) {
+            throw new Error(
+              'ADMIN_MUTATION_REGISTRY must only spread domain shards (no inline keys)',
+            );
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(registryAst);
+  if (!sawCombined) throw new Error('ADMIN_MUTATION_REGISTRY object was not found');
   return keys;
 };
 
@@ -471,7 +536,7 @@ describe('enterprise admin mutation policy registry', () => {
   });
 
   it('rejects duplicate registry declarations before object-key normalization', async () => {
-    const declaredKeys = discoverRegistryKeys(await readFile(registryFile, 'utf8'));
+    const declaredKeys = await discoverRegistryKeysFromShards();
     expect(new Set(declaredKeys).size).toBe(declaredKeys.length);
     expect([...declaredKeys].sort()).toEqual(Object.keys(ADMIN_MUTATION_REGISTRY).sort());
   });
