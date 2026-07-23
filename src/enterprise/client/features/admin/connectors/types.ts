@@ -16,6 +16,8 @@ import type {
   adminConnectorDiscoverOutputSchema,
   adminConnectorDraftMutationOutputSchema,
   adminConnectorDraftSchema,
+  adminConnectorGetBatchInputSchema,
+  adminConnectorGetBatchOutputSchema,
   adminConnectorGetOutputSchema,
   adminConnectorGetPublishedBatchInputSchema,
   adminConnectorGetPublishedBatchOutputSchema,
@@ -53,6 +55,8 @@ export type AdminConnectorDraftMutationOutput = z.infer<
   typeof adminConnectorDraftMutationOutputSchema
 >;
 export type AdminConnectorGetOutput = z.infer<typeof adminConnectorGetOutputSchema>;
+export type AdminConnectorGetBatchInput = z.infer<typeof adminConnectorGetBatchInputSchema>;
+export type AdminConnectorGetBatchOutput = z.infer<typeof adminConnectorGetBatchOutputSchema>;
 export type AdminConnectorGovernanceGetOutput = z.infer<
   typeof adminConnectorGovernanceGetOutputSchema
 >;
@@ -102,6 +106,7 @@ export interface AdminConnectorCatalogClient {
   deleteDraft: (input: AdminConnectorDeleteDraftInput) => Promise<AdminConnectorDeleteDraftOutput>;
   discover: (input: AdminConnectorDiscoverInput) => Promise<AdminConnectorDiscoverOutput>;
   get: (input: { id: string }) => Promise<AdminConnectorGetOutput>;
+  getBatch: (input: AdminConnectorGetBatchInput) => Promise<AdminConnectorGetBatchOutput>;
   getPublishedBatch: (
     input: AdminConnectorGetPublishedBatchInput,
   ) => Promise<AdminConnectorGetPublishedBatchOutput>;

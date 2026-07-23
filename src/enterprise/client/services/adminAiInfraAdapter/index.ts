@@ -1,18 +1,7 @@
-import { mergeArrayById } from '@lobechat/utils';
-import type {
-  AiModelSortMap,
-  AiProviderModelListItem,
-  CreateAiModelParams,
-  ToggleAiModelEnableParams,
-  UpdateAiModelParams,
-} from 'model-bank';
-import { AiModelSourceEnum, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
 import type { AdminAiProviderGetOutput } from '@/enterprise/client/features/admin/ai/types';
-import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { lambdaClient } from '@/libs/trpc/client';
-import type { GetAiProviderModelListParams } from '@/services/aiModel';
 import type {
   AiProviderDetailItem,
   AiProviderListItem,
@@ -24,101 +13,39 @@ import type {
 } from '@/types/aiProvider';
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
-import { withAdminAiInfraErrorToast } from './errors';
+import { adminAiModelService } from './AdminAiModelService';
 import {
   buildAdminRuntimeState,
-  mapModelListItem,
   mapProviderDetail,
   mapProviderListItem,
   splitFormKeyVaults,
 } from './mappers';
+import {
+  createGetOrCreateDetail,
+  DEFAULT_REASON,
+  findBuiltinProviderCard,
+  getDetail,
+  recordPublishOutcome,
+  withReauth,
+} from './shared';
 
-const DEFAULT_REASON = 'admin provider settings auto-publish';
-
-export type AdminPublishOutcome = {
-  providerId: string;
-  published: boolean;
-  publishError?: string | null;
-};
-
-/** Last applyImmediate/publishNow outcome for draft banner (module-level; admin page only). */
-let lastPublishOutcome: AdminPublishOutcome | null = null;
-
-export const getLastAdminPublishOutcome = () => lastPublishOutcome;
-export const clearLastAdminPublishOutcome = () => {
-  lastPublishOutcome = null;
-};
-
-const recordPublishOutcome = (
-  providerKey: string,
-  result: { published?: boolean; publishError?: string | null },
-) => {
-  lastPublishOutcome = {
-    providerId: providerKey,
-    published: result.published !== false,
-    publishError: result.publishError ?? null,
-  };
-};
-
-/** Resolve platform UUID from providerKey (user-facing id). */
-export const resolveProviderRecord = async (providerKeyOrId: string) => {
-  let cursor: string | undefined;
-  for (let page = 0; page < 20; page += 1) {
-    const result = await lambdaClient.admin.aiProviders.list.query({
-      cursor,
-      limit: 100,
-    });
-    const hit = result.items.find(
-      (item) => item.providerKey === providerKeyOrId || item.id === providerKeyOrId,
-    );
-    if (hit) return hit;
-    if (!result.nextCursor) break;
-    cursor = result.nextCursor;
-  }
-  throw new Error(`Platform provider not found: ${providerKeyOrId}`);
-};
-
-const getDetail = async (providerKeyOrId: string): Promise<AdminAiProviderGetOutput> => {
-  const record = await resolveProviderRecord(providerKeyOrId);
-  return lambdaClient.admin.aiProviders.get.query({ id: record.id });
-};
-
-/** Known built-in provider card (client catalog) used to seed the platform DB lazily. */
-const findBuiltinProviderCard = (id: string) =>
-  DEFAULT_MODEL_PROVIDER_LIST.find((card) => card.id === id);
+export { AdminAiModelService, adminAiModelService } from './AdminAiModelService';
+export { withAdminAiInfraErrorToast } from './errors';
+export type { AdminPublishOutcome } from './shared';
+export {
+  clearLastAdminPublishOutcome,
+  getLastAdminPublishOutcome,
+  resolveProviderRecord,
+} from './shared';
 
 /**
- * Resolve the platform detail for a provider, creating the platform DB row on the
- * first write for a known built-in that hasn't been configured yet. Mirrors the user
- * side, where the server auto-inserts the built-in row on read. For unknown providers
- * the original "not found" error is preserved.
- */
-const getOrCreateDetail = async (providerKeyOrId: string): Promise<AdminAiProviderGetOutput> => {
-  try {
-    return await getDetail(providerKeyOrId);
-  } catch (cause) {
-    const card = findBuiltinProviderCard(providerKeyOrId);
-    if (!card) throw cause;
-    await adminAiProviderService.createAiProvider({
-      description: card.description,
-      id: card.id,
-      name: card.name,
-      settings: card.settings as CreateAiProviderParams['settings'],
-      source: AiProviderSourceEnum.Builtin,
-    });
-    return getDetail(providerKeyOrId);
-  }
-};
-
-const withReauth = <T>(fn: () => Promise<T>): Promise<T> =>
-  withAdminAiInfraErrorToast(() => withAdminReauthRetry(fn));
-
-/**
- * Admin adapter implementing the same surface as user AiProviderService / AiModelService.
+ * Admin adapter implementing the same surface as user AiProviderService.
  * Writes = draft mutation + immediate publish via applyImmediate.
  * Secrets: merge-only for updates; baseURL maps to public config.endpoint.
  */
 export class AdminAiProviderService {
+  #getOrCreateDetail = createGetOrCreateDetail((params) => this.createAiProvider(params));
+
   createAiProvider = async (params: CreateAiProviderParams) => {
     const { endpoint, secretParts } = splitFormKeyVaults(
       params.keyVaults as Record<string, unknown> | undefined,
@@ -204,7 +131,7 @@ export class AdminAiProviderService {
   };
 
   toggleProviderEnabled = async (id: string, enabled: boolean) => {
-    const detail = await getOrCreateDetail(id);
+    const detail = await this.#getOrCreateDetail(id);
     return withReauth(async () => {
       const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
         enabled,
@@ -220,7 +147,7 @@ export class AdminAiProviderService {
   };
 
   updateAiProvider = async (id: string, value: UpdateAiProviderParams) => {
-    const detail = await getOrCreateDetail(id);
+    const detail = await this.#getOrCreateDetail(id);
     return withReauth(async () => {
       const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
         description: value.description === null ? null : (value.description ?? undefined),
@@ -241,7 +168,7 @@ export class AdminAiProviderService {
   };
 
   updateAiProviderConfig = async (id: string, value: UpdateAiProviderConfigParams) => {
-    const detail = await getOrCreateDetail(id);
+    const detail = await this.#getOrCreateDetail(id);
     const { endpoint, secretParts } = splitFormKeyVaults(
       value.keyVaults as Record<string, unknown> | undefined,
     );
@@ -283,9 +210,26 @@ export class AdminAiProviderService {
     });
   };
 
+  /**
+   * Reorder providers.
+   *
+   * Intentionally sequential applyImmediate (not a multi-provider batch endpoint):
+   * each provider has independent draftToken/revision CAS and may auto-publish with
+   * side effects. A multi-resource batch would need multi-CAS + partial-failure /
+   * multi-publish atomicity that the current revision model does not offer safely.
+   * (Per-provider model reorder is already a single complete-set endpoint.)
+   *
+   * Resolves all provider details once (O(M) providerKey lookups, no full-list scan),
+   * then applies sort mutations sequentially under reauth.
+   */
   updateAiProviderOrder = async (items: AiProviderSortMap[]) => {
-    for (const item of items) {
-      const detail = await getOrCreateDetail(item.id);
+    const details = await Promise.all(
+      items.map(async (item) => ({
+        detail: await this.#getOrCreateDetail(item.id),
+        item,
+      })),
+    );
+    for (const { detail, item } of details) {
       await withReauth(async () => {
         const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
           expectedDraftToken: detail.draftToken,
@@ -326,258 +270,47 @@ export class AdminAiProviderService {
     });
   };
 
+  /**
+   * Runtime state for ModelList / EnableSwitch.
+   * One list pagination + one getBatch for active providers (no per-provider N+1).
+   */
   getAiProviderRuntimeState = async (_isLogin?: boolean): Promise<AiProviderRuntimeState> => {
-    const list = await lambdaClient.admin.aiProviders.list.query({ limit: 100 });
-    const active = list.items.filter((item) => item.status !== 'archived');
-    let cursor = list.nextCursor;
-    while (cursor) {
-      const page = await lambdaClient.admin.aiProviders.list.query({ cursor, limit: 100 });
-      active.push(...page.items.filter((item) => item.status !== 'archived'));
-      cursor = page.nextCursor;
+    const active = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 50; page += 1) {
+      const pageResult = await lambdaClient.admin.aiProviders.list.query({
+        cursor,
+        limit: 100,
+      });
+      active.push(...pageResult.items.filter((item) => item.status !== 'archived'));
+      if (!pageResult.nextCursor) break;
+      cursor = pageResult.nextCursor;
     }
 
     const modelsByKey = new Map<string, AdminAiProviderGetOutput['draft']['models']>();
-    await Promise.all(
-      active.map(async (provider) => {
-        try {
-          const detail = await lambdaClient.admin.aiProviders.get.query({ id: provider.id });
-          modelsByKey.set(provider.providerKey, detail.draft.models);
-        } catch {
-          modelsByKey.set(provider.providerKey, []);
+    for (const provider of active) {
+      modelsByKey.set(provider.providerKey, []);
+    }
+
+    if (active.length > 0) {
+      // Chunk to honor getBatch max 100 ids.
+      for (let offset = 0; offset < active.length; offset += 100) {
+        const chunk = active.slice(offset, offset + 100);
+        const batch = await lambdaClient.admin.aiProviders.getBatch.query({
+          ids: chunk.map((provider) => provider.id),
+        });
+        for (const detail of batch.items) {
+          modelsByKey.set(detail.draft.providerKey, detail.draft.models);
         }
-      }),
-    );
+        // Missing details stay as empty model lists (same as previous catch-empty behavior).
+      }
+    }
 
     return buildAdminRuntimeState(active, modelsByKey);
   };
 }
 
-export class AdminAiModelService {
-  #resolveModelUuid = async (providerKey: string, modelKeyOrId: string) => {
-    const detail = await getDetail(providerKey);
-    const model =
-      detail.draft.models.find((m) => m.modelKey === modelKeyOrId || m.id === modelKeyOrId) ?? null;
-    return { detail, model };
-  };
-
-  createAiModel = async (params: CreateAiModelParams) => {
-    const detail = await getDetail(params.providerId);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        abilities: params.abilities as Record<string, unknown> | undefined,
-        contextWindowTokens: params.contextWindowTokens ?? null,
-        displayName: params.displayName ?? null,
-        enabled: true,
-        expectedDraftToken: detail.draftToken,
-        modelKey: params.id,
-        operation: 'create',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-        settings: params.settings as Record<string, unknown> | undefined,
-        type: params.type ?? 'chat',
-      });
-      recordPublishOutcome(params.providerId, result);
-      return result;
-    });
-  };
-
-  getAiProviderModelList = async (
-    id: string,
-    _params?: GetAiProviderModelListParams,
-  ): Promise<AiProviderModelListItem[]> => {
-    // Built-in model catalog from client-side model-bank, mirroring the server repo's
-    // fetchBuiltinModels fallback so every provider shows its full model list even before
-    // a platform DB row exists. Providers whose models are genuinely remote-fetched have an
-    // empty built-in list here and keep loading from the cloud — that path is untouched.
-    const builtinModels = LOBE_DEFAULT_MODEL_LIST.filter((model) => model.providerId === id).map(
-      (model): AiProviderModelListItem => ({
-        ...model,
-        enabled: model.enabled || false,
-        source: AiModelSourceEnum.Builtin,
-      }),
-    );
-
-    // Platform DB (draft) models. A built-in that has never been configured has no platform
-    // row, so getDetail throws "Platform provider not found" — treat that as zero DB models
-    // (like getAiProviderById) instead of failing the whole model list.
-    let dbModels: AiProviderModelListItem[] = [];
-    try {
-      const detail = await getDetail(id);
-      dbModels = detail.draft.models.map(mapModelListItem);
-    } catch {
-      // No platform row yet → built-ins only.
-    }
-
-    // DB rows override built-ins by id; the type always comes from the built-in card
-    // (remote/DB rows may lack a reliable type), matching the server merge.
-    const merged = mergeArrayById(builtinModels, dbModels) as AiProviderModelListItem[];
-    const builtinTypeById = new Map(builtinModels.map((model) => [model.id, model.type]));
-    for (const model of merged) {
-      const builtinType = builtinTypeById.get(model.id);
-      if (builtinType) model.type = builtinType;
-    }
-    return merged;
-  };
-
-  getAiModelById = async (id: string) => {
-    void id;
-    return undefined;
-  };
-
-  toggleModelEnabled = async (params: ToggleAiModelEnableParams) => {
-    const { detail, model } = await this.#resolveModelUuid(params.providerId, params.id);
-    if (!model) throw new Error(`Model not found: ${params.id}`);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        enabled: params.enabled,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: model.revision,
-        id: model.id,
-        operation: 'update',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(params.providerId, result);
-      return result;
-    });
-  };
-
-  updateAiModel = async (id: string, providerId: string, value: UpdateAiModelParams) => {
-    const { detail, model } = await this.#resolveModelUuid(providerId, id);
-    if (!model) throw new Error(`Model not found: ${id}`);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        abilities: value.abilities as Record<string, unknown> | undefined,
-        config: value.config as Record<string, unknown> | null | undefined,
-        contextWindowTokens: value.contextWindowTokens ?? undefined,
-        displayName: value.displayName ?? undefined,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: model.revision,
-        id: model.id,
-        operation: 'update',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-        settings: value.settings as Record<string, unknown> | undefined,
-        type: value.type,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
-  };
-
-  batchUpdateAiModels = async (providerId: string, models: AiProviderModelListItem[]) => {
-    const detail = await getDetail(providerId);
-    const mapped = models.map((m) => {
-      const existing = detail.draft.models.find((d) => d.modelKey === m.id || d.id === m.id);
-      return {
-        abilities: m.abilities as Record<string, unknown> | undefined,
-        config: m.config as Record<string, unknown> | null | undefined,
-        contextWindowTokens: m.contextWindowTokens ?? null,
-        displayName: m.displayName ?? null,
-        enabled: m.enabled,
-        id: existing?.id ?? m.id,
-        parameters: m.parameters as Record<string, unknown> | undefined,
-        pricing: m.pricing as Record<string, unknown> | null | undefined,
-        settings: m.settings as Record<string, unknown> | undefined,
-        type: m.type,
-      };
-    });
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        expectedDraftToken: detail.draftToken,
-        models: mapped,
-        operation: 'batchUpdate',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
-  };
-
-  batchToggleAiModels = async (providerId: string, models: string[], enabled: boolean) => {
-    const detail = await getDetail(providerId);
-    const modelIds = models.map((key) => {
-      const found = detail.draft.models.find((m) => m.modelKey === key || m.id === key);
-      if (!found) throw new Error(`Model not found: ${key}`);
-      return found.id;
-    });
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        enabled,
-        expectedDraftToken: detail.draftToken,
-        modelIds,
-        operation: 'batchToggle',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
-  };
-
-  clearModelsByProvider = async (providerId: string) => {
-    const detail = await getDetail(providerId);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        expectedDraftToken: detail.draftToken,
-        operation: 'clear',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
-  };
-
-  clearRemoteModels = async (providerId: string) => this.clearModelsByProvider(providerId);
-
-  updateAiModelOrder = async (providerId: string, items: AiModelSortMap[]) => {
-    const detail = await getDetail(providerId);
-    const mapped = items.map((item) => {
-      const found = detail.draft.models.find((m) => m.modelKey === item.id || m.id === item.id);
-      if (!found) throw new Error(`Model not found: ${item.id}`);
-      return { id: found.id, sort: item.sort };
-    });
-    const requested = new Set(mapped.map((m) => m.id));
-    const complete = [
-      ...mapped,
-      ...detail.draft.models
-        .filter((m) => !requested.has(m.id))
-        .map((m, index) => ({ id: m.id, sort: mapped.length + index })),
-    ];
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        expectedDraftToken: detail.draftToken,
-        items: complete,
-        operation: 'reorder',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
-  };
-
-  deleteAiModel = async (params: { id: string; providerId: string }) => {
-    const { detail, model } = await this.#resolveModelUuid(params.providerId, params.id);
-    if (!model) throw new Error(`Model not found: ${params.id}`);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
-        expectedDraftToken: detail.draftToken,
-        id: model.id,
-        operation: 'delete',
-        providerId: detail.draft.id,
-        reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(params.providerId, result);
-      return result;
-    });
-  };
-}
-
 export const adminAiProviderService = new AdminAiProviderService();
-export const adminAiModelService = new AdminAiModelService();
 
 export const adminAiInfraServices = {
   aiModel: adminAiModelService,

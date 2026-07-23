@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     deleteDraft: vi.fn(),
     discover: vi.fn(),
     get: vi.fn(),
+    getBatch: vi.fn(),
     getGovernance: vi.fn(),
     list: vi.fn(),
     setSharedAuthorization: vi.fn(),
@@ -146,6 +147,7 @@ beforeEach(() => {
   vi.spyOn(toast, 'error').mockImplementation(() => '' as never);
   mocks.skills.list.mockResolvedValue({ items: [], nextCursor: null });
   mocks.connectors.list.mockResolvedValue({ items: [], nextCursor: null });
+  mocks.connectors.getBatch.mockResolvedValue({ failedIds: [], items: [] });
   mocks.connectors.getGovernance.mockResolvedValue({
     doc: { builtinToolPolicies: {}, sharedAuthorization: { ownerUserId: null } },
     managedActive: false,
@@ -325,13 +327,17 @@ describe('useAdminGlobalToolScope', () => {
         items: [{ id: 'conn-1', key: 'jira' }],
         nextCursor: null,
       });
-      mocks.connectors.get.mockResolvedValue(connectorDetail());
+      mocks.connectors.getBatch.mockResolvedValue({
+        failedIds: [],
+        items: [connectorDetail()],
+      });
 
       const { result } = renderScope('connector');
 
       await waitFor(() =>
         expect(result.current.connectors.some((c) => c.id === 'conn-1')).toBe(true),
       );
+      expect(mocks.connectors.getBatch).toHaveBeenCalledWith({ ids: ['conn-1'] });
 
       const builtinRows = result.current.connectors.filter((c) =>
         c.id.startsWith('admin-builtin:'),
@@ -373,7 +379,10 @@ describe('useAdminGlobalToolScope', () => {
         items: [{ id: 'conn-1', key: 'jira' }],
         nextCursor: null,
       });
-      mocks.connectors.get.mockResolvedValue(connectorDetail());
+      mocks.connectors.getBatch.mockResolvedValue({
+        failedIds: [],
+        items: [connectorDetail()],
+      });
       mocks.connectors.applyImmediate.mockResolvedValue({
         draft: { id: 'conn-1' },
         publishError: null,
@@ -415,6 +424,29 @@ describe('useAdminGlobalToolScope', () => {
         (tool: { toolKey: string }) => tool.toolKey === 'create_issue',
       );
       expect(patchedTool.requiresConfirmation).toBe(false);
+    });
+
+    it('surfaces partial connector detail failures via listError', async () => {
+      mocks.connectors.list.mockResolvedValue({
+        items: [
+          { id: 'conn-1', key: 'jira' },
+          { id: 'conn-2', key: 'slack' },
+        ],
+        nextCursor: null,
+      });
+      mocks.connectors.getBatch.mockResolvedValue({
+        failedIds: ['conn-2'],
+        items: [connectorDetail()],
+      });
+
+      const { result } = renderScope('connector');
+
+      await waitFor(() =>
+        expect(result.current.connectors.some((c) => c.id === 'conn-1')).toBe(true),
+      );
+      expect(result.current.listError).toBeInstanceOf(Error);
+      expect(String(result.current.listError)).toMatch(/1 connectors failed to load/i);
+      expect(result.current.connectors.some((c) => c.id === 'conn-2')).toBe(false);
     });
   });
 

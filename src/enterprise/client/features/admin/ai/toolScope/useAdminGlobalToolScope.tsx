@@ -141,24 +141,18 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       ? ['admin-tool-scope/connectors/details', connectorDetailKey]
       : null,
     async () => {
-      const details = await Promise.all(
-        connectorListItems.slice(0, 50).map(async (item) => {
-          try {
-            return await adminConnectorsService.get({ id: item.id });
-          } catch {
-            return null;
-          }
-        }),
-      );
-      return details.filter(Boolean) as AdminConnectorGetOutput[];
+      const ids = connectorListItems.slice(0, 50).map((item) => item.id);
+      const batch = await adminConnectorsService.getBatch({ ids });
+      return batch;
     },
     { revalidateOnFocus: false },
   );
 
   const connectorDetails = useMemo(
-    () => connectorDetailsSWR.data ?? [],
+    () => connectorDetailsSWR.data?.items ?? [],
     [connectorDetailsSWR.data],
   );
+  const connectorDetailFailedCount = connectorDetailsSWR.data?.failedIds.length ?? 0;
   const connectorDetailById = useMemo(
     () => new Map(connectorDetails.map((detail) => [detail.draft.id, detail])),
     [connectorDetails],
@@ -239,9 +233,22 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skillsSWR.mutate, connectorsListSWR.mutate, connectorDetailsSWR.mutate]);
 
+  const connectorPartialDetailError =
+    connectorDetailFailedCount > 0
+      ? new Error(
+          t('aiToolSettings.connectors.partialLoadFailed', {
+            count: connectorDetailFailedCount,
+            defaultValue: `${connectorDetailFailedCount} connectors failed to load; retry to refresh.`,
+          }),
+        )
+      : undefined;
+
   const listError =
     view === 'connector'
-      ? (connectorsListSWR.error ?? skillsSWR.error)
+      ? (connectorsListSWR.error ??
+        connectorDetailsSWR.error ??
+        connectorPartialDetailError ??
+        skillsSWR.error)
       : (skillsSWR.error ?? undefined);
   const listLoading =
     view === 'connector'

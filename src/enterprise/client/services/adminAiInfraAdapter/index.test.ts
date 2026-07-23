@@ -1,11 +1,12 @@
 import { toast } from '@lobehub/ui/base-ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AdminAiProviderService } from './index';
+import { AdminAiProviderService, resolveProviderRecord } from './index';
 
 const mocks = vi.hoisted(() => ({
   applyImmediate: vi.fn(),
   get: vi.fn(),
+  getBatch: vi.fn(),
   list: vi.fn(),
   publishNow: vi.fn(),
   withAdminReauthRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -17,6 +18,7 @@ vi.mock('@/libs/trpc/client', () => ({
       aiProviders: {
         applyImmediate: { mutate: mocks.applyImmediate },
         get: { query: mocks.get },
+        getBatch: { query: mocks.getBatch },
         list: { query: mocks.list },
         publishNow: { mutate: mocks.publishNow },
       },
@@ -50,7 +52,26 @@ const detailFixture = {
     fetchOnClient: false,
     id: 'uuid-p',
     logo: null,
-    models: [],
+    models: [
+      {
+        abilities: {},
+        config: null,
+        contextWindowTokens: null,
+        description: null,
+        displayName: 'M1',
+        enabled: true,
+        id: 'model-uuid',
+        modelKey: 'm1',
+        parameters: {},
+        pricing: null,
+        providerId: 'uuid-p',
+        revision: 1,
+        settings: {},
+        sort: 0,
+        status: 'published',
+        type: 'chat',
+      },
+    ],
     providerKey: 'prov',
     revision: 1,
     secret: { configured: true, fingerprint: 'fp', updatedAt: null },
@@ -71,16 +92,25 @@ describe('AdminAiProviderService adapter', () => {
     mocks.list.mockResolvedValue({
       items: [
         {
+          config: {},
           displayName: 'P',
           enabled: true,
           id: 'uuid-p',
           providerKey: 'prov',
+          settings: {},
+          sort: 0,
+          source: 'custom',
           status: 'published',
         },
       ],
       nextCursor: null,
     });
     mocks.get.mockResolvedValue(detailFixture);
+    mocks.getBatch.mockResolvedValue({
+      failedIds: [],
+      failedProviderKeys: [],
+      items: [detailFixture],
+    });
     mocks.applyImmediate.mockResolvedValue({
       auditId: 'a1',
       draft: detailFixture.draft,
@@ -95,6 +125,8 @@ describe('AdminAiProviderService adapter', () => {
     await service.updateAiProviderConfig('prov', {
       keyVaults: { baseURL: 'https://new.endpoint' },
     });
+    expect(mocks.get).toHaveBeenCalledWith({ providerKey: 'prov' });
+    expect(mocks.list).not.toHaveBeenCalled();
     expect(mocks.applyImmediate).toHaveBeenCalledWith(
       expect.objectContaining({
         config: expect.objectContaining({ endpoint: 'https://new.endpoint' }),
@@ -140,6 +172,98 @@ describe('AdminAiProviderService adapter', () => {
         mode: 'create',
         secret: { operation: 'replace', value: { apiKey: 'first' } },
       }),
+    );
+  });
+
+  it('resolves providerKey without list scan', async () => {
+    const record = await resolveProviderRecord('prov');
+    expect(record).toMatchObject({ id: 'uuid-p', providerKey: 'prov' });
+    expect(mocks.get).toHaveBeenCalledWith({ providerKey: 'prov' });
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('resolves platform UUID via id lookup', async () => {
+    await resolveProviderRecord('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(mocks.get).toHaveBeenCalledWith({ id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
+  });
+
+  it('getAiProviderRuntimeState uses getBatch instead of N get.query', async () => {
+    mocks.list.mockResolvedValue({
+      items: [
+        {
+          config: {},
+          displayName: 'P1',
+          enabled: true,
+          id: 'uuid-1',
+          providerKey: 'p1',
+          settings: {},
+          sort: 0,
+          source: 'custom',
+          status: 'published',
+        },
+        {
+          config: {},
+          displayName: 'P2',
+          enabled: true,
+          id: 'uuid-2',
+          providerKey: 'p2',
+          settings: {},
+          sort: 1,
+          source: 'custom',
+          status: 'published',
+        },
+      ],
+      nextCursor: null,
+    });
+    mocks.getBatch.mockResolvedValue({
+      failedIds: [],
+      failedProviderKeys: [],
+      items: [
+        {
+          ...detailFixture,
+          draft: {
+            ...detailFixture.draft,
+            id: 'uuid-1',
+            models: detailFixture.draft.models,
+            providerKey: 'p1',
+          },
+        },
+        {
+          ...detailFixture,
+          draft: {
+            ...detailFixture.draft,
+            enabled: true,
+            id: 'uuid-2',
+            models: [],
+            providerKey: 'p2',
+          },
+        },
+      ],
+    });
+
+    const state = await service.getAiProviderRuntimeState();
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.getBatch).toHaveBeenCalledTimes(1);
+    expect(mocks.getBatch).toHaveBeenCalledWith({ ids: ['uuid-1', 'uuid-2'] });
+    expect(state.enabledAiProviders.map((p) => p.id)).toEqual(['p1', 'p2']);
+    expect(state.enabledAiModels.some((m) => m.providerId === 'p1' && m.id === 'm1')).toBe(true);
+  });
+
+  it('updateAiProviderOrder resolves details once without list scan', async () => {
+    await service.updateAiProviderOrder([
+      { id: 'prov', sort: 0 },
+      { id: 'prov', sort: 1 },
+    ]);
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.get).toHaveBeenCalledWith({ providerKey: 'prov' });
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(2);
+    expect(mocks.applyImmediate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 'uuid-p', sort: 0 }),
+    );
+    expect(mocks.applyImmediate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 'uuid-p', sort: 1 }),
     );
   });
 
