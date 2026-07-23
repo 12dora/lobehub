@@ -150,6 +150,23 @@ describe('createAdminRouteTree', () => {
       false,
     );
 
+    const auditLogs = children.find((c) => c.path === 'audit/logs');
+    const auditExports = children.find((c) => c.path === 'audit/exports');
+    const auditHolds = children.find((c) => c.path === 'audit/holds');
+    const auditRetention = children.find((c) => c.path === 'audit/retention');
+    expect((auditLogs?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
+    expect(
+      (auditExports?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
+    ).toBe(false);
+    expect((auditHolds?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
+    expect(
+      (auditRetention?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
+    ).toBe(false);
+
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
     expect(usersDetail?.element).toBeTruthy();
@@ -176,7 +193,9 @@ describe('createAdminRouteTree', () => {
           i.id !== 'agents-detail' &&
           i.id !== 'branding' &&
           i.id !== 'identity-providers' &&
-          i.id !== 'system',
+          i.id !== 'system' &&
+          i.id !== 'audit' &&
+          !i.id.startsWith('audit-'),
       ),
     ).toBe(true);
   });
