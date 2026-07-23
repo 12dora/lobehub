@@ -2359,4 +2359,8 @@ export default {
   'audit.live.relative.minutes': '{{count}} min ago',
   'audit.live.relative.hours': '{{count}} h ago',
   'audit.live.relative.days': '{{count}} d ago',
+  'audit.live.messages.gapWarning':
+    'Messages are updating too quickly — some in the middle may be missing. Reload to catch up.',
+  'audit.live.messages.reload': 'Reload messages',
+  'audit.conversations.topic.openLive': 'Live View',
 };

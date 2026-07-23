@@ -1,7 +1,7 @@
 'use client';
 
-import { Flexbox, Input, Popover, Tag, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Button, Popover, Select } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -544,9 +544,17 @@ const OperationLogsPage = memo(() => {
                   : t('audit.logs.filters.more')}
               </Button>
             </Popover>
-            <Button size="small" type="text" onClick={clearAllFilters}>
-              {t('audit.shared.clearFilters')}
-            </Button>
+            {moreFilterCount > 0 ||
+            filters.actions.length > 0 ||
+            filters.results.length > 0 ||
+            filters.actorUserId ||
+            requestIdDraft.trim() ||
+            targetTypeDraft.trim() ||
+            targetIdDraft.trim() ? (
+              <Button size="small" type="text" onClick={clearAllFilters}>
+                {t('audit.shared.clearFilters')}
+              </Button>
+            ) : null}
           </div>
         </Flexbox>
       }
