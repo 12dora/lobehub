@@ -1,19 +1,21 @@
 'use client';
 
 import { Alert, Flexbox, Input, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { adminSettingsService } from '@/enterprise/client/services/adminSettings';
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
+import { openDangerConfirm } from '../primitives/DangerConfirm';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { canMutateAgainstBase, initialConflictState, reduceConflict } from './conflictStateMachine';
 import { refreshAdminSettingsDraft, useFetchAdminSettingsDraft } from './hooks/useAdminSettings';
@@ -59,10 +61,19 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   fieldHeader: css`
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
+    flex-wrap: nowrap;
+    gap: 12px;
+    align-items: flex-start;
     justify-content: space-between;
+  `,
+  titleBlock: css`
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+
+    /* Allow the title to ellipsize instead of pushing the mode select off-row. */
+    min-width: 0;
   `,
   footer: css`
     position: sticky;
@@ -88,16 +99,24 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   grid: css`
     display: grid;
+
+    /* Equal-height rows so every setting box lines up as a uniform tile. */
+    grid-auto-rows: 1fr;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 12px;
   `,
   path: css`
+    overflow: hidden;
+
     font-family: ${cssVar.fontFamilyCode};
     font-size: 12px;
     color: ${cssVar.colorTextSecondary};
+    text-overflow: ellipsis;
+    white-space: nowrap;
   `,
   row: css`
     display: flex;
+    flex-shrink: 0;
     flex-wrap: wrap;
     gap: 12px;
     align-items: center;
@@ -165,7 +184,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
   const platform = useEnterprisePlatform();
   const policyEnabled = platform.capabilities.userSettingsPolicyEnabled === true;
-  const { permissions } = useAdminAccess();
+  const { authMethod, permissions } = useAdminAccess();
   const { canUpdate, canPublish } = deriveSettingsPermissions(permissions);
 
   const { data, error, isLoading, mutate } = useFetchAdminSettingsDraft(policyEnabled);
@@ -664,59 +683,101 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     validatedBaseRevision,
   ]);
 
-  const handleRollback = useCallback(() => {
+  // "Restore defaults": clear every platform override by publishing an empty policy set.
+  // Effective settings fall back to their built-in defaults and users regain control.
+  // Reuses saveDraft + publish (no dedicated procedure); reauth wraps only the publish
+  // retry with a frozen CAS token, mirroring the managed-resources save flow.
+  const handleResetDefaults = useCallback(() => {
     if (
       !data ||
       !canPublish ||
+      !canUpdate ||
       dirty ||
       revisionConflict ||
       activeBaseRevision !== data.baseRevision ||
       activeDraftToken !== data.draftToken ||
-      data.baseRevision < 1
+      Object.keys(data.publishedPolicies).length === 0
     ) {
       return;
     }
-    openReasonModal({
-      buildPayload: (reason) => ({
-        expectedDraftToken: activeDraftToken,
-        expectedRevision: activeBaseRevision,
-        reason,
-        targetRevision: Math.max(1, data.baseRevision - 1),
-      }),
-      danger: true,
-      description: t('settingsPolicy.rollbackDesc'),
-      onSubmit: async (payload) => {
+    const registryVersion = data.registryVersion;
+    const baseToken = activeDraftToken;
+    const baseRevision = activeBaseRevision;
+    // Current (clean) draft — restored if saveDraft commits but publish fails.
+    const priorDraft = draft;
+    openDangerConfirm({
+      confirmText: t('settingsPolicy.resetDefaults'),
+      content: t('settingsPolicy.resetDefaultsDesc'),
+      onConfirm: async () => {
+        const reason = t('settingsPolicy.resetReason');
+        let saved: Awaited<ReturnType<typeof adminSettingsService.saveDraft>> | null = null;
         try {
-          await adminSettingsService.rollback(
-            payload as {
-              expectedDraftToken: string;
-              expectedRevision: number;
-              reason: string;
-              targetRevision: number;
-            },
-          );
-          clearLocalDraft(data.registryVersion, data.baseRevision);
+          saved = await adminSettingsService.saveDraft({
+            draft: {},
+            expectedDraftToken: baseToken,
+            reason,
+          });
+          const frozen = Object.freeze({
+            expectedDraftToken: saved.draftToken,
+            expectedRevision: saved.baseRevision,
+            reason,
+          });
+          await withAdminReauthRetry(() => adminSettingsService.publish({ ...frozen }), {
+            authMethod: authMethod ?? null,
+          });
+          // Published — do not attempt a restore in the catch below.
+          saved = null;
+          clearLocalDraft(registryVersion, baseRevision);
+          clearConflictDraft();
+          setDraft({});
           setDirty(false);
+          setSaveState('idle');
+          setSaveError(null);
+          setValidationMsg(null);
+          setImpact(null);
+          setValidatedFingerprint(null);
+          setValidatedDraftToken(null);
+          setValidatedBaseRevision(null);
           hydratedRef.current = false;
           await mutate();
+          await refreshAdminSettingsDraft();
         } catch (err) {
+          // saveDraft committed an empty draft but publish never landed — put the prior
+          // draft back so the server draft is not left cleared. Best-effort only.
+          if (saved) {
+            try {
+              await adminSettingsService.saveDraft({
+                draft: priorDraft,
+                expectedDraftToken: saved.draftToken,
+                reason: `${reason} (restore)`,
+              });
+            } catch {
+              /* best-effort restore */
+            }
+          }
           const mapped = mapEnterpriseError(err);
           if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
             await enterRevisionConflict();
+            return;
           }
-          throw err;
+          setSaveState('failed');
+          setSaveError(
+            mapped ? t(mapped.i18nKey as never, { defaultValue: mapped.code }) : String(err),
+          );
+          toast.error(t('settingsPolicy.resetFailed'));
         }
       },
-      submitLabel: t('settingsPolicy.rollback'),
-      targetLabel: t('settingsPolicy.title'),
-      title: t('settingsPolicy.rollback'),
+      title: t('settingsPolicy.resetDefaults'),
     });
   }, [
     activeBaseRevision,
     activeDraftToken,
+    authMethod,
     canPublish,
+    canUpdate,
     data,
     dirty,
+    draft,
     enterRevisionConflict,
     mutate,
     revisionConflict,
@@ -820,18 +881,18 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       title={t('settingsPolicy.title')}
       actions={
         <Flexbox horizontal gap={8}>
-          {canPublish ? (
+          {canPublish && canUpdate ? (
             <Button
               disabled={
-                data.baseRevision < 1 ||
                 dirty ||
                 revisionConflict ||
                 activeBaseRevision !== data.baseRevision ||
-                activeDraftToken !== data.draftToken
+                activeDraftToken !== data.draftToken ||
+                Object.keys(data.publishedPolicies).length === 0
               }
-              onClick={handleRollback}
+              onClick={handleResetDefaults}
             >
-              {t('settingsPolicy.rollback')}
+              {t('settingsPolicy.resetDefaults')}
             </Button>
           ) : null}
         </Flexbox>
@@ -1009,17 +1070,20 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                   return (
                     <div className={styles.field} id={`setting-${entry.path}`} key={entry.path}>
                       <div className={styles.fieldHeader}>
-                        <div>
-                          <Text strong>
+                        <div className={styles.titleBlock}>
+                          <Text strong ellipsis={{ tooltip: true }}>
                             {t(entry.titleKey as never, { defaultValue: entry.path })}
                           </Text>
-                          <div className={styles.path}>{entry.path}</div>
+                          <div className={styles.path} title={entry.path}>
+                            {entry.path}
+                          </div>
                         </div>
                         <div className={styles.row}>
                           <Select
                             aria-label={t('settingsPolicy.uiMode.label')}
                             disabled={!canUpdate}
-                            style={{ minWidth: 160 }}
+                            // Unified policy-mode select width — keep in sync with the managed-resource boxes.
+                            style={{ width: 160 }}
                             value={toSettingsPolicyUiMode(policy)}
                             options={UI_MODE_VALUES.map((value) => ({
                               label: t(`settingsPolicy.uiMode.${value}` as never),

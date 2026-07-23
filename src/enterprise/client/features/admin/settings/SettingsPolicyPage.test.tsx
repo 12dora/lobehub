@@ -13,11 +13,12 @@ const mocks = vi.hoisted(() => ({
   capability: true,
   data: undefined as any,
   mutate: vi.fn(),
+  openDangerConfirm: vi.fn(),
   openReasonModal: vi.fn(),
   permissions: [] as string[],
   publish: vi.fn(),
-  rollback: vi.fn(),
   saveDraft: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock('antd-style', () => ({
@@ -59,6 +60,13 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       ))}
     </select>
   ),
+  toast: { error: mocks.toastError, success: vi.fn() },
+}));
+
+vi.mock('../primitives/DangerConfirm', () => ({ openDangerConfirm: mocks.openDangerConfirm }));
+
+vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => ({
+  withAdminReauthRetry: (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -76,7 +84,7 @@ vi.mock('react-router', () => ({
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
-  useAdminAccess: () => ({ permissions: mocks.permissions }),
+  useAdminAccess: () => ({ authMethod: 'better-auth', permissions: mocks.permissions }),
 }));
 
 vi.mock('@/enterprise/client/providers/EnterprisePlatformProvider', () => ({
@@ -88,7 +96,6 @@ vi.mock('@/enterprise/client/providers/EnterprisePlatformProvider', () => ({
 vi.mock('@/enterprise/client/services/adminSettings', () => ({
   adminSettingsService: {
     publish: mocks.publish,
-    rollback: mocks.rollback,
     saveDraft: mocks.saveDraft,
     validateDraft: vi.fn().mockResolvedValue({
       impactEstimate: { pathsWithOverrides: 0, totalOverrideRows: 0 },
@@ -174,11 +181,12 @@ describe('SettingsPolicyPage', () => {
     mocks.capability = true;
     mocks.data = makeData(1);
     mocks.mutate.mockReset();
+    mocks.openDangerConfirm.mockReset();
     mocks.openReasonModal.mockReset();
     mocks.permissions = [];
     mocks.publish.mockReset();
-    mocks.rollback.mockReset();
     mocks.saveDraft.mockReset();
+    mocks.toastError.mockReset();
     mocks.blocker.state = 'unblocked';
     mocks.blocker.proceed.mockReset();
     mocks.blocker.reset.mockReset();
@@ -382,12 +390,60 @@ describe('SettingsPolicyPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
   });
 
-  it('includes the captured token in rollback and never reports a token-conflicted submit as success', async () => {
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_PUBLISH];
-    mocks.rollback.mockRejectedValueOnce(
-      Object.assign(new Error('rollback token conflict'), {
-        code: 'PLATFORM_REVISION_CONFLICT',
-      }),
+  it('restores defaults by saving an empty draft and publishing with the current token', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.saveDraft.mockResolvedValueOnce({
+      baseRevision: 2,
+      draftToken: savedDraftToken,
+      ok: true,
+      registryVersion: 1,
+    });
+    mocks.publish.mockResolvedValueOnce({ auditId: 'audit', revision: 2 });
+    mocks.mutate.mockImplementation(async () => mocks.data);
+
+    render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
+    const confirm = mocks.openDangerConfirm.mock.calls[0]?.[0];
+    expect(confirm).toBeDefined();
+    expect(confirm.title).toBe('settingsPolicy.resetDefaults');
+    await confirm.onConfirm();
+
+    expect(mocks.saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: {}, expectedDraftToken: draftToken }),
+    );
+    expect(mocks.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedDraftToken: savedDraftToken, expectedRevision: 2 }),
+    );
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it('enters conflict mode when the reset publish reports a revision conflict', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.saveDraft
+      // reset saveDraft({}) succeeds…
+      .mockResolvedValueOnce({
+        baseRevision: 2,
+        draftToken: savedDraftToken,
+        ok: true,
+        registryVersion: 1,
+      })
+      // …best-effort restore after the failed publish
+      .mockResolvedValueOnce({
+        baseRevision: 2,
+        draftToken: 'e'.repeat(64),
+        ok: true,
+        registryVersion: 1,
+      });
+    mocks.publish.mockRejectedValueOnce(
+      Object.assign(new Error('reset publish conflict'), { code: 'PLATFORM_REVISION_CONFLICT' }),
     );
     mocks.mutate.mockImplementation(async () => {
       mocks.data = makeData(1, 'server', latestDraftToken);
@@ -395,22 +451,12 @@ describe('SettingsPolicyPage', () => {
     });
 
     render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.rollback' }));
-    const modal = mocks.openReasonModal.mock.calls[0]?.[0];
-    const payload = modal.buildPayload('rollback reason');
-    expect(payload).toMatchObject({
-      expectedDraftToken: draftToken,
-      expectedRevision: 1,
-      reason: 'rollback reason',
-      targetRevision: 1,
-    });
-
-    await expect(modal.onSubmit(payload)).rejects.toThrow('rollback token conflict');
-    expect(mocks.rollback).toHaveBeenCalledWith(payload);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
+    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
     expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
   });
 
-  it('disables publish and rollback when the active token is stale', async () => {
+  it('disables publish and restore-defaults when the active token is stale', async () => {
     mocks.permissions = [
       PLATFORM_PERMISSIONS.SETTINGS_READ,
       PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
@@ -419,7 +465,7 @@ describe('SettingsPolicyPage', () => {
     const { rerender } = render(<SettingsPolicyPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.validate' }));
     expect(await screen.findByRole('button', { name: 'settingsPolicy.publish' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'settingsPolicy.rollback' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeEnabled();
 
     mocks.data = makeData(1, 'server', latestDraftToken);
     rerender(<SettingsPolicyPage />);
@@ -427,7 +473,7 @@ describe('SettingsPolicyPage', () => {
       target: { value: 'font' },
     });
     expect(screen.getByRole('button', { name: 'settingsPolicy.publish' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'settingsPolicy.rollback' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
   });
 
   it('protects dirty drafts from SPA navigation', async () => {

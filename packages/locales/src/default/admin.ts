@@ -1233,11 +1233,13 @@ export default {
   'settingsPolicy.retrySave': 'Retry save',
   'settingsPolicy.validate': 'Validate',
   'settingsPolicy.publish': 'Publish',
-  'settingsPolicy.rollback': 'Rollback',
+  'settingsPolicy.resetDefaults': 'Restore defaults',
+  'settingsPolicy.resetDefaultsDesc':
+    'Restore all settings to their built-in defaults. This clears every platform override and publishes a new revision; users regain control of these settings. Continue?',
+  'settingsPolicy.resetReason': 'Restore settings policy to defaults',
+  'settingsPolicy.resetFailed': 'Restore defaults failed',
   'settingsPolicy.publishDesc':
     'Publishing creates an immutable revision and updates effective settings for all users.',
-  'settingsPolicy.rollbackDesc':
-    'Rollback appends a new published head from a previous revision. History is not rewritten.',
   'settingsPolicy.saveReason': 'Save settings policy draft',
   'settingsPolicy.validateOk': 'Draft is valid.',
   'settingsPolicy.validateRequiresSaved': 'Save the current draft before validating it.',
