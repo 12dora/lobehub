@@ -21,6 +21,7 @@ import {
 import type { PlatformResourceRevisionItem } from '../../schemas/platform/revisions';
 import { platformResourceRevisions } from '../../schemas/platform/revisions';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { inTransaction } from '../platform/tx';
 import { boundedLimit } from '../platformPagination';
 import { likeContains } from '../platformSearch';
 
@@ -60,14 +61,6 @@ type ManagedConnectorSecretColumns = Pick<
 >;
 
 const sqlIncrement = (column: typeof platformUserConnectorBindings.revision) => sql`${column} + 1`;
-
-const isRootDatabase = (db: LobeChatDatabase | Transaction): db is LobeChatDatabase =>
-  'transaction' in db;
-
-const inTransaction = async <T>(
-  db: LobeChatDatabase | Transaction,
-  operation: (transaction: Transaction) => Promise<T>,
-): Promise<T> => (isRootDatabase(db) ? db.transaction(operation) : operation(db));
 
 const MANAGED_CONNECTOR_SECRET_REF_PREFIX = 'kms://platform-connectors/';
 
@@ -237,6 +230,12 @@ export class PlatformConnectorCatalogRepository {
       .where(eq(platformConnectors.id, id))
       .limit(1);
     return rows[0];
+  };
+
+  /** Batch connector rows by id (single `WHERE id IN (...)`). */
+  getConnectorsByIds = async (ids: string[]): Promise<PlatformConnectorItem[]> => {
+    if (ids.length === 0) return [];
+    return this.db.select().from(platformConnectors).where(inArray(platformConnectors.id, ids));
   };
 
   getConnectorByKey = async (connectorKey: string): Promise<PlatformConnectorItem | undefined> => {
@@ -542,6 +541,24 @@ export class PlatformConnectorCatalogRepository {
     };
   };
 
+  /**
+   * All tools for many connectors in one query. Caller enforces per-connector
+   * max tool count; empty input short-circuits.
+   */
+  listToolsForConnectors = async (connectorIds: string[]): Promise<PlatformConnectorToolItem[]> => {
+    if (connectorIds.length === 0) return [];
+    return this.db
+      .select()
+      .from(platformConnectorTools)
+      .where(inArray(platformConnectorTools.connectorId, connectorIds))
+      .orderBy(
+        asc(platformConnectorTools.connectorId),
+        asc(platformConnectorTools.sort),
+        asc(platformConnectorTools.toolKey),
+        asc(platformConnectorTools.id),
+      );
+  };
+
   replaceTools = async (
     connectorId: string,
     tools: ManagedConnectorToolWrite[],
@@ -732,13 +749,6 @@ export class PlatformConnectorCatalogRepository {
           }
         : { status: 'invalid' };
     });
-  };
-
-  consumeOAuthState = async (
-    stateHash: string,
-  ): Promise<PlatformConnectorOAuthStateItem | undefined> => {
-    const reservation = await this.reserveOAuthState(stateHash);
-    return reservation.status === 'reserved' ? reservation.state : undefined;
   };
 
   releaseOAuthStateReservation = async (stateHash: string, reservedAt: Date): Promise<boolean> => {
@@ -1270,12 +1280,6 @@ export class PlatformUserConnectorBindingRepository {
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
     return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
-  };
-
-  revokeBinding = async (
-    connectorId: string,
-  ): Promise<PlatformUserConnectorBindingItem | undefined> => {
-    return (await this.revokeBindingWithPreviousSecret(connectorId))?.binding;
   };
 
   revokeBindingWithPreviousSecret = async (

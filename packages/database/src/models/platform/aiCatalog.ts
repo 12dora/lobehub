@@ -118,7 +118,58 @@ export class PlatformAiCatalogModel {
   getProvider = async (id: string): Promise<PlatformAiProviderDraftView | undefined> => {
     const provider = await this.repository.getProvider(id);
     if (!provider) return undefined;
+    return this.toProviderDraftView(provider);
+  };
+
+  /** Resolve draft view by user-facing providerKey (O(1) lookup; no list scan). */
+  getProviderByKey = async (
+    providerKey: string,
+  ): Promise<PlatformAiProviderDraftView | undefined> => {
+    const provider = await this.repository.getProviderByKey(providerKey);
+    if (!provider) return undefined;
+    return this.toProviderDraftView(provider);
+  };
+
+  /**
+   * Bulk draft views: 1 providers query + 1 models query (no per-id N+1).
+   * Missing ids/keys are simply absent from the returned array.
+   */
+  getProvidersBatch = async (input: {
+    ids?: string[];
+    providerKeys?: string[];
+  }): Promise<PlatformAiProviderDraftView[]> => {
+    const ids = input.ids ?? [];
+    const providerKeys = input.providerKeys ?? [];
+    const providers =
+      ids.length > 0
+        ? await this.repository.getProvidersByIds(ids)
+        : await this.repository.getProvidersByKeys(providerKeys);
+    if (providers.length === 0) return [];
+
+    const models = await this.repository.listModelsForProviders(providers.map((p) => p.id));
+    const modelsByProvider = new Map<string, typeof models>();
+    for (const model of models) {
+      const bucket = modelsByProvider.get(model.providerId);
+      if (bucket) bucket.push(model);
+      else modelsByProvider.set(model.providerId, [model]);
+    }
+
+    return providers.map((provider) =>
+      this.toProviderDraftViewSync(provider, modelsByProvider.get(provider.id) ?? []),
+    );
+  };
+
+  private toProviderDraftView = async (
+    provider: NonNullable<Awaited<ReturnType<PlatformAiCatalogRepository['getProvider']>>>,
+  ): Promise<PlatformAiProviderDraftView> => {
     const models = await this.repository.listModels(provider.id);
+    return this.toProviderDraftViewSync(provider, models);
+  };
+
+  private toProviderDraftViewSync = (
+    provider: NonNullable<Awaited<ReturnType<PlatformAiCatalogRepository['getProvider']>>>,
+    models: Awaited<ReturnType<PlatformAiCatalogRepository['listModels']>>,
+  ): PlatformAiProviderDraftView => {
     const draft: PlatformAiProviderDraftView = {
       checkModel: provider.checkModel ?? null,
       connectionTest:

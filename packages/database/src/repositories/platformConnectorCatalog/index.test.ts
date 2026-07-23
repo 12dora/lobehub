@@ -581,6 +581,26 @@ describe('PlatformConnectorCatalogRepository', () => {
     expect(afterRollback.items.map((item) => item.toolKey)).toEqual(['alpha', 'beta', 'zulu']);
   });
 
+  it('batch-loads connectors and tools with single-query helpers', async () => {
+    const a = await createConnector('batch-a');
+    const b = await createConnector('batch-b');
+    await catalog.replaceTools(a.id, [
+      { displayName: 'A1', id: 'm09-tool-batch-a1', sort: 0, toolKey: 'a1' },
+    ]);
+    await catalog.replaceTools(b.id, [
+      { displayName: 'B1', id: 'm09-tool-batch-b1', sort: 0, toolKey: 'b1' },
+      { displayName: 'B2', id: 'm09-tool-batch-b2', sort: 1, toolKey: 'b2' },
+    ]);
+
+    const connectors = await catalog.getConnectorsByIds([a.id, b.id, `${connectorPrefix}missing`]);
+    expect(connectors.map((c) => c.id).sort()).toEqual([a.id, b.id].sort());
+
+    const tools = await catalog.listToolsForConnectors([a.id, b.id]);
+    expect(tools).toHaveLength(3);
+    expect(tools.filter((t) => t.connectorId === b.id).map((t) => t.toolKey)).toEqual(['b1', 'b2']);
+    expect(await catalog.listToolsForConnectors([])).toEqual([]);
+  });
+
   it('serializes concurrent full replacements under the connector row lock', async () => {
     const connector = await createConnector('tools-concurrent');
     const replacementA = [
@@ -694,15 +714,21 @@ describe('PlatformConnectorCatalogRepository', () => {
     });
 
     const attempts = await Promise.all([
-      catalog.consumeOAuthState(stateHash),
-      catalog.consumeOAuthState(stateHash),
+      catalog.reserveOAuthState(stateHash),
+      catalog.reserveOAuthState(stateHash),
     ]);
-    expect(attempts.filter(Boolean)).toHaveLength(1);
-    expect(attempts.find(Boolean)).toMatchObject({
-      consumedAt: expect.any(Date),
-      id: 'm09-oauth-state',
+    const reserved = attempts.filter((attempt) => attempt.status === 'reserved');
+    expect(reserved).toHaveLength(1);
+    expect(reserved[0]).toMatchObject({
+      status: 'reserved',
+      state: {
+        consumedAt: expect.any(Date),
+        id: 'm09-oauth-state',
+      },
     });
-    await expect(catalog.consumeOAuthState(stateHash)).resolves.toBeUndefined();
+    await expect(catalog.reserveOAuthState(stateHash)).resolves.toMatchObject({
+      status: 'replayed',
+    });
   });
 
   it('terminates expired OAuth states and rejects already revoked states', async () => {
@@ -737,8 +763,12 @@ describe('PlatformConnectorCatalogRepository', () => {
       userId: userIds[0],
     });
 
-    await expect(catalog.consumeOAuthState('e'.repeat(64))).resolves.toBeUndefined();
-    await expect(catalog.consumeOAuthState('f'.repeat(64))).resolves.toBeUndefined();
+    await expect(catalog.reserveOAuthState('e'.repeat(64))).resolves.toMatchObject({
+      status: 'expired',
+    });
+    await expect(catalog.reserveOAuthState('f'.repeat(64))).resolves.toMatchObject({
+      status: 'invalid',
+    });
     const rows = await serverDB
       .select()
       .from(platformConnectorOAuthStates)
@@ -776,8 +806,9 @@ describe('PlatformConnectorCatalogRepository', () => {
         tokenFingerprint: null,
       }),
     ).resolves.toMatchObject({ publishedRevision: 2, revision: 1, status: 'pending' });
-    await expect(catalog.consumeOAuthState('b'.repeat(64))).resolves.toMatchObject({
-      publishedRevision: 1,
+    await expect(catalog.reserveOAuthState('b'.repeat(64))).resolves.toMatchObject({
+      status: 'reserved',
+      state: { publishedRevision: 1 },
     });
     await expect(
       repository.createOAuthState({
@@ -821,17 +852,22 @@ describe('PlatformConnectorCatalogRepository', () => {
       stateId: 'm09-consume-revoke',
     });
 
-    const [consumed] = await Promise.all([
-      catalog.consumeOAuthState(stateHash),
-      repository.revokeBinding(connector.id),
+    const [reserved] = await Promise.all([
+      catalog.reserveOAuthState(stateHash),
+      repository.revokeBindingWithPreviousSecret(connector.id),
     ]);
     const [state] = await serverDB
       .select()
       .from(platformConnectorOAuthStates)
       .where(eq(platformConnectorOAuthStates.id, 'm09-state-consume-revoke'));
     expect(state).toMatchObject({ consumedAt: null, revokedAt: expect.any(Date) });
-    expect(consumed === undefined || consumed.id === state.id).toBe(true);
-    await expect(catalog.consumeOAuthState(stateHash)).resolves.toBeUndefined();
+    expect(
+      reserved.status !== 'reserved' ||
+        (reserved.status === 'reserved' && reserved.state.id === state.id),
+    ).toBe(true);
+    await expect(catalog.reserveOAuthState(stateHash)).resolves.toMatchObject({
+      status: 'invalid',
+    });
     await expect(repository.getBinding(connector.id)).resolves.toMatchObject({ status: 'revoked' });
   });
 
@@ -854,7 +890,7 @@ describe('PlatformConnectorCatalogRepository', () => {
       stateHash: 'e'.repeat(64),
       stateId: 'm09-create-first',
     });
-    await firstRepository.revokeBinding(firstConnector.id);
+    await firstRepository.revokeBindingWithPreviousSecret(firstConnector.id);
 
     const secondConnector = await createConnector('oauth-revoke-first', 'per_user_oauth');
     const secondBinding = await createBinding(
@@ -863,7 +899,7 @@ describe('PlatformConnectorCatalogRepository', () => {
       'm09-binding-revoke-first',
     );
     const secondRepository = new PlatformUserConnectorBindingRepository(serverDB, userIds[1]);
-    await secondRepository.revokeBinding(secondConnector.id);
+    await secondRepository.revokeBindingWithPreviousSecret(secondConnector.id);
     await expect(
       secondRepository.createOAuthState({
         bindingId: secondBinding.id,
@@ -1207,10 +1243,12 @@ describe('PlatformUserConnectorBindingRepository', () => {
       stateId: 'm09-isolation-owned',
     });
 
-    await expect(repositoryA.revokeBinding(connector.id)).resolves.toMatchObject({
-      oauthTokenRef: null,
-      status: 'revoked',
-      tokenFingerprint: null,
+    await expect(repositoryA.revokeBindingWithPreviousSecret(connector.id)).resolves.toMatchObject({
+      binding: {
+        oauthTokenRef: null,
+        status: 'revoked',
+        tokenFingerprint: null,
+      },
     });
     await expect(repositoryB.getBinding(connector.id)).resolves.toMatchObject({
       id: bindingB.id,

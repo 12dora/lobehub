@@ -14,20 +14,11 @@ import { sessions } from '../../schemas/session';
 import { topics } from '../../schemas/topic';
 import { users } from '../../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../../type';
-
-const clampListLimit = (limit?: number): number =>
-  Math.min(Math.max(Math.floor(limit ?? 50), 1), 200);
-
-const encodeCursor = (row: { createdAt: Date; id: string }): string =>
-  `${row.createdAt.toISOString()}|${row.id}`;
-
-const parseCursor = (cursor: string | undefined): { createdAt: Date; id: string } | null => {
-  if (!cursor?.includes('|')) return null;
-  const [iso, id] = cursor.split('|');
-  const createdAt = new Date(iso);
-  if (Number.isNaN(createdAt.getTime()) || !id) return null;
-  return { createdAt, id };
-};
+import {
+  clampListLimit,
+  encodeCreatedAtCursor as encodeCursor,
+  parseCreatedAtCursor as parseCursor,
+} from './cursor';
 
 const escapeLike = (value: string): string =>
   value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');

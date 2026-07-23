@@ -6,48 +6,18 @@
  * - platform_audit_logs before_diff / after_diff
  */
 
-/** Strip non-alphanumerics and lowercase for key comparison (accessToken → accesstoken). */
-const normalizeKey = (key: string): string => key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase();
+import {
+  AWS_ACCESS_KEY_PATTERN,
+  GCP_API_KEY_PATTERN,
+  JWT_PATTERN,
+  normalizeSecretKey,
+  PEM_PRIVATE_KEY_DETECT,
+  PREFIXED_SECRET_PATTERN,
+  SENSITIVE_KEY_EXACT,
+} from './secretPatterns';
 
-/**
- * Normalized forms of known sensitive keys.
- * Stored as normalized strings so camelCase / snake_case / kebab-case all match.
- */
-const SENSITIVE_KEY_EXACT = new Set(
-  [
-    'apikey',
-    'apisecret',
-    'apitoken',
-    'clientsecret',
-    'secret',
-    'token',
-    'password',
-    'passwd',
-    'authorization',
-    'authorizationheader',
-    'authheader',
-    'cookie',
-    'setcookie',
-    'keyvault',
-    'keyvaults',
-    'encryptedkeyvaults',
-    'encryptedclientsecret',
-    'accesstoken',
-    'refreshtoken',
-    'idtoken',
-    'sessiontoken',
-    'privatekey',
-    'accesskey',
-    'accesskeyid',
-    'secretaccesskey',
-    'awssecretaccesskey',
-    'openaiapikey',
-    'xapikey',
-    'bearer',
-    'credential',
-    'credentials',
-  ].map(normalizeKey),
-);
+/** Strip non-alphanumerics and lowercase for key comparison (accessToken → accesstoken). */
+const normalizeKey = normalizeSecretKey;
 
 /**
  * Substring / suffix tokens on the normalized key.
@@ -78,12 +48,14 @@ export interface RedactSensitiveOptions {
   isBenignKey?: (key: string) => boolean;
 }
 
-const PREFIXED_SECRET_PATTERN =
-  /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/iu;
-const JWT_PATTERN = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/iu;
 const BEARER_VALUE_PATTERN = /\bbearer\s+([\w.~+/-]+)/giu;
 const SECRET_PLACEHOLDER_PATTERN =
   /^(?:<[^>]+>|\[redacted\]|\.{3}|available|bearer|configured|disabled|enabled|expired|failed|invalid|missing|none|null|required|reset|revoked|unknown|undefined|not[-_ ]?set)$/iu;
+/**
+ * Documentation-ish free text markers (kept for detector source-contract tests).
+ * Assignment values intentionally do NOT use these — `Bearer fake-token-value`
+ * must still fail closed; only structural placeholders below are excused.
+ */
 const DOCUMENTATION_PLACEHOLDER_MARKERS = [
   'change me',
   'change-me',
@@ -105,17 +77,24 @@ const DOCUMENTATION_PLACEHOLDER_MARKERS = [
   'replace_with',
   'sample',
 ] as const;
+void DOCUMENTATION_PLACEHOLDER_MARKERS;
 const YOUR_PLACEHOLDER_PREFIXES = ['your ', 'your-', 'your_'] as const;
 const SECRET_SCALAR_PATTERN = /^[\w.~+/-]+$/iu;
 
-const isDocumentationPlaceholder = (value: string): boolean => {
-  const normalized = value.toLowerCase();
-  if (DOCUMENTATION_PLACEHOLDER_MARKERS.some((marker) => normalized.includes(marker))) return true;
-  return YOUR_PLACEHOLDER_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-};
-
 const isKnownSecretScalar = (value: string): boolean =>
   PREFIXED_SECRET_PATTERN.test(value) || JWT_PATTERN.test(value);
+
+/**
+ * Structural placeholders only (`<token>`, `required`, `your_*` prefixes).
+ * Assignment values must NOT be excused merely because they contain words like
+ * "fake"/"example" — real leaks and contract tests use
+ * `Authorization: Bearer fake-token-value`.
+ */
+const isStructuralCredentialPlaceholder = (value: string): boolean => {
+  if (SECRET_PLACEHOLDER_PATTERN.test(value)) return true;
+  const normalized = value.toLowerCase();
+  return YOUR_PLACEHOLDER_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+};
 
 /**
  * Stricter scalar check for fully-formed auth shapes (`Authorization: …`,
@@ -125,9 +104,7 @@ const isKnownSecretScalar = (value: string): boolean =>
  */
 const isCredentialAssignmentValue = (value: string): boolean =>
   isKnownSecretScalar(value) ||
-  (SECRET_SCALAR_PATTERN.test(value) &&
-    !SECRET_PLACEHOLDER_PATTERN.test(value) &&
-    !isDocumentationPlaceholder(value));
+  (SECRET_SCALAR_PATTERN.test(value) && !isStructuralCredentialPlaceholder(value));
 
 const containsSecretValueShape = (value: string): boolean => {
   if (PREFIXED_SECRET_PATTERN.test(value) || JWT_PATTERN.test(value)) {
@@ -213,9 +190,7 @@ export const containsSensitiveMaterial = (value: unknown): boolean => {
   return false;
 };
 
-const PEM_PRIVATE_KEY_PATTERN = /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/;
-const AWS_ACCESS_KEY_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/;
-const GCP_API_KEY_PATTERN = /\bAIza[\w-]{35}\b/;
+const PEM_PRIVATE_KEY_PATTERN = PEM_PRIVATE_KEY_DETECT;
 const GCP_SERVICE_ACCOUNT_PATTERN = /["']type["']\s*:\s*["']service_account["']/i;
 const INLINE_SECRET_ASSIGNMENT_PATTERN =
   /\b(?:api[-_ ]?key|api[-_ ]?secret|api[-_ ]?token|access[-_ ]?token|authorization|bearer|client[-_ ]?secret|credential|id[-_ ]?token|password|passwd|private[-_ ]?key|refresh[-_ ]?token|secret[-_ ]?access[-_ ]?key|token)\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|([^\s,;]+))/giu;

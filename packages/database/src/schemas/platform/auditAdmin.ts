@@ -25,6 +25,22 @@ export type PlatformAuditContentAccessMode = 'disabled' | 'metadata_only' | 'con
 /** Redaction aggressiveness applied before diffs / exports leave the system. */
 export type PlatformAuditRedactionProfile = 'strict' | 'standard';
 
+/**
+ * Numeric / enum column defaults for the audit policy singleton.
+ * Shared by the pgTable `.default(...)` declarations and model `getOrCreate` inserts.
+ */
+export const PLATFORM_AUDIT_POLICY_DEFAULTS = {
+  contentAccessMode: 'metadata_only' as const satisfies PlatformAuditContentAccessMode,
+  conversationRetentionDays: 180,
+  exportArtifactRetentionDays: 7,
+  maxExportRows: 50_000,
+  maxListWindowDays: 90,
+  messageBodyInExport: false,
+  operationLogRetentionDays: 365,
+  redactionProfile: 'strict' as const satisfies PlatformAuditRedactionProfile,
+  revision: 0,
+};
+
 /** Export job kinds supported by the admin audit export pipeline. */
 export type PlatformAuditExportKind = 'operation_logs' | 'conversations' | 'user_timeline';
 
@@ -124,27 +140,39 @@ export const platformAuditPolicies = pgTable(
     id: text('id').primaryKey().notNull(),
 
     /** Optimistic concurrency token; updateCAS requires expectedRevision match. */
-    revision: integer('revision').notNull().default(0),
+    revision: integer('revision').notNull().default(PLATFORM_AUDIT_POLICY_DEFAULTS.revision),
 
-    operationLogRetentionDays: integer('operation_log_retention_days').notNull().default(365),
-    conversationRetentionDays: integer('conversation_retention_days').notNull().default(180),
-    exportArtifactRetentionDays: integer('export_artifact_retention_days').notNull().default(7),
+    operationLogRetentionDays: integer('operation_log_retention_days')
+      .notNull()
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.operationLogRetentionDays),
+    conversationRetentionDays: integer('conversation_retention_days')
+      .notNull()
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.conversationRetentionDays),
+    exportArtifactRetentionDays: integer('export_artifact_retention_days')
+      .notNull()
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.exportArtifactRetentionDays),
 
     contentAccessMode: varchar('content_access_mode', { length: 32 })
       .$type<PlatformAuditContentAccessMode>()
       .notNull()
-      .default('metadata_only'),
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.contentAccessMode),
 
     /** When false, export artifacts never include raw message bodies. */
-    messageBodyInExport: boolean('message_body_in_export').notNull().default(false),
+    messageBodyInExport: boolean('message_body_in_export')
+      .notNull()
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.messageBodyInExport),
 
-    maxExportRows: integer('max_export_rows').notNull().default(50_000),
-    maxListWindowDays: integer('max_list_window_days').notNull().default(90),
+    maxExportRows: integer('max_export_rows')
+      .notNull()
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.maxExportRows),
+    maxListWindowDays: integer('max_list_window_days')
+      .notNull()
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.maxListWindowDays),
 
     redactionProfile: varchar('redaction_profile', { length: 32 })
       .$type<PlatformAuditRedactionProfile>()
       .notNull()
-      .default('strict'),
+      .default(PLATFORM_AUDIT_POLICY_DEFAULTS.redactionProfile),
 
     updatedBy: text('updated_by'),
     createdAt: createdAt(),

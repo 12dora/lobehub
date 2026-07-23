@@ -132,36 +132,41 @@ export class PlatformSettingsModel {
       }
     }
 
-    for (const path of paths) {
+    if (paths.length === 0) return;
+
+    const now = new Date();
+    const rows: NewPlatformSettingPolicy[] = paths.map((path) => {
       const policy = params.draft[path]!;
-      const values: NewPlatformSettingPolicy = {
+      return {
         mode: policy.mode,
         path,
         revision: params.revision,
         schemaVersion: policy.schemaVersion,
-        status: 'published',
-        updatedAt: new Date(),
+        status: 'published' as const,
+        updatedAt: now,
         updatedBy: params.updatedBy ?? null,
         value: policy.value,
         visibility: policy.visibility,
       };
-      await this.db
-        .insert(platformSettingPolicies)
-        .values(values)
-        .onConflictDoUpdate({
-          set: {
-            mode: values.mode,
-            revision: values.revision,
-            schemaVersion: values.schemaVersion,
-            status: values.status,
-            updatedAt: values.updatedAt,
-            updatedBy: values.updatedBy,
-            value: values.value,
-            visibility: values.visibility,
-          },
-          target: platformSettingPolicies.path,
-        });
-    }
+    });
+
+    // Single multi-row upsert keeps the publish lock for one round-trip instead of N.
+    await this.db
+      .insert(platformSettingPolicies)
+      .values(rows)
+      .onConflictDoUpdate({
+        set: {
+          mode: sql`excluded.mode`,
+          revision: sql`excluded.revision`,
+          schemaVersion: sql`excluded.schema_version`,
+          status: sql`excluded.status`,
+          updatedAt: sql`excluded.updated_at`,
+          updatedBy: sql`excluded.updated_by`,
+          value: sql`excluded.value`,
+          visibility: sql`excluded.visibility`,
+        },
+        target: platformSettingPolicies.path,
+      });
   };
 
   listPublishedPolicies = async (): Promise<PlatformSettingPolicyItem[]> => {

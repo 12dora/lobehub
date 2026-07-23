@@ -351,6 +351,307 @@ describe('PlatformInstanceRepository', () => {
     expect(snapshot.freshCandidates.every(({ states }) => states.length <= 8)).toBe(true);
   });
 
+  it('aggregates multiple domains in one snapshot with independent token matchers', async () => {
+    const snapshotAt = new Date('2030-01-01T00:10:00.000Z');
+    const cutoff = new Date(snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+    const matchingId = instanceId('a');
+    const settingsDivergedId = instanceId('b');
+    const brandingDegradedId = instanceId('c');
+    const unreportedId = instanceId('d');
+    const staleId = instanceId('e');
+    const brandingToken = 'branding:rev-9';
+
+    await db.insert(platformInstanceHeartbeats).values([
+      {
+        instanceId: matchingId,
+        lastHeartbeatAt: snapshotAt,
+        startedAt: new Date(snapshotAt.getTime() - 10_000),
+      },
+      {
+        instanceId: settingsDivergedId,
+        lastHeartbeatAt: new Date(snapshotAt.getTime() - 1_000),
+        startedAt: new Date(snapshotAt.getTime() - 10_000),
+      },
+      {
+        instanceId: brandingDegradedId,
+        lastHeartbeatAt: new Date(snapshotAt.getTime() - 2_000),
+        startedAt: new Date(snapshotAt.getTime() - 10_000),
+      },
+      {
+        instanceId: unreportedId,
+        lastHeartbeatAt: new Date(snapshotAt.getTime() - 3_000),
+        startedAt: new Date(snapshotAt.getTime() - 10_000),
+      },
+      {
+        instanceId: staleId,
+        lastHeartbeatAt: new Date(cutoff.getTime() - 1),
+        startedAt: new Date(cutoff.getTime() - 10_000),
+      },
+    ]);
+    await db.insert(platformInstanceRevisionStates).values([
+      {
+        domain: 'settings',
+        health: 'healthy',
+        instanceId: matchingId,
+        loadedRevision: 2,
+        loadMode: 'process_cached',
+        source: 'database',
+      },
+      {
+        domain: 'branding',
+        health: 'healthy',
+        instanceId: matchingId,
+        loadedRevisionId: brandingToken,
+        loadMode: 'process_cached',
+        source: 'database',
+      },
+      {
+        domain: 'settings',
+        health: 'healthy',
+        instanceId: settingsDivergedId,
+        loadedRevision: 1,
+        loadMode: 'process_cached',
+        source: 'database',
+      },
+      {
+        domain: 'branding',
+        health: 'healthy',
+        instanceId: settingsDivergedId,
+        loadedRevisionId: brandingToken,
+        loadMode: 'process_cached',
+        source: 'database',
+      },
+      {
+        domain: 'settings',
+        health: 'healthy',
+        instanceId: brandingDegradedId,
+        loadedRevision: 2,
+        loadMode: 'process_cached',
+        source: 'database',
+      },
+      {
+        domain: 'branding',
+        errorCategory: 'cache_unavailable',
+        health: 'degraded',
+        instanceId: brandingDegradedId,
+        loadedRevisionId: 'branding:old',
+        loadMode: 'process_cached',
+        source: 'lkg',
+      },
+      {
+        domain: 'settings',
+        health: 'healthy',
+        instanceId: staleId,
+        loadedRevision: 9,
+        loadMode: 'process_cached',
+        source: 'database',
+      },
+    ]);
+
+    const snapshot = await repository.getConvergenceInventorySnapshot(
+      [
+        {
+          domain: 'settings',
+          loadMode: 'process_cached',
+          status: 'available',
+          token: { kind: 'revision', value: 2 },
+        },
+        {
+          domain: 'branding',
+          loadMode: 'process_cached',
+          status: 'available',
+          token: { kind: 'immutable_id', value: brandingToken },
+        },
+        {
+          domain: 'ai_catalog',
+          loadMode: 'request_scoped',
+          status: 'available',
+          token: { kind: 'revision', value: 1 },
+        },
+        {
+          domain: 'skill_catalog',
+          loadMode: 'process_cached',
+          status: 'disabled',
+          token: null,
+        },
+      ],
+      snapshotAt,
+    );
+
+    expect(snapshot.freshCount).toBe(4);
+    expect(snapshot.staleCount).toBe(1);
+    expect(snapshot.counts.map(({ domain }) => domain)).toEqual([
+      'settings',
+      'branding',
+      'ai_catalog',
+      'skill_catalog',
+    ]);
+    expect(snapshot.counts[0]).toEqual({
+      counts: {
+        degraded: 0,
+        diverged: 1,
+        fresh: 4,
+        matching: 2,
+        stale: 1,
+        unreported: 1,
+      },
+      domain: 'settings',
+    });
+    expect(snapshot.counts[1]).toEqual({
+      counts: {
+        degraded: 1,
+        diverged: 0,
+        fresh: 4,
+        matching: 2,
+        stale: 1,
+        unreported: 1,
+      },
+      domain: 'branding',
+    });
+    expect(snapshot.counts[2]).toEqual({
+      counts: {
+        degraded: 0,
+        diverged: 0,
+        fresh: 4,
+        matching: 0,
+        stale: 1,
+        unreported: 0,
+      },
+      domain: 'ai_catalog',
+    });
+    expect(snapshot.counts[3]).toEqual({
+      counts: {
+        degraded: 0,
+        diverged: 0,
+        fresh: 4,
+        matching: 0,
+        stale: 1,
+        unreported: 0,
+      },
+      domain: 'skill_catalog',
+    });
+
+    const issueIds = snapshot.freshCandidates.map(({ instance }) => instance.instanceId);
+    expect(issueIds[0]).toBe(settingsDivergedId);
+    expect(issueIds.slice(0, 3)).toEqual(
+      expect.arrayContaining([settingsDivergedId, brandingDegradedId, unreportedId]),
+    );
+    expect(issueIds.indexOf(settingsDivergedId)).toBeLessThan(issueIds.indexOf(matchingId));
+    expect(snapshot.staleCandidates.map(({ instance }) => instance.instanceId)).toEqual([staleId]);
+  });
+
+  it('returns empty inventory snapshot counts for empty targets without failing', async () => {
+    const snapshotAt = new Date('2030-01-01T00:10:00.000Z');
+    await db.insert(platformInstanceHeartbeats).values({
+      instanceId: instanceId('f'),
+      lastHeartbeatAt: snapshotAt,
+      startedAt: new Date(snapshotAt.getTime() - 5_000),
+    });
+
+    const snapshot = await repository.getConvergenceInventorySnapshot([], snapshotAt);
+
+    expect(snapshot).toEqual({
+      counts: [],
+      freshCandidates: [
+        {
+          instance: expect.objectContaining({ instanceId: instanceId('f') }),
+          states: [],
+        },
+      ],
+      freshCount: 1,
+      snapshotAt,
+      staleCandidates: [],
+      staleCount: 0,
+    });
+  });
+
+  it('honors diagnostic candidate limit while preserving issue-first multi-domain order', async () => {
+    const snapshotAt = new Date('2030-01-01T00:10:00.000Z');
+    const total = PLATFORM_INSTANCE_FRESH_DIAGNOSTIC_CANDIDATE_LIMIT + 6;
+    const ids = Array.from(
+      { length: total },
+      (_, index) => `pinst_${index.toString(16).padStart(48, '0')}`,
+    );
+    await db.insert(platformInstanceHeartbeats).values(
+      ids.map((id, index) => ({
+        instanceId: id,
+        lastHeartbeatAt: new Date(snapshotAt.getTime() - index * 100),
+        startedAt: new Date(snapshotAt.getTime() - 120_000),
+      })),
+    );
+    // Newest heartbeat (ids[0]) only diverges on branding; oldest (ids.at(-1)) only on settings.
+    await db.insert(platformInstanceRevisionStates).values([
+      ...ids.map((id, index) => ({
+        domain: 'settings' as const,
+        health: 'healthy' as const,
+        instanceId: id,
+        loadedRevision: index === total - 1 ? 1 : 2,
+        loadMode: 'process_cached' as const,
+        source: 'database' as const,
+      })),
+      ...ids.map((id, index) => ({
+        domain: 'branding' as const,
+        health: 'healthy' as const,
+        instanceId: id,
+        loadedRevisionId: index === 0 ? 'branding:wrong' : 'branding:ok',
+        loadMode: 'process_cached' as const,
+        source: 'database' as const,
+      })),
+    ]);
+
+    const snapshot = await repository.getConvergenceInventorySnapshot(
+      [
+        {
+          domain: 'settings',
+          loadMode: 'process_cached',
+          status: 'available',
+          token: { kind: 'revision', value: 2 },
+        },
+        {
+          domain: 'branding',
+          loadMode: 'process_cached',
+          status: 'available',
+          token: { kind: 'immutable_id', value: 'branding:ok' },
+        },
+      ],
+      snapshotAt,
+    );
+
+    expect(snapshot.freshCandidates).toHaveLength(
+      PLATFORM_INSTANCE_FRESH_DIAGNOSTIC_CANDIDATE_LIMIT,
+    );
+    // Issue-first: branding-divergent newest instance precedes matching mid-list instances.
+    expect(snapshot.freshCandidates[0]?.instance.instanceId).toBe(ids[0]);
+    // Settings-divergent oldest remains among the bounded issue set (only two issues total).
+    expect(snapshot.freshCandidates.map(({ instance }) => instance.instanceId)).toEqual(
+      expect.arrayContaining([ids[0], ids.at(-1)]),
+    );
+    expect(snapshot.counts).toEqual([
+      {
+        counts: {
+          degraded: 0,
+          diverged: 1,
+          fresh: total,
+          matching: total - 1,
+          stale: 0,
+          unreported: 0,
+        },
+        domain: 'settings',
+      },
+      {
+        counts: {
+          degraded: 0,
+          diverged: 1,
+          fresh: total,
+          matching: total - 1,
+          stale: 0,
+          unreported: 0,
+        },
+        domain: 'branding',
+      },
+    ]);
+  });
+
   it('keyset-paginates the complete mixed revision inventory across equal heartbeats', async () => {
     const freshHeartbeat = new Date('2030-01-01T00:10:00.000Z');
     const staleHeartbeat = new Date('2030-01-01T00:08:00.000Z');
