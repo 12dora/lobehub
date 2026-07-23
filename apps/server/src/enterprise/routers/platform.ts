@@ -43,7 +43,7 @@ ensurePlatformAuditRetentionWorkerStarted();
  *
  * - getCapabilities: **authenticated** — adminAccess from Global RBAC when flag on.
  * - getPublicSnapshot: anonymous-safe branding / login flags.
- * - getAccessStatus: authenticated access status (always granted after EasyAuth removal).
+ * - getAccessStatus: authenticated access status (always granted for authenticated users).
  */
 export const platformRouter = router({
   agents: platformAgentsRouter,
@@ -115,7 +115,7 @@ export const platformRouter = router({
     }),
 
   /**
-   * Access status for the current principal (always granted after EasyAuth removal).
+   * Access status for the current principal (always granted for authenticated users).
    */
   getAccessStatus: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
     return resolveAccessStatus({

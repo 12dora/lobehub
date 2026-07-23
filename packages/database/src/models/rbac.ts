@@ -461,7 +461,7 @@ export class RbacModel {
    *
    * @param roleIds Role ids that must all be global (`roles.workspace_id IS NULL`).
    * @param options.preserveRoleNames Role names whose grants are left untouched
-   *   (e.g. `super_admin` during EasyAuth sync / non-super actor demote attempts).
+   *   (e.g. `super_admin` during role sync / non-super actor demote attempts).
    * @param options.protectLastSuperAdmin Default true.
    */
   replaceGlobalUserRoles = async (

@@ -33,7 +33,7 @@ export class PlatformRbacService {
     const idMap = await getGlobalRoleIdsByName(this.db as LobeChatDatabase, names);
     return names.map((name) => ({
       id: idMap.get(name) ?? null,
-      // All system roles are managed via the admin RBAC console (EasyAuth removed).
+      // All system roles are managed via the admin RBAC console.
       isSystemRole: true,
       name,
     }));
