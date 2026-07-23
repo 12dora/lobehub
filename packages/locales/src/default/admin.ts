@@ -1235,7 +1235,7 @@ export default {
   'settingsPolicy.publish': 'Publish',
   'settingsPolicy.resetDefaults': 'Restore defaults',
   'settingsPolicy.resetDefaultsDesc':
-    'Restore all settings to their built-in defaults. This clears every platform override and publishes a new revision; users regain control of these settings. Continue?',
+    'Restore the settings on this page to their built-in defaults. This clears the platform overrides configured here and publishes a new revision; users regain control of these settings. Continue?',
   'settingsPolicy.resetReason': 'Restore settings policy to defaults',
   'settingsPolicy.resetFailed': 'Restore defaults failed',
   'settingsPolicy.publishDesc':

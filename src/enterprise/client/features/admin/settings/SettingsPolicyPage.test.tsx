@@ -421,6 +421,54 @@ describe('SettingsPolicyPage', () => {
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
+  it('restore-defaults preserves service-model published paths and clears only this page overrides', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.data = {
+      ...makeData(1),
+      publishedPolicies: {
+        // Owned by the Service Model page (SERVICE_MODEL_MANAGED_PATHS) — must survive.
+        'defaultAgent.config.model': { ...oldPolicy },
+        // This page's own override — must be cleared.
+        'general.fontSize': { ...oldPolicy },
+      },
+    };
+    mocks.saveDraft.mockResolvedValueOnce({
+      baseRevision: 2,
+      draftToken: savedDraftToken,
+      ok: true,
+      registryVersion: 1,
+    });
+    mocks.publish.mockResolvedValueOnce({ auditId: 'audit', revision: 2 });
+    mocks.mutate.mockImplementation(async () => mocks.data);
+
+    render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
+    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
+
+    const savedDraft = mocks.saveDraft.mock.calls[0]?.[0].draft;
+    expect(savedDraft).toHaveProperty(['defaultAgent.config.model']);
+    expect(savedDraft).not.toHaveProperty(['general.fontSize']);
+  });
+
+  it('disables restore-defaults when the only published overrides belong to the service-model page', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.data = {
+      ...makeData(1),
+      publishedPolicies: { 'defaultAgent.config.model': { ...oldPolicy } },
+    };
+    render(<SettingsPolicyPage />);
+    await screen.findByRole('button', { name: 'settingsPolicy.validate' });
+    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
+  });
+
   it('enters conflict mode when the reset publish reports a revision conflict', async () => {
     mocks.permissions = [
       PLATFORM_PERMISSIONS.SETTINGS_READ,

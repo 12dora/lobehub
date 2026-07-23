@@ -338,6 +338,27 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     return map;
   }, [data?.registry]);
 
+  // Published paths owned by the Service Model admin page (hidden here) that live in the
+  // SAME shared platform settings table. "Restore defaults" must keep these — publishing an
+  // empty draft would delete every row and silently wipe model/service/image assignments.
+  const isServiceModelPublishedPath = useCallback(
+    (path: string) => {
+      const entry = registryByPath.get(path);
+      return entry ? isServiceModelManaged(entry) : SERVICE_MODEL_MANAGED_PATHS.has(path);
+    },
+    [registryByPath],
+  );
+
+  // Overrides owned by THIS page — drives the Restore-defaults enable-gate so the button is
+  // disabled when the only published rows belong to the Service Model page.
+  const ownPublishedOverrideCount = useMemo(
+    () =>
+      Object.keys(data?.publishedPolicies ?? {}).filter(
+        (path) => !isServiceModelPublishedPath(path),
+      ).length,
+    [data?.publishedPolicies, isServiceModelPublishedPath],
+  );
+
   const filteredEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (data?.registry ?? []).filter((entry) => {
@@ -683,10 +704,14 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     validatedBaseRevision,
   ]);
 
-  // "Restore defaults": clear every platform override by publishing an empty policy set.
-  // Effective settings fall back to their built-in defaults and users regain control.
-  // Reuses saveDraft + publish (no dedicated procedure); reauth wraps only the publish
-  // retry with a frozen CAS token, mirroring the managed-resources save flow.
+  // "Restore defaults": clear the overrides THIS page owns and publish. Effective settings
+  // fall back to their built-in defaults and users regain control. Reuses saveDraft + publish
+  // (no dedicated procedure); reauth wraps only the publish retry with a frozen CAS token,
+  // mirroring the managed-resources save flow.
+  //
+  // The reset draft KEEPS service-model-managed published paths (owned by the Service Model
+  // admin page, hidden here) — they share the same platform settings table, and publishing an
+  // empty draft would run an unscoped delete and wipe those model/service/image assignments.
   const handleResetDefaults = useCallback(() => {
     if (
       !data ||
@@ -696,7 +721,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       revisionConflict ||
       activeBaseRevision !== data.baseRevision ||
       activeDraftToken !== data.draftToken ||
-      Object.keys(data.publishedPolicies).length === 0
+      ownPublishedOverrideCount === 0
     ) {
       return;
     }
@@ -705,6 +730,10 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     const baseRevision = activeBaseRevision;
     // Current (clean) draft — restored if saveDraft commits but publish fails.
     const priorDraft = draft;
+    // Keep only paths owned by another surface; dropping this page's paths restores their defaults.
+    const resetDraft = Object.fromEntries(
+      Object.entries(data.publishedPolicies).filter(([path]) => isServiceModelPublishedPath(path)),
+    ) as DraftMap;
     openDangerConfirm({
       confirmText: t('settingsPolicy.resetDefaults'),
       content: t('settingsPolicy.resetDefaultsDesc'),
@@ -713,7 +742,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         let saved: Awaited<ReturnType<typeof adminSettingsService.saveDraft>> | null = null;
         try {
           saved = await adminSettingsService.saveDraft({
-            draft: {},
+            draft: resetDraft,
             expectedDraftToken: baseToken,
             reason,
           });
@@ -779,7 +808,9 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     dirty,
     draft,
     enterRevisionConflict,
+    isServiceModelPublishedPath,
     mutate,
+    ownPublishedOverrideCount,
     revisionConflict,
     t,
   ]);
@@ -888,7 +919,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                 revisionConflict ||
                 activeBaseRevision !== data.baseRevision ||
                 activeDraftToken !== data.draftToken ||
-                Object.keys(data.publishedPolicies).length === 0
+                ownPublishedOverrideCount === 0
               }
               onClick={handleResetDefaults}
             >
@@ -1071,7 +1102,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                     <div className={styles.field} id={`setting-${entry.path}`} key={entry.path}>
                       <div className={styles.fieldHeader}>
                         <div className={styles.titleBlock}>
-                          <Text strong ellipsis={{ tooltip: true }}>
+                          <Text strong ellipsis={{ tooltip: true, tooltipWhenOverflow: true }}>
                             {t(entry.titleKey as never, { defaultValue: entry.path })}
                           </Text>
                           <div className={styles.path} title={entry.path}>
@@ -1083,7 +1114,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                             aria-label={t('settingsPolicy.uiMode.label')}
                             disabled={!canUpdate}
                             // Unified policy-mode select width — keep in sync with the managed-resource boxes.
-                            style={{ width: 160 }}
+                            style={{ width: 180 }}
                             value={toSettingsPolicyUiMode(policy)}
                             options={UI_MODE_VALUES.map((value) => ({
                               label: t(`settingsPolicy.uiMode.${value}` as never),
