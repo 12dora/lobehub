@@ -8,6 +8,7 @@ import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
+import { useSidebarLayoutPolicy } from '@/enterprise/client/hooks/useSidebarLayoutPolicy';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
@@ -80,6 +81,17 @@ const Body = memo(() => {
   );
   const updateSystemStatus = useGlobalStore((s) => s.updateSystemStatus);
 
+  // Platform-managed sidebar (M15): when the admin centrally manages the layout, apply the
+  // published layout (order + hidden groups) and hide the user's customization controls.
+  const sidebarPolicy = useSidebarLayoutPolicy();
+  const managedSidebar = sidebarPolicy.managed;
+  const effectiveSidebarItems =
+    managedSidebar && sidebarPolicy.layout ? sidebarPolicy.layout.sidebarItems : sidebarItems;
+  const effectiveHiddenSections =
+    managedSidebar && sidebarPolicy.layout
+      ? sidebarPolicy.layout.hiddenSidebarSections
+      : hiddenSections;
+
   const hideSection = useCallback(
     (key: string) => {
       updateSystemStatus({ hiddenSidebarSections: [...hiddenSections, key] });
@@ -121,14 +133,16 @@ const Body = memo(() => {
       // implicitly owner-private, so a dedicated bucket would be a noisy
       // empty section.
       if (k === GroupKey.Private && !activeWorkspaceId) return false;
-      return k === GroupKey.Agent || k === SIDEBAR_SPACER_ID || !hiddenSections.includes(k);
+      return (
+        k === GroupKey.Agent || k === SIDEBAR_SPACER_ID || !effectiveHiddenSections.includes(k)
+      );
     },
-    [hiddenSections, activeWorkspaceId],
+    [effectiveHiddenSections, activeWorkspaceId],
   );
 
   const visibleKeys = useMemo(
-    () => sidebarItems.filter((k) => !HEADER_KEYS.has(k) && isVisible(k)),
-    [sidebarItems, isVisible],
+    () => effectiveSidebarItems.filter((k) => !HEADER_KEYS.has(k) && isVisible(k)),
+    [effectiveSidebarItems, isVisible],
   );
 
   const renderNavLink = useCallback(
@@ -147,19 +161,23 @@ const Body = memo(() => {
         >
           <NavItem
             active={tab === key}
-            contextMenuItems={getContextMenuItems(key)}
+            contextMenuItems={managedSidebar ? undefined : getContextMenuItems(key)}
             icon={navItem.icon}
             title={navItem.title}
             actions={
-              <DropdownMenu items={getContextMenuItems(key)} nativeButton={false}>
-                <ActionIcon icon={MoreHorizontalIcon} size={'small'} style={{ flex: 'none' }} />
-              </DropdownMenu>
+              // Platform-managed: the nav-link "..." holds only layout controls, so it
+              // disappears entirely (conversation/assistant menus are unaffected).
+              managedSidebar ? undefined : (
+                <DropdownMenu items={getContextMenuItems(key)} nativeButton={false}>
+                  <ActionIcon icon={MoreHorizontalIcon} size={'small'} style={{ flex: 'none' }} />
+                </DropdownMenu>
+              )
             }
           />
         </WorkspaceLink>
       );
     },
-    [navLinkItems, tab, getContextMenuItems, navigate],
+    [navLinkItems, tab, getContextMenuItems, navigate, managedSidebar],
   );
 
   const handleAccordionExpandedChange = useCallback(

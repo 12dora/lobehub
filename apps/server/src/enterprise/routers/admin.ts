@@ -35,6 +35,7 @@ import { adminIdentityProvidersRouter } from './admin/identityProviders';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSecurityRouter } from './admin/security';
 import { adminSettingsRouter } from './admin/settings';
+import { adminSidebarLayoutRouter } from './admin/sidebarLayout';
 import { adminSkillsRouter } from './admin/skills';
 import { adminStatsRouter } from './admin/stats';
 import { adminSystemRouter } from './admin/system';
@@ -335,6 +336,7 @@ export const adminRouter = router({
   roles: adminRolesRouter,
   security: adminSecurityRouter,
   settings: adminSettingsRouter,
+  sidebarLayout: adminSidebarLayoutRouter,
   skills: adminSkillsRouter,
   stats: adminStatsRouter,
   system: adminSystemRouter,

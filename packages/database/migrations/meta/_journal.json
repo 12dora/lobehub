@@ -994,6 +994,13 @@
       "when": 1784700100000,
       "tag": "0141_platform_auth_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 142,
+      "version": "7",
+      "when": 1784700200000,
+      "tag": "0142_platform_sidebar_layout",
+      "breakpoints": true
     }
   ],
   "version": "6"

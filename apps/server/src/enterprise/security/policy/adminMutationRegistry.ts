@@ -642,6 +642,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.settings.validateDraft',
     'Validate settings without publishing them.',
   ),
+  'admin.sidebarLayout.update': regularMutation(
+    'admin.sidebarLayout.update',
+    'medium',
+    'Change the platform home-sidebar layout policy (user vs platform-managed).',
+    { reason: noReason },
+  ),
   'admin.skills.applyImmediate': dangerousMutation(
     'admin.skills.applyImmediate',
     'high',

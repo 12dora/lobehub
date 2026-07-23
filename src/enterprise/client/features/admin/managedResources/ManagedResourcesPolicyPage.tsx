@@ -32,6 +32,7 @@ import {
 } from './controller';
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
 import SharedOAuthAuthorizationControl from './SharedOAuthAuthorizationControl';
+import SidebarLayoutControl from './SidebarLayoutControl';
 import { createUnsavedNavigationDecision } from './unsavedNavigationDecision';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -336,6 +337,8 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
             );
           })}
         </div>
+
+        <SidebarLayoutControl disabled={!canSave || conflict} />
 
         {unready.length > 0 ? (
           <Alert

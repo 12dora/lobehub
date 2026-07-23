@@ -22,9 +22,11 @@ import { useTranslation } from 'react-i18next';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
+import { useSidebarLayoutPolicy } from '@/enterprise/client/hooks/useSidebarLayoutPolicy';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import { useInitRecents } from '@/hooks/useInitRecents';
 import { openCustomizeSidebarModal } from '@/routes/(main)/home/_layout/Body/CustomizeSidebarModal';
+import { stripSidebarLayoutMenuItems } from '@/routes/(main)/home/_layout/Body/sidebarMenuGating';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { reorderSidebarItems } from '@/store/global/selectors/systemStatus';
@@ -76,6 +78,8 @@ const Recents = memo<RecentsProps>(({ itemKey }) => {
     updateSystemStatus({ hiddenSidebarSections: [...hiddenSections, 'recents'] });
   }, [hiddenSections, updateSystemStatus]);
 
+  const managedSidebar = useSidebarLayoutPolicy().managed;
+
   const dropdownMenu = useMemo(() => {
     const pageSizeOptions = [5, 10, 15, 20];
     const pageSizeItems = pageSizeOptions.map((size) => ({
@@ -87,43 +91,46 @@ const Recents = memo<RecentsProps>(({ itemKey }) => {
       },
     }));
 
-    return [
-      {
-        children: pageSizeItems,
-        extra: recentPageSize,
-        icon: <Icon icon={Hash} />,
-        key: 'show',
-        label: t('navPanel.show'),
-      },
-      {
-        disabled: isFirst,
-        icon: <Icon icon={ArrowUpIcon} />,
-        key: 'moveUp',
-        label: t('navPanel.moveUp'),
-        onClick: () => moveSection('up'),
-      },
-      {
-        disabled: isLast,
-        icon: <Icon icon={ArrowDownIcon} />,
-        key: 'moveDown',
-        label: t('navPanel.moveDown'),
-        onClick: () => moveSection('down'),
-      },
-      {
-        disabled: false,
-        icon: <Icon icon={EyeOffIcon} />,
-        key: 'hideSection',
-        label: t('navPanel.hideSection'),
-        onClick: hideSection,
-      },
-      { type: 'divider' as const },
-      {
-        icon: <Icon icon={SlidersHorizontalIcon} />,
-        key: 'customizeSidebar',
-        label: t('navPanel.customizeSidebar'),
-        onClick: () => openCustomizeSidebarModal(),
-      },
-    ] as MenuProps['items'];
+    return stripSidebarLayoutMenuItems(
+      [
+        {
+          children: pageSizeItems,
+          extra: recentPageSize,
+          icon: <Icon icon={Hash} />,
+          key: 'show',
+          label: t('navPanel.show'),
+        },
+        {
+          disabled: isFirst,
+          icon: <Icon icon={ArrowUpIcon} />,
+          key: 'moveUp',
+          label: t('navPanel.moveUp'),
+          onClick: () => moveSection('up'),
+        },
+        {
+          disabled: isLast,
+          icon: <Icon icon={ArrowDownIcon} />,
+          key: 'moveDown',
+          label: t('navPanel.moveDown'),
+          onClick: () => moveSection('down'),
+        },
+        {
+          disabled: false,
+          icon: <Icon icon={EyeOffIcon} />,
+          key: 'hideSection',
+          label: t('navPanel.hideSection'),
+          onClick: hideSection,
+        },
+        { type: 'divider' as const },
+        {
+          icon: <Icon icon={SlidersHorizontalIcon} />,
+          key: 'customizeSidebar',
+          label: t('navPanel.customizeSidebar'),
+          onClick: () => openCustomizeSidebarModal(),
+        },
+      ] as MenuProps['items'],
+      managedSidebar,
+    );
   }, [
     recentPageSize,
     updateSystemStatus,
@@ -132,6 +139,7 @@ const Recents = memo<RecentsProps>(({ itemKey }) => {
     isLast,
     moveSection,
     hideSection,
+    managedSidebar,
     visibleItems.length,
   ]);
 

@@ -21,4 +21,5 @@ export * from './jobs';
 export * from './managedPolicy';
 export * from './revisions';
 export * from './settings';
+export * from './sidebarLayout';
 export * from './skills';

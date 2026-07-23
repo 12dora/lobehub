@@ -358,7 +358,24 @@ const flattenItems = (outer: string[], inner: string[], bindSpacerToAccordion: b
       : [id],
   );
 
-const CustomizeSidebarContent = memo(() => {
+/**
+ * Overrides the dialog's read/write target. When provided (e.g. from the admin
+ * "platform-managed sidebar" surface), the dialog seeds from and saves to this target
+ * instead of the current user's global-store sidebar layout — the DnD/toggle internals
+ * are otherwise identical.
+ */
+export interface CustomizeSidebarTarget {
+  initialHiddenSections: string[];
+  initialItems: string[];
+  isWorkspaceMode: boolean;
+  onConfirm: (next: {
+    hiddenSidebarSections: string[];
+    sidebarExpandedKeys?: string[];
+    sidebarItems: string[];
+  }) => void;
+}
+
+const CustomizeSidebarContent = memo<{ target?: CustomizeSidebarTarget }>(({ target }) => {
   const { close } = useModalContext();
   const { t: commonT } = useTranslation('common');
   const activeWorkspaceId = useActiveWorkspaceId();
@@ -367,19 +384,24 @@ const CustomizeSidebarContent = memo(() => {
     systemStatusSelectors.hiddenSidebarSections(activeWorkspaceId),
   );
   const updateSystemStatus = useGlobalStore((s) => s.updateSystemStatus);
-  const isWorkspaceMode = !!useActiveWorkspaceSlug();
+  const storeWorkspaceMode = !!useActiveWorkspaceSlug();
+
+  // Default target = the current user's sidebar; an injected target overrides read + write.
+  const isWorkspaceMode = target ? target.isWorkspaceMode : storeWorkspaceMode;
+  const baseItems = target ? target.initialItems : storeItems;
+  const baseHiddenSections = target ? target.initialHiddenSections : storeHiddenSections;
   const sortableItemIds = useMemo(
     () => getSortableSidebarItemIds(isWorkspaceMode),
     [isWorkspaceMode],
   );
-  const filteredStoreItems = useMemo(
-    () => storeItems.filter((id) => sortableItemIds.has(id)),
-    [storeItems, sortableItemIds],
+  const filteredBaseItems = useMemo(
+    () => baseItems.filter((id) => sortableItemIds.has(id)),
+    [baseItems, sortableItemIds],
   );
 
   // Local draft state — persisted only when the user confirms the modal.
-  const [items, setItems] = useState<string[]>(filteredStoreItems);
-  const [hiddenSections, setHiddenSections] = useState<string[]>(storeHiddenSections);
+  const [items, setItems] = useState<string[]>(filteredBaseItems);
+  const [hiddenSections, setHiddenSections] = useState<string[]>(baseHiddenSections);
   const [shouldResetExpandedKeys, setShouldResetExpandedKeys] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -431,24 +453,24 @@ const CustomizeSidebarContent = memo(() => {
   }, [sortableItemIds, isWorkspaceMode]);
 
   const handleConfirm = useCallback(() => {
-    updateSystemStatus(
-      {
-        hiddenSidebarSections: hiddenSections,
-        sidebarItems: mergeAvailableSidebarItems(storeItems, items, sortableItemIds),
-        ...(shouldResetExpandedKeys
-          ? { sidebarExpandedKeys: DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS }
-          : {}),
-      },
-      'customizeSidebar',
-    );
+    const next = {
+      hiddenSidebarSections: hiddenSections,
+      sidebarItems: mergeAvailableSidebarItems(baseItems, items, sortableItemIds),
+      ...(shouldResetExpandedKeys
+        ? { sidebarExpandedKeys: DEFAULT_HOME_SIDEBAR_EXPANDED_KEYS }
+        : {}),
+    };
+    if (target) target.onConfirm(next);
+    else updateSystemStatus(next, 'customizeSidebar');
     close();
   }, [
+    baseItems,
     close,
     hiddenSections,
     items,
     shouldResetExpandedKeys,
     sortableItemIds,
-    storeItems,
+    target,
     updateSystemStatus,
   ]);
 
@@ -574,9 +596,9 @@ const CustomizeSidebarContent = memo(() => {
 // Modal entry
 // ---------------------------------------------------------------------------
 
-export const openCustomizeSidebarModal = (): ModalInstance =>
+export const openCustomizeSidebarModal = (target?: CustomizeSidebarTarget): ModalInstance =>
   createModal({
-    content: <CustomizeSidebarContent />,
+    content: <CustomizeSidebarContent target={target} />,
     footer: null,
     maskClosable: true,
     title: t('navPanel.customizeSidebar', { ns: 'common' }),
