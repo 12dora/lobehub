@@ -513,22 +513,21 @@ test('activates a published Authentik provider across a real supervised restart'
     );
     expect(accessStatusResponse.ok()).toBe(true);
     const accessStatusBody = await accessStatusResponse.text();
-    expect(accessStatusBody).toContain('"accessGranted":false');
-    expect(accessStatusBody).toContain('"reason":"not_granted"');
-    expect(accessStatusBody).toContain('/apps/aihub/request');
+    // Authentik-only: authenticated users are admitted (EasyAuth aihub.access gate removed).
+    expect(accessStatusBody).toContain('"accessGranted":true');
+    expect(accessStatusBody).toContain('"reason":"granted"');
     const accessEvidencePage = await oidcContext.newPage();
     await accessEvidencePage.goto(
       `/trpc/lambda/platform.getAccessStatus?batch=1&input=${accessInput}`,
     );
-    await expect(accessEvidencePage.locator('body')).toContainText('"accessGranted":false');
-    await screenshot(accessEvidencePage, '07-access-not-granted-response.png');
+    await expect(accessEvidencePage.locator('body')).toContainText('"accessGranted":true');
+    await screenshot(accessEvidencePage, '07-access-granted-response.png');
     await accessEvidencePage.close();
 
-    const blockedBusinessResponse = await oidcContext.request.get(
+    const businessResponse = await oidcContext.request.get(
       `/trpc/lambda/user.getUserState?batch=1&input=${accessInput}`,
     );
-    expect(blockedBusinessResponse.ok()).toBe(false);
-    expect(await blockedBusinessResponse.text()).toContain('PLATFORM_ACCESS_NOT_GRANTED');
+    expect(businessResponse.ok()).toBe(true);
 
     const session = await oidcContext.request.get('/api/auth/get-session');
     const sessionSerialized = JSON.stringify((await session.json()) as Record<string, unknown>);

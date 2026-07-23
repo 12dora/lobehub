@@ -28,7 +28,7 @@ export const throwEnterpriseError = (params: {
 };
 
 export const mapEnterpriseCodeToTrpc = (code: EnterpriseErrorCode): TRPC_ERROR_CODE_KEY => {
-  if (code === 'PLATFORM_ACCESS_NOT_GRANTED' || code === 'PLATFORM_PERMISSION_DENIED') {
+  if (code === 'PLATFORM_PERMISSION_DENIED') {
     return 'FORBIDDEN';
   }
   if (code === 'ADMIN_ACCESS_DENIED' || code === 'ADMIN_FEATURE_DISABLED') {

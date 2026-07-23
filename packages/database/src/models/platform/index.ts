@@ -14,7 +14,7 @@ export * from './branding';
 export * from './checksum';
 export * from './connectorGovernance';
 export * from './easyauthGrantSnapshot';
-export * from './easyauthLoginSync';
+export * from './ensureDefaultRole';
 export * from './errors';
 export * from './globalCredential';
 export * from './globalStats';

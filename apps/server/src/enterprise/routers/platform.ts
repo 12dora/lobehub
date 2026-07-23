@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PlatformSidebarLayoutModel } from '@/database/models/platform';
 import { RbacModel } from '@/database/models/rbac';
@@ -8,7 +6,6 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { platformPublicSnapshotSchema } from '@/types/platform/publicSnapshot';
 import { sidebarLayoutPolicySchema } from '@/types/platform/sidebarLayout';
 
-import { parseEasyauthConfig } from '../config/easyauth';
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
@@ -21,7 +18,6 @@ import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/ai
 import { resolvePlatformPublicSnapshot } from '../services/branding';
 import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
 import { publishConnectorRuntimeCapabilityState } from '../services/connectorCatalog/runtimeEffectiveState';
-import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
@@ -43,12 +39,11 @@ ensurePlatformAuditExportWorkerStarted();
 ensurePlatformAuditRetentionWorkerStarted();
 
 /**
- * Platform router (M00 read-only + M02 access status / descriptor).
+ * Platform router (M00 read-only + access status).
  *
  * - getCapabilities: **authenticated** — adminAccess from Global RBAC when flag on.
  * - getPublicSnapshot: anonymous-safe branding / login flags.
- * - getAccessStatus: authenticated aihub.access status + permission request URL.
- * - getEasyauthDescriptor: public EasyAuth app descriptor (manifest).
+ * - getAccessStatus: authenticated access status (always granted after EasyAuth removal).
  */
 export const platformRouter = router({
   agents: platformAgentsRouter,
@@ -120,7 +115,7 @@ export const platformRouter = router({
     }),
 
   /**
-   * aihub.access status for the current principal (login → "request access" page).
+   * Access status for the current principal (always granted after EasyAuth removal).
    */
   getAccessStatus: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
     return resolveAccessStatus({
@@ -128,18 +123,6 @@ export const platformRouter = router({
       userId: ctx.userId!,
     });
   }),
-
-  /**
-   * EasyAuth application descriptor (also served at GET /.well-known/easyauth-app.json).
-   */
-  getEasyauthDescriptor: publicProcedure
-    .input(z.object({ schemaVersion: z.number().int().min(1).optional() }).optional())
-    .query(({ input }) => {
-      const config = parseEasyauthConfig();
-      return buildEasyauthDescriptor({
-        schemaVersion: input?.schemaVersion ?? config.manifestSchemaVersion,
-      });
-    }),
 });
 
 export type PlatformRouter = typeof platformRouter;

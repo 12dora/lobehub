@@ -8,14 +8,12 @@ import { hashPassword } from 'better-auth/crypto';
 import { sql } from 'drizzle-orm';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { AIHUB_ACCESS_PERMISSION } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { AdminUserModel } from '@/database/models/adminUser';
 import {
   type CreatePlatformAuditLogParams,
   PlatformAuditLogModel,
 } from '@/database/models/platform';
-import { EasyauthGrantSnapshotModel } from '@/database/models/platform/easyauthGrantSnapshot';
 import { LastSuperAdminProtectionError, RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { getGlobalRoleIdsByName } from '@/database/utils/seedPlatformRoles';
@@ -644,21 +642,7 @@ export class AdminUserService {
           username: input.username ?? null,
         });
 
-        // Base access snapshot so resolvePlatformAccessStatus grants aihub.access.
-        await new EasyauthGrantSnapshotModel(tx).upsert({
-          accessGranted: true,
-          appKey: process.env.EASYAUTH_APP_KEY || 'aihub',
-          catalogVersion: 1,
-          degraded: false,
-          externalUserId: newUserId,
-          grants: [{ permission: AIHUB_ACCESS_PERMISSION }],
-          grantVersion: 1,
-          groups: [],
-          snapshotVersion: 'admin-create',
-          userId: newUserId,
-        });
-
-        // platform_user global role (mirrors easyauthSync.persistSyncOutcome).
+        // Default global role for admin-created users (Authentik-only admission).
         const roleIdsByName = await getGlobalRoleIdsByName(tx, [
           PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
         ]);

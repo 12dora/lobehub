@@ -34,18 +34,7 @@ export const PLATFORM_ERROR_CODES = {
   PLATFORM_INVALID_INPUT: 'PLATFORM_INVALID_INPUT',
   PLATFORM_ASSET_STORAGE_UNAVAILABLE: 'PLATFORM_ASSET_STORAGE_UNAVAILABLE',
   PLATFORM_IDEMPOTENCY_CONFLICT: 'PLATFORM_IDEMPOTENCY_CONFLICT',
-  /**
-   * User is authenticated but lacks EasyAuth base access (`aihub.access`).
-   * Contract alias used in docs/list: ACCESS_NOT_GRANTED → this code (PLATFORM_ prefix rule).
-   */
-  PLATFORM_ACCESS_NOT_GRANTED: 'PLATFORM_ACCESS_NOT_GRANTED',
 } as const;
-
-/**
- * Stable alias matching the M02 / tRPC interface list name `ACCESS_NOT_GRANTED`.
- * Prefer `PLATFORM_ERROR_CODES.PLATFORM_ACCESS_NOT_GRANTED` in new server code.
- */
-export const ACCESS_NOT_GRANTED = PLATFORM_ERROR_CODES.PLATFORM_ACCESS_NOT_GRANTED;
 
 export type PlatformErrorCode = (typeof PLATFORM_ERROR_CODES)[keyof typeof PLATFORM_ERROR_CODES];
 

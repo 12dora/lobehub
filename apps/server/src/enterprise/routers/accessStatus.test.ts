@@ -63,13 +63,13 @@ describe('platform.getAccessStatus', () => {
     expect(status.reason).toBe('super_admin');
   });
 
-  it('no grants → not_granted with request URL', async () => {
+  it('authenticated non-admin → access granted (Authentik-only admission)', async () => {
     vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
     const ctx = { ...(await createContextInner({ userId })), serverDB: db } as never;
     const status = await createCaller(ctx).getAccessStatus();
-    expect(status.accessGranted).toBe(false);
-    expect(status.reason).toBe('not_granted');
-    expect(status.permissionRequestUrl).toMatch(/\/apps\/aihub\/request$/);
+    expect(status.accessGranted).toBe(true);
+    expect(status.reason).toBe('granted');
+    expect(status.permissionRequestUrl).toBeNull();
   });
 
   it('getCapabilities adminAccess true for super_admin when flag on', async () => {

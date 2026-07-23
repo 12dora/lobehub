@@ -11,8 +11,7 @@ const keyForMappedAction = (
     case 'reauth': {
       return 'users.errors.reauthRequired';
     }
-    case 'contact_admin':
-    case 'request_access': {
+    case 'contact_admin': {
       return 'users.errors.permissionDenied';
     }
     case 'retry': {

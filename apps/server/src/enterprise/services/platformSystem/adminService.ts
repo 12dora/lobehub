@@ -53,7 +53,6 @@ import {
 } from './errors';
 
 const CONNECTOR_RUNTIME_JOB_TYPE = 'connector.runtime.shared-call.v1';
-const EASYAUTH_SYNC_JOB_TYPE = 'platform.easyauth.sync_user';
 const DEFAULT_PAGE_SIZE = 50;
 
 type DependencyHealth = {
@@ -202,7 +201,6 @@ const jobKind = (type: string): AdminSystemJob['kind'] => {
   if (type === PLATFORM_AGENT_ROLLOUT_JOB_TYPE) return 'agent_rollout';
   if (type === PLATFORM_SECRET_REWRAP_JOB_TYPE) return 'secret_rewrap';
   if (type === CONNECTOR_RUNTIME_JOB_TYPE) return 'connector_runtime';
-  if (type === EASYAUTH_SYNC_JOB_TYPE) return 'easyauth_sync';
   return 'unknown';
 };
 

@@ -2,7 +2,7 @@ import { TRPCError } from '@trpc/server';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { enterpriseAccessGate, preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
+import { preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
@@ -47,13 +47,12 @@ const assertBrandingFeatureEnabled = (): void => {
   }
 };
 
-/** Feature flag intentionally runs before access, database, active-user and RBAC middleware. */
+/** Feature flag intentionally runs before database, active-user and RBAC middleware. */
 const brandingProcedure = preAccessAuthedProcedure
   .use(({ next }) => {
     assertBrandingFeatureEnabled();
     return next();
   })
-  .use(enterpriseAccessGate)
   .use(serverDatabase)
   .use(withActiveUser())
   .use(withAdminMutationRateLimit());

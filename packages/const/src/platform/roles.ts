@@ -11,7 +11,7 @@ export const PLATFORM_SYSTEM_ROLES = {
   AI_ADMIN: 'ai_admin',
   IDENTITY_ADMIN: 'identity_admin',
   AUDITOR: 'auditor',
-  /** Lightweight grant marker for EasyAuth `aihub.access` (no admin APIs). */
+  /** Default role for any authenticated user (no admin APIs). */
   PLATFORM_USER: 'platform_user',
 } as const;
 

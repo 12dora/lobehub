@@ -83,6 +83,14 @@ vi.mock('@/libs/better-auth/plugins/email-whitelist', () => ({
   emailWhitelist: vi.fn(() => ({ id: 'email-whitelist' })),
 }));
 
+vi.mock('@/libs/better-auth/plugins/registration-guard', () => ({
+  registrationGuard: vi.fn(() => ({ id: 'registration-guard' })),
+}));
+
+vi.mock('@/database/models/platform/ensureDefaultRole', () => ({
+  ensureDefaultPlatformUserRole: vi.fn(async () => undefined),
+}));
+
 vi.mock('@/libs/better-auth/sso', () => ({
   initBetterAuthSSOProviders: vi.fn(() => ({
     genericOAuthProviders: [],
