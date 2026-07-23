@@ -504,7 +504,6 @@ const CreatePlatformAgentContent = memo<CreatePlatformAgentContentProps>(
       if (step === 2) {
         buttons.push(
           <BaseButton
-            disabled={!agentName.trim() && !selectedPlatformDef.name}
             key="create"
             loading={creating}
             type="primary"

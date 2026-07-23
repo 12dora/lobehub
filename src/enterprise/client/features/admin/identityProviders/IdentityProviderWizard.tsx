@@ -414,7 +414,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         basic: basicComplete ? 'complete' : 'pending',
         claims: jsonErrors.claims ? 'error' : claimsComplete ? 'complete' : 'pending',
         client: clientComplete ? 'complete' : 'pending',
-        discovery: discoveryComplete ? 'complete' : draft.issuer ? 'pending' : 'pending',
+        discovery: discoveryComplete ? 'complete' : 'pending',
         policy: jsonErrors.groups ? 'error' : policyComplete ? 'complete' : 'pending',
         publish:
           provider?.status === 'published' ||

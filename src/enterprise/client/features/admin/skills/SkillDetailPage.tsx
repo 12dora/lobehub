@@ -493,6 +493,9 @@ const DetailContent = memo<{
     setSearchParams(next, { replace: true });
   };
 
+  const actionsDisabled =
+    Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed;
+
   return (
     <AdminPageTemplate
       description={data.draft.description || t('skillCatalog.detail.noDescription')}
@@ -501,29 +504,19 @@ const DetailContent = memo<{
         <>
           <Button onClick={() => navigate('/admin/skills')}>{t('skillCatalog.detail.back')}</Button>
           {permission.canUpdate ? (
-            <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
-              onClick={actions.openCreateVersion}
-            >
+            <Button disabled={actionsDisabled} onClick={actions.openCreateVersion}>
               {t('skillCatalog.version.create')}
             </Button>
           ) : null}
           {permission.canUpdate && identityDirty ? (
-            <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
-              type="primary"
-              onClick={actions.openSaveIdentity}
-            >
+            <Button disabled={actionsDisabled} type="primary" onClick={actions.openSaveIdentity}>
               {editor.saveState === 'failed'
                 ? t('skillCatalog.actions.save.retry')
                 : t('skillCatalog.actions.save.label')}
             </Button>
           ) : null}
           {permission.canUpdate && selectedVersionId && !editor.dirty ? (
-            <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
-              onClick={actions.openValidate}
-            >
+            <Button disabled={actionsDisabled} onClick={actions.openValidate}>
               {t('skillCatalog.actions.validate.label')}
             </Button>
           ) : null}
@@ -531,25 +524,12 @@ const DetailContent = memo<{
           selectedVersionId &&
           actions.canPublishSelected &&
           !editor.dirty ? (
-            <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
-              type="primary"
-              onClick={actions.openPublish}
-            >
+            <Button disabled={actionsDisabled} type="primary" onClick={actions.openPublish}>
               {t('skillCatalog.actions.publish.label')}
             </Button>
           ) : null}
           {permission.canArchive && data.draft.status !== 'archived' ? (
-            <Button
-              danger
-              disabled={
-                Boolean(actions.actionLoading) ||
-                editor.dirty ||
-                editor.conflict ||
-                actions.refreshFailed
-              }
-              onClick={actions.openArchive}
-            >
+            <Button danger disabled={actionsDisabled || editor.dirty} onClick={actions.openArchive}>
               {t('skillCatalog.actions.archive.label')}
             </Button>
           ) : null}
