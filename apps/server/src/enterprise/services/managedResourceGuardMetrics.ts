@@ -61,12 +61,6 @@ export class EnterpriseManagedResourceGuardMetricSink implements ManagedResource
   };
 }
 
-let metricSink: ManagedResourceGuardMetricSink = new EnterpriseManagedResourceGuardMetricSink();
+const metricSink: ManagedResourceGuardMetricSink = new EnterpriseManagedResourceGuardMetricSink();
 
 export const getManagedResourceGuardMetricSink = (): ManagedResourceGuardMetricSink => metricSink;
-
-export const setManagedResourceGuardMetricSink = (
-  sink: ManagedResourceGuardMetricSink | null,
-): void => {
-  metricSink = sink ?? new EnterpriseManagedResourceGuardMetricSink();
-};

@@ -3,7 +3,7 @@ import {
   type EnterpriseErrorCode,
   PLATFORM_ERROR_CODES,
 } from '@/const/platform/errorCodes';
-import { PLATFORM_PERMISSIONS, type PlatformPermission } from '@/const/platform/permissions';
+import { type PlatformPermission } from '@/const/platform/permissions';
 import { RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase } from '@/database/type';
 import { trpc } from '@/libs/trpc/lambda/init';
@@ -109,21 +109,6 @@ export const assertPlatformPermission = (
     throwEnterpriseError({
       code: deniedCode,
       details: { permission: code },
-      httpCode: 'FORBIDDEN',
-      message: deniedCode,
-    });
-  }
-};
-
-export const assertAnyPlatformPermission = (
-  auth: PlatformAuthContext,
-  codes: string[],
-  deniedCode: EnterpriseErrorCode = PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-): void => {
-  if (!codes.some((code) => auth.permissions.includes(code))) {
-    throwEnterpriseError({
-      code: deniedCode,
-      details: { permission: codes.join('|') },
       httpCode: 'FORBIDDEN',
       message: deniedCode,
     });
@@ -269,6 +254,3 @@ export const withAnyPlatformPermission = (codes: readonly PlatformPermission[]) 
  * Admin procedure base: authed + serverDB. Permission middleware is composed per-route.
  */
 export { serverDatabase };
-
-/** Convenience: ADMIN_ACCESS gate for menu shell. */
-export const withAdminAccess = () => withPlatformPermission(PLATFORM_PERMISSIONS.ADMIN_ACCESS);

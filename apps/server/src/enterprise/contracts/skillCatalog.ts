@@ -547,10 +547,6 @@ export const resolvePlatformSkillPinnedInputSchema = z
   })
   .strict();
 
-export const serverSkillResolveInputSchema = z
-  .object({ skillKey: skillKeySchema, version: skillVersionSchema.optional() })
-  .strict();
-
 /** Server-only execution projection. Never return this schema from a public/admin router. */
 export const serverResolvedSkillSchema = publishedSkillSchema
   .extend({

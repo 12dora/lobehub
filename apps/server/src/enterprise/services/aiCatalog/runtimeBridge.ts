@@ -54,7 +54,3 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
   registerPlatformAiRuntime(implementation);
   registered = true;
 };
-
-export const resetPlatformAiRuntimeRegistrationForTest = (): void => {
-  registered = false;
-};

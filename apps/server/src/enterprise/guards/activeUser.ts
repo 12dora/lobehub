@@ -9,7 +9,6 @@ import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorC
 import type { LobeChatDatabase } from '@/database/type';
 import { assertUserActive, isOIDCUserInactiveError } from '@/libs/oidc-provider/access-control';
 import { trpc } from '@/libs/trpc/lambda/init';
-import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import { getEnterpriseFeatureFlags, isPlatformAdminFeatureEnabled } from '../featureFlags';
 import { throwEnterpriseError } from './enterpriseErrors';
@@ -120,6 +119,3 @@ export const withActiveUserWhenManagedAgents = () =>
     await enforceActiveUser(ctx as ActiveUserCtx & { serverDB?: LobeChatDatabase });
     return next();
   });
-
-/** Admin base: authed + serverDB + active user (when platform admin on). */
-export const adminProcedureBase = () => serverDatabase;

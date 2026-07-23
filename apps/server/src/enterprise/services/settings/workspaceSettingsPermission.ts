@@ -6,8 +6,6 @@
 import { RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { settingsRegistry } from './registry';
-
 const OWNER_SETTING_TOP_LEVEL = new Set(['defaultAgent', 'image', 'memory', 'systemAgent', 'tts']);
 const MEMBER_SETTING_TOP_LEVEL = new Set(['tool']);
 
@@ -63,11 +61,4 @@ export const assertWorkspaceSettingsWritePermission = async (params: {
     workspaceId: params.workspaceId,
   });
   return allowed ? { ok: true } : { ok: false, reason: 'FORBIDDEN' };
-};
-
-/** Map registered path → top-level for permission classification. */
-export const pathRequiresWorkspaceOwner = (path: string): boolean => {
-  const entry = settingsRegistry.get(path);
-  const top = entry ? topLevelOf(entry.path) : topLevelOf(path);
-  return OWNER_SETTING_TOP_LEVEL.has(top);
 };

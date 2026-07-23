@@ -27,13 +27,3 @@ export const resolveAccessStatus = async (params: {
     userId: params.userId,
   });
 };
-
-/**
- * Always resolves successfully (kept for call-site stability).
- */
-export const assertAccessGranted = async (params: {
-  db: LobeChatDatabase;
-  userId: string;
-}): Promise<AccessStatus> => {
-  return resolveAccessStatus(params);
-};
