@@ -5,6 +5,8 @@
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
+import { canonicalize } from '../primitives/canonicalize';
+
 export type DraftMap = AdminSettingsGetDraftOutput['draft'];
 export type DraftPolicy = DraftMap[string];
 export type SaveState = 'idle' | 'saving' | 'saved' | 'failed';
@@ -88,18 +90,6 @@ export const resolvePrimaryAction = (params: {
   // Clean but not validated → validate is the one primary (not enabled publish)
   if (!params.dirty && params.canPublish) return 'validate';
   return 'none';
-};
-
-const canonicalize = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (!value || typeof value !== 'object') return value;
-
-  const record = value as Record<string, unknown>;
-  return Object.fromEntries(
-    Object.keys(record)
-      .sort()
-      .map((key) => [key, canonicalize(record[key])]),
-  );
 };
 
 export const fingerprintDraft = (draft: DraftMap): string => {

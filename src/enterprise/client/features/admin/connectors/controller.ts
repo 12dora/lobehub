@@ -1,5 +1,6 @@
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
+import { canonicalize } from '../primitives/canonicalize';
 import type {
   AdminConnectorDraft,
   AdminConnectorGetOutput,
@@ -132,17 +133,6 @@ export const validateEditableAdminConnectorDraft = (
     if (!isHttpUrl(draft.oauthTokenEndpoint)) errors.oauthTokenEndpoint = 'httpUrl';
   }
   return { errors, valid: Object.keys(errors).length === 0 };
-};
-
-const canonicalize = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (!value || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  return Object.fromEntries(
-    Object.keys(record)
-      .sort()
-      .map((key) => [key, canonicalize(record[key])]),
-  );
 };
 
 /** Secret values never enter the public draft fingerprint or durable client storage. */
