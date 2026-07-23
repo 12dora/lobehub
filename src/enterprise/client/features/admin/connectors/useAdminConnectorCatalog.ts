@@ -6,7 +6,6 @@ import { adminConnectorsService } from '@/enterprise/client/services/adminConnec
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
-  ADMIN_CONNECTOR_GET_KEY,
   ADMIN_CONNECTOR_LIST_KEY,
   buildAdminConnectorGetKey,
   buildAdminConnectorListKey,
@@ -32,37 +31,6 @@ export const useFetchAdminConnector = (
     revalidateOnFocus: false,
   });
 
-/** Test-only injection aliases kept for contract mocks; production callers use the real defaults. */
-export const useFetchMockableAdminConnectors = (
-  client: AdminConnectorCatalogClient,
-  input: AdminConnectorListInput,
-  enabled: boolean,
-) => useFetchAdminConnectors(input, enabled, client);
-
-export const useFetchMockableAdminConnector = (
-  client: AdminConnectorCatalogClient,
-  id: string | undefined,
-  enabled: boolean,
-) => useFetchAdminConnector(id, enabled, client);
-
 export const refreshAdminConnectorLists = async () => {
   await mutate((key) => Array.isArray(key) && key[0] === ADMIN_CONNECTOR_LIST_KEY);
-};
-
-export const refreshAdminConnector = async (id: string) => {
-  const [detail] = await Promise.all([
-    mutate(buildAdminConnectorGetKey(id, true)),
-    mutate((key) => Array.isArray(key) && key[0] === ADMIN_CONNECTOR_LIST_KEY),
-  ]);
-  return detail;
-};
-
-export const clearAdminConnectorCache = async () => {
-  await mutate(
-    (key) =>
-      Array.isArray(key) &&
-      (key[0] === ADMIN_CONNECTOR_GET_KEY || key[0] === ADMIN_CONNECTOR_LIST_KEY),
-    undefined,
-    { revalidate: false },
-  );
 };

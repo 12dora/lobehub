@@ -23,8 +23,8 @@ import type {
   AdminConnectorRollbackInput,
   AdminConnectorUpdateDraftInput,
 } from './types';
+import { refreshAdminConnectorLists } from './useAdminConnectorCatalog';
 import type { useConnectorEditor } from './useConnectorEditor';
-import { refreshAdminConnectorLists } from './useMockableAdminConnectorCatalog';
 
 interface UseConnectorActionsParams {
   authMethod: AdminReauthAuthMethod | null;
