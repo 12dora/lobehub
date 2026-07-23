@@ -15,15 +15,24 @@ export interface PlatformAuthSettings {
   openRegistration: boolean;
 }
 
+/**
+ * A bare domain `example.com` or a wildcard `*.example.com` (matching the base
+ * domain and all its subdomains). Lowercase; labels are 1–63 chars of [a-z0-9-].
+ */
+export const EMAIL_DOMAIN_PATTERN =
+  /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+
+/** Whether a single normalized allowlist entry is a valid domain / `*.domain` pattern. */
+export const isValidEmailDomainPattern = (entry: string): boolean =>
+  EMAIL_DOMAIN_PATTERN.test(entry.trim().toLowerCase());
+
 /** A single allowlist entry: a bare domain `example.com` or a wildcard `*.example.com`. */
 const domainEntrySchema = z
   .string()
   .trim()
   .toLowerCase()
   .max(253)
-  .regex(/^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/, {
-    message: 'INVALID_EMAIL_DOMAIN',
-  });
+  .regex(EMAIL_DOMAIN_PATTERN, { message: 'INVALID_EMAIL_DOMAIN' });
 
 export const platformAuthSettingsSchema = z
   .object({

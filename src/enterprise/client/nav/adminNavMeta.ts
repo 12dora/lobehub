@@ -31,6 +31,7 @@ export type AdminNavLabelKey =
   | 'nav.agents'
   | 'nav.agentDetail'
   | 'nav.identity'
+  | 'nav.securityAuth'
   | 'nav.branding'
   | 'nav.audit'
   | 'nav.system';
@@ -276,8 +277,10 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
   },
   {
+    // "安全与认证" surface: hosts the identity-provider ("登录与权限") tab and the
+    // registration/login policy ("通用设置") tab. Path kept for deep-link back-compat.
     id: 'identity-providers',
-    labelKey: 'nav.identity',
+    labelKey: 'nav.securityAuth',
     path: '/admin/identity-providers',
     placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],

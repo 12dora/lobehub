@@ -33,7 +33,7 @@ import {
   useIdentityProviders,
 } from './useIdentityProviders';
 
-const IdentityProviderPage = memo(() => {
+const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
   const { authMethod, permissions, status: accessStatus } = useAdminAccess();
   const canRead = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_READ);
@@ -170,6 +170,7 @@ const IdentityProviderPage = memo(() => {
   return (
     <AdminPageTemplate
       description={t('identityProviders.description')}
+      hideTitle={embedded}
       title={t('identityProviders.title')}
       actions={
         setupGuidance ? null : (
