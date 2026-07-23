@@ -31,6 +31,15 @@ describe('mapEnterpriseError (structured)', () => {
     expect(mapped?.action).toBe('contact_admin');
   });
 
+  it('normalizes a legacy alias delivered via cause.data, not only via free text', () => {
+    const mapped = mapEnterpriseError({
+      cause: { data: { code: 'RESOURCE_MANAGED_BY_PLATFORM' } },
+      message: 'x',
+    });
+    expect(mapped?.code).toBe(MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM);
+    expect(mapped?.action).toBe('contact_admin');
+  });
+
   it('falls back to free-text message codes', () => {
     const mapped = mapEnterpriseError(PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT);
     expect(mapped?.code).toBe(PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT);

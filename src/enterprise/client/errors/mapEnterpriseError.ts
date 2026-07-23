@@ -54,7 +54,10 @@ const extractBody = (error: unknown): EnterpriseErrorBody | null => {
     const body = (cause as { data?: unknown }).data;
     if (body && typeof body === 'object' && 'code' in body) {
       const code = normalizeEnterpriseErrorCode(String((body as { code: unknown }).code));
-      if (isEnterpriseErrorCode(code)) return body as EnterpriseErrorBody;
+      // Return the NORMALIZED code (matching the other extract branches) — otherwise a legacy
+      // alias like RESOURCE_MANAGED_BY_PLATFORM survives un-normalized and fails the downstream
+      // isEnterpriseErrorCode(body.code) check, dropping to fuzzy message matching.
+      if (isEnterpriseErrorCode(code)) return { ...(body as EnterpriseErrorBody), code };
     }
   }
 

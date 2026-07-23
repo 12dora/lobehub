@@ -27,6 +27,7 @@ import { users } from '../../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { idGenerator } from '../../utils/idGenerator';
 import { boundedLimit } from '../platformPagination';
+import { likeContains } from '../platformSearch';
 
 export type ExactPlatformAgentVersion = Omit<
   PlatformAgentVersionItem,
@@ -221,7 +222,7 @@ export class PlatformAgentCatalogRepository {
         and(
           eq(platformAgents.migrationRequired, false),
           params.cursor ? gt(platformAgents.agentKey, params.cursor) : undefined,
-          params.query ? ilike(platformAgents.agentKey, `%${params.query}%`) : undefined,
+          params.query ? ilike(platformAgents.agentKey, likeContains(params.query)) : undefined,
           params.status ? eq(platformAgents.status, params.status) : undefined,
         ),
       )
