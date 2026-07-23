@@ -159,8 +159,10 @@ export const parsePlatformPublishedSkillSnapshot = (
   return candidate as PlatformPublishedSkillSnapshot;
 };
 
-const publishedView = (row: PlatformPublishedSkillRow): PlatformPublishedSkillView | undefined => {
-  const payload = parsePlatformPublishedSkillSnapshot(row.payload);
+const publishedView = (
+  row: PlatformPublishedSkillRow,
+  payload = parsePlatformPublishedSkillSnapshot(row.payload),
+): PlatformPublishedSkillView | undefined => {
   if (
     row.status !== 'published' ||
     !payload ||
@@ -430,16 +432,20 @@ export class PlatformSkillCatalogModel {
     params: Parameters<PlatformSkillCatalogRepository['listPublished']>[0] = {},
   ): Promise<PlatformPublishedSkillPageView> => {
     const page = await new PlatformSkillCatalogRepository(this.db).listPublished(params);
-    const builtinOverrideTombstones = page.items.flatMap((row) => {
-      const snapshot = parsePlatformPublishedSkillSnapshot(row.payload);
-      return row.status === 'archived' &&
-        snapshot?.builtinOverrideTombstone === true &&
-        snapshot.skill.allowBuiltinOverride
+    // Parse each published snapshot exactly once, then derive tombstones, catalog tokens and
+    // views from that single pass (previously each row was JSON-validated up to three times).
+    const parsedItems = page.items.map((row) => ({
+      row,
+      snapshot: parsePlatformPublishedSkillSnapshot(row.payload),
+    }));
+    const builtinOverrideTombstones = parsedItems.flatMap(({ row, snapshot }) =>
+      row.status === 'archived' &&
+      snapshot?.builtinOverrideTombstone === true &&
+      snapshot.skill.allowBuiltinOverride
         ? [snapshot.skill.skillKey]
-        : [];
-    });
-    const catalogTokenEntries = page.items.flatMap((row) => {
-      const snapshot = parsePlatformPublishedSkillSnapshot(row.payload);
+        : [],
+    );
+    const catalogTokenEntries = parsedItems.flatMap(({ row, snapshot }) => {
       const tombstone =
         row.status === 'archived' &&
         snapshot?.builtinOverrideTombstone === true &&
@@ -459,8 +465,8 @@ export class PlatformSkillCatalogModel {
     return {
       builtinOverrideTombstones,
       catalogTokenEntries,
-      items: page.items.flatMap((row) => {
-        const view = publishedView(row);
+      items: parsedItems.flatMap(({ row, snapshot }) => {
+        const view = publishedView(row, snapshot);
         return view ? [view] : [];
       }),
       nextCursor: page.nextCursor,

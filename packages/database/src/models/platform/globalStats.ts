@@ -42,6 +42,12 @@ const formatDay = (date?: Date) => {
   return dayjs(date).format('YYYY-MM-DD');
 };
 
+// Heatmap intensity buckets. The message heatmap keys off an absolute count (one level per
+// HEATMAP_MESSAGES_PER_LEVEL messages); the token heatmap scales relative to the busiest day.
+// Both clamp to MAX_HEATMAP_LEVEL — the two formulas are intentionally different.
+const MAX_HEATMAP_LEVEL = 4;
+const HEATMAP_MESSAGES_PER_LEVEL = 5;
+
 const userDisplaySql = sql<string>`COALESCE(NULLIF(TRIM(${users.fullName}), ''), NULLIF(TRIM(${users.username}), ''), NULLIF(TRIM(${users.email}), ''), ${users.id})`;
 
 export class PlatformGlobalStatsModel {
@@ -256,8 +262,8 @@ export class PlatformGlobalStatsModel {
       const formattedDate = currentDate.format('YYYY-MM-DD');
       const dayCount = dateCountMap.get(formattedDate) || 0;
 
-      const levelCount = dayCount > 0 ? Math.ceil(dayCount / 5) : 0;
-      const level = levelCount > 4 ? 4 : levelCount;
+      const levelCount = dayCount > 0 ? Math.ceil(dayCount / HEATMAP_MESSAGES_PER_LEVEL) : 0;
+      const level = Math.min(MAX_HEATMAP_LEVEL, levelCount);
 
       heatmapData.push({
         count: dayCount,
@@ -317,7 +323,10 @@ export class PlatformGlobalStatsModel {
 
       const level =
         tokens > 0 && maxTokens > 0
-          ? Math.min(4, Math.max(1, Math.ceil((tokens / maxTokens) * 4)))
+          ? Math.min(
+              MAX_HEATMAP_LEVEL,
+              Math.max(1, Math.ceil((tokens / maxTokens) * MAX_HEATMAP_LEVEL)),
+            )
           : 0;
 
       heatmapData.push({

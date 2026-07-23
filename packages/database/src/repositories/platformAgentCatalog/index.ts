@@ -26,6 +26,7 @@ import { roles, userRoles } from '../../schemas/rbac';
 import { users } from '../../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { idGenerator } from '../../utils/idGenerator';
+import { boundedLimit } from '../platformPagination';
 
 export type ExactPlatformAgentVersion = Omit<
   PlatformAgentVersionItem,
@@ -212,7 +213,7 @@ export class PlatformAgentCatalogRepository {
     query?: string;
     status?: PlatformAgentItem['status'];
   }): Promise<PlatformAgentIdentityPage> => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const rows = await this.db
       .select()
       .from(platformAgents)
@@ -336,7 +337,7 @@ export class PlatformAgentCatalogRepository {
     cursor?: string;
     limit?: number;
   }): Promise<PlatformAgentVersionPage> => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const rows = await this.db
       .select()
       .from(platformAgentVersions)
@@ -546,7 +547,7 @@ export class PlatformAgentCatalogRepository {
     cursor?: string;
     limit?: number;
   }): Promise<PlatformAgentAssignmentPage> => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const rows = await this.db
       .select(safeAssignmentColumns)
       .from(platformAgentAssignments)
@@ -568,7 +569,7 @@ export class PlatformAgentCatalogRepository {
     cursor?: string;
     limit?: number;
   }): Promise<PlatformAgentMaterializationDependentPage> => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const rows = await this.db
       .select({
         id: platformUserAgentMaterializations.id,
@@ -723,7 +724,7 @@ export class PlatformAgentCatalogRepository {
     targetId: string;
     targetType: PlatformAgentAssignmentTargetType;
   }): Promise<PlatformAgentAssignmentTargetPage> => {
-    const limit = Math.max(1, Math.min(params.limit ?? 100, 500));
+    const limit = boundedLimit(params.limit, 100, 500);
     if (params.targetType === 'user') {
       if (params.cursor && params.targetId <= params.cursor) return { items: [], nextCursor: null };
       const [row] = await this.db
@@ -849,6 +850,7 @@ export class PlatformAgentCatalogRepository {
     if (writableUserIds.length === 0) {
       return { appliedUserIds: new Set(), previousByUserId };
     }
+    const writableUserIdSet = new Set(writableUserIds);
     const now = new Date();
     const written = await this.db
       .insert(platformUserAgentMaterializations)
@@ -884,7 +886,7 @@ export class PlatformAgentCatalogRepository {
           platformUserAgentMaterializations.userId,
           platformUserAgentMaterializations.platformAgentId,
         ],
-        where: or(...casConditions.filter((_, index) => writableUserIds.includes(userIds[index]))),
+        where: or(...casConditions.filter((_, index) => writableUserIdSet.has(userIds[index]))),
       })
       .returning({ userId: platformUserAgentMaterializations.userId });
 
