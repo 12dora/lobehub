@@ -88,7 +88,7 @@ export interface PlatformIdentityProviderTemplate {
 }
 
 /** Default sign-in button label shared by the provider templates below. */
-const DEFAULT_IDP_BUTTON_LABEL = '使用工作账号登录' as const;
+export const DEFAULT_IDP_BUTTON_LABEL = '使用工作账号登录' as const;
 
 export const AUTHENTIK_IDENTITY_PROVIDER_TEMPLATE = {
   buttonLabel: DEFAULT_IDP_BUTTON_LABEL,

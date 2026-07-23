@@ -1,6 +1,6 @@
 'use client';
 
-import { type PlatformIdentityProviderDraft } from '@lobechat/types';
+import { DEFAULT_IDP_BUTTON_LABEL, type PlatformIdentityProviderDraft } from '@lobechat/types';
 import { Alert, copyToClipboard, Flexbox, Input, Tag, Text, TextArea } from '@lobehub/ui';
 import { Button, Checkbox, Select, toast } from '@lobehub/ui/base-ui';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
@@ -123,7 +123,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         : createSeed
           ? fromSeed(createSeed)
           : fromSeed({
-              buttonLabel: '使用工作账号登录',
+              buttonLabel: DEFAULT_IDP_BUTTON_LABEL,
               claimMapping: {
                 dingtalkTitle: [],
                 dingtalkUserId: [],
