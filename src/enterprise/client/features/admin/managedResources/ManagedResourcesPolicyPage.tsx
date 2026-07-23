@@ -75,7 +75,10 @@ const styles = createStaticStyles(({ css }) => ({
   grid: css`
     display: grid;
 
-    /* Cards stay readable; do not force all five into one cramped row. */
+    /* Equal-height rows so every managed-resource box lines up as a uniform tile. */
+    grid-auto-rows: 1fr;
+
+    /* Cards stay readable; do not force all boxes into one cramped row. */
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 12px;
   `,
@@ -321,7 +324,8 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
                   <Select
                     aria-label={`${t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)} ${t('managedResources.uiMode.label')}`}
                     disabled={!canSave || conflict}
-                    style={{ minWidth: 160 }}
+                    // Unified policy-mode select width — keep in sync with the sidebar + settings boxes.
+                    style={{ width: 160 }}
                     value={uiMode}
                     options={UI_MODE_VALUES.map((mode) => ({
                       label: t(`managedResources.uiMode.${mode}` as never),
