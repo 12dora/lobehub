@@ -1,7 +1,7 @@
 'use client';
 
 import { confirmModal } from '@lobehub/ui/base-ui';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
 
@@ -194,7 +194,10 @@ export const useAiProviderEditor = (
     setRebaseConflicts([]);
   }, [snapshot]);
 
-  const validation = draft ? validateEditableAiProviderDraft(draft) : null;
+  const validation = useMemo(
+    () => (draft ? validateEditableAiProviderDraft(draft) : null),
+    [draft],
+  );
   const connectionTest = snapshot
     ? deriveAiProviderConnectionTestView({
         baseRevision: snapshot.baseRevision,

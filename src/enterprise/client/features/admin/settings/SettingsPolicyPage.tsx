@@ -201,6 +201,11 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const [validatedFingerprint, setValidatedFingerprint] = useState<string | null>(null);
   const [validatedDraftToken, setValidatedDraftToken] = useState<string | null>(null);
   const [validatedBaseRevision, setValidatedBaseRevision] = useState<number | null>(null);
+  const resetValidation = useCallback(() => {
+    setValidatedFingerprint(null);
+    setValidatedDraftToken(null);
+    setValidatedBaseRevision(null);
+  }, []);
   const [dirty, setDirty] = useState(false);
   const [activeBaseRevision, setActiveBaseRevision] = useState(0);
   const [activeDraftToken, setActiveDraftToken] = useState('');
@@ -218,6 +223,21 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     conflictState.phase === 'conflict';
 
   const draftFingerprint = useMemo(() => fingerprintDraft(draft), [draft]);
+  // Change preview iterates every registry path with per-path JSON.stringify comparison;
+  // memoize so unrelated re-renders (search typing, save-state ticks) don't recompute it.
+  const preview = useMemo(
+    () =>
+      data
+        ? buildChangePreview({
+            draft,
+            published: data.publishedPolicies,
+            registryPaths: data.registry
+              .filter((r) => !isServiceModelManaged(r))
+              .map((r) => r.path),
+          })
+        : [],
+    [draft, data],
+  );
   const primary = resolvePrimaryAction({
     canPublish,
     canUpdate,
@@ -403,11 +423,9 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       setSaveError(null);
       setValidationMsg(null);
       setImpact(null);
-      setValidatedFingerprint(null);
-      setValidatedDraftToken(null);
-      setValidatedBaseRevision(null);
+      resetValidation();
     },
-    [canUpdate, getPolicy],
+    [canUpdate, getPolicy, resetValidation],
   );
 
   const enterRevisionConflict = useCallback(async () => {
@@ -423,9 +441,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     saveConflictDraft(payload);
     setDirty(true);
     setSaveState('failed');
-    setValidatedFingerprint(null);
-    setValidatedDraftToken(null);
-    setValidatedBaseRevision(null);
+    resetValidation();
     dispatchConflict({
       localBaseRevision: activeBaseRevision,
       localDraft: draft,
@@ -445,7 +461,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     } catch {
       dispatchConflict({ type: 'REFRESH_SERVER_FAILED' });
     }
-  }, [activeBaseRevision, activeDraftToken, data, draft, mutate]);
+  }, [activeBaseRevision, activeDraftToken, data, draft, mutate, resetValidation]);
 
   const refreshConflictServer = useCallback(async () => {
     dispatchConflict({ type: 'REFRESH_SERVER_STARTED' });
@@ -477,9 +493,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     setSaveError(null);
     setValidationMsg(null);
     setImpact(null);
-    setValidatedFingerprint(null);
-    setValidatedDraftToken(null);
-    setValidatedBaseRevision(null);
+    resetValidation();
     originalBaseDraftRef.current = next.serverDraft;
     saveLocalDraft({
       baseRevision: next.serverBaseRevision,
@@ -489,7 +503,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       registryVersion: data.registryVersion,
       savedAt: new Date().toISOString(),
     });
-  }, [activeBaseRevision, conflictState, data]);
+  }, [activeBaseRevision, conflictState, data, resetValidation]);
 
   const handleDiscardConflict = useCallback(() => {
     if (!data || conflictState.phase !== 'conflict') return;
@@ -506,11 +520,9 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     setSaveError(null);
     setValidationMsg(null);
     setImpact(null);
-    setValidatedFingerprint(null);
-    setValidatedDraftToken(null);
-    setValidatedBaseRevision(null);
+    resetValidation();
     originalBaseDraftRef.current = next.serverDraft;
-  }, [activeBaseRevision, conflictState, data]);
+  }, [activeBaseRevision, conflictState, data, resetValidation]);
 
   const handleSaveDraft = useCallback(async () => {
     if (
@@ -539,9 +551,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       setDraft(normalizedDraft);
       setDirty(false);
       setSaveState('saved');
-      setValidatedFingerprint(null);
-      setValidatedDraftToken(null);
-      setValidatedBaseRevision(null);
+      resetValidation();
       setActiveBaseRevision(result.baseRevision);
       setActiveDraftToken(result.draftToken);
       originalBaseDraftRef.current = normalizedDraft;
@@ -569,6 +579,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     draft,
     enterRevisionConflict,
     mutate,
+    resetValidation,
     revisionConflict,
     t,
   ]);
@@ -593,9 +604,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         setValidatedDraftToken(activeDraftToken);
         setValidatedBaseRevision(activeBaseRevision);
       } else {
-        setValidatedFingerprint(null);
-        setValidatedDraftToken(null);
-        setValidatedBaseRevision(null);
+        resetValidation();
         setValidationMsg(
           t('settingsPolicy.validateFail', {
             count: result.issues.length,
@@ -604,9 +613,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         );
       }
     } catch (err) {
-      setValidatedFingerprint(null);
-      setValidatedDraftToken(null);
-      setValidatedBaseRevision(null);
+      resetValidation();
       const mapped = mapEnterpriseError(err);
       setValidationMsg(mapped ? mapped.code : String(err));
     }
@@ -617,6 +624,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     data?.draftToken,
     dirty,
     draft,
+    resetValidation,
     revisionConflict,
     t,
   ]);
@@ -764,9 +772,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
           setSaveError(null);
           setValidationMsg(null);
           setImpact(null);
-          setValidatedFingerprint(null);
-          setValidatedDraftToken(null);
-          setValidatedBaseRevision(null);
+          resetValidation();
           hydratedRef.current = false;
           await mutate();
           await refreshAdminSettingsDraft();
@@ -811,6 +817,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     isServiceModelPublishedPath,
     mutate,
     ownPublishedOverrideCount,
+    resetValidation,
     revisionConflict,
     t,
   ]);
@@ -864,12 +871,6 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       </AdminPageTemplate>
     );
   }
-
-  const preview = buildChangePreview({
-    draft,
-    published: data.publishedPolicies,
-    registryPaths: data.registry.filter((r) => !isServiceModelManaged(r)).map((r) => r.path),
-  });
 
   // Exactly one primary action — sticky footer only (U5)
   const primaryButton =

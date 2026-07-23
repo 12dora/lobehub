@@ -1,7 +1,7 @@
 'use client';
 
 import { confirmModal } from '@lobehub/ui/base-ui';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
 
@@ -197,6 +197,11 @@ export const useConnectorEditor = (
     setSecret(createEmptyConnectorSecretEdit());
   }, [snapshot]);
 
+  const validation = useMemo(
+    () => (draft ? validateEditableAdminConnectorDraft(draft) : { errors: {}, valid: false }),
+    [draft],
+  );
+
   return {
     actionError,
     changeSecret,
@@ -214,6 +219,6 @@ export const useConnectorEditor = (
     setSaveState,
     updateDraft,
     updateTool,
-    validation: draft ? validateEditableAdminConnectorDraft(draft) : { errors: {}, valid: false },
+    validation,
   };
 };

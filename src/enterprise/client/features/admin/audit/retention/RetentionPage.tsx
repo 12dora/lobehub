@@ -70,6 +70,18 @@ const CONTENT_ACCESS_MODE_KEYS = {
 const clampInt = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, Number.isFinite(value) ? Math.trunc(value) : min));
 
+// Single source of truth for retention-policy field bounds, referenced by both the
+// number inputs and the submit-time clamp so the two can never drift apart.
+const POLICY_BOUNDS = {
+  conversationRetentionDays: { max: 3650, min: 1 },
+  exportArtifactRetentionDays: { max: 365, min: 1 },
+  maxExportRows: { max: 1_000_000, min: 1 },
+  maxListWindowDays: { max: 365, min: 1 },
+  operationLogRetentionDays: { max: 3650, min: 1 },
+} as const;
+const clampField = (name: keyof typeof POLICY_BOUNDS, value: number) =>
+  clampInt(value, POLICY_BOUNDS[name].min, POLICY_BOUNDS[name].max);
+
 const totalDeleted = (counts: AdminAuditRetentionRunItem['counts']) =>
   (counts.operationLogsDeleted ?? 0) +
   (counts.conversationsDeleted ?? 0) +
@@ -504,15 +516,19 @@ const PolicyEditModal = memo<{
     </div>
   );
 
-  const numberInput = (value: number, onChange: (n: number) => void, min: number, max: number) => (
+  const numberInput = (
+    value: number,
+    onChange: (n: number) => void,
+    bounds: { max: number; min: number },
+  ) => (
     <InputNumber
-      max={max}
-      min={min}
+      max={bounds.max}
+      min={bounds.min}
       style={{ width: '100%' }}
       value={value}
       onChange={(v) => {
         const n = typeof v === 'number' ? v : Number(v);
-        onChange(clampInt(n, min, max));
+        onChange(clampInt(n, bounds.min, bounds.max));
       }}
     />
   );
@@ -521,12 +537,15 @@ const PolicyEditModal = memo<{
     if (!policy) return;
     const fields = {
       contentAccessMode,
-      conversationRetentionDays: clampInt(conversationRetentionDays, 1, 3650),
-      exportArtifactRetentionDays: clampInt(exportArtifactRetentionDays, 1, 365),
-      maxExportRows: clampInt(maxExportRows, 1, 1_000_000),
-      maxListWindowDays: clampInt(maxListWindowDays, 1, 365),
+      conversationRetentionDays: clampField('conversationRetentionDays', conversationRetentionDays),
+      exportArtifactRetentionDays: clampField(
+        'exportArtifactRetentionDays',
+        exportArtifactRetentionDays,
+      ),
+      maxExportRows: clampField('maxExportRows', maxExportRows),
+      maxListWindowDays: clampField('maxListWindowDays', maxListWindowDays),
       messageBodyInExport,
-      operationLogRetentionDays: clampInt(operationLogRetentionDays, 1, 3650),
+      operationLogRetentionDays: clampField('operationLogRetentionDays', operationLogRetentionDays),
       redactionProfile,
     };
 
@@ -599,23 +618,35 @@ const PolicyEditModal = memo<{
       )}
       {field(
         t('audit.retention.policy.conversationDays'),
-        numberInput(conversationRetentionDays, setConversationRetentionDays, 1, 3650),
+        numberInput(
+          conversationRetentionDays,
+          setConversationRetentionDays,
+          POLICY_BOUNDS.conversationRetentionDays,
+        ),
       )}
       {field(
         t('audit.retention.policy.operationLogDays'),
-        numberInput(operationLogRetentionDays, setOperationLogRetentionDays, 1, 3650),
+        numberInput(
+          operationLogRetentionDays,
+          setOperationLogRetentionDays,
+          POLICY_BOUNDS.operationLogRetentionDays,
+        ),
       )}
       {field(
         t('audit.retention.policy.exportArtifactDays'),
-        numberInput(exportArtifactRetentionDays, setExportArtifactRetentionDays, 1, 365),
+        numberInput(
+          exportArtifactRetentionDays,
+          setExportArtifactRetentionDays,
+          POLICY_BOUNDS.exportArtifactRetentionDays,
+        ),
       )}
       {field(
         t('audit.retention.policy.maxListWindowDays'),
-        numberInput(maxListWindowDays, setMaxListWindowDays, 1, 365),
+        numberInput(maxListWindowDays, setMaxListWindowDays, POLICY_BOUNDS.maxListWindowDays),
       )}
       {field(
         t('audit.retention.policy.maxExportRows'),
-        numberInput(maxExportRows, setMaxExportRows, 1, 1_000_000),
+        numberInput(maxExportRows, setMaxExportRows, POLICY_BOUNDS.maxExportRows),
       )}
       {field(
         t('audit.retention.policy.messageBodyInExport'),
