@@ -2,8 +2,10 @@
 import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import { platformSkillVersionChecksum } from '@/database/models/platform';
+import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
 import {
   platformAuditLogs,
   platformResourceRevisions,
@@ -16,6 +18,7 @@ import type { SkillManifest } from '../../contracts/skillCatalog';
 import { SkillCatalogAdminService } from './adminService';
 import { SkillCatalogValidationError } from './errors';
 import { SkillCatalogReadService } from './readService';
+import { resolvePlatformSkillRuntimeSnapshot } from './runtimeSnapshot';
 
 const db: LobeChatDatabase = await getTestDB();
 const invalidation = { publish: vi.fn(async () => {}) };
@@ -68,6 +71,7 @@ const createVersion = async (
   content: string,
   version: string,
   selectedManifest: SkillManifest = manifest,
+  options: { contentRef?: string | null } = {},
 ) => {
   const resources = [
     {
@@ -80,7 +84,7 @@ const createVersion = async (
   ];
   const payload = {
     content,
-    contentRef: 'opaque:skill-content-1',
+    contentRef: options.contentRef === undefined ? null : options.contentRef,
     manifest: selectedManifest,
     resources,
   };
@@ -97,7 +101,7 @@ const createVersion = async (
 };
 
 describe('SkillCatalogAdminService', () => {
-  it('creates, validates and publishes an exact server-only runtime projection', async () => {
+  it('creates, validates and publishes an inline execution-ready runtime projection', async () => {
     const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service);
     const version = await createVersion(service, draft, '# approved v1', '1.0.0');
@@ -126,17 +130,113 @@ describe('SkillCatalogAdminService', () => {
       expect.objectContaining({ skillKey: 'approved.search', version: '1.0.0' }),
     ]);
     expect(JSON.stringify(catalog)).not.toContain('# approved v1');
-    expect(JSON.stringify(catalog)).not.toContain('opaque:skill-content-1');
+    expect(reader.isPublishedCatalogExecutionReady(catalog)).toBe(true);
     await expect(reader.resolveForExecution('approved.search', '1.0.0')).resolves.toMatchObject({
       checksum: version.checksum,
       content: '# approved v1',
-      contentRef: 'opaque:skill-content-1',
+      contentRef: null,
       resources: [expect.objectContaining({ path: 'references/source.txt' })],
       versionId: version.id,
     });
+    // End-to-end: a successfully published inline catalog is immediately accepted by the
+    // managed runtime snapshot resolver (not only by the readiness helper).
+    const runtime = await resolvePlatformSkillRuntimeSnapshot({
+      db,
+      effectiveMode: 'enforced',
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_SKILLS: true },
+      identity: { agentId: 'agent-1', operationId: 'op-1', userId: 'admin-1' },
+      options: {
+        catalogService: reader,
+        signProof: vi.fn().mockResolvedValue('signed-proof'),
+      },
+    });
+    expect(runtime?.catalog.refs).toEqual([
+      expect.objectContaining({ skillKey: 'approved.search', version: '1.0.0' }),
+    ]);
+    expect(runtime?.skills.some((skill) => skill.identifier === 'approved.search')).toBe(true);
     expect(invalidation.publish).toHaveBeenCalledWith(
       expect.objectContaining({ scopes: ['skill-catalog', 'skill-runtime'] }),
     );
+  });
+
+  it('rejects publication of opaque contentRef that runtime cannot execute', async () => {
+    const service = new SkillCatalogAdminService(db, serviceOptions);
+    const draft = await createDraft(service, 'opaque.blocked');
+    const version = await createVersion(service, draft, '# opaque body', '1.0.0', manifest, {
+      contentRef: 'opaque:skill-content-1',
+    });
+    const ready = await service.getDetail(draft.draft.id);
+    const validation = await service.validate('admin-1', {
+      expectedDraftToken: ready.draftToken,
+      expectedRevision: ready.baseRevision,
+      reason: 'validate opaque version',
+      skillId: draft.draft.id,
+      versionId: version.id,
+    });
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({ code: 'non_inline_content', severity: 'error' }),
+    );
+    await expect(
+      service.publish('admin-1', {
+        expectedDraftToken: ready.draftToken,
+        expectedRevision: ready.baseRevision,
+        id: draft.draft.id,
+        reason: 'must not publish opaque content',
+        versionId: version.id,
+      }),
+    ).rejects.toBeInstanceOf(SkillCatalogValidationError);
+    expect(
+      await new SkillCatalogReadService(db).resolveForExecution('opaque.blocked'),
+    ).toBeUndefined();
+  });
+
+  it('rejects publication of empty-string contentRef (corrupted legacy non-null)', async () => {
+    // Admin createVersion coerces falsy contentRef to null; insert a legacy empty-string row
+    // directly so validate/publish still fail closed (aligned with readService readiness).
+    const service = new SkillCatalogAdminService(db, serviceOptions);
+    const draft = await createDraft(service, 'empty.ref.blocked');
+    const content = '# empty ref body';
+    const contentRef = '';
+    const resources = [
+      {
+        checksum: 'a'.repeat(64),
+        content: 'reference',
+        mediaType: 'text/plain',
+        path: 'references/source.txt',
+        sizeBytes: 9,
+      },
+    ];
+    const version = await new PlatformSkillCatalogRepository(db).createVersion({
+      checksum: platformSkillVersionChecksum({ content, contentRef, manifest, resources }),
+      content,
+      contentRef,
+      manifest,
+      resources,
+      skillId: draft.draft.id,
+      version: '1.0.0',
+    });
+    // Confirm the corrupted empty string survived storage (not coerced to null).
+    expect(version.contentRef).toBe('');
+    const ready = await service.getDetail(draft.draft.id);
+    const validation = await service.validate('admin-1', {
+      expectedDraftToken: ready.draftToken,
+      expectedRevision: ready.baseRevision,
+      reason: 'validate empty-string contentRef',
+      skillId: draft.draft.id,
+      versionId: version.id,
+    });
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({ code: 'non_inline_content', severity: 'error' }),
+    );
+    await expect(
+      service.publish('admin-1', {
+        expectedDraftToken: ready.draftToken,
+        expectedRevision: ready.baseRevision,
+        id: draft.draft.id,
+        reason: 'must not publish empty contentRef',
+        versionId: version.id,
+      }),
+    ).rejects.toBeInstanceOf(SkillCatalogValidationError);
   });
 
   it('keeps runtime on the immutable snapshot after mutable draft edits', async () => {

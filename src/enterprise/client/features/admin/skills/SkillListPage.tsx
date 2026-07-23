@@ -307,11 +307,13 @@ const SkillListPage = memo(() => {
         pagination={false}
         rowKey="id"
         cursorPagination={{
-          hasNext: Boolean(data?.nextCursor) && !error,
-          hasPrevious: cursorStack.length > 0,
+          hasNext: Boolean(data?.nextCursor) && !error && !isLoading,
+          hasPrevious: cursorStack.length > 0 && !isLoading,
           pageSize: limit,
           onNext: () => {
-            if (!data?.nextCursor) return;
+            if (!data?.nextCursor || isLoading) return;
+            // Idempotent: ignore double-click while the next cursor is already active.
+            if (cursorStack.at(-1) === data.nextCursor) return;
             setCursorState({
               fingerprint: filterFingerprint,
               stack: [...cursorStack, data.nextCursor],
@@ -321,8 +323,10 @@ const SkillListPage = memo(() => {
             setLimit(pageSize);
             setCursorState({ fingerprint: filterFingerprint, stack: [] });
           },
-          onPrevious: () =>
-            setCursorState({ fingerprint: filterFingerprint, stack: cursorStack.slice(0, -1) }),
+          onPrevious: () => {
+            if (isLoading) return;
+            setCursorState({ fingerprint: filterFingerprint, stack: cursorStack.slice(0, -1) });
+          },
         }}
         emptyDescription={
           filtered ? t('skillCatalog.list.empty.filtered') : t('skillCatalog.list.empty.default')

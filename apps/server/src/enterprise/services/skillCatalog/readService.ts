@@ -137,7 +137,6 @@ export class SkillCatalogReadService {
   private readonly loadCurrentSnapshot: () => Promise<CurrentSkillCatalogSnapshot>;
   private readonly model: Pick<PlatformSkillCatalogModel, 'resolvePublishedVersion'>;
   private publishedExecutionIndex = new Map<string, ResolvedSkill>();
-  private publishedExecutionRevision: string | undefined;
   private readonly projectionSource: string;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
@@ -354,17 +353,12 @@ export class SkillCatalogReadService {
     if (!cached) throw new Error('Published Skill projection could not be rebuilt');
 
     this.publishedExecutionIndex = cloneExecutionIndex(cached.executionIndex);
-    this.publishedExecutionRevision = cached.catalog.revision;
     cacheReadiness(cached.catalog.revision, cached.executionReady);
     return cloneCatalog(cached.catalog);
   };
 
-  isPublishedCatalogExecutionReady = (catalog: { revision: string; skills: PublishedSkill[] }) => {
-    if (catalog.revision === this.publishedExecutionRevision) {
-      return readinessByRevision.get(catalog.revision) ?? false;
-    }
-    return readinessByRevision.get(catalog.revision) ?? false;
-  };
+  isPublishedCatalogExecutionReady = (catalog: { revision: string; skills: PublishedSkill[] }) =>
+    readinessByRevision.get(catalog.revision) ?? false;
 
   resolveForExecution = async (skillKey: string, version?: string) => {
     const builtin = this.builtinSkills.find((item) => item.skillKey === skillKey);

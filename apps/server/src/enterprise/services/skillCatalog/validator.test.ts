@@ -26,7 +26,7 @@ const resource = {
   mediaType: 'text/plain',
   path: 'references/source.txt',
   sizeBytes: 9,
-};
+} as const;
 
 const safeOptions = (
   overrides: SkillCatalogValidatorOptions = {},
@@ -196,9 +196,10 @@ describe('SkillCatalogValidator', () => {
       contentRef: 'opaque:skill-content-1',
       resources: [resource],
     });
-    expect(codes(await new SkillCatalogValidator(safeOptions()).validate(complete))).not.toContain(
-      'checksum_mismatch',
-    );
+    const completeCodes = codes(await new SkillCatalogValidator(safeOptions()).validate(complete));
+    expect(completeCodes).not.toContain('checksum_mismatch');
+    // Opaque refs remain checksummed, but are never publication-ready for managed runtime.
+    expect(completeCodes).toContain('non_inline_content');
     for (const mutation of [
       { ...complete, contentRef: 'opaque:skill-content-2' },
       { ...complete, resources: [{ ...resource, content: 'tampered' }] },
@@ -207,6 +208,40 @@ describe('SkillCatalogValidator', () => {
         'checksum_mismatch',
       );
     }
+  });
+
+  it('rejects non-inline skill and resource content for managed execution', async () => {
+    const opaqueSkill = await new SkillCatalogValidator(safeOptions()).validate(
+      validationInput({ contentRef: 'opaque:skill-content-1' }),
+    );
+    expect(codes(opaqueSkill)).toContain('non_inline_content');
+    expect(opaqueSkill.issues).toContainEqual(
+      expect.objectContaining({ path: ['contentRef'], severity: 'error' }),
+    );
+
+    // Corrupted legacy empty-string refs are non-null and must also fail closed.
+    const emptyStringRef = await new SkillCatalogValidator(safeOptions()).validate(
+      validationInput({ contentRef: '' }),
+    );
+    expect(codes(emptyStringRef)).toContain('non_inline_content');
+    expect(emptyStringRef.issues).toContainEqual(
+      expect.objectContaining({ path: ['contentRef'], severity: 'error' }),
+    );
+
+    const opaqueResource = await new SkillCatalogValidator(safeOptions()).validate(
+      validationInput({
+        resources: [
+          {
+            checksum: 'e'.repeat(64),
+            contentRef: 'opaque:resource-1',
+            mediaType: 'text/plain',
+            path: 'references/opaque.txt',
+            sizeBytes: 0,
+          },
+        ],
+      }),
+    );
+    expect(codes(opaqueResource)).toContain('non_inline_content');
   });
 
   it('validates required, optional, duplicate and allowlisted Tool combinations', async () => {
