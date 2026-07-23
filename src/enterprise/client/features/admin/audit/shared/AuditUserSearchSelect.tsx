@@ -1,6 +1,6 @@
 'use client';
 
-import { Select } from '@lobehub/ui/base-ui';
+import { AutoComplete } from '@lobehub/ui/base-ui';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -39,13 +39,19 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
     valueLabel,
   }) => {
     const { t } = useTranslation('admin');
-    const [options, setOptions] = useState<
-      { label: string; value: string; user: AdminAuditUserSearchItem }[]
-    >([]);
-    const [loading, setLoading] = useState(false);
-    const [search, setSearch] = useState('');
+    const [options, setOptions] = useState<{ label: string; value: string }[]>([]);
+    const [inputValue, setInputValue] = useState(valueLabel ?? value ?? '');
     const debounceRef = useRef<number | null>(null);
     const usersById = useRef(new Map<string, AdminAuditUserSearchItem>());
+
+    useEffect(() => {
+      if (valueLabel) setInputValue(valueLabel);
+      else if (value && usersById.current.has(value)) {
+        setInputValue(displayAuditUserLabel(usersById.current.get(value)!));
+      } else if (!value) {
+        setInputValue('');
+      }
+    }, [value, valueLabel]);
 
     const runSearch = useCallback(
       async (q: string) => {
@@ -53,7 +59,6 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
           setOptions([]);
           return;
         }
-        setLoading(true);
         try {
           const result = await adminAuditService.searchUsers({ limit: 20, q: q.trim() });
           for (const item of result.items) {
@@ -68,50 +73,64 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
               ]
                 .filter(Boolean)
                 .join(' '),
-              user: item,
               value: item.id,
             })),
           );
         } catch {
           setOptions([]);
-        } finally {
-          setLoading(false);
         }
       },
       [enabled],
     );
 
-    useEffect(() => {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      if (!enabled) return;
-      debounceRef.current = window.setTimeout(() => {
-        void runSearch(search);
-      }, DEBOUNCE_MS);
-      return () => {
+    const scheduleSearch = useCallback(
+      (q: string) => {
         if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      };
-    }, [enabled, runSearch, search]);
+        debounceRef.current = window.setTimeout(() => {
+          void runSearch(q);
+        }, DEBOUNCE_MS);
+      },
+      [runSearch],
+    );
 
-    const mergedOptions =
-      value && valueLabel && !options.some((o) => o.value === value)
-        ? [{ label: valueLabel, value }, ...options]
-        : options;
+    useEffect(
+      () => () => {
+        if (debounceRef.current) window.clearTimeout(debounceRef.current);
+      },
+      [],
+    );
 
     return (
-      <Select
-        showSearch
+      <AutoComplete
         allowClear={allowClear}
         disabled={disabled || !enabled}
-        filterOption={false}
-        loading={loading}
-        options={mergedOptions}
+        options={options}
         placeholder={placeholder ?? t('audit.shared.userSearchPlaceholder')}
         style={style ?? { minWidth: 220 }}
-        value={value}
-        onSearch={(q) => setSearch(q)}
+        value={inputValue}
         onChange={(next) => {
-          const id = (next as string | null | undefined) || undefined;
-          onChange(id, id ? usersById.current.get(id) : undefined);
+          const text = next ?? '';
+          setInputValue(text);
+          // Selecting an option sets value to the option value (user id)
+          if (usersById.current.has(text)) {
+            onChange(text, usersById.current.get(text));
+            setInputValue(displayAuditUserLabel(usersById.current.get(text)!));
+            return;
+          }
+          // Match by label
+          const byLabel = options.find((o) => o.label === text);
+          if (byLabel) {
+            onChange(byLabel.value, usersById.current.get(byLabel.value));
+            return;
+          }
+          if (!text.trim()) {
+            onChange(undefined);
+          }
+          scheduleSearch(text);
+        }}
+        onSearch={(q) => {
+          setInputValue(q);
+          scheduleSearch(q);
         }}
       />
     );

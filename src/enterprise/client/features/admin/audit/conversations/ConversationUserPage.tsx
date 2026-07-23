@@ -101,26 +101,18 @@ const ConversationUserPage = memo(() => {
   );
   const timeline = useFetchAuditUserTimeline({ from, limit: 30, to, userId }, canRead && !!userId);
 
-  const forbidden =
-    [summary.error, list.error, timeline.error].some((err) => {
-      const mapped = mapEnterpriseError(err);
-      return (
-        mapped?.code === 'PLATFORM_PERMISSION_DENIED' ||
-        mapped?.code === 'ADMIN_ACCESS_DENIED' ||
-        mapped?.code === 'FORBIDDEN'
-      );
-    }) || false;
-
-  // Also treat raw TRPC FORBIDDEN
   const isForbidden = useMemo(() => {
     const errors = [summary.error, list.error, timeline.error];
     return errors.some((err) => {
       if (!err) return false;
       const data = (err as { data?: { code?: string } }).data;
       if (data?.code === 'FORBIDDEN') return true;
-      return forbidden;
+      const mapped = mapEnterpriseError(err);
+      return (
+        mapped?.code === 'PLATFORM_PERMISSION_DENIED' || mapped?.code === 'ADMIN_ACCESS_DENIED'
+      );
     });
-  }, [forbidden, list.error, summary.error, timeline.error]);
+  }, [list.error, summary.error, timeline.error]);
 
   const columns: TableColumnsType<AdminAuditConversationListItem> = useMemo(
     () => [
@@ -168,12 +160,12 @@ const ConversationUserPage = memo(() => {
   return (
     <AdminPageTemplate
       description={t('audit.conversations.user.desc')}
+      title={user ? displayAuditUserLabel(user) : t('audit.conversations.user.title')}
       actions={
         <Button type="default" onClick={() => navigate('/admin/audit/conversations')}>
           {t('audit.conversations.user.back')}
         </Button>
       }
-      title={user ? displayAuditUserLabel(user) : t('audit.conversations.user.title')}
       toolbar={
         <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
           <input
