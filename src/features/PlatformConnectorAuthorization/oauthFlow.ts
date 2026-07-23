@@ -16,12 +16,24 @@ export interface WaitForManagedConnectorAuthorizationOptions {
   pollIntervalMs?: number;
   popup: Pick<Window, 'closed'>;
   signal?: AbortSignal;
-  sleep?: (milliseconds: number) => Promise<void>;
+  sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   timeoutMs?: number;
 }
 
-const sleepFor = (milliseconds: number) =>
-  new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+const sleepFor = (milliseconds: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const timer = window.setTimeout(resolve, milliseconds);
+    // Clear the pending timer if the poll is aborted mid-sleep, so a cancelled authorization
+    // does not leave an orphaned timeout running to completion.
+    signal?.addEventListener(
+      'abort',
+      () => {
+        window.clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
 
 class ConnectorAuthorizationPollingCancelledError extends Error {}
 
@@ -77,7 +89,7 @@ export const waitForManagedConnectorAuthorization = async ({
       }
       if (attempt.status !== 'pending') return { binding: null, status: attempt.status };
       if (popup.closed) return { binding: null, status: 'dismissed' };
-      await awaitWithAbort(() => sleep(pollIntervalMs), signal);
+      await awaitWithAbort(() => sleep(pollIntervalMs, signal), signal);
     }
   } catch (error) {
     if (error instanceof ConnectorAuthorizationPollingCancelledError) {

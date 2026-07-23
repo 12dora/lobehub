@@ -135,10 +135,11 @@ export class PostgresAdminMutationRateLimiter implements AdminMutationRateLimite
         limit: this.config.cleanupBatchSize,
         maxAgeMs: this.config.windowMs + this.config.retentionMs,
       });
-    } catch {
-      // Sanitized: cleanup failure must not expand quota or fail the request.
+    } catch (error) {
+      // Sanitized: cleanup failure must not expand quota or fail the request. Log only the
+      // error class name (never the error/value) so real cleanup regressions are diagnosable.
       console.error('[admin-mutation-rate] cleanup unavailable', {
-        errorClass: 'CleanupError',
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
       });
     }
   };

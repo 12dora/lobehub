@@ -127,7 +127,12 @@ export const handleIdentityProviderTestCallback = async (
     }
     const result = await service.callback({ code, effectiveOrigin, state });
     return renderTerminalPage(result.valid);
-  } catch {
+  } catch (error) {
+    // Neutral page for the browser; sanitized server log (name only) so a real callback failure
+    // is not invisible in production.
+    console.error('[identity-provider-test] callback failed', {
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+    });
     return renderTerminalPage(false);
   }
 };

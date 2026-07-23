@@ -46,7 +46,12 @@ export const handleManagedConnectorOAuthCallback = async (
     }
     await service.callback({ code, state });
     return renderManagedResultPage(true);
-  } catch {
+  } catch (error) {
+    // Neutral page for the browser; sanitized server log (name only) so a real token-exchange
+    // or DB failure is not invisible in production.
+    console.error('[managed-connector-oauth] callback failed', {
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+    });
     return renderManagedResultPage(false);
   }
 };

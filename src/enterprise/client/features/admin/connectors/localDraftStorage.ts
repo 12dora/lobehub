@@ -11,6 +11,14 @@ export interface StoredAdminConnectorDraft {
 
 const keyFor = (id: string) => `${STORAGE_PREFIX}${id}`;
 
+const safeRemove = (id: string) => {
+  try {
+    localStorage.removeItem(keyFor(id));
+  } catch {
+    /* storage unavailable — nothing to clean up */
+  }
+};
+
 const sanitizePublicDraft = (draft: EditableAdminConnectorDraft): EditableAdminConnectorDraft => ({
   credentialMode: draft.credentialMode,
   description: draft.description,
@@ -39,20 +47,28 @@ export const loadAdminConnectorDraft = (id: string): StoredAdminConnectorDraft |
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredAdminConnectorDraft;
     if (!parsed.draft || typeof parsed.baseRevision !== 'number' || !parsed.draftToken) {
-      localStorage.removeItem(keyFor(id));
+      safeRemove(id);
       return null;
     }
     const sanitized = sanitizeStoredDraft(parsed);
-    localStorage.setItem(keyFor(id), JSON.stringify(sanitized));
+    try {
+      localStorage.setItem(keyFor(id), JSON.stringify(sanitized));
+    } catch {
+      /* re-persist is best-effort; the sanitized value is still returned */
+    }
     return sanitized;
   } catch {
-    localStorage.removeItem(keyFor(id));
+    safeRemove(id);
     return null;
   }
 };
 
 export const saveAdminConnectorDraft = (id: string, value: StoredAdminConnectorDraft) => {
-  localStorage.setItem(keyFor(id), JSON.stringify(sanitizeStoredDraft(value)));
+  try {
+    localStorage.setItem(keyFor(id), JSON.stringify(sanitizeStoredDraft(value)));
+  } catch {
+    // Quota exceeded / private-mode SecurityError — fail closed without crashing the editor.
+  }
 };
 
-export const clearAdminConnectorDraft = (id: string) => localStorage.removeItem(keyFor(id));
+export const clearAdminConnectorDraft = (id: string) => safeRemove(id);
