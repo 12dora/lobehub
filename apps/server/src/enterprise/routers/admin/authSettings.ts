@@ -45,7 +45,7 @@ export const adminAuthSettingsRouter = router({
             emailDomainCount: next.emailDomainAllowlist.length,
             openRegistration: next.openRegistration,
           },
-          result: 'succeeded',
+          result: 'success',
           targetId: 'global',
           targetType: 'authSettings',
         });

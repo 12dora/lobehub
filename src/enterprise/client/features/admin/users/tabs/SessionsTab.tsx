@@ -67,7 +67,7 @@ const SessionsTab = memo<SessionsTabProps>(({ user, canRevoke, onRevokeAll, onRe
             <div className={styles.card} key={s.id}>
               <div className={styles.cardHeader}>
                 <Text ellipsis style={{ fontWeight: 500, margin: 0 }}>
-                  {s.id}
+                  {s.userAgent ?? t('users.sessions.unknownDevice')}
                 </Text>
                 {canRevoke && onRevokeSession ? (
                   <Button danger size="small" type="text" onClick={() => onRevokeSession(s.id)}>
@@ -82,8 +82,6 @@ const SessionsTab = memo<SessionsTabProps>(({ user, canRevoke, onRevokeAll, onRe
                 <Text>{formatAdminDateTime(s.expiresAt)}</Text>
                 <Text type="secondary">{t('users.sessions.ip')}</Text>
                 <Text>{s.ipAddress ?? '—'}</Text>
-                <Text type="secondary">{t('users.sessions.userAgent')}</Text>
-                <Text ellipsis>{s.userAgent ?? '—'}</Text>
               </div>
             </div>
           ))}

@@ -35,12 +35,6 @@ const styles = createStaticStyles(({ css }) => ({
     font-size: ${cssVar.fontSizeSM};
     color: ${cssVar.colorTextSecondary};
   `,
-  mono: css`
-    font-family: ${cssVar.fontFamilyCode};
-    font-size: ${cssVar.fontSizeSM};
-    color: ${cssVar.colorTextTertiary};
-    word-break: break-all;
-  `,
 }));
 
 export interface DependencyValidity {
@@ -316,12 +310,6 @@ export const DependencyEditor = ({
                       <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>
                     ) : null}
                   </Flexbox>
-                  <Text className={styles.mono}>
-                    {t('agentCatalog.dependency.model.pinned', {
-                      checksum: model.providerChecksum.slice(0, 16),
-                      revision: model.providerRevision,
-                    })}
-                  </Text>
                 </Flexbox>
               </Block>
             ) : (
@@ -365,7 +353,6 @@ export const DependencyEditor = ({
                         <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
                       ) : null}
                     </Flexbox>
-                    <Text className={styles.mono}>{skill.checksum.slice(0, 16)}…</Text>
                   </Flexbox>
                   {editable ? (
                     <Button
@@ -439,11 +426,8 @@ export const DependencyEditor = ({
                   <Flexbox gap={2}>
                     <Flexbox horizontal align="center" gap={8}>
                       <Tag>{connector.connectorKey}</Tag>
-                      <Text className={styles.mono}>
-                        {t('agentCatalog.dependency.connector.pinned', {
-                          revision: connector.publishedRevision,
-                        })}{' '}
-                        · {connector.allowedToolKeys.length}{' '}
+                      <Text type="secondary">
+                        {connector.allowedToolKeys.length}{' '}
                         {t('agentCatalog.dependency.connector.toolsLabel')}
                       </Text>
                       {staleConnectors.includes(connector.connectorKey) ? (

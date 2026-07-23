@@ -88,7 +88,7 @@ const fetchPublicSnapshot = vi.fn(async (): Promise<PlatformPublicSnapshot> => (
   branding: null,
   brandingRevision: null,
   configRevision: '0',
-  login: { workAccountEnabled: false },
+  login: { openRegistration: true, workAccountEnabled: false },
   logoUrl: null,
   platformName: null,
 }));
@@ -158,7 +158,7 @@ describe('EnterprisePlatformProvider', () => {
       branding: null,
       brandingRevision: null,
       configRevision: '0',
-      login: { workAccountEnabled: false },
+      login: { openRegistration: true, workAccountEnabled: false },
       logoUrl: null,
       platformName: null,
     });
@@ -228,7 +228,7 @@ describe('EnterprisePlatformProvider', () => {
       },
       brandingRevision: '3',
       configRevision: 'config-3',
-      login: { workAccountEnabled: false },
+      login: { openRegistration: true, workAccountEnabled: false },
       logoUrl: '/initial.png',
       platformName: 'Initial Brand',
     };
@@ -287,7 +287,7 @@ describe('EnterprisePlatformProvider', () => {
             },
       brandingRevision: revision,
       configRevision: revision ?? '0',
-      login: { workAccountEnabled: false },
+      login: { openRegistration: true, workAccountEnabled: false },
       logoUrl: null,
       platformName: revision === null ? null : name,
     });
