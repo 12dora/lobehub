@@ -15,12 +15,6 @@ const mocks = vi.hoisted(() => ({
     permissions: [] as string[],
     status: 'allowed' as const,
   },
-  easyauth: {
-    data: undefined as unknown,
-    error: undefined as unknown,
-    isLoading: false,
-    mutate: vi.fn(),
-  },
   providers: {
     data: undefined as { items: unknown[] } | undefined,
     error: undefined as unknown,
@@ -80,7 +74,6 @@ vi.mock('./useIdentityProviderRestartLifecycle', () => ({
 
 vi.mock('./useIdentityProviders', () => ({
   useAuthSnapshotStatus: () => mocks.runtime,
-  useEasyauthStatus: () => mocks.easyauth,
   useIdentityProviders: () => mocks.providers,
 }));
 
@@ -145,10 +138,6 @@ vi.mock('../primitives/DataTable', () => ({
   ),
 }));
 
-vi.mock('./EasyauthStatusCard', () => ({
-  default: () => <div data-testid="easyauth-status-card">easyauth</div>,
-}));
-
 const openModalMock = vi.mocked(openIdentityProviderWizardModal);
 
 const allIdentityPermissions = [
@@ -187,8 +176,6 @@ describe('IdentityProviderPage rendering rules', () => {
     mocks.providers.mutate = vi.fn();
     mocks.runtime.data = undefined;
     mocks.runtime.error = undefined;
-    mocks.easyauth.data = undefined;
-    mocks.easyauth.error = undefined;
     mocks.restartLifecycle.phase = 'idle';
   });
 
@@ -199,16 +186,14 @@ describe('IdentityProviderPage rendering rules', () => {
 
     expect(screen.getByTestId('identity-provider-setup-guidance')).toBeTruthy();
     expect(screen.queryByText('identityProviders.actions.create')).toBeNull();
-    expect(screen.queryByTestId('easyauth-status-card')).toBeNull();
     expect(screen.queryByTestId('provider-table')).toBeNull();
   });
 
-  it('renders the provider table + status card and opens the create modal from "New"', () => {
+  it('renders the provider table and opens the create modal from "New"', () => {
     mocks.providers.data = { items: [sampleProvider] };
 
     render(<IdentityProviderPage />);
 
-    expect(screen.getByTestId('easyauth-status-card')).toBeTruthy();
     expect(screen.getByTestId('provider-table')).toBeTruthy();
 
     fireEvent.click(screen.getByText('identityProviders.actions.create'));

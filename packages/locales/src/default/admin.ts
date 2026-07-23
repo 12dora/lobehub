@@ -1720,26 +1720,6 @@ export default {
   'identityProviders.discovery.jwks': 'JWKS',
   'identityProviders.discovery.token': 'Token',
   'identityProviders.discovery.valid': 'Discovery metadata and outbound network policy are valid.',
-  'identityProviders.easyauth.accessGranted': '{{count}} with access',
-  'identityProviders.easyauth.appKey': 'App key: {{key}}',
-  'identityProviders.easyauth.baseUrl': 'Service URL: {{url}}',
-  'identityProviders.easyauth.degraded': '{{count}} degraded',
-  'identityProviders.easyauth.degradedWarning':
-    'Some access data is out of date. Users may see stale permissions until the next sync.',
-  'identityProviders.easyauth.description':
-    'After work-account sign-in, this service grants platform access and roles.',
-  'identityProviders.easyauth.latestFetchedAt': 'Latest snapshot: {{time}}',
-  'identityProviders.easyauth.loadError':
-    'Authorization service status could not be loaded. Identity provider editing is unaffected.',
-  'identityProviders.easyauth.loading': 'Loading authorization service status…',
-  'identityProviders.easyauth.noSnapshots': 'No grant snapshots have been stored yet.',
-  'identityProviders.easyauth.portalUrl': 'Portal: {{url}}',
-  'identityProviders.easyauth.title': 'Sign-in access service',
-  'identityProviders.easyauth.tokenConfigured': 'Connected',
-  'identityProviders.easyauth.tokenHint':
-    "The sign-in access service isn't fully configured yet. Ask your platform operator to finish setup, then restart.",
-  'identityProviders.easyauth.tokenMissing': 'Not configured',
-  'identityProviders.easyauth.totalSnapshots': '{{count}} snapshots',
   'identityProviders.empty': 'No sign-in methods yet. Click "New" to add one.',
   'identityProviders.emptyHint':
     'Choose Authentik or a generic OIDC provider to configure work-account sign-in.',
@@ -2053,7 +2033,6 @@ export default {
   'system.values.instanceKind.platform': 'Platform runtime',
   'system.values.jobKind.agent_rollout': 'Assistant rollout',
   'system.values.jobKind.connector_runtime': 'Connector update',
-  'system.values.jobKind.easyauth_sync': 'Access sync',
   'system.values.jobKind.secret_rewrap': 'Key rotation',
   'system.values.jobKind.unknown': 'Unknown job type',
   'system.values.loadMode.process_cached': 'Process cache',
