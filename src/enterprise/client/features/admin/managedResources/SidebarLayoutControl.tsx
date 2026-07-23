@@ -19,13 +19,13 @@ import { useFetchAdminSidebarLayout } from './hooks/useAdminSidebarLayout';
 
 const MODE_VALUES = ['user', 'platform'] as const satisfies readonly SidebarLayoutMode[];
 
+// Card/row styles mirror the sibling resource boxes on ManagedResourcesPolicyPage
+// so the "侧边栏排序" box renders as a compact grid card, not a full-width strip.
 const styles = createStaticStyles(({ css }) => ({
   card: css`
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px 20px;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 12px;
 
     padding: 16px;
     border: 1px solid ${cssVar.colorBorderSecondary};
@@ -33,11 +33,14 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgContainer};
   `,
-  text: css`
+  row: css`
     display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 220px;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    align-items: center;
+    justify-content: space-between;
+
+    min-width: 0;
   `,
 }));
 
@@ -98,27 +101,27 @@ const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
 
   return (
     <section className={styles.card}>
-      <div className={styles.text}>
+      <div className={styles.row}>
         <Text strong>{t('sidebarLayout.title')}</Text>
-        <Text type="secondary">{t('sidebarLayout.desc')}</Text>
+        <Flexbox horizontal align="center" gap={8}>
+          {mode === 'platform' ? (
+            <Button disabled={busy} icon={<Icon icon={MonitorCog} />} onClick={handleConfigure}>
+              {t('sidebarLayout.configure')}
+            </Button>
+          ) : null}
+          <Select
+            disabled={busy}
+            style={{ minWidth: 140 }}
+            value={mode}
+            options={MODE_VALUES.map((m) => ({
+              label: t(`sidebarLayout.mode.${m}` as const),
+              value: m,
+            }))}
+            onChange={(value) => handleModeChange(value as SidebarLayoutMode)}
+          />
+        </Flexbox>
       </div>
-      <Flexbox horizontal align="center" gap={8}>
-        {mode === 'platform' ? (
-          <Button disabled={busy} icon={<Icon icon={MonitorCog} />} onClick={handleConfigure}>
-            {t('sidebarLayout.configure')}
-          </Button>
-        ) : null}
-        <Select
-          disabled={busy}
-          style={{ minWidth: 160 }}
-          value={mode}
-          options={MODE_VALUES.map((m) => ({
-            label: t(`sidebarLayout.mode.${m}` as const),
-            value: m,
-          }))}
-          onChange={(value) => handleModeChange(value as SidebarLayoutMode)}
-        />
-      </Flexbox>
+      <Text type="secondary">{t('sidebarLayout.desc')}</Text>
     </section>
   );
 });
