@@ -2,17 +2,7 @@
 
 import { Alert, Block, Flexbox, Icon, Tag, Text } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import {
-  Box,
-  Boxes,
-  CircleAlert,
-  Flag,
-  KeyRound,
-  Mail,
-  Network,
-  Server,
-  Waypoints,
-} from 'lucide-react';
+import { Box, Boxes, CircleAlert, KeyRound, Mail, Network, Server, Waypoints } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -65,17 +55,6 @@ const DEPENDENCIES = [
   ['keyManagement', KeyRound],
 ] as const;
 
-const FEATURE_FLAGS = [
-  'platformAdmin',
-  'settingsPolicy',
-  'managedAi',
-  'managedSkills',
-  'managedConnectors',
-  'managedAgents',
-  'databaseOidc',
-  'runtimeBranding',
-] as const;
-
 interface SectionTitleProps {
   children: ReactNode;
 }
@@ -96,13 +75,10 @@ export const BuildSummary = memo<{ status: AdminSystemStatus }>(({ status }) => 
           <Text strong>{t('system.build.title')}</Text>
         </Flexbox>
         <Text className={styles.code}>{status.build.version}</Text>
-        <Text className={styles.code} type="secondary">
-          {status.build.gitSha ?? t('system.values.unavailable')}
-        </Text>
       </Flexbox>
       <Flexbox gap={4}>
         <Text type="secondary">{t('system.snapshotAt')}</Text>
-        <Text className={styles.code}>{status.snapshotAt.toLocaleString()}</Text>
+        <Text>{status.snapshotAt.toLocaleString()}</Text>
       </Flexbox>
     </Block>
   );
@@ -157,32 +133,6 @@ export const DependencyGrid = memo<{ status: AdminSystemStatus }>(({ status }) =
 
 DependencyGrid.displayName = 'AdminSystemDependencyGrid';
 
-export const FeatureFlagGrid = memo<{ status: AdminSystemStatus }>(({ status }) => {
-  const { t } = useTranslation('admin');
-  return (
-    <Flexbox gap={8}>
-      <Flexbox horizontal align="center" gap={8}>
-        <Icon icon={Flag} size={18} />
-        <SectionTitle>{t('system.flags.title')}</SectionTitle>
-      </Flexbox>
-      <div className={styles.flagGrid}>
-        {FEATURE_FLAGS.map((key) => (
-          <Block key={key} padding={12} variant="outlined">
-            <Flexbox horizontal align="center" gap={8} justify="space-between">
-              <Text>{t(`system.flags.${key}` as never)}</Text>
-              <Tag color={status.featureFlags[key] ? 'success' : 'default'} size="small">
-                {t(status.featureFlags[key] ? 'system.values.enabled' : 'system.values.disabled')}
-              </Tag>
-            </Flexbox>
-          </Block>
-        ))}
-      </div>
-    </Flexbox>
-  );
-});
-
-FeatureFlagGrid.displayName = 'AdminSystemFeatureFlagGrid';
-
 export const OidcSummary = memo<{ status: AdminSystemStatus }>(({ status }) => {
   const { t } = useTranslation('admin');
   return (
@@ -193,26 +143,11 @@ export const OidcSummary = memo<{ status: AdminSystemStatus }>(({ status }) => {
       </Flexbox>
       <Block padding={16} variant="outlined">
         <Flexbox gap={8}>
-          <Flexbox horizontal align="center" gap={8} justify="space-between" wrap="wrap">
-            <Flexbox horizontal align="center" gap={8}>
-              <OperationalStatus status={status.oidc.status} />
-              <Tag color={status.oidc.pendingRestart ? 'warning' : 'default'} size="small">
-                {t(
-                  status.oidc.pendingRestart ? 'system.oidc.pendingRestart' : 'system.oidc.active',
-                )}
-              </Tag>
-            </Flexbox>
-            <Text type="secondary">
-              {t('system.oidc.source', {
-                source: t(`system.values.oidcSource.${status.oidc.source}` as never),
-              })}
-            </Text>
-          </Flexbox>
-          <Flexbox gap={4}>
-            <Text type="secondary">{t('system.oidc.activeRevision')}</Text>
-            <Text className={styles.code}>
-              {status.oidc.activeRevision ?? t('system.values.unavailable')}
-            </Text>
+          <Flexbox horizontal align="center" gap={8} wrap="wrap">
+            <OperationalStatus status={status.oidc.status} />
+            <Tag color={status.oidc.pendingRestart ? 'warning' : 'default'} size="small">
+              {t(status.oidc.pendingRestart ? 'system.oidc.pendingRestart' : 'system.oidc.active')}
+            </Tag>
           </Flexbox>
         </Flexbox>
       </Block>
