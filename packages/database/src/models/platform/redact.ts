@@ -78,7 +78,6 @@ export interface RedactSensitiveOptions {
   isBenignKey?: (key: string) => boolean;
 }
 
-const EASYAUTH_APP_TOKEN_PATTERN = /(?<![\w-])eat_(?:live|test)_[\w-]{15,}[a-z0-9](?![\w-])/iu;
 const PREFIXED_SECRET_PATTERN =
   /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/iu;
 const JWT_PATTERN = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/iu;
@@ -116,15 +115,7 @@ const isDocumentationPlaceholder = (value: string): boolean => {
 };
 
 const isKnownSecretScalar = (value: string): boolean =>
-  EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
-  PREFIXED_SECRET_PATTERN.test(value) ||
-  JWT_PATTERN.test(value);
-
-const isExplicitCredentialScalar = (value: string): boolean =>
-  isKnownSecretScalar(value) ||
-  (SECRET_SCALAR_PATTERN.test(value) &&
-    !SECRET_PLACEHOLDER_PATTERN.test(value) &&
-    !isDocumentationPlaceholder(value));
+  PREFIXED_SECRET_PATTERN.test(value) || JWT_PATTERN.test(value);
 
 /**
  * Stricter scalar check for fully-formed auth shapes (`Authorization: …`,
@@ -136,14 +127,10 @@ const isCredentialAssignmentValue = (value: string): boolean =>
   isKnownSecretScalar(value) ||
   (SECRET_SCALAR_PATTERN.test(value) &&
     !SECRET_PLACEHOLDER_PATTERN.test(value) &&
-    !YOUR_PLACEHOLDER_PREFIXES.some((prefix) => value.toLowerCase().startsWith(prefix)));
+    !isDocumentationPlaceholder(value));
 
 const containsSecretValueShape = (value: string): boolean => {
-  if (
-    EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
-    PREFIXED_SECRET_PATTERN.test(value) ||
-    JWT_PATTERN.test(value)
-  ) {
+  if (PREFIXED_SECRET_PATTERN.test(value) || JWT_PATTERN.test(value)) {
     return true;
   }
   return [...value.matchAll(BEARER_VALUE_PATTERN)].some((match) =>

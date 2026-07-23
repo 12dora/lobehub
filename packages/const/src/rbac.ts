@@ -293,7 +293,7 @@ export const ROLE_DESCRIPTIONS = {
   [SYSTEM_DEFAULT_ROLES.AI_ADMIN]: 'Platform AI / skill / connector / agent administrator',
   [SYSTEM_DEFAULT_ROLES.IDENTITY_ADMIN]: 'Platform identity and branding administrator',
   [SYSTEM_DEFAULT_ROLES.AUDITOR]: 'Platform read-only auditor',
-  [SYSTEM_DEFAULT_ROLES.PLATFORM_USER]: 'Base platform access (EasyAuth aihub.access)',
+  [SYSTEM_DEFAULT_ROLES.PLATFORM_USER]: 'Base platform access for authenticated users',
 } as const;
 
 /**

@@ -95,7 +95,7 @@ export const PLATFORM_PERMISSIONS = {
   CRED_UPDATE: 'platform_credential:update:all',
   CRED_DELETE: 'platform_credential:delete:all',
 
-  /** Role assignment / EasyAuth sync status (admin.roles / admin.easyauth). */
+  /** Role assignment (admin.roles). */
   ROLE_READ: 'platform_role:read:all',
   ROLE_UPDATE: 'platform_role:update:all',
 } as const;
@@ -103,9 +103,3 @@ export const PLATFORM_PERMISSIONS = {
 export type PlatformPermission = (typeof PLATFORM_PERMISSIONS)[keyof typeof PLATFORM_PERMISSIONS];
 
 export const PLATFORM_PERMISSION_LIST = Object.values(PLATFORM_PERMISSIONS);
-
-/**
- * EasyAuth base access permission (not a platform_* RBAC code).
- * Granted via EasyAuth; synced into local access state / platform_user role.
- */
-export const AIHUB_ACCESS_PERMISSION = 'aihub.access' as const;

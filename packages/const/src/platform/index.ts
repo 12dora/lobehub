@@ -1,5 +1,3 @@
-export * from './easyauth';
-export * from './easyauthManifest';
 export * from './errorCodes';
 export * from './featureFlags';
 export * from './managedResources';

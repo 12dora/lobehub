@@ -2,8 +2,8 @@ import { PLATFORM_PERMISSIONS, type PlatformPermission } from './permissions';
 
 /**
  * Global platform system roles (workspace_id IS NULL).
- * `super_admin` is local bootstrap / break-glass only — never published to EasyAuth.
- * Other packages are granted via EasyAuth and synced into `rbac_user_roles`.
+ * `super_admin` is local bootstrap / break-glass only.
+ * Other packages are granted via the admin RBAC console.
  */
 export const PLATFORM_SYSTEM_ROLES = {
   SUPER_ADMIN: 'super_admin',
@@ -18,17 +18,6 @@ export const PLATFORM_SYSTEM_ROLES = {
 export type PlatformSystemRoleName =
   (typeof PLATFORM_SYSTEM_ROLES)[keyof typeof PLATFORM_SYSTEM_ROLES];
 
-/** Roles that EasyAuth may grant / revoke on sync (never super_admin). */
-export const EASYAUTH_MANAGED_ROLES = [
-  PLATFORM_SYSTEM_ROLES.USER_ADMIN,
-  PLATFORM_SYSTEM_ROLES.AI_ADMIN,
-  PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
-  PLATFORM_SYSTEM_ROLES.AUDITOR,
-  PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
-] as const;
-
-export type EasyauthManagedRoleName = (typeof EASYAUTH_MANAGED_ROLES)[number];
-
 export const PLATFORM_ROLE_DISPLAY_NAMES: Record<PlatformSystemRoleName, string> = {
   [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN]: 'Super Admin',
   [PLATFORM_SYSTEM_ROLES.USER_ADMIN]: 'User Admin',
@@ -40,7 +29,7 @@ export const PLATFORM_ROLE_DISPLAY_NAMES: Record<PlatformSystemRoleName, string>
 
 export const PLATFORM_ROLE_DESCRIPTIONS: Record<PlatformSystemRoleName, string> = {
   [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN]:
-    'Local break-glass administrator with all platform permissions. Not managed by EasyAuth.',
+    'Local break-glass administrator with all platform permissions.',
   [PLATFORM_SYSTEM_ROLES.USER_ADMIN]:
     'Manage users, sessions, and global role packages (except super_admin).',
   [PLATFORM_SYSTEM_ROLES.AI_ADMIN]:
@@ -48,8 +37,7 @@ export const PLATFORM_ROLE_DESCRIPTIONS: Record<PlatformSystemRoleName, string> 
   [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]:
     'Manage OIDC identity providers, branding, and related audit views.',
   [PLATFORM_SYSTEM_ROLES.AUDITOR]: 'Read-only access to all admin resources and audit export.',
-  [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]:
-    'Base AIHub access granted via EasyAuth aihub.access. No admin APIs.',
+  [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]: 'Default role for authenticated users. No admin APIs.',
 };
 
 const allPlatformPermissions = Object.values(PLATFORM_PERMISSIONS) as PlatformPermission[];
@@ -154,25 +142,4 @@ export const PLATFORM_ROLE_PERMISSIONS: Record<
   ],
 
   [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]: [],
-};
-
-/**
- * EasyAuth authorization group key → local platform role name.
- * `super_admin` is intentionally absent.
- */
-export const EASYAUTH_GROUP_TO_ROLE: Record<string, EasyauthManagedRoleName> = {
-  user_admin: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
-  ai_admin: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
-  identity_admin: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
-  auditor: PLATFORM_SYSTEM_ROLES.AUDITOR,
-  platform_user: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
-};
-
-/** Map EasyAuth permission grant keys that imply a role package. */
-export const EASYAUTH_PERMISSION_TO_ROLE: Record<string, EasyauthManagedRoleName> = {
-  'aihub.role.user_admin': PLATFORM_SYSTEM_ROLES.USER_ADMIN,
-  'aihub.role.ai_admin': PLATFORM_SYSTEM_ROLES.AI_ADMIN,
-  'aihub.role.identity_admin': PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
-  'aihub.role.auditor': PLATFORM_SYSTEM_ROLES.AUDITOR,
-  'aihub.access': PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
 };
