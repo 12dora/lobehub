@@ -16,6 +16,7 @@ import {
   platformSkillVersions,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { boundedLimit } from '../platformPagination';
 
 export interface PlatformSkillPage {
   items: PlatformSkillItem[];
@@ -152,7 +153,7 @@ export class PlatformSkillCatalogRepository {
     source?: PlatformSkillSource;
     status?: PlatformResourceStatus;
   }): Promise<PlatformSkillPage> => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const conditions = [];
     if (params.cursor) conditions.push(gt(platformSkills.skillKey, params.cursor));
     if (params.distribution) {
@@ -201,7 +202,7 @@ export class PlatformSkillCatalogRepository {
     limit?: number;
     skillId: string;
   }) => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const conditions = [eq(platformSkillVersions.skillId, params.skillId)];
     if (params.cursor) {
       conditions.push(
@@ -259,7 +260,7 @@ export class PlatformSkillCatalogRepository {
       limit?: number;
     } = {},
   ): Promise<PlatformPublishedSkillPage> => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const snapshotSkillKey = sql<string>`${platformResourceRevisions.payload}->'skill'->>'skillKey'`;
     const conditions = [
       eq(platformResourceRevisions.resourceType, 'skill'),
@@ -566,7 +567,7 @@ export class PlatformSkillCatalogRepository {
     skillKey: string;
     version?: string;
   }) => {
-    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const limit = boundedLimit(params.limit);
     const agentCursorCondition = params.cursor
       ? params.cursor.type === 'skill'
         ? sql`false`

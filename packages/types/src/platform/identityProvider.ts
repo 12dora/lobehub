@@ -87,8 +87,11 @@ export interface PlatformIdentityProviderTemplate {
   usePkce: true;
 }
 
+/** Default sign-in button label shared by the provider templates below. */
+const DEFAULT_IDP_BUTTON_LABEL = '使用工作账号登录' as const;
+
 export const AUTHENTIK_IDENTITY_PROVIDER_TEMPLATE = {
-  buttonLabel: '使用工作账号登录',
+  buttonLabel: DEFAULT_IDP_BUTTON_LABEL,
   claimMapping: {
     dingtalkTitle: ['dingtalk_title'],
     dingtalkUserId: ['dingtalk_user_id'],
@@ -103,7 +106,7 @@ export const AUTHENTIK_IDENTITY_PROVIDER_TEMPLATE = {
 } as const satisfies PlatformIdentityProviderTemplate;
 
 export const GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE = {
-  buttonLabel: '使用工作账号登录',
+  buttonLabel: DEFAULT_IDP_BUTTON_LABEL,
   claimMapping: {
     dingtalkTitle: [],
     dingtalkUserId: [],

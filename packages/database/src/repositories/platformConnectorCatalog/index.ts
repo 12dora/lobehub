@@ -21,9 +21,8 @@ import {
 import type { PlatformResourceRevisionItem } from '../../schemas/platform/revisions';
 import { platformResourceRevisions } from '../../schemas/platform/revisions';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { boundedLimit } from '../platformPagination';
 
-const DEFAULT_PAGE_SIZE = 50;
-const MAX_PAGE_SIZE = 100;
 export const MAX_PLATFORM_CONNECTOR_TOOLS = 1000;
 
 type ManagedConnectorCreate = Omit<
@@ -59,8 +58,10 @@ type ManagedConnectorSecretColumns = Pick<
   | 'sharedSecretUpdatedAt'
 >;
 
-const boundedLimit = (limit?: number): number =>
-  Math.max(1, Math.min(limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
+const sqlIncrement = (column: typeof platformUserConnectorBindings.revision) => sql`${column} + 1`;
+
+const escapeLike = (value: string): string =>
+  value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 
 const isRootDatabase = (db: LobeChatDatabase | Transaction): db is LobeChatDatabase =>
   'transaction' in db;
@@ -827,10 +828,11 @@ export class PlatformConnectorCatalogRepository {
         .limit(limit + 1)
         .for('update');
       const hasMore = rows.length > limit;
-      const ids = (hasMore ? rows.slice(0, limit) : rows).map((row) => row.id);
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const ids = page.map((row) => row.id);
       let revoked = 0;
       const pkceVerifierRefs: string[] = [];
-      const tokenRefs = (hasMore ? rows.slice(0, limit) : rows)
+      const tokenRefs = page
         .map((row) => row.oauthTokenRef)
         .filter((ref): ref is string => ref !== null);
       if (ids.length > 0) {
@@ -1444,8 +1446,3 @@ export class PlatformUserConnectorBindingRepository {
     });
   };
 }
-
-const sqlIncrement = (column: typeof platformUserConnectorBindings.revision) => sql`${column} + 1`;
-
-const escapeLike = (value: string): string =>
-  value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
