@@ -5,12 +5,10 @@
  * to the inner control while applying platform lock/source/reset (R3-U3).
  */
 
-import { Text, Tooltip } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Tooltip } from '@lobehub/ui';
 import { cloneElement, isValidElement, memo, type ReactElement, type ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
 
-import PlatformSettingSourceBadge from './index';
+import ManagedMetaHeader from './ManagedMetaHeader';
 import { type PlatformSettingMetaState } from './usePlatformSettingMeta';
 
 type ManagedFormControlProps = {
@@ -32,7 +30,6 @@ type ManagedFormControlContentProps = Omit<ManagedFormControlProps, 'path'> & {
 
 export const ManagedFormControlContent = memo<ManagedFormControlContentProps>(
   ({ children, disabledReason, extraDisabled, meta, ...formInjected }) => {
-    const { t } = useTranslation('setting');
     const childProps = children.props as { disabled?: boolean };
 
     // Flag OFF / disabled capability: exact unmanaged — forward form props only
@@ -63,36 +60,7 @@ export const ManagedFormControlContent = memo<ManagedFormControlContentProps>(
 
     return (
       <div>
-        {meta.status === 'ready' ? (
-          <PlatformSettingSourceBadge
-            locked={meta.locked}
-            mode={meta.mode}
-            resetting={meta.resetting}
-            source={meta.source}
-            onReset={meta.canReset ? () => void meta.reset() : undefined}
-          />
-        ) : null}
-        {meta.status === 'loading' ? (
-          <Text type="secondary">{t('platformSource.loadingMeta')}</Text>
-        ) : null}
-        {meta.status === 'error' ? (
-          <Button size="small" type="text" onClick={() => void meta.retry()}>
-            {t('platformSource.retryMeta')}
-          </Button>
-        ) : null}
-        {meta.resetError ? (
-          <Text type="danger">
-            {t('platformSource.resetFailed')}{' '}
-            <Button
-              disabled={meta.resetting}
-              size="small"
-              type="text"
-              onClick={() => void meta.reset()}
-            >
-              {t('platformSource.retryReset')}
-            </Button>
-          </Text>
-        ) : null}
+        <ManagedMetaHeader meta={meta} showBadge={meta.status === 'ready'} />
         {isValidElement(children) ? (
           disabledReason && locked ? (
             <Tooltip title={disabledReason}>
