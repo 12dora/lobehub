@@ -1,6 +1,5 @@
 'use client';
 
-import { adminEasyauthService } from '@/enterprise/client/services/adminEasyauth';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 import { useClientDataSWR } from '@/libs/swr';
 
@@ -10,13 +9,6 @@ export const useIdentityProviders = (enabled: boolean) =>
   useClientDataSWR(
     enabled ? ['admin.identityProviders.list'] : null,
     () => adminIdentityProvidersService.list({ limit: 100 }),
-    { revalidateOnFocus: false },
-  );
-
-export const useEasyauthStatus = (enabled: boolean) =>
-  useClientDataSWR(
-    enabled ? ['admin.easyauth.getStatus'] : null,
-    () => adminEasyauthService.getStatus(),
     { revalidateOnFocus: false },
   );
 

@@ -17,16 +17,11 @@ import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { isIdentityProviderSetupGuidanceError, toIdentityProviderStatusBadge } from './controller';
-import EasyauthStatusCard from './EasyauthStatusCard';
 import IdentityProviderSetupGuidance from './IdentityProviderSetupGuidance';
 import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
 import { identityProviderStyles as styles } from './styles';
 import { useIdentityProviderRestartLifecycle } from './useIdentityProviderRestartLifecycle';
-import {
-  useAuthSnapshotStatus,
-  useEasyauthStatus,
-  useIdentityProviders,
-} from './useIdentityProviders';
+import { useAuthSnapshotStatus, useIdentityProviders } from './useIdentityProviders';
 
 const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
@@ -40,7 +35,6 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const enabled = accessStatus === 'allowed' && canRead;
   const providers = useIdentityProviders(enabled);
   const mutateProviders = providers.mutate;
-  const easyauth = useEasyauthStatus(enabled);
   const runtimeEnabled = accessStatus === 'allowed' && canRestart;
   const [restartPolling, setRestartPolling] = useState(false);
   const runtime = useAuthSnapshotStatus(runtimeEnabled, restartPolling);
@@ -203,15 +197,6 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       }
     >
       <div className={styles.stack}>
-        {!setupGuidance ? (
-          <EasyauthStatusCard
-            data={easyauth.data}
-            error={Boolean(easyauth.error)}
-            loading={easyauth.isLoading}
-            onRetry={() => void easyauth.mutate()}
-          />
-        ) : null}
-
         {setupGuidance ? (
           <IdentityProviderSetupGuidance />
         ) : (
