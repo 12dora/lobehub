@@ -76,6 +76,29 @@ describe('handleIdentityProviderTestCallback', () => {
     expect(callback).toHaveBeenCalledWith({
       code: 'code',
       effectiveOrigin: 'https://app.example.test',
+      iss: null,
+      state: 'state',
+    });
+  });
+
+  it('forwards the RFC 9207 authorization-response iss parameter when present', async () => {
+    vi.stubEnv('ENABLE_DATABASE_OIDC', '1');
+    const callback = vi.fn().mockResolvedValue({ attemptId: 'attempt', valid: true });
+    vi.mocked(createAdminIdentityProviderRuntime).mockReturnValue({
+      admin: {} as never,
+      test: { callback } as never,
+    });
+    const response = await handleIdentityProviderTestCallback(
+      new NextRequest(
+        'https://app.example.test/oauth/identity-provider/test/callback?code=code&state=state&iss=https%3A%2F%2Flogin.example.test%2F',
+      ),
+      unusedDb,
+    );
+    expect(await response.text()).toContain('Test complete');
+    expect(callback).toHaveBeenCalledWith({
+      code: 'code',
+      effectiveOrigin: 'https://app.example.test',
+      iss: 'https://login.example.test/',
       state: 'state',
     });
   });

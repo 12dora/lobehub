@@ -53,6 +53,7 @@ describe('identity provider startup artifact', () => {
           issuer: 'https://login.example.test',
           oidcMetadata: {
             authorizationEndpoint: 'https://login.example.test/authorize',
+            authorizationResponseIssParameterSupported: false,
             codeChallengeMethodsSupported: ['S256'],
             idTokenSigningAlgValuesSupported: ['RS256'],
             issuer: 'https://login.example.test',

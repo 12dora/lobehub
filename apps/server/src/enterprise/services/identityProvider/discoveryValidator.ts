@@ -62,6 +62,8 @@ const toMetadata = (
   parsed: ReturnType<typeof oidcDiscoveryMetadataSchema.parse>,
 ): PlatformOidcDiscoveryMetadata => ({
   authorizationEndpoint: parsed.authorization_endpoint,
+  authorizationResponseIssParameterSupported:
+    parsed.authorization_response_iss_parameter_supported === true,
   codeChallengeMethodsSupported: parsed.code_challenge_methods_supported,
   idTokenSigningAlgValuesSupported: parsed.id_token_signing_alg_values_supported,
   issuer: parsed.issuer,
@@ -75,6 +77,31 @@ const toMetadata = (
   ],
   userinfoEndpoint: parsed.userinfo_endpoint ?? null,
 });
+
+/**
+ * RFC 9207 authorization-response issuer check.
+ * - When discovery advertises support, `iss` is required and must equal the issuer.
+ * - When support is not advertised, a present `iss` is still validated for exact match;
+ *   a missing `iss` is allowed (Authentik and other OPs that omit the parameter).
+ */
+export const assertAuthorizationResponseIssuer = (input: {
+  iss: string | null | undefined;
+  metadata: Pick<
+    PlatformOidcDiscoveryMetadata,
+    'authorizationResponseIssParameterSupported' | 'issuer'
+  >;
+}): void => {
+  const iss = typeof input.iss === 'string' ? input.iss : null;
+  if (input.metadata.authorizationResponseIssParameterSupported) {
+    if (iss === null || iss !== input.metadata.issuer) {
+      throw new Error('OIDC_TEST_RESPONSE_ISSUER_INVALID');
+    }
+    return;
+  }
+  if (iss !== null && iss !== input.metadata.issuer) {
+    throw new Error('OIDC_TEST_RESPONSE_ISSUER_INVALID');
+  }
+};
 
 /** OIDC-specific fail-closed facade over the shared DNS-pinned outbound client. */
 export class IdentityProviderDiscoveryValidator {

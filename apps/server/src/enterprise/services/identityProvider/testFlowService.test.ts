@@ -35,14 +35,56 @@ describe('buildIdentityProviderClaimPreview', () => {
 
   it('uses mapped fallback claims for validation without expanding preview fields', () => {
     const preview = buildIdentityProviderClaimPreview(
-      { employee_name: 'Ada', employee_subject: '42', private_claim: 'no' },
+      {
+        employee_email: 'ada@example.test',
+        employee_name: 'Ada',
+        employee_subject: '42',
+        private_claim: 'no',
+      },
       {
         ...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+        email: ['employee_email'],
         name: ['employee_name'],
         subject: ['employee_subject'],
       },
     );
     expect(preview).toEqual({ claims: {}, issues: [], valid: true });
+  });
+
+  it('rejects missing, malformed, and domain-denied emails like production login', () => {
+    const mapping = GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping;
+    expect(
+      buildIdentityProviderClaimPreview({ name: 'Ada', sub: 'subject-1' }, mapping),
+    ).toMatchObject({
+      issues: [{ code: 'required_claim_missing', field: 'email' }],
+      valid: false,
+    });
+    expect(
+      buildIdentityProviderClaimPreview(
+        { email: 'not-an-email', name: 'Ada', sub: 'subject-1' },
+        mapping,
+      ),
+    ).toMatchObject({
+      issues: [{ code: 'email_invalid', field: 'email' }],
+      valid: false,
+    });
+    expect(
+      buildIdentityProviderClaimPreview(
+        { email: 'ada@attacker.test', name: 'Ada', sub: 'subject-1' },
+        mapping,
+        ['example.test'],
+      ),
+    ).toMatchObject({
+      issues: [{ code: 'email_domain_denied', field: 'email' }],
+      valid: false,
+    });
+    expect(
+      buildIdentityProviderClaimPreview(
+        { email: 'ada@example.test', name: 'Ada', sub: 'subject-1' },
+        mapping,
+        ['example.test'],
+      ),
+    ).toMatchObject({ issues: [], valid: true });
   });
 
   it('redacts every PII value before the admin result leaves the service', () => {
@@ -81,6 +123,7 @@ describe('OIDC ID token verification', () => {
   const nonce = 'nonce-value';
   const metadata = {
     authorizationEndpoint: `${issuer}/authorize`,
+    authorizationResponseIssParameterSupported: false,
     codeChallengeMethodsSupported: ['S256'],
     idTokenSigningAlgValuesSupported: ['RS256'],
     issuer,

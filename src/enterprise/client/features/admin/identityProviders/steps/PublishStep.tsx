@@ -61,7 +61,10 @@ export const PublishStep = memo<PublishStepProps>(
             options={(revisions ?? [])
               .filter((item) => item.revision !== activationRevision)
               .map((item) => ({
-                label: `rev ${item.revision} · ${item.publishedAt.toLocaleString()}`,
+                label: t('identityProviders.rollback.revisionOption', {
+                  publishedAt: item.publishedAt.toLocaleString(),
+                  revision: item.revision,
+                }),
                 value: item.revision,
               }))}
             onChange={(value) => onRollbackTargetChange(value as number | undefined)}

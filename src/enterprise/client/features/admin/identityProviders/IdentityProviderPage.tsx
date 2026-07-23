@@ -15,6 +15,7 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
+import { useCursorStack } from '../skills/useCursorPagedList';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { isIdentityProviderSetupGuidanceError, toIdentityProviderStatusBadge } from './controller';
 import IdentityProviderSetupGuidance from './IdentityProviderSetupGuidance';
@@ -31,9 +32,11 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const canUpdate = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_UPDATE);
   const canTest = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_TEST);
   const canPublish = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_PUBLISH);
+  const canDisable = canPublish;
   const canRestart = permissions.includes(PLATFORM_PERMISSIONS.OIDC_PUBLISH);
   const enabled = accessStatus === 'allowed' && canRead;
-  const providers = useIdentityProviders(enabled);
+  const { cursor, goNext, goPrevious, hasPrevious } = useCursorStack('identity-providers');
+  const providers = useIdentityProviders(enabled, cursor);
   const mutateProviders = providers.mutate;
   const runtimeEnabled = accessStatus === 'allowed' && canRestart;
   const [restartPolling, setRestartPolling] = useState(false);
@@ -65,6 +68,70 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       });
     },
     [authMethod, canCreate, canPublish, canTest, canUpdate, refreshProviders],
+  );
+
+  const requestDisable = useCallback(
+    (provider: PlatformIdentityProviderDraft) => {
+      if (!canDisable) return;
+      if (
+        provider.status !== 'active' &&
+        provider.status !== 'pending_restart' &&
+        provider.status !== 'published' &&
+        provider.status !== 'error'
+      ) {
+        return;
+      }
+      confirmModal({
+        cancelText: t('identityProviders.disable.cancel', {
+          defaultValue: 'Cancel',
+        }),
+        content: t('identityProviders.disable.impact', {
+          defaultValue:
+            'This publishes a signed tombstone revision. The provider will stop accepting logins after instances reload. This cannot be undone without republishing a new configuration.',
+        }),
+        okButtonProps: { danger: true },
+        okText: t('identityProviders.disable.confirm', { defaultValue: 'Disable provider' }),
+        title: t('identityProviders.disable.title', { defaultValue: 'Disable identity provider' }),
+        onOk: async () => {
+          try {
+            await requestAdminReauth({ authMethod });
+            openReasonModal({
+              authMethod,
+              buildPayload: (reason) => ({ reason }),
+              danger: true,
+              impact: t('identityProviders.disable.impact', {
+                defaultValue:
+                  'This publishes a signed tombstone revision. The provider will stop accepting logins after instances reload.',
+              }),
+              onSubmit: async (payload) => {
+                const { reason } = payload as { reason: string };
+                await adminIdentityProvidersService.disable({
+                  expectedRevision: provider.revision,
+                  id: provider.id,
+                  reason,
+                });
+                await refreshProviders();
+                toast.success(
+                  t('identityProviders.disable.success', {
+                    defaultValue: 'Provider disabled',
+                  }),
+                );
+              },
+              submitLabel: t('identityProviders.disable.confirm', {
+                defaultValue: 'Disable provider',
+              }),
+              targetLabel: provider.displayName,
+              title: t('identityProviders.disable.title', {
+                defaultValue: 'Disable identity provider',
+              }),
+            });
+          } catch {
+            toast.error(t('identityProviders.errors.generic', { defaultValue: 'Request failed' }));
+          }
+        },
+      });
+    },
+    [authMethod, canDisable, refreshProviders, t],
   );
 
   const requestRestart = () => {
@@ -185,12 +252,19 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         ) : restartLifecycle.phase === 'failed' ? (
           <Alert
             showIcon
-            description={t('identityProviders.restart.failed')}
             type="error"
             action={
               <Button size="small" onClick={() => restartLifecycle.retry(requestRestart)}>
                 {t('identityProviders.actions.retry')}
               </Button>
+            }
+            description={
+              runtime.data?.restartRequest?.resultCategory
+                ? t('identityProviders.restart.failedWithCategory', {
+                    category: runtime.data.restartRequest.resultCategory,
+                    defaultValue: `Restart failed (${runtime.data.restartRequest.resultCategory})`,
+                  })
+                : t('identityProviders.restart.failed')
             }
           />
         ) : null
@@ -201,13 +275,58 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
           <IdentityProviderSetupGuidance />
         ) : (
           <DataTable<PlatformIdentityProviderDraft>
-            columns={columns}
             dataSource={providers.data?.items ?? []}
             emptyDescription={t('identityProviders.empty')}
             error={Boolean(providers.error) && !providers.data}
             loading={providers.isLoading && !providers.data}
             pagination={false}
             rowKey="id"
+            columns={[
+              ...columns,
+              ...(canDisable
+                ? [
+                    {
+                      key: 'actions',
+                      title: t('identityProviders.columns.actions', { defaultValue: 'Actions' }),
+                      width: 120,
+                      render: (_: unknown, item: PlatformIdentityProviderDraft) => {
+                        const disableable =
+                          item.status === 'active' ||
+                          item.status === 'pending_restart' ||
+                          item.status === 'published' ||
+                          item.status === 'error';
+                        if (!disableable) return null;
+                        return (
+                          <Button
+                            danger
+                            size="small"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              requestDisable(item);
+                            }}
+                          >
+                            {t('identityProviders.actions.disable', { defaultValue: 'Disable' })}
+                          </Button>
+                        );
+                      },
+                    } as TableColumnsType<PlatformIdentityProviderDraft>[number],
+                  ]
+                : []),
+            ]}
+            cursorPagination={{
+              hasNext:
+                Boolean(providers.data?.nextCursor) && !providers.error && !providers.isLoading,
+              hasPrevious: hasPrevious && !providers.isLoading,
+              onNext: () => {
+                const next = providers.data?.nextCursor;
+                if (!next || providers.isLoading) return;
+                goNext(next);
+              },
+              onPrevious: () => {
+                if (providers.isLoading) return;
+                goPrevious();
+              },
+            }}
             onRetry={() => void providers.mutate()}
             onRowActivate={(item) => openWizard(item)}
           />

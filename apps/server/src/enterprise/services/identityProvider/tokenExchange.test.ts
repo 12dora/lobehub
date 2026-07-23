@@ -16,6 +16,7 @@ const publicAddress = '93.184.216.34';
 const redirectUri = 'https://app.example.test/api/auth/oauth2/callback/work';
 const metadata = (authMethods = ['client_secret_basic']): PlatformOidcDiscoveryMetadata => ({
   authorizationEndpoint: 'https://login.example.test/authorize',
+  authorizationResponseIssParameterSupported: false,
   codeChallengeMethodsSupported: ['S256'],
   idTokenSigningAlgValuesSupported: ['RS256'],
   issuer: 'https://login.example.test/issuer',

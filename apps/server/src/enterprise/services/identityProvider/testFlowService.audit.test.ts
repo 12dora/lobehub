@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,6 +29,7 @@ const secretService = new PlatformSecretService({ keyProvider });
 const issuer = 'https://login.example.test';
 const metadata = {
   authorizationEndpoint: `${issuer}/authorize`,
+  authorizationResponseIssParameterSupported: false,
   codeChallengeMethodsSupported: ['S256'],
   idTokenSigningAlgValuesSupported: ['RS256'],
   issuer,
@@ -41,10 +43,13 @@ const metadata = {
 };
 
 const cleanup = async () => {
-  await db.delete(platformIdentityProviderTestAttempts);
-  await db.delete(platformIdentityProviderSecrets);
-  await db.delete(platformIdentityProviders);
-  await db.delete(platformAuditLogs);
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.delete(platformIdentityProviderTestAttempts);
+    await tx.delete(platformIdentityProviderSecrets);
+    await tx.delete(platformIdentityProviders);
+    await tx.delete(platformAuditLogs);
+  });
 };
 
 beforeEach(cleanup);
@@ -102,7 +107,7 @@ const createFlowFixture = async (auditAppender?: AuditAppender) => {
       exp: now + 300,
       iat: now,
       iss: issuer,
-      ...(includeName ? { name: 'Ada' } : {}),
+      ...(includeName ? { email: 'ada@example.test', name: 'Ada' } : {}),
       nonce,
       sub: 'subject-1',
     })
@@ -123,6 +128,137 @@ const createFlowFixture = async (auditAppender?: AuditAppender) => {
 };
 
 describe('IdentityProviderTestFlowService audit and provider binding', () => {
+  it('enforces RFC 9207 iss on test callback when discovery advertises support', async () => {
+    const rfcMetadata = {
+      ...metadata,
+      authorizationResponseIssParameterSupported: true,
+    };
+    const [created] = await db
+      .insert(platformIdentityProviders)
+      .values({ clientId: 'client-id', displayName: 'Work', issuer, providerKey: 'work-rfc' })
+      .returning();
+    await new IdentityProviderSecretStore(db, secretService).persistClientSecret({
+      expectedRevision: created.revision,
+      providerId: created.id,
+      value: 'client-secret',
+    });
+    const discover = vi.fn().mockResolvedValue(rfcMetadata);
+    const { privateKey, publicKey } = await generateKeyPair('RS256');
+    const jwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'key-1', use: 'sig' };
+    let idToken = '';
+    const outbound = {
+      fetch: vi.fn(async (url: string | URL) => {
+        const body = url.toString().endsWith('/token') ? { id_token: idToken } : { keys: [jwk] };
+        return {
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => body,
+          ok: true,
+          truncated: false,
+        };
+      }),
+    } as unknown as SafeOutboundHttpClient;
+    const flow = new IdentityProviderTestFlowService(
+      db,
+      secretService,
+      { discover } as unknown as IdentityProviderDiscoveryValidator,
+      outbound,
+    );
+    const started = await flow.start({
+      expectedRevision: 1,
+      id: created.id,
+      reason: 'rfc9207 callback wiring',
+      redirectUri: 'https://app.example.test/oauth/identity-provider/test/callback',
+      sessionId: 'session-rfc',
+      userId: 'admin-rfc',
+    });
+    const nonce = new URL(started.authorizationUrl).searchParams.get('nonce')!;
+    const state = new URL(started.authorizationUrl).searchParams.get('state')!;
+    const now = Math.floor(Date.now() / 1000);
+    idToken = await new SignJWT({
+      aud: 'client-id',
+      email: 'ada@example.test',
+      exp: now + 300,
+      iat: now,
+      iss: issuer,
+      name: 'Ada',
+      nonce,
+      sub: 'subject-1',
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'key-1' })
+      .sign(privateKey);
+
+    await expect(
+      flow.callback({
+        code: 'code',
+        effectiveOrigin: 'https://app.example.test',
+        state,
+      }),
+    ).rejects.toThrow('OIDC_TEST_RESPONSE_ISSUER_INVALID');
+
+    // Restart for mismatched iss (state already consumed).
+    const started2 = await flow.start({
+      expectedRevision: 1,
+      id: created.id,
+      reason: 'rfc9207 mismatched iss',
+      redirectUri: 'https://app.example.test/oauth/identity-provider/test/callback',
+      sessionId: 'session-rfc-2',
+      userId: 'admin-rfc',
+    });
+    const nonce2 = new URL(started2.authorizationUrl).searchParams.get('nonce')!;
+    const state2 = new URL(started2.authorizationUrl).searchParams.get('state')!;
+    idToken = await new SignJWT({
+      aud: 'client-id',
+      email: 'ada@example.test',
+      exp: now + 300,
+      iat: now,
+      iss: issuer,
+      name: 'Ada',
+      nonce: nonce2,
+      sub: 'subject-1',
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'key-1' })
+      .sign(privateKey);
+    await expect(
+      flow.callback({
+        code: 'code',
+        effectiveOrigin: 'https://app.example.test',
+        iss: 'https://evil.example.test',
+        state: state2,
+      }),
+    ).rejects.toThrow('OIDC_TEST_RESPONSE_ISSUER_INVALID');
+
+    const started3 = await flow.start({
+      expectedRevision: 1,
+      id: created.id,
+      reason: 'rfc9207 correct iss',
+      redirectUri: 'https://app.example.test/oauth/identity-provider/test/callback',
+      sessionId: 'session-rfc-3',
+      userId: 'admin-rfc',
+    });
+    const nonce3 = new URL(started3.authorizationUrl).searchParams.get('nonce')!;
+    const state3 = new URL(started3.authorizationUrl).searchParams.get('state')!;
+    idToken = await new SignJWT({
+      aud: 'client-id',
+      email: 'ada@example.test',
+      exp: now + 300,
+      iat: now,
+      iss: issuer,
+      name: 'Ada',
+      nonce: nonce3,
+      sub: 'subject-1',
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'key-1' })
+      .sign(privateKey);
+    await expect(
+      flow.callback({
+        code: 'code',
+        effectiveOrigin: 'https://app.example.test',
+        iss: issuer,
+        state: state3,
+      }),
+    ).resolves.toMatchObject({ valid: true });
+  });
+
   it('audits terminal success, claim rejection, and provider-revision failure without credentials', async () => {
     const { flow, signForStart, start } = await createFlowFixture();
     const userCountBefore = (await db.select({ id: users.id }).from(users)).length;

@@ -10,6 +10,7 @@ import { type BetterAuthOptions } from 'better-auth/minimal';
 import { betterAuth } from 'better-auth/minimal';
 import { admin, emailOTP, genericOAuth, magicLink } from 'better-auth/plugins';
 import { type BetterAuthPlugin } from 'better-auth/types';
+import { eq } from 'drizzle-orm';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
 
 import { appEnv } from '@/envs/app';
@@ -26,6 +27,8 @@ import { registrationGuard } from '@/libs/better-auth/plugins/registration-guard
 import { initBetterAuthSSOProviders } from '@/libs/better-auth/sso';
 import {
   buildPlatformIdentityProvider,
+  enforcePlatformOidcGroupRoleMappingForUserAccounts,
+  enforcePlatformOidcGroupRoleMappingOnLogin,
   type RuntimeIdentityProvider,
 } from '@/libs/better-auth/sso/platformIdentityProvider';
 import { platformIdentityProviderState } from '@/libs/better-auth/sso/platformIdentityProviderState';
@@ -122,8 +125,20 @@ export function defineConfig(
   customOptions: CustomBetterAuthOptions,
   identitySnapshot: BetterAuthIdentitySnapshot = environmentIdentitySnapshot(),
 ) {
-  const enabledSSOProviders = identitySnapshot.providerIds;
-  const databaseProviders = identitySnapshot.databaseProviders.map((provider) =>
+  // CRITICAL C3: skip disabled/tombstoned providers so a revoked IdP is not
+  // offered at the better-auth config level (consistent with startup/LKG selection).
+  const activeDatabaseProviders = identitySnapshot.databaseProviders.filter(
+    (provider) => provider.enabled !== false,
+  );
+  const disabledProviderKeys = new Set(
+    identitySnapshot.databaseProviders
+      .filter((provider) => provider.enabled === false)
+      .map((provider) => provider.providerKey),
+  );
+  const enabledSSOProviders = identitySnapshot.providerIds.filter(
+    (providerId) => !disabledProviderKeys.has(providerId),
+  );
+  const databaseProviders = activeDatabaseProviders.map((provider) =>
     buildPlatformIdentityProvider(provider, appEnv.APP_URL ?? ''),
   );
   const { socialProviders, genericOAuthProviders } = initBetterAuthSSOProviders({
@@ -239,6 +254,61 @@ export function defineConfig(
      * Ref: https://www.better-auth.com/docs/reference/options#databasehooks
      */
     databaseHooks: {
+      account: {
+        create: {
+          after: async (account) => {
+            // Platform OIDC login: map IdP groups → platform roles once userId is known.
+            try {
+              await enforcePlatformOidcGroupRoleMappingOnLogin({
+                accountId: account.accountId,
+                db: serverDB,
+                providerId: account.providerId,
+                userId: account.userId,
+              });
+            } catch {
+              // non-blocking — role mapping must not fail login
+            }
+          },
+        },
+        update: {
+          after: async (account) => {
+            // Returning OAuth login often updates tokens rather than creating a new account row.
+            try {
+              await enforcePlatformOidcGroupRoleMappingOnLogin({
+                accountId: account.accountId,
+                db: serverDB,
+                providerId: account.providerId,
+                userId: account.userId,
+              });
+            } catch {
+              // non-blocking
+            }
+          },
+        },
+      },
+      session: {
+        create: {
+          after: async (session) => {
+            // Safety net when account create/update did not fire (or order differed).
+            try {
+              const linked = await serverDB
+                .select({
+                  accountId: schema.account.accountId,
+                  providerId: schema.account.providerId,
+                })
+                .from(schema.account)
+                .where(eq(schema.account.userId, session.userId));
+              await enforcePlatformOidcGroupRoleMappingForUserAccounts({
+                accounts: linked,
+                db: serverDB,
+                userId: session.userId,
+              });
+            } catch {
+              // non-blocking
+            }
+          },
+        },
+      },
       user: {
         create: {
           after: async (user) => {

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -33,7 +34,10 @@ const cleanup = async () => {
   await db.delete(platformIdentityProviderTestAttempts);
   await db.delete(platformIdentityProviderSecrets);
   await db.delete(platformIdentityProviders);
-  await db.delete(platformAuditLogs);
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
 };
 
 beforeEach(cleanup);
@@ -123,6 +127,67 @@ describe('AdminIdentityProviderService', () => {
       }),
     );
     expect(JSON.stringify(failureAudits)).not.toMatch(/client-secret|not-returned|ciphertext/);
+  });
+
+  it('replaces and clears secrets on active and pending_restart providers without revision conflict', async () => {
+    const plaintext = 'rotation-secret-value';
+    const created = await service.create(
+      'admin-1',
+      draftInput({ operation: 'replace', value: plaintext }),
+    );
+
+    for (const status of ['active', 'pending_restart', 'published'] as const) {
+      await db
+        .update(platformIdentityProviders)
+        .set({ status })
+        .where(eq(platformIdentityProviders.id, created.id));
+      const current = await service.get(created.id);
+      const replaced = await service.update('admin-2', {
+        ...draftInput({ operation: 'replace', value: `${plaintext}-${status}` }),
+        expectedRevision: current.revision,
+        id: created.id,
+        reason: `rotate secret while ${status}`,
+      });
+      expect(replaced).toMatchObject({
+        revision: current.revision + 1,
+        secret: { configured: true },
+        status: 'draft',
+      });
+      expect(JSON.stringify(replaced)).not.toMatch(
+        new RegExp(`${plaintext}|fingerprint|digest`, 'i'),
+      );
+
+      await db
+        .update(platformIdentityProviders)
+        .set({ status })
+        .where(eq(platformIdentityProviders.id, created.id));
+      const beforeClear = await service.get(created.id);
+      const cleared = await service.update('admin-2', {
+        ...draftInput({ operation: 'clear' }),
+        expectedRevision: beforeClear.revision,
+        id: created.id,
+        reason: `clear secret while ${status}`,
+        secret: { operation: 'clear' },
+      });
+      expect(cleared).toMatchObject({
+        revision: beforeClear.revision + 1,
+        secret: { configured: false, updatedAt: null },
+        status: 'draft',
+      });
+
+      // Re-seed a secret for the next lifecycle status under test.
+      await db
+        .update(platformIdentityProviders)
+        .set({ status })
+        .where(eq(platformIdentityProviders.id, created.id));
+      const reseeded = await service.update('admin-2', {
+        ...draftInput({ operation: 'replace', value: `${plaintext}-reseed-${status}` }),
+        expectedRevision: cleared.revision,
+        id: created.id,
+        reason: `reseed secret after clear while ${status}`,
+      });
+      expect(reseeded.secret.configured).toBe(true);
+    }
   });
 
   it('lists 100 safe drafts with one query and stable cursor pagination', async () => {

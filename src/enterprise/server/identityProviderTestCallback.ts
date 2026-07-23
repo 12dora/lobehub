@@ -117,6 +117,8 @@ export const handleIdentityProviderTestCallback = async (
   }
   const code = request.nextUrl.searchParams.get('code');
   const state = request.nextUrl.searchParams.get('state');
+  // RFC 9207: preserve the authorization-response `iss` for exact-match validation.
+  const iss = request.nextUrl.searchParams.get('iss');
   if (!state) return renderTerminalPage(false);
 
   try {
@@ -125,7 +127,7 @@ export const handleIdentityProviderTestCallback = async (
       await service.abandon(state, effectiveOrigin);
       return renderTerminalPage(false);
     }
-    const result = await service.callback({ code, effectiveOrigin, state });
+    const result = await service.callback({ code, effectiveOrigin, iss, state });
     return renderTerminalPage(result.valid);
   } catch (error) {
     // Neutral page for the browser; sanitized server log (name only) so a real callback failure

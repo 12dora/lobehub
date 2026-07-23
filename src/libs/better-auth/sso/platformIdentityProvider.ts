@@ -6,10 +6,17 @@ import { getOAuthState } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { z } from 'zod';
 
+import type { LobeChatDatabase } from '@/database/type';
 import {
   SafeOutboundHttpClient,
   SafeOutboundHttpError,
 } from '@/server/enterprise/security/outboundHttp';
+import { validatePlatformIdentityProviderClaims } from '@/server/enterprise/services/identityProvider/claimValidation';
+import { extractIdentityProviderGroups } from '@/server/enterprise/services/identityProvider/groupRoleMapping';
+import {
+  reconcileIdentityProviderGroupRoles,
+  stashIdentityProviderGroupRoleMapping,
+} from '@/server/enterprise/services/identityProvider/groupRoleMappingRuntime';
 import { verifyPlatformOidcIdToken } from '@/server/enterprise/services/identityProvider/idTokenVerifier';
 import type { PublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
 import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/services/identityProvider/tokenExchange';
@@ -88,18 +95,6 @@ const firstStringClaim = (
   return undefined;
 };
 
-const emailAllowed = (email: string, allowlist: readonly string[]): boolean => {
-  if (!z.string().email().safeParse(email).success) return false;
-  if (allowlist.length === 0) return true;
-  const separator = email.lastIndexOf('@');
-  if (separator <= 0) return false;
-  const domain = email.slice(separator + 1).toLowerCase();
-  return allowlist.some((allowed) => {
-    const normalized = allowed.trim().toLowerCase().replace(/^@/, '');
-    return domain === normalized || domain.endsWith(`.${normalized}`);
-  });
-};
-
 interface PlatformIdentityProviderUser {
   dingtalkTitle: string | null;
   dingtalkUserId: string | null;
@@ -113,19 +108,73 @@ const mapPlatformProfileToUser = (
   provider: RuntimeIdentityProvider,
   profile: Record<string, unknown>,
 ): PlatformIdentityProviderUser => {
-  const subject = firstStringClaim(profile, provider.claimMapping.subject);
-  const name = firstStringClaim(profile, [...provider.claimMapping.name, 'preferred_username']);
-  const email = firstStringClaim(profile, provider.claimMapping.email);
-  if (!subject || !name || !email || !emailAllowed(email, provider.domainAllowlist)) {
+  const { issues, values } = validatePlatformIdentityProviderClaims({
+    claimMapping: provider.claimMapping,
+    claims: profile,
+    domainAllowlist: provider.domainAllowlist,
+  });
+  if (issues.length > 0 || !values.subject || !values.name || !values.email) {
     throw new Error('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+  }
+  // Stash IdP groups for account/session after-hook role reconciliation.
+  // getUserInfo knows groups but not userId; session/account create has userId.
+  if (Object.keys(provider.groupRoleMapping).length > 0) {
+    stashIdentityProviderGroupRoleMapping({
+      groupRoleMapping: provider.groupRoleMapping,
+      groups: extractIdentityProviderGroups(profile),
+      providerKey: provider.providerKey,
+      subject: values.subject,
+    });
   }
   return {
     ...getStableDingTalkClaims(provider, profile),
-    email,
-    id: subject,
+    email: values.email,
+    id: values.subject,
     image: firstStringClaim(profile, provider.claimMapping.picture),
-    name,
+    name: values.name,
   };
+};
+
+/**
+ * Enforce stashed IdP group→platform role mapping at login time.
+ * Call from Better Auth account/session databaseHooks after the local userId is known.
+ * Non-blocking: reconcileIdentityProviderGroupRoles swallows apply failures.
+ */
+export const enforcePlatformOidcGroupRoleMappingOnLogin = async (input: {
+  /** Better Auth account.accountId = IdP subject */
+  accountId: string;
+  db: LobeChatDatabase;
+  /** Better Auth account.providerId = platform providerKey */
+  providerId: string;
+  userId: string;
+}): Promise<void> => {
+  if (!input.userId || !input.providerId || !input.accountId) return;
+  await reconcileIdentityProviderGroupRoles({
+    db: input.db,
+    providerKey: input.providerId,
+    subject: input.accountId,
+    userId: input.userId,
+  });
+};
+
+/**
+ * Session-create path: try every linked account so a returning OIDC login
+ * (account update may not fire) still applies the pending group mapping.
+ */
+export const enforcePlatformOidcGroupRoleMappingForUserAccounts = async (input: {
+  accounts: ReadonlyArray<{ accountId: string; providerId: string }>;
+  db: LobeChatDatabase;
+  userId: string;
+}): Promise<void> => {
+  if (!input.userId || input.accounts.length === 0) return;
+  for (const linked of input.accounts) {
+    await enforcePlatformOidcGroupRoleMappingOnLogin({
+      accountId: linked.accountId,
+      db: input.db,
+      providerId: linked.providerId,
+      userId: input.userId,
+    });
+  }
 };
 
 /** The only DB/LKG → Better Auth provider adapter. */

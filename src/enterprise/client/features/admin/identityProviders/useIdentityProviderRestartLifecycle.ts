@@ -13,6 +13,16 @@ interface RestartStatus {
   active: { allFreshInstancesActive: boolean };
   pendingRestart: boolean;
   restart: { supported: boolean };
+  restartRequest?: {
+    requestId: string;
+    resultCategory: string | null;
+    status: 'accepted' | 'failed' | 'signaled';
+  } | null;
+  restartRequests?: Array<{
+    requestId: string;
+    resultCategory: string | null;
+    status: 'accepted' | 'failed' | 'signaled';
+  }>;
   targetIdentityRevision: string | null;
 }
 

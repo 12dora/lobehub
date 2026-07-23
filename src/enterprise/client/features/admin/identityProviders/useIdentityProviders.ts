@@ -5,10 +5,16 @@ import { useClientDataSWR } from '@/libs/swr';
 
 import { isIdentityProviderTestTerminal } from './controller';
 
-export const useIdentityProviders = (enabled: boolean) =>
+export const IDENTITY_PROVIDER_LIST_PAGE_SIZE = 100;
+
+export const useIdentityProviders = (enabled: boolean, cursor?: string) =>
   useClientDataSWR(
-    enabled ? ['admin.identityProviders.list'] : null,
-    () => adminIdentityProvidersService.list({ limit: 100 }),
+    enabled ? (['admin.identityProviders.list', cursor ?? null] as const) : null,
+    () =>
+      adminIdentityProvidersService.list({
+        cursor,
+        limit: IDENTITY_PROVIDER_LIST_PAGE_SIZE,
+      }),
     { revalidateOnFocus: false },
   );
 

@@ -24,6 +24,7 @@ import {
 
 import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
+import { PlatformAuditService } from '../platformAudit';
 
 const SUCCESSFUL_TEST_MAX_AGE_MS = 10 * 60 * 1000;
 const IDEMPOTENCY_LEASE_MS = 5 * 60 * 1000;
@@ -35,7 +36,11 @@ export interface PublishedIdentityProviderPayload {
   clientId: string;
   displayName: string;
   domainAllowlist: string[];
-  enabled: true;
+  /**
+   * `true` = live login provider. `false` = signed tombstone/removal revision.
+   * Startup and LKG must honor tombstones (do not materialize; allow monotonic removal).
+   */
+  enabled: boolean;
   groupRoleMapping: Record<string, string>;
   icon: string | null;
   issuer: string;
@@ -143,7 +148,7 @@ export const parsePublishedIdentityProviderPayload = (
     !row.displayName.trim() ||
     row.displayName !== row.displayName.trim() ||
     row.displayName.length > 200 ||
-    row.enabled !== true ||
+    typeof row.enabled !== 'boolean' ||
     (row.icon !== null && (typeof row.icon !== 'string' || row.icon.length > 4096)) ||
     typeof row.issuer !== 'string' ||
     !row.issuer ||
@@ -188,7 +193,7 @@ export const parsePublishedIdentityProviderPayload = (
     clientId: row.clientId,
     displayName: row.displayName,
     domainAllowlist,
-    enabled: true,
+    enabled: row.enabled as boolean,
     groupRoleMapping: groupRoleMapping as Record<string, string>,
     icon: row.icon as string | null,
     issuer: row.issuer,
@@ -1227,6 +1232,162 @@ export class IdentityProviderPublicationService {
         }
         console.error('[admin.identityProviders] idempotency failure remains pending', {
           action,
+          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+        });
+      }
+      throw error;
+    }
+  };
+
+  /**
+   * Publish a signed tombstone revision (`enabled: false`) and mark the provider disabled.
+   * Startup skips tombstones; LKG treats higher-generation removals as monotonic upgrades.
+   *
+   * Publish HISTORY is determined from the latest published revision row — not mutable
+   * draft state. Editing/clearing a secret after publish resets the head to `draft` with
+   * `activationRevision=null`, but tombstone must still work whenever ANY published
+   * revision exists. Never-published drafts use adminService.delete instead.
+   */
+  disable = async (
+    actorUserId: string,
+    input: { expectedRevision: number; id: string; reason: string },
+  ): Promise<PlatformIdentityProviderInternalDraft> => {
+    const reason = assertReason(input.reason);
+    try {
+      return await this.db.transaction(async (tx) => {
+        await acquireIdentityProviderPublishedRevisionLock(tx);
+        const { draft } = await this.lockedDraft(tx, input.id);
+        if (draft.revision !== input.expectedRevision) {
+          throw new PlatformRevisionConflictError('Identity provider revision changed', {
+            currentRevision: draft.revision,
+            expectedRevision: input.expectedRevision,
+            resourceId: input.id,
+            resourceType: 'oidc',
+          });
+        }
+        if (draft.status === 'disabled' || draft.status === 'archived') {
+          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+        }
+
+        // Publish history lives in revision rows, not the mutable draft head.
+        // After edit/secret-clear the head is draft+activationRevision=null — still tombstoneable.
+        const [latestPublished] = await tx
+          .select({
+            payload: platformResourceRevisions.payload,
+            secretFingerprint: platformResourceRevisions.secretFingerprint,
+          })
+          .from(platformResourceRevisions)
+          .where(
+            and(
+              eq(platformResourceRevisions.resourceType, 'oidc'),
+              eq(platformResourceRevisions.resourceId, input.id),
+              eq(platformResourceRevisions.status, 'published'),
+            ),
+          )
+          .orderBy(desc(platformResourceRevisions.revision))
+          .limit(1);
+        const basePayload = latestPublished
+          ? parsePublishedIdentityProviderPayload(latestPublished.payload)
+          : null;
+        if (!basePayload) {
+          // Never published: hard delete path belongs to adminService.delete.
+          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+        }
+
+        // Tombstone reuses the published snapshot's secret material. Draft secret may
+        // already be cleared or replaced after an edit — do not require it.
+        const tombstonePayload = {
+          ...basePayload,
+          enabled: false,
+          secretFingerprint: basePayload.secretFingerprint,
+          ...(basePayload.secretUpdatedAt ? { secretUpdatedAt: basePayload.secretUpdatedAt } : {}),
+        };
+        const parsed = parsePublishedIdentityProviderPayload(tombstonePayload);
+        if (!parsed || parsed.enabled !== false) {
+          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+        }
+
+        const nextRevision = draft.revision + 1;
+        const now = new Date();
+        const checksum = checksumPayload(parsed);
+        await tx.insert(platformResourceRevisions).values({
+          checksum,
+          comment: reason,
+          createdBy: actorUserId,
+          payload: parsed as unknown as Record<string, unknown>,
+          publishedAt: now,
+          publishedBy: actorUserId,
+          resourceId: input.id,
+          resourceType: 'oidc',
+          revision: nextRevision,
+          secretFingerprint: parsed.secretFingerprint,
+          status: 'published',
+        });
+        const [updated] = await tx
+          .update(platformIdentityProviders)
+          .set({
+            activationRevision: null,
+            enabled: false,
+            revision: nextRevision,
+            status: 'disabled',
+            updatedAt: now,
+            updatedBy: actorUserId,
+          })
+          .where(
+            and(
+              eq(platformIdentityProviders.id, input.id),
+              eq(platformIdentityProviders.revision, input.expectedRevision),
+              eq(platformIdentityProviders.status, draft.status),
+            ),
+          )
+          .returning();
+        if (!updated) throw new PlatformRevisionConflictError();
+
+        const result: PlatformIdentityProviderInternalDraft = {
+          ...draft,
+          activationRevision: null,
+          enabled: false,
+          revision: nextRevision,
+          status: 'disabled',
+        };
+        await new PlatformAuditService(tx).append({
+          action: 'admin.identityProviders.disable',
+          actorUserId,
+          afterDiff: {
+            activation: 'disabled',
+            checksum,
+            enabled: false,
+            providerKey: parsed.providerKey,
+            revision: nextRevision,
+            tombstone: true,
+          },
+          beforeDiff: { revision: draft.revision, status: draft.status },
+          configRevision: nextRevision,
+          reason,
+          result: 'success',
+          targetId: input.id,
+          targetType: 'identity_provider',
+        });
+        return result;
+      });
+    } catch (error) {
+      try {
+        await new PlatformAuditService(this.db).append({
+          action: 'admin.identityProviders.disable',
+          actorUserId,
+          afterDiff: {
+            category:
+              error instanceof PlatformRevisionConflictError
+                ? 'revision_conflict'
+                : 'identity_provider_disable_failed',
+          },
+          reason,
+          result: 'failure',
+          targetId: input.id,
+          targetType: 'identity_provider',
+        });
+      } catch (auditError) {
+        console.error('[admin.identityProviders] disable failure audit unavailable', {
           errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
         });
       }

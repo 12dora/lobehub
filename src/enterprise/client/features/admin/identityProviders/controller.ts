@@ -209,12 +209,36 @@ export const resolveIdentityProviderRestartPhase = (input: {
     active: { allFreshInstancesActive: boolean };
     pendingRestart: boolean;
     restart: { supported: boolean };
+    restartRequest?: {
+      requestId: string;
+      resultCategory: string | null;
+      status: 'accepted' | 'failed' | 'signaled';
+    } | null;
+    /** Bounded recent requests so concurrent restarts cannot hide a failed poll target. */
+    restartRequests?: Array<{
+      requestId: string;
+      resultCategory: string | null;
+      status: 'accepted' | 'failed' | 'signaled';
+    }>;
     targetIdentityRevision: string | null;
   };
 }): IdentityProviderRestartPhase => {
   if (input.phase !== 'accepted') return input.phase;
   if (!input.attempt || input.nowMonotonic >= input.attempt.deadlineAtMonotonic) return 'failed';
+  // Terminal polling/transport errors must not leave the UI stuck until the deadline.
+  if (input.error) return 'failed';
   if (!input.status) return 'accepted';
+  // Known terminal request failure (e.g. schedule failure) must not wait for the deadline.
+  // Prefer exact request match from the bounded map when concurrent restarts exist.
+  const restartRequests = input.status.restartRequests ?? [];
+  const restartRequest =
+    restartRequests.find((request) => request.requestId === input.attempt!.requestId) ??
+    (input.status.restartRequest?.requestId === input.attempt.requestId
+      ? input.status.restartRequest
+      : null);
+  if (restartRequest && restartRequest.status === 'failed') {
+    return 'failed';
+  }
   if (
     input.status.active.allFreshInstancesActive &&
     !input.status.pendingRestart &&

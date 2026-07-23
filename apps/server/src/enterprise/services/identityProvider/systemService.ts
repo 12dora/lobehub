@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { and, asc, count, desc, eq, gte, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, lt, ne, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
 import {
@@ -102,10 +102,6 @@ export const loadPublishedIdentityTarget = async (
     providers,
   };
 };
-
-type AuthSnapshotStatus = Awaited<
-  ReturnType<IdentityProviderSystemService['getAuthSnapshotStatus']>
->;
 
 const restartPayloadHash = (input: {
   actorId: string;
@@ -302,6 +298,41 @@ export class IdentityProviderSystemService {
         (provider) => provider.blockedCategory === null,
       );
       const capability = this.restartCapability();
+      // Bounded recent requests (newest first) so concurrent restarts cannot hide
+      // the polling administrator's failed schedule outcome.
+      const recentRestartRequests = await tx
+        .select({
+          requestId: platformIdentityProviderRestartRequests.requestId,
+          resultCategory: platformIdentityProviderRestartRequests.resultCategory,
+          status: platformIdentityProviderRestartRequests.status,
+        })
+        .from(platformIdentityProviderRestartRequests)
+        .where(
+          and(
+            eq(platformIdentityProviderRestartRequests.targetInstanceId, local.instanceId),
+            inArray(platformIdentityProviderRestartRequests.status, [
+              'accepted',
+              'signaled',
+              'failed',
+            ]),
+          ),
+        )
+        .orderBy(desc(platformIdentityProviderRestartRequests.createdAt))
+        .limit(32);
+      const restartRequests = recentRestartRequests.flatMap((request) =>
+        request.status === 'accepted' ||
+        request.status === 'signaled' ||
+        request.status === 'failed'
+          ? [
+              {
+                requestId: request.requestId,
+                resultCategory: request.resultCategory,
+                status: request.status,
+              },
+            ]
+          : [],
+      );
+      const restartRequest = restartRequests[0] ?? null;
       return {
         active: {
           allFreshInstancesActive,
@@ -328,6 +359,8 @@ export class IdentityProviderSystemService {
               : capability.reason,
           supported: restartablePending && capability.supported,
         },
+        restartRequest,
+        restartRequests,
         targetIdentityRevision: target.identityRevision,
       };
     });
@@ -679,5 +712,3 @@ export class IdentityProviderSystemService {
     }
   };
 }
-
-export type IdentityProviderAuthSnapshotStatus = AuthSnapshotStatus;

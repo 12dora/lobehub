@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -76,10 +76,24 @@ const tamperTerminalAfterDiff = async (
 ) => {
   const terminal = await findTerminalAudit(idempotencyRequestId);
   const afterDiff = terminal.afterDiff as Record<string, unknown>;
-  await db
-    .update(platformAuditLogs)
-    .set({ afterDiff: mutation(afterDiff) })
-    .where(eq(platformAuditLogs.id, terminal.id));
+  // Append-only audit: tests deliberately corrupt terminal payloads to assert fail-closed replay.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx
+      .update(platformAuditLogs)
+      .set({ afterDiff: mutation(afterDiff) })
+      .where(eq(platformAuditLogs.id, terminal.id));
+  });
+};
+
+const tamperPublishedRevision = async (resourceId: string, mutation: Record<string, unknown>) => {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx
+      .update(platformResourceRevisions)
+      .set(mutation)
+      .where(eq(platformResourceRevisions.resourceId, resourceId));
+  });
 };
 
 const tamperTerminalResponse = async (
@@ -98,11 +112,15 @@ const tamperTerminalResponse = async (
 
 const cleanup = async () => {
   resetIdentityProviderStartupSnapshotForTest();
-  await db.delete(platformIdentityProviderTestAttempts);
-  await db.delete(platformIdentityProviderSecrets);
-  await db.delete(platformIdentityProviders);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformAuditLogs);
+  // Immutable published revisions + append-only audit require trigger bypass for fixtures.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.delete(platformIdentityProviderTestAttempts);
+    await tx.delete(platformIdentityProviderSecrets);
+    await tx.delete(platformIdentityProviders);
+    await tx.delete(platformResourceRevisions);
+    await tx.delete(platformAuditLogs);
+  });
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
   );
@@ -153,6 +171,7 @@ const startupEnv = async () => {
 const discovery = {
   discover: async (issuer: string) => ({
     authorizationEndpoint: 'https://login.example.test/authorize',
+    authorizationResponseIssParameterSupported: false,
     codeChallengeMethodsSupported: ['S256'],
     idTokenSigningAlgValuesSupported: ['RS256'],
     issuer,
@@ -236,6 +255,212 @@ describe('IdentityProviderPublicationService', () => {
     expect(
       parsePublishedIdentityProviderPayload({ ...valid, scopes: ['openid', 'openid'] }),
     ).toBeNull();
+  });
+
+  it('publishes a signed tombstone and excludes the provider from startup selection', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'activate before revoke',
+      requestId: requestId(90),
+    });
+    const disabled = await publication.disable('admin-1', {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'compromise revoke',
+    });
+    expect(disabled).toMatchObject({
+      activationRevision: null,
+      enabled: false,
+      status: 'disabled',
+    });
+    const revisions = await db.select().from(platformResourceRevisions);
+    expect(revisions.some((row) => (row.payload as { enabled?: boolean }).enabled === false)).toBe(
+      true,
+    );
+    const selection = await (
+      await import('./startupSnapshot')
+    ).loadPublishedIdentityProviderSelection({
+      db,
+      environmentProviderIds: new Set(),
+    });
+    expect(selection.selected).toHaveLength(0);
+    expect(selection.tombstoneGenerations.length).toBeGreaterThan(0);
+  });
+
+  it('tombstones after edit even when head is draft with activationRevision=null', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'activate before edit-then-revoke',
+      requestId: requestId(91),
+    });
+    const edited = await admin.update('admin-1', {
+      autoProvision: true,
+      buttonLabel: 'Sign in with work',
+      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      clientId: 'client-id',
+      displayName: 'Work login (edited)',
+      domainAllowlist: [],
+      expectedRevision: published.revision,
+      groupRoleMapping: {},
+      icon: null,
+      id: draft.id,
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      reason: 'edit after publish forks to draft',
+      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secret: { operation: 'keep' },
+      type: 'generic_oidc',
+      usePkce: true,
+    });
+    expect(edited).toMatchObject({
+      activationRevision: null,
+      status: 'draft',
+    });
+    // Critical C3: disable must use published revision history, not draft head state.
+    const disabled = await publication.disable('admin-1', {
+      expectedRevision: edited.revision,
+      id: draft.id,
+      reason: 'revoke after edit',
+    });
+    expect(disabled).toMatchObject({
+      activationRevision: null,
+      enabled: false,
+      status: 'disabled',
+    });
+    const selection = await (
+      await import('./startupSnapshot')
+    ).loadPublishedIdentityProviderSelection({
+      db,
+      environmentProviderIds: new Set(),
+    });
+    expect(selection.selected).toHaveLength(0);
+    expect(selection.tombstoneGenerations.length).toBeGreaterThan(0);
+  });
+
+  it('tombstones after secret-clear without requiring a current draft secret', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'activate before secret-clear revoke',
+      requestId: requestId(92),
+    });
+    const cleared = await admin.update('admin-1', {
+      autoProvision: true,
+      buttonLabel: 'Sign in with work',
+      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      clientId: 'client-id',
+      displayName: 'Work login',
+      domainAllowlist: [],
+      expectedRevision: published.revision,
+      groupRoleMapping: {},
+      icon: null,
+      id: draft.id,
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      reason: 'clear secret after publish',
+      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secret: { operation: 'clear' },
+      type: 'generic_oidc',
+      usePkce: true,
+    });
+    expect(cleared).toMatchObject({
+      activationRevision: null,
+      secret: { configured: false, updatedAt: null },
+      status: 'draft',
+    });
+    const disabled = await publication.disable('admin-1', {
+      expectedRevision: cleared.revision,
+      id: draft.id,
+      reason: 'revoke after secret clear',
+    });
+    expect(disabled).toMatchObject({
+      enabled: false,
+      status: 'disabled',
+    });
+    const tombstones = (await db.select().from(platformResourceRevisions)).filter(
+      (row) => (row.payload as { enabled?: boolean }).enabled === false,
+    );
+    expect(tombstones.length).toBeGreaterThan(0);
+    // Tombstone reuses published secret fingerprint, not the cleared draft.
+    expect(tombstones.at(-1)?.secretFingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('outage LKG does not resurrect a provider tombstoned after edit', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'activate for lkg outage tombstone',
+      requestId: requestId(93),
+    });
+    const env = await startupEnv();
+    // Commit published provider into LKG (healthy path).
+    const liveStartup = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery,
+      env,
+    });
+    expect(liveStartup.source).toBe('database');
+    expect(liveStartup.databaseProviders.map((p) => p.providerKey)).toContain('work');
+
+    const edited = await admin.update('admin-1', {
+      autoProvision: true,
+      buttonLabel: 'Sign in with work',
+      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      clientId: 'client-id',
+      displayName: 'Work login (edited)',
+      domainAllowlist: [],
+      expectedRevision: published.revision,
+      groupRoleMapping: {},
+      icon: null,
+      id: draft.id,
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      reason: 'edit then tombstone for outage proof',
+      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secret: { operation: 'keep' },
+      type: 'generic_oidc',
+      usePkce: true,
+    });
+    await publication.disable('admin-1', {
+      expectedRevision: edited.revision,
+      id: draft.id,
+      reason: 'signed revoke after edit',
+    });
+    // Write tombstone-advanced LKG (empty providers, higher generation).
+    const afterDisable = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery,
+      env,
+    });
+    expect(afterDisable.databaseProviders).toHaveLength(0);
+
+    // Outage fallback: force DB failure path → LKG must not resurrect the tombstoned provider.
+    const failingDb = {
+      select: () => {
+        throw new Error('simulated database outage');
+      },
+    } as unknown as LobeChatDatabase;
+    const outageStartup = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db: failingDb,
+      discovery,
+      env,
+    });
+    expect(outageStartup.source).toBe('lkg');
+    expect(outageStartup.databaseProviders).toHaveLength(0);
+    expect(outageStartup.providerIds).not.toContain('work');
   });
 
   it('publishes only an exact recently-tested draft and persists no secret material', async () => {
@@ -537,10 +762,13 @@ describe('IdentityProviderPublicationService', () => {
       string,
       unknown
     >;
-    await db
-      .update(platformResourceRevisions)
-      .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
-      .where(eq(platformResourceRevisions.id, revision.id));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformResourceRevisions)
+        .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
+        .where(eq(platformResourceRevisions.id, revision.id));
+    });
     const [secret] = await db
       .select()
       .from(platformIdentityProviderSecrets)
@@ -716,20 +944,23 @@ describe('IdentityProviderPublicationService', () => {
     const secondTerminal = await findTerminalAudit(requestId(49));
     const firstAfterDiff = firstTerminal.afterDiff as Record<string, unknown>;
     const secondAfterDiff = secondTerminal.afterDiff as Record<string, unknown>;
-    await db
-      .update(platformAuditLogs)
-      .set({
-        afterDiff: {
-          ...firstAfterDiff,
-          activation: secondAfterDiff.activation,
-          checksum: secondAfterDiff.checksum,
-          providerKey: secondAfterDiff.providerKey,
-          response: secondAfterDiff.response,
-          revision: secondAfterDiff.revision,
-        },
-        configRevision: secondTerminal.configRevision,
-      })
-      .where(eq(platformAuditLogs.id, firstTerminal.id));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformAuditLogs)
+        .set({
+          afterDiff: {
+            ...firstAfterDiff,
+            activation: secondAfterDiff.activation,
+            checksum: secondAfterDiff.checksum,
+            providerKey: secondAfterDiff.providerKey,
+            response: secondAfterDiff.response,
+            revision: secondAfterDiff.revision,
+          },
+          configRevision: secondTerminal.configRevision,
+        })
+        .where(eq(platformAuditLogs.id, firstTerminal.id));
+    });
 
     await expect(publication.publish('admin-1', firstInput)).rejects.toMatchObject({
       code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
@@ -1127,17 +1358,20 @@ describe('IdentityProviderPublicationService', () => {
     const afterDiff = terminal.afterDiff as Record<string, unknown>;
     const response = afterDiff.response as Record<string, unknown>;
     const tamperedResultRevision = result.revision + 10;
-    await db
-      .update(platformAuditLogs)
-      .set({
-        afterDiff: {
-          ...afterDiff,
-          response: { ...response, revision: tamperedResultRevision },
-          revision: tamperedResultRevision,
-        },
-        configRevision: tamperedResultRevision,
-      })
-      .where(eq(platformAuditLogs.id, terminal.id));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformAuditLogs)
+        .set({
+          afterDiff: {
+            ...afterDiff,
+            response: { ...response, revision: tamperedResultRevision },
+            revision: tamperedResultRevision,
+          },
+          configRevision: tamperedResultRevision,
+        })
+        .where(eq(platformAuditLogs.id, terminal.id));
+    });
 
     await expect(publication.rollback('admin-1', input)).rejects.toMatchObject({
       code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
@@ -1156,10 +1390,7 @@ describe('IdentityProviderPublicationService', () => {
       reason: 'publish first version',
       requestId: requestId(7),
     });
-    await db
-      .update(platformResourceRevisions)
-      .set(mutation)
-      .where(eq(platformResourceRevisions.resourceId, draft.id));
+    await tamperPublishedRevision(draft.id, mutation);
 
     await expect(
       publication.rollback('admin-1', {

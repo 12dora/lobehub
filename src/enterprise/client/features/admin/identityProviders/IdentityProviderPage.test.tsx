@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
     status: 'allowed' as const,
   },
   providers: {
-    data: undefined as { items: unknown[] } | undefined,
+    data: undefined as { items: unknown[]; nextCursor?: string | null } | undefined,
     error: undefined as unknown,
     isLoading: false,
     mutate: vi.fn(),
@@ -72,9 +72,31 @@ vi.mock('./useIdentityProviderRestartLifecycle', () => ({
   useIdentityProviderRestartLifecycle: () => mocks.restartLifecycle,
 }));
 
+const cursorStack = vi.hoisted(() => ({
+  cursor: undefined as string | undefined,
+  goNext: vi.fn((next: string) => {
+    cursorStack.cursor = next;
+  }),
+  goPrevious: vi.fn(),
+  hasPrevious: false,
+}));
+
+vi.mock('../skills/useCursorPagedList', () => ({
+  useCursorStack: () => ({
+    cursor: cursorStack.cursor,
+    goNext: cursorStack.goNext,
+    goPrevious: cursorStack.goPrevious,
+    hasPrevious: cursorStack.hasPrevious,
+  }),
+}));
+
 vi.mock('./useIdentityProviders', () => ({
   useAuthSnapshotStatus: () => mocks.runtime,
-  useIdentityProviders: () => mocks.providers,
+  useIdentityProviders: (_enabled: boolean, cursor?: string) => {
+    // Expose the cursor the page passes so pagination can be asserted end-to-end.
+    (mocks.providers as { listCursor?: string | undefined }).listCursor = cursor;
+    return mocks.providers;
+  },
 }));
 
 vi.mock('@lobehub/ui', () => ({
@@ -122,9 +144,16 @@ vi.mock('../primitives/StatusBadge', () => ({ default: () => null }));
 // Minimal DataTable: renders one activatable button per row so we can assert row-open.
 vi.mock('../primitives/DataTable', () => ({
   default: ({
+    cursorPagination,
     dataSource,
     onRowActivate,
   }: {
+    cursorPagination?: {
+      hasNext: boolean;
+      hasPrevious: boolean;
+      onNext: () => void;
+      onPrevious: () => void;
+    };
     dataSource?: { displayName: string; id: string }[];
     onRowActivate?: (item: { id: string }) => void;
   }) => (
@@ -134,6 +163,24 @@ vi.mock('../primitives/DataTable', () => ({
           {item.displayName}
         </button>
       ))}
+      {cursorPagination ? (
+        <div data-testid="provider-pager">
+          <button
+            disabled={!cursorPagination.hasPrevious}
+            type="button"
+            onClick={cursorPagination.onPrevious}
+          >
+            previous
+          </button>
+          <button
+            disabled={!cursorPagination.hasNext}
+            type="button"
+            onClick={cursorPagination.onNext}
+          >
+            next
+          </button>
+        </div>
+      ) : null}
     </div>
   ),
 }));
@@ -211,5 +258,41 @@ describe('IdentityProviderPage rendering rules', () => {
 
     expect(openModalMock).toHaveBeenCalledTimes(1);
     expect(openModalMock.mock.calls[0][0].provider).toMatchObject({ id: 'idp-1' });
+  });
+
+  it('passes the second page cursor so provider 101+ is administrable', () => {
+    const page2Provider = {
+      ...sampleProvider,
+      displayName: 'Provider 101',
+      id: 'idp-101',
+    };
+    cursorStack.cursor = undefined;
+    cursorStack.goNext.mockClear();
+    cursorStack.hasPrevious = false;
+    mocks.providers.data = {
+      items: [sampleProvider],
+      nextCursor: 'cursor-page-2',
+    };
+
+    const view = render(<IdentityProviderPage />);
+
+    const next = screen.getByText('next') as HTMLButtonElement;
+    expect(next.disabled).toBe(false);
+    fireEvent.click(next);
+    expect(cursorStack.goNext).toHaveBeenCalledWith('cursor-page-2');
+
+    // Remount with advanced cursor + page-2 payload (memoized page ignores prop-less rerender).
+    view.unmount();
+    cursorStack.cursor = 'cursor-page-2';
+    cursorStack.hasPrevious = true;
+    mocks.providers.data = {
+      items: [page2Provider],
+      nextCursor: null,
+    };
+    render(<IdentityProviderPage />);
+
+    expect(screen.getByText('Provider 101')).toBeTruthy();
+    expect((mocks.providers as { listCursor?: string }).listCursor).toBe('cursor-page-2');
+    expect((screen.getByText('previous') as HTMLButtonElement).disabled).toBe(false);
   });
 });
