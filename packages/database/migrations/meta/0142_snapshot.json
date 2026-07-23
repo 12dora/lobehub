@@ -1,6 +1,6 @@
 {
-  "id": "c22b6387-cd0d-482b-9701-0e12b2ee46ff",
-  "prevId": "4413a59b-8fd2-450c-ab46-528aae37c4e5",
+  "id": "26d567c3-bac0-4336-aad1-493919e7d056",
+  "prevId": "c22b6387-cd0d-482b-9701-0e12b2ee46ff",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19579,7 +19579,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'使用工作账号登录'"
+          "default": "'\u4f7f\u7528\u5de5\u4f5c\u8d26\u53f7\u767b\u5f55'"
         },
         "icon": {
           "name": "icon",
@@ -31820,6 +31820,66 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.platform_auth_settings": {
+      "name": "platform_auth_settings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email_domain_allowlist": {
+          "name": "email_domain_allowlist",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "email_domain_allowlist_enabled": {
+          "name": "email_domain_allowlist_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "open_registration": {
+          "name": "open_registration",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
