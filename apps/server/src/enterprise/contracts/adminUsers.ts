@@ -96,6 +96,7 @@ export const adminUserListItemSchema = z
   .object({
     avatar: z.string().nullable(),
     createdAt: z.date(),
+    dingtalkTitle: z.string().nullable(),
     email: z.string().nullable(),
     fullName: z.string().nullable(),
     id: z.string(),
@@ -176,6 +177,7 @@ export const adminUsersGetOutputSchema = z
     banReason: z.string().nullable(),
     banned: z.boolean(),
     createdAt: z.date(),
+    dingtalkTitle: z.string().nullable(),
     email: z.string().nullable(),
     emailVerified: z.boolean().optional(),
     fullName: z.string().nullable(),

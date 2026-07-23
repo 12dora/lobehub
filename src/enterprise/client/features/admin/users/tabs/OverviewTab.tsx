@@ -67,6 +67,8 @@ const OverviewTab = memo<OverviewTabProps>(
           <dd>{user.username ?? '—'}</dd>
           <dt>{t('users.overview.fullName')}</dt>
           <dd>{user.fullName ?? '—'}</dd>
+          <dt>{t('users.overview.jobTitle')}</dt>
+          <dd>{user.dingtalkTitle?.trim() ? user.dingtalkTitle : '—'}</dd>
           <dt>{t('users.overview.status')}</dt>
           <dd>
             <StatusBadge status={user.status} />

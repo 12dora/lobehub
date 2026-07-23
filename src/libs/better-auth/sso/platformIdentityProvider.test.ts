@@ -48,6 +48,36 @@ const provider = {
 } as const satisfies RuntimeIdentityProvider;
 
 describe('platform identity provider Better Auth adapter', () => {
+  it('maps refreshed profile claims for subsequent logins (overrideUserInfo path)', async () => {
+    const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
+    expect(config.overrideUserInfo).toBe(true);
+    const first = config.mapProfileToUser!({
+      avatar: 'https://cdn.example.test/old.png',
+      display_name: 'Ada',
+      dingtalk_title: 'Engineer',
+      dingtalk_user_id: 'ding-user-1',
+      employee_id: 'employee-1',
+      mail: 'ada@example.test',
+    });
+    const second = config.mapProfileToUser!({
+      avatar: 'https://cdn.example.test/new.png',
+      display_name: 'Ada Lovelace',
+      dingtalk_title: 'Engineering Director',
+      dingtalk_user_id: 'ding-user-1',
+      employee_id: 'employee-1',
+      mail: 'ada@example.test',
+    });
+    expect(first).toMatchObject({
+      dingtalkTitle: 'Engineer',
+      image: 'https://cdn.example.test/old.png',
+      name: 'Ada',
+    });
+    expect(second).toMatchObject({
+      dingtalkTitle: 'Engineering Director',
+      image: 'https://cdn.example.test/new.png',
+      name: 'Ada Lovelace',
+    });
+  });
   it('uses stable provider identity, callback, PKCE, and mapped claims', async () => {
     const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
     expect(config).toMatchObject({
@@ -62,7 +92,7 @@ describe('platform identity provider Better Auth adapter', () => {
     expect(config).not.toHaveProperty('discoveryUrl');
     expect(config.tokenUrl).toBe('https://platform-oidc-token.invalid/');
     expect(config.tokenUrl).not.toBe(provider.oidcMetadata.tokenEndpoint);
-    expect(config).not.toHaveProperty('overrideUserInfo');
+    expect(config.overrideUserInfo).toBe(true);
     const mapped = config.mapProfileToUser!({
       avatar: 'https://cdn.example.test/ada.png',
       display_name: 'Ada',

@@ -87,6 +87,7 @@ describe('adminUsersListOutputSchema', () => {
       items: [
         {
           avatar: null,
+          dingtalkTitle: null,
           createdAt: new Date(),
           email: 'a@b.com',
           fullName: 'A',
@@ -110,6 +111,7 @@ describe('adminUsersListOutputSchema', () => {
         items: [
           {
             avatar: null,
+            dingtalkTitle: null,
             createdAt: new Date(),
             email: null,
             fullName: null,
@@ -133,6 +135,7 @@ describe('adminUsersListOutputSchema', () => {
           {
             accountId: 'acct-1',
             avatar: null,
+            dingtalkTitle: null,
             createdAt: new Date(),
             email: null,
             fullName: null,
@@ -160,6 +163,7 @@ describe('adminUsersGetInputSchema', () => {
 describe('adminUsersGetOutputSchema isSelf', () => {
   const base = {
     avatar: null,
+    dingtalkTitle: null,
     banExpires: null,
     banReason: null,
     banned: false,
