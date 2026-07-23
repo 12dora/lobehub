@@ -11,9 +11,9 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import ConnectorDetailView from './ConnectorDetailView';
 import { deriveAdminConnectorPermissions } from './controller';
 import type { AdminConnectorGetOutput } from './types';
+import { useFetchAdminConnector } from './useAdminConnectorCatalog';
 import { useConnectorActions } from './useConnectorActions';
 import { useConnectorEditor } from './useConnectorEditor';
-import { useFetchAdminConnector } from './useMockableAdminConnectorCatalog';
 
 interface ConnectorDetailContentProps {
   authMethod: AdminAccessContextValue['authMethod'];

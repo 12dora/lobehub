@@ -12,10 +12,7 @@ import ConnectorListView from './ConnectorListView';
 import { deriveAdminConnectorPermissions } from './controller';
 import { openCreateConnectorModal } from './openCreateConnectorModal';
 import type { AdminConnectorListInput } from './types';
-import {
-  refreshAdminConnectorLists,
-  useFetchAdminConnectors,
-} from './useMockableAdminConnectorCatalog';
+import { refreshAdminConnectorLists, useFetchAdminConnectors } from './useAdminConnectorCatalog';
 
 const DEFAULT_LIMIT = 50;
 
