@@ -2,7 +2,7 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMockAdminAgentsClient } from './mockAdminAgents';
+import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
 import {
   clearAdminAgentCache,
   fetchActiveAdminAgentRollouts,
