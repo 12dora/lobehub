@@ -26,7 +26,13 @@ import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { ADMIN_MUTATION_REGISTRY } from '../../security/policy/adminMutationRegistry';
 import { ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY } from '../../security/policy/adminProcedureAuthorizationRegistry';
 import { adminRouter } from '../admin';
-import { MAX_IMPORT_ZIP_BYTES } from './skillsImportParse';
+import {
+  assertZipExpandedWithinLimit,
+  MAX_IMPORT_ZIP_BYTES,
+  MAX_IMPORT_ZIP_EXPANDED_BYTES,
+  readResponseBodyWithLimit,
+  SKILL_IMPORT_ERROR_REASONS,
+} from './skillsImportParse';
 
 const db: LobeChatDatabase = await getTestDB();
 const createRootCaller = createCallerFactory(adminRouter);
@@ -140,6 +146,7 @@ describe('admin.skills.parseImportSource', () => {
     expect(vi.mocked(ssrfSafeFetch)).toHaveBeenCalledWith(
       'https://example.com/skills/demo/SKILL.md',
       expect.objectContaining({ signal: expect.anything() }),
+      { maxContentLength: 1_048_576 },
     );
 
     // Parse-only: no skills / versions persisted.
@@ -175,7 +182,7 @@ describe('admin.skills.parseImportSource', () => {
     expect(await db.select().from(platformSkills)).toEqual([]);
   });
 
-  it('rejects a ZIP whose decoded size exceeds 20MB with BAD_REQUEST', async () => {
+  it('rejects a ZIP whose decoded size exceeds 20MB with a stable skill_import error code', async () => {
     const caller = await callerFor({ userId: ids.superAdmin });
     await expect(
       caller.parseImportSource({
@@ -185,7 +192,7 @@ describe('admin.skills.parseImportSource', () => {
       }),
     ).rejects.toMatchObject({
       code: 'BAD_REQUEST',
-      message: expect.stringMatching(/20MB/),
+      message: 'skill_import_zip_too_large',
     });
   });
 
@@ -234,6 +241,186 @@ describe('admin.skills.parseImportSource', () => {
       kind: 'mutation',
       path: 'admin.skills.parseImportSource',
       permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_CREATE] },
+    });
+  });
+
+  it('rejects oversized remote bodies without Content-Length using a stable size code', async () => {
+    const oversized = 'x'.repeat(1_048_576 + 64);
+    vi.mocked(ssrfSafeFetch).mockResolvedValue(
+      new Response(oversized, { headers: { 'content-type': 'text/markdown' } }),
+    );
+    const caller = await callerFor({ userId: ids.superAdmin });
+    await expect(
+      caller.parseImportSource({ source: 'url', url: 'https://example.com/SKILL.md' }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'skill_import_content_too_large',
+    });
+  });
+
+  it('passes fetch-layer maxContentLength so oversized bodies are capped before full buffering', async () => {
+    // Simulate the real ssrfSafeFetch contract: when maxContentLength is set, only
+    // up to that many bytes are returned (soft cap). The call site must wire the
+    // third-arg option so the package never materializes an unbounded arrayBuffer().
+    vi.mocked(ssrfSafeFetch).mockImplementation(async (_url, _init, ssrfOptions) => {
+      expect(ssrfOptions?.maxContentLength).toBe(1_048_576);
+      // Body at exactly the fetch-layer cap — proves the option was required for safety.
+      // Post-hoc reader still accepts equality; oversize without the option would OOM.
+      return new Response('x'.repeat(ssrfOptions!.maxContentLength!), {
+        headers: { 'content-type': 'text/markdown' },
+      });
+    });
+    const caller = await callerFor({ userId: ids.superAdmin });
+    // Content of max bytes that is not valid skill markdown → parse fails, but the
+    // important assertion is that ssrfSafeFetch received maxContentLength (above).
+    await expect(
+      caller.parseImportSource({ source: 'url', url: 'https://example.com/SKILL.md' }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(vi.mocked(ssrfSafeFetch)).toHaveBeenCalledWith(
+      'https://example.com/SKILL.md',
+      expect.objectContaining({ signal: expect.anything() }),
+      { maxContentLength: 1_048_576 },
+    );
+  });
+
+  it('passes ZIP maxContentLength for package-looking URL downloads at the fetch layer', async () => {
+    vi.mocked(ssrfSafeFetch).mockImplementation(async (_url, _init, ssrfOptions) => {
+      expect(ssrfOptions?.maxContentLength).toBe(MAX_IMPORT_ZIP_BYTES);
+      return new Response('ignored', {
+        headers: {
+          'content-length': String(MAX_IMPORT_ZIP_BYTES + 1),
+          'content-type': 'application/zip',
+        },
+      });
+    });
+    const caller = await callerFor({ userId: ids.superAdmin });
+    await expect(
+      caller.parseImportSource({ source: 'url', url: 'https://example.com/skill.zip' }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'skill_import_zip_too_large',
+    });
+    expect(vi.mocked(ssrfSafeFetch)).toHaveBeenCalledWith(
+      'https://example.com/skill.zip',
+      expect.objectContaining({ signal: expect.anything() }),
+      { maxContentLength: MAX_IMPORT_ZIP_BYTES },
+    );
+  });
+
+  it('rejects remote responses that declare an oversized Content-Length before body read', async () => {
+    vi.mocked(ssrfSafeFetch).mockResolvedValue(
+      new Response('ignored', {
+        headers: {
+          'content-length': String(MAX_IMPORT_ZIP_BYTES + 1),
+          'content-type': 'application/zip',
+        },
+      }),
+    );
+    const caller = await callerFor({ userId: ids.superAdmin });
+    await expect(
+      caller.parseImportSource({ source: 'url', url: 'https://example.com/skill.zip' }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'skill_import_zip_too_large',
+    });
+  });
+
+  it('maps fetch abort to skill_import_timeout', async () => {
+    const abortError = new Error('aborted');
+    abortError.name = 'AbortError';
+    vi.mocked(ssrfSafeFetch).mockRejectedValue(abortError);
+    const caller = await callerFor({ userId: ids.superAdmin });
+    await expect(
+      caller.parseImportSource({ source: 'url', url: 'https://example.com/SKILL.md' }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'skill_import_timeout',
+    });
+  });
+
+  it('maps HTTP 404 to skill_import_not_found', async () => {
+    vi.mocked(ssrfSafeFetch).mockResolvedValue(new Response('missing', { status: 404 }));
+    const caller = await callerFor({ userId: ids.superAdmin });
+    await expect(
+      caller.parseImportSource({ source: 'url', url: 'https://example.com/missing.md' }),
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'skill_import_not_found',
+    });
+  });
+
+  it('maps body stall after headers (aborted signal mid-stream) to skill_import_timeout', async () => {
+    const stalledBody = new ReadableStream<Uint8Array>({
+      start() {
+        // Never enqueues — simulates a post-header hang until the client aborts.
+      },
+    });
+    const controller = new AbortController();
+    // Abort immediately so the reader loop observes signal.aborted.
+    controller.abort();
+    await expect(
+      readResponseBodyWithLimit(
+        new Response(stalledBody, { headers: { 'content-type': 'text/markdown' } }),
+        MAX_IMPORT_ZIP_BYTES,
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: SKILL_IMPORT_ERROR_REASONS.TIMEOUT,
+    });
+  });
+
+  it('enforces compressed + expanded ZIP caps for GitHub archive downloads', async () => {
+    // Oversized compressed body via Content-Length on the GitHub archive URL path.
+    vi.mocked(ssrfSafeFetch).mockResolvedValue(
+      new Response('ignored', {
+        headers: {
+          'content-length': String(MAX_IMPORT_ZIP_BYTES + 1),
+          'content-type': 'application/zip',
+        },
+      }),
+    );
+    const caller = await callerFor({ userId: ids.superAdmin });
+    await expect(
+      caller.parseImportSource({
+        repoUrl: 'https://github.com/acme/demo-skill',
+        source: 'github',
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'skill_import_zip_too_large',
+    });
+    expect(vi.mocked(ssrfSafeFetch)).toHaveBeenCalledWith(
+      expect.stringContaining('github.com/acme/demo-skill/archive/'),
+      expect.objectContaining({ signal: expect.anything() }),
+      { maxContentLength: MAX_IMPORT_ZIP_BYTES },
+    );
+  });
+
+  it('rejects ZIP bombs whose expanded size exceeds the hard cap', async () => {
+    // Highly compressible payload: small on the wire, huge when inflated.
+    const huge = new Uint8Array(MAX_IMPORT_ZIP_EXPANDED_BYTES + 1024);
+    const zipped = zipSync({
+      'SKILL.md': strToU8(SKILL_MD),
+      'bomb.bin': huge,
+    });
+    expect(zipped.byteLength).toBeLessThan(MAX_IMPORT_ZIP_BYTES);
+
+    await expect(assertZipExpandedWithinLimit(Buffer.from(zipped))).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: SKILL_IMPORT_ERROR_REASONS.ZIP_TOO_LARGE,
+    });
+
+    const caller = await callerFor({ userId: ids.superAdmin });
+    await expect(
+      caller.parseImportSource({
+        fileName: 'bomb.zip',
+        source: 'zip',
+        zipBase64: Buffer.from(zipped).toString('base64'),
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'skill_import_zip_too_large',
     });
   });
 });

@@ -17,19 +17,23 @@ import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { PlatformConnectorContractError } from '../../services/connectorCatalog/errors';
 import { getConnectorOAuthRuntime } from '../../services/connectorCatalog/oauthRuntime';
 import { UserConnectorOAuthService } from '../../services/connectorCatalog/userOAuthService';
+import { withActiveUserWhenManaged } from '../managedActiveUser';
 
-const userConnectorProcedure = authedProcedure.use(serverDatabase).use(async ({ ctx, next }) =>
-  next({
-    ctx: {
-      getUserConnectorOAuthService: () =>
-        new UserConnectorOAuthService(
-          ctx.serverDB,
-          ctx.userId!,
-          getConnectorOAuthRuntime(ctx.serverDB),
-        ),
-    },
-  }),
-);
+const userConnectorProcedure = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUserWhenManaged('ENABLE_PLATFORM_MANAGED_CONNECTORS'))
+  .use(async ({ ctx, next }) =>
+    next({
+      ctx: {
+        getUserConnectorOAuthService: () =>
+          new UserConnectorOAuthService(
+            ctx.serverDB,
+            ctx.userId!,
+            getConnectorOAuthRuntime(ctx.serverDB),
+          ),
+      },
+    }),
+  );
 
 const featureEnabled = (): boolean =>
   parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_CONNECTORS;
@@ -95,5 +99,3 @@ export const userConnectorsRouter = router({
       return execute(() => ctx.getUserConnectorOAuthService().startAuthorization(input));
     }),
 });
-
-export type UserConnectorsRouter = typeof userConnectorsRouter;

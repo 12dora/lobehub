@@ -1,32 +1,97 @@
 // @vitest-environment node
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ADMIN_ERROR_CODES } from '@/const/platform/errorCodes';
 import { getTestDB } from '@/database/core/getTestDB';
+import { users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { userConnectorsRouter } from './connectors';
 
-let db: LobeChatDatabase;
+const db: LobeChatDatabase = await getTestDB();
 const createCaller = createCallerFactory(userConnectorsRouter);
 
-beforeAll(async () => {
-  db = await getTestDB();
-});
+const listManagedSpy = vi.hoisted(() => vi.fn(async () => ({ items: [], nextCursor: null })));
 
-beforeEach(() => {
+vi.mock('../../services/connectorCatalog/userOAuthService', () => ({
+  UserConnectorOAuthService: class {
+    disconnect = vi.fn(async () => ({ disconnected: true as const }));
+    getAuthorizationStatus = vi.fn(async () => ({
+      attemptId: 'a'.repeat(32),
+      binding: null,
+      status: 'invalid' as const,
+    }));
+    listManaged = listManagedSpy;
+    startAuthorization = vi.fn(async () => ({
+      attemptId: 'a'.repeat(32),
+      authorizationUrl: 'https://example.com',
+    }));
+  },
+}));
+
+vi.mock('../../services/connectorCatalog/oauthRuntime', () => ({
+  getConnectorOAuthRuntime: vi.fn(() => ({})),
+}));
+
+// serverDatabase middleware always resolves via getServerDB(); pin it to the test DB.
+vi.mock('@/database/core/db-adaptor', () => ({
+  getServerDB: vi.fn(async () => db),
+}));
+
+const IDS = {
+  active: 'm09-router-user-a',
+  banned: 'm09-router-banned',
+  epoch: 'm09-router-epoch',
+  tempBanned: 'm09-router-temp-banned',
+} as const;
+
+beforeEach(async () => {
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '0');
+  await db.delete(users);
+  await db
+    .insert(users)
+    .values([
+      { id: IDS.active },
+      { banned: true, id: IDS.banned },
+      { banExpires: new Date(Date.now() + 3_600_000), banned: true, id: IDS.tempBanned },
+      { authInvalidatedAt: new Date('2021-01-01T00:00:00.000Z'), id: IDS.epoch },
+    ]);
 });
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(async () => {
+  await db.delete(users);
+  vi.unstubAllEnvs();
+});
 
-const callerFor = async (userId: string) =>
-  createCaller({ ...(await createContextInner({ userId })), serverDB: db } as never);
+const callerFor = async (
+  userId: string,
+  extras?: { authMethod?: 'better-auth' | 'oidc'; credentialIssuedAt?: Date },
+) =>
+  createCaller({
+    ...(await createContextInner({
+      authMethod: extras?.authMethod ?? 'oidc',
+      credentialIssuedAt: extras?.credentialIssuedAt ?? new Date('2020-01-01T00:00:00.000Z'),
+      userId,
+    })),
+    serverDB: db,
+  } as never);
+
+const expectAccessDenied = (error: unknown) => {
+  const body = getEnterpriseErrorBody(error);
+  expect(
+    body?.code === ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED ||
+      (error as { code?: string }).code === 'UNAUTHORIZED',
+  ).toBe(true);
+};
 
 describe('user.connectors router', () => {
   it('preserves upstream behavior when the managed connector flag is off', async () => {
-    const caller = await callerFor('m09-router-user-a');
+    const caller = await callerFor(IDS.active);
     await expect(caller.listManaged({ limit: 50 })).resolves.toEqual({
       items: [],
       nextCursor: null,
@@ -47,7 +112,7 @@ describe('user.connectors router', () => {
   });
 
   it('rejects every client-supplied identity field at the strict boundary', async () => {
-    const caller = await callerFor('m09-router-user-a');
+    const caller = await callerFor(IDS.active);
     await expect(
       caller.getAuthorizationStatus({ connectorId: 'connector-1' } as never),
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
@@ -64,5 +129,54 @@ describe('user.connectors router', () => {
         remoteAccountId: 'remote-user-b',
       } as never),
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+});
+
+describe('managed Connectors reject banned, temporary-banned, and epoch-invalid principals', () => {
+  beforeEach(() => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '0');
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
+  });
+
+  it('rejects a banned caller before service access', async () => {
+    const caller = await callerFor(IDS.banned);
+    try {
+      await caller.listManaged({ limit: 50 });
+      expect.fail('expected banned caller to be denied');
+    } catch (error) {
+      expectAccessDenied(error);
+    }
+    expect(listManagedSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a temporarily-banned caller before service access', async () => {
+    const caller = await callerFor(IDS.tempBanned);
+    try {
+      await caller.listManaged({ limit: 50 });
+      expect.fail('expected temp-banned caller to be denied');
+    } catch (error) {
+      expectAccessDenied(error);
+    }
+    expect(listManagedSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects an epoch-invalidated caller before service access', async () => {
+    const caller = await callerFor(IDS.epoch, { authMethod: 'oidc' });
+    try {
+      await caller.listManaged({ limit: 50 });
+      expect.fail('expected epoch-invalid caller to be denied');
+    } catch (error) {
+      expectAccessDenied(error);
+    }
+    expect(listManagedSpy).not.toHaveBeenCalled();
+  });
+
+  it('allows an active caller to reach the service when the flag is on', async () => {
+    const caller = await callerFor(IDS.active);
+    await expect(caller.listManaged({ limit: 50 })).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    expect(listManagedSpy).toHaveBeenCalled();
   });
 });
