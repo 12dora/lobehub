@@ -1,8 +1,10 @@
-# M02 · Global RBAC、超级管理员与真实服务端鉴权
+# M02・Global RBAC、超级管理员与真实服务端鉴权
 
-> 波次：W1  
-> 估算：2–3 人周  
-> 前置依赖：M00、M01  
+> 2026-07-23: EasyAuth 授权模块已移除
+
+> 波次：W1\
+> 估算：2–3 人周\
+> 前置依赖：M00、M01\
 > 源码基线：LobeHub 2.2.10（设计基线提交 4bab1636408e60a7ee17b640490fbf33a310a325）
 
 > 决策（2026-07-16）：平台角色的**授予入口为 EasyAuth**（iam.jiefakj.com，钉钉审批流），同步写入内建 RBAC 表；运行时仍以内建 RBAC 为唯一授权执行点。普通用户使用 AIHub 需先经 EasyAuth 授予基础访问权限（`aihub.access`）。
@@ -17,7 +19,7 @@
 ## 2. 范围
 
 - 扩展权限常量、平台角色、全局作用域查询、管理员 Procedure、初始化 CLI。
-- EasyAuth 集成：应用描述符（`/.well-known/easyauth-app.json`，app_key=`aihub`）、权限目录发布、AccessGrant 同步、`aihub.access` 用户准入与“申请权限”引导页。
+- EasyAuth 集成：应用描述符（`/.well-known/easyauth-app.json`，app\_key=`aihub`）、权限目录发布、AccessGrant 同步、`aihub.access` 用户准入与 “申请权限” 引导页。
 - 把管理 API 的授权检查集中到 `withPlatformPermission`。
 - 企业部署下启用真实 `withScopedPermission`；保留 Flag 关闭兼容路径。
 
@@ -37,10 +39,10 @@
 
 参考实现（本机路径，实现 EasyAuth 集成前先分析）：
 
-- EasyAuth 服务与 SDK：`/Users/konata/code/EasyAuth`（线上 iam.jiefakj.com）。权限查询 API 见 `src/easyauth/api/views.py`；Python SDK 见 `sdk/python/src/easyauth_app_sdk/`；对接指南见 `docs/guides/easyauth-app-sdk-integration.md`；应用/凭据模型见 `src/easyauth/applications/models.py`。
+- EasyAuth 服务与 SDK：`/Users/konata/code/EasyAuth`（线上 iam.jiefakj.com）。权限查询 API 见 `src/easyauth/api/views.py`；Python SDK 见 `sdk/python/src/easyauth_app_sdk/`；对接指南见 `docs/guides/easyauth-app-sdk-integration.md`；应用 / 凭据模型见 `src/easyauth/applications/models.py`。
 - EasyTrade 集成参照：`/Users/konata/code/EasyTrade`（线上 etrade.jiefakj.com）。EasyAuth 客户端封装见 `backend/app/domain/authz/easyauth_client.py`；按路由权限校验见 `backend/app/api/v1/authz_dependencies.py`（`require_permission` + 拒绝页 + permissionRequestUrl 引导模式）。
 
-## 5. 建议新增目录/文件
+## 5. 建议新增目录 / 文件
 
 - `apps/server/src/enterprise/guards/platformPermission.ts`。
 - `packages/database/src/models/platform/platformRbac.ts` 或给现有 `RbacModel` 增加严格方法。
@@ -50,19 +52,19 @@
 ## 6. 目标设计
 
 - 平台权限统一使用 `platform_*:action:all`；在 `getAllowedScopesForAction` 中让 `platform_` 资源只允许 ALL。
-- `hasGlobalPermission()` 必须显式匹配 `roles.workspace_id IS NULL`，不得复用“未传 workspaceId”语义。
+- `hasGlobalPermission()` 必须显式匹配 `roles.workspace_id IS NULL`，不得复用 “未传 workspaceId” 语义。
 - `replaceGlobalUserRoles()` 只删除全局角色分配，绝不触碰工作区角色。
 - 超级管理员可通过系统角色获得所有平台权限；其他角色按权限白名单。
 - 最后一名活跃超级管理员的移除、封禁、过期和删除必须在同一事务中拒绝。
 - **EasyAuth 同步**：AIHub 以静态 App Token（或 OAuth2 client credentials）调用 EasyAuth `GET /api/v1/apps/aihub/users/{authentik_user_id}/permissions`；将返回的 grants 按映射表写入 `rbac_user_roles`（全局作用域），记录 `grant_version` 与同步时间；同步在用户登录时触发并辅以定时任务，操作幂等。
-- **准入**：`aihub.access` 由 EasyAuth 授予；未授予者登录成功后仅能访问“申请权限”引导页（跳转 EasyAuth 门户），所有业务 API 返回 `ACCESS_NOT_GRANTED`。
+- **准入**：`aihub.access` 由 EasyAuth 授予；未授予者登录成功后仅能访问 “申请权限” 引导页（跳转 EasyAuth 门户），所有业务 API 返回 `ACCESS_NOT_GRANTED`。
 - **降级行为**：EasyAuth 不可用时沿用最近一次同步结果继续运行并记录告警；本地超级管理员（G-04/G-05 Break-glass）不经 EasyAuth 授予，不受同步影响。
 - EasyAuth 授予的角色不得触碰工作区角色；`super_admin` 仍只能由本地初始化或既有超级管理员授予，不进入 EasyAuth 权限目录。
 
 ## 7. 数据模型与持久化
 
 - 复用现有 RBAC 表；新增权限和系统角色种子。
-- 必要时为 `rbac_roles(workspace_id,name)`、`rbac_user_roles(user_id,role_id,expires_at)` 增补索引/唯一约束。
+- 必要时为 `rbac_roles(workspace_id,name)`、`rbac_user_roles(user_id,role_id,expires_at)` 增补索引 / 唯一约束。
 - 不新增第二套管理员角色表。
 
 ## 8. 服务端 API / Contract
@@ -70,7 +72,7 @@
 - `admin.auth.getMyAccess`：返回管理员菜单所需权限集合。
 - `admin.roles.listSystemRoles`、`admin.roles.listUserAssignments`。
 - `admin.roles.replaceUserGlobalRoles`：带 expectedRevision/reason。
-- `admin.easyauth.getSyncStatus` / `triggerSync`：查看/触发 EasyAuth grants 同步（幂等，写审计）。
+- `admin.easyauth.getSyncStatus` / `triggerSync`：查看 / 触发 EasyAuth grants 同步（幂等，写审计）。
 - `platform.getAccessStatus`：返回当前用户准入状态与 EasyAuth 申请入口 URL（未准入引导页使用）。
 - HTTP `GET /.well-known/easyauth-app.json`：EasyAuth 应用描述符（权限目录 manifest）。
 - `withPlatformPermission(code)`、`withAnyPlatformPermission(codes)`。
@@ -78,7 +80,7 @@
 ## 9. 管理端与用户端 UI
 
 - 菜单和按钮按权限裁剪，但路由进入后仍请求服务端鉴权。
-- 403 页面区分“已登录但无平台权限”和“会话失效”。
+- 403 页面区分 “已登录但无平台权限” 和 “会话失效”。
 - 角色编辑 UI 显示角色用途和到期时间，不显示底层数据库 ID 为主要信息。
 
 ## 10. 运行时接入
@@ -93,7 +95,7 @@
 3. PR-011：一次性超级管理员 CLI、幂等启动检查。
 4. PR-012：最后超级管理员保护与角色分配 API。
 5. PR-013：在企业 Flag 下替换 no-op scoped middleware，并完成现有路由回归。
-6. PR-013A：EasyAuth 应用描述符、grants 同步服务、`aihub.access` 准入 Guard 与“申请权限”引导页。
+6. PR-013A：EasyAuth 应用描述符、grants 同步服务、`aihub.access` 准入 Guard 与 “申请权限” 引导页。
 
 ## 12. 测试清单
 
@@ -108,7 +110,7 @@
 ## 13. 上线与回滚
 
 - 先在测试环境种子至少两名超级管理员，再启用真实 RBAC。
-- 保留受控 CLI 修复角色，但 CLI 需要数据库/运维权限，不暴露为网页接口。
+- 保留受控 CLI 修复角色，但 CLI 需要数据库 / 运维权限，不暴露为网页接口。
 
 ## 14. Definition of Done
 
@@ -120,7 +122,7 @@
 
 - 启用真实 scoped 权限可能暴露现有工作区授权缺陷；需以 Flag 分阶段开启并运行回归。
 - 双角色源漂移；Better Auth role 只作为兼容镜像或展示，不参与授权决策。
-- EasyAuth grants 与内建 RBAC 漂移：以 EasyAuth 为授予事实源、内建 RBAC 为执行副本，同步必须幂等并记录 grant_version；手工在 /admin 修改经 EasyAuth 授予的角色应被禁止或在下次同步被纠正（本地初始化的 super_admin 除外）。
+- EasyAuth grants 与内建 RBAC 漂移：以 EasyAuth 为授予事实源、内建 RBAC 为执行副本，同步必须幂等并记录 grant\_version；手工在 /admin 修改经 EasyAuth 授予的角色应被禁止或在下次同步被纠正（本地初始化的 super\_admin 除外）。
 
 ## 16. 模块移交物
 
