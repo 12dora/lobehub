@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
@@ -10,6 +10,7 @@ import {
   platformAiProviderSecrets,
   platformAuditLogs,
   platformResourceRevisions,
+  platformSettingPolicies,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
@@ -27,12 +28,18 @@ const keyProvider: KeyProvider = {
   providerId: 'test',
 };
 
+/** Append-only audit rows cannot be DELETE'd (0145); TRUNCATE bypasses the row trigger. */
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformAiModels);
-  await db.delete(platformAiProviderSecrets);
-  await db.delete(platformAiProviders);
+  await db.execute(sql`
+    TRUNCATE TABLE
+      ${platformAuditLogs},
+      ${platformResourceRevisions},
+      ${platformSettingPolicies},
+      ${platformAiModels},
+      ${platformAiProviderSecrets},
+      ${platformAiProviders}
+    RESTART IDENTITY CASCADE
+  `);
 };
 
 beforeEach(async () => {
@@ -119,11 +126,12 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     // update mode on revision 0 soft-fails via tryPublish when baseRevision stays 0
     // applyProviderImmediate rethrows for update when baseRevision > 0 only
     expect(result.published).toBe(false);
-    expect(result.publishError).toBeTruthy();
+    // Stable machine-readable code (not free-form probe prose).
+    expect(result.publishError).toBe('connection_test_failed');
     expect(result.revision).toBe(0);
   });
 
-  it('does not auto retest when revision > 0 (allowStaleConnectionTest path)', async () => {
+  it('does not auto retest cosmetic edits when revision > 0 (allowStaleConnectionTest path)', async () => {
     let probeCount = 0;
     const service = createService(async () => {
       probeCount += 1;
@@ -167,6 +175,221 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
       reason: 'rename',
     });
     expect(probeCount).toBe(0);
+  });
+
+  it('transport config changes (apiStyle/headers/timeoutMs) require retest', async () => {
+    let probeCount = 0;
+    const service = createService(async () => {
+      probeCount += 1;
+    });
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat',
+      config: { endpoint: 'https://api.example.test/v1' },
+      displayName: 'Transport',
+      enabled: true,
+      providerKey: 'transport-cfg',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai', timeoutMs: 30_000 },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'prime' });
+    detail = await service.getDetail(created.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'first publish',
+    });
+    probeCount = 0;
+    detail = await service.getDetail(created.id);
+    await service.updateProviderDraft('admin', {
+      config: {
+        endpoint: 'https://api.example.test/v1',
+        headers: { 'X-Custom': '1' },
+      },
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'add headers',
+      settings: { sdkType: 'openai', timeoutMs: 30_000 },
+    });
+    detail = await service.getDetail(created.id);
+    await expect(
+      service.publishProvider('admin', {
+        allowStaleConnectionTest: true,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: created.id,
+        reason: 'publish headers without retest',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+    expect(probeCount).toBe(0);
+
+    detail = await service.getDetail(created.id);
+    const applied = await service.applyProviderImmediate('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      mode: 'update',
+      reason: 'apply after headers',
+    });
+    expect(probeCount).toBeGreaterThan(0);
+    expect(applied.published).toBe(true);
+  });
+
+  it('failed connection probe blocks publish after invalid credentials', async () => {
+    const service = createService(async () => {
+      throw new Error('invalid_api_key');
+    });
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat',
+      displayName: 'Bad key',
+      enabled: true,
+      providerKey: 'bad-key-probe',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'bad-secret' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    const test = await service.testProvider('admin', { id: created.id, reason: 'probe' });
+    expect(test.status).toBe('failure');
+    detail = await service.getDetail(created.id);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: created.id,
+        reason: 'publish with failed probe',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+  });
+
+  it('hard-delete requires matching expectedRevision and expectedDraftToken', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      displayName: 'Delete me',
+      enabled: true,
+      providerKey: 'delete-cas',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+    });
+    const detail = await service.getDetail(created.id);
+
+    await expect(
+      service.deleteProvider('admin', {
+        expectedDraftToken: '0'.repeat(64),
+        expectedRevision: detail.draft.revision,
+        id: created.id,
+        reason: 'stale draft token',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_REVISION_CONFLICT' });
+
+    await expect(
+      service.deleteProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.draft.revision + 1,
+        id: created.id,
+        reason: 'stale revision',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_REVISION_CONFLICT' });
+
+    await service.deleteProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.draft.revision,
+      id: created.id,
+      reason: 'hard delete',
+    });
+    await expect(service.getDetail(created.id)).rejects.toMatchObject({
+      code: 'PLATFORM_NOT_FOUND',
+    });
+  });
+
+  it('secret rotation requires retest before publishing (connectivity-sensitive)', async () => {
+    let probeCount = 0;
+    const service = createService(async () => {
+      probeCount += 1;
+    });
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat',
+      displayName: 'Rotate',
+      enabled: true,
+      providerKey: 'rotate-secret',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key-v1' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'prime' });
+    detail = await service.getDetail(created.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'first publish',
+    });
+    probeCount = 0;
+    detail = await service.getDetail(created.id);
+    // Direct publish without retest must fail validation for secret rotation.
+    await service.updateProviderDraft('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'rotate secret',
+      secret: { operation: 'replace', value: 'seed-key-v2-invalid' },
+    });
+    detail = await service.getDetail(created.id);
+    await expect(
+      service.publishProvider('admin', {
+        allowStaleConnectionTest: true,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: created.id,
+        reason: 'publish rotated secret without retest',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+    expect(probeCount).toBe(0);
+
+    // applyImmediate must auto-retest then publish.
+    detail = await service.getDetail(created.id);
+    const applied = await service.applyProviderImmediate('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      mode: 'update',
+      reason: 'apply after rotate',
+    });
+    expect(probeCount).toBeGreaterThan(0);
+    expect(applied.published).toBe(true);
   });
 
   it('publishNow retests revision 0 and publishes', async () => {
@@ -222,6 +445,209 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     });
     expect(result.published).toBe(true);
     expect(result.revision).toBeGreaterThan(0);
+  });
+
+  it('batchToggle failure rolls back prior items (atomic batch)', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat-a',
+      displayName: 'Batch',
+      enabled: true,
+      providerKey: 'batch-atomic',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat-a',
+      providerId: created.id,
+      reason: 'model a',
+      type: 'chat',
+    });
+    detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat-b',
+      providerId: created.id,
+      reason: 'model b',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'prime' });
+    detail = await service.getDetail(created.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'publish',
+    });
+    detail = await service.getDetail(created.id);
+    const models = detail.draft.models;
+    expect(models).toHaveLength(2);
+    const firstId = models[0]!.id;
+    const beforeEnabled = models.map((m) => m.enabled);
+
+    // Second id is unknown → mid-batch failure; first toggle must not stick.
+    await expect(
+      service.applyModelImmediate('admin', {
+        enabled: false,
+        expectedDraftToken: detail.draftToken,
+        modelIds: [firstId, 'missing-model-id'],
+        operation: 'batchToggle',
+        providerId: created.id,
+        reason: 'atomic batch',
+      }),
+    ).rejects.toBeTruthy();
+
+    const after = await service.getDetail(created.id);
+    expect(after.draft.models.map((m) => m.enabled)).toEqual(beforeEnabled);
+  });
+
+  it('batchUpdate failure rolls back prior items (atomic batch)', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat-a',
+      displayName: 'Batch Update',
+      enabled: true,
+      providerKey: 'batch-update-atomic',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key-for-leak-check' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat-a',
+      providerId: created.id,
+      reason: 'model a',
+      type: 'chat',
+    });
+    detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat-b',
+      providerId: created.id,
+      reason: 'model b',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'prime' });
+    detail = await service.getDetail(created.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'publish',
+    });
+    detail = await service.getDetail(created.id);
+    const [first, second] = detail.draft.models;
+    expect(first && second).toBeTruthy();
+    const beforeNames = detail.draft.models.map((m) => m.displayName);
+
+    // Second update embeds the live secret → credential boundary fails mid-batch.
+    await expect(
+      service.applyModelImmediate('admin', {
+        expectedDraftToken: detail.draftToken,
+        models: [
+          { displayName: 'Renamed A', id: first!.id },
+          {
+            description: 'contains seed-key-for-leak-check',
+            displayName: 'Renamed B',
+            id: second!.id,
+          },
+        ],
+        operation: 'batchUpdate',
+        providerId: created.id,
+        reason: 'atomic batch update',
+      }),
+    ).rejects.toBeTruthy();
+
+    const after = await service.getDetail(created.id);
+    expect(after.draft.models.map((m) => m.displayName)).toEqual(beforeNames);
+  });
+
+  it('clear failure rolls back prior model deletes (atomic batch)', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat-a',
+      displayName: 'Batch Clear',
+      enabled: true,
+      providerKey: 'batch-clear-atomic',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat-a',
+      providerId: created.id,
+      reason: 'model a',
+      type: 'chat',
+    });
+    detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat-b',
+      providerId: created.id,
+      reason: 'model b',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'prime' });
+    detail = await service.getDetail(created.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'publish',
+    });
+
+    detail = await service.getDetail(created.id);
+    expect(detail.draft.models).toHaveLength(2);
+    // Block the second model in draft order so the first delete succeeds then rolls back.
+    const blockedModelKey = detail.draft.models[1]!.modelKey;
+    await db.insert(platformSettingPolicies).values([
+      {
+        mode: 'default',
+        path: 'systemAgent.topic.provider',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: 'batch-clear-atomic',
+        visibility: 'visible',
+      },
+      {
+        mode: 'default',
+        path: 'systemAgent.topic.model',
+        revision: 1,
+        schemaVersion: 1,
+        status: 'published',
+        value: blockedModelKey,
+        visibility: 'visible',
+      },
+    ]);
+
+    const beforeKeys = detail.draft.models.map((m) => m.modelKey).sort();
+    await expect(
+      service.applyModelImmediate('admin', {
+        expectedDraftToken: detail.draftToken,
+        operation: 'clear',
+        providerId: created.id,
+        reason: 'atomic clear',
+      }),
+    ).rejects.toBeTruthy();
+
+    const after = await service.getDetail(created.id);
+    expect(after.draft.models.map((m) => m.modelKey).sort()).toEqual(beforeKeys);
   });
 
   it('toggle-off published provider publishes enabled:false revision (global disable)', async () => {

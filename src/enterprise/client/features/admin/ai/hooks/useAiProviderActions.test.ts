@@ -126,7 +126,7 @@ const permissions: AiCatalogPermissions = {
   canCreateModel: true,
   canCreateProvider: false,
   canDeleteModel: true,
-  canPublishModel: false,
+
   canPublishProvider: true,
   canReadModels: true,
   canReadProviders: true,

@@ -2,12 +2,96 @@ import { ModelProvider } from 'model-bank';
 import { describe, expect, it } from 'vitest';
 
 import {
+  credentialStringLeaves,
   normalizeAiCatalogExecutionCredentials,
   validateAiCatalogCredentialShape,
   validateAiCatalogRuntimeProvider,
 } from './credentialAdapter';
+import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
 
 describe('AI catalog credential adapter', () => {
+  it('does not treat structural authType/region fields as credential leaves', () => {
+    const leaves = credentialStringLeaves({
+      apiKey: 'sk-live-super-secret-key-value',
+      authType: 'bearer',
+      region: 'us-east-1',
+    });
+    expect(leaves).toEqual(['sk-live-super-secret-key-value']);
+    expect(leaves).not.toContain('bearer');
+    expect(leaves).not.toContain('us-east-1');
+
+    // Structural vault fields may also appear as public catalog metadata without leaking secrets.
+    expect(() =>
+      assertAiCatalogPublicFieldsExcludeCredentials(
+        {
+          description: 'Primary region catalog entry',
+          settings: { region: 'us-east-1', sdkType: 'openai' },
+        },
+        {
+          apiKey: 'sk-live-super-secret-key-value',
+          authType: 'bearer',
+          region: 'us-east-1',
+        },
+      ),
+    ).not.toThrow();
+
+    // Direct secret leakage into public fields still fails closed.
+    expect(() =>
+      assertAiCatalogPublicFieldsExcludeCredentials(
+        { description: 'key is sk-live-super-secret-key-value' },
+        { apiKey: 'sk-live-super-secret-key-value' },
+      ),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+  });
+
+  it('keeps short secrets from known keys and detects exact/token leakage', () => {
+    expect(credentialStringLeaves({ apiKey: 'ab12', authType: 'none' })).toEqual(['ab12']);
+    expect(credentialStringLeaves({ password: 'p@ss' })).toEqual(['p@ss']);
+
+    // Exact / token-aware short-secret disclosure fails closed.
+    expect(() =>
+      assertAiCatalogPublicFieldsExcludeCredentials(
+        { description: 'api key ab12 for staging' },
+        { apiKey: 'ab12' },
+      ),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(() =>
+      assertAiCatalogPublicFieldsExcludeCredentials({ description: 'ab12' }, { apiKey: 'ab12' }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+
+    // Substring collision of a short secret inside a longer public token is ignored.
+    expect(() =>
+      assertAiCatalogPublicFieldsExcludeCredentials(
+        { description: 'label-ab12-extra' },
+        { apiKey: 'ab12' },
+      ),
+    ).not.toThrow();
+  });
+
+  it('does not treat non-secret custom header values as credential leaves unless long', () => {
+    expect(
+      credentialStringLeaves({
+        apiKey: 'sk-live-super-secret-key-value',
+        customHeaders: {
+          'Authorization': 'tok',
+          'X-Trace-Id': 'trace-correlation-identifier-value',
+          'X-Public-Label': 'short',
+        },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        'sk-live-super-secret-key-value',
+        'tok',
+        'trace-correlation-identifier-value',
+      ]),
+    );
+    expect(
+      credentialStringLeaves({
+        customHeaders: { 'X-Public-Label': 'short' },
+      }),
+    ).toEqual([]);
+  });
+
   it('validates structured provider credentials', () => {
     expect(() =>
       normalizeAiCatalogExecutionCredentials({

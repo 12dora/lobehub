@@ -9,32 +9,23 @@ import {
 } from '@/database/models/platform';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import {
-  type PlatformAiModelAbilities,
-  type PlatformAiModelConfig,
-  type PlatformAiModelItem,
-  type PlatformAiModelParameters,
-  type PlatformAiModelPricing,
-  type PlatformAiModelSettings,
   type PlatformAiProviderConfig,
   type PlatformAiProviderSettings,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
-  type adminAiModelCreateInputSchema,
-  type adminAiModelDeleteInputSchema,
-  type adminAiModelReorderInputSchema,
-  type adminAiModelUpdateInputSchema,
   type adminAiProviderCreateDraftInputSchema,
   type adminAiProviderDeleteInputSchema,
   type adminAiProviderUpdateDraftInputSchema,
-  aiModelDraftSchema,
   type AiProviderDraft,
   aiProviderDraftSchema,
 } from '../../contracts/aiCatalog';
 import type { PlatformSecretService } from '../../security/secret';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import { AiCatalogAdminServiceModelOps } from './adminService.models';
 import { AiCatalogReadService } from './catalogReadService';
 import {
   AiCatalogConnectionTestService,
@@ -47,9 +38,8 @@ import {
   validateAiCatalogRuntimeProvider,
 } from './credentialAdapter';
 import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
-import { resolveAiCatalogDependents } from './dependencies';
+import { resolveAiCatalogDependentsForModels } from './dependencies';
 import {
-  type AiCatalogDependent,
   AiCatalogNotFoundError,
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
@@ -61,15 +51,12 @@ import {
   aiCatalogDraftToken,
   appendAiCatalogFailureAudit,
   getLockedAiCatalogDraft,
+  publishedPayloadConnectivityMatchesDraft,
 } from './shared';
 
 type CreateProviderInput = z.infer<typeof adminAiProviderCreateDraftInputSchema>;
 type UpdateProviderInput = z.infer<typeof adminAiProviderUpdateDraftInputSchema>;
-type CreateModelInput = z.infer<typeof adminAiModelCreateInputSchema>;
-type UpdateModelInput = z.infer<typeof adminAiModelUpdateInputSchema>;
-type DeleteModelInput = z.infer<typeof adminAiModelDeleteInputSchema>;
 type DeleteProviderInput = z.infer<typeof adminAiProviderDeleteInputSchema>;
-type ReorderModelsInput = z.infer<typeof adminAiModelReorderInputSchema>;
 
 export interface AiCatalogAdminServiceOptions {
   connectionProbe?: AiConnectionProbe;
@@ -85,38 +72,19 @@ export interface AiCatalogAdminServiceOptions {
 const toProviderDraft = (view: PlatformAiProviderDraftView): AiProviderDraft =>
   aiProviderDraftSchema.parse(view);
 
-const toModelDraft = (row: PlatformAiModelItem) =>
-  aiModelDraftSchema.parse({
-    abilities: row.abilities ?? {},
-    config: row.config ?? null,
-    contextWindowTokens: row.contextWindowTokens ?? null,
-    description: row.description ?? null,
-    displayName: row.displayName ?? null,
-    enabled: row.enabled,
-    id: row.id,
-    modelKey: row.modelKey,
-    parameters: row.parameters ?? {},
-    pricing: row.pricing ?? null,
-    providerId: row.providerId,
-    revision: row.revision,
-    settings: row.settings ?? {},
-    sort: row.sort,
-    status: row.status,
-    type: row.type,
-  });
-
-export class AiCatalogAdminService {
-  private readonly connectionTests: AiCatalogConnectionTestService;
-  private readonly db: LobeChatDatabase;
-  private readonly lifecycle: NonNullable<AiCatalogAdminServiceOptions['lifecycle']>;
-  private readonly publication: AiCatalogPublicationService;
-  private readonly secrets: AiCatalogSecretManager;
+export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
+  protected readonly connectionTests: AiCatalogConnectionTestService;
+  protected readonly db: LobeChatDatabase;
+  protected readonly lifecycle: NonNullable<AiCatalogAdminServiceOptions['lifecycle']>;
+  protected readonly publication: AiCatalogPublicationService;
+  protected readonly secrets: AiCatalogSecretManager;
 
   constructor(
     db: LobeChatDatabase,
     secretService: PlatformSecretService,
     options: AiCatalogAdminServiceOptions = {},
   ) {
+    super();
     this.db = db;
     this.connectionTests = new AiCatalogConnectionTestService(options.connectionProbe);
     this.lifecycle = options.lifecycle ?? {};
@@ -127,7 +95,7 @@ export class AiCatalogAdminService {
     });
   }
 
-  private sanitizeReason = async (
+  protected sanitizeReason = async (
     reason: string,
     providerId?: string,
     secretMutation?: AiSecretMutation,
@@ -149,7 +117,7 @@ export class AiCatalogAdminService {
     return sanitizeAiCatalogPersistedText(reason, credentialValues);
   };
 
-  private getLockedDraft = (
+  protected getLockedDraft = (
     tx: Parameters<typeof getLockedAiCatalogDraft>[0]['tx'],
     providerId: string,
     expectedDraftToken: string,
@@ -163,7 +131,7 @@ export class AiCatalogAdminService {
       tx,
     });
 
-  private appendFailureAudit = (params: {
+  protected appendFailureAudit = (params: {
     action: string;
     actorUserId: string;
     reason: string;
@@ -423,191 +391,19 @@ export class AiCatalogAdminService {
     }
   };
 
-  createModel = async (actorUserId: string, input: CreateModelInput) => {
-    const { expectedDraftToken, providerId, reason: rawReason, ...values } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      return await this.db.transaction(async (tx) => {
-        const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-        const repository = new PlatformAiCatalogRepository(tx);
-        const provider = await repository.getProvider(providerId);
-        if (!provider) throw new AiCatalogNotFoundError();
-        const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
-        assertAiCatalogPublicFieldsExcludeCredentials(values, keyVaults);
-        const row = await repository.createModel({
-          ...values,
-          abilities: values.abilities as PlatformAiModelAbilities | undefined,
-          config: values.config as PlatformAiModelConfig | null | undefined,
-          createdBy: actorUserId,
-          parameters: values.parameters as PlatformAiModelParameters | undefined,
-          pricing: values.pricing as PlatformAiModelPricing | null | undefined,
-          providerId,
-          revision: draft.revision,
-          settings: values.settings as PlatformAiModelSettings | undefined,
-          status: 'draft',
-          updatedBy: actorUserId,
-        });
-        await repository.updateProvider(providerId, {
-          status: 'draft',
-          updatedBy: actorUserId,
-        });
-        await new PlatformAuditService(tx).append({
-          action: 'admin.aiModels.create',
-          actorUserId,
-          afterDiff: { modelKey: row.modelKey, providerId },
-          reason,
-          result: 'success',
-          targetId: row.id,
-          targetType: 'model',
-        });
-        return toModelDraft(row);
-      });
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.create',
-        actorUserId,
-        reason,
-        targetId: providerId,
-      });
-      throw error;
-    }
-  };
-
-  getDependents = async (providerId: string, modelId: string): Promise<AiCatalogDependent[]> => {
-    const repository = new PlatformAiCatalogRepository(this.db);
-    const [provider, model] = await Promise.all([
-      repository.getProvider(providerId),
-      repository.getModel(providerId, modelId),
-    ]);
-    if (!provider || !model) throw new AiCatalogNotFoundError();
-    return resolveAiCatalogDependents(this.db, provider.providerKey, model.modelKey);
-  };
-
-  updateModel = async (actorUserId: string, input: UpdateModelInput) => {
-    const {
-      expectedDraftToken,
-      expectedRevision,
-      id,
-      providerId,
-      reason: rawReason,
-      ...values
-    } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      return await this.db.transaction(async (tx) => {
-        const draft = await this.getLockedDraft(
-          tx,
-          providerId,
-          expectedDraftToken,
-          expectedRevision,
-        );
-        const repository = new PlatformAiCatalogRepository(tx);
-        const provider = await repository.getProvider(providerId);
-        if (!provider) throw new AiCatalogNotFoundError();
-        const current = await repository.getModel(providerId, id);
-        if (!current) throw new AiCatalogNotFoundError();
-        const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
-        assertAiCatalogPublicFieldsExcludeCredentials({ ...current, ...values }, keyVaults);
-        if (current.enabled && values.enabled === false) {
-          const dependents = await resolveAiCatalogDependents(
-            tx,
-            draft.providerKey,
-            current.modelKey,
-          );
-          if (dependents.some((item) => item.blocking)) {
-            throw new AiCatalogResourceInUseError(dependents);
-          }
-        }
-        const row = await repository.updateModel(providerId, id, {
-          ...values,
-          abilities: values.abilities as PlatformAiModelAbilities | undefined,
-          config: values.config as PlatformAiModelConfig | null | undefined,
-          parameters: values.parameters as PlatformAiModelParameters | undefined,
-          pricing: values.pricing as PlatformAiModelPricing | null | undefined,
-          settings: values.settings as PlatformAiModelSettings | undefined,
-          status: 'draft',
-          updatedBy: actorUserId,
-        });
-        if (!row) throw new AiCatalogNotFoundError();
-        await repository.updateProvider(providerId, { status: 'draft', updatedBy: actorUserId });
-        await new PlatformAuditService(tx).append({
-          action: 'admin.aiModels.update',
-          actorUserId,
-          afterDiff: { modelId: id, providerId },
-          reason,
-          result: 'success',
-          targetId: id,
-          targetType: 'model',
-        });
-        return toModelDraft(row);
-      });
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.update',
-        actorUserId,
-        reason,
-        targetId: id,
-      });
-      throw error;
-    }
-  };
-
-  deleteModel = async (actorUserId: string, input: DeleteModelInput) => {
-    const { expectedDraftToken, id, providerId, reason: rawReason } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      await this.db.transaction(async (tx) => {
-        const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-        const repository = new PlatformAiCatalogRepository(tx);
-        const current = await repository.getModel(providerId, id);
-        if (!current) throw new AiCatalogNotFoundError();
-        const dependents = await resolveAiCatalogDependents(
-          tx,
-          draft.providerKey,
-          current.modelKey,
-        );
-        if (dependents.some((item) => item.blocking)) {
-          throw new AiCatalogResourceInUseError(dependents);
-        }
-        await repository.deleteModel(providerId, id);
-        await repository.updateProvider(providerId, { status: 'draft', updatedBy: actorUserId });
-        await new PlatformAuditService(tx).append({
-          action: 'admin.aiModels.deleteFromDraft',
-          actorUserId,
-          beforeDiff: { modelId: id, modelKey: current.modelKey, providerId },
-          reason,
-          result: 'success',
-          targetId: id,
-          targetType: 'model',
-        });
-      });
-      return { deleted: true as const };
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.deleteFromDraft',
-        actorUserId,
-        reason,
-        targetId: id,
-      });
-      throw error;
-    }
-  };
-
-  /**
-   * Hard-delete a provider and every row it owns: models (RESTRICT FK), unified revision-log
-   * entries (no FK), and the provider itself (encrypted secret versions cascade). Draft-only /
-   * never-published providers delete freely; a provider whose models are still referenced by a
-   * published agent or setting is refused with {@link AiCatalogResourceInUseError}.
-   */
   deleteProvider = async (actorUserId: string, input: DeleteProviderInput) => {
-    const { expectedRevision, id, reason: rawReason } = input;
+    const { expectedDraftToken, expectedRevision, id, reason: rawReason } = input;
     const reason = await this.sanitizeReason(rawReason, id);
     try {
       await this.db.transaction(async (tx) => {
         const repository = new PlatformAiCatalogRepository(tx);
+        // 1) Provider row lock first — same order as publication.lockAndGetRevision.
         const provider = await repository.lockProvider(id);
         if (!provider) throw new AiCatalogNotFoundError();
-        if (typeof expectedRevision === 'number' && provider.revision !== expectedRevision) {
+        // 2) Then the dependency-publication advisory lock (publication acquires it in
+        //    assertLockedState after the provider row is already held).
+        await acquirePlatformDependencyPublicationLock(tx);
+        if (provider.revision !== expectedRevision) {
           throw new PlatformRevisionConflictError('Provider changed before delete', {
             currentRevision: provider.revision,
             expectedRevision,
@@ -615,17 +411,21 @@ export class AiCatalogAdminService {
             resourceType: 'provider',
           });
         }
+        const draft = await new PlatformAiCatalogModel(tx).getProvider(id);
+        if (!draft) throw new AiCatalogNotFoundError();
+        if (aiCatalogDraftToken(draft) !== expectedDraftToken) {
+          throw new PlatformRevisionConflictError('Provider draft token changed before delete', {
+            resourceId: id,
+            resourceType: 'provider',
+          });
+        }
         // Refuse when any owned model is still referenced by a published agent / setting.
         const models = await repository.listModels(id);
-        const dependents: AiCatalogDependent[] = [];
-        for (const model of models) {
-          const modelDependents = await resolveAiCatalogDependents(
-            tx,
-            provider.providerKey,
-            model.modelKey,
-          );
-          dependents.push(...modelDependents);
-        }
+        const dependents = await resolveAiCatalogDependentsForModels(
+          tx,
+          provider.providerKey,
+          models.map((model) => model.modelKey),
+        );
         if (dependents.some((item) => item.blocking)) {
           throw new AiCatalogResourceInUseError(dependents);
         }
@@ -653,53 +453,6 @@ export class AiCatalogAdminService {
         actorUserId,
         reason,
         targetId: id,
-      });
-      throw error;
-    }
-  };
-
-  reorderModels = async (actorUserId: string, input: ReorderModelsInput) => {
-    const { expectedDraftToken, items, providerId, reason: rawReason } = input;
-    const reason = await this.sanitizeReason(rawReason, providerId);
-    try {
-      return await this.db.transaction(async (tx) => {
-        await this.getLockedDraft(tx, providerId, expectedDraftToken);
-        const repository = new PlatformAiCatalogRepository(tx);
-        const current = await repository.listModels(providerId);
-        const requestedIds = new Set(items.map((item) => item.id));
-        if (
-          requestedIds.size !== items.length ||
-          current.length !== items.length ||
-          current.some((model) => !requestedIds.has(model.id))
-        ) {
-          throw new PlatformRevisionConflictError(
-            'Reorder must contain the complete provider draft model collection',
-          );
-        }
-        const updated = await repository.reorderModels(providerId, items);
-        if (updated !== current.length) {
-          throw new PlatformRevisionConflictError('Model collection changed during reorder');
-        }
-        await repository.updateProvider(providerId, { status: 'draft', updatedBy: actorUserId });
-        const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
-        if (!draft) throw new AiCatalogNotFoundError();
-        await new PlatformAuditService(tx).append({
-          action: 'admin.aiModels.reorder',
-          actorUserId,
-          afterDiff: { items: items.map(({ id, sort }) => ({ id, sort })) },
-          reason,
-          result: 'success',
-          targetId: providerId,
-          targetType: 'provider',
-        });
-        return { draftToken: aiCatalogDraftToken(draft), updated };
-      });
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.aiModels.reorder',
-        actorUserId,
-        reason,
-        targetId: providerId,
       });
       throw error;
     }
@@ -816,62 +569,89 @@ export class AiCatalogAdminService {
     this.publication.rollbackProvider(actorUserId, input);
 
   /**
-   * For first publish (revision 0): re-run connectivity test when credentials + ≥1
-   * enabled model are present so applyImmediate can land without a separate UI test step.
-   * revision > 0 skips auto retest (allowStaleConnectionTest handles non-secret edits).
+   * Determine whether connectivity-sensitive fields differ from the last published revision.
+   * Used to decide whether applyImmediate may skip a retest (cosmetic-only) or must probe.
    */
-  private prepareFirstPublishConnectionTest = async (
+  private connectivityChangedFromPublished = async (providerId: string): Promise<boolean> => {
+    const draft = await new PlatformAiCatalogModel(this.db).getProvider(providerId);
+    if (!draft) throw new AiCatalogNotFoundError();
+    if (draft.revision === 0) return true;
+    const repository = new PlatformAiCatalogRepository(this.db);
+    const published = await repository.getProviderRevision(providerId, draft.revision);
+    if (!published || published.status !== 'published') return true;
+    return !publishedPayloadConnectivityMatchesDraft(draft, {
+      payload: published.payload as Record<string, unknown>,
+      secretFingerprint: published.secretFingerprint,
+    });
+  };
+
+  /**
+   * Auto-run connectivity test when required so applyImmediate can land without a separate UI step.
+   * - revision 0 (first publish): always retest when credentials + ≥1 enabled model are present.
+   * - revision > 0: retest only when connectivity-sensitive fields changed vs last publish;
+   *   cosmetic-only edits reuse the stale-test allow path in validatePublishDraft.
+   */
+  /**
+   * Stable machine-readable codes returned as `publishError` for client i18n.
+   * Free-form prose is never surfaced — map codes under `aiSettings.draftBanner.error.*`.
+   */
+  private preparePublishConnectionTest = async (
     actorUserId: string,
     providerId: string,
     reason: string,
   ): Promise<{ ok: true } | { ok: false; reason: string }> => {
     const detail = await this.getDetail(providerId);
-    if (detail.baseRevision > 0) return { ok: true };
+    const connectivityChanged =
+      detail.baseRevision === 0 || (await this.connectivityChangedFromPublished(providerId));
+    if (!connectivityChanged) return { ok: true };
+
+    // Fresh connection test already bound to this draft — no need to re-probe.
+    if (detail.draft.connectionTest?.status === 'success' && !detail.draft.connectionTest.stale) {
+      return { ok: true };
+    }
+
     const hasEnabledModel = detail.draft.models.some((m) => m.enabled);
     const hasCredentials = detail.draft.secret.configured;
     if (!hasEnabledModel || !hasCredentials) {
       return {
         ok: false,
-        reason: !hasEnabledModel
-          ? 'At least one model must be enabled before first publish'
-          : 'Provider secret must be configured before first publish',
+        // Stable codes — client translates; do not return localized/server prose.
+        reason: !hasEnabledModel ? 'model_required' : 'secret_required',
       };
     }
     const test = await this.testProvider(actorUserId, { id: providerId, reason });
     if (test.status !== 'success') {
       return {
         ok: false,
-        reason: test.sanitizedMessage || 'Connection test failed before first publish',
+        reason: 'connection_test_failed',
       };
     }
     return { ok: true };
   };
 
-  private tryPublishImmediate = async (
+  protected tryPublishImmediate = async (
     actorUserId: string,
     providerId: string,
     reason: string,
     options?: { softFail?: boolean },
   ) => {
-    let detail = await this.getDetail(providerId);
-
-    if (detail.baseRevision === 0) {
-      const prep = await this.prepareFirstPublishConnectionTest(actorUserId, providerId, reason);
-      if (!prep.ok) {
-        detail = await this.getDetail(providerId);
-        return {
-          auditId: null as string | null,
-          draft: detail.draft,
-          published: false,
-          publishError: prep.reason,
-          revision: detail.baseRevision,
-        };
-      }
-      detail = await this.getDetail(providerId);
+    const prep = await this.preparePublishConnectionTest(actorUserId, providerId, reason);
+    if (!prep.ok) {
+      const detail = await this.getDetail(providerId);
+      return {
+        auditId: null as string | null,
+        draft: detail.draft,
+        published: false,
+        publishError: prep.reason,
+        revision: detail.baseRevision,
+      };
     }
+    const detail = await this.getDetail(providerId);
 
     try {
       const published = await this.publishProvider(actorUserId, {
+        // Cosmetic-only republish may reuse a stale successful test; connectivity changes
+        // were already re-probed above (or rejected). Validation still re-checks field sensitivity.
         allowStaleConnectionTest: detail.baseRevision > 0,
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,
@@ -889,18 +669,15 @@ export class AiCatalogAdminService {
     } catch (error) {
       if (options?.softFail || error instanceof AiCatalogValidationError) {
         const after = await this.getDetail(providerId);
-        const reasonText =
-          error instanceof AiCatalogValidationError
-            ? error.issues.join('; ')
-            : error instanceof Error
-              ? error.message
-              : 'Publish failed';
+        // Stable machine-readable codes only — never free-form Error.message / issue prose.
+        const reasonCode =
+          error instanceof AiCatalogValidationError ? 'validation_failed' : 'publish_failed';
         if (options?.softFail || after.baseRevision === 0) {
           return {
             auditId: null as string | null,
             draft: after.draft,
             published: false,
-            publishError: reasonText,
+            publishError: reasonCode,
             revision: after.baseRevision,
           };
         }
@@ -956,183 +733,12 @@ export class AiCatalogAdminService {
   publishNow = async (actorUserId: string, input: { id: string; reason: string }) => {
     return this.tryPublishImmediate(actorUserId, input.id, input.reason, { softFail: true });
   };
-
-  /**
-   * Apply a model draft mutation (or batch) then publish the parent provider immediately.
-   * One rate-limit unit; publish failure is visible (draft retained).
-   */
-  applyModelImmediate = async (
-    actorUserId: string,
-    input: {
-      enabled?: boolean;
-      expectedDraftToken: string;
-      expectedRevision?: number;
-      id?: string;
-      items?: Array<{ id: string; sort: number }>;
-      modelIds?: string[];
-      modelKey?: string;
-      models?: Array<Record<string, unknown> & { id: string }>;
-      operation:
-        'batchToggle' | 'batchUpdate' | 'clear' | 'create' | 'delete' | 'reorder' | 'update';
-      providerId: string;
-      reason: string;
-      [key: string]: unknown;
-    },
-  ) => {
-    const { operation, providerId, reason, expectedDraftToken } = input;
-    const token = expectedDraftToken;
-
-    switch (operation) {
-      case 'create': {
-        const { operation: _o, ...rest } = input;
-        await this.createModel(actorUserId, {
-          ...(rest as CreateModelInput),
-          expectedDraftToken: token,
-          modelKey: input.modelKey!,
-          providerId,
-          reason,
-        });
-        break;
-      }
-      case 'update': {
-        const { operation: _o, ...rest } = input;
-        await this.updateModel(actorUserId, {
-          ...(rest as UpdateModelInput),
-          expectedDraftToken: token,
-          expectedRevision: input.expectedRevision!,
-          id: input.id!,
-          providerId,
-          reason,
-        });
-        break;
-      }
-      case 'delete': {
-        await this.deleteModel(actorUserId, {
-          expectedDraftToken: token,
-          id: input.id!,
-          providerId,
-          reason,
-        });
-        break;
-      }
-      case 'reorder': {
-        await this.reorderModels(actorUserId, {
-          expectedDraftToken: token,
-          items: input.items!,
-          providerId,
-          reason,
-        });
-        break;
-      }
-      case 'batchToggle': {
-        // Single detail snapshot for model map; refresh draft token per mutation only.
-        let snapshot = await this.getDetail(providerId);
-        let draftToken = snapshot.draftToken;
-        const modelsById = new Map(snapshot.draft.models.map((m) => [m.id, m]));
-        for (const modelId of input.modelIds ?? []) {
-          const model = modelsById.get(modelId);
-          if (!model) throw new AiCatalogNotFoundError();
-          await this.updateModel(actorUserId, {
-            enabled: input.enabled!,
-            expectedDraftToken: draftToken,
-            expectedRevision: model.revision,
-            id: modelId,
-            providerId,
-            reason,
-          });
-          snapshot = await this.getDetail(providerId);
-          draftToken = snapshot.draftToken;
-          for (const m of snapshot.draft.models) modelsById.set(m.id, m);
-        }
-        break;
-      }
-      case 'batchUpdate': {
-        let snapshot = await this.getDetail(providerId);
-        let draftToken = snapshot.draftToken;
-        const modelsById = new Map(snapshot.draft.models.map((m) => [m.id, m]));
-        for (const item of input.models ?? []) {
-          const current = modelsById.get(item.id);
-          if (!current) {
-            await this.createModel(actorUserId, {
-              abilities: item.abilities as CreateModelInput['abilities'],
-              config: item.config as CreateModelInput['config'],
-              contextWindowTokens:
-                item.contextWindowTokens as CreateModelInput['contextWindowTokens'],
-              description: item.description as CreateModelInput['description'],
-              displayName: item.displayName as CreateModelInput['displayName'],
-              enabled: item.enabled as CreateModelInput['enabled'],
-              expectedDraftToken: draftToken,
-              modelKey: item.id,
-              parameters: item.parameters as CreateModelInput['parameters'],
-              pricing: item.pricing as CreateModelInput['pricing'],
-              providerId,
-              reason,
-              settings: item.settings as CreateModelInput['settings'],
-              type: item.type as CreateModelInput['type'],
-            });
-          } else {
-            await this.updateModel(actorUserId, {
-              abilities: item.abilities as UpdateModelInput['abilities'],
-              config: item.config as UpdateModelInput['config'],
-              contextWindowTokens:
-                item.contextWindowTokens as UpdateModelInput['contextWindowTokens'],
-              description: item.description as UpdateModelInput['description'],
-              displayName: item.displayName as UpdateModelInput['displayName'],
-              enabled: item.enabled as UpdateModelInput['enabled'],
-              expectedDraftToken: draftToken,
-              expectedRevision: current.revision,
-              id: item.id,
-              parameters: item.parameters as UpdateModelInput['parameters'],
-              pricing: item.pricing as UpdateModelInput['pricing'],
-              providerId,
-              reason,
-              settings: item.settings as UpdateModelInput['settings'],
-              type: item.type as UpdateModelInput['type'],
-            });
-          }
-          snapshot = await this.getDetail(providerId);
-          draftToken = snapshot.draftToken;
-          modelsById.clear();
-          for (const m of snapshot.draft.models) modelsById.set(m.id, m);
-        }
-        break;
-      }
-      case 'clear': {
-        let snapshot = await this.getDetail(providerId);
-        const modelIds = snapshot.draft.models.map((m) => m.id);
-        for (const modelId of modelIds) {
-          await this.deleteModel(actorUserId, {
-            expectedDraftToken: snapshot.draftToken,
-            id: modelId,
-            providerId,
-            reason,
-          });
-          snapshot = await this.getDetail(providerId);
-        }
-        break;
-      }
-      default: {
-        throw new AiCatalogValidationError([`Unsupported model apply operation: ${operation}`]);
-      }
-    }
-
-    const publishResult = await this.tryPublishImmediate(actorUserId, providerId, reason, {
-      softFail: true,
-    });
-    const after = await this.getDetail(providerId);
-    return {
-      auditId: publishResult.auditId,
-      draftToken: after.draftToken,
-      published: publishResult.published,
-      publishError: publishResult.publishError,
-      revision: publishResult.revision,
-    };
-  };
 }
 
 export {
   type AiCatalogDependent,
   AiCatalogNotFoundError,
+  AiCatalogProviderDisabledError,
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from './errors';

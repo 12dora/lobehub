@@ -45,7 +45,11 @@ import {
 } from './errors';
 import { sanitizeAiCatalogPersistedText } from './persistentText';
 import type { AiCatalogSecretManager } from './secretManager';
-import { aiCatalogDraftToken, appendAiCatalogFailureAudit } from './shared';
+import {
+  aiCatalogDraftToken,
+  appendAiCatalogFailureAudit,
+  publishedPayloadConnectivityMatchesDraft,
+} from './shared';
 
 type PublishProviderInput = z.infer<typeof adminAiProviderPublishInputSchema>;
 type ArchiveProviderInput = z.infer<typeof adminAiProviderArchiveInputSchema>;
@@ -136,7 +140,9 @@ export class AiCatalogPublicationService {
     options?: {
       /**
        * Admin settings UI auto-publish: after a provider has already been published once,
-       * allow republishing non-secret draft edits without re-running the connection test.
+       * allow republishing *cosmetic* draft edits without re-running the connection test.
+       * Any non-cosmetic change (full config/settings deep-equal, check model, secret
+       * fingerprint) always requires a fresh successful probe.
        * First publish still requires a fresh successful connection test.
        */
       allowStaleConnectionTest?: boolean;
@@ -161,11 +167,22 @@ export class AiCatalogPublicationService {
       if (enabledModels.length === 0) issues.push('At least one model must be enabled');
       const connectionTestFresh =
         draft.connectionTest?.status === 'success' && !draft.connectionTest.stale;
-      if (
-        !connectionTestFresh &&
-        !(options?.allowStaleConnectionTest === true && previouslyPublished)
-      ) {
-        issues.push('Current provider draft must pass connection testing before publish');
+      if (!connectionTestFresh) {
+        let allowStale = false;
+        if (options?.allowStaleConnectionTest === true && previouslyPublished) {
+          // Stale reuse is limited to cosmetic field edits vs the last published revision.
+          const published = await repository.getProviderRevision(providerId, draft.revision);
+          allowStale =
+            published?.status === 'published' &&
+            publishedPayloadConnectivityMatchesDraft(draft, {
+              payload: published.payload as Record<string, unknown>,
+              // Revision-row column is unredacted; payload.provider.secretFingerprint is redacted.
+              secretFingerprint: published.secretFingerprint,
+            });
+        }
+        if (!allowStale) {
+          issues.push('Current provider draft must pass connection testing before publish');
+        }
       }
       if (draft.checkModel) {
         const checkModel = enabledModels.find((model) => model.modelKey === draft.checkModel);

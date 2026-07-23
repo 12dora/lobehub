@@ -85,12 +85,18 @@ const createPublishedAgentDependency = async (
   return agent;
 };
 
+/** Append-only audit rows cannot be DELETE'd (0145); TRUNCATE bypasses the row trigger. */
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.execute(sql`TRUNCATE TABLE ${platformAgentVersions}, ${platformAgents} CASCADE`);
-  await db.delete(platformAiModels);
-  await db.delete(platformAiProviders);
+  await db.execute(sql`
+    TRUNCATE TABLE
+      ${platformAuditLogs},
+      ${platformResourceRevisions},
+      ${platformAgentVersions},
+      ${platformAgents},
+      ${platformAiModels},
+      ${platformAiProviders}
+    RESTART IDENTITY CASCADE
+  `);
 };
 
 beforeEach(async () => {
@@ -383,10 +389,14 @@ describe('AiCatalog publication transaction', () => {
     (pollutedPayload.models as Array<Record<string, unknown>>)[0].settings = {
       publicUrl: 'https://history.example.test/model?X-Amz-Signature=unrelated-signature',
     };
-    await db
-      .update(platformResourceRevisions)
-      .set({ payload: pollutedPayload })
-      .where(eq(platformResourceRevisions.id, revisionOne.id));
+    // Migration 0145 makes revisions immutable; tests inject pollution past the trigger.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformResourceRevisions)
+        .set({ payload: pollutedPayload })
+        .where(eq(platformResourceRevisions.id, revisionOne.id));
+    });
 
     detail = await service.getDetail(provider.id);
     await expect(
@@ -402,10 +412,13 @@ describe('AiCatalog publication transaction', () => {
     });
 
     (pollutedPayload.models as Array<Record<string, unknown>>)[0].settings = {};
-    await db
-      .update(platformResourceRevisions)
-      .set({ payload: pollutedPayload })
-      .where(eq(platformResourceRevisions.id, revisionOne.id));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformResourceRevisions)
+        .set({ payload: pollutedPayload })
+        .where(eq(platformResourceRevisions.id, revisionOne.id));
+    });
     await expect(
       service.rollbackProvider('admin', {
         expectedDraftToken: detail.draftToken,

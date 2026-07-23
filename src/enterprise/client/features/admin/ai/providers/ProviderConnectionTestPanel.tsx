@@ -37,7 +37,14 @@ const ProviderConnectionTestPanel = memo<ProviderConnectionTestPanelProps>(({ co
           <Text type="secondary">
             {t('aiCatalog.editor.test.summary', {
               latency: connectionTest.state.latencyMs ?? '—',
-              message: connectionTest.state.sanitizedMessage,
+              message:
+                connectionTest.state.status === 'success'
+                  ? t('aiCatalog.editor.test.message.success')
+                  : connectionTest.state.status === 'pending'
+                    ? t('aiCatalog.editor.test.message.pending', {
+                        defaultValue: 'Connection test in progress',
+                      })
+                    : t('aiCatalog.editor.test.message.failure'),
             })}
           </Text>
           <Text type="secondary">

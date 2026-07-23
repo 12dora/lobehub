@@ -27,9 +27,28 @@ import {
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
-import { AiCatalogModelNotPublishedError, AiCatalogNotFoundError } from './errors';
+import {
+  AiCatalogModelNotPublishedError,
+  AiCatalogNotFoundError,
+  AiCatalogProviderDisabledError,
+} from './errors';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
+
+/**
+ * Credential-free provider config fields safe to expose in public runtime state.
+ * Endpoints, headers, and secrets stay server-only (execution resolver path).
+ */
+export const projectPublicAiProviderRuntimeConfig = (
+  config: unknown,
+): AiProviderRuntimeConfig['config'] => {
+  if (!isRecord(config)) return {};
+  const projected: AiProviderRuntimeConfig['config'] = {};
+  if (typeof config.enableResponseApi === 'boolean') {
+    projected.enableResponseApi = config.enableResponseApi;
+  }
+  return projected;
+};
 
 const EMPTY_RUNTIME_STATE: AiProviderRuntimeState = {
   enabledAiModels: [],
@@ -206,7 +225,7 @@ export class AiCatalogRuntimeAdapter {
           sort: typeof provider.sort === 'number' ? provider.sort : Number.MAX_SAFE_INTEGER,
         });
         runtimeConfig[providerKey] = {
-          config: {},
+          config: projectPublicAiProviderRuntimeConfig(provider.config),
           fetchOnClient: false,
           keyVaults: {},
           settings: {},
@@ -374,6 +393,12 @@ export class AiCatalogExecutionResolver {
         isRecord(item.payload.provider) && item.payload.provider.providerKey === providerKey,
     );
     if (!revision || !isRecord(revision.payload.provider)) {
+      // Snapshot omits archived pointers. A known provider with a non-zero pointer was once
+      // published and is now inactive — fail closed so runtime does not resurrect it via BYOK.
+      const known = await repository.getProviderByKey(providerKey);
+      if (known && known.revision > 0) {
+        throw new AiCatalogProviderDisabledError(providerKey);
+      }
       throw new AiCatalogNotFoundError();
     }
     return this.buildExecutionConfigFromRevision(providerKey, revision, repository);
@@ -429,7 +454,13 @@ export class AiCatalogExecutionResolver {
   ): Promise<AiCatalogProviderExecutionConfig> {
     if (!isRecord(revision.payload.provider)) throw new AiCatalogNotFoundError();
     const provider = revision.payload.provider;
-    if (provider.enabled !== true) throw new AiCatalogNotFoundError();
+    // Known but administratively disabled — fail closed (do not surface as PLATFORM_NOT_FOUND
+    // or the runtime BYOK path will resurrect the provider with a user key).
+    if (provider.enabled !== true) {
+      throw new AiCatalogProviderDisabledError(
+        typeof provider.providerKey === 'string' ? provider.providerKey : providerKey,
+      );
+    }
     const allowedModels = Array.isArray(revision.payload.models)
       ? revision.payload.models.flatMap((model) =>
           isRecord(model) &&

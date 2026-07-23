@@ -51,6 +51,7 @@ const AdminDraftPublishBanner = memo<AdminDraftPublishBannerProps>(
     publishError,
     retryLabel,
   }) => {
+    const { t } = useTranslation('admin');
     const [retrying, setRetrying] = useState(false);
 
     const handleRetry = useCallback(async () => {
@@ -64,6 +65,16 @@ const AdminDraftPublishBanner = memo<AdminDraftPublishBannerProps>(
 
     if (!open) return null;
 
+    // Map known server codes to stable translated copy; never render raw server prose.
+    const resolvedPublishError = (() => {
+      if (!publishError) return null;
+      const primary = publishError.split(',')[0]?.trim() || publishError;
+      const key = `aiSettings.draftBanner.error.${primary}`;
+      const localized = t(key as never, { defaultValue: '' });
+      if (localized) return localized;
+      return t('aiSettings.draftBanner.error.generic');
+    })();
+
     return (
       <Alert
         closable
@@ -72,7 +83,7 @@ const AdminDraftPublishBanner = memo<AdminDraftPublishBannerProps>(
         type="warning"
         description={
           <Flexbox gap={8}>
-            <Text type="secondary">{publishError || defaultDescription}</Text>
+            <Text type="secondary">{resolvedPublishError || defaultDescription}</Text>
             <div className={styles.actions}>
               <Button loading={retrying} size="small" onClick={() => void handleRetry()}>
                 {retryLabel}

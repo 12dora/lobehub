@@ -1,21 +1,16 @@
 // @vitest-environment node
 import { ModelRuntime } from '@lobechat/model-runtime';
-import type { AiProviderRuntimeState } from '@lobechat/types';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
-import { getTestDB } from '@/database/core/getTestDB';
 import { checksumPayload } from '@/database/models/platform/checksum';
 import {
-  platformAiModels,
   platformAiProviders,
   platformAiProviderSecrets,
-  platformAuditLogs,
   platformResourceRevisions,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
-import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { loadCurrentAiCatalogSnapshot } from '../platformInstance/catalogAuthority';
 import { PlatformCatalogTokenInvariantError } from '../platformInstance/catalogTokens';
@@ -31,98 +26,21 @@ import {
   getEmptyAiProviderRuntimeState,
   recordAiCatalogShadowComparison,
 } from './runtimeAdapter';
-
-const db: LobeChatDatabase = await getTestDB();
-const keyProvider: KeyProvider = {
-  getKek: async () => ({ key: new Uint8Array(32).fill(41), keyId: 'runtime-test' }),
-  providerId: 'test',
-};
-const secretService = new PlatformSecretService({ keyProvider });
-const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
-const upstreamState: AiProviderRuntimeState = {
-  enabledAiModels: [
-    {
-      abilities: { vision: true },
-      contextWindowTokens: 64_000,
-      enabled: true,
-      id: 'chat',
-      providerId: 'alpha',
-      type: 'chat',
-    },
-    { abilities: {}, enabled: true, id: 'user-only', providerId: 'user-provider', type: 'chat' },
-  ],
-  enabledAiProviders: [
-    { id: 'alpha', name: 'Built-in Alpha', source: 'builtin' },
-    { id: 'user-provider', name: 'User', source: 'custom' },
-  ],
-  enabledChatAiProviders: [],
-  enabledImageAiProviders: [],
-  enabledVideoAiProviders: [],
-  runtimeConfig: {
-    'alpha': { config: {}, keyVaults: { apiKey: 'user-key-must-not-win' }, settings: {} },
-    'user-provider': { config: {}, keyVaults: { apiKey: 'user-only' }, settings: {} },
-  },
-};
-
-const deferred = <T>() => {
-  let reject!: (reason?: unknown) => void;
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve, promiseReject) => {
-    reject = promiseReject;
-    resolve = promiseResolve;
-  });
-  return { promise, reject, resolve };
-};
-
-const cleanup = async () => {
-  clearAiCatalogRuntimeCache();
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformAiProviderSecrets);
-  await db.delete(platformAiModels);
-  await db.delete(platformAiProviders);
-};
+import {
+  cleanup,
+  createPublishedProvider,
+  db,
+  deferred,
+  flags,
+  secretService,
+  upstreamState,
+} from './runtimeAdapter.testFixtures';
 
 beforeEach(cleanup);
 afterEach(async () => {
   vi.restoreAllMocks();
   await cleanup();
 });
-
-const createPublishedProvider = async () => {
-  const service = new AiCatalogAdminService(db, secretService, {
-    connectionProbe: async () => {},
-  });
-  const provider = await service.createProviderDraft('admin', {
-    checkModel: 'chat',
-    config: { endpoint: 'https://private-runtime.example.test/v1' },
-    displayName: 'Platform Alpha',
-    enabled: true,
-    providerKey: 'alpha',
-    reason: 'create',
-    secret: { operation: 'replace', value: 'published-key-v1' },
-    source: 'custom',
-  });
-  let detail = await service.getDetail(provider.id);
-  await service.createModel('admin', {
-    contextWindowTokens: 128_000,
-    enabled: true,
-    expectedDraftToken: detail.draftToken,
-    modelKey: 'chat',
-    providerId: provider.id,
-    reason: 'model',
-    type: 'chat',
-  });
-  await service.testProvider('admin', { id: provider.id, reason: 'test v1' });
-  detail = await service.getDetail(provider.id);
-  await service.publishProvider('admin', {
-    expectedDraftToken: detail.draftToken,
-    expectedRevision: 0,
-    id: provider.id,
-    reason: 'publish v1',
-  });
-  return { provider, service };
-};
 
 describe('AiCatalogRuntimeAdapter', () => {
   it('flag-off returns the exact upstream state without reading the catalog', async () => {
@@ -254,14 +172,18 @@ describe('AiCatalogRuntimeAdapter', () => {
           eq(platformResourceRevisions.revision, 1),
         ),
       );
-    await db
-      .delete(platformResourceRevisions)
-      .where(
-        and(
-          eq(platformResourceRevisions.resourceId, provider.id),
-          eq(platformResourceRevisions.revision, 1),
-        ),
-      );
+    // Migration 0145 makes revisions immutable; tests simulate a broken pointer past the trigger.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .delete(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceId, provider.id),
+            eq(platformResourceRevisions.revision, 1),
+          ),
+        );
+    });
     const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
     const adapter = new AiCatalogRuntimeAdapter(db, { reportRuntimeState });
 
@@ -405,6 +327,86 @@ describe('AiCatalogRuntimeAdapter', () => {
     expect(reportRuntimeState).not.toHaveBeenCalled();
   });
 
+  it('projects enableResponseApi into public runtime config without leaking endpoints or secrets', async () => {
+    await createPublishedProvider({
+      config: { enableResponseApi: true, endpoint: 'https://private-runtime.example.test/v1' },
+    });
+    const adapter = new AiCatalogRuntimeAdapter(db);
+    const state = await adapter.resolve({ flags, upstreamState });
+    expect(state.runtimeConfig.alpha).toEqual({
+      config: { enableResponseApi: true },
+      fetchOnClient: false,
+      keyVaults: {},
+      settings: {},
+    });
+    const publicJson = JSON.stringify(state);
+    expect(publicJson).not.toContain('published-key-v1');
+    expect(publicJson).not.toContain('private-runtime.example.test');
+
+    // Explicit false is also projected (not treated as default/absent).
+    const service = new AiCatalogAdminService(db, secretService, {
+      connectionProbe: async () => {},
+    });
+    let detail = await service.getDetail({ providerKey: 'alpha' });
+    await service.updateProviderDraft('admin', {
+      config: { enableResponseApi: false, endpoint: 'https://private-runtime.example.test/v1' },
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: detail.draft.id,
+      reason: 'disable responses',
+    });
+    await service.testProvider('admin', { id: detail.draft.id, reason: 'retest' });
+    detail = await service.getDetail(detail.draft.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: detail.draft.id,
+      reason: 'publish false',
+    });
+    clearAiCatalogRuntimeCache();
+    const after = await adapter.resolve({ flags, upstreamState });
+    expect(after.runtimeConfig.alpha.config).toEqual({ enableResponseApi: false });
+  });
+
+  it('fails closed for disabled managed providers without PLATFORM_NOT_FOUND (no BYOK)', async () => {
+    const { provider, service } = await createPublishedProvider();
+    let detail = await service.getDetail(provider.id);
+    await service.updateProviderDraft('admin', {
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: provider.id,
+      reason: 'global disable',
+    });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      allowStaleConnectionTest: true,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: provider.id,
+      reason: 'publish disabled',
+    });
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('alpha')).rejects.toMatchObject({
+      code: 'PLATFORM_AI_PROVIDER_DISABLED',
+    });
+  });
+
+  it('fails closed for archived managed providers (no BYOK via PLATFORM_NOT_FOUND)', async () => {
+    const { provider, service } = await createPublishedProvider();
+    const detail = await service.getDetail(provider.id);
+    await service.archiveProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: provider.id,
+      reason: 'archive managed',
+    });
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig('alpha')).rejects.toMatchObject({
+      code: 'PLATFORM_AI_PROVIDER_DISABLED',
+    });
+  });
+
   it('separates public metadata cache from server execution secrets across publish and rollback', async () => {
     const { provider, service } = await createPublishedProvider();
     const adapter = new AiCatalogRuntimeAdapter(db);
@@ -425,6 +427,7 @@ describe('AiCatalogRuntimeAdapter', () => {
       }),
     ]);
     expect(state.runtimeConfig.alpha).toEqual({
+      // Credential-free allowlist only (enableResponseApi when set); endpoint/secrets stay empty.
       config: {},
       fetchOnClient: false,
       keyVaults: {},
@@ -781,93 +784,5 @@ describe('AiCatalogRuntimeAdapter', () => {
     expect(comparison.providerOnlyInUpstream).toHaveLength(100);
     expect(comparison.providerOnlyInUpstreamTotal).toBe(150);
     expect(comparison.differencesTruncated).toBe(true);
-  });
-});
-
-describe('AiCatalogExecutionResolver — exact historical revision (MODEL-EXACT)', () => {
-  const publishV2 = async (
-    service: Awaited<ReturnType<typeof createPublishedProvider>>['service'],
-    providerId: string,
-  ) => {
-    let detail = await service.getDetail(providerId);
-    await service.updateProviderDraft('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: 1,
-      id: providerId,
-      reason: 'replace draft',
-      secret: { operation: 'replace', value: 'published-key-v2' },
-    });
-    await service.testProvider('admin', { id: providerId, reason: 'test v2' });
-    detail = await service.getDetail(providerId);
-    await service.publishProvider('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: 1,
-      id: providerId,
-      reason: 'publish v2',
-    });
-  };
-
-  it('resolves the pinned v1 config after v2 becomes current, and fails closed on mismatch', async () => {
-    const { provider, service } = await createPublishedProvider();
-    const [v1] = await db
-      .select()
-      .from(platformResourceRevisions)
-      .where(
-        and(
-          eq(platformResourceRevisions.resourceId, provider.id),
-          eq(platformResourceRevisions.revision, 1),
-        ),
-      );
-    const v1Checksum = v1.checksum!;
-    await publishV2(service, provider.id);
-
-    const execution = new AiCatalogExecutionResolver(db, secretService);
-    // The current/latest pointer is now v2 …
-    expect((await execution.resolveProviderExecutionConfig('alpha')).keyVaults.apiKey).toBe(
-      'published-key-v2',
-    );
-    // … but the exact pinned v1 still resolves v1's historical config + credentials.
-    const exact = await execution.resolveProviderExecutionConfigAtRevision({
-      modelKey: 'chat',
-      providerChecksum: v1Checksum,
-      providerKey: 'alpha',
-      providerRevision: 1,
-    });
-    expect(exact.revision).toBe(1);
-    expect(exact.keyVaults.apiKey).toBe('published-key-v1');
-
-    // Fail closed: checksum mismatch, missing revision, disabled/unknown model, unknown provider.
-    await expect(
-      execution.resolveProviderExecutionConfigAtRevision({
-        modelKey: 'chat',
-        providerChecksum: 'f'.repeat(64),
-        providerKey: 'alpha',
-        providerRevision: 1,
-      }),
-    ).rejects.toThrow();
-    await expect(
-      execution.resolveProviderExecutionConfigAtRevision({
-        modelKey: 'chat',
-        providerChecksum: v1Checksum,
-        providerKey: 'alpha',
-        providerRevision: 99,
-      }),
-    ).rejects.toThrow();
-    await expect(
-      execution.resolveProviderExecutionConfigAtRevision({
-        modelKey: 'not-published',
-        providerChecksum: v1Checksum,
-        providerKey: 'alpha',
-        providerRevision: 1,
-      }),
-    ).rejects.toThrow();
-    await expect(
-      execution.resolveProviderExecutionConfigAtRevision({
-        modelKey: 'chat',
-        providerChecksum: v1Checksum,
-        providerKey: 'unknown-provider',
-        providerRevision: 1,
-      }),
-    ).rejects.toThrow();
   });
 });

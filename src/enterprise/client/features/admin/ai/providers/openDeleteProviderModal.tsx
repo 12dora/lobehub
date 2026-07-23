@@ -20,10 +20,17 @@ const DELETE_REASON = 'Provider hard-deleted from admin console';
  * Irreversible hard delete of a catalog provider (and all its models, secrets, revisions).
  * Reuses the shared reason modal (confirm-only + reauth). `onDeleted` runs after a successful
  * commit — it must not throw (swallow refresh errors) or the modal will surface a false failure.
+ *
+ * CAS requires both list/detail revision and draft token so concurrent draft edits and
+ * publishes cannot race a stale UI delete.
  */
 export const openDeleteProviderModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   displayName: string;
+  /** Draft identity token from getProvider / list-time snapshot. */
+  expectedDraftToken: string;
+  /** CAS revision from the list/detail row; required to refuse stale UI deletes. */
+  expectedRevision: number;
   onDeleted: () => void | Promise<void>;
   providerId: string;
 }) => {
@@ -37,7 +44,12 @@ export const openDeleteProviderModal = (params: {
     submitLabel: t('aiCatalog.actions.delete.label'),
     targetLabel: params.displayName,
     title: t('aiCatalog.actions.delete.title'),
-    buildPayload: (reason): AdminAiProviderDeleteInput => ({ id: params.providerId, reason }),
+    buildPayload: (reason): AdminAiProviderDeleteInput => ({
+      expectedDraftToken: params.expectedDraftToken,
+      expectedRevision: params.expectedRevision,
+      id: params.providerId,
+      reason,
+    }),
     onSubmit: async (payload) => {
       await adminAiCatalogService.deleteProvider(payload as AdminAiProviderDeleteInput);
       toast.success(t('aiCatalog.toast.providerDeleted'));

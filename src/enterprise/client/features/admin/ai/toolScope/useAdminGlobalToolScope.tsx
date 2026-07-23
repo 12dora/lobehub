@@ -8,6 +8,7 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ConnectorToolPermission } from '@/database/schemas';
+import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 import type {
@@ -23,53 +24,23 @@ import type { ConnectorTool, ConnectorWithTools } from '@/store/tool/slices/conn
 
 import type { AdminConnectorGetOutput } from '../../connectors/types';
 import { readFileBase64 } from '../../primitives/readFileBase64';
-import { buildApplyImmediateVersionPayload } from '../../skills/controller';
-import { refreshAdminSkillLists, useFetchAdminSkills } from '../../skills/hooks/useAdminSkills';
-
-/** Audit reasons for one-click org actions taken from the parity settings UI. */
-const REASONS = {
-  connectorCreate: 'Create platform connector from admin settings',
-  connectorDelete: 'Remove platform connector from admin settings',
-  connectorDiscover: 'Discover connector tools from admin settings',
-  builtinToolPolicy: 'Update org builtin tool policy from admin settings',
-  connectorPolicy: 'Update connector tool policy from admin settings',
-  skillDelete: 'Remove organization skill from admin settings',
-  skillDistribution: 'Set organization skill default from admin settings',
-  skillImport: 'Import organization skill from admin settings',
-} as const;
-
-/** Synthetic row-id prefix for builtin in-process tools shown in the connector view. */
-const BUILTIN_ROW_PREFIX = 'admin-builtin:';
-/** Tool-id format for platform connector tools: `platform:<connectorId>:<toolKey>`. */
-const PLATFORM_TOOL_PREFIX = 'platform:';
-
-const sanitizeSkillKey = (raw: string): string =>
-  raw
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9._-]+/g, '-')
-    .replaceAll(/^[^a-z0-9]+|[-._]+$/g, '')
-    .slice(0, 120);
-
-const policyToPermission = (tool: {
-  platformPolicy: 'allow' | 'deny';
-  requiresConfirmation: boolean;
-}): ConnectorToolPermission => {
-  if (tool.platformPolicy === 'deny') return ConnectorToolPermission.disabled;
-  return tool.requiresConfirmation
-    ? ConnectorToolPermission.needs_approval
-    : ConnectorToolPermission.auto;
-};
-
-const permissionToPolicy = (
-  permission: ConnectorToolPermission,
-): { platformPolicy: 'allow' | 'deny'; requiresConfirmation: boolean } => {
-  if (permission === ConnectorToolPermission.disabled)
-    return { platformPolicy: 'deny', requiresConfirmation: false };
-  return {
-    platformPolicy: 'allow',
-    requiresConfirmation: permission === ConnectorToolPermission.needs_approval,
-  };
-};
+import {
+  buildApplyImmediateVersionPayload,
+  buildApplyImmediateVersionPayloadFromImport,
+} from '../../skills/controller';
+import { refreshAdminSkillLists } from '../../skills/hooks/useAdminSkills';
+import {
+  BUILTIN_ROW_PREFIX,
+  deriveToolScopeCapabilities,
+  listAllAdminConnectors,
+  listAllAdminSkills,
+  loadAllConnectorDetails,
+  permissionToPolicy,
+  PLATFORM_TOOL_PREFIX,
+  policyToPermission,
+  REASONS,
+  sanitizeSkillKey,
+} from './adminToolScopeHelpers';
 
 /**
  * Builds the org-global datasource for the user-facing skill/connector settings
@@ -79,11 +50,15 @@ const permissionToPolicy = (
  */
 export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolScope => {
   const { t } = useTranslation('admin');
+  const { permissions } = useAdminAccess();
+  const capabilities = useMemo(() => deriveToolScopeCapabilities(permissions), [permissions]);
   const builtinTools = useToolStore((s) => s.builtinTools, isEqual);
 
-  // ── org skill catalog ─────────────────────────────────────────────────────
-  const skillsSWR = useFetchAdminSkills({ limit: 100 }, true);
-  const skillItems = useMemo(() => skillsSWR.data?.items ?? [], [skillsSWR.data?.items]);
+  // ── org skill catalog (full cursor traversal) ─────────────────────────────
+  const skillsSWR = useClientDataSWR('admin-tool-scope/skills/all', () => listAllAdminSkills(), {
+    revalidateOnFocus: false,
+  });
+  const skillItems = useMemo(() => skillsSWR.data ?? [], [skillsSWR.data]);
 
   const skillRowsByKey = useMemo(
     () => new Map(skillItems.map((item) => [item.skillKey, item])),
@@ -119,11 +94,11 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     [builtinSkillKeys, skillItems],
   );
 
-  // ── platform connector catalog (list + per-row detail for tools/CAS) ──────
+  // ── platform connector catalog (full list + batched details) ──────────────
   const connectorsEnabled = view === 'connector';
   const connectorsListSWR = useClientDataSWR(
-    connectorsEnabled ? 'admin-tool-scope/connectors/list' : null,
-    () => adminConnectorsService.list({ limit: 100 }),
+    connectorsEnabled ? 'admin-tool-scope/connectors/all' : null,
+    () => listAllAdminConnectors(),
     { revalidateOnFocus: false },
   );
   // Org governance: builtin tool permission matrix + shared OAuth designation.
@@ -134,17 +109,13 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
   );
   const governance = governanceSWR.data;
   const builtinToolPolicies = governance?.doc.builtinToolPolicies;
-  const connectorListItems = connectorsListSWR.data?.items ?? [];
+  const connectorListItems = connectorsListSWR.data ?? [];
   const connectorDetailKey = connectorListItems.map((item) => item.id).join('|');
   const connectorDetailsSWR = useClientDataSWR(
     connectorsEnabled && connectorListItems.length > 0
       ? ['admin-tool-scope/connectors/details', connectorDetailKey]
       : null,
-    async () => {
-      const ids = connectorListItems.slice(0, 50).map((item) => item.id);
-      const batch = await adminConnectorsService.getBatch({ ids });
-      return batch;
-    },
+    async () => loadAllConnectorDetails(connectorListItems.map((item) => item.id)),
     { revalidateOnFocus: false },
   );
 
@@ -238,7 +209,6 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       ? new Error(
           t('aiToolSettings.connectors.partialLoadFailed', {
             count: connectorDetailFailedCount,
-            defaultValue: `${connectorDetailFailedCount} connectors failed to load; retry to refresh.`,
           }),
         )
       : undefined;
@@ -275,6 +245,24 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     [skillRowsByKey],
   );
 
+  const localizePublishError = useCallback(
+    (publishError: string) => {
+      // Server may join multiple validation codes with commas; localize the primary code.
+      const primary = publishError.split(',')[0]?.trim() || publishError;
+      if (primary === 'version_required') {
+        return t('skillCatalog.publishError.version_required');
+      }
+      if (primary === 'publish_failed' || primary === 'validation_failed') {
+        return t(`skillCatalog.publishError.${primary}` as never);
+      }
+      return t(`skillCatalog.validation.issue.${primary}` as never, {
+        defaultValue: t('skillCatalog.publishError.validation_failed'),
+        path: t('skillCatalog.validation.path.root'),
+      });
+    },
+    [t],
+  );
+
   const notifyApplyOutcome = useCallback(
     (result: { publishError?: string | null; published: boolean }) => {
       if (result.published) {
@@ -283,20 +271,22 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
         );
       } else {
         toast.warning(
-          result.publishError ||
-            t('aiSkillSettings.actions.draftSaved', {
-              defaultValue: 'Saved as draft — publish is pending',
-            }),
+          result.publishError
+            ? localizePublishError(result.publishError)
+            : t('aiSkillSettings.actions.draftSaved', {
+                defaultValue: 'Saved as draft — publish is pending',
+              }),
         );
       }
     },
-    [t],
+    [localizePublishError, t],
   );
 
   const setBuiltinSkillDistribution = useCallback(
     async (identifier: string, distribution: AdminSkillDistribution) => {
       const row = skillRowsByKey.get(identifier);
       if (row) {
+        if (!capabilities.canUpdateSkill) throw new Error('PLATFORM_PERMISSION_DENIED');
         const detail = await adminSkillsService.get({ id: row.id });
         const result = await adminSkillsService.applyImmediate({
           distribution,
@@ -308,6 +298,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
         });
         notifyApplyOutcome(result);
       } else {
+        if (!capabilities.canCreateSkill) throw new Error('PLATFORM_PERMISSION_DENIED');
         // First org-level decision about a code-bundled builtin: materialize an
         // override row carrying the bundled content so the catalog can shadow it.
         const bundled = bundledBuiltinSkills.find((skill) => skill.identifier === identifier);
@@ -334,7 +325,13 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       }
       retry();
     },
-    [notifyApplyOutcome, retry, skillRowsByKey],
+    [
+      capabilities.canCreateSkill,
+      capabilities.canUpdateSkill,
+      notifyApplyOutcome,
+      retry,
+      skillRowsByKey,
+    ],
   );
 
   const toggleBuiltinSkill = useCallback(
@@ -345,21 +342,20 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
 
   // ── org skill create/delete flows ─────────────────────────────────────────
   const createOrgSkillFromParsed = useCallback(
-    async (parsed: {
-      content: string;
-      description: string | null;
-      displayName: string;
-      resources: unknown[];
-      suggestedSkillKey: string;
-    }) => {
-      const version = buildApplyImmediateVersionPayload({
-        content: parsed.content,
-        description: parsed.description,
-        displayName: parsed.displayName,
-        resourcesText: parsed.resources.length > 0 ? JSON.stringify(parsed.resources) : undefined,
-        version: '1.0.0',
-      });
-      if (!version) throw new Error(t('skillCatalog.version.formInvalid'));
+    async (
+      parsed: Parameters<typeof buildApplyImmediateVersionPayloadFromImport>[0] & {
+        suggestedSkillKey: string;
+      },
+    ) => {
+      if (!capabilities.canCreateSkill) throw new Error('PLATFORM_PERMISSION_DENIED');
+      const version = buildApplyImmediateVersionPayloadFromImport(parsed);
+      if ('error' in version) {
+        throw new Error(
+          version.error === 'resources_truncated'
+            ? t('skillCatalog.import.resourcesTruncated')
+            : t('skillCatalog.version.formInvalid'),
+        );
+      }
       const result = await adminSkillsService.applyImmediate({
         allowBuiltinOverride: false,
         description: parsed.description,
@@ -374,7 +370,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       notifyApplyOutcome(result);
       retry();
     },
-    [notifyApplyOutcome, retry, t],
+    [capabilities.canCreateSkill, notifyApplyOutcome, retry, t],
   );
 
   const importFromUrl = useCallback(
@@ -424,6 +420,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
 
   const deleteOrgSkill = useCallback(
     async (skillId: string) => {
+      if (!capabilities.canDeleteSkill) throw new Error('PLATFORM_PERMISSION_DENIED');
       const detail = await adminSkillsService.get({ id: skillId });
       await adminSkillsService.archiveImmediate({
         expectedDraftToken: detail.draftToken,
@@ -433,7 +430,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       });
       retry();
     },
-    [retry],
+    [capabilities.canDeleteSkill, retry],
   );
 
   // ── org skill detail (AgentSkillDetail parity) ────────────────────────────
@@ -481,10 +478,12 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
 
   // ── connector policy writes ───────────────────────────────────────────────
   // Builtin rows edit the ORG governance matrix (platform_connector_governance);
-  // they fall back to read-only only while the governance doc hasn't loaded.
+  // they fall back to read-only while governance is missing or the admin lacks update.
   const isConnectorReadOnly = useCallback(
-    (connector: ConnectorWithTools) => connector.id.startsWith(BUILTIN_ROW_PREFIX) && !governance,
-    [governance],
+    (connector: ConnectorWithTools) =>
+      !capabilities.canUpdateConnector ||
+      (connector.id.startsWith(BUILTIN_ROW_PREFIX) && !governance),
+    [capabilities.canUpdateConnector, governance],
   );
 
   const updateBuiltinPolicies = useCallback(
@@ -493,6 +492,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
         policies: NonNullable<typeof builtinToolPolicies>,
       ) => NonNullable<typeof builtinToolPolicies>,
     ) => {
+      if (!capabilities.canUpdateConnector) throw new Error('PLATFORM_PERMISSION_DENIED');
       const current = await adminConnectorsService.getGovernance();
       await adminConnectorsService.updateBuiltinToolPolicy({
         expectedRevision: current.revision,
@@ -502,7 +502,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       await governanceSWR.mutate();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [governanceSWR.mutate],
+    [capabilities.canUpdateConnector, governanceSWR.mutate],
   );
 
   const applyConnectorToolsPatch = useCallback(
@@ -512,6 +512,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
         tools: NonNullable<AdminConnectorGetOutput['draft']['tools']>,
       ) => NonNullable<AdminConnectorGetOutput['draft']['tools']>,
     ) => {
+      if (!capabilities.canUpdateConnector) throw new Error('PLATFORM_PERMISSION_DENIED');
       const cached = connectorDetailById.get(connectorId);
       const detail = cached ?? (await adminConnectorsService.get({ id: connectorId }));
       const tools = detail.draft.tools ?? [];
@@ -525,7 +526,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       });
       retry();
     },
-    [connectorDetailById, retry],
+    [capabilities.canUpdateConnector, connectorDetailById, retry],
   );
 
   const updateToolPermission = useCallback(
@@ -577,6 +578,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
   const deleteConnector = useCallback(
     async (connectorId: string) => {
       if (connectorId.startsWith(BUILTIN_ROW_PREFIX)) return;
+      if (!capabilities.canDeleteConnector) throw new Error('PLATFORM_PERMISSION_DENIED');
       const cached = connectorDetailById.get(connectorId);
       const detail = cached ?? (await adminConnectorsService.get({ id: connectorId }));
       if (detail.published) {
@@ -596,7 +598,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       }
       retry();
     },
-    [connectorDetailById, retry],
+    [capabilities.canDeleteConnector, connectorDetailById, retry],
   );
 
   const submitCustomConnector = useCallback(
@@ -606,6 +608,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       serverUrl?: string;
       transport: 'http' | 'stdio';
     }) => {
+      if (!capabilities.canCreateConnector) throw new Error('PLATFORM_PERMISSION_DENIED');
       if (values.transport !== 'http' || !values.serverUrl) {
         throw new Error(
           t('aiConnectorSettings.httpOnly', {
@@ -679,11 +682,12 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       }
       retry();
     },
-    [retry, t],
+    [capabilities.canCreateConnector, retry, t],
   );
 
   return useMemo<AdminToolScope>(
     () => ({
+      capabilities,
       connectors,
       deleteConnector,
       deleteOrgSkill,
@@ -706,6 +710,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
       useOrgSkillDetail,
     }),
     [
+      capabilities,
       connectors,
       deleteConnector,
       deleteOrgSkill,

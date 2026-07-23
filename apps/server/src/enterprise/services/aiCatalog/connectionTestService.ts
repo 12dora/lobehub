@@ -79,6 +79,18 @@ const safeFailureMessage = (
   })[category];
 
 /**
+ * Map managed `enableResponseApi` to the chat transport mode used by connection probes.
+ * Explicit true → Responses API; explicit false → Chat Completions; unset → SDK default.
+ */
+export const resolveAiConnectionProbeApiMode = (
+  enableResponseApi: unknown,
+): 'chatCompletion' | 'responses' | undefined => {
+  if (enableResponseApi === true) return 'responses';
+  if (enableResponseApi === false) return 'chatCompletion';
+  return undefined;
+};
+
+/**
  * Production probe: real chat completion against the configured check model.
  * Every HTTP hop is forced onto the enterprise outbound boundary via:
  * 1. explicit `fetch` constructor option (OpenAI-compatible, Anthropic, Bedrock handler)
@@ -100,11 +112,15 @@ export const createSafeAiConnectionProbe = (
     if (!provider.checkModel) throw new Error('check model is required');
     const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
 
+    // Honor managed OpenAI request-format setting so probes match production traffic.
+    const apiMode = resolveAiConnectionProbeApiMode(provider.config?.enableResponseApi);
+
     // Dual binding: constructor option + concurrent-safe global fetch binding.
     await runWithBoundFetch(fetchAdapter, async () => {
       const runtime = initModelRuntimeWithUserPayload(provider.providerKey, payload, transport);
       const response = await runtime.chat(
         {
+          ...(apiMode ? { apiMode } : {}),
           messages: [{ content: 'Hi', role: 'user' }],
           model: provider.checkModel!,
           stream: false,

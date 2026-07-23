@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   openReason: vi.fn(),
   reasonProps: null as null | { onSubmit: (input: unknown) => Promise<void> },
   refresh: vi.fn(),
+  refreshProvider: vi.fn(),
   reorderModels: vi.fn(),
   toastError: vi.fn(),
   updateModel: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock('../models/openModelEditorModal', () => ({
 
 vi.mock('./useAdminAiCatalog', () => ({
   refreshAdminAiModelLists: mocks.refresh,
+  refreshAdminAiProvider: mocks.refreshProvider,
 }));
 
 const permissions = {
@@ -67,7 +69,6 @@ const permissions = {
   canCreateModel: true,
   canCreateProvider: false,
   canDeleteModel: true,
-  canPublishModel: false,
   canPublishProvider: false,
   canReadModels: true,
   canReadProviders: false,
@@ -116,8 +117,48 @@ describe('useGlobalModelActions', () => {
     mocks.getDeleteDraftContext.mockResolvedValue(context);
     mocks.getUpdateDraftContext.mockResolvedValue(context);
     mocks.refresh.mockResolvedValue(undefined);
+    mocks.refreshProvider.mockResolvedValue(undefined);
     mocks.reorderModels.mockResolvedValue({});
     mocks.updateModel.mockResolvedValue({});
+  });
+
+  it('refreshes provider detail cache after a model mutation', async () => {
+    const { result } = renderHook(() => useGlobalModelActions({ authMethod: null, permissions }));
+
+    await act(async () => result.current.handleCreate('provider-1'));
+    await act(async () =>
+      mocks.modelProps!.onSubmit({ fields: {}, modelKey: 'new-model', reason: 'create' } as never),
+    );
+
+    await waitFor(() => expect(mocks.refresh).toHaveBeenCalled());
+    expect(mocks.refreshProvider).toHaveBeenCalledWith('provider-1');
+  });
+
+  it('retries full provider invalidation when provider refresh failed after model-list success', async () => {
+    mocks.refresh.mockResolvedValue(undefined);
+    mocks.refreshProvider
+      .mockRejectedValueOnce(new Error('provider cache stale'))
+      .mockResolvedValueOnce(undefined);
+
+    const { result } = renderHook(() => useGlobalModelActions({ authMethod: null, permissions }));
+
+    await act(async () => result.current.handleCreate('provider-1'));
+    await act(async () =>
+      mocks.modelProps!.onSubmit({ fields: {}, modelKey: 'new-model', reason: 'create' } as never),
+    );
+
+    await waitFor(() => expect(result.current.refreshFailed).toBe(true));
+    expect(mocks.refreshProvider).toHaveBeenCalledWith('provider-1');
+
+    await act(async () => {
+      await result.current.retryRefresh();
+    });
+
+    await waitFor(() => expect(result.current.refreshFailed).toBe(false));
+    // Retry must re-run model lists AND the same provider detail invalidation.
+    expect(mocks.refresh.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(mocks.refreshProvider).toHaveBeenLastCalledWith('provider-1');
+    expect(result.current.reloadRequired).toBe(false);
   });
 
   it('rethrows create draft context failures so the Provider picker remains open', async () => {

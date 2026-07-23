@@ -29,6 +29,24 @@ export class AiCatalogModelNotPublishedError extends Error {
   }
 }
 
+/**
+ * Managed provider exists in the catalog but is administratively disabled.
+ * Must not be confused with {@link AiCatalogNotFoundError}: callers that fall back to
+ * user BYOK on PLATFORM_NOT_FOUND must still fail closed on this code.
+ */
+export class AiCatalogProviderDisabledError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED;
+  readonly errorType = PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED;
+
+  constructor(providerKey?: string) {
+    super(PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED);
+    this.name = 'AiCatalogProviderDisabledError';
+    if (providerKey) {
+      Object.defineProperty(this, 'providerKey', { enumerable: false, value: providerKey });
+    }
+  }
+}
+
 export class AiCatalogValidationError extends Error {
   readonly issues: string[];
 
