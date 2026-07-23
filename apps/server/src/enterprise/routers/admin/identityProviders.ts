@@ -9,6 +9,8 @@ import {
   adminIdentityProviderCreateInputSchema,
   adminIdentityProviderDeleteInputSchema,
   adminIdentityProviderDeleteOutputSchema,
+  adminIdentityProviderDisableInputSchema,
+  adminIdentityProviderDisableOutputSchema,
   adminIdentityProviderDiscoverInputSchema,
   adminIdentityProviderDiscoveryOutputSchema,
   adminIdentityProviderGetInputSchema,
@@ -228,6 +230,27 @@ export const adminIdentityProvidersRouter = router({
         targetId: input.id,
       });
       return execute(() => ctx.getIdentityProviderRuntime().admin.delete(ctx.userId!, input));
+    }),
+
+  disable: identityProviderProcedure
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_PUBLISH))
+    .input(adminIdentityProviderDisableInputSchema)
+    .output(adminIdentityProviderDisableOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertIdentityDangerousReauth({
+        action: 'admin.identityProviders.disable',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+      });
+      return execute(async () =>
+        toPublicIdentityProviderDraft(
+          await new IdentityProviderPublicationService(ctx.serverDB).disable(ctx.userId!, input),
+        ),
+      );
     }),
 
   discover: identityProviderProcedure

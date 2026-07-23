@@ -87,6 +87,7 @@ export const identityProviderSecretStateSchema = z
 export const oidcDiscoveryMetadataSchema = z
   .object({
     authorization_endpoint: z.string().url().max(4096),
+    authorization_response_iss_parameter_supported: z.boolean().optional(),
     code_challenge_methods_supported: z.array(z.string().min(1).max(128)).max(32).default([]),
     id_token_signing_alg_values_supported: z.array(z.string().min(1).max(128)).min(1).max(32),
     issuer: identityProviderIssuerSchema,
@@ -251,6 +252,16 @@ export const adminIdentityProviderDeleteOutputSchema = z
   .object({ deleted: z.literal(true) })
   .strict();
 
+/** Reauth-protected disable: publishes a signed tombstone revision (enabled:false). */
+export const adminIdentityProviderDisableInputSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    id: z.string().min(1).max(128),
+    reason: reasonSchema,
+  })
+  .strict();
+export const adminIdentityProviderDisableOutputSchema = identityProviderDraftSchema;
+
 export const adminIdentityProviderDiscoverInputSchema = z
   .object({ issuer: identityProviderIssuerSchema })
   .strict();
@@ -300,6 +311,12 @@ export const adminIdentityProviderTestStartOutputSchema = z
 const previewClaimSummarySchema = z
   .object({ present: z.literal(true), type: z.literal('string') })
   .strict();
+export const identityProviderClaimValidationIssueSchema = z
+  .object({
+    code: z.enum(['email_domain_denied', 'email_invalid', 'required_claim_missing']),
+    field: z.enum(['email', 'name', 'subject']),
+  })
+  .strict();
 export const identityProviderClaimPreviewSchema = z
   .object({
     claims: z
@@ -315,11 +332,7 @@ export const identityProviderClaimPreviewSchema = z
         >,
       )
       .strict(),
-    issues: z.array(
-      z
-        .object({ code: z.literal('required_claim_missing'), field: z.enum(['name', 'subject']) })
-        .strict(),
-    ),
+    issues: z.array(identityProviderClaimValidationIssueSchema),
     valid: z.boolean(),
   })
   .strict();

@@ -445,7 +445,7 @@ describe('admin.skills.applyImmediate', () => {
     });
     expect(result.published).toBe(false);
     expect(result.revision).toBe(0);
-    expect(result.publishError).toMatch(/version/i);
+    expect(result.publishError).toBe('version_required');
     expect(result.draft.displayName).toBe('Draft Only Skill');
   });
 

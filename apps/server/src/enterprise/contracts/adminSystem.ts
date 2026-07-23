@@ -335,6 +335,37 @@ export const adminSystemAuthSnapshotStatusOutputSchema = z
         .nullable(),
       supported: z.boolean(),
     }),
+    /**
+     * Most recent accepted/signaled/failed restart request for this instance.
+     * Lets the admin UI fail closed immediately when scheduling fails, instead of
+     * waiting for the convergence deadline.
+     */
+    restartRequest: z
+      .object({
+        requestId: z.string().uuid(),
+        resultCategory: z
+          .string()
+          .regex(/^[a-z0-9_]{1,128}$/)
+          .nullable(),
+        status: z.enum(['accepted', 'failed', 'signaled']),
+      })
+      .nullable(),
+    /**
+     * Bounded recent restart requests for this instance (newest first).
+     * Concurrent restarts must not hide a failed request the admin is polling.
+     */
+    restartRequests: z
+      .array(
+        z.object({
+          requestId: z.string().uuid(),
+          resultCategory: z
+            .string()
+            .regex(/^[a-z0-9_]{1,128}$/)
+            .nullable(),
+          status: z.enum(['accepted', 'failed', 'signaled']),
+        }),
+      )
+      .max(32),
     targetIdentityRevision: identityRevisionSchema.nullable(),
   })
   .strict();

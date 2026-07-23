@@ -27,6 +27,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_IDENTITY_ACCESS = [
   },
   {
     kind: 'mutation',
+    path: 'admin.identityProviders.disable',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.IDENTITY_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.identityProviders.discover',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.IDENTITY_TEST] },
   },

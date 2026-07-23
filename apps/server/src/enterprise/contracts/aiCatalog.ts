@@ -417,11 +417,14 @@ export const adminAiProviderArchiveInputSchema = adminAiProviderPublishInputSche
 
 /**
  * Hard-delete a provider (and all its models, secrets, and revisions).
- * CAS-light: the list row carries no draft token, so only an optional revision guard is accepted.
+ * Requires expectedRevision + expectedDraftToken so concurrent publishes/draft edits
+ * cannot race a stale UI delete. The service locks the provider row first, then the
+ * shared dependency-publication lock (same order as publication) before checking references.
  */
 export const adminAiProviderDeleteInputSchema = z
   .object({
-    expectedRevision: z.number().int().nonnegative().optional(),
+    expectedDraftToken: z.string().length(64),
+    expectedRevision: z.number().int().nonnegative(),
     id: z.string().min(1),
     reason: z.string().trim().min(1).max(2000),
   })

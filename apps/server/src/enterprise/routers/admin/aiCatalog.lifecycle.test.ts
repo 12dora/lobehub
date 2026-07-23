@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -42,17 +42,22 @@ vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
 }));
 
+/** Append-only audit rows cannot be DELETE'd (0145); TRUNCATE bypasses the row trigger. */
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformAiModels);
-  await db.delete(platformAiProviderSecrets);
-  await db.delete(platformAiProviders);
-  await db.delete(userRoles);
-  await db.delete(rolePermissions);
-  await db.delete(roles);
-  await db.delete(permissions);
-  await db.delete(users);
+  await db.execute(sql`
+    TRUNCATE TABLE
+      ${platformAuditLogs},
+      ${platformResourceRevisions},
+      ${platformAiModels},
+      ${platformAiProviderSecrets},
+      ${platformAiProviders},
+      ${userRoles},
+      ${rolePermissions},
+      ${roles},
+      ${permissions},
+      ${users}
+    RESTART IDENTITY CASCADE
+  `);
 };
 
 beforeEach(async () => {
@@ -414,9 +419,15 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
 
   it('hard-deletes a draft provider with its models and secret, and writes a success audit', async () => {
     const { caller, providerId } = await seedDeletableProvider('delete-draft');
+    const detail = await caller.aiProviders.get({ id: providerId });
 
     await expect(
-      caller.aiProviders.delete({ id: providerId, reason: 'remove test provider' }),
+      caller.aiProviders.delete({
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        reason: 'remove test provider',
+      }),
     ).resolves.toEqual({ deleted: true });
 
     expect(await providerRows(providerId)).toHaveLength(0);
@@ -431,27 +442,41 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
     ).toBe(true);
   });
 
-  it('hard-deletes a published provider and removes its revision-log rows', async () => {
+  it('hard-deletes a published provider while retaining immutable revision history', async () => {
     const { providerId } = await seedPublishableProvider('delete-published');
     // Published provider owns at least one revision row.
-    expect((await revisionRows(providerId)).length).toBeGreaterThan(0);
+    const revisionsBefore = await revisionRows(providerId);
+    expect(revisionsBefore.length).toBeGreaterThan(0);
 
     const caller = await callerFor(ids.aiAdmin);
+    const detail = await caller.aiProviders.get({ id: providerId });
     await expect(
-      caller.aiProviders.delete({ id: providerId, reason: 'remove published provider' }),
+      caller.aiProviders.delete({
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        reason: 'remove published provider',
+      }),
     ).resolves.toEqual({ deleted: true });
 
     expect(await providerRows(providerId)).toHaveLength(0);
     expect(await modelRows(providerId)).toHaveLength(0);
-    expect(await revisionRows(providerId)).toHaveLength(0);
+    // Migration 0145: revision rows are immutable and retained as audit trail by provider id.
+    expect(await revisionRows(providerId)).toHaveLength(revisionsBefore.length);
   });
 
   it('rejects a stale-reauth delete before mutating and records a denied audit', async () => {
-    const { providerId } = await seedDeletableProvider('delete-stale-reauth');
+    const { caller, providerId } = await seedDeletableProvider('delete-stale-reauth');
+    const detail = await caller.aiProviders.get({ id: providerId });
     const stale = await callerFor(ids.aiAdmin, { authenticatedAt: null });
 
     await expect(
-      stale.aiProviders.delete({ id: providerId, reason: 'stale reauth delete' }),
+      stale.aiProviders.delete({
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        reason: 'stale reauth delete',
+      }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
 
     expect(await providerRows(providerId)).toHaveLength(1);
@@ -464,11 +489,17 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
   });
 
   it('denies an ordinary user without AI_PROVIDER_DELETE', async () => {
-    const { providerId } = await seedDeletableProvider('delete-forbidden');
+    const { caller, providerId } = await seedDeletableProvider('delete-forbidden');
+    const detail = await caller.aiProviders.get({ id: providerId });
     const ordinary = await callerFor(ids.normal);
 
     await expect(
-      ordinary.aiProviders.delete({ id: providerId, reason: 'no permission' }),
+      ordinary.aiProviders.delete({
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        reason: 'no permission',
+      }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     expect(await providerRows(providerId)).toHaveLength(1);
