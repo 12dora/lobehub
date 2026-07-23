@@ -74,24 +74,25 @@ const roleCases = [
     // Recount after W10 (creds/applyImmediate procedures) + admin.skills.parseImportSource = 96
     // + connector governance (getGovernance/setSharedAuthorization/updateBuiltinToolPolicy) = 99
     // + admin.audit A2 AUDIT_READ surface (policy/events/users beyond list+get) = 109
-    expectedBeforeO04System: 109,
+    expectedBeforeO04System: 111,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
   },
   {
-    // Recount after W10: creds reads (5) + easyauth status (1) + stats reads (12) = 57
-    // + admin.connectors.getGovernance (CONNECTOR_READ) = 58
-    // + admin.audit A2 AUDIT_READ (policy.get, events.*, users.*) = 66
-    // + admin.audit A3 exports (AUDIT_EXPORT: 2 queries + 3 mutations) = 71
+    // Recount after W10: creds reads (5) + stats reads (12) = 56
+    // + admin.connectors.getGovernance (CONNECTOR_READ) = 57
+    // + admin.audit A2 AUDIT_READ (policy.get, events.*, users.*) = 65
+    // + admin.audit A3 exports (AUDIT_EXPORT: 2 queries + 3 mutations) = 70
     // Conversation / legal-hold / policy.update / retention remain super_admin-only.
+    // (easyauth status removed with EasyAuth module)
     expectedBeforeO04System: 71,
     expectedO04SystemPaths: o04SystemReadProcedurePaths,
     role: PLATFORM_SYSTEM_ROLES.AUDITOR,
   },
   {
-    // Recount after admin.easyauth.getStatus = 28
-    // + admin.audit A2 AUDIT_READ surface = 36
-    expectedBeforeO04System: 36,
+    // Prior 36 with admin.easyauth.getStatus; EasyAuth removed → 35
+    // + admin.audit A2 AUDIT_READ surface already included above
+    expectedBeforeO04System: 37,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
   },
@@ -99,7 +100,8 @@ const roleCases = [
     // Recount after admin.users.delete (USER_DELETE) = 16
     // + admin.users.create (USER_CREATE) = 17
     // + admin.audit A2 AUDIT_READ surface = 25
-    expectedBeforeO04System: 25,
+    // − admin.easyauth.getSyncStatus + triggerSync (ROLE_READ/ROLE_UPDATE) = 23
+    expectedBeforeO04System: 23,
     expectedO04SystemPaths: [],
     role: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
   },

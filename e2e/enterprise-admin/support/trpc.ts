@@ -331,25 +331,10 @@ export const assertExactPermissionDenied = (result: TrpcResult): void => {
 };
 
 /**
- * Access gate denial (ordinary / no platform role): PLATFORM_ACCESS_NOT_GRANTED.
+ * @deprecated EasyAuth access gate removed — ordinary principals now get
+ * PLATFORM_PERMISSION_DENIED on admin routes. Prefer assertExactPermissionDenied.
  */
-export const assertExactAccessNotGranted = (result: TrpcResult): void => {
-  if (result.status !== 403) {
-    throw new Error(`expected HTTP 403, got ${result.status}: ${result.text.slice(0, 300)}`);
-  }
-  const parts = extractTrpcErrorParts(result.json);
-  if (parts.trpcCode !== 'FORBIDDEN') {
-    throw new Error(
-      `expected tRPC code FORBIDDEN, got ${parts.trpcCode ?? '<missing>'}: ${result.text.slice(0, 300)}`,
-    );
-  }
-  const enterprise = parts.enterpriseCode ?? parts.message;
-  if (enterprise !== 'PLATFORM_ACCESS_NOT_GRANTED') {
-    throw new Error(
-      `expected enterprise code PLATFORM_ACCESS_NOT_GRANTED exactly, got ${enterprise ?? '<missing>'}`,
-    );
-  }
-};
+export const assertExactAccessNotGranted = assertExactPermissionDenied;
 
 /**
  * Managed-resource denial: HTTP 403 + FORBIDDEN + RESOURCE_MANAGED_BY_PLATFORM exactly.

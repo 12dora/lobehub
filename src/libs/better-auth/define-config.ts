@@ -250,19 +250,14 @@ export function defineConfig(
               createdAt: user.createdAt,
               // TODO: if add phone plugin, we should fill phone here
             });
-          },
-        },
-      },
-      // M02: EasyAuth grants sync on session create (login). Never blocks auth.
-      session: {
-        create: {
-          after: async (session) => {
+            // Authentik-only admission: grant platform_user when user has no global roles.
+            // Never blocks account creation (errors are swallowed inside the helper).
             try {
-              const { syncEasyauthOnLogin } =
-                await import('@/database/models/platform/easyauthLoginSync');
-              await syncEasyauthOnLogin(serverDB, session.userId);
+              const { ensureDefaultPlatformUserRole } =
+                await import('@/database/models/platform/ensureDefaultRole');
+              await ensureDefaultPlatformUserRole(serverDB, user.id);
             } catch {
-              // ignore — login must succeed even if EasyAuth is down
+              // ignore — login/signup must succeed even if RBAC seed fails
             }
           },
         },

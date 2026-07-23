@@ -62,30 +62,16 @@ describe('admin procedure authorization registry', () => {
   it('reconciles all live procedures, middleware gates, root mounts, and mutation risks', () => {
     expect(() => reconcile()).not.toThrow();
 
-    // Prior baseline 119 + W10-S stats (12 queries) + W10-E creds (5 queries + 7 mutations)
-    // + W10-P applyImmediate/publishNow (3) + W10-C settings.applyImmediate (1)
-    // + W10-D skills/connectors applyImmediate+publishNow (4)
-    // + admin.easyauth.getStatus (1 query) = 152
-    // + admin.skills.parseImportSource (1 mutation) = 153
-    // + connector governance (getGovernance query + setSharedAuthorization
-    //   + updateBuiltinToolPolicy mutations) = 156
-    // + admin.users hard-delete (1 mutation) = 157
-    // + admin.users.create (1 mutation) = 158
-    // + admin.aiProviders.delete (1 mutation) = 159
-    // + admin.agents.delete (1 mutation) = 160
-    // + admin.audit A2 (16 procedures: 13 queries + 3 mutations; list/get retained) = 176
-    // + admin.audit A3 exports (2 queries + 3 mutations) = 181
-    // + admin.audit A3 retention (3 queries + 3 mutations) = 187
-    // + admin.authSettings (get query + update mutation) = 189
-    // + admin.sidebarLayout (get query + update mutation) = 191
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(191);
+    // Prior baseline 191 including admin.easyauth.* (2 queries + 1 mutation).
+    // EasyAuth procedures removed → 191 - 3 = 188.
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(188);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(87);
+    ).toHaveLength(85);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(104);
-    expect(mutationPaths).toHaveLength(104);
+    ).toHaveLength(103);
+    expect(mutationPaths).toHaveLength(103);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

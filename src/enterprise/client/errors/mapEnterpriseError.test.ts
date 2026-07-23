@@ -9,15 +9,15 @@ describe('mapEnterpriseError (structured)', () => {
     const mapped = mapEnterpriseError({
       data: {
         errorData: {
-          code: PLATFORM_ERROR_CODES.PLATFORM_ACCESS_NOT_GRANTED,
-          details: { permissionRequestUrl: 'https://iam.example/request' },
+          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+          details: { path: 'admin.system.getStatus' },
         },
       },
       message: 'ignored',
     });
-    expect(mapped?.code).toBe(PLATFORM_ERROR_CODES.PLATFORM_ACCESS_NOT_GRANTED);
-    expect(mapped?.action).toBe('request_access');
-    expect(mapped?.details?.permissionRequestUrl).toBe('https://iam.example/request');
+    expect(mapped?.code).toBe(PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED);
+    expect(mapped?.action).toBe('contact_admin');
+    expect(mapped?.details?.path).toBe('admin.system.getStatus');
   });
 
   it('reads cause.data body', () => {

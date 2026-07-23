@@ -186,10 +186,6 @@ export const buildEnterpriseEnv = (params: {
   AUTH_TRUSTED_ORIGINS: `${params.appUrl},http://127.0.0.1:${params.port},http://localhost:${params.port}`,
   DATABASE_DRIVER: 'node',
   DATABASE_URL: params.databaseUrl,
-  EASYAUTH_APP_TOKEN: '',
-  EASYAUTH_APP_TOKEN_FILE: '/dev/null',
-  EASYAUTH_BASE_URL: 'http://127.0.0.1:9',
-  EASYAUTH_PORTAL_URL: 'http://127.0.0.1:9',
   // Isolate Next output so suite never corrupts the user's main .next (type-check safe).
   ...(params.nextDistDir ? { E2E_ENTERPRISE_ADMIN_NEXT_DIST_DIR: params.nextDistDir } : {}),
   ENABLE_PLATFORM_ADMIN: '1',

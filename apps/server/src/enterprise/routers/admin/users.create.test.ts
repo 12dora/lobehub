@@ -12,7 +12,6 @@ import {
   account,
   permissions,
   platformAuditLogs,
-  platformEasyauthGrantSnapshots,
   rolePermissions,
   roles,
   session,
@@ -52,7 +51,6 @@ const PASSWORD = 'S3cure-pass!x';
 const cleanup = async () => {
   await db.delete(session);
   await db.delete(account);
-  await db.delete(platformEasyauthGrantSnapshots);
   await db.delete(platformAuditLogs);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
@@ -110,7 +108,7 @@ const ctx = async (
 };
 
 describe('admin.users.create (credential user)', () => {
-  it('creates user + credential account + access snapshot + platform_user role atomically', async () => {
+  it('creates user + credential account + platform_user role atomically', async () => {
     const caller = createAdminCaller(await ctx(IDS.userAdmin));
     const result = await caller.users.create({
       email: '  New.User@Example.COM ',
@@ -135,22 +133,13 @@ describe('admin.users.create (credential user)', () => {
     expect(created?.onboarding).toEqual({ finishedAt: expect.any(String), version: 1 });
 
     // Better Auth credential account: scrypt hash verifies and never stores plaintext.
-    // accountId is the LOCAL user id (credential convention) — never the email,
-    // so EasyAuth external-id resolvers can't treat it as an SSO subject id.
+    // accountId is the LOCAL user id (credential convention) — never the email.
     const acct = await db.query.account.findFirst({ where: eq(account.userId, result.userId) });
     expect(acct?.providerId).toBe('credential');
     expect(acct?.accountId).toBe(result.userId);
     expect(acct?.password).toBeTruthy();
     expect(acct?.password).not.toBe(PASSWORD);
     await expect(verifyPassword({ hash: acct!.password!, password: PASSWORD })).resolves.toBe(true);
-
-    // EasyAuth base-access snapshot (aihub.access granted).
-    const snapshot = await db.query.platformEasyauthGrantSnapshots.findFirst({
-      where: eq(platformEasyauthGrantSnapshots.userId, result.userId),
-    });
-    expect(snapshot?.accessGranted).toBe(true);
-    expect(snapshot?.snapshotVersion).toBe('admin-create');
-    expect(snapshot?.grants).toEqual([{ permission: 'aihub.access' }]);
 
     // platform_user global role assigned.
     const platformUserRole = await db.query.roles.findFirst({

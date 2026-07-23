@@ -83,7 +83,6 @@ const adminSystemJobStatusSchema = z.enum([
 export const adminSystemJobKindSchema = z.enum([
   'agent_rollout',
   'connector_runtime',
-  'easyauth_sync',
   'secret_rewrap',
   'unknown',
 ]);

@@ -3,7 +3,7 @@ import { after } from 'next/server';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { enterpriseAccessGate, preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
+import { preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
@@ -53,14 +53,12 @@ const systemProcedure = preAccessAuthedProcedure
     }
     return next();
   })
-  .use(enterpriseAccessGate)
   .use(serverDatabase)
   .use(withActiveUser())
   .use(withAdminMutationRateLimit())
   .use(withPlatformPermission(PLATFORM_PERMISSIONS.OIDC_PUBLISH));
 
 const platformSystemBase = preAccessAuthedProcedure
-  .use(enterpriseAccessGate)
   .use(serverDatabase)
   .use(withActiveUser())
   .use(withAdminMutationRateLimit());

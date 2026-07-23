@@ -1,10 +1,5 @@
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import {
-  authedProcedure,
-  enterpriseAccessGate,
-  preAccessAuthedProcedure,
-  router,
-} from '@/libs/trpc/lambda';
+import { authedProcedure, preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
@@ -82,7 +77,6 @@ const rolloutBase = preAccessAuthedProcedure
     assertAgentFeatureEnabled();
     return next();
   })
-  .use(enterpriseAccessGate)
   .use(serverDatabase)
   .use(withActiveUser())
   .use(withAdminMutationRateLimit());

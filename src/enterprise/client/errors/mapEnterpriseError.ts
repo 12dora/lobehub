@@ -10,7 +10,7 @@ import type { EnterpriseErrorBody } from '@/types/platform/errors';
 
 export interface MappedEnterpriseError {
   /** Suggested UX action for shared handlers. */
-  action: 'signin' | 'reauth' | 'retry' | 'contact_admin' | 'request_access' | 'none';
+  action: 'signin' | 'reauth' | 'retry' | 'contact_admin' | 'none';
   code: EnterpriseErrorCode;
   details?: EnterpriseErrorBody['details'];
   i18nKey: string;
@@ -18,7 +18,6 @@ export interface MappedEnterpriseError {
 
 const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError['action']>> = {
   [PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED]: 'contact_admin',
-  [PLATFORM_ERROR_CODES.PLATFORM_ACCESS_NOT_GRANTED]: 'request_access',
   [PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT]: 'retry',
   [PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED]: 'none',
   [PLATFORM_ERROR_CODES.PLATFORM_LAST_SUPER_ADMIN]: 'none',

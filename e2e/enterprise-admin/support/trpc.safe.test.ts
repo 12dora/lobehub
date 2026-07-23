@@ -131,15 +131,15 @@ describe('trpc helpers', () => {
           {
             error: {
               json: {
-                data: { code: 'FORBIDDEN', errorData: { code: 'PLATFORM_ACCESS_NOT_GRANTED' } },
-                message: 'PLATFORM_ACCESS_NOT_GRANTED',
+                data: { code: 'FORBIDDEN', errorData: { code: 'PLATFORM_FEATURE_DISABLED' } },
+                message: 'PLATFORM_FEATURE_DISABLED',
               },
             },
           },
         ],
         ok: false,
         status: 403,
-        text: 'PLATFORM_ACCESS_NOT_GRANTED',
+        text: 'PLATFORM_FEATURE_DISABLED',
       }),
     ).toThrow(/PLATFORM_PERMISSION_DENIED/);
 
@@ -169,7 +169,7 @@ describe('trpc helpers', () => {
     ).toThrow(/403/);
   });
 
-  it('requires exact access-not-granted for ordinary principals', () => {
+  it('maps legacy access-not-granted helper to permission denial', () => {
     expect(() =>
       assertExactAccessNotGranted({
         json: [
@@ -178,16 +178,16 @@ describe('trpc helpers', () => {
               json: {
                 data: {
                   code: 'FORBIDDEN',
-                  errorData: { code: 'PLATFORM_ACCESS_NOT_GRANTED' },
+                  errorData: { code: 'PLATFORM_PERMISSION_DENIED' },
                 },
-                message: 'PLATFORM_ACCESS_NOT_GRANTED',
+                message: 'PLATFORM_PERMISSION_DENIED',
               },
             },
           },
         ],
         ok: false,
         status: 403,
-        text: 'PLATFORM_ACCESS_NOT_GRANTED',
+        text: 'PLATFORM_PERMISSION_DENIED',
       }),
     ).not.toThrow();
   });

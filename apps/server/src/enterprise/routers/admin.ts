@@ -2,13 +2,9 @@ import { z } from 'zod';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { EasyauthGrantSnapshotModel } from '@/database/models/platform/easyauthGrantSnapshot';
-import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
-import { parseEasyauthConfig, redactEasyauthConfig } from '../config/easyauth';
-import { adminEasyauthGetStatusOutputSchema } from '../contracts/adminEasyauth';
 import {
   adminUsersReplaceGlobalRolesInputSchema,
   adminUsersReplaceGlobalRolesOutputSchema,
@@ -16,13 +12,11 @@ import {
 import { withActiveUser } from '../guards/activeUser';
 import { withAdminMutationRateLimit } from '../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../guards/enterpriseErrors';
-import { withAnyPlatformPermission, withPlatformPermission } from '../guards/platformPermission';
+import { withPlatformPermission } from '../guards/platformPermission';
 import { assertRecentReauth } from '../guards/reauth';
 import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
 import { ensureAiCatalogReadinessRegistered } from '../services/aiCatalog';
 import { ensureConnectorCatalogReadinessRegistered } from '../services/connectorCatalog/runtimeReadiness';
-import { EasyauthSyncService, normalizeEasyauthSyncReason } from '../services/easyauthSync';
-import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { adminAgentsRouter } from './admin/agents';
@@ -50,49 +44,6 @@ const adminBase = authedProcedure
 ensureAiCatalogReadinessRegistered();
 ensureConnectorCatalogReadinessRegistered();
 ensureSkillCatalogReadinessRegistered();
-
-const EASYAUTH_INVALID_REASON_AUDIT_REASON = 'easyauth_sync_invalid_reason';
-
-const safeEasyauthReauthReason = (reason: string): string => {
-  try {
-    return normalizeEasyauthSyncReason(reason);
-  } catch {
-    return EASYAUTH_INVALID_REASON_AUDIT_REASON;
-  }
-};
-
-const assertEasyauthDangerousReauth = async (params: {
-  actorUserId: string;
-  authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
-  reason: string;
-  serverDB: LobeChatDatabase;
-  targetId: string;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: 'admin.easyauth.triggerSync',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: params.reason,
-        result: 'denied',
-        targetId: params.targetId,
-        targetType: 'user',
-      });
-    } catch (auditError) {
-      console.error('[admin.easyauth] reauth denied audit unavailable', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
 
 export const adminAuthRouter = router({
   /**
@@ -210,72 +161,6 @@ export const adminRolesRouter = router({
     }),
 });
 
-export const adminEasyauthRouter = router({
-  /**
-   * Redacted EasyAuth deployment + grant-snapshot aggregate for identity admin surfaces.
-   * Read-only; IDENTITY_READ; never returns token material.
-   */
-  getStatus: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_READ))
-    .output(adminEasyauthGetStatusOutputSchema)
-    .query(async ({ ctx }) => {
-      const config = parseEasyauthConfig();
-      const redacted = redactEasyauthConfig(config);
-      const aggregate = await new EasyauthGrantSnapshotModel(ctx.serverDB).aggregateStatus(
-        config.appKey,
-      );
-      return {
-        config: {
-          appKey: redacted.appKey,
-          baseUrl: redacted.baseUrl,
-          portalUrl: redacted.portalUrl || null,
-          tokenConfigured: redacted.hasAppToken,
-        },
-        sync: {
-          accessGrantedCount: aggregate.accessGrantedCount,
-          degradedCount: aggregate.degradedCount,
-          latestFetchedAt: aggregate.latestFetchedAt,
-          totalCount: aggregate.totalCount,
-        },
-      };
-    }),
-
-  getSyncStatus: adminBase
-    .use(
-      withAnyPlatformPermission([PLATFORM_PERMISSIONS.ROLE_READ, PLATFORM_PERMISSIONS.SYSTEM_READ]),
-    )
-    .input(z.object({ userId: z.string().optional() }).optional())
-    .query(async ({ ctx, input }) => {
-      const service = new EasyauthSyncService(ctx.serverDB);
-      return service.getSyncStatus(input?.userId);
-    }),
-
-  triggerSync: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.ROLE_UPDATE))
-    .input(
-      z.object({
-        reason: z.string().trim().min(1).max(2000),
-        userId: z.string().min(1),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      await assertEasyauthDangerousReauth({
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: safeEasyauthReauthReason(input.reason),
-        serverDB: ctx.serverDB,
-        targetId: input.userId,
-      });
-      const service = new EasyauthSyncService(ctx.serverDB);
-      return service.syncUser({
-        actorUserId: ctx.userId!,
-        reason: input.reason,
-        userId: input.userId,
-      });
-    }),
-});
-
 /**
  * Admin root router (M02 + M04 surface).
  * Mounted as `admin` on lambda root when wired.
@@ -290,7 +175,6 @@ export const adminRouter = router({
   branding: adminBrandingRouter,
   connectors: adminConnectorsRouter,
   creds: adminCredsRouter,
-  easyauth: adminEasyauthRouter,
   identityProviders: adminIdentityProvidersRouter,
   managedResources: adminManagedResourcesRouter,
   roles: adminRolesRouter,

@@ -261,11 +261,11 @@ describe('PlatformSystemAdminService jobs', () => {
     ).rejects.toBeInstanceOf(PlatformSystemJobConflictError);
   });
 
-  it('does not expose connector, EasyAuth, ledger, or unknown jobs as mutable', async () => {
+  it('does not expose connector, ledger, or unknown jobs as mutable', async () => {
     for (const [index, type] of [
       'connector.runtime.shared-call.v1',
-      'platform.easyauth.sync_user',
       'future.platform.job.v1',
+      'legacy.unknown.job.v1',
     ].entries()) {
       await db.insert(platformJobs).values({
         id: `pjob_000000000000003${index}`,
