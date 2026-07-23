@@ -1,5 +1,5 @@
 export { isPlatformAdminBootEnabled } from './boot/isPlatformAdminBootEnabled';
-export { isKnownEnterpriseErrorMessage, mapEnterpriseError } from './errors/mapEnterpriseError';
+export { mapEnterpriseError } from './errors/mapEnterpriseError';
 export * from './features/admin';
 export {
   ADMIN_NAV_FLAT,

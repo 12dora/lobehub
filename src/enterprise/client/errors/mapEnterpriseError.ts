@@ -104,8 +104,5 @@ export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null
   };
 };
 
-export const isKnownEnterpriseErrorMessage = (message: string): boolean =>
-  isEnterpriseErrorCode(message.trim());
-
 /** Re-export catalogs for UI bindings. */
 export { ADMIN_ERROR_CODES, ENTERPRISE_ERROR_CODES, MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES };

@@ -73,14 +73,6 @@ export const deriveManagedResourcePermissions = (
   };
 };
 
-export const fingerprintManagedResourcePolicy = (policy: ManagedResourcePolicyMap): string =>
-  JSON.stringify(
-    MANAGED_RESOURCE_KINDS.map((resource) => {
-      const item = policy[resource];
-      return [resource, item.managed, item.enforcementMode];
-    }),
-  );
-
 export interface ManagedResourceDiff {
   after: ManagedResourcePolicyMap[keyof ManagedResourcePolicyMap];
   before: ManagedResourcePolicyMap[keyof ManagedResourcePolicyMap];

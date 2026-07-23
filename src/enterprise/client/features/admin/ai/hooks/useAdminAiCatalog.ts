@@ -7,10 +7,8 @@ import { useClientDataSWR } from '@/libs/swr';
 
 import {
   ADMIN_AI_MODEL_LIST_KEY,
-  ADMIN_AI_PROVIDER_GET_KEY,
   ADMIN_AI_PROVIDER_LIST_KEY,
   ADMIN_AI_PROVIDER_REVISIONS_KEY,
-  buildAdminAiModelDependentsKey,
   buildAdminAiModelListKey,
   buildAdminAiProviderGetKey,
   buildAdminAiProviderListKey,
@@ -51,17 +49,6 @@ export const useFetchAdminAiProviderRevisions = (
     { revalidateOnFocus: false },
   );
 
-export const useFetchAdminAiModelDependents = (
-  providerId: string | undefined,
-  id: string | undefined,
-  enabled = true,
-) =>
-  useClientDataSWR(
-    enabled && providerId && id ? buildAdminAiModelDependentsKey(providerId, id) : null,
-    () => adminAiCatalogService.getModelDependents({ id: id!, providerId: providerId! }),
-    { revalidateOnFocus: false },
-  );
-
 export const refreshAdminAiProviderLists = async () => {
   await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_PROVIDER_LIST_KEY);
 };
@@ -78,14 +65,4 @@ export const refreshAdminAiProvider = async (id: string) => {
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_MODEL_LIST_KEY),
   ]);
   return detail;
-};
-
-export const clearAdminAiProviderCache = async () => {
-  await mutate(
-    (key) =>
-      Array.isArray(key) &&
-      (key[0] === ADMIN_AI_PROVIDER_GET_KEY || key[0] === ADMIN_AI_PROVIDER_LIST_KEY),
-    undefined,
-    { revalidate: false },
-  );
 };

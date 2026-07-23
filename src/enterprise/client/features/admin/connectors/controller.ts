@@ -150,22 +150,6 @@ export const fingerprintEditableAdminConnectorDraft = (
   draft: EditableAdminConnectorDraft,
 ): string => JSON.stringify(canonicalize(draft));
 
-export const fingerprintAdminConnectorSnapshot = (snapshot: AdminConnectorGetOutput): string =>
-  JSON.stringify(
-    canonicalize({
-      baseRevision: snapshot.baseRevision,
-      draft: fingerprintEditableAdminConnectorDraft(toEditableAdminConnectorDraft(snapshot.draft)),
-      draftToken: snapshot.draftToken,
-      publishedRevision: snapshot.published?.publishedRevision ?? null,
-      secretState:
-        snapshot.draft.credentialMode === 'shared_service_account'
-          ? snapshot.draft.sharedSecret
-          : snapshot.draft.credentialMode === 'per_user_oauth'
-            ? snapshot.draft.oauthClientSecret
-            : null,
-    }),
-  );
-
 export type AdminConnectorPrimaryAction = 'none' | 'publish' | 'retry' | 'save' | 'test';
 
 /** One dominant action for the sticky editor footer. */

@@ -1,7 +1,5 @@
 'use client';
 
-import { mutate } from 'swr';
-
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { adminBrandingService } from '@/enterprise/client/services/adminBranding';
 import { useClientDataSWR } from '@/libs/swr';
@@ -24,8 +22,4 @@ export const useFetchAdminBranding = (params: { adminAllowed: boolean; canRead: 
   return useClientDataSWR(enabled ? [ADMIN_BRANDING_DRAFT_KEY] : null, () =>
     adminBrandingService.getDraft(),
   );
-};
-
-export const refreshAdminBranding = async (): Promise<void> => {
-  await mutate((key) => Array.isArray(key) && key[0] === ADMIN_BRANDING_DRAFT_KEY);
 };
