@@ -11,7 +11,7 @@ import { cloneElement, isValidElement, memo, type ReactElement, type ReactNode }
 import { useTranslation } from 'react-i18next';
 
 import PlatformSettingSourceBadge from './index';
-import { type PlatformSettingMetaState, usePlatformSettingMeta } from './usePlatformSettingMeta';
+import { type PlatformSettingMetaState } from './usePlatformSettingMeta';
 
 type ManagedFormControlProps = {
   children: ReactElement;
@@ -118,24 +118,3 @@ export const ManagedFormControlContent = memo<ManagedFormControlContentProps>(
 );
 
 ManagedFormControlContent.displayName = 'ManagedFormControlContent';
-
-const ManagedFormControl = memo<ManagedFormControlProps>(
-  ({ path, children, disabledReason, extraDisabled, ...formInjected }) => {
-    const meta = usePlatformSettingMeta(path);
-
-    return (
-      <ManagedFormControlContent
-        disabledReason={disabledReason}
-        extraDisabled={extraDisabled}
-        meta={meta}
-        {...formInjected}
-      >
-        {children}
-      </ManagedFormControlContent>
-    );
-  },
-);
-
-ManagedFormControl.displayName = 'ManagedFormControl';
-
-export default ManagedFormControl;

@@ -6,7 +6,7 @@ import { memo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import PlatformSettingSourceBadge from './index';
-import { type PlatformSettingMetaState, usePlatformSettingMeta } from './usePlatformSettingMeta';
+import { type PlatformSettingMetaState } from './usePlatformSettingMeta';
 
 export type ManagedSettingFieldRenderArgs = {
   disabled: boolean;
@@ -124,16 +124,3 @@ export const ManagedCompositeSettingFieldContent = memo<ManagedCompositeSettingF
 );
 
 ManagedCompositeSettingFieldContent.displayName = 'ManagedCompositeSettingFieldContent';
-
-const ManagedSettingField = memo<{
-  children: (args: ManagedSettingFieldRenderArgs) => ReactNode;
-  path: string;
-}>(({ path, children }) => {
-  const meta = usePlatformSettingMeta(path);
-
-  return <ManagedSettingFieldContent meta={meta}>{children}</ManagedSettingFieldContent>;
-});
-
-ManagedSettingField.displayName = 'ManagedSettingField';
-
-export default ManagedSettingField;
