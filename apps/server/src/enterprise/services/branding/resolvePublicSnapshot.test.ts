@@ -93,12 +93,12 @@ describe('resolvePlatformPublicSnapshot', () => {
     });
   });
 
-  it.each(['database unavailable', 'duplicate Published rows', 'invalid URL'])(
-    'fails closed to the built-in snapshot for %s',
+  it.each(['duplicate Published rows', 'invalid URL'])(
+    'drops branding only for %s while preserving auth settings',
     async (message) => {
       const snapshot = await resolvePlatformPublicSnapshot({
         flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
-        getAuthSettings: authSettings(),
+        getAuthSettings: authSettings({ openRegistration: false }),
         getDatabase: async () => ({}) as LobeChatDatabase,
         getPublishedBranding: async () => {
           throw new Error(message);
@@ -109,8 +109,24 @@ describe('resolvePlatformPublicSnapshot', () => {
       expect(snapshot.brandingRevision).toBeNull();
       expect(snapshot.configRevision).toBe('0');
       expect(snapshot.platformName).toBeNull();
+      // Branding failure must not open registration when platform policy closed it.
+      expect(snapshot.login.openRegistration).toBe(false);
     },
   );
+
+  it('branding failure + openRegistration=false remains false', async () => {
+    const snapshot = await resolvePlatformPublicSnapshot({
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      getAuthSettings: authSettings({ openRegistration: false }),
+      getDatabase: async () => ({}) as LobeChatDatabase,
+      getPublishedBranding: async () => {
+        throw new Error('branding store unavailable');
+      },
+    });
+
+    expect(snapshot.branding).toBeNull();
+    expect(snapshot.login.openRegistration).toBe(false);
+  });
 
   it('fails closed to the built-in snapshot when auth settings are unavailable', async () => {
     const snapshot = await resolvePlatformPublicSnapshot({
@@ -119,6 +135,21 @@ describe('resolvePlatformPublicSnapshot', () => {
         throw new Error('auth settings unavailable');
       },
       getDatabase: async () => ({}) as LobeChatDatabase,
+      getPublishedBranding: async () => publishedBranding,
+    });
+
+    // Branding still resolves when only auth fails.
+    expect(snapshot.branding).toEqual(publishedBranding);
+    expect(snapshot.login.openRegistration).toBe(true);
+  });
+
+  it('fails closed entirely when the database is unavailable', async () => {
+    const snapshot = await resolvePlatformPublicSnapshot({
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      getAuthSettings: authSettings({ openRegistration: false }),
+      getDatabase: async () => {
+        throw new Error('database unavailable');
+      },
       getPublishedBranding: async () => publishedBranding,
     });
 

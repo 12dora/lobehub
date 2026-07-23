@@ -13,19 +13,11 @@ export {
 } from './effectiveResolver';
 export {
   EffectiveSettingsService,
-  readEffectivePath,
   MANAGED_ERROR_CODES as SETTINGS_MANAGED_ERROR_CODES,
   PLATFORM_ERROR_CODES as SETTINGS_PLATFORM_ERROR_CODES,
   SettingsPathError,
 } from './effectiveSettingsService';
-export {
-  deleteByPath,
-  flattenLeaves,
-  getByPath,
-  isValidSettingPathShape,
-  setByPath,
-  splitSettingPath,
-} from './pathUtils';
+export { flattenLeaves, getByPath, setByPath, splitSettingPath } from './pathUtils';
 export {
   SETTINGS_REGISTRY_VERSION,
   SETTINGS_SECRET_PATH_PREFIXES,

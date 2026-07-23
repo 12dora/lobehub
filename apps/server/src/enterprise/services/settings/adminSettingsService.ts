@@ -31,6 +31,12 @@ import {
   assertPublishedPlatformAiReferences,
 } from '../platformDependencyLock';
 import { PlatformPublisherService, PlatformRevisionConflictError } from '../platformPublisher';
+import {
+  isServiceModelManagedPath,
+  mergePolicyEditorDraft,
+  overlayCurrentForeignPolicies,
+  preserveForeignPublishedInDraft,
+} from './policyEditorOwnership';
 import { settingsRegistry } from './registry';
 
 export { PlatformRevisionConflictError };
@@ -124,6 +130,13 @@ export class AdminSettingsService {
     alignDraft?: boolean;
     expectedDraftToken: string;
     operation: 'publish' | 'rollback';
+    /**
+     * Publish only: `policy-editor` re-attaches missing foreign published rows so empty
+     * policy-editor drafts cannot wipe service-model policies. `full` materializes the
+     * draft as a whole-table replacement (intentional foreign deletes are allowed).
+     * Rollback always overlays current foreign rows (ownership is path-based, not actor).
+     */
+    ownership?: 'full' | 'policy-editor';
     updatedBy?: string | null;
   }) =>
     createSettingsPointerAdapter({
@@ -141,8 +154,19 @@ export class AdminSettingsService {
       },
       materializePublished: async (tx, args) => {
         const model = new PlatformSettingsModel(tx);
-        const policies = ((args.payload as { policies?: SettingsDraftPolicyMap }).policies ??
+        let policies = ((args.payload as { policies?: SettingsDraftPolicyMap }).policies ??
           {}) as SettingsDraftPolicyMap;
+        const published = await model.listPublishedPolicies();
+        if (params.operation === 'publish') {
+          // Only policy-editor publishes preserve missing foreign rows. Full ownership
+          // is a whole-table replacement (documented on saveDraft / publish).
+          if (params.ownership === 'policy-editor') {
+            policies = preserveForeignPublishedInDraft(policies, published);
+          }
+        } else {
+          // Rollback: restore owned paths from history, keep current foreign rows byte-identical.
+          policies = overlayCurrentForeignPolicies(policies, published);
+        }
         await assertPublishedPlatformAiReferences(tx, policies);
         await model.replacePublishedPolicies({
           draft: policies,
@@ -161,7 +185,14 @@ export class AdminSettingsService {
         const model = new PlatformSettingsModel(tx);
         const bundle = await model.getBundle();
         if (!bundle) throw new Error('Failed to load locked platform settings bundle');
-        const draft = (bundle.draft ?? {}) as SettingsDraftPolicyMap;
+        let draft = (bundle.draft ?? {}) as SettingsDraftPolicyMap;
+        // Policy-editor only: re-attach foreign published paths absent from the draft so
+        // empty/partial policy-editor drafts cannot wipe service-model policies.
+        // Full ownership leaves the draft unchanged (intentional foreign deletes stick).
+        if (params.ownership === 'policy-editor') {
+          const published = await model.listPublishedPolicies();
+          draft = preserveForeignPublishedInDraft(draft, published);
+        }
         const validation = await this.validateDraftWithModel(draft, model);
         if (!validation.ok) throw new SettingsDraftValidationError(validation.issues);
 
@@ -299,22 +330,39 @@ export class AdminSettingsService {
     actorUserId: string;
     draft: SettingsDraftPolicyMap;
     expectedDraftToken: string;
+    /**
+     * `policy-editor` (TRPC admin settings page): only owned paths may change; foreign
+     * service-model rows are preserved from the locked draft.
+     * `full` (applyImmediate / internal): whole-table replacement.
+     */
+    ownership?: 'full' | 'policy-editor';
     reason: string;
   }) => {
-    const validation = await this.validateDraft(params.draft);
-    if (!validation.ok) {
-      // Best-effort failure audit after validation (no state write)
-      await this.auditAppend(this.db, {
-        action: 'admin.settings.saveDraft',
-        actorUserId: params.actorUserId,
-        afterDiff: { issueCount: validation.issues.length },
-        beforeDiff: null,
-        reason: params.reason,
-        result: 'failure',
-        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
-      });
-      throw new SettingsDraftValidationError(validation.issues);
+    const ownership = params.ownership ?? 'full';
+
+    // Pre-validate client payload. For policy-editor, only owned paths are validated here;
+    // foreign keys are ignored by the merge and re-validated with the locked draft below.
+    const draftToPrevalidate =
+      ownership === 'policy-editor'
+        ? (Object.fromEntries(
+            Object.entries(params.draft).filter(([path]) => !isServiceModelManagedPath(path)),
+          ) as SettingsDraftPolicyMap)
+        : params.draft;
+    {
+      const validation = await this.validateDraft(draftToPrevalidate);
+      if (!validation.ok) {
+        await this.auditAppend(this.db, {
+          action: 'admin.settings.saveDraft',
+          actorUserId: params.actorUserId,
+          afterDiff: { issueCount: validation.issues.length },
+          beforeDiff: null,
+          reason: params.reason,
+          result: 'failure',
+          targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+          targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+        });
+        throw new SettingsDraftValidationError(validation.issues);
+      }
     }
 
     // Atomic: draft write + success audit in one transaction
@@ -331,17 +379,33 @@ export class AdminSettingsService {
             'Platform settings draft conflict: expectedDraftToken does not match current draft',
           );
         }
+
+        const currentDraft = (current.draft ?? {}) as SettingsDraftPolicyMap;
+        const nextDraft =
+          ownership === 'policy-editor'
+            ? mergePolicyEditorDraft(currentDraft, params.draft)
+            : params.draft;
+
+        // Re-validate merged bundle under the lock (foreign rows + owned changes).
+        if (ownership === 'policy-editor') {
+          const validation = await this.validateDraftWithModel(nextDraft, model);
+          if (!validation.ok) {
+            throw new SettingsDraftValidationError(validation.issues);
+          }
+        }
+
         const saved = await model.saveDraft({
-          draft: params.draft,
+          draft: nextDraft,
           updatedBy: params.actorUserId,
         });
         await this.auditAppend(tx, {
           action: 'admin.settings.saveDraft',
           actorUserId: params.actorUserId,
           afterDiff: {
-            pathCount: Object.keys(params.draft).length,
+            ownership,
+            pathCount: Object.keys(nextDraft).length,
             paths: Object.fromEntries(
-              Object.entries(params.draft).map(([path, p]) => [
+              Object.entries(nextDraft).map(([path, p]) => [
                 path,
                 { mode: p.mode, visibility: p.visibility },
               ]),
@@ -579,9 +643,16 @@ export class AdminSettingsService {
     comment?: string;
     expectedDraftToken: string;
     expectedRevision: number;
+    /**
+     * `policy-editor` (TRPC admin settings page): re-attach missing foreign published rows.
+     * `full` (default — applyImmediate / internal whole-table): draft is authoritative;
+     * omitted foreign paths are deleted from `platform_setting_policies` on materialize.
+     */
+    ownership?: 'full' | 'policy-editor';
     reason: string;
   }) => {
     await this.model.ensureBundle();
+    const ownership = params.ownership ?? 'full';
 
     try {
       // Single transaction: revision + pointer + materialize policies + success audit;
@@ -597,6 +668,7 @@ export class AdminSettingsService {
         pointer: this.settingsPointer({
           expectedDraftToken: params.expectedDraftToken,
           operation: 'publish',
+          ownership,
           updatedBy: params.actorUserId,
         }),
         reason: params.reason,

@@ -31,21 +31,45 @@ export const resolvePlatformPublicSnapshot = async ({
   getPublishedBranding = (db) => new BrandingPublishedReadService(db).getPublished(),
   getAuthSettings = (db) => new PlatformAuthSettingsModel(db).get(),
 }: ResolvePlatformPublicSnapshotOptions) => {
+  let db: LobeChatDatabase;
   try {
-    const db = await getDatabase();
-    const branding = flags.ENABLE_RUNTIME_BRANDING ? await getPublishedBranding(db) : null;
-    const authSettings = await getAuthSettings(db);
-
-    return buildPlatformPublicSnapshot({
-      branding,
-      flags,
-      openRegistration: authSettings.openRegistration,
-    });
+    db = await getDatabase();
   } catch (error) {
     log(
-      'published branding / auth settings unavailable; using built-in fallback (%s)',
+      'database unavailable for public snapshot; using built-in fallback (%s)',
       error instanceof Error ? error.name : 'UnknownError',
     );
     return buildPlatformPublicSnapshot({ flags });
   }
+
+  // Branding and auth are independent: a branding load failure must not force openRegistration
+  // back to the built-in default (true) when registration is closed.
+  let branding: PlatformBrandingPublished | null = null;
+  if (flags.ENABLE_RUNTIME_BRANDING) {
+    try {
+      branding = await getPublishedBranding(db);
+    } catch (error) {
+      log(
+        'published branding unavailable; continuing without branding (%s)',
+        error instanceof Error ? error.name : 'UnknownError',
+      );
+    }
+  }
+
+  let openRegistration: boolean | undefined;
+  try {
+    const authSettings = await getAuthSettings(db);
+    openRegistration = authSettings.openRegistration;
+  } catch (error) {
+    log(
+      'auth settings unavailable; openRegistration falls back to built-in default (%s)',
+      error instanceof Error ? error.name : 'UnknownError',
+    );
+  }
+
+  return buildPlatformPublicSnapshot({
+    branding,
+    flags,
+    openRegistration,
+  });
 };

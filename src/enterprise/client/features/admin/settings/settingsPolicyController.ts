@@ -56,14 +56,33 @@ export const fromSettingsPolicyUiMode = (
     ? { mode: 'locked', visibility: 'hidden' }
     : { mode: 'user', visibility: 'visible' };
 
-/** Normalize every draft entry on save so legacy default/locked become locked+hidden. */
-export const normalizeSettingsPolicyDraft = (draft: DraftMap): DraftMap =>
+/**
+ * Normalize draft entries for the two-state policy UI (legacy default/locked → locked+hidden).
+ * Pass `preservePath` for foreign rows (service-model) so they stay byte-identical — the
+ * policy editor must never rewrite hidden ownership belonging to another admin surface.
+ */
+export const normalizeSettingsPolicyDraft = (
+  draft: DraftMap,
+  options?: { preservePath?: (path: string) => boolean },
+): DraftMap =>
   Object.fromEntries(
     Object.entries(draft).map(([path, policy]) => {
       if (!policy) return [path, policy];
+      if (options?.preservePath?.(path)) return [path, policy];
       const ui = toSettingsPolicyUiMode(policy);
       return [path, { ...policy, ...fromSettingsPolicyUiMode(ui) }];
     }),
+  ) as DraftMap;
+
+/** Project only policy-editor-owned paths for save/publish payloads (server re-attaches foreign). */
+export const projectPolicyEditorOwnedDraft = (
+  draft: DraftMap,
+  isForeignPath: (path: string) => boolean,
+): DraftMap =>
+  Object.fromEntries(
+    Object.entries(normalizeSettingsPolicyDraft(draft, { preservePath: isForeignPath })).filter(
+      ([path]) => !isForeignPath(path),
+    ),
   ) as DraftMap;
 
 export type SettingsPermissionMode = {

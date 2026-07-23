@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   openReasonModal: vi.fn(),
   permissions: [] as string[],
   publish: vi.fn(),
+  refreshAdminSettingsDraft: vi.fn(),
   saveDraft: vi.fn(),
   toastError: vi.fn(),
   useBlocker: vi.fn((when: boolean | ((args: unknown) => boolean)) => {
@@ -29,6 +30,8 @@ const mocks = vi.hoisted(() => ({
       ? mocks.blocker
       : { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' };
   }),
+  /** Spy only — the module mock below runs `fn` once. */
+  withAdminReauthRetry: vi.fn(),
 }));
 
 vi.mock('antd-style', () => ({
@@ -37,10 +40,19 @@ vi.mock('antd-style', () => ({
 }));
 
 vi.mock('@lobehub/ui', () => ({
-  Alert: ({ description, message }: { description?: ReactNode; message?: ReactNode }) => (
+  Alert: ({
+    description,
+    extra,
+    message,
+  }: {
+    description?: ReactNode;
+    extra?: ReactNode;
+    message?: ReactNode;
+  }) => (
     <div role="alert">
       {message}
       {description}
+      {extra}
     </div>
   ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -77,7 +89,10 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 vi.mock('../primitives/DangerConfirm', () => ({ openDangerConfirm: mocks.openDangerConfirm }));
 
 vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => ({
-  withAdminReauthRetry: (fn: () => Promise<unknown>) => fn(),
+  withAdminReauthRetry: (fn: () => Promise<unknown>, options?: { authMethod?: string | null }) => {
+    mocks.withAdminReauthRetry(fn, options);
+    return fn();
+  },
 }));
 
 vi.mock('react-i18next', () => ({
@@ -119,7 +134,7 @@ vi.mock('@/enterprise/client/errors/mapEnterpriseError', () => ({
 }));
 
 vi.mock('./hooks/useAdminSettings', () => ({
-  refreshAdminSettingsDraft: vi.fn(),
+  refreshAdminSettingsDraft: mocks.refreshAdminSettingsDraft,
   useFetchAdminSettingsDraft: () => ({
     data: mocks.data,
     error: undefined,
@@ -193,8 +208,11 @@ describe('SettingsPolicyPage', () => {
     mocks.openReasonModal.mockReset();
     mocks.permissions = [];
     mocks.publish.mockReset();
+    mocks.refreshAdminSettingsDraft.mockReset();
+    mocks.refreshAdminSettingsDraft.mockResolvedValue(undefined);
     mocks.saveDraft.mockReset();
     mocks.toastError.mockReset();
+    mocks.withAdminReauthRetry.mockClear();
     mocks.blocker.state = 'unblocked';
     mocks.blocker.proceed.mockReset();
     mocks.blocker.reset.mockReset();
@@ -382,6 +400,7 @@ describe('SettingsPolicyPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.publish' }));
     const modal = mocks.openReasonModal.mock.calls[0]?.[0];
     expect(modal).toBeDefined();
+    expect(modal.authMethod).toBe('better-auth');
 
     // Another administrator saves after this modal opened. Its callback must
     // keep the token captured at open instead of silently adopting new data.
@@ -424,13 +443,43 @@ describe('SettingsPolicyPage', () => {
     expect(mocks.saveDraft).toHaveBeenCalledWith(
       expect.objectContaining({ draft: {}, expectedDraftToken: draftToken }),
     );
+    // Reset uses withAdminReauthRetry (not openReasonModal) — auth method must still propagate.
+    expect(mocks.withAdminReauthRetry).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ authMethod: 'better-auth' }),
+    );
     expect(mocks.publish).toHaveBeenCalledWith(
       expect.objectContaining({ expectedDraftToken: savedDraftToken, expectedRevision: 2 }),
     );
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
-  it('restore-defaults preserves service-model published paths and clears only this page overrides', async () => {
+  it('saveDraft does not reauthenticate', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.saveDraft.mockResolvedValueOnce({
+      baseRevision: 1,
+      draftToken: savedDraftToken,
+      ok: true,
+      registryVersion: 1,
+    });
+    mocks.mutate.mockImplementation(async () => mocks.data);
+
+    render(<SettingsPolicyPage />);
+    fireEvent.change(screen.getByLabelText('editor-font.title:general.fontSize'), {
+      target: { value: 'local-only' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
+
+    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalled());
+    expect(mocks.withAdminReauthRetry).not.toHaveBeenCalled();
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+  });
+
+  it('restore-defaults sends empty owned draft (server preserves foreign service-model paths)', async () => {
     mocks.permissions = [
       PLATFORM_PERMISSIONS.SETTINGS_READ,
       PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
@@ -439,9 +488,9 @@ describe('SettingsPolicyPage', () => {
     mocks.data = {
       ...makeData(1),
       publishedPolicies: {
-        // Owned by the Service Model page (SERVICE_MODEL_MANAGED_PATHS) — must survive.
+        // Owned by the Service Model page — server must keep these (not in client payload).
         'defaultAgent.config.model': { ...oldPolicy },
-        // This page's own override — must be cleared.
+        // This page's own override — cleared by empty owned draft.
         'general.fontSize': { ...oldPolicy },
       },
     };
@@ -458,9 +507,8 @@ describe('SettingsPolicyPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
     await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
 
-    const savedDraft = mocks.saveDraft.mock.calls[0]?.[0].draft;
-    expect(savedDraft).toHaveProperty(['defaultAgent.config.model']);
-    expect(savedDraft).not.toHaveProperty(['general.fontSize']);
+    // Client only clears owned paths; server policy-editor ownership re-attaches foreign rows.
+    expect(mocks.saveDraft.mock.calls[0]?.[0].draft).toEqual({});
   });
 
   it('disables restore-defaults when the only published overrides belong to the service-model page', async () => {
@@ -543,6 +591,95 @@ describe('SettingsPolicyPage', () => {
     await waitFor(() => expect(mocks.confirmModal).toHaveBeenCalled());
     act(() => mocks.confirmModal.mock.calls[0]![0].onCancel());
     expect(mocks.blocker.reset).toHaveBeenCalled();
+  });
+
+  it('keeps committed local CAS state when post-save refresh rejects and allows retry', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.saveDraft.mockResolvedValue({
+      baseRevision: 2,
+      draftToken: savedDraftToken,
+      ok: true,
+      registryVersion: 1,
+    });
+    mocks.mutate.mockRejectedValueOnce(new Error('refresh failed'));
+    mocks.refreshAdminSettingsDraft.mockResolvedValue(undefined);
+
+    render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
+      target: { value: 'local' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
+
+    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalled());
+    // Alert mock concatenates message+description; assert via container textContent.
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle');
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.failed');
+    });
+    // Save still reported success — not a mutation failure.
+    expect(screen.getByText(/settingsPolicy\.saveState\.saved/)).toBeTruthy();
+    expect(screen.getByText(/settingsPolicy\.revision:2/)).toBeTruthy();
+
+    mocks.mutate.mockResolvedValueOnce(makeData(2, 'local', savedDraftToken));
+    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.refresh.retry' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+  });
+
+  it('surfaces refresh rejection after publish without re-running publish', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.publish.mockResolvedValue({ auditId: 'a1', revision: 2 });
+    mocks.mutate.mockRejectedValueOnce(new Error('publish refresh failed'));
+
+    render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.validate' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.publish' }));
+    await waitFor(() => expect(mocks.openReasonModal).toHaveBeenCalled());
+    await mocks.openReasonModal.mock.calls[0]?.[0].onSubmit({
+      expectedDraftToken: draftToken,
+      expectedRevision: 1,
+      reason: 'publish',
+    });
+
+    expect(mocks.publish).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle');
+    });
+  });
+
+  it('surfaces refresh rejection after reset defaults without treating it as reset failure', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.saveDraft.mockResolvedValue({
+      baseRevision: 2,
+      draftToken: savedDraftToken,
+      ok: true,
+      registryVersion: 1,
+    });
+    mocks.publish.mockResolvedValue({ auditId: 'a1', revision: 2 });
+    mocks.mutate.mockRejectedValueOnce(new Error('reset refresh failed'));
+
+    render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
+    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
+
+    expect(mocks.publish).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle');
+    });
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it('only guards the exit while the draft actually diverges from the published policy', async () => {

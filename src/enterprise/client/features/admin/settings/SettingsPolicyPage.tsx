@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Input, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Input, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo } from 'react';
@@ -78,7 +78,9 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     preview,
     primary,
     refreshConflictServer,
+    refreshError,
     registryByPath,
+    retryRefresh,
     revisionConflict,
     saveError,
     saveState,
@@ -198,16 +200,31 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         </Flexbox>
       }
       banner={
-        revisionConflict ? (
-          <SettingsPolicyConflictBanner
-            canUpdate={canUpdate}
-            conflictState={conflictState}
-            registryByPath={registryByPath}
-            onDiscard={handleDiscardConflict}
-            onRebase={handleRebase}
-            onRefresh={() => void refreshConflictServer()}
-          />
-        ) : null
+        <>
+          {refreshError ? (
+            <Alert
+              showIcon
+              description={refreshError}
+              message={t('settingsPolicy.refresh.committedTitle')}
+              type="warning"
+              extra={
+                <Button onClick={() => void retryRefresh()}>
+                  {t('settingsPolicy.refresh.retry')}
+                </Button>
+              }
+            />
+          ) : null}
+          {revisionConflict ? (
+            <SettingsPolicyConflictBanner
+              canUpdate={canUpdate}
+              conflictState={conflictState}
+              registryByPath={registryByPath}
+              onDiscard={handleDiscardConflict}
+              onRebase={handleRebase}
+              onRefresh={() => void refreshConflictServer()}
+            />
+          ) : null}
+        </>
       }
       description={
         canUpdate
