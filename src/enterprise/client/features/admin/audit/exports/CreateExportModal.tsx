@@ -7,7 +7,6 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ReadonlyURLSearchParams } from 'react-router';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type { AdminAuditExportsCreateInput } from '@/enterprise/client/services/adminAudit';
@@ -54,7 +53,7 @@ export interface CreateExportModalProps {
   onCreated: () => void;
   onSubmit: (input: AdminAuditExportsCreateInput) => Promise<unknown>;
   open: boolean;
-  searchParams?: ReadonlyURLSearchParams;
+  searchParams?: URLSearchParams;
 }
 
 const CreateExportModal = memo<CreateExportModalProps>(
@@ -160,9 +159,6 @@ const CreateExportModal = memo<CreateExportModalProps>(
           </Flexbox>
         }
         onCancel={onClose}
-        onOpenChange={(next) => {
-          if (!next) onClose();
-        }}
       >
         {step === 0 ? (
           <div className={styles.step}>

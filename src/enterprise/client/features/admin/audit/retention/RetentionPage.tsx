@@ -380,10 +380,11 @@ const RetentionPage = memo(() => {
             await refreshAuditPolicy();
           } catch (err) {
             const mapped = mapEnterpriseError(err);
+            const trpcCode = (err as { data?: { code?: string } })?.data?.code;
             if (
-              mapped?.code === 'PLATFORM_CONFLICT' ||
-              mapped?.code === 'CONFLICT' ||
-              (err as { data?: { code?: string } })?.data?.code === 'CONFLICT'
+              mapped?.code === 'PLATFORM_REVISION_CONFLICT' ||
+              trpcCode === 'CONFLICT' ||
+              /conflict|revision/i.test(String((err as Error)?.message ?? ''))
             ) {
               throw new Error(t('audit.retention.policy.conflict'), { cause: err });
             }
@@ -541,9 +542,6 @@ const PolicyEditModal = memo<{
       width={560}
       onCancel={onClose}
       onOk={handleOk}
-      onOpenChange={(next) => {
-        if (!next) onClose();
-      }}
     >
       {field(
         t('audit.retention.policy.contentAccessMode'),

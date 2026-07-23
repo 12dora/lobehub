@@ -271,9 +271,6 @@ const LegalHoldsPage = memo(() => {
         title={t('audit.holds.create.title')}
         onCancel={() => setCreateOpen(false)}
         onOk={submitCreate}
-        onOpenChange={(next) => {
-          if (!next) setCreateOpen(false);
-        }}
       >
         <div className={styles.banner}>{t('audit.holds.create.warning')}</div>
         <div className={styles.field}>
