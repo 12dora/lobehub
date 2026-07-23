@@ -2,14 +2,14 @@
  * Error code unions from the runtime catalog (single source of truth).
  * Prefer `@/const/platform/errorCodes` for values; types re-export for convenience.
  */
-import type { EnterpriseErrorCode } from '../../../const/src/platform/errorCodes';
+import type { EnterpriseErrorCode } from '@/const/platform/errorCodes';
 
 export type {
   AdminErrorCode,
   EnterpriseErrorCode,
   ManagedErrorCode,
   PlatformErrorCode,
-} from '../../../const/src/platform/errorCodes';
+} from '@/const/platform/errorCodes';
 
 /**
  * Structured enterprise error payload for tRPC `cause` / client mappers.

@@ -133,17 +133,6 @@ export interface PlatformAgentImmutableVersion {
   version: string;
 }
 
-export interface PlatformAgentAssignment {
-  agentId: string;
-  enabled: boolean;
-  id: string;
-  mode: PlatformAgentAssignmentMode;
-  pinnedVersionId: string | null;
-  targetId: string;
-  targetType: PlatformAgentAssignmentTargetType;
-  versionPolicy: PlatformAgentVersionPolicy;
-}
-
 /** Public user projection. It deliberately excludes assignment target and mutation reason. */
 export interface PlatformEffectiveAgent {
   agentKey: string;

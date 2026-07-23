@@ -103,14 +103,6 @@ export interface EffectiveSettingPathMeta {
 export const PLATFORM_SETTINGS_RESOURCE_TYPE = 'settings' as const;
 export const PLATFORM_SETTINGS_RESOURCE_ID = 'global' as const;
 
-/** Draft / published settings bundle (aggregate). */
-export interface SettingsPolicyBundle {
-  /** Map of path → policy. Only registered paths allowed. */
-  policies: Record<string, Omit<SettingPathPolicy, 'path'>>;
-  /** Registry version the bundle was validated against. */
-  registryVersion: number;
-}
-
 export interface EffectiveSettingsResult {
   /** Nested effective UserSettings-shaped object (non-secret keys only + passthrough legacy). */
   effectiveSettings: Record<string, unknown>;

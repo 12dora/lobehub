@@ -93,21 +93,21 @@ export const ENTERPRISE_REVISION_LAG_DOMAINS = ['identity'] as const;
 export const ENTERPRISE_REVISION_LAG_REASONS = ['degraded', 'diverged'] as const;
 
 export type EnterpriseCacheDomain = (typeof ENTERPRISE_CACHE_DOMAINS)[number];
-export type EnterpriseCacheEpochOutcome = 'changed' | 'failure' | 'success';
-export type EnterpriseCacheLoadOutcome = 'load_failure' | 'loaded' | 'loaded_negative';
-export type EnterpriseCacheRequestOutcome = 'coalesced' | 'hit' | 'negative';
+export type EnterpriseCacheEpochOutcome = (typeof ENTERPRISE_CACHE_EPOCH_OUTCOMES)[number];
+export type EnterpriseCacheLoadOutcome = (typeof ENTERPRISE_CACHE_LOAD_OUTCOMES)[number];
+export type EnterpriseCacheRequestOutcome = (typeof ENTERPRISE_CACHE_REQUEST_OUTCOMES)[number];
 export type EnterpriseConfigDomain = (typeof ENTERPRISE_CONFIG_DOMAINS)[number];
-export type EnterpriseConfigPublishOperation = 'publish' | 'rollback';
-export type EnterpriseConfigPublishOutcome = 'conflict' | 'failure' | 'success';
-export type EnterpriseGuardClassification = 'deny' | 'input-sensitive';
-export type EnterpriseGuardMode = 'enforced' | 'observe' | 'ui-only';
-export type EnterpriseGuardOutcome = 'catalog_not_ready' | 'denied' | 'would_deny';
+export type EnterpriseConfigPublishOperation =
+  (typeof ENTERPRISE_CONFIG_PUBLISH_OPERATIONS)[number];
+export type EnterpriseConfigPublishOutcome = (typeof ENTERPRISE_CONFIG_PUBLISH_OUTCOMES)[number];
+export type EnterpriseGuardClassification = (typeof ENTERPRISE_GUARD_CLASSIFICATIONS)[number];
+export type EnterpriseGuardMode = (typeof ENTERPRISE_GUARD_MODES)[number];
+export type EnterpriseGuardOutcome = (typeof ENTERPRISE_GUARD_OUTCOMES)[number];
 export type EnterpriseGuardResource = (typeof ENTERPRISE_GUARD_RESOURCES)[number];
-export type EnterpriseHeartbeatOperation = 'register' | 'tick';
-export type EnterpriseHeartbeatOutcome = 'failure' | 'success';
-export type EnterpriseInvalidationBackend = 'memory' | 'redis';
-export type EnterpriseInvalidationOutcome =
-  'disabled' | 'error' | 'partial_failure' | 'success' | 'unavailable';
+export type EnterpriseHeartbeatOperation = (typeof ENTERPRISE_HEARTBEAT_OPERATIONS)[number];
+export type EnterpriseHeartbeatOutcome = (typeof ENTERPRISE_HEARTBEAT_OUTCOMES)[number];
+export type EnterpriseInvalidationBackend = (typeof ENTERPRISE_INVALIDATION_BACKENDS)[number];
+export type EnterpriseInvalidationOutcome = (typeof ENTERPRISE_INVALIDATION_OUTCOMES)[number];
 export type EnterpriseJobBacklogState = (typeof ENTERPRISE_JOB_BACKLOG_STATES)[number];
 export type EnterpriseOperationalCollector = (typeof ENTERPRISE_OPERATIONAL_COLLECTORS)[number];
 export type EnterpriseOperationalCollectionOutcome =

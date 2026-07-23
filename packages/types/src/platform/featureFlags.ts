@@ -5,4 +5,4 @@
 export type {
   EnterpriseFeatureFlagKey,
   EnterpriseFeatureFlags,
-} from '../../../const/src/platform/featureFlags';
+} from '@/const/platform/featureFlags';
