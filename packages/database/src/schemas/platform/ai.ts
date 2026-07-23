@@ -17,6 +17,11 @@ import type { PlatformResourceStatus } from './common';
 export interface PlatformAiProviderConfig {
   [key: string]: unknown;
   apiStyle?: string;
+  /**
+   * OpenAI-compatible Responses vs Chat Completions selection. Credential-free;
+   * projected into public runtime state for managed providers.
+   */
+  enableResponseApi?: boolean;
   endpoint?: string;
   headers?: Record<string, string>;
   timeoutMs?: number;

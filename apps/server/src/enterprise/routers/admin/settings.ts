@@ -197,6 +197,8 @@ export const adminSettingsRouter = router({
           actorUserId: ctx.userId!,
           draft: input.draft,
           expectedDraftToken: input.expectedDraftToken,
+          // TRPC policy-editor surface: never whole-table replace service-model rows.
+          ownership: 'policy-editor',
           reason: input.reason,
         });
       } catch (error) {
@@ -278,6 +280,8 @@ export const adminSettingsRouter = router({
           comment: input.comment,
           expectedDraftToken: input.expectedDraftToken,
           expectedRevision: input.expectedRevision,
+          // TRPC policy-editor surface: never wipe service-model rows on publish.
+          ownership: 'policy-editor',
           reason: input.reason,
         });
       } catch (error) {

@@ -9,9 +9,11 @@ import { GitHub, GitHubParseError } from '@/server/modules/GitHub';
 import { SkillManifestError, SkillParseError } from '@/server/services/skill/errors';
 import { SkillParser } from '@/server/services/skill/parser';
 
+import { isStrictSemVer } from '../../contracts/shared';
 import type {
   AdminSkillParseImportSourceInput,
   AdminSkillParseImportSourceOutput,
+  SkillManifest as EnterpriseSkillManifest,
   SkillResource,
 } from '../../contracts/skillCatalog';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
@@ -138,6 +140,180 @@ const deriveDescription = (manifest: SkillManifest): string | null => {
   return description ? description.slice(0, 4000) : null;
 };
 
+/** Hostname shape accepted by enterprise skillPermissionsSchema.network.allowedHosts. */
+const ALLOWED_HOST_RE =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+const TOOL_KEY_RE = /^[a-z0-9][\w.-]{0,127}$/i;
+const SKILL_KEY_RE = /^[a-z0-9][\w.-]*$/i;
+
+const uniquePreserveOrder = (values: string[]): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+};
+
+/**
+ * Map free-form package permission tokens into enterprise grants.
+ * Unknown / non-compatible tokens are ignored (fail closed — no silent over-grant).
+ *
+ * Compatible tokens:
+ * - `filesystem` | `filesystem:read` | `fs:read` → filesystem:read
+ * - `network:<hostname>` → network host allowlist (+ enabled when non-empty)
+ * - bare `network` is ignored (requires explicit hosts to stay validator-consistent)
+ * - `tool:<key>` → tools.allow (+ matching optional toolDependencies)
+ * Bare unknown tokens are ignored (fail closed — no silent over-grant).
+ */
+export const mapPackagePermissionTokens = (
+  tokens: readonly string[] | undefined,
+): Pick<EnterpriseSkillManifest, 'permissions' | 'toolDependencies'> => {
+  let filesystem: 'none' | 'read' = 'none';
+  const allowedHosts: string[] = [];
+  const toolKeys: string[] = [];
+
+  for (const raw of tokens ?? []) {
+    if (typeof raw !== 'string') continue;
+    const token = raw.trim();
+    if (!token) continue;
+    const lower = token.toLowerCase();
+
+    if (lower === 'filesystem' || lower === 'filesystem:read' || lower === 'fs:read') {
+      filesystem = 'read';
+      continue;
+    }
+
+    if (lower === 'network' || lower === 'filesystem:none' || lower === 'none') {
+      // Bare network cannot enable without hosts; explicit none stays closed.
+      continue;
+    }
+
+    const networkHost = token.match(/^network:(.+)$/i)?.[1]?.trim();
+    if (networkHost) {
+      if (networkHost.length <= 253 && ALLOWED_HOST_RE.test(networkHost)) {
+        allowedHosts.push(networkHost.toLowerCase());
+      }
+      continue;
+    }
+
+    // Only explicit tool: prefixes become Tool grants (bare free-form strings stay ignored).
+    const toolKey = token.match(/^tool:(.+)$/i)?.[1]?.trim();
+    if (toolKey && TOOL_KEY_RE.test(toolKey)) {
+      toolKeys.push(toolKey);
+    }
+  }
+
+  const allow = uniquePreserveOrder(toolKeys).slice(0, 100);
+  const hosts = uniquePreserveOrder(allowedHosts).slice(0, 50);
+  return {
+    permissions: {
+      filesystem,
+      network: { allowedHosts: hosts, enabled: hosts.length > 0 },
+      tools: { allow },
+    },
+    // Optional so unknown/unavailable tools surface as warnings, not hard publish blockers.
+    toolDependencies: allow.map((toolKey) => ({ optional: true, toolKey })),
+  };
+};
+
+const mapPackageSkillDependencies = (
+  raw: unknown,
+): EnterpriseSkillManifest['skillDependencies'] => {
+  if (!Array.isArray(raw)) return [];
+  const deps: EnterpriseSkillManifest['skillDependencies'] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const skillKey = typeof record.skillKey === 'string' ? record.skillKey.trim() : '';
+    const version = typeof record.version === 'string' ? record.version.trim() : '';
+    if (!skillKey || !SKILL_KEY_RE.test(skillKey) || skillKey.length > 128) continue;
+    if (!version || !isStrictSemVer(version)) continue;
+    deps.push({
+      optional: record.optional === true,
+      skillKey,
+      version,
+    });
+    if (deps.length >= 100) break;
+  }
+  return deps;
+};
+
+const mapPackageToolDependencies = (raw: unknown): EnterpriseSkillManifest['toolDependencies'] => {
+  if (!Array.isArray(raw)) return [];
+  const deps: EnterpriseSkillManifest['toolDependencies'] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const toolKey = typeof record.toolKey === 'string' ? record.toolKey.trim() : '';
+    if (!toolKey || !TOOL_KEY_RE.test(toolKey) || seen.has(toolKey)) continue;
+    seen.add(toolKey);
+    deps.push({ optional: record.optional === true, toolKey });
+    if (deps.length >= 100) break;
+  }
+  return deps;
+};
+
+/**
+ * Convert a package SkillManifest into the enterprise platform Skill manifest.
+ * Compatible permission tokens and optional package dependency declarations are preserved;
+ * unrecognized metadata is dropped (fail closed).
+ */
+export const toEnterpriseSkillManifest = (params: {
+  description: string | null;
+  displayName: string;
+  /** Full package manifest (permissions + optional passthrough dependency fields). */
+  packageManifest?: SkillManifest;
+}): EnterpriseSkillManifest => {
+  const packageManifest = params.packageManifest;
+  const fromTokens = mapPackagePermissionTokens(packageManifest?.permissions);
+
+  // Optional package-level dependency declarations (passthrough fields).
+  const packageRecord = packageManifest as (SkillManifest & Record<string, unknown>) | undefined;
+  const skillDependencies = mapPackageSkillDependencies(packageRecord?.skillDependencies);
+  const declaredToolDeps = mapPackageToolDependencies(packageRecord?.toolDependencies);
+
+  // Merge tool deps from tokens + explicit declarations; required allowlist tools stay required.
+  const toolDepByKey = new Map<string, { optional: boolean; toolKey: string }>();
+  for (const dep of [...fromTokens.toolDependencies, ...declaredToolDeps]) {
+    const existing = toolDepByKey.get(dep.toolKey);
+    if (!existing) {
+      toolDepByKey.set(dep.toolKey, dep);
+      continue;
+    }
+    // Prefer required (optional:false) when either declaration is required.
+    if (!dep.optional) toolDepByKey.set(dep.toolKey, { optional: false, toolKey: dep.toolKey });
+  }
+  const toolDependencies = [...toolDepByKey.values()].slice(0, 100);
+  const allow = uniquePreserveOrder([
+    ...fromTokens.permissions.tools.allow,
+    ...toolDependencies.map((d) => d.toolKey),
+  ]).slice(0, 100);
+
+  return {
+    description: params.description?.trim() || params.displayName,
+    displayName: params.displayName,
+    localizedDescriptions: {},
+    localizedDisplayNames: {},
+    permissions: {
+      filesystem: fromTokens.permissions.filesystem,
+      network: fromTokens.permissions.network,
+      tools: { allow },
+    },
+    skillDependencies,
+    toolDependencies,
+  };
+};
+
+const derivePackageVersion = (manifest: SkillManifest): string | undefined => {
+  const version = manifest.version?.trim();
+  if (!version || !isStrictSemVer(version)) return undefined;
+  return version;
+};
+
 const importError = (
   reason: SkillImportErrorReason,
   options?: { httpCode?: 'BAD_REQUEST' | 'NOT_FOUND'; status?: number },
@@ -172,10 +348,19 @@ const buildOutput = (params: {
     return importError(SKILL_IMPORT_ERROR_REASONS.CONTENT_TOO_LARGE);
   }
   const { items, truncated } = toContractResources(params.resources);
+  const displayName = deriveDisplayName(params.manifest, params.content);
+  const description = deriveDescription(params.manifest);
+  const packageVersion = derivePackageVersion(params.manifest);
   return {
     content: params.content,
-    description: deriveDescription(params.manifest),
-    displayName: deriveDisplayName(params.manifest, params.content),
+    description,
+    displayName,
+    manifest: toEnterpriseSkillManifest({
+      description,
+      displayName,
+      packageManifest: params.manifest,
+    }),
+    ...(packageVersion ? { packageVersion } : {}),
     resources: items,
     ...(truncated ? { resourcesTruncated: true } : {}),
     sourceMeta: { kind: params.kind, origin: params.origin.slice(0, 2048) },

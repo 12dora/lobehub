@@ -29,6 +29,9 @@ describe('enterprise error codes', () => {
     expect(PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED).toBe(
       'PLATFORM_AI_MODEL_NOT_PUBLISHED',
     );
+    expect(PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED).toBe(
+      'PLATFORM_AI_PROVIDER_DISABLED',
+    );
   });
 
   it('exposes admin and managed codes', () => {

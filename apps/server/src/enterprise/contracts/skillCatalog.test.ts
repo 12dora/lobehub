@@ -273,6 +273,14 @@ describe('Skill catalog contracts', () => {
       }),
     ).toMatchObject({ code: 'unknown_tool_dependency', severity: 'error' });
     expect(
+      skillValidationIssueSchema.parse({
+        code: 'non_inline_content',
+        message: 'Opaque content is not executable',
+        path: ['contentRef'],
+        severity: 'error',
+      }),
+    ).toMatchObject({ code: 'non_inline_content', severity: 'error' });
+    expect(
       skillValidationIssueSchema.safeParse({
         code: 'free-form-code',
         message: 'Unknown tool',

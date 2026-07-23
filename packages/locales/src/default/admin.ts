@@ -322,6 +322,8 @@ export default {
   'aiCatalog.editor.settings': 'Provider settings (JSON)',
   'aiCatalog.editor.sort': 'Sort order',
   'aiCatalog.editor.test.failure': 'Connection test failed',
+  'aiCatalog.editor.test.message.failure': 'Connection probe failed',
+  'aiCatalog.editor.test.message.success': 'Connection probe succeeded',
   'aiCatalog.editor.test.notRun': 'No persisted connection test result yet.',
   'aiCatalog.editor.test.pending': 'Connection test pending',
   'aiCatalog.editor.test.stale': 'Stale — test again',
@@ -563,6 +565,11 @@ export default {
   'generalSettings.save': 'Save',
   'generalSettings.saved': 'Settings saved',
   'generalSettings.saveError': 'Failed to save settings. Please try again.',
+  'generalSettings.unsaved.title': 'Unsaved general settings',
+  'generalSettings.unsaved.description':
+    'You have unsaved registration or allowlist changes. Leave anyway?',
+  'generalSettings.unsaved.leave': 'Leave without saving',
+  'generalSettings.unsaved.stay': 'Keep editing',
   'securityAuth.tabs.login': 'Login & access',
   'securityAuth.tabs.general': 'General settings',
   'sidebarLayout.title': 'Sidebar layout',
@@ -605,8 +612,18 @@ export default {
   'aiMemory.page.desc': 'Platform default memory preferences. Changes publish immediately.',
   'aiMemory.autoPublishNote':
     'Edits save and publish as platform defaults. Users inherit these values unless they override them.',
+  'aiMemory.fetchFailed': 'Failed to load platform memory defaults. Retry to try again.',
   'aiMemory.noWritePermission':
     'You need settings update and publish permissions to edit platform defaults.',
+  'aiMemory.retry': 'Retry',
+  'aiSettings.draftBanner.error.generic':
+    'Publish did not complete. Open the advanced catalog or retry.',
+  'aiSettings.draftBanner.error.validation_failed':
+    'Validation failed — changes stay as draft until fixed.',
+  'aiSettings.draftBanner.error.publish_failed': 'Publish failed — changes stay as draft.',
+  'aiSettings.draftBanner.error.version_required': 'A version is required before publish.',
+  'aiToolSettings.connectors.partialLoadFailed':
+    '{{count}} connectors failed to load; retry to refresh.',
   'aiSettingsDefaults.dirtyDraft.title': 'Unpublished settings draft blocks save',
   'aiSettingsDefaults.dirtyDraft.desc':
     'The Settings Policy page has an unpublished draft outside this change. Resolve it on the <settingsLink>Settings Policy</settingsLink> page first, then retry.',
@@ -962,6 +979,8 @@ export default {
   'skillCatalog.validation.issue.dependency_resolver_error':
     'A dependency could not be resolved safely at {{path}}.',
   'skillCatalog.validation.issue.manifest_invalid': 'The Skill manifest is invalid at {{path}}.',
+  'skillCatalog.validation.issue.non_inline_content':
+    'Managed Skills require fully inline content at {{path}}; opaque content references cannot be published.',
   'skillCatalog.validation.issue.permissions_invalid':
     'The permission declaration is invalid at {{path}}.',
   'skillCatalog.validation.issue.secret_material_detected':
@@ -974,7 +993,17 @@ export default {
     'This version conflicts with an existing immutable version at {{path}}.',
   'skillCatalog.validation.path.root': 'the Skill root',
   'skillCatalog.validation.technicalDetails': 'Technical details',
+  'skillCatalog.validation.untranslatedDiagnostics':
+    'Server diagnostic text (not localized; for troubleshooting only).',
   'skillCatalog.validation.warning': 'Warning',
+  'skillCatalog.publishError.version_required':
+    'A Skill version is required before this Skill can be published.',
+  'skillCatalog.publishError.validation_failed':
+    'Publication was blocked by validation. Review the version details and try again.',
+  'skillCatalog.publishError.publish_failed':
+    'Publication failed. Retry after confirming the catalog is ready.',
+  'skillCatalog.import.resourcesTruncated':
+    'Some package resources could not be imported (size, binary, or path limits). Fix the package or remove unsupported files, then import again.',
   'skillCatalog.toast.archive': 'Skill archived',
   'skillCatalog.toast.created': 'Skill created',
   'skillCatalog.toast.publish': 'Skill version published',
@@ -1286,6 +1315,11 @@ export default {
   'settingsPolicy.saveState.saving': 'Saving draft…',
   'settingsPolicy.saveState.saved': 'Draft saved',
   'settingsPolicy.saveState.failed': 'Save failed',
+  'settingsPolicy.refresh.failed':
+    'The change was committed, but the latest server state could not be loaded. Retry refresh before making further changes.',
+  'settingsPolicy.refresh.committedTitle':
+    'Change committed, but the latest state could not reload',
+  'settingsPolicy.refresh.retry': 'Retry refresh',
   // Legacy mode labels (preview / impact still may reference raw mode values).
   'settingsPolicy.mode.user': 'User',
   'settingsPolicy.mode.default': 'Default',
@@ -1472,6 +1506,22 @@ export default {
   'connectorCatalog.actions.rollback': 'Roll back revision',
   'connectorCatalog.actions.save': 'Save draft',
   'connectorCatalog.actions.test': 'Test connection',
+  'connectorCatalog.audit.action.admin.connectors.archive': 'Archive Connector',
+  'connectorCatalog.audit.action.admin.connectors.createDraft': 'Create Connector draft',
+  'connectorCatalog.audit.action.admin.connectors.deleteDraft': 'Delete Connector draft',
+  'connectorCatalog.audit.action.admin.connectors.discover': 'Discover Connector tools',
+  'connectorCatalog.audit.action.admin.connectors.publish': 'Publish Connector',
+  'connectorCatalog.audit.action.admin.connectors.revokeAllBindings': 'Revoke all user connections',
+  'connectorCatalog.audit.action.admin.connectors.rollback': 'Roll back Connector revision',
+  'connectorCatalog.audit.action.admin.connectors.setSharedAuthorization':
+    'Set shared authorization',
+  'connectorCatalog.audit.action.admin.connectors.test': 'Test Connector connection',
+  'connectorCatalog.audit.action.admin.connectors.updateBuiltinToolPolicy':
+    'Update built-in tool policy',
+  'connectorCatalog.audit.action.admin.connectors.updateDraft': 'Update Connector draft',
+  'connectorCatalog.audit.action.user.connectors.disconnect': 'Disconnect Connector',
+  'connectorCatalog.audit.action.user.connectors.startAuthorization':
+    'Start Connector authorization',
   'connectorCatalog.audit.empty': 'No audit events for this Connector.',
   'connectorCatalog.audit.noPermission':
     'You need audit read permission to view this Connector’s audit trail. No request was sent.',
@@ -1599,9 +1649,14 @@ export default {
   'connectorCatalog.toast.rolledBack': 'Connector revision rolled back.',
   'connectorCatalog.toast.saved': 'Connector draft saved.',
   'connectorCatalog.toast.tested': 'Connector connection test completed.',
+  'connectorCatalog.tombstone.unavailable': 'Managed Connector is unavailable',
   'connectorCatalog.unsaved.description':
     'You have unsaved public Connector changes. Secret values are never stored in recovery drafts.',
   'connectorCatalog.unsaved.leave': 'Leave without saving',
+  'connectorCatalog.unsaved.secretClearRestored':
+    'Clear-secret intent was restored. Save to apply the clear operation.',
+  'connectorCatalog.unsaved.secretReentry':
+    'Re-enter the replacement secret before saving. Secret values are never stored in recovery drafts.',
   'connectorCatalog.unsaved.stay': 'Keep editing',
   'connectorCatalog.unsaved.title': 'Unsaved Connector changes',
   'connectorCatalog.validation.httpUrl': 'Enter an HTTP(S) URL without embedded credentials.',
@@ -1785,6 +1840,7 @@ export default {
   'identityProviders.rollback.historyLoadError': 'Published revision history could not be loaded.',
   'identityProviders.rollback.target': 'Published rollback target',
   'identityProviders.rollback.targetRequired': 'Choose an existing published revision to restore.',
+  'identityProviders.rollback.revisionOption': 'rev {{revision}} · {{publishedAt}}',
   'identityProviders.rollback.title': 'Rollback identity provider',
   'identityProviders.runtime.degraded':
     'This instance is using last-known-good or break-glass configuration ({{category}}).',

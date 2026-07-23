@@ -153,6 +153,8 @@ export const skillValidationIssueCodeSchema = z.enum([
   'dependency_identity_mismatch',
   'dependency_resolver_error',
   'manifest_invalid',
+  /** Opaque contentRef / non-inline resources are not executable by the managed Skill runtime. */
+  'non_inline_content',
   'permissions_invalid',
   'secret_material_detected',
   'unknown_skill_dependency',
@@ -485,6 +487,15 @@ export const adminSkillParseImportSourceOutputSchema = z
     content: z.string().max(1_048_576),
     description: z.string().max(4000).nullable(),
     displayName: z.string().min(1).max(200),
+    /**
+     * Enterprise platform Skill manifest derived from the package metadata.
+     * Callers must publish this rather than synthesizing an empty-permissions stub.
+     */
+    manifest: skillManifestSchema,
+    /**
+     * Package SemVer when present and valid; omit when absent/invalid so clients can default.
+     */
+    packageVersion: skillVersionSchema.optional(),
     resources: skillResourcesSchema,
     /** true when parsed resources were dropped (count cap, binary/oversize file or invalid path). */
     resourcesTruncated: z.boolean().optional(),

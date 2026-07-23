@@ -5,7 +5,7 @@ import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { AdminIdentityProviderService } from '../../services/identityProvider/adminService';
-import { IdentityProviderDiscoveryValidator } from '../../services/identityProvider/discoveryValidator';
+import { createIdentityProviderSecurityFoundation } from '../../services/identityProvider/factory';
 import { IdentityProviderTestFlowService } from '../../services/identityProvider/testFlowService';
 
 export interface AdminIdentityProviderRuntime {
@@ -22,15 +22,17 @@ export const createAdminIdentityProviderRuntime = (
   env: Record<string, string | undefined> = process.env,
 ): AdminIdentityProviderRuntime => {
   if (!isIdentityProviderFeatureEnabled(env)) throw new Error('PLATFORM_FEATURE_DISABLED');
+  const foundation = createIdentityProviderSecurityFoundation(db, env);
+  if (!foundation) throw new Error('PLATFORM_FEATURE_DISABLED');
   const flags = parseEnterpriseFeatureFlags(env);
   const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise(env, flags);
   if (!secretService) throw new Error('PLATFORM_SECRET_REQUIRED');
+  // Shared outbound client so test token/userinfo exchange uses the same public-only boundary.
   const outbound = new SafeOutboundHttpClient({ mode: 'public-only' });
-  const discovery = new IdentityProviderDiscoveryValidator(outbound);
   const publicAppUrl = env === process.env ? appEnv.APP_URL : env.APP_URL;
   if (!publicAppUrl) throw new Error('PLATFORM_APP_URL_INVALID');
   return {
-    admin: new AdminIdentityProviderService(db, secretService, discovery, publicAppUrl),
-    test: new IdentityProviderTestFlowService(db, secretService, discovery, outbound),
+    admin: new AdminIdentityProviderService(db, secretService, foundation.discovery, publicAppUrl),
+    test: new IdentityProviderTestFlowService(db, secretService, foundation.discovery, outbound),
   };
 };

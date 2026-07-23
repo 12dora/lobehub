@@ -157,6 +157,11 @@ export interface PlatformIdentityProviderDraft {
 /** Validated OpenID Provider metadata. Unknown discovery fields never cross this boundary. */
 export interface PlatformOidcDiscoveryMetadata {
   authorizationEndpoint: string;
+  /**
+   * RFC 9207: when true the authorization response must include `iss` equal to the
+   * discovered issuer. When false/absent, a present `iss` is still validated exactly.
+   */
+  authorizationResponseIssParameterSupported: boolean;
   codeChallengeMethodsSupported: string[];
   idTokenSigningAlgValuesSupported: string[];
   issuer: string;
@@ -193,8 +198,8 @@ export type PlatformIdentityProviderPreviewClaim =
   (typeof PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS)[number];
 
 export interface PlatformIdentityProviderClaimValidationIssue {
-  code: 'required_claim_missing';
-  field: 'name' | 'subject';
+  code: 'email_domain_denied' | 'email_invalid' | 'required_claim_missing';
+  field: 'email' | 'name' | 'subject';
 }
 
 export interface PlatformIdentityProviderClaimPreview {

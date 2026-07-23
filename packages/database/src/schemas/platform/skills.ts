@@ -63,6 +63,8 @@ export type PlatformSkillValidationIssueCode =
   | 'dependency_identity_mismatch'
   | 'dependency_resolver_error'
   | 'manifest_invalid'
+  /** Opaque contentRef / non-inline resources are not executable by the managed Skill runtime. */
+  | 'non_inline_content'
   | 'permissions_invalid'
   | 'secret_material_detected'
   | 'unknown_skill_dependency'

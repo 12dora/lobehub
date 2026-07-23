@@ -12,6 +12,8 @@ import type {
 class AdminIdentityProvidersService {
   create = (input: AdminIdentityProviderCreateInput) =>
     lambdaClient.admin.identityProviders.create.mutate(input);
+  disable = (input: { expectedRevision: number; id: string; reason: string }) =>
+    lambdaClient.admin.identityProviders.disable.mutate(input);
   discover = (input: { issuer: string }) =>
     lambdaClient.admin.identityProviders.discover.mutate(input);
   getCallbackUrls = () => lambdaClient.admin.identityProviders.getCallbackUrls.query();

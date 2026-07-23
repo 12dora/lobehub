@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
 import {
   permissions,
   platformAuditLogs,
@@ -28,10 +29,12 @@ import { ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY } from '../../security/policy/ad
 import { adminRouter } from '../admin';
 import {
   assertZipExpandedWithinLimit,
+  mapPackagePermissionTokens,
   MAX_IMPORT_ZIP_BYTES,
   MAX_IMPORT_ZIP_EXPANDED_BYTES,
   readResponseBodyWithLimit,
   SKILL_IMPORT_ERROR_REASONS,
+  toEnterpriseSkillManifest,
 } from './skillsImportParse';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -48,6 +51,7 @@ const ids = {
 const SKILL_MD = `---
 name: Demo Skill
 description: A demo skill
+version: 2.3.4
 ---
 
 # Demo Skill
@@ -55,7 +59,58 @@ description: A demo skill
 Demo skill body content.
 `;
 
+const SKILL_MD_WITH_PERMISSIONS = `---
+name: Rich Import Skill
+description: Skill with compatible package grants
+version: 3.1.0
+permissions:
+  - filesystem:read
+  - network:api.example.com
+  - tool:web-search
+  - unknown_freeform_token
+skillDependencies:
+  - skillKey: helper.skill
+    version: 1.0.0
+    optional: true
+toolDependencies:
+  - toolKey: web-search
+    optional: true
+---
+
+# Rich Import Skill
+
+Body with preserved grants.
+`;
+
+/** Publish-safe grants only (no unknown tools/skills that fail closed at validation). */
+const SKILL_MD_PUBLISHABLE_GRANTS = `---
+name: Publishable Import Skill
+description: Skill with filesystem and network grants only
+version: 3.1.0
+permissions:
+  - filesystem:read
+  - network:api.example.com
+  - unknown_freeform_token
+---
+
+# Publishable Import Skill
+
+Body with preserved grants.
+`;
+
 vi.mock('@lobechat/ssrf-safe-fetch', () => ({ ssrfSafeFetch: vi.fn() }));
+
+vi.mock('@lobechat/builtin-skills', () => ({
+  builtinSkills: [
+    {
+      content: '# Mock builtin Skill',
+      description: 'Mock builtin Skill',
+      identifier: 'mock-builtin',
+      name: 'Mock builtin',
+      source: 'builtin',
+    },
+  ],
+}));
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
@@ -122,6 +177,54 @@ const callerFor = async (params: { userId?: string }) =>
     serverDB: db,
   } as never);
 
+describe('toEnterpriseSkillManifest / mapPackagePermissionTokens', () => {
+  it('maps compatible package permission tokens and dependency declarations', () => {
+    const mapped = mapPackagePermissionTokens([
+      'filesystem:read',
+      'network:api.example.com',
+      'tool:web-search',
+      'tool:web-search',
+      'unknown_freeform_token',
+      'network',
+    ]);
+    expect(mapped).toEqual({
+      permissions: {
+        filesystem: 'read',
+        network: { allowedHosts: ['api.example.com'], enabled: true },
+        tools: { allow: ['web-search'] },
+      },
+      toolDependencies: [{ optional: true, toolKey: 'web-search' }],
+    });
+
+    const enterprise = toEnterpriseSkillManifest({
+      description: 'desc',
+      displayName: 'Name',
+      packageManifest: {
+        description: 'desc',
+        name: 'Name',
+        permissions: ['filesystem:read', 'network:api.example.com', 'tool:web-search'],
+        skillDependencies: [
+          { optional: true, skillKey: 'helper.skill', version: '1.0.0' },
+          { skillKey: 'bad key', version: '1.0.0' },
+        ],
+        toolDependencies: [{ optional: true, toolKey: 'web-search' }],
+        version: '3.1.0',
+      } as never,
+    });
+    expect(enterprise).toMatchObject({
+      description: 'desc',
+      displayName: 'Name',
+      permissions: {
+        filesystem: 'read',
+        network: { allowedHosts: ['api.example.com'], enabled: true },
+        tools: { allow: ['web-search'] },
+      },
+      skillDependencies: [{ optional: true, skillKey: 'helper.skill', version: '1.0.0' }],
+      toolDependencies: [{ optional: true, toolKey: 'web-search' }],
+    });
+  });
+});
+
 describe('admin.skills.parseImportSource', () => {
   it('parses a markdown skill from a URL without persisting anything', async () => {
     vi.mocked(ssrfSafeFetch).mockResolvedValue(
@@ -137,6 +240,18 @@ describe('admin.skills.parseImportSource', () => {
     expect(result.description).toBe('A demo skill');
     expect(result.content).toContain('# Demo Skill');
     expect(result.resources).toEqual([]);
+    expect(result.packageVersion).toBe('2.3.4');
+    expect(result.manifest).toMatchObject({
+      description: 'A demo skill',
+      displayName: 'Demo Skill',
+      permissions: {
+        filesystem: 'none',
+        network: { allowedHosts: [], enabled: false },
+        tools: { allow: [] },
+      },
+      skillDependencies: [],
+      toolDependencies: [],
+    });
     expect(result.suggestedSkillKey).toBe('url.example.com.skills.demo.skill');
     expect(result.suggestedSkillKey).toMatch(/^[a-z0-9][a-z0-9._-]*$/);
     expect(result.sourceMeta).toEqual({
@@ -180,6 +295,95 @@ describe('admin.skills.parseImportSource', () => {
     expect(result.resources[0]!.checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.sourceMeta).toEqual({ kind: 'zip', origin: 'demo-skill.zip' });
     expect(await db.select().from(platformSkills)).toEqual([]);
+  });
+
+  it('preserves package version/permissions/deps through parse → applyImmediate and flags truncation', async () => {
+    const caller = await callerFor({ userId: ids.superAdmin });
+
+    // Truncation flag: >100 resource files must surface resourcesTruncated (client refuses publish).
+    const resourceEntries: Record<string, Uint8Array> = {
+      'SKILL.md': strToU8(SKILL_MD_WITH_PERMISSIONS),
+    };
+    for (let i = 0; i < 101; i += 1) {
+      resourceEntries[`references/file-${String(i).padStart(3, '0')}.md`] = strToU8(`# file ${i}`);
+    }
+    const truncated = await caller.parseImportSource({
+      fileName: 'rich-import.zip',
+      source: 'zip',
+      zipBase64: Buffer.from(zipSync(resourceEntries)).toString('base64'),
+    });
+    expect(truncated.packageVersion).toBe('3.1.0');
+    expect(truncated.resourcesTruncated).toBe(true);
+    expect(truncated.resources).toHaveLength(100);
+    expect(truncated.manifest).toMatchObject({
+      permissions: {
+        filesystem: 'read',
+        network: { allowedHosts: ['api.example.com'], enabled: true },
+        tools: { allow: ['web-search'] },
+      },
+      skillDependencies: [{ optional: true, skillKey: 'helper.skill', version: '1.0.0' }],
+      toolDependencies: [{ optional: true, toolKey: 'web-search' }],
+    });
+
+    // Complete package with publish-safe grants → applyImmediate retains converted manifest + version.
+    const complete = await caller.parseImportSource({
+      fileName: 'rich-complete.zip',
+      source: 'zip',
+      zipBase64: Buffer.from(
+        zipSync({
+          'SKILL.md': strToU8(SKILL_MD_PUBLISHABLE_GRANTS),
+          'references/notes.md': strToU8('# notes'),
+        }),
+      ).toString('base64'),
+    });
+    expect(complete.resourcesTruncated).toBeUndefined();
+    expect(complete.packageVersion).toBe('3.1.0');
+    expect(complete.manifest).toMatchObject({
+      permissions: {
+        filesystem: 'read',
+        network: { allowedHosts: ['api.example.com'], enabled: true },
+        tools: { allow: [] },
+      },
+      skillDependencies: [],
+      toolDependencies: [],
+    });
+
+    const published = await caller.applyImmediate({
+      allowBuiltinOverride: false,
+      description: complete.description,
+      displayName: complete.displayName,
+      distribution: 'default',
+      enabled: true,
+      mode: 'create',
+      reason: 'import regression with preserved grants',
+      skillKey: `rich.import.${Date.now()}`,
+      version: {
+        content: complete.content,
+        contentRef: null,
+        manifest: complete.manifest,
+        resources: complete.resources,
+        version: complete.packageVersion ?? '1.0.0',
+      },
+    });
+    expect(published.published).toBe(true);
+    expect(published.publishError).toBeFalsy();
+    expect(published.versionId).toBeTruthy();
+
+    // Read stored version via repository (avoids TRPC getVersion output coupling).
+    const stored = await new PlatformSkillCatalogRepository(db).getVersion(
+      published.draft.id,
+      published.versionId!,
+    );
+    expect(stored?.version).toBe('3.1.0');
+    expect(stored?.manifest).toMatchObject({
+      permissions: {
+        filesystem: 'read',
+        network: { allowedHosts: ['api.example.com'], enabled: true },
+        tools: { allow: [] },
+      },
+      skillDependencies: [],
+      toolDependencies: [],
+    });
   });
 
   it('rejects a ZIP whose decoded size exceeds 20MB with a stable skill_import error code', async () => {

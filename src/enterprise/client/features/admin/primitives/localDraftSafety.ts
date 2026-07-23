@@ -52,6 +52,12 @@ export interface LocalDraftSecretScanOptions {
   /** Extra keys treated as non-secret even when the name matches the sensitive pattern. */
   benignKeys?: Iterable<string>;
   maxScanNodes?: number;
+  /**
+   * Exact secret leaf values currently being edited. Any public-field string that
+   * equals or contains one of these is treated as secret material (arbitrary
+   * passwords/passphrases that match no built-in pattern).
+   */
+  secretLeaves?: Iterable<string>;
 }
 
 const isSensitiveKeyName = (key: string, benign: Set<string>) =>
@@ -72,6 +78,7 @@ export const carriesLocalDraftSecretMaterial = (
   const benign = new Set(
     [...(options?.benignKeys ?? DEFAULT_LOCAL_DRAFT_BENIGN_KEYS)].map((name) => name.toLowerCase()),
   );
+  const secretLeaves = [...(options?.secretLeaves ?? [])].filter((leaf) => leaf.length > 0);
   const maxScanNodes = options?.maxScanNodes ?? MAX_LOCAL_DRAFT_SCAN_NODES;
   const stack: unknown[] = [value];
   const seen = new WeakSet<object>();
@@ -82,6 +89,7 @@ export const carriesLocalDraftSecretMaterial = (
     visited += 1;
     if (typeof current === 'string') {
       if (containsSecretValue(current)) return true;
+      if (secretLeaves.some((leaf) => current === leaf || current.includes(leaf))) return true;
       continue;
     }
     if (!current || typeof current !== 'object') continue;

@@ -1241,6 +1241,31 @@ export class PlatformUserConnectorBindingRepository {
     return rows[0];
   };
 
+  /**
+   * Batch variant of {@link getBinding}: bindings for many connectors in ONE query
+   * (`WHERE userId = :userId AND connectorId IN (:ids)`). Connectors without a binding
+   * are simply absent from the map — callers use `.get(id)` and treat undefined as unbound.
+   */
+  getBindingsForConnectors = async (
+    connectorIds: string[],
+  ): Promise<Map<string, PlatformUserConnectorBindingItem>> => {
+    const byConnectorId = new Map<string, PlatformUserConnectorBindingItem>();
+    if (connectorIds.length === 0) return byConnectorId;
+    const rows = await this.db
+      .select()
+      .from(platformUserConnectorBindings)
+      .where(
+        and(
+          eq(platformUserConnectorBindings.userId, this.userId),
+          inArray(platformUserConnectorBindings.connectorId, connectorIds),
+        ),
+      );
+    for (const row of rows) {
+      byConnectorId.set(row.connectorId, row);
+    }
+    return byConnectorId;
+  };
+
   getAuthorizationAttempt = async (connectorId: string, attemptId: string) => {
     const [row] = await this.db
       .select({

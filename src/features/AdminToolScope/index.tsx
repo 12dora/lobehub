@@ -22,6 +22,20 @@ export interface AdminOrgSkillDetailData {
 }
 
 /**
+ * Platform RBAC capabilities for skill/connector actions under the admin panel.
+ * Shared settings surfaces prefer these over personal `create_content` /
+ * `edit_own_content` when {@link useAdminToolScope} is non-null.
+ */
+export interface AdminToolScopeCapabilities {
+  canCreateConnector: boolean;
+  canCreateSkill: boolean;
+  canDeleteConnector: boolean;
+  canDeleteSkill: boolean;
+  canUpdateConnector: boolean;
+  canUpdateSkill: boolean;
+}
+
+/**
  * Org-global datasource injected by the admin panel so the user-facing
  * skill/connector settings UI renders unchanged while every read/write targets
  * the platform catalog (admin.skills / admin.connectors) instead of the
@@ -32,6 +46,8 @@ export interface AdminOrgSkillDetailData {
  * untouched by construction.
  */
 export interface AdminToolScope {
+  /** Platform SKILL_* / CONNECTOR_* capabilities from useAdminAccess. */
+  capabilities: AdminToolScopeCapabilities;
   /** Extra warning/notice rendered above both settings views (e.g. per-user OAuth caveat). */
   connectorNotice?: ReactNode;
   /** Platform connectors + synthesized builtin rows, in ConnectorWithTools shape. */
