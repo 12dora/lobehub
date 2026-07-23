@@ -1,7 +1,9 @@
 'use client';
 
-import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
+import { cssVar } from 'antd-style';
+import { Info } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -71,10 +73,22 @@ const SharedOAuthAuthorizationControl = memo<{ disabled?: boolean }>(({ disabled
   return (
     <Flexbox gap={6} style={{ marginBlockStart: 10 }}>
       <Flexbox horizontal align="center" gap={8} justify="space-between">
-        <Flexbox horizontal align="center" gap={8}>
+        <Flexbox horizontal align="center" gap={6}>
           <Text strong style={{ fontSize: 13 }}>
             {t('managedResources.sharedOAuth.title', { defaultValue: 'Org-shared OAuth' })}
           </Text>
+          <Tooltip
+            title={t('managedResources.sharedOAuth.activeDesc', {
+              defaultValue:
+                'While connectors are platform-managed, all users share the designated OAuth authorizations. User-owned authorizations are kept and resume when sharing stops.',
+            })}
+          >
+            <span
+              style={{ color: cssVar.colorTextSecondary, cursor: 'help', display: 'inline-flex' }}
+            >
+              <Icon icon={Info} size={14} />
+            </span>
+          </Tooltip>
           {ownerUserId ? (
             <Tag color="success">
               {t('managedResources.sharedOAuth.active', { defaultValue: 'Shared' })}
@@ -106,17 +120,6 @@ const SharedOAuthAuthorizationControl = memo<{ disabled?: boolean }>(({ disabled
           </Button>
         )}
       </Flexbox>
-      <Text style={{ fontSize: 12 }} type="secondary">
-        {ownerUserId
-          ? t('managedResources.sharedOAuth.activeDesc', {
-              defaultValue:
-                'While connectors are platform-managed, all users share the designated OAuth authorizations. User-owned authorizations are kept and resume when sharing stops.',
-            })
-          : t('managedResources.sharedOAuth.perUserDesc', {
-              defaultValue:
-                'Each user authorizes OAuth connectors from their own settings. Takes effect only when connectors are platform-managed.',
-            })}
-      </Text>
     </Flexbox>
   );
 });

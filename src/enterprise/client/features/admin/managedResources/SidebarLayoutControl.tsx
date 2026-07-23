@@ -111,7 +111,8 @@ const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
           ) : null}
           <Select
             disabled={busy}
-            style={{ minWidth: 140 }}
+            // Unified policy-mode select width — keep in sync with the resource + settings boxes.
+            style={{ width: 160 }}
             value={mode}
             options={MODE_VALUES.map((m) => ({
               label: t(`sidebarLayout.mode.${m}` as const),
@@ -121,7 +122,6 @@ const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
           />
         </Flexbox>
       </div>
-      <Text type="secondary">{t('sidebarLayout.desc')}</Text>
     </section>
   );
 });
