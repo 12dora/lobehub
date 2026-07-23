@@ -78,6 +78,7 @@ const AuditIndexRedirect = lazy(
 const OperationLogsPage = lazy(
   () => import('@/enterprise/client/features/admin/audit/operationLogs/OperationLogsPage'),
 );
+const AuditLivePage = lazy(() => import('@/enterprise/client/features/admin/audit/live/LivePage'));
 const ConversationsSearchPage = lazy(
   () => import('@/enterprise/client/features/admin/audit/conversations/ConversationsSearchPage'),
 );
@@ -192,6 +193,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'audit-logs': {
       return withLazy(<OperationLogsPage />);
+    }
+    case 'audit-live': {
+      return withLazy(<AuditLivePage />);
     }
     case 'audit-conversations': {
       return withLazy(<ConversationsSearchPage />);

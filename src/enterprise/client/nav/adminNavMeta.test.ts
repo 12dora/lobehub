@@ -155,5 +155,10 @@ describe('adminNavMeta', () => {
     const nav = filterAdminNavByPermissions(ADMIN_NAV_ITEMS, [PLATFORM_PERMISSIONS.AUDIT_READ]);
     const audit = nav.find((item) => item.id === 'audit');
     expect(audit?.children?.map((c) => c.id)).toEqual(['audit-logs']);
+
+    expect(findAdminNavItemByPath('/admin/audit/live')?.id).toBe('audit-live');
+    expect(findAdminNavItemByPath('/admin/audit/live')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ,
+    ]);
   });
 });

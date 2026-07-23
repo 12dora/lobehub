@@ -98,17 +98,21 @@ export const useFetchAuditConversationsList = (
     userId: string;
   },
   enabled = true,
+  options?: { refreshInterval?: number },
 ) => {
   const key = enabled && params.userId ? buildAdminAuditConversationsListKey(params) : null;
-  return useClientDataSWR(key, () =>
-    adminAuditService.listConversations({
-      cursor: params.cursor ?? undefined,
-      from: params.from,
-      limit: params.limit,
-      q: params.q,
-      to: params.to,
-      userId: params.userId,
-    }),
+  return useClientDataSWR(
+    key,
+    () =>
+      adminAuditService.listConversations({
+        cursor: params.cursor ?? undefined,
+        from: params.from,
+        limit: params.limit,
+        q: params.q,
+        to: params.to,
+        userId: params.userId,
+      }),
+    { refreshInterval: options?.refreshInterval },
   );
 };
 
@@ -133,19 +137,23 @@ export const useFetchAuditConversationMessages = (
     userId: string;
   },
   enabled = true,
+  options?: { refreshInterval?: number },
 ) => {
   const key =
     enabled && params.userId && params.topicId
       ? buildAdminAuditConversationMessagesKey(params)
       : null;
-  return useClientDataSWR(key, () =>
-    adminAuditService.listConversationMessages({
-      cursor: params.cursor ?? undefined,
-      includeBody: params.includeBody,
-      limit: params.limit,
-      topicId: params.topicId,
-      userId: params.userId,
-    }),
+  return useClientDataSWR(
+    key,
+    () =>
+      adminAuditService.listConversationMessages({
+        cursor: params.cursor ?? undefined,
+        includeBody: params.includeBody,
+        limit: params.limit,
+        topicId: params.topicId,
+        userId: params.userId,
+      }),
+    { refreshInterval: options?.refreshInterval },
   );
 };
 

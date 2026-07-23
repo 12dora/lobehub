@@ -34,6 +34,7 @@ export type AdminNavLabelKey =
   | 'nav.branding'
   | 'nav.audit'
   | 'nav.auditLogs'
+  | 'nav.auditLive'
   | 'nav.auditConversations'
   | 'nav.auditConversationUser'
   | 'nav.auditConversationTopic'
@@ -304,6 +305,13 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         path: '/admin/audit/logs',
         placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_READ],
+      },
+      {
+        id: 'audit-live',
+        labelKey: 'nav.auditLive',
+        path: '/admin/audit/live',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
       {
         id: 'audit-conversations',
