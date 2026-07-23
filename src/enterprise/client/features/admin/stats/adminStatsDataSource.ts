@@ -55,6 +55,3 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
  */
 export const resolveAdminStatsUser = (userId: string): UserDisplay =>
   userDisplayCache.get(userId) ?? { avatar: null, name: userId };
-
-/** Test helper — clear display cache between tests. */
-export const __clearAdminStatsUserCache = () => userDisplayCache.clear();

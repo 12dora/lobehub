@@ -21,7 +21,6 @@ import {
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
-  ADMIN_AUDIT_EVENTS_LIST_KEY,
   ADMIN_AUDIT_EXPORTS_LIST_KEY,
   ADMIN_AUDIT_HOLDS_LIST_KEY,
   ADMIN_AUDIT_POLICY_KEY,
@@ -261,10 +260,6 @@ export const useFetchAuditRetentionRuns = (
       }),
     { refreshInterval: options?.refreshInterval },
   );
-};
-
-export const refreshAuditEventsList = async () => {
-  await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AUDIT_EVENTS_LIST_KEY);
 };
 
 export const refreshAuditExportsList = async () => {

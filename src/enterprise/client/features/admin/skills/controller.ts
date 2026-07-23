@@ -223,17 +223,6 @@ export const buildMinimalSkillManifest = (params: {
   toolDependencies: [],
 });
 
-export const emptyEditableSkillVersionDraft = (
-  overrides: Partial<EditableSkillVersionDraft> = {},
-): EditableSkillVersionDraft => ({
-  content: '# Platform skill\n',
-  contentRef: '',
-  manifestText: JSON.stringify(buildMinimalSkillManifest({ displayName: 'Skill' }), null, 2),
-  resourcesText: '[]',
-  version: '1.0.0',
-  ...overrides,
-});
-
 /** Version fields embedded in applyImmediate(mode:'create') without CAS tokens. */
 export const buildApplyImmediateVersionPayload = (params: {
   content: string;
@@ -322,33 +311,3 @@ export const summarizeSkillValidation = (validation: AdminSkillValidateOutput | 
   ),
   warnings: validation?.issues.filter((issue) => issue.severity === 'warning').length ?? 0,
 });
-
-export type SkillPrimaryAction = 'none' | 'publish' | 'retry' | 'save' | 'validate';
-
-export const resolveSkillPrimaryAction = (params: {
-  canPublish: boolean;
-  canSave: boolean;
-  canValidate: boolean;
-  conflict: boolean;
-  dirty: boolean;
-  hasVersion: boolean;
-  saveState: SkillSaveState;
-  validation: AdminSkillValidateOutput | null;
-}): SkillPrimaryAction => {
-  if (params.conflict) return 'none';
-  if (params.saveState === 'failed' && params.canSave) return 'retry';
-  if (params.dirty && params.canSave) return 'save';
-  if (
-    params.hasVersion &&
-    params.canValidate &&
-    !summarizeSkillValidation(params.validation).publishable
-  )
-    return 'validate';
-  if (
-    params.hasVersion &&
-    params.canPublish &&
-    summarizeSkillValidation(params.validation).publishable
-  )
-    return 'publish';
-  return 'none';
-};

@@ -8,11 +8,7 @@ import i18n from 'i18next';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import {
-  PLATFORM_ROLE_PERMISSIONS,
-  PLATFORM_SYSTEM_ROLES,
-  type PlatformSystemRoleName,
-} from '@/const/platform/roles';
+import { PLATFORM_SYSTEM_ROLES, type PlatformSystemRoleName } from '@/const/platform/roles';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type {
   AdminUsersBanInput,
@@ -509,7 +505,3 @@ export const openDeleteUserModal = (params: {
     },
   });
 };
-
-// Re-export permission map for tests that assert localization keys map to packages.
-export const rolePermissionCount = (role: PlatformSystemRoleName) =>
-  PLATFORM_ROLE_PERMISSIONS[role].length;

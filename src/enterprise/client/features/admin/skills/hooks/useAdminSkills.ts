@@ -8,7 +8,6 @@ import { useClientDataSWR } from '@/libs/swr';
 
 import {
   ADMIN_SKILL_DEPENDENTS_KEY,
-  ADMIN_SKILL_GET_KEY,
   ADMIN_SKILL_LIST_KEY,
   ADMIN_SKILL_VERSION_KEY,
   ADMIN_SKILL_VERSIONS_KEY,
@@ -115,20 +114,4 @@ export const refreshAdminSkill = async (id: string) => {
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_SKILL_DEPENDENTS_KEY),
   ]);
   return detail;
-};
-
-export const clearAdminSkillCache = async () => {
-  await mutate(
-    (key) =>
-      Array.isArray(key) &&
-      [
-        ADMIN_SKILL_GET_KEY,
-        ADMIN_SKILL_LIST_KEY,
-        ADMIN_SKILL_VERSION_KEY,
-        ADMIN_SKILL_VERSIONS_KEY,
-        ADMIN_SKILL_DEPENDENTS_KEY,
-      ].includes(key[0]),
-    undefined,
-    { revalidate: false },
-  );
 };

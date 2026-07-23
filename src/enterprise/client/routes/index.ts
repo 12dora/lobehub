@@ -28,14 +28,5 @@ export const getEnterpriseDesktopRoutesWithoutMainLayout = (): RouteObject[] => 
 export const EnterpriseDesktopRoutesWithoutMainLayout: RouteObject[] =
   getEnterpriseDesktopRoutesWithoutMainLayout();
 
-/**
- * Mobile `/admin` surface: unsupported management page when flag on; empty when off.
- */
-export const getEnterpriseMobileRoutesWithoutMainLayout = (): RouteObject[] => {
-  if (!isPlatformAdminBootEnabled()) return [];
-  // Lazy element import kept in BusinessMobileRoutes to avoid circular deps in tests
-  return [];
-};
-
 export { isPlatformAdminBootEnabled } from '../boot/isPlatformAdminBootEnabled';
 export { createAdminRouteTree } from './admin/createAdminRouteTree';

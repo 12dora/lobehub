@@ -1,11 +1,7 @@
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
-import type {
-  AdminSystemJob,
-  AdminSystemJobs,
-  AdminSystemStatus,
-} from '@/enterprise/client/services/adminSystem';
+import type { AdminSystemJob, AdminSystemJobs } from '@/enterprise/client/services/adminSystem';
 
 export interface AdminSystemPermissions {
   canOperate: boolean;
@@ -121,11 +117,3 @@ export const didAdminSystemJobRefreshConfirm = (
 
 export const isAdminSystemConflictError = (error: unknown): boolean =>
   mapEnterpriseError(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT;
-
-export const formatRevisionToken = (
-  token: AdminSystemStatus['domains'][number]['targetToken'],
-): string => {
-  if (!token) return '—';
-  if (token.kind === 'revision') return `r${token.value}`;
-  return token.value.slice(0, 12);
-};

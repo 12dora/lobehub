@@ -9,7 +9,6 @@ import {
   type EditableSkillDraft,
   parseEditableSkillVersionDraft,
   rebaseSkillDraft,
-  resolveSkillPrimaryAction,
   shouldConfirmSkillHydration,
   summarizeSkillValidation,
   toEditableSkillDraft,
@@ -201,48 +200,12 @@ describe('M08 Skill UI controller', () => {
     ]);
   });
 
-  it('prioritizes retry/save/validate/publish and blocks actions during conflict', () => {
+  it('summarizes skill validation into error/warning counts and publishability', () => {
     const valid: AdminSkillValidateOutput = {
       issues: [],
       validatedAt: new Date(),
       validatorVersion: 'm08-v2',
     };
     expect(summarizeSkillValidation(valid)).toEqual({ errors: 0, publishable: true, warnings: 0 });
-    expect(
-      resolveSkillPrimaryAction({
-        canPublish: true,
-        canSave: true,
-        canValidate: true,
-        conflict: true,
-        dirty: true,
-        hasVersion: true,
-        saveState: 'dirty',
-        validation: valid,
-      }),
-    ).toBe('none');
-    expect(
-      resolveSkillPrimaryAction({
-        canPublish: true,
-        canSave: true,
-        canValidate: true,
-        conflict: false,
-        dirty: false,
-        hasVersion: true,
-        saveState: 'failed',
-        validation: valid,
-      }),
-    ).toBe('retry');
-    expect(
-      resolveSkillPrimaryAction({
-        canPublish: true,
-        canSave: true,
-        canValidate: true,
-        conflict: false,
-        dirty: false,
-        hasVersion: true,
-        saveState: 'saved',
-        validation: valid,
-      }),
-    ).toBe('publish');
   });
 });

@@ -105,7 +105,6 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 interface ListFilters {
-  action?: string;
   actions: string[];
   actorUserId?: string;
   from: Date;
@@ -172,7 +171,6 @@ const OperationLogsPage = memo(() => {
 
   const listInput = useMemo(
     () => ({
-      action: filters.action,
       actions: filters.actions.length ? filters.actions : undefined,
       actorUserId: filters.actorUserId,
       cursor: currentCursor ?? undefined,
