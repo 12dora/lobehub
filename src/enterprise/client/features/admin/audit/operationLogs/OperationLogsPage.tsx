@@ -29,9 +29,9 @@ import {
   truncateText,
 } from '../shared/format';
 import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
+import { AUDIT_DEFAULT_LIST_LIMIT, useCursorPagination } from '../shared/useCursorPagination';
 import EventDetailDrawer from './EventDetailDrawer';
 
-const DEFAULT_LIST_LIMIT = 50;
 const DEBOUNCE_MS = 300;
 
 const styles = createStaticStyles(({ css }) => ({
@@ -115,23 +115,13 @@ interface ListFilters {
   to: Date;
 }
 
-interface ListQueryState {
-  cursorStack: (string | null)[];
-  filters: ListFilters;
-  limit: number;
-}
-
-const emptyQuery = (): ListQueryState => {
+const emptyFilters = (): ListFilters => {
   const window = getDefaultAuditTimeWindow();
   return {
-    cursorStack: [],
-    filters: {
-      actions: [],
-      from: window.from,
-      results: [],
-      to: window.to,
-    },
-    limit: DEFAULT_LIST_LIMIT,
+    actions: [],
+    from: window.from,
+    results: [],
+    to: window.to,
   };
 };
 
@@ -140,34 +130,38 @@ const OperationLogsPage = memo(() => {
   const { permissions } = useAdminAccess();
   const canRead = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
 
-  const [queryState, setQueryState] = useState<ListQueryState>(emptyQuery);
+  const [filters, setFilters] = useState<ListFilters>(emptyFilters);
+  const {
+    currentCursor,
+    hasPrevious,
+    limit,
+    onNext,
+    onPageSizeChange,
+    onPrevious,
+    reset: resetCursor,
+    setLimit,
+  } = useCursorPagination();
   const [detailId, setDetailId] = useState<string | null>(null);
   const [requestIdDraft, setRequestIdDraft] = useState('');
   const [targetTypeDraft, setTargetTypeDraft] = useState('');
   const [targetIdDraft, setTargetIdDraft] = useState('');
   const requestIdDebounceRef = useRef<number | null>(null);
 
-  const { filters, cursorStack, limit } = queryState;
-  const currentCursor = cursorStack.at(-1) ?? null;
-
   // Debounce requestId: draft keystrokes must not fire list/access-audit per key.
   useEffect(() => {
     if (requestIdDebounceRef.current) window.clearTimeout(requestIdDebounceRef.current);
     requestIdDebounceRef.current = window.setTimeout(() => {
       const next = requestIdDraft.trim() || undefined;
-      setQueryState((prev) => {
-        if (prev.filters.requestId === next) return prev;
-        return {
-          ...prev,
-          cursorStack: [],
-          filters: { ...prev.filters, requestId: next },
-        };
+      setFilters((prev) => {
+        if (prev.requestId === next) return prev;
+        resetCursor();
+        return { ...prev, requestId: next };
       });
     }, DEBOUNCE_MS);
     return () => {
       if (requestIdDebounceRef.current) window.clearTimeout(requestIdDebounceRef.current);
     };
-  }, [requestIdDraft]);
+  }, [requestIdDraft, resetCursor]);
 
   const listInput = useMemo(
     () => ({
@@ -195,13 +189,13 @@ const OperationLogsPage = memo(() => {
   const items = data?.items ?? [];
   const nextCursor = data?.nextCursor ?? null;
 
-  const patchFilters = useCallback((patch: Partial<ListFilters>) => {
-    setQueryState((prev) => ({
-      cursorStack: [],
-      filters: { ...prev.filters, ...patch },
-      limit: prev.limit,
-    }));
-  }, []);
+  const patchFilters = useCallback(
+    (patch: Partial<ListFilters>) => {
+      setFilters((prev) => ({ ...prev, ...patch }));
+      resetCursor();
+    },
+    [resetCursor],
+  );
 
   const toggleResult = useCallback(
     (result: 'success' | 'failure' | 'denied' | null) => {
@@ -209,32 +203,27 @@ const OperationLogsPage = memo(() => {
         patchFilters({ results: [] });
         return;
       }
-      setQueryState((prev) => {
-        const has = prev.filters.results.includes(result);
-        const next = has ? prev.filters.results.filter((r) => r !== result) : [result];
-        return {
-          cursorStack: [],
-          filters: { ...prev.filters, results: next },
-          limit: prev.limit,
-        };
+      setFilters((prev) => {
+        const has = prev.results.includes(result);
+        const next = has ? prev.results.filter((r) => r !== result) : [result];
+        return { ...prev, results: next };
       });
+      resetCursor();
     },
-    [patchFilters],
+    [patchFilters, resetCursor],
   );
 
-  const toggleActionFacet = useCallback((action: string) => {
-    setQueryState((prev) => {
-      const has = prev.filters.actions.includes(action);
-      const actions = has
-        ? prev.filters.actions.filter((a) => a !== action)
-        : [...prev.filters.actions, action];
-      return {
-        cursorStack: [],
-        filters: { ...prev.filters, actions },
-        limit: prev.limit,
-      };
-    });
-  }, []);
+  const toggleActionFacet = useCallback(
+    (action: string) => {
+      setFilters((prev) => {
+        const has = prev.actions.includes(action);
+        const actions = has ? prev.actions.filter((a) => a !== action) : [...prev.actions, action];
+        return { ...prev, actions };
+      });
+      resetCursor();
+    },
+    [resetCursor],
+  );
 
   const rangeValue: [Dayjs, Dayjs] = useMemo(
     () => [dayjs(filters.from), dayjs(filters.to)],
@@ -291,21 +280,6 @@ const OperationLogsPage = memo(() => {
     [t],
   );
 
-  const goNext = useCallback(() => {
-    if (!nextCursor) return;
-    setQueryState((prev) => ({
-      ...prev,
-      cursorStack: [...prev.cursorStack, nextCursor],
-    }));
-  }, [nextCursor]);
-
-  const goPrevious = useCallback(() => {
-    setQueryState((prev) => ({
-      ...prev,
-      cursorStack: prev.cursorStack.length === 0 ? prev.cursorStack : prev.cursorStack.slice(0, -1),
-    }));
-  }, []);
-
   const activeResult = filters.results.length === 1 ? filters.results[0] : null;
 
   const moreFilterCount = [
@@ -332,8 +306,10 @@ const OperationLogsPage = memo(() => {
     setRequestIdDraft('');
     setTargetTypeDraft('');
     setTargetIdDraft('');
-    setQueryState(emptyQuery());
-  }, []);
+    setFilters(emptyFilters());
+    setLimit(AUDIT_DEFAULT_LIST_LIMIT);
+    resetCursor();
+  }, [resetCursor, setLimit]);
 
   const statCards = [
     {
@@ -549,13 +525,12 @@ const OperationLogsPage = memo(() => {
         scroll={{ x: 1100 }}
         cursorPagination={{
           hasNext: Boolean(nextCursor),
-          hasPrevious: cursorStack.length > 0,
-          onNext: goNext,
-          onPrevious: goPrevious,
+          hasPrevious,
+          onNext: () => onNext(nextCursor),
+          onPrevious,
           pageSize: limit,
           pageSizeOptions: ['20', '50', '100'],
-          onPageSizeChange: (pageSize) =>
-            setQueryState((prev) => ({ ...prev, cursorStack: [], limit: pageSize })),
+          onPageSizeChange,
         }}
         onRetry={() => void mutate()}
         onRowActivate={(row) => setDetailId(row.id)}

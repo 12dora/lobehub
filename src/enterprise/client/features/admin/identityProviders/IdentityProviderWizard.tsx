@@ -1,8 +1,8 @@
 'use client';
 
 import { DEFAULT_IDP_BUTTON_LABEL, type PlatformIdentityProviderDraft } from '@lobechat/types';
-import { Alert, copyToClipboard, Flexbox, Input, Tag, Text, TextArea } from '@lobehub/ui';
-import { Button, Checkbox, Select, toast } from '@lobehub/ui/base-ui';
+import { Alert, copyToClipboard, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -12,7 +12,6 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
-  AUTHENTIK_ISSUER_PLACEHOLDER,
   type IdentityProviderCreateDraftSeed,
   IdentityProviderTestPopupBlockedError,
   openIdentityProviderTestPopup,
@@ -26,28 +25,22 @@ import {
   type IdentityProviderStepState,
   IdentityProviderWizardNavigation,
 } from './IdentityProviderWizardNavigation';
+import {
+  BasicStep,
+  ClaimsStep,
+  ClientStep,
+  DiscoveryStep,
+  type EditableDraft,
+  PolicyStep,
+  PublishStep,
+  TestStep,
+} from './steps';
 import { identityProviderStyles as styles } from './styles';
 import {
   useIdentityProviderRevisionHistory,
   useIdentityProviderTestResult,
 } from './useIdentityProviders';
 import { useUnsavedIdentityProviderGuard } from './useUnsavedIdentityProviderGuard';
-
-type EditableDraft = {
-  autoProvision: boolean;
-  buttonLabel: string;
-  claimMapping: PlatformIdentityProviderDraft['claimMapping'];
-  clientId: string;
-  displayName: string;
-  domainAllowlist: string[];
-  groupRoleMapping: Record<string, string>;
-  icon: string | null;
-  issuer: string;
-  providerKey: string;
-  scopes: string[];
-  type: 'authentik' | 'generic_oidc';
-  usePkce: true;
-};
 
 const fromSeed = (seed: IdentityProviderCreateDraftSeed): EditableDraft => ({
   autoProvision: true,
@@ -400,6 +393,22 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       setStep(IDENTITY_PROVIDER_STEPS[nextIndex]);
     };
 
+    const handleClaimJsonChange = (raw: string) => {
+      setClaimJson(raw);
+      const parsed = parseIdentityProviderJsonObject(raw);
+      setJsonErrors((current) => ({ ...current, claims: !parsed.valid }));
+      if (parsed.valid)
+        patch('claimMapping', parsed.value as unknown as EditableDraft['claimMapping']);
+    };
+
+    const handleGroupRoleJsonChange = (raw: string) => {
+      setGroupRoleJson(raw);
+      const parsed = parseIdentityProviderJsonObject(raw);
+      setJsonErrors((current) => ({ ...current, groups: !parsed.valid }));
+      if (parsed.valid)
+        patch('groupRoleMapping', parsed.value as EditableDraft['groupRoleMapping']);
+    };
+
     const stepStates = useMemo((): Partial<
       Record<IdentityProviderStep, IdentityProviderStepState>
     > => {
@@ -446,344 +455,91 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const renderStep = () => {
       switch (step) {
         case 'basic': {
-          return (
-            <div className={styles.form}>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.displayName')}</Text>
-                <Input
-                  value={draft.displayName}
-                  onChange={(e) => patch('displayName', e.target.value)}
-                />
-              </label>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.providerKey')}</Text>
-                <Input
-                  disabled={Boolean(provider)}
-                  value={draft.providerKey}
-                  onChange={(e) => patch('providerKey', e.target.value.toLowerCase())}
-                />
-              </label>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.buttonLabel')}</Text>
-                <Input
-                  value={draft.buttonLabel}
-                  onChange={(e) => patch('buttonLabel', e.target.value)}
-                />
-              </label>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.icon')}</Text>
-                <Input
-                  placeholder="https://…"
-                  value={draft.icon ?? ''}
-                  onChange={(e) => patch('icon', e.target.value || null)}
-                />
-              </label>
-              <div className={`${styles.field} ${styles.full}`}>
-                <Text>{t('identityProviders.fields.type')}</Text>
-                <Flexbox horizontal gap={8}>
-                  <Tag color={draft.type === 'authentik' ? 'blue' : 'default'}>
-                    {draft.type === 'authentik'
-                      ? 'Authentik'
-                      : t('identityProviders.templates.genericOidc.label')}
-                  </Tag>
-                  <Text type="secondary">{t('identityProviders.fields.typeLocked')}</Text>
-                </Flexbox>
-              </div>
-            </div>
-          );
+          return <BasicStep draft={draft} patch={patch} providerKeyLocked={Boolean(provider)} />;
         }
         case 'discovery': {
           return (
-            <Flexbox gap={12}>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.issuer')}</Text>
-                <Input
-                  value={draft.issuer}
-                  placeholder={
-                    draft.type === 'authentik'
-                      ? AUTHENTIK_ISSUER_PLACEHOLDER
-                      : 'https://id.example.com/application/o/app/'
-                  }
-                  onChange={(e) => {
-                    patch('issuer', e.target.value);
-                    setNetworkValid(false);
-                    setDiscovery(null);
-                  }}
-                />
-              </label>
-              <Button
-                disabled={!canTest || !draft.issuer}
-                loading={busy === 'discover'}
-                onClick={discover}
-              >
-                {t('identityProviders.actions.discover')}
-              </Button>
-              {networkValid ? (
-                <Alert
-                  showIcon
-                  description={t('identityProviders.discovery.valid')}
-                  type="success"
-                />
-              ) : null}
-              {discovery ? (
-                <div className={styles.discoveryGrid}>
-                  <Text strong>{t('identityProviders.discovery.endpoints')}</Text>
-                  {(
-                    [
-                      ['authorization', discovery.authorizationEndpoint],
-                      ['token', discovery.tokenEndpoint],
-                      ['jwks', discovery.jwksUri],
-                    ] as const
-                  ).map(([key, value]) => (
-                    <div className={styles.discoveryRow} key={key}>
-                      <Text type="secondary">
-                        {t(`identityProviders.discovery.${key}` as never)}
-                      </Text>
-                      <Text className={styles.endpointValue}>{value}</Text>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </Flexbox>
+            <DiscoveryStep
+              busy={busy}
+              canTest={canTest}
+              discovery={discovery}
+              draft={draft}
+              networkValid={networkValid}
+              patch={patch}
+              onDiscover={discover}
+              onIssuerChange={() => {
+                setNetworkValid(false);
+                setDiscovery(null);
+              }}
+            />
           );
         }
         case 'client': {
           return (
-            <Flexbox gap={12}>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.clientId')}</Text>
-                <Input value={draft.clientId} onChange={(e) => patch('clientId', e.target.value)} />
-              </label>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.clientSecret')}</Text>
-                <Input
-                  autoComplete="new-password"
-                  type="password"
-                  value={secret}
-                  placeholder={
-                    provider?.secret.configured ? t('identityProviders.secret.configured') : ''
-                  }
-                  onChange={(e) => {
-                    setSecret(e.target.value);
-                    setClearSecret(false);
-                  }}
-                />
-              </label>
-              {provider?.secret.configured ? (
-                <Text type="secondary">
-                  {t('identityProviders.secret.updatedAt', {
-                    updatedAt: provider.secret.updatedAt?.toLocaleString() ?? '—',
-                  })}
-                </Text>
-              ) : null}
-              <label>
-                <Checkbox
-                  checked={clearSecret}
-                  onChange={(checked) => {
-                    setClearSecret(checked);
-                    if (checked) setSecret('');
-                  }}
-                />{' '}
-                {t('identityProviders.secret.clear')}
-              </label>
-              <Text>{t('identityProviders.callback.production')}</Text>
-              <div className={styles.callback}>
-                <span className={styles.callbackUrl}>{callbacks?.production ?? '—'}</span>
-                {callbacks?.production ? (
-                  <Button size="small" onClick={() => void copyUrl(callbacks.production)}>
-                    {t('identityProviders.callback.copy')}
-                  </Button>
-                ) : null}
-              </div>
-              <Text>{t('identityProviders.callback.test')}</Text>
-              <div className={styles.callback}>
-                <span className={styles.callbackUrl}>{callbacks?.test ?? '—'}</span>
-                {callbacks?.test ? (
-                  <Button size="small" onClick={() => void copyUrl(callbacks.test)}>
-                    {t('identityProviders.callback.copy')}
-                  </Button>
-                ) : null}
-              </div>
-            </Flexbox>
+            <ClientStep
+              callbacks={callbacks}
+              clearSecret={clearSecret}
+              draft={draft}
+              patch={patch}
+              secret={secret}
+              secretConfigured={Boolean(provider?.secret.configured)}
+              secretUpdatedAt={provider?.secret.updatedAt}
+              setClearSecret={setClearSecret}
+              setSecret={setSecret}
+              onCopyUrl={copyUrl}
+            />
           );
         }
         case 'claims': {
           return (
-            <label className={styles.field}>
-              <Text>{t('identityProviders.fields.claimMapping')}</Text>
-              <TextArea
-                rows={14}
-                value={claimJson}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  setClaimJson(raw);
-                  const parsed = parseIdentityProviderJsonObject(raw);
-                  setJsonErrors((current) => ({ ...current, claims: !parsed.valid }));
-                  if (parsed.valid)
-                    patch('claimMapping', parsed.value as unknown as EditableDraft['claimMapping']);
-                }}
-              />
-              {jsonErrors.claims ? (
-                <Text type="danger">{t('identityProviders.errors.invalidJson')}</Text>
-              ) : null}
-            </label>
+            <ClaimsStep
+              claimJson={claimJson}
+              invalidJson={jsonErrors.claims}
+              onClaimJsonChange={handleClaimJsonChange}
+            />
           );
         }
         case 'policy': {
           return (
-            <Flexbox gap={12}>
-              <label>
-                <Checkbox
-                  checked={draft.autoProvision}
-                  onChange={(checked) => patch('autoProvision', checked)}
-                />{' '}
-                {t('identityProviders.fields.autoProvision')}
-              </label>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.domains')}</Text>
-                <TextArea
-                  rows={4}
-                  value={draft.domainAllowlist.join('\n')}
-                  onChange={(e) =>
-                    patch(
-                      'domainAllowlist',
-                      e.target.value
-                        .split(/[,\n]/)
-                        .map((value) => value.trim())
-                        .filter(Boolean),
-                    )
-                  }
-                />
-              </label>
-              <label className={styles.field}>
-                <Text>{t('identityProviders.fields.groupRoles')}</Text>
-                <TextArea
-                  rows={8}
-                  value={groupRoleJson}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    setGroupRoleJson(raw);
-                    const parsed = parseIdentityProviderJsonObject(raw);
-                    setJsonErrors((current) => ({ ...current, groups: !parsed.valid }));
-                    if (parsed.valid)
-                      patch('groupRoleMapping', parsed.value as EditableDraft['groupRoleMapping']);
-                  }}
-                />
-                {jsonErrors.groups ? (
-                  <Text type="danger">{t('identityProviders.errors.invalidJson')}</Text>
-                ) : null}
-              </label>
-            </Flexbox>
+            <PolicyStep
+              draft={draft}
+              groupRoleJson={groupRoleJson}
+              invalidJson={jsonErrors.groups}
+              patch={patch}
+              onGroupRoleJsonChange={handleGroupRoleJsonChange}
+            />
           );
         }
         case 'test': {
           return (
-            <Flexbox gap={12}>
-              <Text>{t('identityProviders.test.description')}</Text>
-              <Button
-                disabled={!provider || dirty || !canTest}
-                loading={busy === 'test'}
-                onClick={startTest}
-              >
-                {t('identityProviders.actions.startTest')}
-              </Button>
-              {attempt && Date.now() - attempt.startedAt > 120_000 ? (
-                <Alert showIcon description={t('identityProviders.test.timeout')} type="warning" />
-              ) : null}
-              {testResult.data ? (
-                <Alert
-                  showIcon
-                  description={t('identityProviders.test.status', {
-                    status: t(
-                      `identityProviders.values.testStatus.${testResult.data.status}` as never,
-                    ),
-                  })}
-                  type={
-                    testResult.data.status === 'succeeded' && testResult.data.result?.valid
-                      ? 'success'
-                      : testResult.data.status === 'failed'
-                        ? 'error'
-                        : 'info'
-                  }
-                />
-              ) : null}
-              {testResult.data?.result ? (
-                <Flexbox horizontal gap={6} wrap="wrap">
-                  {Object.entries(testResult.data.result.claims).map(([claim, summary]) => (
-                    <Tag key={claim}>
-                      {t('identityProviders.test.claimPresent', {
-                        claim,
-                        type: t(`identityProviders.values.claimType.${summary.type}` as never),
-                      })}
-                    </Tag>
-                  ))}
-                </Flexbox>
-              ) : null}
-              {testResult.error ? (
-                <Alert
-                  showIcon
-                  description={t('identityProviders.test.resultLoadError')}
-                  type="error"
-                  action={
-                    <Button size="small" onClick={() => void testResult.mutate()}>
-                      {t('identityProviders.actions.retry')}
-                    </Button>
-                  }
-                />
-              ) : null}
-            </Flexbox>
+            <TestStep
+              attempt={attempt}
+              busy={busy}
+              canTest={canTest}
+              dirty={dirty}
+              hasProvider={Boolean(provider)}
+              resultError={Boolean(testResult.error)}
+              testResult={testResult.data}
+              onRetryResult={() => void testResult.mutate()}
+              onStartTest={startTest}
+            />
           );
         }
         case 'publish': {
           return (
-            <Flexbox gap={12}>
-              <Text>{t('identityProviders.publish.description')}</Text>
-              <Flexbox horizontal gap={8}>
-                <Button
-                  disabled={!provider || dirty || !canPublish}
-                  loading={busy === 'publish'}
-                  type="primary"
-                  onClick={() => publish(false)}
-                >
-                  {t('identityProviders.actions.publish')}
-                </Button>
-                <Select
-                  aria-label={t('identityProviders.rollback.target')}
-                  placeholder={t('identityProviders.rollback.target')}
-                  style={{ minWidth: 220 }}
-                  value={rollbackTarget}
-                  options={(revisions.data ?? [])
-                    .filter((item) => item.revision !== provider?.activationRevision)
-                    .map((item) => ({
-                      label: `rev ${item.revision} · ${item.publishedAt.toLocaleString()}`,
-                      value: item.revision,
-                    }))}
-                  onChange={(value) => setRollbackTarget(value as number | undefined)}
-                />
-                <Button
-                  danger
-                  loading={busy === 'rollback'}
-                  disabled={
-                    !provider?.activationRevision || !rollbackTarget || dirty || !canPublish
-                  }
-                  onClick={() => publish(true)}
-                >
-                  {t('identityProviders.actions.rollback')}
-                </Button>
-              </Flexbox>
-              {revisions.error ? (
-                <Alert
-                  showIcon
-                  description={t('identityProviders.rollback.historyLoadError')}
-                  type="error"
-                  action={
-                    <Button size="small" onClick={() => void revisions.mutate()}>
-                      {t('identityProviders.actions.retry')}
-                    </Button>
-                  }
-                />
-              ) : null}
-            </Flexbox>
+            <PublishStep
+              activationRevision={provider?.activationRevision}
+              busy={busy}
+              canPublish={canPublish}
+              dirty={dirty}
+              hasProvider={Boolean(provider)}
+              historyError={Boolean(revisions.error)}
+              revisions={revisions.data}
+              rollbackTarget={rollbackTarget}
+              onPublish={publish}
+              onRetryHistory={() => void revisions.mutate()}
+              onRollbackTargetChange={setRollbackTarget}
+            />
           );
         }
       }

@@ -28,7 +28,7 @@ import {
   adminPlatformAgentVersionsListOutputSchema,
 } from '@/server/enterprise/contracts/platformAgents';
 
-import type { AdminAgentDetailOutput, AdminAgentListItem, AdminAgentsClient } from './types';
+import type { AdminAgentDetailOutput, AdminAgentListItem, AdminAgentsClient } from '../types';
 
 const checksum = (seed: string) => seed.padEnd(64, seed.at(-1) ?? '0').slice(0, 64);
 

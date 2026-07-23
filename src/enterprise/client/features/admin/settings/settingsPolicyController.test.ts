@@ -8,12 +8,25 @@ import {
   deriveSettingsPermissions,
   fingerprintDraft,
   fromSettingsPolicyUiMode,
+  isServiceModelManaged,
   normalizeSettingsPolicyDraft,
   resolvePrimaryAction,
+  SETTINGS_POLICY_GROUPS,
   toSettingsPolicyUiMode,
 } from './settingsPolicyController';
 
 describe('settingsPolicyController', () => {
+  it('hides service-model managed groups/paths from the settings policy surface', () => {
+    expect(isServiceModelManaged({ group: 'image', path: 'image.any' })).toBe(true);
+    expect(isServiceModelManaged({ group: 'systemAgent', path: 'systemAgent.x' })).toBe(true);
+    expect(
+      isServiceModelManaged({ group: 'defaultAgent', path: 'defaultAgent.config.model' }),
+    ).toBe(true);
+    expect(isServiceModelManaged({ group: 'general', path: 'general.fontSize' })).toBe(false);
+    expect(SETTINGS_POLICY_GROUPS).not.toContain('image');
+    expect(SETTINGS_POLICY_GROUPS).toContain('general');
+  });
+
   it('permission matrix: read-only / update / publish', () => {
     const auditor = deriveSettingsPermissions([PLATFORM_PERMISSIONS.SETTINGS_READ]);
     expect(auditor).toEqual({ canPublish: false, canUpdate: false, canView: true });

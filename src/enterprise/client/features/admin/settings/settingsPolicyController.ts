@@ -11,6 +11,29 @@ export type DraftMap = AdminSettingsGetDraftOutput['draft'];
 export type DraftPolicy = DraftMap[string];
 export type SaveState = 'idle' | 'saving' | 'saved' | 'failed';
 
+// The admin "Service model" page (/admin/ai/service-model) already owns model/service
+// assignments. These groups/paths are hidden here to avoid a duplicate editing surface
+// that could publish conflicting policy. Everything else in each group stays editable.
+export const SERVICE_MODEL_MANAGED_GROUPS = new Set(['image', 'systemAgent']);
+export const SERVICE_MODEL_MANAGED_PATHS = new Set([
+  'defaultAgent.config.model',
+  'defaultAgent.config.provider',
+  'tts.openAI.ttsModel',
+]);
+
+export const isServiceModelManaged = (entry: { group: string; path: string }): boolean =>
+  SERVICE_MODEL_MANAGED_GROUPS.has(entry.group) || SERVICE_MODEL_MANAGED_PATHS.has(entry.path);
+
+/** Setting groups rendered on the settings policy editor (excludes service-model surfaces). */
+export const SETTINGS_POLICY_GROUPS = [
+  'general',
+  'memory',
+  'tool',
+  'tts',
+  'notification',
+  'defaultAgent',
+] as const;
+
 /**
  * Admin UI collapses mode+visibility into two states:
  * - user: mode user + visibility visible (users control the setting)

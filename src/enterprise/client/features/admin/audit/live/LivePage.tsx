@@ -27,10 +27,10 @@ import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
 import { mergeMessagePages } from '../shared/liveMessageUtils';
 import { idSetsDisjoint, mergeTopicPages } from '../shared/topicListUtils';
+import { AUDIT_LIST_POLL_MS } from '../shared/useCursorPagination';
 import MessagePane from './MessagePane';
 import TopicListPane from './TopicListPane';
 
-const POLL_MS = 4000;
 const LIST_LIMIT = 30;
 const MSG_LIMIT = 100;
 
@@ -229,7 +229,7 @@ const LivePage = memo(() => {
       userId: userId!,
     },
     canConversationRead && !!userId,
-    { refreshInterval: poll && !!userId ? POLL_MS : 0 },
+    { refreshInterval: poll && !!userId ? AUDIT_LIST_POLL_MS : 0 },
   );
 
   const topicDetail = useFetchAuditConversation(
@@ -246,7 +246,7 @@ const LivePage = memo(() => {
       userId: userId!,
     },
     canConversationRead && !!userId && !!topicId,
-    { refreshInterval: poll && !!topicId ? POLL_MS : 0 },
+    { refreshInterval: poll && !!topicId ? AUDIT_LIST_POLL_MS : 0 },
   );
 
   // Update last-refreshed on every poll completion (validating edge), not only data ref change.

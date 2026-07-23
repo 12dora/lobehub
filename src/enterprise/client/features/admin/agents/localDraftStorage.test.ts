@@ -219,6 +219,15 @@ describe('admin Agent recovery draft storage', () => {
     expect(saveAdminAgentDraft('agent-1', baseValue())).toBe('unavailable');
   });
 
+  it('reports unavailable when serialization fails (circular structure)', () => {
+    const value = baseValue();
+    vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+      throw new TypeError('Converting circular structure to JSON');
+    });
+    expect(saveAdminAgentDraft('agent-1', value)).toBe('unavailable');
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
   it('returns null (never throws) when reading throws', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new DOMException('SecurityError');

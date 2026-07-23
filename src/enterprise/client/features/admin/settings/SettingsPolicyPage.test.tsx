@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,6 +11,10 @@ import SettingsPolicyPage from './SettingsPolicyPage';
 const mocks = vi.hoisted(() => ({
   blocker: { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' },
   capability: true,
+  confirmModal: vi.fn((_options: { onCancel: () => void; onOk: () => void }) => ({
+    close: vi.fn(),
+    destroy: vi.fn(),
+  })),
   data: undefined as any,
   mutate: vi.fn(),
   openDangerConfirm: vi.fn(),
@@ -60,6 +64,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       ))}
     </select>
   ),
+  confirmModal: mocks.confirmModal,
   toast: { error: mocks.toastError, success: vi.fn() },
 }));
 
@@ -77,10 +82,12 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('react-router', () => ({
-  useBlocker: (dirty: boolean) =>
-    dirty && mocks.blocker.state === 'blocked'
+  useBlocker: (when: boolean | ((args: unknown) => boolean)) => {
+    const enabled = typeof when === 'function' ? true : Boolean(when);
+    return enabled && mocks.blocker.state === 'blocked'
       ? mocks.blocker
-      : { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' },
+      : { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' };
+  },
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
@@ -527,12 +534,12 @@ describe('SettingsPolicyPage', () => {
   it('protects dirty drafts from SPA navigation', async () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
     mocks.blocker.state = 'blocked';
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<SettingsPolicyPage />);
     fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
       target: { value: 'local' },
     });
-    await waitFor(() => expect(window.confirm).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.confirmModal).toHaveBeenCalled());
+    act(() => mocks.confirmModal.mock.calls[0]![0].onCancel());
     expect(mocks.blocker.reset).toHaveBeenCalled();
   });
 });

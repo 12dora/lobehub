@@ -76,11 +76,7 @@ export const clearConnectorSecretEdit = (): ConnectorSecretEdit => ({
 export const changeConnectorCredentialMode = (
   draft: EditableAdminConnectorDraft,
   credentialMode: ConnectorCredentialMode,
-  _secret: ConnectorSecretEdit,
-): { draft: EditableAdminConnectorDraft; secret: ConnectorSecretEdit } => ({
-  draft: { ...draft, credentialMode },
-  secret: createEmptyConnectorSecretEdit(),
-});
+): EditableAdminConnectorDraft => ({ ...draft, credentialMode });
 
 export const toEditableAdminConnectorDraft = (
   draft: AdminConnectorDraft,

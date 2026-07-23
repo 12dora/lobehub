@@ -1,11 +1,10 @@
 'use client';
 
 import { Alert, Text } from '@lobehub/ui';
-import { Button, confirmModal } from '@lobehub/ui/base-ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useBlocker } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -23,10 +22,10 @@ import type {
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { readFileBase64 } from '../primitives/readFileBase64';
 import RevisionBanner from '../primitives/RevisionBanner';
+import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { BrandingFields } from './BrandingFields';
 import { BrandingPreview } from './BrandingPreview';
-import { createBrandingNavigationDecision } from './navigationDecision';
 import { useBrandingEditorStore } from './store';
 import { useFetchAdminBranding } from './useAdminBranding';
 
@@ -120,7 +119,6 @@ const BrandingPage = memo(() => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const observedServerSnapshot = useRef<string | null>(null);
-  const leaveModal = useRef<ReturnType<typeof confirmModal> | null>(null);
   const dirty = editorState === 'dirty';
   const conflict = editorState === 'conflict';
 
@@ -143,40 +141,19 @@ const BrandingPage = memo(() => {
     }
   }, [baseRevision, data, draft, draftToken, editorState, hydrate, markConflict]);
 
-  const blocker = useBlocker(dirty);
-  const blockerProceed = blocker.proceed;
-  const blockerReset = blocker.reset;
-  const blockerState = blocker.state;
-  useEffect(() => {
-    if (blockerState !== 'blocked') {
-      leaveModal.current?.close();
-      leaveModal.current = null;
-      return;
-    }
-    if (leaveModal.current) return;
-    const decision = createBrandingNavigationDecision({
-      onCancel: () => {
-        leaveModal.current = null;
-        blockerReset?.();
-      },
-      onProceed: () => {
-        leaveModal.current = null;
-        blockerProceed?.();
-      },
-    });
-    leaveModal.current = confirmModal({
+  const unsavedMessages = useMemo(
+    () => ({
       cancelText: t('branding.unsaved.stay'),
       content: t('branding.unsaved.description'),
       okText: t('branding.unsaved.leave'),
-      onCancel: decision.cancel,
-      onOk: decision.proceed,
       title: t('branding.unsaved.title'),
-    });
-  }, [blockerProceed, blockerReset, blockerState, t]);
+    }),
+    [t],
+  );
+  useUnsavedChangesGuard({ enabled: dirty, messages: unsavedMessages });
 
   useEffect(
     () => () => {
-      leaveModal.current?.destroy();
       // Clear observation so a remount with the same SWR snapshot can hydrate again
       // even if the module-level store was already emptied by reset().
       observedServerSnapshot.current = null;
@@ -184,16 +161,6 @@ const BrandingPage = memo(() => {
     },
     [reset],
   );
-
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [dirty]);
 
   const labels = useMemo(
     () =>

@@ -1,10 +1,11 @@
 'use client';
 
 import { confirmModal } from '@lobehub/ui/base-ui';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useBlocker } from 'react-router';
+import type { BlockerFunction } from 'react-router';
 
+import { useUnsavedChangesGuard } from '../../primitives/useUnsavedChangesGuard';
 import {
   type EditableSkillDraft,
   type EditableSkillIdentityDraft,
@@ -47,7 +48,6 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
   const pendingSnapshotRef = useRef<AdminSkillGetOutput | null>(null);
   const allowedHydrationSkillIdRef = useRef<string | null>(null);
   const pendingNavigationSkillIdRef = useRef<string | null>(null);
-  const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
   const switchModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
   const hydrateSnapshot = useCallback(
@@ -189,59 +189,42 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
     recoveryBaseRevision,
   ]);
 
-  useEffect(() => {
-    if (!editable || !dirty) return;
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
+  const skillLeaveBlocker = useMemo<boolean | BlockerFunction>(() => {
+    if (!editable || !dirty) return false;
+    return ({ currentLocation, nextLocation }) => {
+      if (currentLocation.pathname === nextLocation.pathname) return false;
+      const match = /^\/admin\/skills\/([^/]+)$/.exec(nextLocation.pathname);
+      try {
+        pendingNavigationSkillIdRef.current = match ? decodeURIComponent(match[1]) : null;
+      } catch {
+        pendingNavigationSkillIdRef.current = null;
+      }
+      return true;
     };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [dirty, editable]);
 
-  const blocker = useBlocker(
-    editable && dirty
-      ? ({ currentLocation, nextLocation }) => {
-          if (currentLocation.pathname === nextLocation.pathname) return false;
-          const match = /^\/admin\/skills\/([^/]+)$/.exec(nextLocation.pathname);
-          try {
-            pendingNavigationSkillIdRef.current = match ? decodeURIComponent(match[1]) : null;
-          } catch {
-            pendingNavigationSkillIdRef.current = null;
-          }
-          return true;
-        }
-      : false,
-  );
-  useEffect(() => {
-    if (blocker.state !== 'blocked') {
-      leaveModalRef.current?.close();
-      leaveModalRef.current = null;
-      return;
-    }
-    if (leaveModalRef.current) return;
-    leaveModalRef.current = confirmModal({
+  const unsavedMessages = useMemo(
+    () => ({
       cancelText: t('skillCatalog.editor.unsaved.stay'),
       content: t('skillCatalog.editor.unsaved.desc'),
       okText: t('skillCatalog.editor.unsaved.leave'),
       title: t('skillCatalog.editor.unsaved.title'),
-      onCancel: () => {
-        leaveModalRef.current = null;
-        blocker.reset?.();
-      },
-      onOk: () => {
-        allowedHydrationSkillIdRef.current = pendingNavigationSkillIdRef.current;
-        pendingNavigationSkillIdRef.current = null;
-        leaveModalRef.current = null;
-        blocker.proceed?.();
-      },
-    });
-  }, [blocker.proceed, blocker.reset, blocker.state, t]);
+    }),
+    [t],
+  );
+
+  useUnsavedChangesGuard({
+    enabled: editable && dirty,
+    messages: unsavedMessages,
+    shouldBlock: skillLeaveBlocker,
+    onProceed: () => {
+      allowedHydrationSkillIdRef.current = pendingNavigationSkillIdRef.current;
+      pendingNavigationSkillIdRef.current = null;
+    },
+  });
 
   useEffect(
     () => () => {
-      leaveModalRef.current?.destroy();
-      leaveModalRef.current = null;
       switchModalRef.current?.destroy();
       switchModalRef.current = null;
     },
