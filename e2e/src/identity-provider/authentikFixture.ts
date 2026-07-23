@@ -22,6 +22,8 @@ interface PendingAuthorization {
   challenge: string;
   clientId: string;
   nonce?: string;
+  /** When true, authorize redirect omits RFC 9207 `iss` (real Authentik parity). */
+  omitIss?: boolean;
   redirectUri: string;
   state: string;
 }
@@ -243,8 +245,10 @@ export const startAuthentikFixture = async (
         ) {
           return fail(response, 'invalid_request', 'authorization request rejected');
         }
+        // `fixture_omit_iss=1` mirrors real Authentik (no RFC 9207 iss on auth response).
+        const omitIss = url.searchParams.get('fixture_omit_iss') === '1';
         const consentId = randomBytes(18).toString('base64url');
-        pending.set(consentId, { challenge, clientId, nonce, redirectUri, state });
+        pending.set(consentId, { challenge, clientId, nonce, omitIss, redirectUri, state });
         response.writeHead(200, {
           'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
           'content-type': 'text/html; charset=utf-8',
@@ -267,7 +271,10 @@ export const startAuthentikFixture = async (
         codes.set(code, { ...authorization, consumed: false });
         const redirect = new URL(authorization.redirectUri);
         redirect.searchParams.set('code', code);
-        redirect.searchParams.set('iss', AUTHENTIK_FIXTURE_ISSUER);
+        // Default still emits iss (stricter fixture); omit when fixture_omit_iss=1 (Authentik parity).
+        if (!authorization.omitIss) {
+          redirect.searchParams.set('iss', AUTHENTIK_FIXTURE_ISSUER);
+        }
         redirect.searchParams.set('state', authorization.state);
         response.writeHead(302, { location: redirect.toString() });
         return response.end();

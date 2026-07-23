@@ -314,7 +314,11 @@ export const buildPlatformIdentityProvider = (
     pkce: true,
     providerId: provider.providerKey,
     redirectURI,
-    requireIssuerValidation: true,
+    // Authentik (this deploy) does not support RFC 9207: auth responses omit `iss` and
+    // discovery has no authorization_response_iss_parameter_supported. better-auth still
+    // rejects a present-but-mismatched iss; when missing we must not fail closed here.
+    // Issuer authenticity is enforced by getUserInfo → verifyPlatformOidcIdToken (iss/sig/aud/nonce).
+    requireIssuerValidation: false,
     scopes: provider.scopes,
     tokenUrl: BETTER_AUTH_UNUSED_TOKEN_ENDPOINT,
   };

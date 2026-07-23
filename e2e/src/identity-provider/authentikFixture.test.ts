@@ -55,7 +55,7 @@ const assertAuthorizationResponse = (callback: URL, expectedState: string) => {
   return { code, issuer, state };
 };
 
-const authorize = async (input: { nonce?: string; state?: string } = {}) => {
+const authorize = async (input: { nonce?: string; omitIss?: boolean; state?: string } = {}) => {
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
   const url = new URL('authorize', AUTHENTIK_FIXTURE_ISSUER);
@@ -68,6 +68,8 @@ const authorize = async (input: { nonce?: string; state?: string } = {}) => {
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
   if (input.nonce) url.searchParams.set('nonce', input.nonce);
+  // Real Authentik omits RFC 9207 `iss`; fixture default still emits iss unless requested.
+  if (input.omitIss) url.searchParams.set('fixture_omit_iss', '1');
 
   const consent = await request(url, { dispatcher });
   const html = await consent.body.text();
@@ -80,6 +82,14 @@ const authorize = async (input: { nonce?: string; state?: string } = {}) => {
     method: 'POST',
   });
   const callback = new URL(String(approval.headers.location));
+  if (input.omitIss) {
+    const code = callback.searchParams.get('code');
+    const state = callback.searchParams.get('state');
+    if (!code) throw new Error('authorization response code missing');
+    if (state !== expectedState) throw new Error('authorization response state mismatch');
+    expect(callback.searchParams.get('iss')).toBeNull();
+    return { callback, code, issuer: null, state, verifier };
+  }
   return { ...assertAuthorizationResponse(callback, expectedState), callback, verifier };
 };
 
@@ -182,6 +192,18 @@ describe('Authentik fixture', () => {
       clientSecretBasicExchanges: 1,
       clientSecretPostExchanges: 0,
     });
+  });
+
+  it('can emit an authorization response without RFC 9207 iss (Authentik parity)', async () => {
+    await setup();
+    const { callback, code, issuer, state } = await authorize({
+      nonce: 'nonce-no-iss',
+      omitIss: true,
+    });
+    expect(code).toBeTruthy();
+    expect(issuer).toBeNull();
+    expect(state).toBe(EXPECTED_STATE);
+    expect(callback.searchParams.has('iss')).toBe(false);
   });
 
   it('rejects authorization responses with a missing or wrong RFC 9207 issuer', async () => {

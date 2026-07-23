@@ -87,8 +87,10 @@ describe('platform identity provider Better Auth adapter', () => {
       pkce: true,
       providerId: 'corp-oidc',
       redirectURI: 'https://app.example.test/api/auth/oauth2/callback/corp-oidc',
-      requireIssuerValidation: true,
+      // Authentik omits RFC 9207 `iss` on authorize response; id_token verification covers issuer.
+      requireIssuerValidation: false,
     });
+    expect(config.requireIssuerValidation).toBe(false);
     expect(config).not.toHaveProperty('discoveryUrl');
     expect(config.tokenUrl).toBe('https://platform-oidc-token.invalid/');
     expect(config.tokenUrl).not.toBe(provider.oidcMetadata.tokenEndpoint);
