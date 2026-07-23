@@ -1,21 +1,16 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import {
-  platformAuditLogs,
-  platformResourceRevisions,
-  platformSettingPolicies,
-  platformSettingsBundle,
-  userSettingOverrideRevisions,
-  userSettingOverrides,
-} from '@/database/schemas/platform';
+import { users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import { AdminSettingsService } from './adminSettingsService';
 import {
   EffectiveSettingsService,
+  getEffectiveSettingsCacheSizeForTest,
   resetEffectiveSettingsCacheForTest,
   SettingsPathError,
 } from './effectiveSettingsService';
@@ -39,23 +34,36 @@ vi.mock('../../featureFlags', async (importOriginal) => {
 const service = new EffectiveSettingsService(serverDB);
 const admin = new AdminSettingsService(serverDB);
 
+/** TRUNCATE bypasses append-only audit/revision immutability triggers (migration 0145). */
+const resetSettingsTables = async () => {
+  await serverDB.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_audit_logs,
+        platform_resource_revisions,
+        user_setting_overrides,
+        user_setting_override_revisions,
+        platform_setting_policies,
+        platform_settings_bundle
+      CASCADE
+    `),
+  );
+};
+
+const ensureUsers = async (...ids: string[]) => {
+  for (const id of ids) {
+    await serverDB.insert(users).values({ id }).onConflictDoNothing();
+  }
+};
+
 beforeEach(async () => {
   resetEffectiveSettingsCacheForTest();
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(userSettingOverrides);
-  await serverDB.delete(userSettingOverrideRevisions);
-  await serverDB.delete(platformSettingPolicies);
-  await serverDB.delete(platformSettingsBundle);
+  await resetSettingsTables();
+  await ensureUsers('u1', 'u2');
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(userSettingOverrides);
-  await serverDB.delete(userSettingOverrideRevisions);
-  await serverDB.delete(platformSettingPolicies);
-  await serverDB.delete(platformSettingsBundle);
+  await resetSettingsTables();
 });
 
 const publishDefault = async () => {
@@ -108,6 +116,54 @@ describe('EffectiveSettingsService (flag ON)', () => {
       revision: 1,
       source: 'database',
     });
+  });
+
+  it('bounds soft-cache size across many users', async () => {
+    await publishDefault();
+    const runtimeService = new EffectiveSettingsService(serverDB);
+
+    for (let i = 0; i < 600; i++) {
+      await runtimeService.getEffectiveSettings({ userId: `user-${i}` });
+    }
+
+    expect(getEffectiveSettingsCacheSizeForTest()).toBeLessThanOrEqual(512);
+  });
+
+  it('uses absolute TTL — frequent hits do not renew expiry or pin stale legacy settings', async () => {
+    await publishDefault();
+    const runtimeService = new EffectiveSettingsService(serverDB);
+    vi.useFakeTimers();
+    try {
+      const t0 = Date.now();
+      vi.setSystemTime(t0);
+
+      const first = await runtimeService.getEffectiveSettings({
+        legacyUserSettings: { general: { language: 'en-US' } },
+        userId: 'ttl-user',
+      });
+      expect(first.effectiveSettings).toMatchObject({ general: { language: 'en-US' } });
+
+      // Hot-path reads within the original TTL window must not slide expiry.
+      // Cache key omits legacyUserSettings, so hits keep serving the first materialization.
+      vi.setSystemTime(t0 + 3_000);
+      for (let i = 0; i < 5; i++) {
+        const hit = await runtimeService.getEffectiveSettings({
+          legacyUserSettings: { general: { language: 'zh-CN' } },
+          userId: 'ttl-user',
+        });
+        expect(hit.effectiveSettings).toMatchObject({ general: { language: 'en-US' } });
+      }
+
+      // Past the original insertion TTL, the entry must expire and re-materialize.
+      vi.setSystemTime(t0 + 5_100);
+      const afterExpiry = await runtimeService.getEffectiveSettings({
+        legacyUserSettings: { general: { language: 'zh-CN' } },
+        userId: 'ttl-user',
+      });
+      expect(afterExpiry.effectiveSettings).toMatchObject({ general: { language: 'zh-CN' } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports a database failure then recovers at the same target without replacing the error', async () => {

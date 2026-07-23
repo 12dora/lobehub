@@ -21,7 +21,6 @@ interface BrandingEditorStore {
   }) => void;
   markConflict: () => void;
   patch: (patch: Partial<AdminBrandingDraft>) => void;
-  replaceDraft: (draft: AdminBrandingDraft) => void;
   reset: () => void;
   setEditorState: (state: BrandingEditorState) => void;
   syncServer: (params: { baseRevision: number; draftToken: string }) => void;
@@ -45,7 +44,6 @@ export const useBrandingEditorStore = createWithEqualityFn<BrandingEditorStore>(
         draft: state.draft ? { ...state.draft, ...patch } : state.draft,
         editorState: state.editorState === 'conflict' ? 'conflict' : 'dirty',
       })),
-    replaceDraft: (draft) => set({ draft, editorState: 'dirty' }),
     reset: () => set(initialState),
     setEditorState: (editorState) => set({ editorState }),
     syncServer: ({ baseRevision, draftToken }) =>

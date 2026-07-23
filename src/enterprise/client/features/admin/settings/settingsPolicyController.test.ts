@@ -10,6 +10,7 @@ import {
   fromSettingsPolicyUiMode,
   isServiceModelManaged,
   normalizeSettingsPolicyDraft,
+  projectPolicyEditorOwnedDraft,
   resolvePrimaryAction,
   SETTINGS_POLICY_GROUPS,
   toSettingsPolicyUiMode,
@@ -260,5 +261,35 @@ describe('settingsPolicyController', () => {
     expect(normalized.a).toMatchObject({ mode: 'locked', visibility: 'hidden', value: 14 });
     expect(normalized.b).toMatchObject({ mode: 'locked', visibility: 'hidden', value: true });
     expect(normalized.c).toMatchObject({ mode: 'user', visibility: 'visible', value: 'x' });
+  });
+
+  it('preserves foreign service-model rows byte-identical during normalize / project', () => {
+    const foreign = {
+      mode: 'default' as const,
+      schemaVersion: 1,
+      value: 'gpt-4o',
+      visibility: 'visible' as const,
+    };
+    const draft = {
+      'defaultAgent.config.model': foreign,
+      'general.fontSize': {
+        mode: 'default' as const,
+        schemaVersion: 1,
+        value: 16,
+        visibility: 'visible' as const,
+      },
+    };
+    const isForeign = (path: string) => path === 'defaultAgent.config.model';
+    const normalized = normalizeSettingsPolicyDraft(draft, { preservePath: isForeign });
+    expect(normalized['defaultAgent.config.model']).toBe(foreign);
+    expect(normalized['general.fontSize']).toMatchObject({
+      mode: 'locked',
+      visibility: 'hidden',
+      value: 16,
+    });
+
+    const owned = projectPolicyEditorOwnedDraft(draft, isForeign);
+    expect(owned).not.toHaveProperty(['defaultAgent.config.model']);
+    expect(owned['general.fontSize']).toMatchObject({ mode: 'locked', visibility: 'hidden' });
   });
 });

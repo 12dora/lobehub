@@ -10,7 +10,7 @@
  */
 
 import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { PlatformSettingsModel, type SettingsDraftPolicyMap } from '@/database/models/platform';
+import { PlatformSettingsModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
 import type {
@@ -33,7 +33,7 @@ import {
 } from '../platformInstance/runtimeReporter';
 import { buildSettingsCacheKey, resolveEffectiveSettings } from './effectiveResolver';
 import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
-import { flattenLeaves, getByPath } from './pathUtils';
+import { flattenLeaves } from './pathUtils';
 import { settingsRegistry } from './registry';
 
 export class SettingsPathError extends Error {
@@ -50,8 +50,47 @@ export class SettingsPathError extends Error {
 export { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES };
 
 /** Soft process-local cache — not a multi-instance guarantee. */
-const softCache = new Map<string, { at: number; value: EffectiveSettingsResult }>();
+type SoftCacheEntry = {
+  /** Absolute expiry from insertion/materialization — hits must not renew this. */
+  expiresAt: number;
+  value: EffectiveSettingsResult;
+};
+const softCache = new Map<string, SoftCacheEntry>();
 const SOFT_CACHE_TTL_MS = 5_000;
+/** Bound resident keys so historical user/revision traffic cannot grow unbounded. */
+const SOFT_CACHE_MAX_ENTRIES = 512;
+
+const pruneSoftCache = (now: number): void => {
+  for (const [key, entry] of softCache) {
+    if (now >= entry.expiresAt) softCache.delete(key);
+  }
+  while (softCache.size > SOFT_CACHE_MAX_ENTRIES) {
+    const oldest = softCache.keys().next().value;
+    if (oldest === undefined) break;
+    softCache.delete(oldest);
+  }
+};
+
+const readSoftCache = (key: string): EffectiveSettingsResult | undefined => {
+  const now = Date.now();
+  const cached = softCache.get(key);
+  if (!cached) return undefined;
+  if (now >= cached.expiresAt) {
+    softCache.delete(key);
+    return undefined;
+  }
+  // Refresh insertion order for LRU eviction only — keep absolute expiresAt (not sliding TTL).
+  softCache.delete(key);
+  softCache.set(key, cached);
+  return cached.value;
+};
+
+const writeSoftCache = (key: string, value: EffectiveSettingsResult): void => {
+  const now = Date.now();
+  softCache.delete(key);
+  softCache.set(key, { expiresAt: now + SOFT_CACHE_TTL_MS, value });
+  pruneSoftCache(now);
+};
 
 /**
  * Narrow transaction lifecycle seam. Production leaves this empty; causal
@@ -177,9 +216,9 @@ export class EffectiveSettingsService {
       userOverrideRevision,
     });
 
-    const cached = softCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < SOFT_CACHE_TTL_MS) {
-      return cached.value;
+    const cached = readSoftCache(cacheKey);
+    if (cached) {
+      return cached;
     }
 
     let published: Awaited<ReturnType<PlatformSettingsModel['listPublishedPolicies']>>;
@@ -228,7 +267,7 @@ export class EffectiveSettingsService {
       userOverrideRevision,
     });
 
-    softCache.set(cacheKey, { at: Date.now(), value: result });
+    writeSoftCache(cacheKey, result);
     reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
       domain: 'settings',
       health: 'healthy',
@@ -519,33 +558,6 @@ export class EffectiveSettingsService {
     return { appliedPaths: ops.map((o) => o.path) };
   };
 
-  /** @deprecated use applyLegacyUpdateSettings */
-  adaptLegacyUpdateSettings = async (params: {
-    input: Record<string, unknown>;
-    userId: string;
-  }) => {
-    const result = await this.applyLegacyUpdateSettings(params);
-    return { appliedPaths: result.appliedPaths, legacyPartial: {} };
-  };
-
-  /**
-   * Load published policies as a map (for tests / tooling).
-   */
-  loadPublishedPolicyMap = async (): Promise<SettingsDraftPolicyMap> => {
-    if (!this.isPolicyEnabled()) return {};
-    const rows = await this.model.listPublishedPolicies();
-    const map: SettingsDraftPolicyMap = {};
-    for (const row of rows) {
-      map[row.path] = {
-        mode: row.mode as SettingPolicyMode,
-        schemaVersion: row.schemaVersion,
-        value: row.value,
-        visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
-      };
-    }
-    return map;
-  };
-
   private dropUserCache = (userId: string) => {
     for (const key of softCache.keys()) {
       if (key.includes(`:u${userId}:`)) softCache.delete(key);
@@ -557,6 +569,5 @@ export const resetEffectiveSettingsCacheForTest = (): void => {
   softCache.clear();
 };
 
-/** Helper for tests / diagnostics — read a leaf from nested settings. */
-export const readEffectivePath = (effective: EffectiveSettingsResult, path: string): unknown =>
-  effective.effectiveValues[path] ?? getByPath(effective.effectiveSettings, path);
+/** Test/observability helper — current soft-cache resident key count. */
+export const getEffectiveSettingsCacheSizeForTest = (): number => softCache.size;

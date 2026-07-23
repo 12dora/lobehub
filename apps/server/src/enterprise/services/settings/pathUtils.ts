@@ -13,8 +13,6 @@ export const splitSettingPath = (path: string): string[] => {
   return parts;
 };
 
-export const isValidSettingPathShape = (path: string): boolean => splitSettingPath(path).length > 0;
-
 /**
  * Read a nested value by registered path. Returns `undefined` when missing.
  */
@@ -61,34 +59,6 @@ export const setByPath = <T extends Record<string, unknown>>(
   }
 
   cur[parts.at(-1)!] = value;
-  return clone as T;
-};
-
-/**
- * Delete a leaf at path; prune empty intermediate objects only when they become empty
- * is intentionally not done — callers own legacy blob shape.
- */
-export const deleteByPath = <T extends Record<string, unknown>>(root: T, path: string): T => {
-  const parts = splitSettingPath(path);
-  if (parts.length === 0) return root;
-
-  const clone = { ...root } as Record<string, unknown>;
-  const stack: Array<{ obj: Record<string, unknown>; key: string }> = [];
-  let cur: Record<string, unknown> = clone;
-
-  for (let i = 0; i < parts.length - 1; i++) {
-    const part = parts[i]!;
-    const next = cur[part];
-    if (next === null || typeof next !== 'object' || Array.isArray(next)) {
-      return clone as T;
-    }
-    const nextObj = { ...(next as Record<string, unknown>) };
-    cur[part] = nextObj;
-    stack.push({ key: part, obj: cur });
-    cur = nextObj;
-  }
-
-  delete cur[parts.at(-1)!];
   return clone as T;
 };
 

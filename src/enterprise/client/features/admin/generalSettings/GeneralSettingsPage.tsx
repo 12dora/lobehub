@@ -3,8 +3,9 @@
 import { Alert, Flexbox, Text, TextArea } from '@lobehub/ui';
 import { Button, Switch, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { BlockerFunction } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
@@ -17,6 +18,7 @@ import {
 } from '@/types/platform/authSettings';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
+import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import { useFetchAdminAuthSettings } from './useAdminAuthSettings';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -99,6 +101,33 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         data.emailDomainAllowlist.join('\n')
     );
   }, [data, draft]);
+
+  // Block real route exits and, when embedded under SecurityAuth tabs, same-path `?tab=`
+  // switches that unmount this dirty page. Standalone navigation that only tweaks other
+  // search params is still allowed.
+  const shouldBlockPageExit = useCallback<BlockerFunction>(
+    ({ currentLocation, nextLocation }) => {
+      if (!dirty) return false;
+      if (currentLocation.pathname !== nextLocation.pathname) return true;
+      if (!embedded) return false;
+      return currentLocation.search !== nextLocation.search;
+    },
+    [dirty, embedded],
+  );
+  const unsavedMessages = useMemo(
+    () => ({
+      cancelText: t('generalSettings.unsaved.stay'),
+      content: t('generalSettings.unsaved.description'),
+      okText: t('generalSettings.unsaved.leave'),
+      title: t('generalSettings.unsaved.title'),
+    }),
+    [t],
+  );
+  useUnsavedChangesGuard({
+    enabled: dirty,
+    messages: unsavedMessages,
+    shouldBlock: shouldBlockPageExit,
+  });
 
   const patch = (next: Partial<GeneralSettingsDraft>) =>
     setDraft((current) => (current ? { ...current, ...next } : current));
