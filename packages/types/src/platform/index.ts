@@ -1,4 +1,5 @@
 export * from './agents';
+export * from './authSettings';
 export * from './branding';
 export * from './capabilities';
 export * from './connectorGovernance';

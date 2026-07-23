@@ -14,6 +14,13 @@ export const platformPublicSnapshotSchema = z
     configRevision: z.string().trim().min(1).max(128),
     login: z
       .object({
+        /**
+         * Whether self-service email/password sign-up is offered (admin toggle).
+         * Defaults to open so snapshots serialized before this field existed still
+         * parse (and degrade to "registration available"); the backend guard is the
+         * real gate.
+         */
+        openRegistration: z.boolean().default(true),
         workAccountEnabled: z.boolean(),
       })
       .strict(),
@@ -58,6 +65,9 @@ export const DISABLED_PLATFORM_PUBLIC_SNAPSHOT: PlatformPublicSnapshot = {
   brandingRevision: null,
   configRevision: '0',
   login: {
+    // Registration defaults to open so the sign-up link stays available when the
+    // platform feature is disabled; the backend guard remains the real gate.
+    openRegistration: true,
     workAccountEnabled: false,
   },
   logoUrl: null,

@@ -332,6 +332,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Change an AI provider draft.',
     { reauth: conditionalReauth },
   ),
+  'admin.authSettings.update': regularMutation(
+    'admin.authSettings.update',
+    'medium',
+    'Change platform registration settings: open-registration toggle and email-domain allowlist.',
+    { reason: noReason },
+  ),
   'admin.branding.publish': dangerousMutation(
     'admin.branding.publish',
     'high',
