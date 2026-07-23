@@ -247,6 +247,17 @@ describe('UserDetailPage', () => {
     expect(screen.queryByTestId('user-source-sso')).toBeNull();
   });
 
+  it('renders job title on overview when present', () => {
+    detailState = {
+      data: { ...baseUser, dingtalkTitle: '高级工程师' },
+      error: undefined,
+      isLoading: false,
+    };
+    renderDetail();
+    expect(screen.getByText('users.overview.jobTitle')).toBeTruthy();
+    expect(screen.getByText('高级工程师')).toBeTruthy();
+  });
+
   it('shows loading before data', () => {
     detailState = { data: undefined, error: undefined, isLoading: true };
     renderDetail();

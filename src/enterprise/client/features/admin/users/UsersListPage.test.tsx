@@ -23,6 +23,19 @@ const sampleList = {
       status: 'active' as const,
       username: 'alice',
     },
+    {
+      avatar: null,
+      dingtalkTitle: '高级工程师',
+      createdAt: new Date('2024-01-02'),
+      email: 'carol@example.com',
+      fullName: 'Carol',
+      id: 'u2',
+      lastActiveAt: null,
+      providerIds: ['corp-oidc'],
+      roles: ['platform_user'],
+      status: 'active' as const,
+      username: 'carol',
+    },
   ],
   nextCursor: 'cursor-2',
 };
@@ -243,6 +256,14 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
         <UsersListPage />
       </MemoryRouter>,
     );
+
+  it('renders job title column with title text or em dash when empty', () => {
+    renderPage();
+    const emptyTitle = within(screen.getByTestId('row-u1')).getByTestId('cell-dingtalkTitle');
+    expect(emptyTitle.textContent).toBe('—');
+    const titled = within(screen.getByTestId('row-u2')).getByTestId('cell-dingtalkTitle');
+    expect(titled.textContent).toBe('高级工程师');
+  });
 
   const goToSecondPage = async () => {
     fireEvent.click(screen.getByText('next'));
@@ -541,7 +562,7 @@ describe('UsersListPage source tags (local / SSO)', () => {
     sampleList.items[0].providerIds = ['credential'];
     renderPage();
 
-    const cell = screen.getByTestId('cell-source');
+    const cell = within(screen.getByTestId('row-u1')).getByTestId('cell-source');
     expect(within(cell).getByTestId('user-source-local')).toBeTruthy();
     expect(within(cell).getByText('users.source.local')).toBeTruthy();
     expect(within(cell).queryByTestId('user-source-sso')).toBeNull();
@@ -551,7 +572,7 @@ describe('UsersListPage source tags (local / SSO)', () => {
     sampleList.items[0].providerIds = ['authentik'];
     renderPage();
 
-    const cell = screen.getByTestId('cell-source');
+    const cell = within(screen.getByTestId('row-u1')).getByTestId('cell-source');
     expect(within(cell).queryByTestId('user-source-local')).toBeNull();
     expect(within(cell).getByTestId('user-source-sso')).toBeTruthy();
     expect(within(cell).getByText('users.source.sso')).toBeTruthy();
@@ -561,7 +582,7 @@ describe('UsersListPage source tags (local / SSO)', () => {
     sampleList.items[0].providerIds = ['credential', 'authentik'];
     renderPage();
 
-    const cell = screen.getByTestId('cell-source');
+    const cell = within(screen.getByTestId('row-u1')).getByTestId('cell-source');
     expect(within(cell).getByTestId('user-source-local')).toBeTruthy();
     expect(within(cell).getByTestId('user-source-sso')).toBeTruthy();
     expect(within(cell).getByText('users.source.local')).toBeTruthy();
