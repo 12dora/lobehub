@@ -118,28 +118,3 @@ const PlatformSettingSourceBadge = memo<PlatformSettingSourceBadgeProps>(
 PlatformSettingSourceBadge.displayName = 'PlatformSettingSourceBadge';
 
 export default PlatformSettingSourceBadge;
-
-/**
- * Wrapper that disables children when locked and shows source badge.
- */
-export const ManagedSettingControl = memo<{
-  children: ReactNode;
-  hidden?: boolean;
-  locked?: boolean;
-  mode?: 'user' | 'default' | 'locked';
-  onReset?: () => void;
-  source?: PlatformSettingSource;
-}>(({ children, hidden, locked, mode, onReset, source }) => {
-  if (hidden) return null;
-
-  return (
-    <Flexbox gap={6}>
-      <PlatformSettingSourceBadge locked={locked} mode={mode} source={source} onReset={onReset} />
-      <div style={{ opacity: locked ? 0.6 : 1, pointerEvents: locked ? 'none' : undefined }}>
-        {children}
-      </div>
-    </Flexbox>
-  );
-});
-
-ManagedSettingControl.displayName = 'ManagedSettingControl';
