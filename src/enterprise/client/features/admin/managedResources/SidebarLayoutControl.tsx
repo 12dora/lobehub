@@ -35,8 +35,8 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   row: css`
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px 20px;
+    flex-wrap: nowrap;
+    gap: 12px;
     align-items: center;
     justify-content: space-between;
 
@@ -102,8 +102,14 @@ const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
   return (
     <section className={styles.card}>
       <div className={styles.row}>
-        <Text strong>{t('sidebarLayout.title')}</Text>
-        <Flexbox horizontal align="center" gap={8}>
+        <Text
+          strong
+          ellipsis={{ tooltip: true, tooltipWhenOverflow: true }}
+          style={{ flex: 1, minWidth: 0 }}
+        >
+          {t('sidebarLayout.title')}
+        </Text>
+        <Flexbox horizontal align="center" gap={8} style={{ flexShrink: 0 }}>
           {mode === 'platform' ? (
             <Button disabled={busy} icon={<Icon icon={MonitorCog} />} onClick={handleConfigure}>
               {t('sidebarLayout.configure')}
@@ -112,7 +118,7 @@ const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
           <Select
             disabled={busy}
             // Unified policy-mode select width — keep in sync with the resource + settings boxes.
-            style={{ width: 160 }}
+            style={{ flexShrink: 0, width: 180 }}
             value={mode}
             options={MODE_VALUES.map((m) => ({
               label: t(`sidebarLayout.mode.${m}` as const),

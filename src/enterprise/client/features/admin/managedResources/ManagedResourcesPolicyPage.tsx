@@ -49,8 +49,8 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   row: css`
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px 20px;
+    flex-wrap: nowrap;
+    gap: 12px;
     align-items: center;
     justify-content: space-between;
 
@@ -320,12 +320,18 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
             return (
               <section className={styles.card} key={resource}>
                 <div className={styles.row}>
-                  <Text strong>{t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)}</Text>
+                  <Text
+                    strong
+                    ellipsis={{ tooltip: true, tooltipWhenOverflow: true }}
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
+                    {t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)}
+                  </Text>
                   <Select
                     aria-label={`${t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)} ${t('managedResources.uiMode.label')}`}
                     disabled={!canSave || conflict}
                     // Unified policy-mode select width — keep in sync with the sidebar + settings boxes.
-                    style={{ width: 160 }}
+                    style={{ flexShrink: 0, width: 180 }}
                     value={uiMode}
                     options={UI_MODE_VALUES.map((mode) => ({
                       label: t(`managedResources.uiMode.${mode}` as never),
