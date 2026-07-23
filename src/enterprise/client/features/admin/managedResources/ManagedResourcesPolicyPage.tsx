@@ -336,9 +336,9 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
               </section>
             );
           })}
-        </div>
 
-        <SidebarLayoutControl disabled={!canSave || conflict} />
+          <SidebarLayoutControl disabled={!canSave || conflict} />
+        </div>
 
         {unready.length > 0 ? (
           <Alert
