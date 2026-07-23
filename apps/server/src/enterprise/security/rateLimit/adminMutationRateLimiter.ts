@@ -121,7 +121,13 @@ export class PostgresAdminMutationRateLimiter implements AdminMutationRateLimite
       // Opportunistic bounded cleanup never affects the consume decision.
       void this.maybeCleanup(model);
       return result.allowed ? 'allowed' : 'limited';
-    } catch {
+    } catch (error) {
+      // Fail-open to 'unavailable' (a rate-limiter fault must never block an admin mutation), but
+      // log the error class so a persistent outage — which silently disables rate limiting — is
+      // diagnosable. Never log the scope/value.
+      console.error('[admin-mutation-rate] consume unavailable', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
       return 'unavailable';
     }
   };

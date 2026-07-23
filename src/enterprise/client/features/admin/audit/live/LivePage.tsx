@@ -41,7 +41,6 @@ const styles = createStaticStyles(({ css }) => ({
     flex: 1;
 
     height: calc(100vh - 220px);
-    min-height: 0;
     min-height: 480px;
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadiusLG};
