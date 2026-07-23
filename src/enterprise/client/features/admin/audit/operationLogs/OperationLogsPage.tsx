@@ -1,6 +1,7 @@
 'use client';
 
 import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Button, Popover, Select } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -13,7 +14,6 @@ import type { AdminAuditEventListItem } from '@/enterprise/client/services/admin
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable from '../../primitives/DataTable';
-import FilterBar from '../../primitives/FilterBar';
 import {
   useFetchAuditEventFacets,
   useFetchAuditEventsList,
@@ -76,6 +76,29 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     flex-wrap: wrap;
     gap: 12px;
+  `,
+  filterRow: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+
+    @media (width <= 1200px) {
+      align-items: stretch;
+    }
+  `,
+  moreBody: css`
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+
+    min-width: 260px;
+    padding: 4px;
+  `,
+  moreField: css`
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   `,
 }));
 
@@ -306,6 +329,33 @@ const OperationLogsPage = memo(() => {
 
   const activeResult = filters.results.length === 1 ? filters.results[0] : null;
 
+  const moreFilterCount = [
+    filters.targetType,
+    filters.targetId,
+    filters.requestId || requestIdDraft.trim(),
+  ].filter((v) => Boolean(v && String(v).trim())).length;
+
+  const actionOptions = useMemo(() => {
+    const fromFacets = (facets?.actions ?? []).map((a) => ({
+      label: `${a.value} (${a.count})`,
+      value: a.value,
+    }));
+    // Keep selected actions that dropped out of facets.
+    for (const a of filters.actions) {
+      if (!fromFacets.some((o) => o.value === a)) {
+        fromFacets.push({ label: a, value: a });
+      }
+    }
+    return fromFacets;
+  }, [facets?.actions, filters.actions]);
+
+  const clearAllFilters = useCallback(() => {
+    setRequestIdDraft('');
+    setTargetTypeDraft('');
+    setTargetIdDraft('');
+    setQueryState(emptyQuery());
+  }, []);
+
   const statCards = [
     {
       key: 'total',
@@ -392,67 +442,120 @@ const OperationLogsPage = memo(() => {
             </div>
           ) : null}
 
-          <FilterBar
-            searchPlaceholder={t('audit.logs.filters.requestId')}
-            extra={
-              <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
-                <DatePicker.RangePicker
-                  showTime
-                  allowClear={false}
-                  value={rangeValue}
-                  onChange={(vals) => {
-                    if (!vals?.[0] || !vals[1]) return;
-                    patchFilters({
-                      from: vals[0].toDate(),
-                      to: vals[1].toDate(),
-                    });
-                  }}
-                />
-                <AuditUserSearchSelect
-                  enabled={canRead}
-                  placeholder={t('audit.logs.filters.actor')}
-                  value={filters.actorUserId}
-                  onChange={(userId) => patchFilters({ actorUserId: userId })}
-                />
-                <Input
-                  placeholder={t('audit.logs.filters.targetType')}
-                  style={{ minWidth: 120 }}
-                  value={targetTypeDraft}
-                  onBlur={() => patchFilters({ targetType: targetTypeDraft.trim() || undefined })}
-                  onChange={(e) => setTargetTypeDraft(e.target.value)}
-                  onPressEnter={() =>
-                    patchFilters({ targetType: targetTypeDraft.trim() || undefined })
-                  }
-                />
-                <Input
-                  placeholder={t('audit.logs.filters.targetId')}
-                  style={{ minWidth: 120 }}
-                  value={targetIdDraft}
-                  onBlur={() => patchFilters({ targetId: targetIdDraft.trim() || undefined })}
-                  onChange={(e) => setTargetIdDraft(e.target.value)}
-                  onPressEnter={() => patchFilters({ targetId: targetIdDraft.trim() || undefined })}
-                />
-              </Flexbox>
-            }
-            values={{
-              query: requestIdDraft,
-              targetType: targetTypeDraft,
-              targetId: targetIdDraft,
-              actorUserId: filters.actorUserId ?? '',
-            }}
-            onChange={(next) => {
-              // Clear-all from FilterBar
-              if (Object.values(next).every((v) => !v || !String(v).trim())) {
-                setRequestIdDraft('');
-                setTargetTypeDraft('');
-                setTargetIdDraft('');
-                setQueryState(emptyQuery());
-                return;
+          <div className={styles.filterRow}>
+            <DatePicker.RangePicker
+              showTime
+              allowClear={false}
+              size="small"
+              style={{ maxWidth: 360 }}
+              value={rangeValue}
+              onChange={(vals) => {
+                if (!vals?.[0] || !vals[1]) return;
+                patchFilters({
+                  from: vals[0].toDate(),
+                  to: vals[1].toDate(),
+                });
+              }}
+            />
+            <Select
+              allowClear
+              mode="multiple"
+              options={actionOptions}
+              placeholder={t('audit.logs.filters.action')}
+              style={{ minWidth: 160, maxWidth: 280 }}
+              value={filters.actions.length ? filters.actions : undefined}
+              onChange={(v) => {
+                const next = (Array.isArray(v) ? v : v ? [v] : []) as string[];
+                patchFilters({ actions: next });
+              }}
+            />
+            <Select
+              allowClear
+              mode="multiple"
+              placeholder={t('audit.logs.filters.result')}
+              style={{ minWidth: 140, maxWidth: 220 }}
+              value={filters.results.length ? filters.results : undefined}
+              options={[
+                { label: t('audit.status.result.success'), value: 'success' },
+                { label: t('audit.status.result.failure'), value: 'failure' },
+                { label: t('audit.status.result.denied'), value: 'denied' },
+              ]}
+              onChange={(v) => {
+                const next = (Array.isArray(v) ? v : v ? [v] : []) as Array<
+                  'success' | 'failure' | 'denied'
+                >;
+                patchFilters({ results: next });
+              }}
+            />
+            <div style={{ minWidth: 180, maxWidth: 240, flex: '1 1 180px' }}>
+              <AuditUserSearchSelect
+                enabled={canRead}
+                placeholder={t('audit.logs.filters.actor')}
+                style={{ width: '100%', minWidth: 0 }}
+                value={filters.actorUserId}
+                onChange={(userId) => patchFilters({ actorUserId: userId })}
+              />
+            </div>
+            <Popover
+              trigger="click"
+              content={
+                <div className={styles.moreBody}>
+                  <div className={styles.moreField}>
+                    <Text type="secondary">{t('audit.logs.filters.targetType')}</Text>
+                    <Input
+                      value={targetTypeDraft}
+                      onChange={(e) => setTargetTypeDraft(e.target.value)}
+                      onBlur={() =>
+                        patchFilters({ targetType: targetTypeDraft.trim() || undefined })
+                      }
+                      onPressEnter={() =>
+                        patchFilters({ targetType: targetTypeDraft.trim() || undefined })
+                      }
+                    />
+                  </div>
+                  <div className={styles.moreField}>
+                    <Text type="secondary">{t('audit.logs.filters.targetId')}</Text>
+                    <Input
+                      value={targetIdDraft}
+                      onBlur={() => patchFilters({ targetId: targetIdDraft.trim() || undefined })}
+                      onChange={(e) => setTargetIdDraft(e.target.value)}
+                      onPressEnter={() =>
+                        patchFilters({ targetId: targetIdDraft.trim() || undefined })
+                      }
+                    />
+                  </div>
+                  <div className={styles.moreField}>
+                    <Text type="secondary">{t('audit.logs.filters.requestId')}</Text>
+                    <Input
+                      value={requestIdDraft}
+                      onChange={(e) => setRequestIdDraft(e.target.value)}
+                      onPressEnter={() => {
+                        const next = requestIdDraft.trim() || undefined;
+                        patchFilters({ requestId: next });
+                      }}
+                    />
+                  </div>
+                </div>
               }
-              // Search keystrokes only update draft; debounce commits requestId.
-              setRequestIdDraft(next.query ?? '');
-            }}
-          />
+            >
+              <Button size="small" type="default">
+                {moreFilterCount > 0
+                  ? t('audit.logs.filters.moreActive', { count: moreFilterCount })
+                  : t('audit.logs.filters.more')}
+              </Button>
+            </Popover>
+            {moreFilterCount > 0 ||
+            filters.actions.length > 0 ||
+            filters.results.length > 0 ||
+            filters.actorUserId ||
+            requestIdDraft.trim() ||
+            targetTypeDraft.trim() ||
+            targetIdDraft.trim() ? (
+              <Button size="small" type="text" onClick={clearAllFilters}>
+                {t('audit.shared.clearFilters')}
+              </Button>
+            ) : null}
+          </div>
         </Flexbox>
       }
     >

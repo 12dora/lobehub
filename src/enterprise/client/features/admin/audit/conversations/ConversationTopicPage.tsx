@@ -142,9 +142,21 @@ const ConversationTopicPage = memo(() => {
       description={t('audit.conversations.topic.desc')}
       title={topic?.title || t('audit.conversations.topic.title')}
       actions={
-        <Button type="default" onClick={() => navigate(`/admin/audit/conversations/${userId}`)}>
-          {t('audit.conversations.topic.back')}
-        </Button>
+        <Flexbox horizontal gap={8}>
+          <Button
+            type="default"
+            onClick={() =>
+              navigate(
+                `/admin/audit/live?userId=${encodeURIComponent(userId)}&topicId=${encodeURIComponent(topicId)}`,
+              )
+            }
+          >
+            {t('audit.conversations.topic.openLive')}
+          </Button>
+          <Button type="default" onClick={() => navigate(`/admin/audit/conversations/${userId}`)}>
+            {t('audit.conversations.topic.back')}
+          </Button>
+        </Flexbox>
       }
       banner={
         contentAccessMode === 'metadata_only' ? (

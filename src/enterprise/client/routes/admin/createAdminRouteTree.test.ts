@@ -151,10 +151,14 @@ describe('createAdminRouteTree', () => {
     );
 
     const auditLogs = children.find((c) => c.path === 'audit/logs');
+    const auditLive = children.find((c) => c.path === 'audit/live');
     const auditExports = children.find((c) => c.path === 'audit/exports');
     const auditHolds = children.find((c) => c.path === 'audit/holds');
     const auditRetention = children.find((c) => c.path === 'audit/retention');
     expect((auditLogs?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
+    expect((auditLive?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
     );
     expect(
