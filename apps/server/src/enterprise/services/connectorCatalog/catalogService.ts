@@ -1,3 +1,4 @@
+import debug from 'debug';
 import type { z } from 'zod';
 
 import type { LobeChatDatabase } from '@/database/type';
@@ -27,6 +28,8 @@ import { ConnectorCatalogDiscoveryService } from './discoveryService';
 import { ConnectorCatalogDraftService } from './draftService';
 import { PlatformConnectorContractError } from './errors';
 import { ConnectorCatalogPublicationService } from './publicationService';
+
+const log = debug('lobe-server:connector-catalog');
 
 type ApplyImmediateInput = z.input<typeof adminConnectorApplyImmediateInputSchema>;
 type PublishNowInput = z.input<typeof adminConnectorPublishNowInputSchema>;
@@ -194,12 +197,19 @@ export class ConnectorCatalogService {
       };
     } catch (error) {
       const after = await this.getDraft(connectorId);
+      // Never echo arbitrary exception messages — they may contain credentials,
+      // headers, internal URLs, or vault material. Contract codes are allowlisted.
       const reasonText =
         error instanceof PlatformConnectorContractError
           ? error.code
-          : error instanceof Error
-            ? error.message.slice(0, 500)
-            : 'Publish failed';
+          : 'PLATFORM_CONNECTOR_PUBLISH_FAILED';
+      if (!(error instanceof PlatformConnectorContractError)) {
+        log(
+          'publish error connectorId=%s errorClass=%s',
+          connectorId,
+          error instanceof Error ? error.name : 'UnknownError',
+        );
+      }
       if (options?.softFail || after.baseRevision === 0) {
         return {
           auditId: null as string | null,
@@ -210,7 +220,15 @@ export class ConnectorCatalogService {
           revision: after.baseRevision,
         };
       }
-      throw error;
+      // Hard-fail (already-published update): only stable codes leave this boundary.
+      if (error instanceof PlatformConnectorContractError) {
+        const wrapped = new Error(error.code);
+        wrapped.name = 'ConnectorPublishImmediateError';
+        throw wrapped;
+      }
+      const wrapped = new Error('PLATFORM_CONNECTOR_PUBLISH_FAILED');
+      wrapped.name = 'ConnectorPublishImmediateError';
+      throw wrapped;
     }
   };
 

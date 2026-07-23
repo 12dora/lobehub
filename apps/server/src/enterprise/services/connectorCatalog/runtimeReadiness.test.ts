@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
 
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -45,9 +45,13 @@ afterAll(async () => {
     .delete(platformConnectorSecrets)
     .where(inArray(platformConnectorSecrets.connectorId, connectorIds));
   await db.delete(platformConnectors).where(inArray(platformConnectors.id, connectorIds));
-  await db
-    .delete(platformResourceRevisions)
-    .where(inArray(platformResourceRevisions.resourceId, connectorIds));
+  // Migration 0145: revisions reject row DELETE; disable user triggers for scoped cleanup.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL session_replication_role = 'replica'`));
+    await tx
+      .delete(platformResourceRevisions)
+      .where(inArray(platformResourceRevisions.resourceId, connectorIds));
+  });
 });
 
 const publish = async (
@@ -265,6 +269,7 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
 
     const fixture = await publish('none');
     const getSnapshot = vi.fn();
+    const getSnapshotsBatch = vi.fn();
     const itemCapRepository = listedRepository(
       Array.from({ length: 10_001 }, () => fixture.connector),
     );
@@ -272,11 +277,12 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
       resolveConnectorCatalogRuntimeReadiness({
         db,
         env,
-        readService: { getSnapshot },
+        readService: { getSnapshot, getSnapshotsBatch },
         repository: itemCapRepository,
       }),
     ).resolves.toBe(false);
     expect(getSnapshot).not.toHaveBeenCalled();
+    expect(getSnapshotsBatch).not.toHaveBeenCalled();
   });
 
   it('loads one shared snapshot and resolves its exact secret once', async () => {
@@ -287,17 +293,22 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
       runtime.secrets,
     ).getSnapshot(fixture.connector.id);
     const getSnapshot = vi.fn().mockResolvedValue(validatedSnapshot);
+    // Prefer the batch path used by readiness; fall back mock keeps getSnapshot reachable.
+    const getSnapshotsBatch = vi
+      .fn()
+      .mockResolvedValue(new Map([[fixture.connector.id, validatedSnapshot]]));
     const resolveSecret = vi.spyOn(runtime.secrets, 'resolveSecretVersion');
     await expect(
       resolveConnectorCatalogRuntimeReadiness({
         db,
         env,
-        readService: { getSnapshot },
+        readService: { getSnapshot, getSnapshotsBatch },
         repository: listedRepository([fixture.connector]),
         runtime,
       }),
     ).resolves.toBe(true);
-    expect(getSnapshot).toHaveBeenCalledTimes(1);
+    expect(getSnapshotsBatch).toHaveBeenCalledTimes(1);
+    expect(getSnapshot).not.toHaveBeenCalled();
     expect(resolveSecret).toHaveBeenCalledTimes(1);
     expect(resolveSecret).toHaveBeenCalledWith({
       connectorId: fixture.connector.id,

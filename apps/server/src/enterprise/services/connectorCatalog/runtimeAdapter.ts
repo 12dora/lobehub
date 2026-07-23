@@ -5,7 +5,10 @@ import { z } from 'zod';
 
 import type { PlatformUserConnectorBindingItem } from '@/database/schemas/platform/connectors';
 
-import { connectorSharedCredentialSchema } from '../../contracts/platformConnectors';
+import {
+  collectConnectorSecretLeaves,
+  connectorSharedCredentialSchema,
+} from '../../contracts/platformConnectors';
 import { redactDeep } from '../../security/redaction';
 import { resolveConnectorSecretVersion } from './catalogSnapshot';
 import type { ConnectorCatalogSecretStore } from './catalogTypes';
@@ -231,7 +234,12 @@ export class PlatformConnectorRuntimeAdapter {
         );
         const credential = connectorSharedCredentialSchema.parse(secret.value);
         headers = sharedCredentialHeaders(credential);
-        taintedValues.push(...collectSecretStrings(credential), ...Object.values(headers));
+        // Canonical collector treats dynamic header *keys* and values as secret leaves.
+        taintedValues.push(
+          ...collectConnectorSecretLeaves(credential),
+          ...collectConnectorSecretLeaves({ headers }),
+          ...Object.values(headers),
+        );
       } else if (connector.credentialMode === 'per_user_oauth') {
         const allowedScopes = connector.oauthConfig?.scopes ?? [];
         let binding = await this.loadBinding(
@@ -542,13 +550,6 @@ const sharedCredentialHeaders = (
       }
     : {}),
 });
-
-const collectSecretStrings = (value: unknown): string[] => {
-  if (typeof value === 'string') return value.length > 0 ? [value] : [];
-  if (Array.isArray(value)) return value.flatMap(collectSecretStrings);
-  if (!isPlainRecord(value)) return [];
-  return Object.values(value).flatMap(collectSecretStrings);
-};
 
 const redactTaintedString = (value: string, taintedValues: string[]): string => {
   let redacted = value;

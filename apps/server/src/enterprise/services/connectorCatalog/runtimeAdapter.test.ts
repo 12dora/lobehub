@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PlatformConnectorRevisionPayload } from '@/database/repositories/platformConnectorCatalog';
 import type { PlatformUserConnectorBindingItem } from '@/database/schemas/platform/connectors';
 
-import type { ConnectorCatalogSecretStore } from './catalogTypes';
+import type { ConnectorCatalogSecretStore, ConnectorResolvedSecret } from './catalogTypes';
 import { PlatformConnectorContractError } from './errors';
 import type { FrozenConnectorOperationSnapshot } from './operationSnapshot';
 import {
@@ -109,7 +109,7 @@ const createHarness = (
   credentialMode: PlatformConnectorRevisionPayload['connector']['credentialMode'],
 ) => {
   const order: string[] = [];
-  const resolveSecretVersion = vi.fn(async () => {
+  const resolveSecretVersion = vi.fn(async (): Promise<ConnectorResolvedSecret> => {
     order.push('secret-version');
     return {
       fingerprint: 'c'.repeat(64),
@@ -118,7 +118,7 @@ const createHarness = (
       value: { bearerToken: 'shared-token' },
     };
   });
-  const resolveSecretRef = vi.fn(async () => {
+  const resolveSecretRef = vi.fn(async (): Promise<ConnectorResolvedSecret | null> => {
     order.push('secret-ref');
     return {
       fingerprint: 'd'.repeat(64),
@@ -244,6 +244,41 @@ describe('PlatformConnectorRuntimeAdapter', () => {
       success: true,
     });
     expect(harness.order).toEqual(['policy', 'preflight', 'secret-version']);
+  });
+
+  it('runtime_response_redacts_custom_header_names_and_values', async () => {
+    const harness = createHarness('shared_service_account');
+    vi.mocked(harness.resolveSecretVersion).mockResolvedValueOnce({
+      fingerprint: 'c'.repeat(64),
+      ref: 'kms://platform-connectors/connector-1/sharedSecret/secret',
+      updatedAt: new Date(),
+      value: {
+        headers: { 'opaque-private-name': 'header-secret-value' },
+      },
+    });
+    vi.mocked(harness.dependencies.outbound.requestJson).mockResolvedValueOnce({
+      body: {
+        result: {
+          'opaque-private-name': 'echoed-key',
+          'message': 'prefix header-secret-value suffix',
+        },
+      },
+      status: 200,
+      url: 'https://connector.example.test/mcp',
+    });
+    const result = await harness.adapter.execute(invocation);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('opaque-private-name');
+    expect(serialized).not.toContain('header-secret-value');
+    expect(result.state).toMatchObject({
+      '[REDACTED]': 'echoed-key',
+      'message': 'prefix [REDACTED] suffix',
+    });
+  });
+
+  it('continues shared-call audit after redaction', async () => {
+    const harness = createHarness('shared_service_account');
+    await harness.adapter.execute(invocation);
     expect(harness.dependencies.audit.appendSharedCall).toHaveBeenCalledWith({
       connectorId: 'connector-1',
       idempotencyKey: 'connector-runtime-audit:journal-1',

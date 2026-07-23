@@ -249,6 +249,31 @@ const projectAdminPublished = (
   );
 };
 
+const projectPublicPublished = (
+  payload: PlatformConnectorRevisionPayload,
+  provenance: PlatformConnectorRuntimeRevision['provenance'],
+) => {
+  const connector = payload.connector;
+  return managedConnectorSchema.parse({
+    binding: null,
+    credentialMode: connector.credentialMode,
+    description: connector.description,
+    displayName: connector.displayName,
+    id: connector.id,
+    key: connector.key,
+    publishedRevision: provenance.revision,
+    tools: payload.tools.map((tool) => ({
+      available: tool.platformPolicy === 'allow',
+      description: tool.description,
+      displayName: tool.displayName,
+      requiresConfirmation: tool.requiresConfirmation,
+      riskLevel: tool.riskLevel,
+      sort: tool.sort,
+      toolKey: tool.toolKey,
+    })),
+  });
+};
+
 export class ConnectorCatalogReadService {
   private readonly repository: PlatformConnectorCatalogRepository;
 
@@ -345,25 +370,59 @@ export class ConnectorCatalogReadService {
 
   getPublicPublished = async (connectorId: string) => {
     const { payload, provenance } = await this.getSnapshot(connectorId);
-    const connector = payload.connector;
-    return managedConnectorSchema.parse({
-      binding: null,
-      credentialMode: connector.credentialMode,
-      description: connector.description,
-      displayName: connector.displayName,
-      id: connector.id,
-      key: connector.key,
-      publishedRevision: provenance.revision,
-      tools: payload.tools.map((tool) => ({
-        available: tool.platformPolicy === 'allow',
-        description: tool.description,
-        displayName: tool.displayName,
-        requiresConfirmation: tool.requiresConfirmation,
-        riskLevel: tool.riskLevel,
-        sort: tool.sort,
-        toolKey: tool.toolKey,
-      })),
-    });
+    return projectPublicPublished(payload, provenance);
+  };
+
+  /**
+   * Public managed projection for many connectors in ONE runtime query.
+   * Missing / invalid / disabled connectors are absent from the map.
+   */
+  getPublicPublishedBatch = async (connectorIds: string[]) => {
+    const byId = new Map<string, ReturnType<typeof projectPublicPublished>>();
+    if (connectorIds.length === 0) return byId;
+    const snapshots = await this.repository.getCurrentPublishedRuntimeBatch(connectorIds);
+    for (const snapshot of snapshots) {
+      try {
+        const payload = parseExactSnapshot(snapshot);
+        if (!payload.connector.enabled) continue;
+        byId.set(
+          snapshot.provenance.connectorId,
+          projectPublicPublished(payload, snapshot.provenance),
+        );
+      } catch {
+        // Partial batch success: drop a single bad row rather than failing closed for all.
+      }
+    }
+    return byId;
+  };
+
+  /**
+   * Exact published snapshots for many connectors in ONE runtime query.
+   * Used by readiness to avoid per-connector getSnapshot fan-out.
+   */
+  getSnapshotsBatch = async (connectorIds: string[]) => {
+    const byId = new Map<
+      string,
+      {
+        payload: PlatformConnectorRevisionPayload;
+        provenance: PlatformConnectorRuntimeRevision['provenance'];
+      }
+    >();
+    if (connectorIds.length === 0) return byId;
+    const snapshots = await this.repository.getCurrentPublishedRuntimeBatch(connectorIds);
+    for (const snapshot of snapshots) {
+      try {
+        const payload = parseExactSnapshot(snapshot);
+        if (!payload.connector.enabled) continue;
+        byId.set(snapshot.provenance.connectorId, {
+          payload,
+          provenance: snapshot.provenance,
+        });
+      } catch {
+        // Drop invalid rows; readiness treats missing as not ready.
+      }
+    }
+    return byId;
   };
 
   getTrustedPublished = async (connectorId: string) => {

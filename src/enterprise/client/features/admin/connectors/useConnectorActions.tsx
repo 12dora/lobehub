@@ -2,7 +2,7 @@
 
 import { Flexbox, InputNumber, Text } from '@lobehub/ui';
 import { toast } from '@lobehub/ui/base-ui';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
@@ -11,7 +11,11 @@ import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/r
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
 
-import type { AdminConnectorPermissions, AdminConnectorPrimaryAction } from './controller';
+import type {
+  AdminConnectorPermissions,
+  AdminConnectorPrimaryAction,
+  SessionConnectorTestResult,
+} from './controller';
 import {
   buildConnectorUpdatePayload,
   isPersistedConnectorTestCurrent,
@@ -77,6 +81,18 @@ export const useConnectorActions = ({
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  /** Retains a successful test across refetch until draft identity changes. */
+  const [sessionTest, setSessionTest] = useState<SessionConnectorTestResult | null>(null);
+
+  useEffect(() => {
+    if (!sessionTest) return;
+    if (
+      sessionTest.testedRevision !== data.baseRevision ||
+      sessionTest.testedDraftToken !== data.draftToken
+    ) {
+      setSessionTest(null);
+    }
+  }, [data.baseRevision, data.draftToken, sessionTest]);
 
   const errorText = useCallback(
     (cause: unknown) => {
@@ -109,7 +125,13 @@ export const useConnectorActions = ({
   );
 
   const openSave = useCallback(() => {
-    if (!permissions.canUpdate || !editor.draft || !editor.dirty || !editor.validation.valid)
+    if (
+      !permissions.canUpdate ||
+      !editor.draft ||
+      !editor.dirty ||
+      !editor.validation.valid ||
+      editor.requiresSecretReentry
+    )
       return;
     const draft = structuredClone(editor.draft);
     const secret = editor.secret;
@@ -181,19 +203,62 @@ export const useConnectorActions = ({
     [data.draft.id, openSimple, permissions.canDiscover],
   );
 
-  const test = useCallback(
-    () =>
-      openSimple({
-        action: 'test',
-        descriptionKey: 'connectorCatalog.mutations.test.description',
-        operation: (reason) => adminConnectorsService.test({ id: data.draft.id, reason }),
-        permission: permissions.canTest,
-        submitKey: 'connectorCatalog.actions.test',
-        successKey: 'connectorCatalog.toast.tested',
-        titleKey: 'connectorCatalog.mutations.test.title',
-      }),
-    [data.draft.id, openSimple, permissions.canTest],
-  );
+  const test = useCallback(() => {
+    if (!permissions.canTest || editor.dirty || editor.conflict || busyAction) return;
+    const testedRevision = data.baseRevision;
+    const testedDraftToken = data.draftToken;
+    openReasonModal({
+      authMethod: authMethod ?? undefined,
+      buildPayload: (reason) => ({ reason }),
+      description: t('connectorCatalog.mutations.test.description'),
+      onSubmit: async (input) => {
+        const reason = (input as { reason: string }).reason;
+        setBusyAction('test');
+        editor.setActionError(null);
+        try {
+          const result = await adminConnectorsService.test({ id: data.draft.id, reason });
+          if (result.status === 'success') {
+            setSessionTest({
+              status: 'success',
+              testedDraftToken,
+              testedRevision,
+            });
+          } else {
+            setSessionTest(null);
+          }
+          await Promise.all([mutate(), refreshAdminConnectorLists()]);
+          if (result.status === 'success') {
+            toast.success(t('connectorCatalog.toast.tested'));
+          } else {
+            editor.setActionError(t('connectorCatalog.errors.generic'));
+          }
+        } catch (cause) {
+          setSessionTest(null);
+          const mapped = mapEnterpriseError(cause);
+          if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') editor.setConflict(true);
+          editor.setActionError(errorText(cause));
+          throw cause;
+        } finally {
+          setBusyAction(null);
+        }
+      },
+      submitLabel: t('connectorCatalog.actions.test'),
+      targetLabel: data.draft.displayName,
+      title: t('connectorCatalog.mutations.test.title'),
+    });
+  }, [
+    authMethod,
+    busyAction,
+    data.baseRevision,
+    data.draft.displayName,
+    data.draft.id,
+    data.draftToken,
+    editor,
+    errorText,
+    mutate,
+    permissions.canTest,
+    t,
+  ]);
 
   const publish = useCallback(
     () =>
@@ -207,12 +272,12 @@ export const useConnectorActions = ({
             id: data.draft.id,
             reason,
           }),
-        permission: permissions.canPublish && isPersistedConnectorTestCurrent(data),
+        permission: permissions.canPublish && isPersistedConnectorTestCurrent(data, sessionTest),
         submitKey: 'connectorCatalog.actions.publish',
         successKey: 'connectorCatalog.toast.published',
         titleKey: 'connectorCatalog.mutations.publish.title',
       }),
-    [data, openSimple, permissions.canPublish],
+    [data, openSimple, permissions.canPublish, sessionTest],
   );
 
   const archive = useCallback(
@@ -338,12 +403,12 @@ export const useConnectorActions = ({
 
   const primaryAction = resolveAdminConnectorPrimaryAction({
     canPublish: permissions.canPublish && data.draft.status !== 'archived',
-    canSave: permissions.canUpdate && editor.validation.valid,
+    canSave: permissions.canUpdate && editor.validation.valid && !editor.requiresSecretReentry,
     canTest: permissions.canTest && data.draft.status !== 'archived',
     conflict: editor.conflict,
     dirty: editor.dirty,
     saveFailed: editor.saveState === 'failed',
-    testPassed: isPersistedConnectorTestCurrent(data),
+    testPassed: isPersistedConnectorTestCurrent(data, sessionTest),
   });
 
   const onPrimaryAction = useCallback(

@@ -51,8 +51,10 @@ import type {
   ConnectorSecretSlot,
   ConnectorStoredSecret,
 } from './catalogTypes';
+import { resolveConnectorConnectionTest } from './connectionTestState';
 import { PlatformConnectorContractError } from './errors';
 import { assertConnectorPersistentTextSafe } from './secretBoundary';
+import { cleanupConnectorSecretRefs } from './secretCleanup';
 
 type CreateDraftInput = z.input<typeof adminConnectorCreateDraftInputSchema>;
 type UpdateDraftInput = z.input<typeof adminConnectorUpdateDraftInputSchema>;
@@ -111,8 +113,11 @@ const assertStoredSecret = (value: ConnectorStoredSecret): ConnectorStoredSecret
   return value;
 };
 
-export const connectorDraftToken = (draft: ConnectorDraft): string =>
-  checksumPayload({ draft, revision: draft.revision });
+/** Connection-test bookkeeping never changes the catalog draft identity. */
+export const connectorDraftToken = (draft: ConnectorDraft): string => {
+  const { connectionTest: _connectionTest, ...catalogDraft } = draft;
+  return checksumPayload({ draft: catalogDraft, revision: draft.revision });
+};
 
 export const connectorToolInsertValues = (
   tools: ConnectorDraft['tools'],
@@ -147,6 +152,7 @@ const toDraft = (
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
   }
   const common = {
+    // Token excludes connectionTest; attach after parse so stale/fresh is token-bound.
     connectionTest: null,
     description: connector.description,
     displayName: connector.displayName,
@@ -173,17 +179,17 @@ const toDraft = (
     transport: connector.transport,
   } as const;
   const empty = { configured: false, fingerprint: null, updatedAt: null } as const;
+  let draft: ConnectorDraft;
   if (connector.credentialMode === 'none') {
-    return adminConnectorDraftSchema.parse({
+    draft = adminConnectorDraftSchema.parse({
       ...common,
       credentialMode: 'none',
       oauthClientSecret: empty,
       oauthConfig: null,
       sharedSecret: empty,
     });
-  }
-  if (connector.credentialMode === 'shared_service_account') {
-    return adminConnectorDraftSchema.parse({
+  } else if (connector.credentialMode === 'shared_service_account') {
+    draft = adminConnectorDraftSchema.parse({
       ...common,
       credentialMode: 'shared_service_account',
       oauthClientSecret: empty,
@@ -194,18 +200,25 @@ const toDraft = (
         updatedAt: connector.sharedSecretUpdatedAt,
       },
     });
+  } else {
+    draft = adminConnectorDraftSchema.parse({
+      ...common,
+      credentialMode: 'per_user_oauth',
+      oauthClientSecret: {
+        configured: connector.oauthClientSecretRef !== null,
+        fingerprint: connector.oauthClientSecretFingerprint,
+        updatedAt: connector.oauthClientSecretUpdatedAt,
+      },
+      oauthConfig: connector.oauthConfig,
+      sharedSecret: empty,
+    });
   }
-  return adminConnectorDraftSchema.parse({
-    ...common,
-    credentialMode: 'per_user_oauth',
-    oauthClientSecret: {
-      configured: connector.oauthClientSecretRef !== null,
-      fingerprint: connector.oauthClientSecretFingerprint,
-      updatedAt: connector.oauthClientSecretUpdatedAt,
-    },
-    oauthConfig: connector.oauthConfig,
-    sharedSecret: empty,
+  const draftToken = connectorDraftToken(draft);
+  const connectionTest = resolveConnectorConnectionTest(connector.id, {
+    draftToken,
+    revision: draft.revision,
   });
+  return connectionTest ? { ...draft, connectionTest } : draft;
 };
 
 const listAllTools = async (
@@ -541,7 +554,9 @@ export class ConnectorCatalogDraftService {
         secretContext,
       );
       // Persist immutable Secret handles before acquiring the database row lock.
-      // A losing CAS may leave an unreachable handle, which is safe to garbage collect.
+      // On a losing CAS, revoke any newly created replacement handles immediately.
+      const previousOAuthRef = connector.oauthClientSecretRef;
+      const previousSharedRef = connector.sharedSecretRef;
       const secretSlots = await this.persistDraftSecrets(
         patch.id,
         normalized.candidate,
@@ -549,63 +564,94 @@ export class ConnectorCatalogDraftService {
         normalized.patch,
       );
       await this.lifecycle.afterDraftSecretPersist?.(patch.id);
-      return await this.db.transaction(async (tx) => {
-        const [lockedConnector] = await tx
-          .select()
-          .from(platformConnectors)
-          .where(eq(platformConnectors.id, patch.id))
-          .limit(1)
-          .for('update');
-        if (!lockedConnector) {
-          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
-        }
-        const lockedCurrent = await loadConnectorDraft(tx, patch.id);
-        if (
-          lockedCurrent.draft.revision !== patch.expectedRevision ||
-          lockedCurrent.draftToken !== patch.expectedDraftToken
-        ) {
-          throw new PlatformRevisionConflictError();
-        }
-        const repository = new PlatformConnectorCatalogRepository(tx);
-        const updated = await repository.updateConnectorDraftCas(patch.id, patch.expectedRevision, {
-          ...secretSlots,
-          connectorKey: normalized.candidate.key,
-          credentialMode: normalized.candidate.credentialMode,
-          description: normalized.candidate.description,
-          displayName: normalized.candidate.displayName,
-          enabled: normalized.candidate.enabled,
-          endpoint: normalized.candidate.endpoint,
-          oauthConfig: normalized.candidate.oauthConfig,
-          sort: normalized.candidate.sort,
-          transport: 'http',
-          updatedBy: actorUserId,
-        });
-        if (!updated) throw new PlatformRevisionConflictError();
-        await repository.replaceTools(
-          patch.id,
-          connectorToolInsertValues(normalized.candidate.tools),
-        );
-        const after = await loadConnectorDraft(tx, patch.id);
-        await new PlatformAuditService(tx).append({
-          action: 'admin.connectors.updateDraft',
-          actorUserId,
-          afterDiff: {
-            connector: connectorAuditSummary(
-              after.draft,
-              Object.keys(normalized.patch).filter(
-                (key) => !['expectedDraftToken', 'expectedRevision', 'id', 'reason'].includes(key),
+      try {
+        return await this.db.transaction(async (tx) => {
+          const [lockedConnector] = await tx
+            .select()
+            .from(platformConnectors)
+            .where(eq(platformConnectors.id, patch.id))
+            .limit(1)
+            .for('update');
+          if (!lockedConnector) {
+            throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
+          }
+          const lockedCurrent = await loadConnectorDraft(tx, patch.id);
+          if (
+            lockedCurrent.draft.revision !== patch.expectedRevision ||
+            lockedCurrent.draftToken !== patch.expectedDraftToken
+          ) {
+            throw new PlatformRevisionConflictError();
+          }
+          const repository = new PlatformConnectorCatalogRepository(tx);
+          const updated = await repository.updateConnectorDraftCas(
+            patch.id,
+            patch.expectedRevision,
+            {
+              ...secretSlots,
+              connectorKey: normalized.candidate.key,
+              credentialMode: normalized.candidate.credentialMode,
+              description: normalized.candidate.description,
+              displayName: normalized.candidate.displayName,
+              enabled: normalized.candidate.enabled,
+              endpoint: normalized.candidate.endpoint,
+              oauthConfig: normalized.candidate.oauthConfig,
+              sort: normalized.candidate.sort,
+              transport: 'http',
+              updatedBy: actorUserId,
+            },
+          );
+          if (!updated) throw new PlatformRevisionConflictError();
+          await repository.replaceTools(
+            patch.id,
+            connectorToolInsertValues(normalized.candidate.tools),
+          );
+          const after = await loadConnectorDraft(tx, patch.id);
+          await new PlatformAuditService(tx).append({
+            action: 'admin.connectors.updateDraft',
+            actorUserId,
+            afterDiff: {
+              connector: connectorAuditSummary(
+                after.draft,
+                Object.keys(normalized.patch).filter(
+                  (key) =>
+                    !['expectedDraftToken', 'expectedRevision', 'id', 'reason'].includes(key),
+                ),
               ),
-            ),
-          },
-          beforeDiff: { connector: connectorAuditSummary(lockedCurrent.draft) },
-          configRevision: after.draft.revision,
-          reason: normalized.patch.reason,
-          result: 'success',
-          targetId: patch.id,
-          targetType: 'connector',
+            },
+            beforeDiff: { connector: connectorAuditSummary(lockedCurrent.draft) },
+            configRevision: after.draft.revision,
+            reason: normalized.patch.reason,
+            result: 'success',
+            targetId: patch.id,
+            targetType: 'connector',
+          });
+          return after;
         });
-        return after;
-      });
+      } catch (casError) {
+        if (casError instanceof PlatformRevisionConflictError) {
+          const orphans = [
+            secretSlots.oauthClientSecretRef &&
+            secretSlots.oauthClientSecretRef !== previousOAuthRef
+              ? {
+                  connectorId: patch.id,
+                  ref: secretSlots.oauthClientSecretRef,
+                  slot: 'oauthClientSecret' as const,
+                }
+              : null,
+            secretSlots.sharedSecretRef && secretSlots.sharedSecretRef !== previousSharedRef
+              ? {
+                  connectorId: patch.id,
+                  ref: secretSlots.sharedSecretRef,
+                  slot: 'sharedSecret' as const,
+                }
+              : null,
+          ].filter((item): item is NonNullable<typeof item> => item !== null);
+          if (orphans.length > 0) {
+            await cleanupConnectorSecretRefs(this.secrets, orphans);
+          }
+        }
+        throw casError;
+      }
     } catch (error) {
       await appendConnectorFailureAudit(
         this.db,

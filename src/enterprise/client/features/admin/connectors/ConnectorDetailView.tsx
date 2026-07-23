@@ -72,6 +72,8 @@ interface ConnectorDetailViewProps {
   ) => void;
   permissions: AdminConnectorPermissions;
   primaryAction: AdminConnectorPrimaryAction;
+  /** Localized notice after crash recovery of secret intent (clear / reentry). */
+  restoreNotice?: string | null;
   saveState: AdminConnectorSaveState;
   secret: ConnectorSecretEdit;
   snapshot: AdminConnectorGetOutput;
@@ -99,6 +101,7 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
     onToolChange,
     permissions,
     primaryAction,
+    restoreNotice,
     saveState,
     secret,
     snapshot,
@@ -181,6 +184,7 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
             {readOnly ? (
               <Alert showIcon message={t('connectorCatalog.readOnly')} type={'info'} />
             ) : null}
+            {restoreNotice ? <Alert showIcon message={restoreNotice} type={'warning'} /> : null}
             {conflict ? (
               <Alert
                 showIcon

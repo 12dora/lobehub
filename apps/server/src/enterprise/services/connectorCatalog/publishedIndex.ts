@@ -151,5 +151,3 @@ export const invalidateConnectorPublishedIndex = (
   db: LobeChatDatabase,
   connectorId?: string,
 ): void => getConnectorPublishedIndex(db).invalidate(connectorId);
-
-export { MAX_INDEX_ENTRIES as MAX_CONNECTOR_PUBLISHED_INDEX_ENTRIES };

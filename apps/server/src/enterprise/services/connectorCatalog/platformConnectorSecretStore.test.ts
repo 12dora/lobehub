@@ -1,10 +1,14 @@
 // @vitest-environment node
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
-import { platformConnectors, platformConnectorSecrets } from '@/database/schemas/platform';
+import {
+  platformConnectors,
+  platformConnectorSecrets,
+  platformResourceRevisions,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { type KeyProvider, PlatformSecretService } from '../../security/secret';
@@ -24,6 +28,13 @@ const cleanup = async () => {
   await db
     .delete(platformConnectorSecrets)
     .where(eq(platformConnectorSecrets.connectorId, connectorIds[1]));
+  // Migration 0145: revisions reject row DELETE without the replica-role bypass.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL session_replication_role = 'replica'`));
+    await tx
+      .delete(platformResourceRevisions)
+      .where(inArray(platformResourceRevisions.resourceId, connectorIds));
+  });
   await db.delete(platformConnectors).where(eq(platformConnectors.id, connectorIds[0]));
   await db.delete(platformConnectors).where(eq(platformConnectors.id, connectorIds[1]));
 };
@@ -129,6 +140,42 @@ describe('PlatformConnectorSecretStore', () => {
     ).resolves.toMatchObject({ value: 'v'.repeat(64) });
   });
 
+  it('exposes non-deterministic opaque fingerprints and rejects ciphertext substitution', async () => {
+    const keyProvider: KeyProvider = {
+      getKek: async () => ({ key: keyA, keyId: 'test:key-a' }),
+      providerId: 'test',
+    };
+    const secretService = new PlatformSecretService({ keyProvider });
+    const store = new PlatformConnectorSecretStore(db, secretService);
+    const value = { password: 'guessable' };
+    const a = await store.persistSecret({
+      connectorId: connectorIds[0],
+      slot: 'sharedSecret',
+      value,
+    });
+    const b = await store.persistSecret({
+      connectorId: connectorIds[0],
+      slot: 'sharedSecret',
+      value,
+    });
+    // Same plaintext must not produce a deterministic public fingerprint (oracle).
+    expect(a.fingerprint).not.toBe(b.fingerprint);
+    expect(a.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+    // Substituting a valid envelope of different plaintext must fail integrity.
+    await db
+      .update(platformConnectorSecrets)
+      .set({ ciphertext: await secretService.encrypt(JSON.stringify({ password: 'different' })) })
+      .where(eq(platformConnectorSecrets.ref, a.ref));
+    await expect(
+      store.resolveSecretRef({
+        connectorId: connectorIds[0],
+        ref: a.ref,
+        slot: 'sharedSecret',
+      }),
+    ).rejects.toBeInstanceOf(PlatformConnectorContractError);
+  });
+
   it('fails closed on an invalid envelope and makes revoked handles unreadable', async () => {
     const keyProvider: KeyProvider = {
       getKek: async () => ({ key: keyA, keyId: 'test:key-a' }),
@@ -193,6 +240,65 @@ describe('PlatformConnectorSecretStore', () => {
         connectorId: connectorIds[0],
         ref: orphan.ref,
         slot: 'oauthBindingToken',
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('gc_preserves_client_secrets_referenced_by_published_revision_fingerprints', async () => {
+    const keyProvider: KeyProvider = {
+      getKek: async () => ({ key: keyA, keyId: 'test:key-a' }),
+      providerId: 'test',
+    };
+    const store = new PlatformConnectorSecretStore(db, new PlatformSecretService({ keyProvider }));
+    const historical = await store.persistSecret({
+      connectorId: connectorIds[0],
+      slot: 'sharedSecret',
+      value: { apiKey: 'historical-revision-secret' },
+    });
+    // Current connector row does not reference this ref (as if draft replaced it).
+    await db
+      .update(platformConnectors)
+      .set({ sharedSecretFingerprint: null, sharedSecretRef: null })
+      .where(eq(platformConnectors.id, connectorIds[0]));
+    // Published revision still pins the fingerprint for rollback / historical runtime.
+    await db.insert(platformResourceRevisions).values({
+      checksum: 'a'.repeat(64),
+      payload: {
+        connector: {
+          sharedSecretFingerprint: historical.fingerprint,
+        },
+      },
+      resourceId: connectorIds[0],
+      resourceType: 'connector',
+      revision: 99,
+      status: 'published',
+    });
+    await db
+      .update(platformConnectorSecrets)
+      .set({ createdAt: new Date('2020-01-01T00:00:00Z') })
+      .where(eq(platformConnectorSecrets.ref, historical.ref));
+
+    await expect(store.garbageCollectOrphanedSecrets()).resolves.toBe(0);
+    await expect(
+      store.resolveSecretRef({
+        connectorId: connectorIds[0],
+        ref: historical.ref,
+        slot: 'sharedSecret',
+      }),
+    ).resolves.toMatchObject({ fingerprint: historical.fingerprint });
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL session_replication_role = 'replica'`));
+      await tx
+        .delete(platformResourceRevisions)
+        .where(eq(platformResourceRevisions.resourceId, connectorIds[0]));
+    });
+    await expect(store.garbageCollectOrphanedSecrets()).resolves.toBeGreaterThanOrEqual(1);
+    await expect(
+      store.resolveSecretRef({
+        connectorId: connectorIds[0],
+        ref: historical.ref,
+        slot: 'sharedSecret',
       }),
     ).resolves.toBeNull();
   });

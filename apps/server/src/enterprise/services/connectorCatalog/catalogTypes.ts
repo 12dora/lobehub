@@ -26,6 +26,8 @@ export interface ConnectorResolvedSecret extends ConnectorStoredSecret {
 
 export interface ConnectorCatalogSecretStore extends ConnectorCurrentSecretLoader {
   assertReady?: () => Promise<void>;
+  /** Opportunistic GC for unreferenced secret rows (optional store capability). */
+  garbageCollectOrphanedSecrets?: (limit?: number) => Promise<number>;
   persistSecret: (
     params: {
       connectorId: string;

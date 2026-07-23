@@ -236,7 +236,7 @@ describe('ConnectorCatalogDraftService', () => {
     );
   });
 
-  it('persists replacement handles before locking and leaves a safe orphan after a losing CAS', async () => {
+  it('losing_CAS_cleans_unreferenced_secret', async () => {
     const secrets = new MemoryConnectorSecretStore(db);
     const lifecycle: ConnectorCatalogLifecycle = {};
     const service = createService(undefined, secrets, lifecycle);
@@ -272,13 +272,14 @@ describe('ConnectorCatalogDraftService', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     expect(orphan).toBeDefined();
+    // Losing CAS must revoke the unreferenced replacement handle.
     await expect(
       secrets.resolveSecretVersion({
         connectorId: created.draft.id,
         fingerprint: orphan!.fingerprint,
         slot: 'sharedSecret',
       }),
-    ).resolves.toMatchObject({ ref: orphan!.ref });
+    ).resolves.toBeNull();
     const [connector] = await db.select().from(platformConnectors);
     expect(connector.sharedSecretFingerprint).toBe(created.draft.sharedSecret.fingerprint);
   });

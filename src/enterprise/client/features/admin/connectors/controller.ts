@@ -1,6 +1,5 @@
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
-import { canonicalize } from '../primitives/canonicalize';
 import type {
   AdminConnectorDraft,
   AdminConnectorGetOutput,
@@ -131,11 +130,6 @@ export const validateEditableAdminConnectorDraft = (
   return { errors, valid: Object.keys(errors).length === 0 };
 };
 
-/** Secret values never enter the public draft fingerprint or durable client storage. */
-export const fingerprintEditableAdminConnectorDraft = (
-  draft: EditableAdminConnectorDraft,
-): string => JSON.stringify(canonicalize(draft));
-
 export type AdminConnectorPrimaryAction = 'none' | 'publish' | 'retry' | 'save' | 'test';
 
 /** One dominant action for the sticky editor footer. */
@@ -156,7 +150,25 @@ export const resolveAdminConnectorPrimaryAction = (params: {
   return 'none';
 };
 
-export const isPersistedConnectorTestCurrent = (snapshot: AdminConnectorGetOutput): boolean => {
+/** Session-retained success from the last connection test in this editor. */
+export interface SessionConnectorTestResult {
+  status: 'success';
+  testedDraftToken: string;
+  testedRevision: number;
+}
+
+export const isPersistedConnectorTestCurrent = (
+  snapshot: AdminConnectorGetOutput,
+  sessionTest?: SessionConnectorTestResult | null,
+): boolean => {
+  if (
+    sessionTest &&
+    sessionTest.status === 'success' &&
+    sessionTest.testedRevision === snapshot.baseRevision &&
+    sessionTest.testedDraftToken === snapshot.draftToken
+  ) {
+    return true;
+  }
   const state = snapshot.draft.connectionTest;
   return Boolean(
     state &&

@@ -7,6 +7,7 @@ import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import {
   changeConnectorCredentialMode,
   clearConnectorSecretEdit,
+  type ConnectorSecretEdit,
   createEmptyConnectorSecretEdit,
   type EditableAdminConnectorDraft,
   toEditableAdminConnectorDraft,
@@ -18,14 +19,38 @@ import {
   clearAdminConnectorDraft,
   loadAdminConnectorDraft,
   saveAdminConnectorDraft,
+  type StoredConnectorSecretIntent,
 } from './localDraftStorage';
 import type { AdminConnectorGetOutput, AdminConnectorToolDraft } from './types';
+
+/**
+ * Map live secret edit → durable intent. When the admin previously typed a
+ * replacement that was not yet saved, we retain `replace_requires_reentry`
+ * even though the bytes themselves are never stored.
+ */
+const secretIntentFromEdit = (
+  edit: ConnectorSecretEdit,
+  requiresReentry: boolean,
+): StoredConnectorSecretIntent => {
+  if (edit.operation === 'clear') return 'clear';
+  if (edit.operation === 'replace') return 'replace_requires_reentry';
+  if (requiresReentry) return 'replace_requires_reentry';
+  return 'keep';
+};
+
+const secretEditFromIntent = (
+  intent: StoredConnectorSecretIntent | undefined,
+): ConnectorSecretEdit => {
+  if (intent === 'clear') return clearConnectorSecretEdit();
+  // Replacement bytes are never stored — admin must re-enter after restore.
+  return createEmptyConnectorSecretEdit();
+};
 
 export const useConnectorEditor = (
   snapshot: AdminConnectorGetOutput | undefined,
   editable: boolean,
 ) => {
-  const { t } = useTranslation('admin');
+  const { i18n, t } = useTranslation('admin');
   const [draft, setDraft] = useState<EditableAdminConnectorDraft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
@@ -34,6 +59,10 @@ export const useConnectorEditor = (
   );
   const [actionError, setActionError] = useState<string | null>(null);
   const [secret, setSecret] = useState(createEmptyConnectorSecretEdit);
+  /** True until the admin re-enters a replacement or explicitly dismisses it. */
+  const [requiresSecretReentry, setRequiresSecretReentry] = useState(false);
+  /** Stable i18n key — translated at the presentation boundary so locale changes apply. */
+  const [restoreNoticeKey, setRestoreNoticeKey] = useState<string | null>(null);
   const hydratedRef = useRef('');
 
   useEffect(() => {
@@ -53,18 +82,40 @@ export const useConnectorEditor = (
     );
     setSaveState(stored ? 'dirty' : 'idle');
     setActionError(null);
-    setSecret(createEmptyConnectorSecretEdit());
+    setSecret(secretEditFromIntent(stored?.secretIntent));
+    const needsReentry = stored?.secretIntent === 'replace_requires_reentry';
+    setRequiresSecretReentry(needsReentry);
+    setRestoreNoticeKey(
+      needsReentry
+        ? 'connectorCatalog.unsaved.secretReentry'
+        : stored?.secretIntent === 'clear'
+          ? 'connectorCatalog.unsaved.secretClearRestored'
+          : null,
+    );
   }, [editable, snapshot]);
+
+  const restoreNotice = useMemo(
+    () => (restoreNoticeKey ? t(restoreNoticeKey as never) : null),
+    // Recompute when language changes so restored warnings are not stuck in a prior locale.
+    [i18n.language, restoreNoticeKey, t],
+  );
 
   useEffect(() => {
     if (!editable || !snapshot || !draft || !dirty) return;
-    saveAdminConnectorDraft(snapshot.draft.id, {
-      baseRevision: snapshot.baseRevision,
-      draft,
-      draftToken: snapshot.draftToken,
-      savedAt: new Date().toISOString(),
-    });
-  }, [dirty, draft, editable, snapshot]);
+    const secretLeaves =
+      secret.operation === 'replace' && secret.value ? [secret.value] : undefined;
+    saveAdminConnectorDraft(
+      snapshot.draft.id,
+      {
+        baseRevision: snapshot.baseRevision,
+        draft,
+        draftToken: snapshot.draftToken,
+        savedAt: new Date().toISOString(),
+        secretIntent: secretIntentFromEdit(secret, requiresSecretReentry),
+      },
+      { secretLeaves },
+    );
+  }, [dirty, draft, editable, requiresSecretReentry, secret, snapshot]);
 
   const unsavedMessages = useMemo(
     () => ({
@@ -93,6 +144,8 @@ export const useConnectorEditor = (
             : current,
         );
         setSecret(createEmptyConnectorSecretEdit());
+        setRequiresSecretReentry(false);
+        setRestoreNoticeKey(null);
         setDirty(true);
         setSaveState('dirty');
         setActionError(null);
@@ -103,7 +156,7 @@ export const useConnectorEditor = (
       setSaveState('dirty');
       setActionError(null);
     },
-    [editable, secret],
+    [editable],
   );
 
   const updateTool = useCallback(
@@ -133,6 +186,9 @@ export const useConnectorEditor = (
     (value: string) => {
       if (!editable) return;
       setSecret(updateConnectorSecretEdit(value));
+      // Entering a replacement clears the reentry sentinel.
+      setRequiresSecretReentry(false);
+      setRestoreNoticeKey(null);
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
@@ -143,6 +199,8 @@ export const useConnectorEditor = (
   const clearSecret = useCallback(() => {
     if (!editable) return;
     setSecret(clearConnectorSecretEdit());
+    setRequiresSecretReentry(false);
+    setRestoreNoticeKey(null);
     setDirty(true);
     setSaveState('dirty');
     setActionError(null);
@@ -151,6 +209,8 @@ export const useConnectorEditor = (
   const keepSecret = useCallback(() => {
     if (!editable) return;
     setSecret(createEmptyConnectorSecretEdit());
+    setRequiresSecretReentry(false);
+    setRestoreNoticeKey(null);
     setDirty(true);
     setSaveState('dirty');
     setActionError(null);
@@ -165,6 +225,8 @@ export const useConnectorEditor = (
     setSaveState('idle');
     setActionError(null);
     setSecret(createEmptyConnectorSecretEdit());
+    setRequiresSecretReentry(false);
+    setRestoreNoticeKey(null);
   }, [snapshot]);
 
   const markSaved = useCallback(() => {
@@ -175,12 +237,17 @@ export const useConnectorEditor = (
     setSaveState('saved');
     setActionError(null);
     setSecret(createEmptyConnectorSecretEdit());
+    setRequiresSecretReentry(false);
+    setRestoreNoticeKey(null);
   }, [snapshot]);
 
-  const validation = useMemo(
-    () => (draft ? validateEditableAdminConnectorDraft(draft) : { errors: {}, valid: false }),
-    [draft],
-  );
+  const validation = useMemo(() => {
+    if (!draft) return { errors: {}, valid: false };
+    const base = validateEditableAdminConnectorDraft(draft);
+    // Block Save until a restored replacement is re-entered or explicitly dismissed.
+    if (requiresSecretReentry) return { ...base, valid: false };
+    return base;
+  }, [draft, requiresSecretReentry]);
 
   return {
     actionError,
@@ -192,6 +259,9 @@ export const useConnectorEditor = (
     draft,
     keepSecret,
     markSaved,
+    /** True when a restored replacement must be re-entered before save. */
+    requiresSecretReentry,
+    restoreNotice,
     saveState,
     secret,
     setActionError,

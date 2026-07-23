@@ -76,7 +76,11 @@ const ConnectorAuditPanel = memo<ConnectorAuditPanelProps>(({ canReadAudit, conn
             <div className={styles.row} key={row.id}>
               <Text type={'secondary'}>{formatDateTime(row.createdAt)}</Text>
               <Flexbox gap={2} style={{ minWidth: 0 }}>
-                <Text strong>{row.action}</Text>
+                <Text strong>
+                  {t(`connectorCatalog.audit.action.${row.action}` as never, {
+                    defaultValue: row.action,
+                  })}
+                </Text>
                 {row.reason ? <Text type={'secondary'}>{row.reason}</Text> : null}
               </Flexbox>
               <Text>{t(`connectorCatalog.audit.result.${row.result}` as never)}</Text>

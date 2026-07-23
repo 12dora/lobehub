@@ -1,7 +1,7 @@
 import { createHash, randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
 
 import { isPlainRecord } from '@lobechat/utils/object';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { PlatformJobModel } from '@/database/models/platform/job';
@@ -35,6 +35,13 @@ import { cleanupConnectorSecretRefs } from './secretCleanup';
 
 const AUTHORIZATION_TTL_MS = 9 * 60 * 1000;
 const OAUTH_REFRESH_JOB_TYPE = 'connector.oauth.refresh.v1';
+/** Short lease before outbound I/O; heartbeats renew while work is in flight. */
+const OAUTH_REFRESH_LEASE_INTERVAL = sql<Date>`statement_timestamp() + interval '2 minutes'`;
+/**
+ * Extended lease once outbound token refresh has started — covers slow IdP
+ * round-trips without allowing concurrent reclaim of an in-flight rotation.
+ */
+const OAUTH_REFRESH_OUTBOUND_LEASE_INTERVAL = sql<Date>`statement_timestamp() + interval '10 minutes'`;
 const storedOAuthTokenSchema = z
   .object({
     accessToken: z.string().min(1).max(32_768),
@@ -164,15 +171,22 @@ export class UserConnectorOAuthService {
       query: command.query,
       status: 'published',
     });
-    const items = await Promise.all(
-      page.items.map(async (connector) => {
-        const [published, binding] = await Promise.all([
-          this.read.getPublicPublished(connector.id),
-          this.bindings.getBinding(connector.id),
-        ]);
-        return { ...published, binding: toBindingProjection(binding) };
-      }),
-    );
+    // Batch binding + published snapshot lookups once per page (no N+1).
+    const connectorIds = page.items.map((connector) => connector.id);
+    const [bindingsByConnectorId, publishedById] = await Promise.all([
+      this.bindings.getBindingsForConnectors(connectorIds),
+      this.read.getPublicPublishedBatch(connectorIds),
+    ]);
+    const items = page.items.map((connector) => {
+      const published = publishedById.get(connector.id);
+      if (!published) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      }
+      return {
+        ...published,
+        binding: toBindingProjection(bindingsByConnectorId.get(connector.id)),
+      };
+    });
     return userConnectorListManagedOutputSchema.parse({
       items,
       nextCursor: page.nextCursor?.connectorKey ?? null,
@@ -343,13 +357,19 @@ export class UserConnectorOAuthService {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
     }
     const refreshLease = await this.acquireRefreshLease(binding);
+    let completed = false;
     try {
+      // Mark outboundStarted + extend lease before IdP I/O so concurrent callers
+      // cannot reclaim mid-rotation; a crash after this point is fail-closed via TTL.
+      await this.heartbeatRefreshLease(refreshLease, { outbound: true });
       const response = await this.dependencies.outbound.refresh({
         clientId: oauth.clientId,
         clientSecret: clientSecretValue,
         refreshToken: currentToken.data.refreshToken,
         tokenEndpoint: oauth.tokenEndpoint,
       });
+      // Renew after outbound returns to cover the persistence / CAS window.
+      await this.heartbeatRefreshLease(refreshLease, { outbound: true });
       const token = connectorOAuthTokenResponseSchema.safeParse(response.body);
       if (!token.success) {
         throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID');
@@ -392,21 +412,90 @@ export class UserConnectorOAuthService {
         resultSummary: { bindingRevision: updated.revision },
         workerId: refreshLease.owner,
       });
+      completed = true;
       await bestEffortRevokeSecret(
         this.dependencies,
         connectorId,
         'oauthBindingToken',
         binding.oauthTokenRef,
       );
-    } catch (error) {
-      await new PlatformJobModel(this.db).fail({
-        error: { code: 'CONNECTOR_OAUTH_REFRESH_FAILED' },
-        jobId: refreshLease.jobId,
-        terminal: true,
-        workerId: refreshLease.owner,
-      });
-      throw error;
+    } finally {
+      // Process crash is covered by finite leaseUntil + reclaim. This finally
+      // releases the lease on any in-process failure so a held lease cannot
+      // livelock the binding revision.
+      if (!completed) {
+        await this.releaseRefreshLeaseBestEffort(refreshLease, 'CONNECTOR_OAUTH_REFRESH_FAILED');
+      }
     }
+  };
+
+  /**
+   * Terminalise a refresh lease even when the standard job.fail() CAS misses
+   * (expired lease). Idempotent: terminal rows and foreign owners are no-ops.
+   */
+  private releaseRefreshLeaseBestEffort = async (
+    lease: { jobId: string; owner: string },
+    code: string,
+  ): Promise<void> => {
+    try {
+      const failed = await new PlatformJobModel(this.db).fail({
+        error: { code },
+        jobId: lease.jobId,
+        terminal: true,
+        workerId: lease.owner,
+      });
+      if (failed) return;
+      // fail() no-ops when lease already expired — force-clear ownership so the
+      // binding revision can be reclaimed without waiting for another cycle.
+      const databaseNow = sql<Date>`statement_timestamp()`;
+      await this.db
+        .update(platformJobs)
+        .set({
+          finishedAt: databaseNow,
+          lastError: { code },
+          leaseOwner: null,
+          leaseUntil: null,
+          status: 'failed',
+          updatedAt: databaseNow,
+        })
+        .where(
+          and(
+            eq(platformJobs.id, lease.jobId),
+            eq(platformJobs.leaseOwner, lease.owner),
+            eq(platformJobs.status, 'running'),
+          ),
+        );
+    } catch {
+      // Best-effort only; finite leaseUntil remains the crash-recovery backstop.
+    }
+  };
+
+  private heartbeatRefreshLease = async (
+    lease: { jobId: string; owner: string },
+    options: { outbound: boolean } = { outbound: false },
+  ): Promise<void> => {
+    const databaseNow = sql<Date>`statement_timestamp()`;
+    await this.db
+      .update(platformJobs)
+      .set({
+        heartbeatAt: databaseNow,
+        // Outbound I/O uses the longer lease so slow IdPs cannot be reclaimed mid-flight.
+        leaseUntil: options.outbound
+          ? OAUTH_REFRESH_OUTBOUND_LEASE_INTERVAL
+          : OAUTH_REFRESH_LEASE_INTERVAL,
+        // Mark that outbound work may be in flight so reclaim refuses blind retry.
+        input: options.outbound
+          ? sql`jsonb_set(coalesce(${platformJobs.input}, '{}'::jsonb), '{outboundStarted}', 'true'::jsonb, true)`
+          : platformJobs.input,
+        updatedAt: databaseNow,
+      })
+      .where(
+        and(
+          eq(platformJobs.id, lease.jobId),
+          eq(platformJobs.leaseOwner, lease.owner),
+          eq(platformJobs.status, 'running'),
+        ),
+      );
   };
 
   private acquireRefreshLease = async (
@@ -414,7 +503,10 @@ export class UserConnectorOAuthService {
   ): Promise<{ jobId: string; owner: string }> => {
     const owner = randomUUID();
     const databaseNow = sql<Date>`statement_timestamp()`;
-    const databaseInfiniteLease = sql<Date>`timestamptz '9999-12-31 23:59:59.999+00'`;
+    // Finite lease so a crashed worker can be reclaimed after expiry instead of
+    // permanently stranding the binding refresh path on an abandoned `running` row.
+    // Heartbeats renew leaseUntil while the holder is still executing outbound work.
+    const databaseLeaseUntil = OAUTH_REFRESH_LEASE_INTERVAL;
     const idempotencyKey = hash(`${binding.id}:${binding.revision}`);
     const [created] = await this.db
       .insert(platformJobs)
@@ -426,10 +518,11 @@ export class UserConnectorOAuthService {
           bindingId: binding.id,
           bindingRevision: binding.revision,
           connectorId: binding.connectorId,
+          outboundStarted: false,
           userId: binding.userId,
         },
         leaseOwner: owner,
-        leaseUntil: databaseInfiniteLease,
+        leaseUntil: databaseLeaseUntil,
         requestedBy: binding.userId,
         startedAt: databaseNow,
         status: 'running',
@@ -439,13 +532,39 @@ export class UserConnectorOAuthService {
       .returning({ id: platformJobs.id });
     if (created) return { jobId: created.id, owner };
 
+    // Ambiguous outbound: lease expired after token endpoint may have rotated.
+    // Mark dead and never reclaim for a blind refresh-token retry (fail closed).
+    const [ambiguous] = await this.db
+      .update(platformJobs)
+      .set({
+        lastError: { code: 'CONNECTOR_OAUTH_REFRESH_AMBIGUOUS_OUTBOUND' },
+        status: 'dead',
+        updatedAt: databaseNow,
+      })
+      .where(
+        and(
+          eq(platformJobs.type, OAUTH_REFRESH_JOB_TYPE),
+          eq(platformJobs.idempotencyKey, idempotencyKey),
+          eq(platformJobs.status, 'running'),
+          sql`${platformJobs.leaseUntil} IS NOT NULL`,
+          sql`${platformJobs.leaseUntil} < statement_timestamp()`,
+          sql`coalesce((${platformJobs.input}->>'outboundStarted')::boolean, false) = true`,
+        ),
+      )
+      .returning({ id: platformJobs.id });
+    if (ambiguous) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+    }
+
     const [reclaimed] = await this.db
       .update(platformJobs)
       .set({
         attempt: sql`${platformJobs.attempt} + 1`,
         heartbeatAt: databaseNow,
+        input: sql`jsonb_set(coalesce(${platformJobs.input}, '{}'::jsonb), '{outboundStarted}', 'false'::jsonb, true)`,
+        lastError: null,
         leaseOwner: owner,
-        leaseUntil: databaseInfiniteLease,
+        leaseUntil: databaseLeaseUntil,
         status: 'running',
         updatedAt: databaseNow,
       })
@@ -453,7 +572,25 @@ export class UserConnectorOAuthService {
         and(
           eq(platformJobs.type, OAUTH_REFRESH_JOB_TYPE),
           eq(platformJobs.idempotencyKey, idempotencyKey),
-          inArray(platformJobs.status, ['dead', 'failed']),
+          // Terminal non-ambiguous jobs, or abandoned running leases that never
+          // started outbound (safe reclaim without double-rotate risk).
+          sql`(
+            (
+              ${platformJobs.status} IN ('dead', 'failed')
+              AND coalesce(${platformJobs.lastError}->>'code', '')
+                <> 'CONNECTOR_OAUTH_REFRESH_AMBIGUOUS_OUTBOUND'
+            )
+            OR (
+              ${platformJobs.status} = 'running'
+              AND ${platformJobs.leaseUntil} IS NOT NULL
+              AND ${platformJobs.leaseUntil} < statement_timestamp()
+              AND coalesce((${platformJobs.input}->>'outboundStarted')::boolean, false) = false
+              AND (
+                ${platformJobs.heartbeatAt} IS NULL
+                OR ${platformJobs.heartbeatAt} < statement_timestamp() - interval '2 minutes'
+              )
+            )
+          )`,
         ),
       )
       .returning({ id: platformJobs.id });

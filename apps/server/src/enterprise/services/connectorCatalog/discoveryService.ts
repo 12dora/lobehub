@@ -1,6 +1,12 @@
+import { randomUUID } from 'node:crypto';
+
 import { isPlainRecord } from '@lobechat/utils/object';
+import { eq } from 'drizzle-orm';
 import type { z } from 'zod';
 
+import { PlatformRevisionConflictError } from '@/database/models/platform';
+import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
+import { platformConnectors } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
@@ -21,11 +27,15 @@ import type {
   ConnectorCatalogSecretStore,
   ConnectorDraft,
 } from './catalogTypes';
+import { recordConnectorConnectionTest } from './connectionTestState';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
-import { loadConnectorDraft } from './draftService';
+import { connectorToolInsertValues, loadConnectorDraft } from './draftService';
 import { PlatformConnectorContractError } from './errors';
 import { fixedConnectorOperationResult } from './secretBoundary';
-import { parseDiscoveredConnectorTools } from './toolDefinitionValidator';
+import {
+  parseConnectorToolsForWrite,
+  parseDiscoveredConnectorTools,
+} from './toolDefinitionValidator';
 
 export class ConnectorCatalogDiscoveryService {
   constructor(
@@ -83,6 +93,10 @@ export class ConnectorCatalogDiscoveryService {
     );
   };
 
+  /**
+   * Discover remote tools and persist them onto the draft under revision CAS so
+   * a subsequent admin get/refetch populates the editor for Save/Publish.
+   */
   discover = async (
     actorUserId: string,
     input: z.input<typeof adminConnectorDiscoverInputSchema>,
@@ -91,20 +105,56 @@ export class ConnectorCatalogDiscoveryService {
     const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
     try {
       const detail = await loadConnectorDraft(this.db, command.id);
-      const tools = await this.discoverRemoteTools(detail.draft);
-      await new PlatformAuditService(this.db).append({
-        action: 'admin.connectors.discover',
-        actorUserId,
-        afterDiff: { toolCount: tools.length },
-        reason,
-        result: 'success',
-        targetId: command.id,
-        targetType: 'connector',
+      const discovered = await this.discoverRemoteTools(detail.draft);
+      // Re-validate through the write boundary so insert values match ConnectorDraft tools
+      // (required outputSchema + stable id) without optional-default inference drift.
+      // Zod `.default({})` can leave `outputSchema` optional on the inferred output type —
+      // normalize again after parse so connectorToolInsertValues / draft tools stay required.
+      const toolsWithIds = parseConnectorToolsForWrite(
+        discovered.map((tool) => ({
+          ...tool,
+          id: randomUUID(),
+          outputSchema: tool.outputSchema ?? {},
+        })),
+      ).map((tool) => ({
+        ...tool,
+        outputSchema: tool.outputSchema ?? {},
+      }));
+
+      await this.db.transaction(async (tx) => {
+        const [locked] = await tx
+          .select({ id: platformConnectors.id, revision: platformConnectors.revision })
+          .from(platformConnectors)
+          .where(eq(platformConnectors.id, command.id))
+          .limit(1)
+          .for('update');
+        if (!locked) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
+        if (locked.revision !== detail.draft.revision) {
+          throw new PlatformRevisionConflictError();
+        }
+        const repository = new PlatformConnectorCatalogRepository(tx);
+        const updated = await repository.updateConnectorDraftCas(command.id, locked.revision, {
+          updatedBy: actorUserId,
+        });
+        if (!updated) throw new PlatformRevisionConflictError();
+        await repository.replaceTools(command.id, connectorToolInsertValues(toolsWithIds));
+        await new PlatformAuditService(tx).append({
+          action: 'admin.connectors.discover',
+          actorUserId,
+          afterDiff: { toolCount: toolsWithIds.length },
+          configRevision: updated.revision,
+          reason,
+          result: 'success',
+          targetId: command.id,
+          targetType: 'connector',
+        });
       });
+
+      // Response omits write-only tool ids (contract uses connectorToolWithoutIdListSchema).
       return adminConnectorDiscoverOutputSchema.parse({
         messageCode: 'connector.operation_succeeded',
         oauthConfig: detail.draft.oauthConfig,
-        tools,
+        tools: toolsWithIds.map(({ id: _id, ...tool }) => tool),
       });
     } catch (error) {
       await appendConnectorFailureAudit(
@@ -136,10 +186,24 @@ export class ConnectorCatalogDiscoveryService {
         latencyMs: Math.max(0, Date.now() - startedAt),
         testedAt: new Date(),
       });
+      // Persist revision/token-bound success so a subsequent get/refetch unlocks Publish.
+      recordConnectorConnectionTest(command.id, {
+        errorCategory: null,
+        latencyMs: output.latencyMs,
+        messageCode: output.messageCode,
+        status: 'success',
+        testedAt: output.testedAt,
+        testedDraftToken: detail.draftToken,
+        testedRevision: detail.draft.revision,
+      });
       await new PlatformAuditService(this.db).append({
         action: 'admin.connectors.test',
         actorUserId,
-        afterDiff: output,
+        afterDiff: {
+          ...output,
+          testedDraftToken: detail.draftToken,
+          testedRevision: detail.draft.revision,
+        },
         reason,
         result: 'success',
         targetId: command.id,
@@ -168,15 +232,33 @@ export class ConnectorCatalogDiscoveryService {
         error.code === 'PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED'
           ? 'invalid_config'
           : 'network';
+      const detail = await loadConnectorDraft(this.db, command.id).catch(() => null);
       const output = adminConnectorTestOutputSchema.parse({
         ...fixedConnectorOperationResult('failure', errorCategory),
         latencyMs: null,
         testedAt: new Date(),
       });
+      if (detail) {
+        recordConnectorConnectionTest(command.id, {
+          errorCategory: output.errorCategory,
+          latencyMs: null,
+          messageCode: output.messageCode,
+          status: 'failure',
+          testedAt: output.testedAt,
+          testedDraftToken: detail.draftToken,
+          testedRevision: detail.draft.revision,
+        });
+      }
       await new PlatformAuditService(this.db).append({
         action: 'admin.connectors.test',
         actorUserId,
-        afterDiff: output,
+        afterDiff: detail
+          ? {
+              ...output,
+              testedDraftToken: detail.draftToken,
+              testedRevision: detail.draft.revision,
+            }
+          : output,
         reason,
         result: 'failure',
         targetId: command.id,
