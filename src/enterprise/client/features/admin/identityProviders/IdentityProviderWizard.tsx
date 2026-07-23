@@ -90,6 +90,8 @@ interface IdentityProviderWizardProps {
   canUpdate: boolean;
   /** Prefill when creating from a type template. */
   createSeed?: IdentityProviderCreateDraftSeed;
+  /** Drop the card chrome when hosted inside a modal. */
+  embedded?: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onDiscard: () => void;
   onRefresh: () => Promise<unknown>;
@@ -106,6 +108,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     canTest,
     canUpdate,
     createSeed,
+    embedded,
     provider,
     onDirtyChange,
     onDiscard,
@@ -601,7 +604,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
                   </Button>
                 ) : null}
               </div>
-              <Text type="secondary">PKCE S256 · {draft.scopes.join(' ')}</Text>
             </Flexbox>
           );
         }
@@ -788,15 +790,15 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     };
 
     return (
-      <div className={styles.panel} data-testid="identity-provider-wizard">
+      <div
+        className={embedded ? styles.stack : styles.panel}
+        data-testid="identity-provider-wizard"
+      >
         <IdentityProviderWizardNavigation stepStates={stepStates} value={step} onChange={setStep} />
         {provider ? (
-          <Flexbox horizontal gap={8}>
+          <Flexbox horizontal align="center" gap={8}>
             <Tag>{t(`identityProviders.values.providerStatus.${provider.status}` as never)}</Tag>
-            <Text type="secondary">
-              {t('identityProviders.revision', { revision: provider.revision })}
-              {dirty ? ` · ${t('identityProviders.unsaved')}` : ''}
-            </Text>
+            {dirty ? <Text type="secondary">{t('identityProviders.unsaved')}</Text> : null}
           </Flexbox>
         ) : (
           <Text type="secondary">

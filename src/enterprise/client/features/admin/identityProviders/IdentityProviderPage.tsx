@@ -1,7 +1,9 @@
 'use client';
 
-import { Alert, Flexbox, Text } from '@lobehub/ui';
+import type { PlatformIdentityProviderDraft } from '@lobechat/types';
+import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
+import type { TableColumnsType } from 'antd';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -11,25 +13,18 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
+import DataTable from '../primitives/DataTable';
+import StatusBadge from '../primitives/StatusBadge';
 import { openReasonModal } from '../users/modals/openReasonModal';
-import {
-  createIdentityProviderDraftFromTemplate,
-  type IdentityProviderCreateDraftSeed,
-  type IdentityProviderCreateTemplateId,
-  isIdentityProviderSetupGuidanceError,
-} from './controller';
+import { isIdentityProviderSetupGuidanceError, toIdentityProviderStatusBadge } from './controller';
 import EasyauthStatusCard from './EasyauthStatusCard';
-import IdentityProviderList from './IdentityProviderList';
-import IdentityProviderRuntimeCard from './IdentityProviderRuntimeCard';
 import IdentityProviderSetupGuidance from './IdentityProviderSetupGuidance';
-import IdentityProviderTypePicker from './IdentityProviderTypePicker';
-import IdentityProviderWizard from './IdentityProviderWizard';
+import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
 import { identityProviderStyles as styles } from './styles';
 import { useIdentityProviderRestartLifecycle } from './useIdentityProviderRestartLifecycle';
 import {
   useAuthSnapshotStatus,
   useEasyauthStatus,
-  useIdentityProviderCallbacks,
   useIdentityProviders,
 } from './useIdentityProviders';
 
@@ -45,14 +40,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const enabled = accessStatus === 'allowed' && canRead;
   const providers = useIdentityProviders(enabled);
   const mutateProviders = providers.mutate;
-  const callbacks = useIdentityProviderCallbacks(enabled);
   const easyauth = useEasyauthStatus(enabled);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [createSeed, setCreateSeed] = useState<IdentityProviderCreateDraftSeed | null>(null);
-  const [editorDirty, setEditorDirty] = useState(false);
-  const [editorEpoch, setEditorEpoch] = useState(0);
-  const [restartError, setRestartError] = useState<string | null>(null);
   const runtimeEnabled = accessStatus === 'allowed' && canRestart;
   const [restartPolling, setRestartPolling] = useState(false);
   const runtime = useAuthSnapshotStatus(runtimeEnabled, restartPolling);
@@ -63,54 +51,27 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const setupGuidance = Boolean(
     providers.error && isIdentityProviderSetupGuidanceError(providers.error),
   );
-  const selected = useMemo(
-    () => providers.data?.items.find((item) => item.id === selectedId) ?? providers.data?.items[0],
-    [providers.data?.items, selectedId],
-  );
 
   const refreshProviders = useCallback(() => mutateProviders(), [mutateProviders]);
-  const discardAndReload = useCallback(() => {
-    setEditorDirty(false);
-    setEditorEpoch((current) => current + 1);
-    void mutateProviders();
-  }, [mutateProviders]);
-  const changeEditor = useCallback(
-    (change: () => void) => {
-      if (!editorDirty) {
-        change();
-        return;
-      }
-      confirmModal({
-        cancelText: t('identityProviders.unsaved.stay'),
-        content: t('identityProviders.unsaved.description'),
-        okText: t('identityProviders.unsaved.discard'),
-        title: t('identityProviders.unsaved.title'),
-        onOk: () => {
-          setEditorDirty(false);
-          setEditorEpoch((current) => current + 1);
-          change();
-        },
-      });
-    },
-    [editorDirty, t],
-  );
 
   useEffect(() => {
     setRestartPolling(restartLifecycle.phase === 'accepted');
   }, [restartLifecycle.phase]);
 
-  const startCreate = useCallback(() => {
-    changeEditor(() => {
-      setCreating(true);
-      setCreateSeed(null);
-      setSelectedId(null);
-    });
-  }, [changeEditor]);
-
-  const pickTemplate = useCallback((type: IdentityProviderCreateTemplateId) => {
-    setCreateSeed(createIdentityProviderDraftFromTemplate(type));
-    setEditorEpoch((current) => current + 1);
-  }, []);
+  const openWizard = useCallback(
+    (provider?: PlatformIdentityProviderDraft) => {
+      openIdentityProviderWizardModal({
+        authMethod: authMethod ?? null,
+        canCreate,
+        canPublish,
+        canTest,
+        canUpdate,
+        onChanged: refreshProviders,
+        provider,
+      });
+    },
+    [authMethod, canCreate, canPublish, canTest, canUpdate, refreshProviders],
+  );
 
   const requestRestart = () => {
     if (!runtime.data?.pendingRestart || !runtime.data.restart.supported) return;
@@ -129,7 +90,6 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
             impact: t('identityProviders.restart.impact'),
             onSubmit: async (payload) => {
               const input = payload as { reason: string; requestId: string };
-              setRestartError(null);
               try {
                 const prepared = await adminIdentityProvidersService.prepareRestart(input);
                 const result = await adminIdentityProvidersService.requestRestart({
@@ -144,7 +104,6 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                 }
               } catch (cause) {
                 restartLifecycle.fail();
-                setRestartError(t('identityProviders.errors.generic'));
                 throw cause;
               }
             },
@@ -159,13 +118,49 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     });
   };
 
+  const columns = useMemo<TableColumnsType<PlatformIdentityProviderDraft>>(
+    () => [
+      {
+        key: 'name',
+        title: t('identityProviders.columns.name'),
+        render: (_, item) => (
+          <Flexbox gap={2}>
+            <Text strong>{item.displayName}</Text>
+            <Text ellipsis style={{ fontSize: 12 }} type="secondary">
+              {item.buttonLabel}
+            </Text>
+          </Flexbox>
+        ),
+      },
+      {
+        key: 'type',
+        title: t('identityProviders.columns.type'),
+        width: 160,
+        render: (_, item) => (
+          <Tag color={item.type === 'authentik' ? 'blue' : 'default'}>
+            {item.type === 'authentik'
+              ? 'Authentik'
+              : t('identityProviders.templates.genericOidc.label')}
+          </Tag>
+        ),
+      },
+      {
+        dataIndex: 'status',
+        key: 'status',
+        title: t('identityProviders.columns.status'),
+        width: 150,
+        render: (_, item) => <StatusBadge status={toIdentityProviderStatusBadge(item.status)} />,
+      },
+    ],
+    [t],
+  );
+
   if (!canRead) {
     return <Alert showIcon description={t('identityProviders.errors.forbidden')} type="warning" />;
   }
 
   const showCreateAction = canCreate && !setupGuidance;
   const showRuntime = canRestart && !setupGuidance;
-  const showEditor = creating || Boolean(selected);
 
   return (
     <AdminPageTemplate
@@ -176,7 +171,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         setupGuidance ? null : (
           <Flexbox horizontal gap={8}>
             {showCreateAction ? (
-              <Button type="primary" onClick={startCreate}>
+              <Button type="primary" onClick={() => openWizard()}>
                 {t('identityProviders.actions.create')}
               </Button>
             ) : null}
@@ -196,19 +191,12 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         ) : restartLifecycle.phase === 'failed' ? (
           <Alert
             showIcon
+            description={t('identityProviders.restart.failed')}
             type="error"
             action={
               <Button size="small" onClick={() => restartLifecycle.retry(requestRestart)}>
                 {t('identityProviders.actions.retry')}
               </Button>
-            }
-            description={
-              restartLifecycle.attempt
-                ? t('identityProviders.restart.failedAccepted', {
-                    requestId: restartLifecycle.attempt.requestId,
-                    revision: restartLifecycle.attempt.targetIdentityRevision,
-                  })
-                : t('identityProviders.restart.failed')
             }
           />
         ) : null
@@ -227,99 +215,17 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         {setupGuidance ? (
           <IdentityProviderSetupGuidance />
         ) : (
-          <>
-            {showRuntime ? (
-              <IdentityProviderRuntimeCard
-                loadError={Boolean(runtime.error && !runtime.data)}
-                restartError={restartError}
-                status={runtime.data}
-                onRetry={() => void runtime.mutate()}
-              />
-            ) : null}
-
-            {/*
-              Keep the create/edit column mounted while the list revalidates.
-              isLoading flips true on retry / SWR backoff even when creating;
-              unmounting would discard wizard input (including write-only secrets).
-            */}
-            {providers.isLoading && !creating ? (
-              <Text role="status">{t('identityProviders.loading')}</Text>
-            ) : (
-              <div className={styles.columns}>
-                <Flexbox gap={8}>
-                  {providers.isLoading && creating ? (
-                    <Text role="status">{t('identityProviders.loading')}</Text>
-                  ) : null}
-                  {providers.error ? (
-                    <Alert
-                      showIcon
-                      description={t('identityProviders.errors.load')}
-                      type="error"
-                      action={
-                        <Button size="small" onClick={() => void providers.mutate()}>
-                          {t('identityProviders.actions.retry')}
-                        </Button>
-                      }
-                    />
-                  ) : null}
-                  {!providers.isLoading || creating ? (
-                    <IdentityProviderList
-                      canCreate={canCreate}
-                      items={providers.data?.items ?? []}
-                      selectedId={creating ? null : (selected?.id ?? null)}
-                      onCreate={startCreate}
-                      onSelect={(id) =>
-                        changeEditor(() => {
-                          setCreating(false);
-                          setCreateSeed(null);
-                          setSelectedId(id);
-                        })
-                      }
-                    />
-                  ) : null}
-                </Flexbox>
-
-                {/* Wizard stays reachable even when list fails — required for "New". */}
-                {creating && !createSeed ? (
-                  <IdentityProviderTypePicker onSelect={pickTemplate} />
-                ) : showEditor && (creating ? Boolean(createSeed) : Boolean(selected)) ? (
-                  <Flexbox gap={8}>
-                    {callbacks.error ? (
-                      <Alert
-                        showIcon
-                        description={t('identityProviders.callback.loadError')}
-                        type="warning"
-                        action={
-                          <Button size="small" onClick={() => void callbacks.mutate()}>
-                            {t('identityProviders.actions.retry')}
-                          </Button>
-                        }
-                      />
-                    ) : null}
-                    <IdentityProviderWizard
-                      authMethod={authMethod ?? null}
-                      callbacks={callbacks.data}
-                      canCreate={canCreate}
-                      canPublish={canPublish}
-                      canTest={canTest}
-                      canUpdate={canUpdate}
-                      createSeed={creating ? (createSeed ?? undefined) : undefined}
-                      key={`${creating ? `new:${createSeed?.type ?? 'pick'}` : selected?.id}:${editorEpoch}`}
-                      provider={creating ? undefined : selected}
-                      onDirtyChange={setEditorDirty}
-                      onDiscard={discardAndReload}
-                      onRefresh={refreshProviders}
-                      onSaved={async () => {
-                        setCreating(false);
-                        setCreateSeed(null);
-                        await mutateProviders();
-                      }}
-                    />
-                  </Flexbox>
-                ) : null}
-              </div>
-            )}
-          </>
+          <DataTable<PlatformIdentityProviderDraft>
+            columns={columns}
+            dataSource={providers.data?.items ?? []}
+            emptyDescription={t('identityProviders.empty')}
+            error={Boolean(providers.error) && !providers.data}
+            loading={providers.isLoading && !providers.data}
+            pagination={false}
+            rowKey="id"
+            onRetry={() => void providers.mutate()}
+            onRowActivate={(item) => openWizard(item)}
+          />
         )}
       </div>
     </AdminPageTemplate>

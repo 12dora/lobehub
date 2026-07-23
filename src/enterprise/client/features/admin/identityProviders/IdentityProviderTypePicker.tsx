@@ -8,41 +8,52 @@ import type { IdentityProviderCreateTemplateId } from './controller';
 import { identityProviderStyles as styles } from './styles';
 
 interface IdentityProviderTypePickerProps {
+  /** Drop the card chrome when hosted inside a modal (which already frames content). */
+  embedded?: boolean;
   onSelect: (type: IdentityProviderCreateTemplateId) => void;
 }
 
-const IdentityProviderTypePicker = memo<IdentityProviderTypePickerProps>(({ onSelect }) => {
-  const { t } = useTranslation('admin');
+const IdentityProviderTypePicker = memo<IdentityProviderTypePickerProps>(
+  ({ embedded, onSelect }) => {
+    const { t } = useTranslation('admin');
 
-  return (
-    <div className={styles.panel} data-testid="identity-provider-type-picker">
-      <Flexbox gap={6}>
-        <Text strong>{t('identityProviders.templates.title')}</Text>
-        <Text type="secondary">{t('identityProviders.templates.description')}</Text>
-      </Flexbox>
-      <div className={styles.templateGrid}>
-        <button className={styles.templateCard} type="button" onClick={() => onSelect('authentik')}>
-          <Flexbox horizontal align="center" gap={8}>
-            <Text strong>Authentik</Text>
-            <Tag color="blue">OIDC</Tag>
-          </Flexbox>
-          <Text type="secondary">{t('identityProviders.templates.authentik.description')}</Text>
-        </button>
-        <button
-          className={styles.templateCard}
-          type="button"
-          onClick={() => onSelect('generic_oidc')}
-        >
-          <Flexbox horizontal align="center" gap={8}>
-            <Text strong>{t('identityProviders.templates.genericOidc.label')}</Text>
-            <Tag>OIDC</Tag>
-          </Flexbox>
-          <Text type="secondary">{t('identityProviders.templates.genericOidc.description')}</Text>
-        </button>
+    return (
+      <div
+        className={embedded ? styles.stack : styles.panel}
+        data-testid="identity-provider-type-picker"
+      >
+        <Flexbox gap={6}>
+          <Text strong>{t('identityProviders.templates.title')}</Text>
+          <Text type="secondary">{t('identityProviders.templates.description')}</Text>
+        </Flexbox>
+        <div className={styles.templateGrid}>
+          <button
+            className={styles.templateCard}
+            type="button"
+            onClick={() => onSelect('authentik')}
+          >
+            <Flexbox horizontal align="center" gap={8}>
+              <Text strong>Authentik</Text>
+              <Tag color="blue">OIDC</Tag>
+            </Flexbox>
+            <Text type="secondary">{t('identityProviders.templates.authentik.description')}</Text>
+          </button>
+          <button
+            className={styles.templateCard}
+            type="button"
+            onClick={() => onSelect('generic_oidc')}
+          >
+            <Flexbox horizontal align="center" gap={8}>
+              <Text strong>{t('identityProviders.templates.genericOidc.label')}</Text>
+              <Tag>OIDC</Tag>
+            </Flexbox>
+            <Text type="secondary">{t('identityProviders.templates.genericOidc.description')}</Text>
+          </button>
+        </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 IdentityProviderTypePicker.displayName = 'IdentityProviderTypePicker';
 export default IdentityProviderTypePicker;

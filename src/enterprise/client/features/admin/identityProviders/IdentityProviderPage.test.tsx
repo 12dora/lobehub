@@ -7,18 +7,13 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import IdentityProviderPage from './IdentityProviderPage';
+import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
 
 const mocks = vi.hoisted(() => ({
   admin: {
     authMethod: 'better-auth' as const,
     permissions: [] as string[],
     status: 'allowed' as const,
-  },
-  callbacks: {
-    data: undefined as { production: string; test: string } | undefined,
-    error: undefined as unknown,
-    isLoading: false,
-    mutate: vi.fn(),
   },
   easyauth: {
     data: undefined as unknown,
@@ -75,6 +70,10 @@ vi.mock('../users/modals/openReasonModal', () => ({
   openReasonModal: vi.fn(),
 }));
 
+vi.mock('./openIdentityProviderWizardModal', () => ({
+  openIdentityProviderWizardModal: vi.fn(),
+}));
+
 vi.mock('./useIdentityProviderRestartLifecycle', () => ({
   useIdentityProviderRestartLifecycle: () => mocks.restartLifecycle,
 }));
@@ -82,7 +81,6 @@ vi.mock('./useIdentityProviderRestartLifecycle', () => ({
 vi.mock('./useIdentityProviders', () => ({
   useAuthSnapshotStatus: () => mocks.runtime,
   useEasyauthStatus: () => mocks.easyauth,
-  useIdentityProviderCallbacks: () => mocks.callbacks,
   useIdentityProviders: () => mocks.providers,
 }));
 
@@ -128,17 +126,30 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 
 vi.mock('../primitives/StatusBadge', () => ({ default: () => null }));
 
-vi.mock('./IdentityProviderWizard', () => ({
-  default: () => <div data-testid="identity-provider-wizard">wizard</div>,
-}));
-
-vi.mock('./IdentityProviderRuntimeCard', () => ({
-  default: () => <div data-testid="identity-runtime-status">runtime</div>,
+// Minimal DataTable: renders one activatable button per row so we can assert row-open.
+vi.mock('../primitives/DataTable', () => ({
+  default: ({
+    dataSource,
+    onRowActivate,
+  }: {
+    dataSource?: { displayName: string; id: string }[];
+    onRowActivate?: (item: { id: string }) => void;
+  }) => (
+    <div data-testid="provider-table">
+      {(dataSource ?? []).map((item) => (
+        <button key={item.id} type="button" onClick={() => onRowActivate?.(item)}>
+          {item.displayName}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 vi.mock('./EasyauthStatusCard', () => ({
   default: () => <div data-testid="easyauth-status-card">easyauth</div>,
 }));
+
+const openModalMock = vi.mocked(openIdentityProviderWizardModal);
 
 const allIdentityPermissions = [
   PLATFORM_PERMISSIONS.IDENTITY_READ,
@@ -156,23 +167,24 @@ const setupGuidanceError = {
   message: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
 };
 
-const genericLoadError = {
-  data: {
-    errorData: { code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT },
-  },
-  message: 'network failed',
+const sampleProvider = {
+  buttonLabel: 'Sign in with work account',
+  displayName: 'Corp SSO',
+  id: 'idp-1',
+  providerKey: 'corp',
+  status: 'draft',
+  type: 'generic_oidc',
 };
 
 describe('IdentityProviderPage rendering rules', () => {
   beforeEach(() => {
+    openModalMock.mockClear();
     mocks.admin.permissions = [...allIdentityPermissions];
     mocks.admin.status = 'allowed';
     mocks.providers.data = undefined;
     mocks.providers.error = undefined;
     mocks.providers.isLoading = false;
     mocks.providers.mutate = vi.fn();
-    mocks.callbacks.data = undefined;
-    mocks.callbacks.error = undefined;
     mocks.runtime.data = undefined;
     mocks.runtime.error = undefined;
     mocks.easyauth.data = undefined;
@@ -180,47 +192,39 @@ describe('IdentityProviderPage rendering rules', () => {
     mocks.restartLifecycle.phase = 'idle';
   });
 
-  it('renders only setup guidance for deploy-config list errors (no create, no runtime)', () => {
+  it('renders only setup guidance for deploy-config list errors (no create, no table)', () => {
     mocks.providers.error = setupGuidanceError;
-    mocks.runtime.data = {
-      active: { allFreshInstancesActive: true, partial: false },
-      artifact: { health: 'healthy', source: 'database' },
-      instances: [],
-      pendingPublished: [],
-      pendingRestart: false,
-      restart: { supported: true },
-      targetIdentityRevision: null,
-    };
 
     render(<IdentityProviderPage />);
 
     expect(screen.getByTestId('identity-provider-setup-guidance')).toBeTruthy();
     expect(screen.queryByText('identityProviders.actions.create')).toBeNull();
-    expect(screen.queryByTestId('identity-runtime-status')).toBeNull();
     expect(screen.queryByTestId('easyauth-status-card')).toBeNull();
-    expect(screen.queryByTestId('identity-provider-type-picker')).toBeNull();
-    expect(screen.queryByTestId('identity-provider-wizard')).toBeNull();
+    expect(screen.queryByTestId('provider-table')).toBeNull();
   });
 
-  it('keeps create flow mounted while the list is loading after a general load error', () => {
-    // SWR retry leaves isLoading=true with a prior general error. Header create remains
-    // available; entering create must not be blocked by the full-page loading branch.
-    mocks.providers.error = genericLoadError;
-    mocks.providers.isLoading = true;
+  it('renders the provider table + status card and opens the create modal from "New"', () => {
+    mocks.providers.data = { items: [sampleProvider] };
 
     render(<IdentityProviderPage />);
 
-    expect(screen.queryByTestId('identity-provider-setup-guidance')).toBeNull();
-    // Full-page loading is shown when not creating.
-    expect(screen.getByText('identityProviders.loading')).toBeTruthy();
-    expect(screen.queryByTestId('identity-provider-type-picker')).toBeNull();
+    expect(screen.getByTestId('easyauth-status-card')).toBeTruthy();
+    expect(screen.getByTestId('provider-table')).toBeTruthy();
 
-    // Header create is outside the list-loading branch and must still work.
     fireEvent.click(screen.getByText('identityProviders.actions.create'));
 
-    // creating=true while isLoading=true: columns + type picker stay mounted
-    // (pre-fix bug replaced this entire tree with loading-only status text).
-    expect(screen.getByTestId('identity-provider-type-picker')).toBeTruthy();
-    expect(screen.queryByTestId('identity-provider-setup-guidance')).toBeNull();
+    expect(openModalMock).toHaveBeenCalledTimes(1);
+    expect(openModalMock.mock.calls[0][0].provider).toBeUndefined();
+  });
+
+  it('opens the wizard modal in edit mode when a row is activated', () => {
+    mocks.providers.data = { items: [sampleProvider] };
+
+    render(<IdentityProviderPage />);
+
+    fireEvent.click(screen.getByText('Corp SSO'));
+
+    expect(openModalMock).toHaveBeenCalledTimes(1);
+    expect(openModalMock.mock.calls[0][0].provider).toMatchObject({ id: 'idp-1' });
   });
 });
