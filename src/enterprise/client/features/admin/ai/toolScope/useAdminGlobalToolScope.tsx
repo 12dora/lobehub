@@ -22,6 +22,7 @@ import { useToolStore } from '@/store/tool';
 import type { ConnectorTool, ConnectorWithTools } from '@/store/tool/slices/connector/types';
 
 import type { AdminConnectorGetOutput } from '../../connectors/types';
+import { readFileBase64 } from '../../primitives/readFileBase64';
 import { buildApplyImmediateVersionPayload } from '../../skills/controller';
 import { refreshAdminSkillLists, useFetchAdminSkills } from '../../skills/hooks/useAdminSkills';
 
@@ -48,19 +49,6 @@ const sanitizeSkillKey = (raw: string): string =>
     .replaceAll(/[^a-z0-9._-]+/g, '-')
     .replaceAll(/^[^a-z0-9]+|[-._]+$/g, '')
     .slice(0, 120);
-
-const readFileBase64 = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('FILE_READ_FAILED'));
-    reader.onload = () => {
-      const value = String(reader.result ?? '');
-      const comma = value.indexOf(',');
-      if (comma < 0) return reject(new Error('FILE_READ_FAILED'));
-      resolve(value.slice(comma + 1));
-    };
-    reader.readAsDataURL(file);
-  });
 
 const policyToPermission = (tool: {
   platformPolicy: 'allow' | 'deny';

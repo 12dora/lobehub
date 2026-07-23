@@ -21,6 +21,7 @@ import type {
 } from '@/server/enterprise/contracts/adminBranding';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
+import { readFileBase64 } from '../primitives/readFileBase64';
 import RevisionBanner from '../primitives/RevisionBanner';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { BrandingFields } from './BrandingFields';
@@ -83,19 +84,6 @@ const styles = createStaticStyles(({ css }) => ({
     color: ${cssVar.colorTextSecondary};
   `,
 }));
-
-const readFileBase64 = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('FILE_READ_FAILED'));
-    reader.onload = () => {
-      const value = String(reader.result ?? '');
-      const comma = value.indexOf(',');
-      if (comma < 0) return reject(new Error('FILE_READ_FAILED'));
-      resolve(value.slice(comma + 1));
-    };
-    reader.readAsDataURL(file);
-  });
 
 const BrandingPage = memo(() => {
   const { t } = useTranslation('admin');

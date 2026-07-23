@@ -1,5 +1,6 @@
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
+import { canonicalize } from '../primitives/canonicalize';
 import type {
   AdminAiModelCreateTargetListInput,
   AdminAiModelDependentsOutput,
@@ -111,17 +112,6 @@ export const deriveAiProviderConnectionTestView = (params: {
     stale,
     state: params.state,
   };
-};
-
-const canonicalize = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (!value || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  return Object.fromEntries(
-    Object.keys(record)
-      .sort()
-      .map((key) => [key, canonicalize(record[key])]),
-  );
 };
 
 /** Secret state is metadata only and deliberately excluded from editor fingerprints. */
