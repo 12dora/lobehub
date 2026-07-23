@@ -1,0 +1,237 @@
+'use client';
+
+import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Button, Switch } from '@lobehub/ui/base-ui';
+import { createStaticStyles, cssVar } from 'antd-style';
+import { memo, useCallback, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useNavigate, useParams } from 'react-router';
+
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import type { AdminAuditConversationMessage } from '@/enterprise/client/services/adminAudit';
+
+import AdminPageTemplate from '../../primitives/AdminPageTemplate';
+import { openDangerConfirm } from '../../primitives/DangerConfirm';
+import {
+  useFetchAuditConversation,
+  useFetchAuditConversationMessages,
+  useFetchAuditPolicy,
+} from '../hooks/useAdminAudit';
+import { formatAdminDateTime, hasPermission } from '../shared/format';
+import ContentAccessDisabledState from './ContentAccessDisabledState';
+
+const styles = createStaticStyles(({ css }) => ({
+  banner: css`
+    padding-block: 10px;
+    padding-inline: 14px;
+    border: 1px solid ${cssVar.colorWarningBorder};
+    border-radius: ${cssVar.borderRadius};
+
+    background: ${cssVar.colorWarningBg};
+  `,
+  message: css`
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    padding-block: 12px;
+    padding-inline: 14px;
+    border: 1px solid ${cssVar.colorBorderSecondary};
+    border-radius: ${cssVar.borderRadiusLG};
+
+    background: ${cssVar.colorBgContainer};
+  `,
+  body: css`
+    font-family: ${cssVar.fontFamilyCode};
+    font-size: 13px;
+    line-height: 1.55;
+    word-break: break-word;
+    white-space: pre-wrap;
+  `,
+  redacted: css`
+    font-weight: 600;
+    color: ${cssVar.colorWarning};
+  `,
+  stream: css`
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  `,
+}));
+
+const renderBody = (content: string) => {
+  const parts = content.split(/(\[REDACTED[^\]]*\])/g);
+  return parts.map((part, i) =>
+    part.startsWith('[REDACTED') ? (
+      <span className={styles.redacted} key={i}>
+        {part}
+      </span>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  );
+};
+
+const ConversationTopicPage = memo(() => {
+  const { t } = useTranslation('admin');
+  const navigate = useNavigate();
+  const { userId = '', topicId = '' } = useParams<{ userId: string; topicId: string }>();
+  const { permissions } = useAdminAccess();
+  const canRead = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ);
+
+  const [includeBody, setIncludeBody] = useState(false);
+  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const currentCursor = cursorStack.at(-1) ?? null;
+
+  const policy = useFetchAuditPolicy(canRead);
+  const detail = useFetchAuditConversation(userId, topicId, canRead && !!userId && !!topicId);
+  const messages = useFetchAuditConversationMessages(
+    {
+      cursor: currentCursor,
+      includeBody,
+      limit: 50,
+      topicId,
+      userId,
+    },
+    canRead && !!userId && !!topicId,
+  );
+
+  const isForbidden = useMemo(() => {
+    const errors = [detail.error, messages.error, policy.error];
+    return errors.some((err) => {
+      if (!err) return false;
+      const data = (err as { data?: { code?: string } }).data;
+      return data?.code === 'FORBIDDEN';
+    });
+  }, [detail.error, messages.error, policy.error]);
+
+  const contentAccessMode =
+    messages.data?.contentAccessMode ??
+    detail.data?.contentAccessMode ??
+    policy.data?.contentAccessMode;
+
+  const onToggleBody = useCallback(
+    (checked: boolean) => {
+      if (!checked) {
+        setIncludeBody(false);
+        setCursorStack([]);
+        return;
+      }
+      openDangerConfirm({
+        content: t('audit.conversations.topic.loadBodyConfirm'),
+        title: t('audit.conversations.topic.loadBodyTitle'),
+        onConfirm: () => {
+          setIncludeBody(true);
+          setCursorStack([]);
+        },
+      });
+    },
+    [t],
+  );
+
+  if (isForbidden || contentAccessMode === 'disabled') {
+    return <ContentAccessDisabledState />;
+  }
+
+  const topic = detail.data;
+  const items = messages.data?.items ?? [];
+
+  return (
+    <AdminPageTemplate
+      description={t('audit.conversations.topic.desc')}
+      title={topic?.title || t('audit.conversations.topic.title')}
+      actions={
+        <Button type="default" onClick={() => navigate(`/admin/audit/conversations/${userId}`)}>
+          {t('audit.conversations.topic.back')}
+        </Button>
+      }
+      banner={
+        contentAccessMode === 'metadata_only' ? (
+          <div className={styles.banner} role="status">
+            {t('audit.conversations.topic.metadataOnlyBanner')}
+          </div>
+        ) : contentAccessMode === 'content_allowed' ? (
+          <div className={styles.banner} role="status">
+            <Flexbox horizontal align="center" gap={12}>
+              <span>{t('audit.conversations.topic.bodyToggleLabel')}</span>
+              <Switch
+                checked={includeBody}
+                onChange={(checked) => onToggleBody(Boolean(checked))}
+              />
+            </Flexbox>
+          </div>
+        ) : null
+      }
+    >
+      <Flexbox gap={8} style={{ marginBlockEnd: 12 }}>
+        <Text type="secondary">
+          {[topic?.provider, topic?.model, topic?.agentId].filter(Boolean).join(' · ') || '—'}
+        </Text>
+        <Text type="secondary">
+          {t('audit.conversations.columns.updatedAt')}: {formatAdminDateTime(topic?.updatedAt)}
+        </Text>
+      </Flexbox>
+
+      <div className={styles.stream}>
+        {messages.isLoading && !messages.data ? (
+          <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+        ) : null}
+        {items.map((msg: AdminAuditConversationMessage) => (
+          <div className={styles.message} key={msg.id}>
+            <Flexbox horizontal align="center" gap={8}>
+              <Tag size="small">{msg.role}</Tag>
+              <Text style={{ fontSize: 12 }} type="secondary">
+                {formatAdminDateTime(msg.createdAt)}
+              </Text>
+            </Flexbox>
+            {msg.content != null && msg.content !== '' ? (
+              <div className={styles.body}>{renderBody(msg.content)}</div>
+            ) : msg.hasContent ? (
+              <Text type="secondary">{t('audit.conversations.topic.bodyNotLoaded')}</Text>
+            ) : (
+              <Text type="secondary">—</Text>
+            )}
+          </div>
+        ))}
+        {messages.error && !messages.data ? (
+          <Flexbox align="flex-start" gap={8}>
+            <Text role="alert" type="danger">
+              {t('audit.conversations.topic.loadError')}
+            </Text>
+            <Button size="small" type="default" onClick={() => void messages.mutate()}>
+              {t('primitives.dataTable.retry')}
+            </Button>
+          </Flexbox>
+        ) : null}
+        {!items.length && !messages.isLoading && !messages.error ? (
+          <Text type="secondary">{t('audit.conversations.topic.emptyMessages')}</Text>
+        ) : null}
+      </div>
+
+      <Flexbox horizontal gap={8} style={{ marginBlockStart: 12 }}>
+        <Button
+          disabled={cursorStack.length === 0}
+          size="small"
+          onClick={() => setCursorStack((p) => p.slice(0, -1))}
+        >
+          {t('primitives.dataTable.previous')}
+        </Button>
+        <Button
+          disabled={!messages.data?.nextCursor}
+          size="small"
+          onClick={() => {
+            const next = messages.data?.nextCursor;
+            if (next) setCursorStack((p) => [...p, next]);
+          }}
+        >
+          {t('primitives.dataTable.next')}
+        </Button>
+      </Flexbox>
+    </AdminPageTemplate>
+  );
+});
+
+ConversationTopicPage.displayName = 'AuditConversationTopicPage';
+
+export default ConversationTopicPage;
