@@ -290,8 +290,7 @@ export const useAgentActions = ({
         currentDefaultIdentity && currentDefaultIdentity.id !== snapshot.identity.id
           ? await adminAgentsService.get({ id: currentDefaultIdentity.id })
           : null;
-    } catch (cause) {
-      console.error(cause);
+    } catch {
       toast.error(t('agentCatalog.toast.actionFailed'));
       return;
     }
@@ -356,8 +355,7 @@ export const useAgentActions = ({
             .filter(({ identity }) => identity.id !== snapshot.identity.id)
             .map(({ displayName, identity }) => ({ label: displayName, value: identity.id }))
         : [];
-    } catch (cause) {
-      console.error(cause);
+    } catch {
       toast.error(t('agentCatalog.toast.actionFailed'));
       return;
     }

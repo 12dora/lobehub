@@ -79,9 +79,10 @@ export const redactForAudit = <T>(input: T, options?: RedactOptions): T =>
   redactDeep(input, options);
 
 /**
- * TODO(M07): suggested benign keys for AI catalog payloads.
- * Not applied by default — M07 should pass `isBenignKey` when wiring.
- * Keep empty until product confirms the allowlist.
+ * Benign (non-secret) key names for AI-catalog payloads. These look sensitive to the generic
+ * redactor but are model-capability numbers, so they are allow-listed via {@link M07_REDACTION_OPTIONS}
+ * and applied in the aiCatalog redaction paths (contracts/aiCatalog, services/aiCatalog
+ * publication + persistentText). Keep this list scoped to AI-catalog use only.
  */
 export const M07_BENIGN_KEY_CANDIDATES = [
   'maxTokens',
