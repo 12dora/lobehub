@@ -140,24 +140,17 @@ vi.mock('../../primitives/DataTable', () => ({
   },
 }));
 
-vi.mock('@lobehub/ui', async (importOriginal) => {
+vi.mock('@lobehub/ui/base-ui', async (importOriginal) => {
   const actual = await importOriginal<any>();
   return {
     ...actual,
+    Button: ({ children, ...rest }: any) => <button {...rest}>{children}</button>,
     Popover: ({ children, content }: any) => (
       <div data-testid="more-filters">
         {children}
         <div>{content}</div>
       </div>
     ),
-  };
-});
-
-vi.mock('@lobehub/ui/base-ui', async (importOriginal) => {
-  const actual = await importOriginal<any>();
-  return {
-    ...actual,
-    Button: ({ children, ...rest }: any) => <button {...rest}>{children}</button>,
     Select: ({ placeholder }: any) => <div data-testid="select">{placeholder}</div>,
   };
 });
