@@ -1,0 +1,15 @@
+export const ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS = {
+  archive: 'platform_connector:delete:all',
+  create: 'platform_connector:create:all',
+  createDraft: 'platform_connector:create:all',
+  deleteDraft: 'platform_connector:delete:all',
+  discover: 'platform_connector:test:all',
+  get: 'platform_connector:read:all',
+  list: 'platform_connector:read:all',
+  publish: 'platform_connector:publish:all',
+  revokeAllBindings: 'platform_connector:delete:all',
+  rollback: 'platform_connector:publish:all',
+  test: 'platform_connector:test:all',
+  update: 'platform_connector:update:all',
+  updateDraft: 'platform_connector:update:all',
+} as const;

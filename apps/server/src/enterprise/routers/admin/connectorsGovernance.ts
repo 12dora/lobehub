@@ -21,12 +21,11 @@ import {
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   ConnectorGovernanceAdminService,
   ConnectorGovernanceOwnerNotFoundError,
 } from '../../services/connectorGovernance/adminService';
-import { PlatformAuditService } from '../../services/platformAudit';
 
 const governanceProcedure = authedProcedure
   .use(serverDatabase)
@@ -70,35 +69,21 @@ const assertGovernanceDangerousReauth = async (params: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   reason: string;
   serverDB: LobeChatDatabase;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: params.reason,
-        result: 'denied',
-        targetId: CONNECTOR_GOVERNANCE_RESOURCE_ID,
-        targetType: CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
-      });
-    } catch (auditError) {
-      console.error('[admin.connectors.governance] reauth denied audit failed', {
-        action: params.action,
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[admin.connectors.governance] reauth denied audit failed',
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: params.reason,
+    serverDB: params.serverDB,
+    targetId: CONNECTOR_GOVERNANCE_RESOURCE_ID,
+    targetType: CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
+  });
 
 /** Governance procedures spread into `adminConnectorsRouter` (admin.connectors.*). */
 export const adminConnectorGovernanceProcedures = {

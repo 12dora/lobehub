@@ -20,7 +20,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   beginConnectorRuntimeEffectiveStateTransition,
   cancelConnectorRuntimeEffectiveStateTransition,
@@ -32,7 +32,6 @@ import {
   ManagedResourcePolicyService,
   PlatformRevisionConflictError,
 } from '../../services/managedResourcePolicy';
-import { PlatformAuditService } from '../../services/platformAudit';
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -42,35 +41,24 @@ const adminBase = authedProcedure
 const assertPublishReauth = async (params: {
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   reason: string;
   serverDB: LobeChatDatabase;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: 'admin.managedResources.publish',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        beforeDiff: null,
-        reason: params.reason,
-        result: 'denied',
-        targetId: MANAGED_POLICY_RESOURCE_ID,
-        targetType: MANAGED_POLICY_RESOURCE_TYPE,
-      });
-    } catch (auditError) {
-      console.error('[admin.managedResources.publish] reauth denied audit failed', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: 'admin.managedResources.publish',
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[admin.managedResources.publish] reauth denied audit failed',
+    // Legacy path only logged errorClass (no action).
+    auditFailureMeta: {},
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    beforeDiff: null,
+    reason: params.reason,
+    serverDB: params.serverDB,
+    targetId: MANAGED_POLICY_RESOURCE_ID,
+    targetType: MANAGED_POLICY_RESOURCE_TYPE,
+  });
 
 export const adminManagedResourcesRouter = router({
   get: adminBase

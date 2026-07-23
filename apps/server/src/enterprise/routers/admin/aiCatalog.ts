@@ -28,6 +28,8 @@ import {
   adminAiProviderCreateDraftInputSchema,
   adminAiProviderDeleteInputSchema,
   adminAiProviderDeleteOutputSchema,
+  adminAiProviderGetBatchInputSchema,
+  adminAiProviderGetBatchOutputSchema,
   adminAiProviderGetInputSchema,
   adminAiProviderGetOutputSchema,
   adminAiProviderListInputSchema,
@@ -205,7 +207,20 @@ export const adminAiProvidersRouter = router({
     .output(adminAiProviderGetOutputSchema)
     .query(async ({ ctx, input }) => {
       try {
-        return await createService(ctx.serverDB).getDetail(input.id);
+        return await createService(ctx.serverDB).getDetail(input);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  /** Bulk detail (models included) — eliminates client N+1 for runtime state. */
+  getBatch: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_READ))
+    .input(adminAiProviderGetBatchInputSchema)
+    .output(adminAiProviderGetBatchOutputSchema)
+    .query(async ({ ctx, input }) => {
+      try {
+        return await createService(ctx.serverDB).getDetailsBatch(input);
       } catch (error) {
         return mapServiceError(error);
       }

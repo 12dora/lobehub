@@ -3,8 +3,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { assertRecentReauth } from '../../guards/reauth';
-import { PlatformAuditService } from '../../services/platformAudit';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   PlatformGlobalCredentialAdminService,
   PlatformGlobalCredentialConflictError,
@@ -71,33 +70,22 @@ export const assertDangerousReauth = async (params: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   serverDB: LobeChatDatabase;
   targetId: string;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: FIXED_AUDIT_REASON,
-        result: 'denied',
-        targetId: params.targetId,
-        targetType: 'platform_global_credential',
-      });
-    } catch (auditError) {
-      console.error('[admin.creds] reauth denied audit failed', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[admin.creds] reauth denied audit failed',
+    // Legacy path only logged errorClass (no action).
+    auditFailureMeta: {},
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: FIXED_AUDIT_REASON,
+    serverDB: params.serverDB,
+    targetId: params.targetId,
+    targetType: 'platform_global_credential',
+  });
 
 export { FIXED_AUDIT_REASON };

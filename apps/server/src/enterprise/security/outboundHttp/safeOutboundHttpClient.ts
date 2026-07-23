@@ -28,7 +28,10 @@ import type {
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_REDIRECTS = 5;
 const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+/** Shared redirect status set for fetch + streamFetch (must stay in sync). */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Statuses that force method → GET when following a redirect. */
+const REDIRECT_FORCE_GET_STATUSES = new Set([301, 302, 303]);
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
 
@@ -39,6 +42,11 @@ const CREDENTIAL_HEADER_NAMES = new Set([
   'cookie2',
   'proxy-authorization',
 ]);
+
+type RedirectHopResult =
+  | { kind: 'done' }
+  | { forceGet: true; kind: 'follow'; next: URL; redirects: number }
+  | { forceGet: false; kind: 'follow'; next: URL; redirects: number };
 
 export class SafeOutboundHttpClient {
   private readonly policyProvider: () => { policy: OutboundPolicy; version: number | string };
@@ -86,16 +94,11 @@ export class SafeOutboundHttpClient {
     let method = (init.method ?? 'GET').toUpperCase();
     let body = toBuffer(init.body);
     const baseHeaders: Record<string, string> = { ...init.headers };
-    const secretBearing =
-      init.secretBearing === true ||
-      Object.keys(baseHeaders).length > 0 ||
-      body !== undefined ||
-      hasSensitiveHeaders(baseHeaders) ||
-      hasSensitiveBody(body);
-
     // Drop hop-by-hop that we control
     delete baseHeaders.host;
     delete baseHeaders.Host;
+    // Fixed for the whole redirect chain — same formula as streamFetch (no per-hop drift).
+    const secretBearing = computeSecretBearing(init, baseHeaders, body);
 
     while (true) {
       this.assertUrlPolicy(current, this.getPolicy());
@@ -124,41 +127,25 @@ export class SafeOutboundHttpClient {
         init.signal,
       );
 
-      if (REDIRECT_STATUSES.has(response.status) && redirects < maxRedirects) {
-        const location = headerGet(response.headers, 'location');
-        if (!location) {
-          return this.toResponse(response, current);
-        }
-        const previous = current;
-        current = this.parseUrl(new URL(location, previous));
-        redirects += 1;
-
-        if (!isSameOrigin(previous, current)) {
-          if (secretBearing) {
-            throw ssrfBlocked(
-              'secret_redirect',
-              'cross-origin redirect rejected for secret-bearing request',
-            );
-          }
-          stripCredentialHeaders(baseHeaders);
-        }
-
-        // RFC: 303 switches to GET; 301/302 historically do for browsers — we follow GET for 301/302/303
-        if (response.status === 303 || response.status === 302 || response.status === 301) {
-          method = 'GET';
-          body = undefined;
-        }
-        continue;
+      const hop = this.resolveRedirectHop({
+        current,
+        headers: baseHeaders,
+        location: headerGet(response.headers, 'location'),
+        maxRedirects,
+        redirects,
+        secretBearing,
+        status: response.status,
+        urlForLimit: current,
+      });
+      if (hop.kind === 'done') {
+        return this.toResponse(response, current);
       }
-
-      if (REDIRECT_STATUSES.has(response.status) && redirects >= maxRedirects) {
-        throw ssrfBlocked('redirect_limit', 'too many redirects', {
-          maxRedirects,
-          url: current.toString(),
-        });
+      current = hop.next;
+      redirects = hop.redirects;
+      if (hop.forceGet) {
+        method = 'GET';
+        body = undefined;
       }
-
-      return this.toResponse(response, current);
     }
   };
 
@@ -178,6 +165,8 @@ export class SafeOutboundHttpClient {
     const headers = { ...init.headers };
     delete headers.host;
     delete headers.Host;
+    // Identical secret-bearing policy to fetch — fixed for the whole redirect chain.
+    const secretBearing = computeSecretBearing(init, headers, body);
 
     while (true) {
       this.assertUrlPolicy(current, this.getPolicy());
@@ -194,35 +183,85 @@ export class SafeOutboundHttpClient {
         timeoutMs: this.remainingMs(deadlineAt),
         url: current,
       });
-      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-      if (redirects >= maxRedirects) {
-        await response.body?.cancel();
-        throw ssrfBlocked('redirect_limit', 'too many redirects', {
+      try {
+        const hop = this.resolveRedirectHop({
+          current,
+          headers,
+          location: response.headers.get('location'),
           maxRedirects,
-          url: current.toString(),
+          redirects,
+          secretBearing,
+          status: response.status,
+          urlForLimit: current,
         });
-      }
-      const location = response.headers.get('location');
-      if (!location) return response;
-      await response.body?.cancel();
-      const previous = current;
-      current = this.parseUrl(new URL(location, previous));
-      redirects += 1;
-      if (!isSameOrigin(previous, current)) {
-        if (init.secretBearing || Object.keys(headers).length > 0 || body) {
-          throw ssrfBlocked(
-            'secret_redirect',
-            'cross-origin redirect rejected for secret-bearing request',
-          );
+        if (hop.kind === 'done') {
+          return response;
         }
-        stripCredentialHeaders(headers);
-      }
-      if ([301, 302, 303].includes(response.status)) {
-        method = 'GET';
-        body = undefined;
+        // Drop the intermediate redirect body before following (matches prior streamFetch).
+        await response.body?.cancel();
+        current = hop.next;
+        redirects = hop.redirects;
+        if (hop.forceGet) {
+          method = 'GET';
+          body = undefined;
+        }
+      } catch (error) {
+        // Cancel the unused body before propagating redirect/limit rejections.
+        await response.body?.cancel();
+        throw error;
       }
     }
   };
+
+  /**
+   * Shared redirect decision for fetch and streamFetch.
+   * - non-redirect / missing Location → done (caller returns response)
+   * - over limit / secret cross-origin → throws ssrfBlocked
+   * - otherwise → follow with optional force-GET
+   */
+  private resolveRedirectHop(params: {
+    current: URL;
+    headers: Record<string, string>;
+    location: string | null | undefined;
+    maxRedirects: number;
+    redirects: number;
+    secretBearing: boolean;
+    status: number;
+    urlForLimit: URL;
+  }): RedirectHopResult {
+    if (!REDIRECT_STATUSES.has(params.status)) {
+      return { kind: 'done' };
+    }
+    if (params.redirects >= params.maxRedirects) {
+      throw ssrfBlocked('redirect_limit', 'too many redirects', {
+        maxRedirects: params.maxRedirects,
+        url: params.urlForLimit.toString(),
+      });
+    }
+    if (!params.location) {
+      return { kind: 'done' };
+    }
+
+    const next = this.parseUrl(new URL(params.location, params.current));
+    if (!isSameOrigin(params.current, next)) {
+      if (params.secretBearing) {
+        throw ssrfBlocked(
+          'secret_redirect',
+          'cross-origin redirect rejected for secret-bearing request',
+        );
+      }
+      stripCredentialHeaders(params.headers);
+    }
+
+    // RFC: 303 switches to GET; 301/302 historically do for browsers — follow GET for 301/302/303
+    const forceGet = REDIRECT_FORCE_GET_STATUSES.has(params.status);
+    return {
+      forceGet,
+      kind: 'follow',
+      next,
+      redirects: params.redirects + 1,
+    };
+  }
 
   /** Policy check without performing a network request (admin URL validation). */
   assertAllowed = async (input: string | URL): Promise<void> => {
@@ -439,6 +478,22 @@ const hasSensitiveBody = (body: Buffer | undefined): boolean => {
   if (!body || body.length === 0 || body.length > 64 * 1024) return false;
   return containsSensitiveMaterial(body.toString('utf8'));
 };
+
+/**
+ * Shared secret-bearing classification for fetch + streamFetch.
+ * Any caller header, body, explicit flag, or detected credential shape makes
+ * the entire redirect chain secret-bearing (fixed at request start).
+ */
+const computeSecretBearing = (
+  init: SafeOutboundRequestInit,
+  headers: Record<string, string>,
+  body: Buffer | undefined,
+): boolean =>
+  init.secretBearing === true ||
+  Object.keys(headers).length > 0 ||
+  body !== undefined ||
+  hasSensitiveHeaders(headers) ||
+  hasSensitiveBody(body);
 
 /** Factory with G-07 defaults (private allowed, metadata blocked). */
 export const createSafeOutboundHttpClient = (

@@ -5,7 +5,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import {
   AiCatalogAdminService,
@@ -19,7 +19,6 @@ import {
   AiCatalogSecretManager,
   type AiSecretMutation,
 } from '../../services/aiCatalog/secretManager';
-import { PlatformAuditService } from '../../services/platformAudit';
 
 export const aiSecretMutationRequiresReauth = (mutation?: AiSecretMutation): boolean =>
   mutation?.operation === 'replace' ||
@@ -108,35 +107,23 @@ export const assertDangerousReauth = async (params: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   existingSecretTargetId?: string | null;
   reason: string;
   replacementSecrets?: unknown[];
   serverDB: LobeChatDatabase;
   targetId: string;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      const reason = await safeDeniedReason(params);
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason,
-        result: 'denied',
-        targetId: params.targetId,
-        targetType: 'provider',
-      });
-    } catch (auditError) {
-      console.error('[admin.aiCatalog] reauth denied audit failed', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[admin.aiCatalog] reauth denied audit failed',
+    // Legacy path only logged errorClass (no action).
+    auditFailureMeta: {},
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    resolveDeniedReason: () => safeDeniedReason(params),
+    serverDB: params.serverDB,
+    targetId: params.targetId,
+    targetType: 'provider',
+  });

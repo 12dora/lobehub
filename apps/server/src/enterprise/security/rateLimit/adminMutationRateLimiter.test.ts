@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  getSharedAdminMutationRateLimiter,
   InMemoryAdminMutationRateLimiter,
   PostgresAdminMutationRateLimiter,
   resetSharedAdminMutationRateLimiter,
@@ -44,8 +45,14 @@ describe('PostgresAdminMutationRateLimiter', () => {
     ).resolves.toBe('unavailable');
   });
 
-  it('SharedAdminMutationRateLimiter is PostgreSQL-only (no independent Redis quota)', () => {
+  it('SharedAdminMutationRateLimiter is a non-deprecated Postgres alias', () => {
     expect(new SharedAdminMutationRateLimiter()).toBeInstanceOf(PostgresAdminMutationRateLimiter);
+  });
+
+  it('getSharedAdminMutationRateLimiter constructs PostgresAdminMutationRateLimiter', () => {
+    resetSharedAdminMutationRateLimiter();
+    expect(getSharedAdminMutationRateLimiter()).toBeInstanceOf(PostgresAdminMutationRateLimiter);
+    resetSharedAdminMutationRateLimiter();
   });
 });
 

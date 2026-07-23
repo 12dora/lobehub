@@ -22,7 +22,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import { PlatformAuditService } from '../../services/platformAudit';
 import {
   AdminSettingsService,
@@ -69,35 +69,21 @@ const assertSettingsDangerousReauth = async (params: {
   action: 'admin.settings.applyImmediate' | 'admin.settings.publish' | 'admin.settings.rollback';
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   reason: string;
   serverDB: LobeChatDatabase;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: params.reason,
-        result: 'denied',
-        targetId: 'global',
-        targetType: 'settings',
-      });
-    } catch (auditError) {
-      console.error('[admin.settings] reauth denied audit unavailable', {
-        action: params.action,
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[admin.settings] reauth denied audit unavailable',
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: params.reason,
+    serverDB: params.serverDB,
+    targetId: 'global',
+    targetType: 'settings',
+  });
 
 /**
  * admin.settings.* — draft / validate / publish / rollback.

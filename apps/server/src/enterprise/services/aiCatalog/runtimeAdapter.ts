@@ -128,7 +128,6 @@ const cacheState = (key: string, state: AiProviderRuntimeState): AiProviderRunti
 };
 
 export const clearAiCatalogRuntimeCache = (): void => {
-  lastShadowComparison = null;
   activeRuntimeLoad = undefined;
   runtimeCacheGeneration += 1;
   runtimeCache.clear();

@@ -241,6 +241,44 @@ export const loadConnectorDraft = async (
   return { draft, draftToken: connectorDraftToken(draft) };
 };
 
+/**
+ * Bulk draft load: 1 connectors query + 1 tools query.
+ * Missing ids are absent from the map (caller reports failedIds).
+ */
+export const loadConnectorDraftsBatch = async (
+  db: LobeChatDatabase | Transaction,
+  connectorIds: string[],
+): Promise<Map<string, ConnectorDraftDetail>> => {
+  const result = new Map<string, ConnectorDraftDetail>();
+  if (connectorIds.length === 0) return result;
+
+  const repository = new PlatformConnectorCatalogRepository(db);
+  const connectors = await repository.getConnectorsByIds(connectorIds);
+  if (connectors.length === 0) return result;
+
+  const tools = await repository.listToolsForConnectors(connectors.map((c) => c.id));
+  const toolsByConnector = new Map<string, PlatformConnectorToolItem[]>();
+  for (const tool of tools) {
+    const bucket = toolsByConnector.get(tool.connectorId);
+    if (bucket) bucket.push(tool);
+    else toolsByConnector.set(tool.connectorId, [tool]);
+  }
+
+  for (const connector of connectors) {
+    const connectorTools = toolsByConnector.get(connector.id) ?? [];
+    if (connectorTools.length > 1000) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
+    }
+    try {
+      const draft = toDraft(connector, connectorTools);
+      result.set(connector.id, { draft, draftToken: connectorDraftToken(draft) });
+    } catch {
+      // Invalid / migration-required rows are treated as not found for partial batch success.
+    }
+  }
+  return result;
+};
+
 export class ConnectorCatalogDraftService {
   constructor(
     private readonly db: LobeChatDatabase,
@@ -249,6 +287,9 @@ export class ConnectorCatalogDraftService {
     private readonly failureAuditWriter?: ConnectorFailureAuditWriter,
     private readonly lifecycle: ConnectorCatalogLifecycle = {},
   ) {}
+
+  /** Bulk draft load via PlatformConnectorCatalogRepository (1 connectors + 1 tools query). */
+  loadDraftsBatch = (connectorIds: string[]) => loadConnectorDraftsBatch(this.db, connectorIds);
 
   private resolveRedirectUri = (credentialMode: ConnectorDraft['credentialMode']) =>
     credentialMode === 'per_user_oauth'

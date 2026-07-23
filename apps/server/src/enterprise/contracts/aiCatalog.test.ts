@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adminAiProviderCreateDraftInputSchema,
+  adminAiProviderGetBatchInputSchema,
+  adminAiProviderGetInputSchema,
   aiModelDraftSchema,
   aiProviderDraftSchema,
   aiSecretMutationSchema,
@@ -9,6 +11,33 @@ import {
 } from './aiCatalog';
 
 describe('AI catalog contracts', () => {
+  it('get accepts exactly one of id or providerKey', () => {
+    expect(adminAiProviderGetInputSchema.parse({ id: 'uuid-1' })).toEqual({ id: 'uuid-1' });
+    expect(adminAiProviderGetInputSchema.parse({ providerKey: 'openai' })).toEqual({
+      providerKey: 'openai',
+    });
+    expect(adminAiProviderGetInputSchema.safeParse({}).success).toBe(false);
+    expect(
+      adminAiProviderGetInputSchema.safeParse({ id: 'uuid-1', providerKey: 'openai' }).success,
+    ).toBe(false);
+  });
+
+  it('getBatch accepts exactly one of ids or providerKeys (bounded)', () => {
+    expect(adminAiProviderGetBatchInputSchema.parse({ ids: ['a', 'b'] })).toEqual({
+      ids: ['a', 'b'],
+    });
+    expect(adminAiProviderGetBatchInputSchema.parse({ providerKeys: ['openai'] })).toEqual({
+      providerKeys: ['openai'],
+    });
+    expect(adminAiProviderGetBatchInputSchema.safeParse({}).success).toBe(false);
+    expect(
+      adminAiProviderGetBatchInputSchema.safeParse({
+        ids: ['a'],
+        providerKeys: ['openai'],
+      }).success,
+    ).toBe(false);
+  });
+
   it('models explicit secret keep/replace/clear semantics', () => {
     expect(aiSecretMutationSchema.parse({ operation: 'keep' })).toEqual({ operation: 'keep' });
     expect(aiSecretMutationSchema.parse({ operation: 'clear' })).toEqual({ operation: 'clear' });

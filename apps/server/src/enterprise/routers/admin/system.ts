@@ -26,12 +26,12 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   IdentityProviderSystemError,
   IdentityProviderSystemService,
 } from '../../services/identityProvider/systemService';
-import { PlatformAuditService } from '../../services/platformAudit';
+import type { PlatformAuditService } from '../../services/platformAudit';
 import { PlatformSystemAdminService } from '../../services/platformSystem/adminService';
 import {
   PlatformSystemJobConflictError,
@@ -137,70 +137,53 @@ const executePlatformSystem = async <T>(operation: () => Promise<T>): Promise<T>
 
 const assertRestartReauth = async (
   ctx: {
-    authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+    authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
     authenticatedAt?: Date | null;
     serverDB: ConstructorParameters<typeof PlatformAuditService>[0];
     userId: string;
   },
   input: { reason: string; requestId: string },
   action: 'admin.system.prepareRestart' | 'admin.system.requestRestart',
-): Promise<void> => {
-  try {
-    assertRecentReauth({ authenticatedAt: ctx.authenticatedAt, authMethod: ctx.authMethod });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(ctx.serverDB).append({
-        action,
-        actorUserId: ctx.userId,
-        afterDiff: { error: 'reauth_required' },
-        reason: input.reason,
-        requestId: input.requestId,
-        result: 'denied',
-        targetId: 'identity_provider_runtime',
-        targetType: 'system',
-      });
-    } catch (auditError) {
-      console.error('[admin.system] restart reauth denied audit unavailable', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    // Denial must still reject even if the audit write fails.
-    throw error;
-  }
-};
+): Promise<void> =>
+  assertDangerousReauthWithAudit({
+    action,
+    actorUserId: ctx.userId,
+    auditFailureLog: '[admin.system] restart reauth denied audit unavailable',
+    // Legacy path only logged errorClass (no action).
+    auditFailureMeta: {},
+    authenticatedAt: ctx.authenticatedAt,
+    authMethod: ctx.authMethod,
+    reason: input.reason,
+    requestId: input.requestId,
+    serverDB: ctx.serverDB,
+    targetId: 'identity_provider_runtime',
+    targetType: 'system',
+  });
 
 const assertJobMutationReauth = async (
   ctx: {
-    authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+    authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
     authenticatedAt?: Date | null;
     serverDB: ConstructorParameters<typeof PlatformAuditService>[0];
     userId: string;
   },
   input: { jobId: string; reason: string; requestId: string },
   action: 'admin.system.jobs.cancel' | 'admin.system.jobs.retry',
-): Promise<void> => {
-  try {
-    assertRecentReauth({ authenticatedAt: ctx.authenticatedAt, authMethod: ctx.authMethod });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(ctx.serverDB).append({
-        action,
-        actorUserId: ctx.userId,
-        afterDiff: { error: 'reauth_required' },
-        reason: input.reason,
-        requestId: input.requestId,
-        result: 'denied',
-        targetId: input.jobId,
-        targetType: 'platform_job',
-      });
-    } catch (auditError) {
-      console.error('[admin.system] job reauth denied audit unavailable', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+): Promise<void> =>
+  assertDangerousReauthWithAudit({
+    action,
+    actorUserId: ctx.userId,
+    auditFailureLog: '[admin.system] job reauth denied audit unavailable',
+    // Legacy path only logged errorClass (no action).
+    auditFailureMeta: {},
+    authenticatedAt: ctx.authenticatedAt,
+    authMethod: ctx.authMethod,
+    reason: input.reason,
+    requestId: input.requestId,
+    serverDB: ctx.serverDB,
+    targetId: input.jobId,
+    targetType: 'platform_job',
+  });
 
 export const adminSystemRouter = router({
   cancelJob: platformSystemBase

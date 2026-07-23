@@ -21,7 +21,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   AdminBrandingService,
   BrandingAssetCleanupClaimedError,
@@ -36,7 +36,6 @@ import {
   BrandingPersistenceInvariantError,
   PlatformRevisionConflictError,
 } from '../../services/branding/adminBrandingService';
-import { PlatformAuditService } from '../../services/platformAudit';
 
 const assertBrandingFeatureEnabled = (): void => {
   if (!parseEnterpriseFeatureFlags(process.env).ENABLE_RUNTIME_BRANDING) {
@@ -141,34 +140,23 @@ const assertDangerousReauth = async (params: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   reason: string;
   requestId: string;
   serverDB: ConstructorParameters<typeof AdminBrandingService>[0];
-}): Promise<void> => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: params.reason,
-        requestId: params.requestId,
-        result: 'denied',
-        targetId: 'global',
-        targetType: 'branding',
-      });
-    } catch {
-      // Denied audit is best-effort and never bypasses reauthentication.
-    }
-    throw error;
-  }
-};
+}): Promise<void> =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: false,
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: params.reason,
+    requestId: params.requestId,
+    serverDB: params.serverDB,
+    targetId: 'global',
+    targetType: 'branding',
+  });
 
 export const adminBrandingRouter = router({
   getDraft: brandingProcedure

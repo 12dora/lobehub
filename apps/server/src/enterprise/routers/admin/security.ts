@@ -21,8 +21,8 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
-import { PlatformAuditService } from '../../services/platformAudit';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import type { PlatformAuditService } from '../../services/platformAudit';
 import { PlatformSecretRotationAdminService } from '../../services/secretRewrap';
 import {
   PlatformSecretRewrapConflictError,
@@ -73,36 +73,28 @@ const mapSecretRotationError = (error: unknown): never => {
 const assertMutationReauth = async (
   ctx: {
     authenticatedAt?: Date | null;
-    authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+    authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
     serverDB: ConstructorParameters<typeof PlatformAuditService>[0];
     userId: string;
   },
   input: { reason: string; requestId: string },
   action: string,
   targetId: string,
-): Promise<void> => {
-  try {
-    assertRecentReauth({ authenticatedAt: ctx.authenticatedAt, authMethod: ctx.authMethod });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(ctx.serverDB).append({
-        action,
-        actorUserId: ctx.userId,
-        afterDiff: { error: 'reauth_required' },
-        reason: input.reason,
-        requestId: input.requestId,
-        result: 'denied',
-        targetId,
-        targetType: 'secret_rotation',
-      });
-    } catch (auditError) {
-      console.error('[admin.security.secretRotation] reauth denied audit unavailable', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+): Promise<void> =>
+  assertDangerousReauthWithAudit({
+    action,
+    actorUserId: ctx.userId,
+    auditFailureLog: '[admin.security.secretRotation] reauth denied audit unavailable',
+    // Legacy path only logged errorClass (no action).
+    auditFailureMeta: {},
+    authenticatedAt: ctx.authenticatedAt,
+    authMethod: ctx.authMethod,
+    reason: input.reason,
+    requestId: input.requestId,
+    serverDB: ctx.serverDB,
+    targetId,
+    targetType: 'secret_rotation',
+  });
 
 const execute = async <T>(operation: () => Promise<T>): Promise<T> => {
   try {

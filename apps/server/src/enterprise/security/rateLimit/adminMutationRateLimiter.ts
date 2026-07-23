@@ -151,7 +151,11 @@ export class PostgresAdminMutationRateLimiter implements AdminMutationRateLimite
   };
 }
 
-/** @deprecated Alias kept for callers; production uses PostgreSQL only. */
+/**
+ * Alias of {@link PostgresAdminMutationRateLimiter}.
+ * Not deprecated — multi-instance production path is PostgreSQL-backed; this
+ * name remains for tests and call sites that prefer the historical class name.
+ */
 export class SharedAdminMutationRateLimiter extends PostgresAdminMutationRateLimiter {}
 
 /**
@@ -191,12 +195,12 @@ export class InMemoryAdminMutationRateLimiter implements AdminMutationRateLimite
 let sharedLimiter: AdminMutationRateLimiter | null = null;
 
 /**
- * Production singleton — PostgreSQL-backed SharedAdminMutationRateLimiter.
+ * Production singleton — instantiates PostgresAdminMutationRateLimiter directly.
  * Unit tests may inject a double via setSharedAdminMutationRateLimiter for isolation.
  */
 export const getSharedAdminMutationRateLimiter = (): AdminMutationRateLimiter => {
   if (!sharedLimiter) {
-    sharedLimiter = new SharedAdminMutationRateLimiter();
+    sharedLimiter = new PostgresAdminMutationRateLimiter();
   }
   return sharedLimiter;
 };

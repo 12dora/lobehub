@@ -13,6 +13,8 @@ import {
   adminConnectorDiscoverInputSchema,
   adminConnectorDiscoverOutputSchema,
   adminConnectorDraftMutationOutputSchema,
+  adminConnectorGetBatchInputSchema,
+  adminConnectorGetBatchOutputSchema,
   adminConnectorGetInputSchema,
   adminConnectorGetOutputSchema,
   adminConnectorGetPublishedBatchInputSchema,
@@ -51,7 +53,7 @@ const adminConnectorProcedure = authedProcedure
   .use(async ({ ctx, next }) =>
     next({
       ctx: {
-        // Secret-free path for pure reads (list/get/getPublishedBatch); does not require a master key.
+        // Secret-free path for pure reads (list/get/getBatch/getPublishedBatch); no master key.
         getAdminConnectorReadService: () => createAdminConnectorReadRuntime(ctx.serverDB).service,
         getAdminConnectorRuntime: () => createAdminConnectorRuntime(ctx.serverDB),
       },
@@ -319,6 +321,16 @@ export const adminConnectorsRouter = router({
     .query(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.get', () =>
         ctx.getAdminConnectorReadService().getDraft(input.id),
+      ),
+    ),
+
+  getBatch: adminConnectorProcedure
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.CONNECTOR_READ))
+    .input(adminConnectorGetBatchInputSchema)
+    .output(adminConnectorGetBatchOutputSchema)
+    .query(async ({ ctx, input }) =>
+      executeAdminConnectorOperation('admin.connectors.getBatch', () =>
+        ctx.getAdminConnectorReadService().getDraftBatch(input.ids),
       ),
     ),
 

@@ -154,8 +154,6 @@ export const adminUserGlobalRoleSchema = z
   })
   .strict();
 
-export type AdminUserGlobalRole = z.infer<typeof adminUserGlobalRoleSchema>;
-
 /** Safe session metadata for admin detail — never session token. */
 export const adminUserSessionSummarySchema = z
   .object({
