@@ -135,67 +135,35 @@ describe('PlatformAiCatalogRepository', () => {
     expect(unchanged).toMatchObject({ displayName: null, sort: 1 });
   });
 
-  it('returns only the latest published revision per provider', async () => {
+  it('reorders multiple owned models in one update and demotes them to draft', async () => {
     const alpha = await repository.createProvider({ displayName: 'Alpha', providerKey: 'alpha' });
     const beta = await repository.createProvider({ displayName: 'Beta', providerKey: 'beta' });
-    const insertRevision = async (params: {
-      providerId: string;
-      providerKey: string;
-      revision: number;
-      status: 'draft' | 'published';
-    }) => {
-      const payload = { models: [], provider: { providerKey: params.providerKey } };
-      await serverDB.insert(platformResourceRevisions).values({
-        checksum: checksumPayload(payload),
-        payload,
-        resourceId: params.providerId,
-        resourceType: 'provider',
-        revision: params.revision,
-        status: params.status,
-      });
-    };
-    await insertRevision({
-      providerId: alpha.id,
-      providerKey: 'alpha-old',
-      revision: 1,
-      status: 'published',
-    });
-    await serverDB.insert(platformResourceRevisions).values({
-      checksum: 'settings-collision',
-      payload: { shouldNeverJoin: true },
-      resourceId: alpha.id,
-      resourceType: 'settings',
-      revision: 3,
-      status: 'published',
-    });
-    await insertRevision({
-      providerId: alpha.id,
-      providerKey: 'alpha-draft',
-      revision: 2,
+    const a = await repository.createModel({ modelKey: 'a', providerId: alpha.id, sort: 1 });
+    const b = await repository.createModel({ modelKey: 'b', providerId: alpha.id, sort: 2 });
+    const foreign = await repository.createModel({ modelKey: 'x', providerId: beta.id, sort: 1 });
+    await repository.updateModel(alpha.id, a.id, { status: 'published' });
+    await repository.updateModel(alpha.id, b.id, { status: 'published' });
+
+    expect(
+      await repository.reorderModels(alpha.id, [
+        { id: b.id, sort: 10 },
+        { id: a.id, sort: 20 },
+        { id: foreign.id, sort: 99 },
+      ]),
+    ).toBe(2);
+
+    expect(await repository.getModel(alpha.id, a.id)).toMatchObject({
+      sort: 20,
       status: 'draft',
     });
-    await insertRevision({
-      providerId: alpha.id,
-      providerKey: 'alpha-new',
-      revision: 3,
-      status: 'published',
+    expect(await repository.getModel(alpha.id, b.id)).toMatchObject({
+      sort: 10,
+      status: 'draft',
     });
-    await insertRevision({
-      providerId: beta.id,
-      providerKey: 'beta',
-      revision: 1,
-      status: 'published',
+    expect(await repository.getModel(beta.id, foreign.id)).toMatchObject({
+      sort: 1,
+      status: 'draft',
     });
-
-    const rows = await repository.listLatestPublishedProviderRevisions();
-    expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.resourceType === 'provider')).toBe(true);
-    expect(rows.map((row) => [row.resourceId, row.revision])).toEqual(
-      expect.arrayContaining([
-        [alpha.id, 3],
-        [beta.id, 1],
-      ]),
-    );
   });
 
   it('hard-deletes a provider with its models, revisions, and cascaded secrets', async () => {
@@ -244,5 +212,27 @@ describe('PlatformAiCatalogRepository', () => {
     ).toHaveLength(0);
     expect(await repository.getProvider(beta.id)).toMatchObject({ id: beta.id });
     expect(await repository.listModels(beta.id)).toHaveLength(1);
+  });
+
+  it('batch-loads providers and models in single-query helpers', async () => {
+    const alpha = await repository.createProvider({ displayName: 'Alpha', providerKey: 'alpha' });
+    const beta = await repository.createProvider({ displayName: 'Beta', providerKey: 'beta' });
+    await repository.createModel({ modelKey: 'm-a', providerId: alpha.id, sort: 0 });
+    await repository.createModel({ modelKey: 'm-b1', providerId: beta.id, sort: 0 });
+    await repository.createModel({ modelKey: 'm-b2', providerId: beta.id, sort: 1 });
+
+    const byIds = await repository.getProvidersByIds([alpha.id, beta.id, 'missing-id']);
+    expect(byIds.map((p) => p.providerKey).sort()).toEqual(['alpha', 'beta']);
+
+    const byKeys = await repository.getProvidersByKeys(['alpha', 'missing-key', 'beta']);
+    expect(byKeys.map((p) => p.id).sort()).toEqual([alpha.id, beta.id].sort());
+
+    const models = await repository.listModelsForProviders([alpha.id, beta.id]);
+    expect(models).toHaveLength(3);
+    expect(models.filter((m) => m.providerId === beta.id).map((m) => m.modelKey)).toEqual([
+      'm-b1',
+      'm-b2',
+    ]);
+    expect(await repository.listModelsForProviders([])).toEqual([]);
   });
 });

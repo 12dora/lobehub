@@ -26,6 +26,7 @@ import { roles, userRoles } from '../../schemas/rbac';
 import { users } from '../../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { idGenerator } from '../../utils/idGenerator';
+import { inTransaction } from '../platform/tx';
 import { boundedLimit } from '../platformPagination';
 import { likeContains } from '../platformSearch';
 
@@ -122,14 +123,6 @@ export class PlatformAgentMaterializationRaceError extends Error {
     super('PLATFORM_MATERIALIZATION_RACE');
   }
 }
-
-const isRootDatabase = (db: LobeChatDatabase | Transaction): db is LobeChatDatabase =>
-  'transaction' in db;
-
-const inTransaction = async <T>(
-  db: LobeChatDatabase | Transaction,
-  operation: (transaction: Transaction) => Promise<T>,
-): Promise<T> => (isRootDatabase(db) ? db.transaction(operation) : operation(db));
 
 const PLATFORM_AGENT_REFERENCE_LOCK_NAMESPACE = 'aihub:platform-agent-reference:v1';
 
@@ -1236,143 +1229,231 @@ export class PlatformAgentCatalogRepository {
       const scoped = new PlatformAgentCatalogRepository(tx);
       const agent = await this.lockReferenceableAgent(tx, params.platformAgentId);
       if (!agent) return undefined;
-      const hasHidden = Object.hasOwn(params, 'hidden') && params.hidden !== undefined;
-      const hasLastErrorCategory =
-        Object.hasOwn(params, 'lastErrorCategory') && params.lastErrorCategory !== undefined;
-      const hasMaterializedAgent =
-        Object.hasOwn(params, 'materializedAgentId') && params.materializedAgentId !== undefined;
-      const status =
-        params.status ??
-        (hasMaterializedAgent
-          ? params.materializedAgentId === null
-            ? 'pending'
-            : 'materialized'
-          : undefined);
-      const lastErrorCategory = hasLastErrorCategory
-        ? params.lastErrorCategory
-        : status && status !== 'error'
-          ? null
-          : undefined;
-      // A real materialization reference carries real state; a visibility-only row (written by
-      // setMaterializationHidden to hold only the hidden preference) does NOT — see
-      // countAgentReferences. `upsertMaterialization` always intends a real materialization, so a
-      // visibility-only row is never "already in the desired state": it must be upgraded, not
-      // early-returned. This is what closes the visibility-first → materialize bypass.
-      const isRealMaterialization = (item: PlatformUserAgentMaterializationItem) =>
-        item.materializedAgentId !== null || item.lastSyncedAt !== null;
-      const matchesDesiredState = (item: PlatformUserAgentMaterializationItem) =>
-        isRealMaterialization(item) &&
-        item.platformAgentVersionId === params.platformAgentVersionId &&
-        item.platformAgentVersionChecksum === params.platformAgentVersionChecksum &&
-        (!hasHidden || item.hidden === params.hidden) &&
-        (!hasMaterializedAgent || item.materializedAgentId === params.materializedAgentId) &&
-        (!(hasLastErrorCategory || (status && status !== 'error')) ||
-          item.lastErrorCategory === lastErrorCategory) &&
-        (!status || item.status === status);
-      const insertValues = {
-        hidden: params.hidden ?? false,
-        lastErrorCategory,
-        lastSyncedAt: new Date(),
-        materializedAgentId: params.materializedAgentId,
-        platformAgentId: params.platformAgentId,
-        platformAgentVersionChecksum: params.platformAgentVersionChecksum,
-        platformAgentVersionId: params.platformAgentVersionId,
-        status: status ?? 'pending',
-        userId: params.userId,
-      };
-      if (!params.expectedCurrent) {
-        const [inserted] = await tx
-          .insert(platformUserAgentMaterializations)
-          .values(insertValues)
-          .onConflictDoNothing({
-            target: [
-              platformUserAgentMaterializations.userId,
-              platformUserAgentMaterializations.platformAgentId,
-            ],
-          })
-          .returning();
-        if (inserted) return inserted;
-        const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
-        if (!existing) return undefined;
-        // No-expectedCurrent conflict resolves to exactly one of three cases:
-        //   1) a real materialization already in the desired state → idempotent, do not refresh;
-        if (matchesDesiredState(existing)) return existing;
-        //   2) a real materialization NOT in the desired state → refuse: without an explicit
-        //      expectedCurrent CAS we must never clobber it (e.g. overwrite a real v1 with v2);
-        if (isRealMaterialization(existing)) return undefined;
-        //   3) a visibility-only row → atomically upgrade it in place (below).
-        const resolvedStatus = status ?? 'pending';
-        // Atomic upgrade under the same per-Agent reference lock: stamp last_synced_at (the real
-        // materialization marker) and write the target version/checksum/status, preserving the
-        // owner's hidden preference unless the caller explicitly overrides it.
-        const [upgraded] = await tx
-          .update(platformUserAgentMaterializations)
-          .set({
-            ...(hasHidden ? { hidden: params.hidden } : {}),
-            ...(hasMaterializedAgent ? { materializedAgentId: params.materializedAgentId } : {}),
-            lastErrorCategory:
-              resolvedStatus === 'error' ? (params.lastErrorCategory ?? null) : null,
-            lastSyncedAt: new Date(),
-            platformAgentVersionChecksum: params.platformAgentVersionChecksum,
-            platformAgentVersionId: params.platformAgentVersionId,
-            status: resolvedStatus,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(platformUserAgentMaterializations.userId, params.userId),
-              eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
-            ),
-          )
-          .returning();
-        return upgraded && matchesDesiredState(upgraded) ? upgraded : undefined;
-      }
 
-      const set = {
-        ...(hasHidden ? { hidden: params.hidden } : {}),
-        ...(hasLastErrorCategory || (status && status !== 'error') ? { lastErrorCategory } : {}),
-        ...(hasMaterializedAgent ? { materializedAgentId: params.materializedAgentId } : {}),
-        ...(status ? { status } : {}),
+      const resolved = resolveMaterializationWrite(params);
+      const expectedCurrent = params.expectedCurrent;
+      if (!expectedCurrent) {
+        return this.insertOrUpgradeMaterialization(tx, scoped, params, resolved);
+      }
+      return this.casUpdateMaterialization(tx, scoped, { ...params, expectedCurrent }, resolved);
+    });
+
+  /**
+   * No-expectedCurrent path: insert when absent; on conflict either return idempotent
+   * match, refuse to clobber a real materialization, or upgrade a visibility-only row.
+   */
+  private insertOrUpgradeMaterialization = async (
+    tx: Transaction,
+    scoped: PlatformAgentCatalogRepository,
+    params: {
+      hidden?: boolean;
+      lastErrorCategory?: PlatformUserAgentMaterializationErrorCategory | null;
+      materializedAgentId?: string | null;
+      platformAgentId: string;
+      platformAgentVersionChecksum: string;
+      platformAgentVersionId: string;
+      userId: string;
+    },
+    resolved: ResolvedMaterializationWrite,
+  ): Promise<PlatformUserAgentMaterializationItem | undefined> => {
+    const insertValues = {
+      hidden: params.hidden ?? false,
+      lastErrorCategory: resolved.lastErrorCategory,
+      lastSyncedAt: new Date(),
+      materializedAgentId: params.materializedAgentId,
+      platformAgentId: params.platformAgentId,
+      platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+      platformAgentVersionId: params.platformAgentVersionId,
+      status: resolved.status ?? 'pending',
+      userId: params.userId,
+    };
+    const [inserted] = await tx
+      .insert(platformUserAgentMaterializations)
+      .values(insertValues)
+      .onConflictDoNothing({
+        target: [
+          platformUserAgentMaterializations.userId,
+          platformUserAgentMaterializations.platformAgentId,
+        ],
+      })
+      .returning();
+    if (inserted) return inserted;
+
+    const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
+    if (!existing) return undefined;
+    //   1) real materialization already desired → idempotent;
+    if (matchesDesiredState(existing, params, resolved)) return existing;
+    //   2) real materialization not desired → refuse without CAS;
+    if (isRealMaterialization(existing)) return undefined;
+    //   3) visibility-only row → upgrade in place.
+    return this.upgradeVisibilityOnlyMaterialization(tx, params, resolved);
+  };
+
+  /** Upgrade a visibility-only row into a real materialization under the per-Agent lock. */
+  private upgradeVisibilityOnlyMaterialization = async (
+    tx: Transaction,
+    params: {
+      hidden?: boolean;
+      lastErrorCategory?: PlatformUserAgentMaterializationErrorCategory | null;
+      materializedAgentId?: string | null;
+      platformAgentId: string;
+      platformAgentVersionChecksum: string;
+      platformAgentVersionId: string;
+      userId: string;
+    },
+    resolved: ResolvedMaterializationWrite,
+  ): Promise<PlatformUserAgentMaterializationItem | undefined> => {
+    const resolvedStatus = resolved.status ?? 'pending';
+    const [upgraded] = await tx
+      .update(platformUserAgentMaterializations)
+      .set({
+        ...(resolved.hasHidden ? { hidden: params.hidden } : {}),
+        ...(resolved.hasMaterializedAgent
+          ? { materializedAgentId: params.materializedAgentId }
+          : {}),
+        lastErrorCategory: resolvedStatus === 'error' ? (params.lastErrorCategory ?? null) : null,
         lastSyncedAt: new Date(),
         platformAgentVersionChecksum: params.platformAgentVersionChecksum,
         platformAgentVersionId: params.platformAgentVersionId,
+        status: resolvedStatus,
         updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.userId, params.userId),
+          eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
+        ),
+      )
+      .returning();
+    return upgraded && matchesDesiredState(upgraded, params, resolved) ? upgraded : undefined;
+  };
+
+  /**
+   * expectedCurrent CAS path: UPDATE only when version/checksum still match; read-back
+   * returns the row only when already a real materialization in the desired state.
+   */
+  private casUpdateMaterialization = async (
+    tx: Transaction,
+    scoped: PlatformAgentCatalogRepository,
+    params: {
+      expectedCurrent: {
+        checksum: string;
+        versionId: string;
       };
-      const stableMaterializedAgentId = !hasMaterializedAgent
-        ? undefined
-        : typeof params.materializedAgentId === 'string'
-          ? or(
-              isNull(platformUserAgentMaterializations.materializedAgentId),
-              eq(platformUserAgentMaterializations.materializedAgentId, params.materializedAgentId),
-            )
-          : isNull(platformUserAgentMaterializations.materializedAgentId);
-      const [updated] = await tx
-        .update(platformUserAgentMaterializations)
-        .set(set)
-        .where(
-          and(
-            eq(platformUserAgentMaterializations.userId, params.userId),
-            eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
-            eq(
-              platformUserAgentMaterializations.platformAgentVersionId,
-              params.expectedCurrent.versionId,
-            ),
-            eq(
-              platformUserAgentMaterializations.platformAgentVersionChecksum,
-              params.expectedCurrent.checksum,
-            ),
-            stableMaterializedAgentId,
+      hidden?: boolean;
+      lastErrorCategory?: PlatformUserAgentMaterializationErrorCategory | null;
+      materializedAgentId?: string | null;
+      platformAgentId: string;
+      platformAgentVersionChecksum: string;
+      platformAgentVersionId: string;
+      userId: string;
+    },
+    resolved: ResolvedMaterializationWrite,
+  ): Promise<PlatformUserAgentMaterializationItem | undefined> => {
+    const set = {
+      ...(resolved.hasHidden ? { hidden: params.hidden } : {}),
+      ...(resolved.hasLastErrorCategory || (resolved.status && resolved.status !== 'error')
+        ? { lastErrorCategory: resolved.lastErrorCategory }
+        : {}),
+      ...(resolved.hasMaterializedAgent ? { materializedAgentId: params.materializedAgentId } : {}),
+      ...(resolved.status ? { status: resolved.status } : {}),
+      lastSyncedAt: new Date(),
+      platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+      platformAgentVersionId: params.platformAgentVersionId,
+      updatedAt: new Date(),
+    };
+    const stableMaterializedAgentId = !resolved.hasMaterializedAgent
+      ? undefined
+      : typeof params.materializedAgentId === 'string'
+        ? or(
+            isNull(platformUserAgentMaterializations.materializedAgentId),
+            eq(platformUserAgentMaterializations.materializedAgentId, params.materializedAgentId),
+          )
+        : isNull(platformUserAgentMaterializations.materializedAgentId);
+    const [updated] = await tx
+      .update(platformUserAgentMaterializations)
+      .set(set)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.userId, params.userId),
+          eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
+          eq(
+            platformUserAgentMaterializations.platformAgentVersionId,
+            params.expectedCurrent.versionId,
           ),
-        )
-        .returning();
-      // The UPDATE is the CAS: it only writes when the row still matches expectedCurrent (and the
-      // materialized-agent guard). A correct expectedCurrent updates / upgrades; a wrong one never
-      // writes. The fallback below is a pure read-back — it returns the row only when it is ALREADY
-      // a real materialization in the desired state (matchesDesiredState requires
-      // isRealMaterialization), so a wrong expectedCurrent against a visibility-only or otherwise
-      // non-matching row yields undefined and never a fallback upgrade.
-      if (updated) return updated;
-      const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
-      return existing && matchesDesiredState(existing) ? existing : undefined;
-    });
+          eq(
+            platformUserAgentMaterializations.platformAgentVersionChecksum,
+            params.expectedCurrent.checksum,
+          ),
+          stableMaterializedAgentId,
+        ),
+      )
+      .returning();
+    if (updated) return updated;
+    const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
+    return existing && matchesDesiredState(existing, params, resolved) ? existing : undefined;
+  };
 }
+
+/** A real materialization carries a local agent or a sync stamp; visibility-only rows do not. */
+const isRealMaterialization = (item: PlatformUserAgentMaterializationItem) =>
+  item.materializedAgentId !== null || item.lastSyncedAt !== null;
+
+interface ResolvedMaterializationWrite {
+  hasHidden: boolean;
+  hasLastErrorCategory: boolean;
+  hasMaterializedAgent: boolean;
+  lastErrorCategory: PlatformUserAgentMaterializationErrorCategory | null | undefined;
+  status: PlatformUserAgentMaterializationStatus | undefined;
+}
+
+const resolveMaterializationWrite = (params: {
+  hidden?: boolean;
+  lastErrorCategory?: PlatformUserAgentMaterializationErrorCategory | null;
+  materializedAgentId?: string | null;
+  status?: PlatformUserAgentMaterializationStatus;
+}): ResolvedMaterializationWrite => {
+  const hasHidden = Object.hasOwn(params, 'hidden') && params.hidden !== undefined;
+  const hasLastErrorCategory =
+    Object.hasOwn(params, 'lastErrorCategory') && params.lastErrorCategory !== undefined;
+  const hasMaterializedAgent =
+    Object.hasOwn(params, 'materializedAgentId') && params.materializedAgentId !== undefined;
+  const status =
+    params.status ??
+    (hasMaterializedAgent
+      ? params.materializedAgentId === null
+        ? 'pending'
+        : 'materialized'
+      : undefined);
+  const lastErrorCategory = hasLastErrorCategory
+    ? params.lastErrorCategory
+    : status && status !== 'error'
+      ? null
+      : undefined;
+  return {
+    hasHidden,
+    hasLastErrorCategory,
+    hasMaterializedAgent,
+    lastErrorCategory,
+    status,
+  };
+};
+
+const matchesDesiredState = (
+  item: PlatformUserAgentMaterializationItem,
+  params: {
+    hidden?: boolean;
+    materializedAgentId?: string | null;
+    platformAgentVersionChecksum: string;
+    platformAgentVersionId: string;
+  },
+  resolved: ResolvedMaterializationWrite,
+) =>
+  isRealMaterialization(item) &&
+  item.platformAgentVersionId === params.platformAgentVersionId &&
+  item.platformAgentVersionChecksum === params.platformAgentVersionChecksum &&
+  (!resolved.hasHidden || item.hidden === params.hidden) &&
+  (!resolved.hasMaterializedAgent || item.materializedAgentId === params.materializedAgentId) &&
+  (!(resolved.hasLastErrorCategory || (resolved.status && resolved.status !== 'error')) ||
+    item.lastErrorCategory === resolved.lastErrorCategory) &&
+  (!resolved.status || item.status === resolved.status);

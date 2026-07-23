@@ -7,6 +7,7 @@ import {
 } from '../../schemas/platform';
 import type { PlatformAuditResult } from '../../schemas/platform/common';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { encodeCreatedAtCursor, parseCompositeCursor } from './cursor';
 import { redactSensitive } from './redact';
 
 export type { PlatformAuditLogItem, PlatformAuditResult };
@@ -82,8 +83,9 @@ export interface PlatformAuditLogStatsParams {
 }
 
 export const encodeAuditCursor = (row: Pick<PlatformAuditLogItem, 'createdAt' | 'id'>): string =>
-  `${row.createdAt.toISOString()}|${row.id}`;
+  encodeCreatedAtCursor(row);
 
+/** Composite cursor plus legacy Date / bare-ISO fallback for older clients. */
 export const parseAuditCursor = (
   cursor: PlatformAuditCursor | Date | undefined,
 ): { createdAt: Date; id?: string } | null => {
@@ -92,12 +94,8 @@ export const parseAuditCursor = (
     if (Number.isNaN(cursor.getTime())) return null;
     return { createdAt: cursor };
   }
-  if (cursor.includes('|')) {
-    const [iso, id] = cursor.split('|');
-    const createdAt = new Date(iso);
-    if (Number.isNaN(createdAt.getTime()) || !id) return null;
-    return { createdAt, id };
-  }
+  const composite = parseCompositeCursor(cursor);
+  if (composite) return { createdAt: composite.at, id: composite.id };
   const createdAt = new Date(cursor);
   if (Number.isNaN(createdAt.getTime())) return null;
   return { createdAt };

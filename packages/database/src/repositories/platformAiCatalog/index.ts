@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, ilike, inArray, lt, max, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, lt, or, sql } from 'drizzle-orm';
 import type { AiModelType } from 'model-bank';
 
 import {
@@ -127,6 +127,21 @@ export class PlatformAiCatalogRepository {
     return row;
   };
 
+  /** Batch provider load by platform UUIDs (single `WHERE id IN (...)`). */
+  getProvidersByIds = async (ids: string[]): Promise<PlatformAiProviderItem[]> => {
+    if (ids.length === 0) return [];
+    return this.db.select().from(platformAiProviders).where(inArray(platformAiProviders.id, ids));
+  };
+
+  /** Batch provider load by user-facing provider keys (single `WHERE provider_key IN (...)`). */
+  getProvidersByKeys = async (providerKeys: string[]): Promise<PlatformAiProviderItem[]> => {
+    if (providerKeys.length === 0) return [];
+    return this.db
+      .select()
+      .from(platformAiProviders)
+      .where(inArray(platformAiProviders.providerKey, providerKeys));
+  };
+
   getProviderSecretVersion = async (
     providerId: string,
     fingerprint: string,
@@ -236,56 +251,26 @@ export class PlatformAiCatalogRepository {
     };
   };
 
-  listLatestPublishedProviderRevisions = async (): Promise<PlatformResourceRevisionItem[]> => {
-    const latest = this.db
-      .select({
-        resourceId: platformResourceRevisions.resourceId,
-        latestRevision: max(platformResourceRevisions.revision).as('latest_revision'),
-      })
-      .from(platformResourceRevisions)
-      .where(and(eq(platformResourceRevisions.resourceType, 'provider')))
-      .groupBy(platformResourceRevisions.resourceId)
-      .as('latest_provider_revision');
-
-    return this.db
-      .select({
-        checksum: platformResourceRevisions.checksum,
-        comment: platformResourceRevisions.comment,
-        createdAt: platformResourceRevisions.createdAt,
-        createdBy: platformResourceRevisions.createdBy,
-        id: platformResourceRevisions.id,
-        payload: platformResourceRevisions.payload,
-        publishedAt: platformResourceRevisions.publishedAt,
-        publishedBy: platformResourceRevisions.publishedBy,
-        resourceId: platformResourceRevisions.resourceId,
-        resourceType: platformResourceRevisions.resourceType,
-        revision: platformResourceRevisions.revision,
-        secretFingerprint: platformResourceRevisions.secretFingerprint,
-        status: platformResourceRevisions.status,
-      })
-      .from(platformResourceRevisions)
-      .innerJoin(
-        latest,
-        and(
-          eq(platformResourceRevisions.resourceId, latest.resourceId),
-          eq(platformResourceRevisions.revision, latest.latestRevision),
-        ),
-      )
-      .where(
-        and(
-          eq(platformResourceRevisions.resourceType, 'provider'),
-          eq(platformResourceRevisions.status, 'published'),
-        ),
-      )
-      .orderBy(asc(platformResourceRevisions.resourceId));
-  };
-
   listModels = async (providerId: string): Promise<PlatformAiModelItem[]> => {
     return this.db
       .select()
       .from(platformAiModels)
       .where(eq(platformAiModels.providerId, providerId))
       .orderBy(asc(platformAiModels.sort), asc(platformAiModels.modelKey));
+  };
+
+  /** All models under many providers in one query (grouped by caller). */
+  listModelsForProviders = async (providerIds: string[]): Promise<PlatformAiModelItem[]> => {
+    if (providerIds.length === 0) return [];
+    return this.db
+      .select()
+      .from(platformAiModels)
+      .where(inArray(platformAiModels.providerId, providerIds))
+      .orderBy(
+        asc(platformAiModels.providerId),
+        asc(platformAiModels.sort),
+        asc(platformAiModels.modelKey),
+      );
   };
 
   listAllModels = async (params: {
@@ -438,13 +423,30 @@ export class PlatformAiCatalogRepository {
         ),
       );
     const ownedIds = new Set(owned.map((item) => item.id));
-    for (const item of items) {
-      if (!ownedIds.has(item.id)) continue;
-      await this.db
-        .update(platformAiModels)
-        .set({ sort: item.sort, status: 'draft', updatedAt: new Date() })
-        .where(and(eq(platformAiModels.providerId, providerId), eq(platformAiModels.id, item.id)));
-    }
+    const ownedItems = items.filter((item) => ownedIds.has(item.id));
+    if (ownedItems.length === 0) return 0;
+
+    // One CASE UPDATE instead of N sequential writes; still scoped to provider + owned ids.
+    // Cast THEN branches to int — Drizzle params default to text without an explicit cast.
+    const sortCases = ownedItems.map(
+      (item) => sql`WHEN ${platformAiModels.id} = ${item.id} THEN ${item.sort}::integer`,
+    );
+    await this.db
+      .update(platformAiModels)
+      .set({
+        sort: sql`CASE ${sql.join(sortCases, sql` `)} END`,
+        status: 'draft',
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(platformAiModels.providerId, providerId),
+          inArray(
+            platformAiModels.id,
+            ownedItems.map((item) => item.id),
+          ),
+        ),
+      );
     return ownedIds.size;
   };
 

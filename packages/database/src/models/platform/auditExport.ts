@@ -9,6 +9,11 @@ import {
   type PlatformAuditExportStatus,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import {
+  clampListLimit,
+  encodeCreatedAtCursor as encodeCursor,
+  parseCreatedAtCursor as parseCursor,
+} from './cursor';
 
 export type {
   PlatformAuditExportFilterSnapshot,
@@ -56,20 +61,6 @@ const TERMINAL_EXPORT_STATUSES: readonly PlatformAuditExportStatus[] = [
   'cancelled',
   'expired',
 ];
-
-const clampListLimit = (limit?: number): number =>
-  Math.min(Math.max(Math.floor(limit ?? 50), 1), 200);
-
-const encodeCursor = (row: Pick<PlatformAuditExportItem, 'createdAt' | 'id'>): string =>
-  `${row.createdAt.toISOString()}|${row.id}`;
-
-const parseCursor = (cursor: string | undefined): { createdAt: Date; id: string } | null => {
-  if (!cursor?.includes('|')) return null;
-  const [iso, id] = cursor.split('|');
-  const createdAt = new Date(iso);
-  if (Number.isNaN(createdAt.getTime()) || !id) return null;
-  return { createdAt, id };
-};
 
 /**
  * Admin audit export repository: create → running → complete/fail/cancel/expired.

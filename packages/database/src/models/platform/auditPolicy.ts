@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditPolicy,
+  PLATFORM_AUDIT_POLICY_DEFAULTS,
   PLATFORM_AUDIT_POLICY_ID,
   type PlatformAuditContentAccessMode,
   platformAuditPolicies,
@@ -26,20 +27,9 @@ export interface UpdatePlatformAuditPolicyParams {
   updatedBy?: string | null;
 }
 
-/**
- * Defaults must match `platform_audit_policies` column defaults in auditAdmin schema.
- * operation logs 365d, conversations 180d, export artifacts 7d, max export rows 50_000.
- */
+/** Insert defaults — single source with schema column defaults (`PLATFORM_AUDIT_POLICY_DEFAULTS`). */
 const DEFAULT_POLICY_VALUES: Omit<NewPlatformAuditPolicy, 'id'> = {
-  contentAccessMode: 'metadata_only',
-  conversationRetentionDays: 180,
-  exportArtifactRetentionDays: 7,
-  maxExportRows: 50_000,
-  maxListWindowDays: 90,
-  messageBodyInExport: false,
-  operationLogRetentionDays: 365,
-  redactionProfile: 'strict',
-  revision: 0,
+  ...PLATFORM_AUDIT_POLICY_DEFAULTS,
 };
 
 /**

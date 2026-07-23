@@ -11,12 +11,22 @@ import type { LobeChatDatabase } from '../../type';
 import { RbacModel } from '../rbac';
 
 export interface PlatformAccessStatus {
+  /**
+   * Always true after Authentik-only admission (allowlist gating removed).
+   * Kept for response shape compatibility with existing clients/e2e.
+   */
   accessGranted: boolean;
+  /** Always false after Authentik-only admission; kept for response shape compatibility. */
   degraded: boolean;
+  /** Always null; kept for response shape compatibility. */
   grantVersion: number | null;
   /** Always null; kept for response shape compatibility. */
   permissionRequestUrl: string | null;
-  reason: 'granted' | 'super_admin' | 'not_granted' | 'feature_disabled';
+  /**
+   * Admission path. `not_granted` is intentionally absent — Authentik-only migration
+   * never produces a denial reason from this resolver.
+   */
+  reason: 'granted' | 'super_admin' | 'feature_disabled';
 }
 
 const isPlatformAdminEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>

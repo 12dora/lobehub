@@ -281,4 +281,107 @@ describe('PlatformSecretRotationRepository', () => {
       expect(JSON.stringify(candidate)).toBe('{}');
     });
   });
+
+  it('projects domain-specific owner/fingerprint/revision columns via getById', async () => {
+    await seedFiveDomains();
+
+    const aiCurrent = await repository.getById('aiCurrent', 'ai-a');
+    expect(aiCurrent).toMatchObject({
+      ciphertext: opaque('ai-old'),
+      domain: 'aiCurrent',
+      fingerprint: fingerprintA,
+      id: 'ai-a',
+      ownerId: null,
+      revision: 1,
+      storedKeyId: oldKeyId,
+    });
+
+    const aiImmutable = await repository.getById('aiImmutable', 'ai-version-a');
+    expect(aiImmutable).toMatchObject({
+      ciphertext: opaque('ai-old'),
+      domain: 'aiImmutable',
+      fingerprint: fingerprintA,
+      id: 'ai-version-a',
+      ownerId: 'ai-a',
+      revision: 1,
+      storedKeyId: null,
+    });
+
+    const connector = await repository.getById('connector', 'connector-secret-a');
+    expect(connector).toMatchObject({
+      ciphertext: opaque('connector-old'),
+      domain: 'connector',
+      fingerprint: null,
+      id: 'connector-secret-a',
+      ownerId: 'connector-a',
+      revision: 3,
+      storedKeyId: oldKeyId,
+    });
+
+    const identity = await repository.getById('identityProvider', 'identity-secret-a');
+    expect(identity).toMatchObject({
+      ciphertext: opaque('identity-old'),
+      domain: 'identityProvider',
+      fingerprint: fingerprintA,
+      id: 'identity-secret-a',
+      ownerId: 'identity-a',
+      revision: 4,
+      storedKeyId: oldKeyId,
+    });
+
+    const pkce = await repository.getById('identityProviderTestPkce', 'identity-test-a');
+    expect(pkce).toMatchObject({
+      ciphertext: opaque('pkce-old'),
+      domain: 'identityProviderTestPkce',
+      fingerprint: null,
+      id: 'identity-test-a',
+      ownerId: 'identity-a',
+      revision: null,
+      storedKeyId: oldKeyId,
+    });
+  });
+
+  it('returns undefined from getById when aiCurrent has no ciphertext material', async () => {
+    await db.insert(platformAiProviders).values({
+      displayName: 'No secret',
+      encryptedKeyVaults: null,
+      id: 'ai-empty',
+      providerKey: 'ai-empty',
+      secretKeyId: oldKeyId,
+      secretKeyVersion: 1,
+    });
+
+    await expect(repository.getById('aiCurrent', 'ai-empty')).resolves.toBeUndefined();
+    await expect(repository.getById('connector', 'missing')).resolves.toBeUndefined();
+  });
+
+  it('refuses revision-required domains when inventory revision is null', async () => {
+    await seedFiveDomains();
+    const { items } = await repository.listCandidates({ limit: 50, targetKeyId });
+    const connector = items.find(({ domain }) => domain === 'connector')!;
+    const orphan = {
+      ciphertext: connector.ciphertext,
+      domain: 'connector' as const,
+      fingerprint: connector.fingerprint,
+      id: connector.id,
+      ownerId: connector.ownerId,
+      revision: null,
+      storedKeyId: connector.storedKeyId,
+    };
+
+    await expect(
+      repository.rotateExact({
+        candidate: orphan,
+        ciphertext: opaque('must-not-write'),
+        targetKeyId,
+      }),
+    ).resolves.toEqual({ currentSynchronized: false, updated: false });
+
+    const [stored] = await db
+      .select()
+      .from(platformConnectorSecrets)
+      .where(eq(platformConnectorSecrets.id, 'connector-secret-a'));
+    expect(stored.ciphertext === opaque('connector-old')).toBe(true);
+    expect(stored.keyId).toBe(oldKeyId);
+  });
 });

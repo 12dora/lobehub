@@ -1,19 +1,4 @@
-import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  gt,
-  gte,
-  inArray,
-  isNull,
-  lt,
-  ne,
-  not,
-  or,
-  sql,
-} from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 
 import {
   type PlatformIdentityProviderInstanceItem,
@@ -53,6 +38,73 @@ export interface PlatformInstanceInventoryCounts {
   stale: number;
   unreported: number;
 }
+
+/**
+ * Boolean SQL: revision-state row matches the inventory target token carried on the
+ * `targets` CTE (`token_kind` / `token_revision` / `token_immutable_id`).
+ * Preserves single-target semantics: revision matches only when id is null and vice versa;
+ * missing token never matches.
+ */
+const targetTokenMatchesSql = sql`(
+  CASE
+    WHEN targets.token_kind = 'revision' THEN
+      ${platformInstanceRevisionStates.loadedRevision} = targets.token_revision
+      AND ${platformInstanceRevisionStates.loadedRevisionId} IS NULL
+    WHEN targets.token_kind = 'immutable_id' THEN
+      ${platformInstanceRevisionStates.loadedRevisionId} = targets.token_immutable_id
+      AND ${platformInstanceRevisionStates.loadedRevision} IS NULL
+    ELSE FALSE
+  END
+)`;
+
+const isActiveInventoryTarget = (target: PlatformInstanceInventoryTarget) =>
+  target.status !== 'disabled' && target.loadMode !== 'request_scoped';
+
+/** Parameterized VALUES list for active inventory targets (Postgres / PGlite). */
+const inventoryTargetsValuesSql = (targets: PlatformInstanceInventoryTarget[]) =>
+  sql.join(
+    targets.map((target) => {
+      const tokenKind = target.token?.kind ?? null;
+      const tokenRevision = target.token?.kind === 'revision' ? target.token.value : null;
+      const tokenImmutableId = target.token?.kind === 'immutable_id' ? target.token.value : null;
+      return sql`(
+        ${target.domain}::text,
+        ${target.status}::text,
+        ${tokenKind}::text,
+        ${tokenRevision}::integer,
+        ${tokenImmutableId}::text
+      )`;
+    }),
+    sql`, `,
+  );
+
+const zeroDomainCounts = (fresh: number, stale: number): PlatformInstanceInventoryCounts => ({
+  degraded: 0,
+  diverged: 0,
+  fresh,
+  matching: 0,
+  stale,
+  unreported: 0,
+});
+
+interface DomainAggregateRow extends Record<string, unknown> {
+  degraded: number | string;
+  diverged: number | string;
+  domain: PlatformInstanceDomain;
+  matching: number | string;
+  unreported: number | string;
+}
+
+interface DiagnosticIssueRow extends Record<string, unknown> {
+  instanceId: string;
+  lastHeartbeatAt: Date | string;
+  startedAt: Date | string;
+}
+
+const asQueryRows = <T>(result: { rows: T[] } | T[]): T[] =>
+  Array.isArray(result) ? result : result.rows;
+
+const asDate = (value: Date | string): Date => (value instanceof Date ? value : new Date(value));
 
 export interface PlatformInstanceInventoryDiagnostic {
   instance: PlatformInstanceHeartbeatItem;
@@ -146,17 +198,51 @@ export class PlatformInstanceRepository {
         );
   };
 
-  private tokenMatches = (target: PlatformInstanceInventoryTarget) => {
-    if (!target.token) return sql`false`;
-    return target.token.kind === 'revision'
-      ? and(
-          eq(platformInstanceRevisionStates.loadedRevision, target.token.value),
-          isNull(platformInstanceRevisionStates.loadedRevisionId),
-        )!
-      : and(
-          eq(platformInstanceRevisionStates.loadedRevisionId, target.token.value),
-          isNull(platformInstanceRevisionStates.loadedRevision),
-        )!;
+  /**
+   * Fresh diagnostic issue set across all active domains in one statement.
+   * An instance is an issue if ANY active target is unavailable, missing state,
+   * non-healthy, or token-mismatched — same union semantics as the former per-domain loop.
+   */
+  private listDiagnosticIssueInstances = async (input: {
+    cutoff: Date;
+    limit: number;
+    targets: PlatformInstanceInventoryTarget[];
+  }): Promise<PlatformInstanceHeartbeatItem[]> => {
+    const activeTargets = input.targets.filter(isActiveInventoryTarget);
+    if (activeTargets.length === 0) return [];
+
+    const result = await this.db.execute<DiagnosticIssueRow>(sql`
+      WITH targets(domain, status, token_kind, token_revision, token_immutable_id) AS (
+        VALUES ${inventoryTargetsValuesSql(activeTargets)}
+      )
+      SELECT
+        ${platformInstanceHeartbeats.instanceId} AS "instanceId",
+        ${platformInstanceHeartbeats.lastHeartbeatAt} AS "lastHeartbeatAt",
+        ${platformInstanceHeartbeats.startedAt} AS "startedAt"
+      FROM ${platformInstanceHeartbeats}
+      WHERE ${platformInstanceHeartbeats.lastHeartbeatAt} >= ${input.cutoff}
+        AND EXISTS (
+          SELECT 1
+          FROM targets
+          LEFT JOIN ${platformInstanceRevisionStates}
+            ON ${platformInstanceRevisionStates.instanceId} = ${platformInstanceHeartbeats.instanceId}
+            AND ${platformInstanceRevisionStates.domain} = targets.domain
+          WHERE targets.status = 'unavailable'
+            OR ${platformInstanceRevisionStates.instanceId} IS NULL
+            OR ${platformInstanceRevisionStates.health} <> 'healthy'
+            OR NOT ${targetTokenMatchesSql}
+        )
+      ORDER BY
+        ${platformInstanceHeartbeats.lastHeartbeatAt} DESC,
+        ${platformInstanceHeartbeats.instanceId} ASC
+      LIMIT ${input.limit}
+    `);
+
+    return asQueryRows(result).map((row) => ({
+      instanceId: row.instanceId,
+      lastHeartbeatAt: asDate(row.lastHeartbeatAt),
+      startedAt: asDate(row.startedAt),
+    }));
   };
 
   private listDiagnosticCandidates = async (input: {
@@ -168,6 +254,7 @@ export class PlatformInstanceRepository {
     const recency = input.fresh
       ? gte(platformInstanceHeartbeats.lastHeartbeatAt, input.cutoff)
       : lt(platformInstanceHeartbeats.lastHeartbeatAt, input.cutoff);
+    // Constant query budget: baseline + optional single multi-domain issue query + states.
     const baseline = await this.db
       .select()
       .from(platformInstanceHeartbeats)
@@ -177,41 +264,14 @@ export class PlatformInstanceRepository {
         asc(platformInstanceHeartbeats.instanceId),
       )
       .limit(input.limit);
-    const issues = new Map<string, PlatformInstanceHeartbeatItem>();
-    if (input.fresh) {
-      for (const target of input.targets) {
-        if (target.status === 'disabled' || target.loadMode === 'request_scoped') continue;
-        const issue =
-          target.status === 'unavailable'
-            ? sql`true`
-            : or(
-                isNull(platformInstanceRevisionStates.instanceId),
-                ne(platformInstanceRevisionStates.health, 'healthy'),
-                not(this.tokenMatches(target)),
-              );
-        const rows = await this.db
-          .select({
-            instanceId: platformInstanceHeartbeats.instanceId,
-            lastHeartbeatAt: platformInstanceHeartbeats.lastHeartbeatAt,
-            startedAt: platformInstanceHeartbeats.startedAt,
-          })
-          .from(platformInstanceHeartbeats)
-          .leftJoin(
-            platformInstanceRevisionStates,
-            and(
-              eq(platformInstanceRevisionStates.instanceId, platformInstanceHeartbeats.instanceId),
-              eq(platformInstanceRevisionStates.domain, target.domain),
-            ),
-          )
-          .where(and(recency, issue))
-          .orderBy(
-            desc(platformInstanceHeartbeats.lastHeartbeatAt),
-            asc(platformInstanceHeartbeats.instanceId),
-          )
-          .limit(input.limit);
-        for (const row of rows) issues.set(row.instanceId, row);
-      }
-    }
+    const issueRows = input.fresh
+      ? await this.listDiagnosticIssueInstances({
+          cutoff: input.cutoff,
+          limit: input.limit,
+          targets: input.targets,
+        })
+      : [];
+    const issues = new Map(issueRows.map((row) => [row.instanceId, row]));
     const candidates = [...issues.values(), ...baseline]
       .filter(
         (instance, index, all) =>
@@ -243,8 +303,69 @@ export class PlatformInstanceRepository {
   };
 
   /**
+   * Per-domain convergence aggregates in one GROUP BY over a targets VALUES list.
+   * Inactive targets (disabled / request_scoped) are omitted from SQL and zero-filled in JS.
+   */
+  private listDomainInventoryAggregates = async (input: {
+    cutoff: Date;
+    targets: PlatformInstanceInventoryTarget[];
+  }): Promise<
+    Map<PlatformInstanceDomain, Omit<PlatformInstanceInventoryCounts, 'fresh' | 'stale'>>
+  > => {
+    const activeTargets = input.targets.filter(isActiveInventoryTarget);
+    const byDomain = new Map<
+      PlatformInstanceDomain,
+      Omit<PlatformInstanceInventoryCounts, 'fresh' | 'stale'>
+    >();
+    if (activeTargets.length === 0) return byDomain;
+
+    const result = await this.db.execute<DomainAggregateRow>(sql`
+      WITH targets(domain, status, token_kind, token_revision, token_immutable_id) AS (
+        VALUES ${inventoryTargetsValuesSql(activeTargets)}
+      )
+      SELECT
+        targets.domain AS domain,
+        count(*) FILTER (
+          WHERE ${platformInstanceRevisionStates.instanceId} IS NOT NULL
+            AND ${platformInstanceRevisionStates.health} <> 'healthy'
+        )::int AS degraded,
+        count(*) FILTER (
+          WHERE targets.status = 'available'
+            AND ${platformInstanceRevisionStates.health} = 'healthy'
+            AND NOT ${targetTokenMatchesSql}
+        )::int AS diverged,
+        count(*) FILTER (
+          WHERE targets.status = 'available'
+            AND ${platformInstanceRevisionStates.health} = 'healthy'
+            AND ${targetTokenMatchesSql}
+        )::int AS matching,
+        count(*) FILTER (
+          WHERE ${platformInstanceRevisionStates.instanceId} IS NULL
+        )::int AS unreported
+      FROM targets
+      CROSS JOIN ${platformInstanceHeartbeats}
+      LEFT JOIN ${platformInstanceRevisionStates}
+        ON ${platformInstanceRevisionStates.instanceId} = ${platformInstanceHeartbeats.instanceId}
+        AND ${platformInstanceRevisionStates.domain} = targets.domain
+      WHERE ${platformInstanceHeartbeats.lastHeartbeatAt} >= ${input.cutoff}
+      GROUP BY targets.domain
+    `);
+
+    for (const row of asQueryRows(result)) {
+      byDomain.set(row.domain, {
+        degraded: Number(row.degraded ?? 0),
+        diverged: Number(row.diverged ?? 0),
+        matching: Number(row.matching ?? 0),
+        unreported: Number(row.unreported ?? 0),
+      });
+    }
+    return byDomain;
+  };
+
+  /**
    * Reads exact aggregates and bounded issue-first diagnostics against one caller-supplied
    * database clock. Stale processes are counted but excluded from convergence classifications.
+   * Query count is constant in the number of domains (VALUES + GROUP BY / EXISTS), not O(domains).
    */
   getConvergenceInventorySnapshot = async (
     targets: PlatformInstanceInventoryTarget[],
@@ -260,71 +381,38 @@ export class PlatformInstanceRepository {
       .from(platformInstanceHeartbeats);
     const freshCount = Number(inventory?.fresh ?? 0);
     const staleCount = Number(inventory?.stale ?? 0);
-    const counts: PlatformInstanceInventorySnapshot['counts'] = [];
-    for (const target of targets) {
-      if (target.status === 'disabled' || target.loadMode === 'request_scoped') {
-        counts.push({
-          counts: {
-            degraded: 0,
-            diverged: 0,
-            fresh: freshCount,
-            matching: 0,
-            stale: staleCount,
-            unreported: 0,
-          },
-          domain: target.domain,
-        });
-        continue;
+    // Single multi-domain aggregate (no per-target round-trip; no Promise.all on tx client).
+    const aggregates = await this.listDomainInventoryAggregates({ cutoff, targets });
+    const counts: PlatformInstanceInventorySnapshot['counts'] = targets.map((target) => {
+      if (!isActiveInventoryTarget(target)) {
+        return { counts: zeroDomainCounts(freshCount, staleCount), domain: target.domain };
       }
-      const matches = this.tokenMatches(target);
-      const [aggregate] = await this.db
-        .select({
-          degraded: sql<number>`count(*) filter (where ${platformInstanceRevisionStates.instanceId} is not null and ${platformInstanceRevisionStates.health} <> 'healthy')`,
-          diverged:
-            target.status === 'available'
-              ? sql<number>`count(*) filter (where ${platformInstanceRevisionStates.health} = 'healthy' and not (${matches}))`
-              : sql<number>`0`,
-          matching:
-            target.status === 'available'
-              ? sql<number>`count(*) filter (where ${platformInstanceRevisionStates.health} = 'healthy' and ${matches})`
-              : sql<number>`0`,
-          unreported: sql<number>`count(*) filter (where ${platformInstanceRevisionStates.instanceId} is null)`,
-        })
-        .from(platformInstanceHeartbeats)
-        .leftJoin(
-          platformInstanceRevisionStates,
-          and(
-            eq(platformInstanceRevisionStates.instanceId, platformInstanceHeartbeats.instanceId),
-            eq(platformInstanceRevisionStates.domain, target.domain),
-          ),
-        )
-        .where(gte(platformInstanceHeartbeats.lastHeartbeatAt, cutoff));
-      counts.push({
+      const aggregate = aggregates.get(target.domain);
+      return {
         counts: {
-          degraded: Number(aggregate?.degraded ?? 0),
-          diverged: Number(aggregate?.diverged ?? 0),
+          degraded: aggregate?.degraded ?? 0,
+          diverged: aggregate?.diverged ?? 0,
           fresh: freshCount,
-          matching: Number(aggregate?.matching ?? 0),
+          matching: aggregate?.matching ?? 0,
           stale: staleCount,
-          unreported: Number(aggregate?.unreported ?? 0),
+          unreported: aggregate?.unreported ?? 0,
         },
         domain: target.domain,
-      });
-    }
-    const [freshCandidates, staleCandidates] = await Promise.all([
-      this.listDiagnosticCandidates({
-        cutoff,
-        fresh: true,
-        limit: PLATFORM_INSTANCE_FRESH_DIAGNOSTIC_CANDIDATE_LIMIT,
-        targets,
-      }),
-      this.listDiagnosticCandidates({
-        cutoff,
-        fresh: false,
-        limit: PLATFORM_INSTANCE_STALE_DIAGNOSTIC_CANDIDATE_LIMIT,
-        targets,
-      }),
-    ]);
+      };
+    });
+    // Sequential under the same transaction client as the aggregates above.
+    const freshCandidates = await this.listDiagnosticCandidates({
+      cutoff,
+      fresh: true,
+      limit: PLATFORM_INSTANCE_FRESH_DIAGNOSTIC_CANDIDATE_LIMIT,
+      targets,
+    });
+    const staleCandidates = await this.listDiagnosticCandidates({
+      cutoff,
+      fresh: false,
+      limit: PLATFORM_INSTANCE_STALE_DIAGNOSTIC_CANDIDATE_LIMIT,
+      targets,
+    });
     return {
       counts,
       freshCandidates,
@@ -366,26 +454,25 @@ export class PlatformInstanceRepository {
           ),
         )
       : undefined;
-    const [platformRows, identityRows] = await Promise.all([
-      this.db
-        .select()
-        .from(platformInstanceHeartbeats)
-        .where(platformCursor)
-        .orderBy(
-          desc(platformInstanceHeartbeats.lastHeartbeatAt),
-          asc(platformInstanceHeartbeats.instanceId),
-        )
-        .limit(limit + 1),
-      this.db
-        .select()
-        .from(platformIdentityProviderInstances)
-        .where(identityCursor)
-        .orderBy(
-          desc(platformIdentityProviderInstances.lastHeartbeat),
-          asc(platformIdentityProviderInstances.instanceId),
-        )
-        .limit(limit + 1),
-    ]);
+    // Sequential reads: callers wrap this in a transaction (statusService inventory page).
+    const platformRows = await this.db
+      .select()
+      .from(platformInstanceHeartbeats)
+      .where(platformCursor)
+      .orderBy(
+        desc(platformInstanceHeartbeats.lastHeartbeatAt),
+        asc(platformInstanceHeartbeats.instanceId),
+      )
+      .limit(limit + 1);
+    const identityRows = await this.db
+      .select()
+      .from(platformIdentityProviderInstances)
+      .where(identityCursor)
+      .orderBy(
+        desc(platformIdentityProviderInstances.lastHeartbeat),
+        asc(platformIdentityProviderInstances.instanceId),
+      )
+      .limit(limit + 1);
     const candidates = [
       ...platformRows.map((instance) => ({
         heartbeat: instance.lastHeartbeatAt,

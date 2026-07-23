@@ -13,6 +13,7 @@ import {
   platformAuditLogs,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { clampListLimit, encodeCompositeCursor, parseCompositeCursor } from './cursor';
 
 /** Topic statuses that must never be purged by chat-history retention. */
 export const RETENTION_PROTECTED_TOPIC_STATUSES = ['running', 'paused', 'waitingForHuman'] as const;
@@ -70,19 +71,16 @@ export type ExportArtifactRetentionCandidate = {
   storageKey: string | null;
 };
 
-const clampLimit = (limit?: number): number => Math.min(Math.max(Math.floor(limit ?? 50), 1), 200);
+const clampLimit = (limit?: number): number => clampListLimit(limit);
 
 export const encodeRetentionCursor = (sortAt: Date, id: string): string =>
-  `${sortAt.toISOString()}|${id}`;
+  encodeCompositeCursor(sortAt, id);
 
 export const parseRetentionCursor = (
   cursor: string | undefined,
 ): { id: string; sortAt: Date } | null => {
-  if (!cursor?.includes('|')) return null;
-  const [iso, id] = cursor.split('|');
-  const sortAt = new Date(iso);
-  if (Number.isNaN(sortAt.getTime()) || !id) return null;
-  return { id, sortAt };
+  const parsed = parseCompositeCursor(cursor);
+  return parsed ? { id: parsed.id, sortAt: parsed.at } : null;
 };
 
 /**

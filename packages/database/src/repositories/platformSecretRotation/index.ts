@@ -1,4 +1,5 @@
-import { and, type AnyColumn, asc, eq, gt, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, isNull, ne, or, type SQL } from 'drizzle-orm';
+import type { AnyPgColumn, PgTable, SelectedFields } from 'drizzle-orm/pg-core';
 
 import {
   platformAiProviders,
@@ -20,6 +21,8 @@ import {
 export * from './types';
 
 const MAX_PAGE_SIZE = 50;
+
+type Db = LobeChatDatabase | Transaction;
 
 interface CandidateValues {
   ciphertext: string;
@@ -80,8 +83,465 @@ class InternalRotationCandidate implements PlatformSecretRotationCandidate {
   }
 }
 
-const keyIdCondition = (column: AnyColumn, storedKeyId: string | null) =>
+const keyIdCondition = (column: AnyPgColumn, storedKeyId: string | null) =>
   storedKeyId === null ? isNull(column) : eq(column, storedKeyId);
+
+const NO_CURRENT: PlatformSecretRotationCasResult = {
+  currentSynchronized: false,
+  updated: false,
+};
+
+/**
+ * Per-domain column source-of-truth. Select projections, list filters, and CAS
+ * predicates all read from these column refs so domain schema drift is edited once.
+ */
+interface DomainColumns {
+  ciphertext: AnyPgColumn;
+  fingerprint?: AnyPgColumn;
+  id: AnyPgColumn;
+  ownerId?: AnyPgColumn;
+  revision?: AnyPgColumn;
+  storedKeyId: AnyPgColumn;
+}
+
+interface SelectRow {
+  ciphertext: string | null;
+  fingerprint?: string | null;
+  id: string;
+  ownerId?: string | null;
+  revision?: number | null;
+  storedKeyId: string | null;
+}
+
+/** Project a Drizzle partial-select row (keys from DomainColumns) into SelectRow. */
+const projectSelectRow = (row: Record<string, unknown>): SelectRow => {
+  const id = row.id;
+  const ciphertext = row.ciphertext;
+  const storedKeyId = row.storedKeyId;
+  if (typeof id !== 'string') {
+    throw new TypeError('platform secret rotation select row missing string id');
+  }
+  if (ciphertext !== null && typeof ciphertext !== 'string') {
+    throw new TypeError('platform secret rotation select row invalid ciphertext');
+  }
+  if (storedKeyId !== null && typeof storedKeyId !== 'string') {
+    throw new TypeError('platform secret rotation select row invalid storedKeyId');
+  }
+
+  const projected: SelectRow = { ciphertext, id, storedKeyId };
+
+  if ('fingerprint' in row) {
+    const fingerprint = row.fingerprint;
+    if (fingerprint !== null && fingerprint !== undefined && typeof fingerprint !== 'string') {
+      throw new TypeError('platform secret rotation select row invalid fingerprint');
+    }
+    projected.fingerprint = fingerprint ?? null;
+  }
+  if ('ownerId' in row) {
+    const ownerId = row.ownerId;
+    if (ownerId !== null && ownerId !== undefined && typeof ownerId !== 'string') {
+      throw new TypeError('platform secret rotation select row invalid ownerId');
+    }
+    projected.ownerId = ownerId ?? null;
+  }
+  if ('revision' in row) {
+    const revision = row.revision;
+    if (revision !== null && revision !== undefined && typeof revision !== 'number') {
+      throw new TypeError('platform secret rotation select row invalid revision');
+    }
+    projected.revision = revision ?? null;
+  }
+
+  return projected;
+};
+
+interface ListDomainParams {
+  afterId?: string;
+  limit: number;
+  targetKeyId: string;
+}
+
+interface RotateExactParams {
+  candidate: PlatformSecretRotationCandidate;
+  ciphertext: string;
+  targetKeyId: string;
+}
+
+interface RotateExactContext {
+  db: Db;
+  transactionScoped: boolean;
+}
+
+/**
+ * Typed domain handler. Drizzle cannot safely unify heterogeneous tables into one
+ * generic update/select builder, so each domain owns a small handler while sharing
+ * column maps + query helpers below. No `any`.
+ */
+interface DomainRotationHandler {
+  readonly domain: PlatformSecretRotationDomain;
+  getById: (db: Db, id: string) => Promise<PlatformSecretRotationCandidate | undefined>;
+  listDomain: (db: Db, params: ListDomainParams) => Promise<PlatformSecretRotationCandidate[]>;
+  rotateExact: (
+    ctx: RotateExactContext,
+    params: RotateExactParams,
+  ) => Promise<PlatformSecretRotationCasResult>;
+}
+
+const candidateSelect = (columns: DomainColumns): SelectedFields => {
+  const projection: SelectedFields = {
+    ciphertext: columns.ciphertext,
+    id: columns.id,
+    storedKeyId: columns.storedKeyId,
+  };
+  if (columns.fingerprint) projection.fingerprint = columns.fingerprint;
+  if (columns.ownerId) projection.ownerId = columns.ownerId;
+  if (columns.revision) projection.revision = columns.revision;
+  return projection;
+};
+
+const toCandidate = (
+  domain: PlatformSecretRotationDomain,
+  row: SelectRow,
+): InternalRotationCandidate => {
+  if (row.ciphertext === null) {
+    throw new TypeError('platform secret rotation candidate requires ciphertext');
+  }
+  return new InternalRotationCandidate({
+    ciphertext: row.ciphertext,
+    domain,
+    fingerprint: row.fingerprint,
+    id: row.id,
+    ownerId: row.ownerId,
+    revision: row.revision,
+    storedKeyId: row.storedKeyId,
+  });
+};
+
+const listKeyMismatch = (
+  storedKeyId: AnyPgColumn,
+  targetKeyId: string,
+  mode: 'notEqual' | 'nullOrNotEqual',
+): SQL =>
+  mode === 'nullOrNotEqual'
+    ? (or(isNull(storedKeyId), ne(storedKeyId, targetKeyId)) as SQL)
+    : (ne(storedKeyId, targetKeyId) as SQL);
+
+const listDomainWhere = (params: {
+  afterId?: string;
+  columns: DomainColumns;
+  keyMode: 'notEqual' | 'nullOrNotEqual';
+  requireCiphertext: boolean;
+  targetKeyId: string;
+}) =>
+  and(
+    params.requireCiphertext ? isNotNull(params.columns.ciphertext) : undefined,
+    listKeyMismatch(params.columns.storedKeyId, params.targetKeyId, params.keyMode),
+    params.afterId ? gt(params.columns.id, params.afterId) : undefined,
+  );
+
+const getByIdWhere = (columns: DomainColumns, id: string, requireCiphertext: boolean) =>
+  and(eq(columns.id, id), requireCiphertext ? isNotNull(columns.ciphertext) : undefined);
+
+/**
+ * Shared read path: one select projection + filters driven by DomainColumns.
+ * `table` stays untyped at the PgTable boundary because domain tables differ;
+ * columns themselves remain the typed source-of-truth for projections/predicates.
+ */
+const selectCandidates = async (params: {
+  columns: DomainColumns;
+  db: Db;
+  limit?: number;
+  table: PgTable;
+  where: SQL | undefined;
+}): Promise<SelectRow[]> => {
+  const query = params.db
+    .select(candidateSelect(params.columns))
+    .from(params.table)
+    .where(params.where)
+    .orderBy(asc(params.columns.id));
+
+  // PgTable erases row shape; DomainColumns own the projection contract.
+  // Map field-by-field (no whole-row `as SelectRow[]` / `as unknown`).
+  const rows = await query.limit(params.limit ?? 1);
+  return rows.map((row) => projectSelectRow(row));
+};
+
+const casUpdated = async (params: {
+  db: Db;
+  idColumn: AnyPgColumn;
+  set: Record<string, string>;
+  table: PgTable;
+  where: SQL | undefined;
+}): Promise<boolean> => {
+  const rows = await params.db
+    .update(params.table)
+    .set(params.set)
+    .where(params.where)
+    .returning({ id: params.idColumn });
+  return rows.length === 1;
+};
+
+const revisionEq = (column: AnyPgColumn, revision: number | null) =>
+  revision === null ? isNull(column) : eq(column, revision);
+
+/** Standard inventory domain: list by key mismatch, CAS on ciphertext (+ optional key/revision). */
+const createColumnDomainHandler = (config: {
+  columns: DomainColumns;
+  domain: PlatformSecretRotationDomain;
+  keyMode: 'notEqual' | 'nullOrNotEqual';
+  requireCiphertext: boolean;
+  requireRevision: boolean;
+  /**
+   * CAS also matches stored key id (connector / identity / pkce).
+   * aiCurrent matches revision only; aiImmutable is custom.
+   */
+  casKeyId: boolean;
+  set: (ciphertext: string, targetKeyId: string) => Record<string, string>;
+  table: PgTable;
+}): DomainRotationHandler => {
+  const { columns, domain, table } = config;
+
+  return {
+    domain,
+
+    getById: async (db, id) => {
+      const [row] = await selectCandidates({
+        columns,
+        db,
+        table,
+        where: getByIdWhere(columns, id, config.requireCiphertext),
+      });
+      return row ? toCandidate(domain, row) : undefined;
+    },
+
+    listDomain: async (db, params) => {
+      const rows = await selectCandidates({
+        columns,
+        db,
+        limit: params.limit,
+        table,
+        where: listDomainWhere({
+          afterId: params.afterId,
+          columns,
+          keyMode: config.keyMode,
+          requireCiphertext: config.requireCiphertext,
+          targetKeyId: params.targetKeyId,
+        }),
+      });
+      return rows.map((row) => toCandidate(domain, row));
+    },
+
+    rotateExact: async ({ db }, { candidate, ciphertext, targetKeyId }) => {
+      if (config.requireRevision && candidate.revision === null) return NO_CURRENT;
+
+      const where = and(
+        eq(columns.id, candidate.id),
+        eq(columns.ciphertext, candidate.ciphertext),
+        config.casKeyId ? keyIdCondition(columns.storedKeyId, candidate.storedKeyId) : undefined,
+        columns.revision ? revisionEq(columns.revision, candidate.revision) : undefined,
+      );
+
+      const updated = await casUpdated({
+        db,
+        idColumn: columns.id,
+        set: config.set(ciphertext, targetKeyId),
+        table,
+        where,
+      });
+      return { currentSynchronized: false, updated };
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Domain column maps (single source of truth per domain)
+// ---------------------------------------------------------------------------
+
+const AI_CURRENT_COLUMNS = {
+  ciphertext: platformAiProviders.encryptedKeyVaults,
+  fingerprint: platformAiProviders.secretFingerprint,
+  id: platformAiProviders.id,
+  revision: platformAiProviders.secretKeyVersion,
+  storedKeyId: platformAiProviders.secretKeyId,
+} as const satisfies DomainColumns;
+
+const AI_IMMUTABLE_COLUMNS = {
+  ciphertext: platformAiProviderSecrets.ciphertext,
+  fingerprint: platformAiProviderSecrets.fingerprint,
+  id: platformAiProviderSecrets.id,
+  ownerId: platformAiProviderSecrets.providerId,
+  revision: platformAiProviderSecrets.keyVersion,
+  storedKeyId: platformAiProviderSecrets.keyId,
+} as const satisfies DomainColumns;
+
+const CONNECTOR_COLUMNS = {
+  ciphertext: platformConnectorSecrets.ciphertext,
+  id: platformConnectorSecrets.id,
+  ownerId: platformConnectorSecrets.connectorId,
+  revision: platformConnectorSecrets.revision,
+  storedKeyId: platformConnectorSecrets.keyId,
+} as const satisfies DomainColumns;
+
+const IDENTITY_PROVIDER_COLUMNS = {
+  ciphertext: platformIdentityProviderSecrets.ciphertext,
+  fingerprint: platformIdentityProviderSecrets.fingerprint,
+  id: platformIdentityProviderSecrets.id,
+  ownerId: platformIdentityProviderSecrets.providerId,
+  revision: platformIdentityProviderSecrets.revision,
+  storedKeyId: platformIdentityProviderSecrets.keyId,
+} as const satisfies DomainColumns;
+
+const IDENTITY_PROVIDER_TEST_PKCE_COLUMNS = {
+  ciphertext: platformIdentityProviderTestAttempts.pkceCiphertext,
+  id: platformIdentityProviderTestAttempts.id,
+  ownerId: platformIdentityProviderTestAttempts.providerId,
+  storedKeyId: platformIdentityProviderTestAttempts.pkceKeyId,
+} as const satisfies DomainColumns;
+
+const aiCurrentHandler = createColumnDomainHandler({
+  casKeyId: false,
+  columns: AI_CURRENT_COLUMNS,
+  domain: 'aiCurrent',
+  keyMode: 'nullOrNotEqual',
+  requireCiphertext: true,
+  requireRevision: false,
+  set: (ciphertext, targetKeyId) => ({
+    encryptedKeyVaults: ciphertext,
+    secretKeyId: targetKeyId,
+  }),
+  table: platformAiProviders,
+});
+
+/**
+ * AI immutable history: CAS the version row, then best-effort sync the matching
+ * current provider material in the same transaction. Column map above still owns
+ * inventory projections; dual-write predicates stay explicit here.
+ */
+const aiImmutableHandler: DomainRotationHandler = {
+  domain: 'aiImmutable',
+
+  getById: async (db, id) => {
+    const [row] = await selectCandidates({
+      columns: AI_IMMUTABLE_COLUMNS,
+      db,
+      table: platformAiProviderSecrets,
+      where: getByIdWhere(AI_IMMUTABLE_COLUMNS, id, false),
+    });
+    return row ? toCandidate('aiImmutable', row) : undefined;
+  },
+
+  listDomain: async (db, params) => {
+    const rows = await selectCandidates({
+      columns: AI_IMMUTABLE_COLUMNS,
+      db,
+      limit: params.limit,
+      table: platformAiProviderSecrets,
+      where: listDomainWhere({
+        afterId: params.afterId,
+        columns: AI_IMMUTABLE_COLUMNS,
+        keyMode: 'nullOrNotEqual',
+        requireCiphertext: false,
+        targetKeyId: params.targetKeyId,
+      }),
+    });
+    return rows.map((row) => toCandidate('aiImmutable', row));
+  },
+
+  rotateExact: async (ctx, { candidate, ciphertext, targetKeyId }) => {
+    if (candidate.revision === null) return NO_CURRENT;
+    const revision = candidate.revision;
+    const columns = AI_IMMUTABLE_COLUMNS;
+
+    const rotate = async (tx: Db): Promise<PlatformSecretRotationCasResult> => {
+      const updated = await casUpdated({
+        db: tx,
+        idColumn: columns.id,
+        set: { ciphertext, keyId: targetKeyId },
+        table: platformAiProviderSecrets,
+        where: and(
+          eq(columns.id, candidate.id),
+          eq(columns.ciphertext, candidate.ciphertext),
+          eq(columns.revision, revision),
+        ),
+      });
+      if (!updated) return NO_CURRENT;
+      if (!candidate.ownerId || !candidate.fingerprint) {
+        return { currentSynchronized: false, updated: true };
+      }
+
+      const currentSynchronized = await casUpdated({
+        db: tx,
+        idColumn: AI_CURRENT_COLUMNS.id,
+        set: {
+          encryptedKeyVaults: ciphertext,
+          secretKeyId: targetKeyId,
+        },
+        table: platformAiProviders,
+        where: and(
+          eq(AI_CURRENT_COLUMNS.id, candidate.ownerId),
+          eq(AI_CURRENT_COLUMNS.fingerprint!, candidate.fingerprint),
+          eq(AI_CURRENT_COLUMNS.ciphertext, candidate.ciphertext),
+          eq(AI_CURRENT_COLUMNS.revision!, revision),
+        ),
+      });
+      return { currentSynchronized, updated: true };
+    };
+
+    if (ctx.transactionScoped) return rotate(ctx.db);
+    return (ctx.db as LobeChatDatabase).transaction(rotate);
+  },
+};
+
+const connectorHandler = createColumnDomainHandler({
+  casKeyId: true,
+  columns: CONNECTOR_COLUMNS,
+  domain: 'connector',
+  keyMode: 'notEqual',
+  requireCiphertext: false,
+  requireRevision: true,
+  set: (ciphertext, targetKeyId) => ({ ciphertext, keyId: targetKeyId }),
+  table: platformConnectorSecrets,
+});
+
+const identityProviderHandler = createColumnDomainHandler({
+  casKeyId: true,
+  columns: IDENTITY_PROVIDER_COLUMNS,
+  domain: 'identityProvider',
+  keyMode: 'notEqual',
+  requireCiphertext: false,
+  requireRevision: true,
+  set: (ciphertext, targetKeyId) => ({ ciphertext, keyId: targetKeyId }),
+  table: platformIdentityProviderSecrets,
+});
+
+const identityProviderTestPkceHandler = createColumnDomainHandler({
+  casKeyId: true,
+  columns: IDENTITY_PROVIDER_TEST_PKCE_COLUMNS,
+  domain: 'identityProviderTestPkce',
+  keyMode: 'notEqual',
+  requireCiphertext: false,
+  requireRevision: false,
+  set: (ciphertext, targetKeyId) => ({
+    pkceCiphertext: ciphertext,
+    pkceKeyId: targetKeyId,
+  }),
+  table: platformIdentityProviderTestAttempts,
+});
+
+/**
+ * Exhaustive domain registry. Adding a domain forces a new entry here and
+ * cannot leave getById/listDomain/rotateExact out of sync.
+ */
+const DOMAIN_HANDLERS = {
+  aiCurrent: aiCurrentHandler,
+  aiImmutable: aiImmutableHandler,
+  connector: connectorHandler,
+  identityProvider: identityProviderHandler,
+  identityProviderTestPkce: identityProviderTestPkceHandler,
+} as const satisfies Record<PlatformSecretRotationDomain, DomainRotationHandler>;
+
+const handlerFor = (domain: PlatformSecretRotationDomain): DomainRotationHandler =>
+  DOMAIN_HANDLERS[domain];
 
 /**
  * Persistence-only foundation for bounded, resumable secret re-wrap.
@@ -108,85 +568,8 @@ export class PlatformSecretRotationRepository {
   getById = async (
     domain: PlatformSecretRotationDomain,
     id: string,
-  ): Promise<PlatformSecretRotationCandidate | undefined> => {
-    switch (domain) {
-      case 'aiCurrent': {
-        const [row] = await this.db
-          .select({
-            ciphertext: platformAiProviders.encryptedKeyVaults,
-            fingerprint: platformAiProviders.secretFingerprint,
-            id: platformAiProviders.id,
-            revision: platformAiProviders.secretKeyVersion,
-            storedKeyId: platformAiProviders.secretKeyId,
-          })
-          .from(platformAiProviders)
-          .where(
-            and(eq(platformAiProviders.id, id), isNotNull(platformAiProviders.encryptedKeyVaults)),
-          )
-          .limit(1);
-        return row
-          ? new InternalRotationCandidate({ ...row, ciphertext: row.ciphertext!, domain })
-          : undefined;
-      }
-      case 'aiImmutable': {
-        const [row] = await this.db
-          .select({
-            ciphertext: platformAiProviderSecrets.ciphertext,
-            fingerprint: platformAiProviderSecrets.fingerprint,
-            id: platformAiProviderSecrets.id,
-            ownerId: platformAiProviderSecrets.providerId,
-            revision: platformAiProviderSecrets.keyVersion,
-            storedKeyId: platformAiProviderSecrets.keyId,
-          })
-          .from(platformAiProviderSecrets)
-          .where(eq(platformAiProviderSecrets.id, id))
-          .limit(1);
-        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
-      }
-      case 'connector': {
-        const [row] = await this.db
-          .select({
-            ciphertext: platformConnectorSecrets.ciphertext,
-            id: platformConnectorSecrets.id,
-            ownerId: platformConnectorSecrets.connectorId,
-            revision: platformConnectorSecrets.revision,
-            storedKeyId: platformConnectorSecrets.keyId,
-          })
-          .from(platformConnectorSecrets)
-          .where(eq(platformConnectorSecrets.id, id))
-          .limit(1);
-        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
-      }
-      case 'identityProvider': {
-        const [row] = await this.db
-          .select({
-            ciphertext: platformIdentityProviderSecrets.ciphertext,
-            fingerprint: platformIdentityProviderSecrets.fingerprint,
-            id: platformIdentityProviderSecrets.id,
-            ownerId: platformIdentityProviderSecrets.providerId,
-            revision: platformIdentityProviderSecrets.revision,
-            storedKeyId: platformIdentityProviderSecrets.keyId,
-          })
-          .from(platformIdentityProviderSecrets)
-          .where(eq(platformIdentityProviderSecrets.id, id))
-          .limit(1);
-        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
-      }
-      case 'identityProviderTestPkce': {
-        const [row] = await this.db
-          .select({
-            ciphertext: platformIdentityProviderTestAttempts.pkceCiphertext,
-            id: platformIdentityProviderTestAttempts.id,
-            ownerId: platformIdentityProviderTestAttempts.providerId,
-            storedKeyId: platformIdentityProviderTestAttempts.pkceKeyId,
-          })
-          .from(platformIdentityProviderTestAttempts)
-          .where(eq(platformIdentityProviderTestAttempts.id, id))
-          .limit(1);
-        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
-      }
-    }
-  };
+  ): Promise<PlatformSecretRotationCandidate | undefined> =>
+    handlerFor(domain).getById(this.db, id);
 
   private listDomain = async (params: {
     afterId?: string;
@@ -194,125 +577,8 @@ export class PlatformSecretRotationRepository {
     limit: number;
     targetKeyId: string;
   }): Promise<PlatformSecretRotationCandidate[]> => {
-    const { afterId, domain, limit, targetKeyId } = params;
-
-    switch (domain) {
-      case 'aiCurrent': {
-        const rows = await this.db
-          .select({
-            ciphertext: platformAiProviders.encryptedKeyVaults,
-            fingerprint: platformAiProviders.secretFingerprint,
-            id: platformAiProviders.id,
-            revision: platformAiProviders.secretKeyVersion,
-            storedKeyId: platformAiProviders.secretKeyId,
-          })
-          .from(platformAiProviders)
-          .where(
-            and(
-              isNotNull(platformAiProviders.encryptedKeyVaults),
-              or(
-                isNull(platformAiProviders.secretKeyId),
-                ne(platformAiProviders.secretKeyId, targetKeyId),
-              ),
-              afterId ? gt(platformAiProviders.id, afterId) : undefined,
-            ),
-          )
-          .orderBy(asc(platformAiProviders.id))
-          .limit(limit);
-        return rows.map(
-          (row) =>
-            new InternalRotationCandidate({
-              ...row,
-              ciphertext: row.ciphertext!,
-              domain,
-            }),
-        );
-      }
-      case 'aiImmutable': {
-        const rows = await this.db
-          .select({
-            ciphertext: platformAiProviderSecrets.ciphertext,
-            fingerprint: platformAiProviderSecrets.fingerprint,
-            id: platformAiProviderSecrets.id,
-            ownerId: platformAiProviderSecrets.providerId,
-            revision: platformAiProviderSecrets.keyVersion,
-            storedKeyId: platformAiProviderSecrets.keyId,
-          })
-          .from(platformAiProviderSecrets)
-          .where(
-            and(
-              or(
-                isNull(platformAiProviderSecrets.keyId),
-                ne(platformAiProviderSecrets.keyId, targetKeyId),
-              ),
-              afterId ? gt(platformAiProviderSecrets.id, afterId) : undefined,
-            ),
-          )
-          .orderBy(asc(platformAiProviderSecrets.id))
-          .limit(limit);
-        return rows.map((row) => new InternalRotationCandidate({ ...row, domain }));
-      }
-      case 'connector': {
-        const rows = await this.db
-          .select({
-            ciphertext: platformConnectorSecrets.ciphertext,
-            id: platformConnectorSecrets.id,
-            ownerId: platformConnectorSecrets.connectorId,
-            revision: platformConnectorSecrets.revision,
-            storedKeyId: platformConnectorSecrets.keyId,
-          })
-          .from(platformConnectorSecrets)
-          .where(
-            and(
-              ne(platformConnectorSecrets.keyId, targetKeyId),
-              afterId ? gt(platformConnectorSecrets.id, afterId) : undefined,
-            ),
-          )
-          .orderBy(asc(platformConnectorSecrets.id))
-          .limit(limit);
-        return rows.map((row) => new InternalRotationCandidate({ ...row, domain }));
-      }
-      case 'identityProvider': {
-        const rows = await this.db
-          .select({
-            ciphertext: platformIdentityProviderSecrets.ciphertext,
-            fingerprint: platformIdentityProviderSecrets.fingerprint,
-            id: platformIdentityProviderSecrets.id,
-            ownerId: platformIdentityProviderSecrets.providerId,
-            revision: platformIdentityProviderSecrets.revision,
-            storedKeyId: platformIdentityProviderSecrets.keyId,
-          })
-          .from(platformIdentityProviderSecrets)
-          .where(
-            and(
-              ne(platformIdentityProviderSecrets.keyId, targetKeyId),
-              afterId ? gt(platformIdentityProviderSecrets.id, afterId) : undefined,
-            ),
-          )
-          .orderBy(asc(platformIdentityProviderSecrets.id))
-          .limit(limit);
-        return rows.map((row) => new InternalRotationCandidate({ ...row, domain }));
-      }
-      case 'identityProviderTestPkce': {
-        const rows = await this.db
-          .select({
-            ciphertext: platformIdentityProviderTestAttempts.pkceCiphertext,
-            id: platformIdentityProviderTestAttempts.id,
-            ownerId: platformIdentityProviderTestAttempts.providerId,
-            storedKeyId: platformIdentityProviderTestAttempts.pkceKeyId,
-          })
-          .from(platformIdentityProviderTestAttempts)
-          .where(
-            and(
-              ne(platformIdentityProviderTestAttempts.pkceKeyId, targetKeyId),
-              afterId ? gt(platformIdentityProviderTestAttempts.id, afterId) : undefined,
-            ),
-          )
-          .orderBy(asc(platformIdentityProviderTestAttempts.id))
-          .limit(limit);
-        return rows.map((row) => new InternalRotationCandidate({ ...row, domain }));
-      }
-    }
+    const { domain, ...rest } = params;
+    return handlerFor(domain).listDomain(this.db, rest);
   };
 
   listCandidates = async (params: {
@@ -351,110 +617,9 @@ export class PlatformSecretRotationRepository {
     candidate: PlatformSecretRotationCandidate;
     ciphertext: string;
     targetKeyId: string;
-  }): Promise<PlatformSecretRotationCasResult> => {
-    const { candidate, ciphertext, targetKeyId } = params;
-    const noCurrent = { currentSynchronized: false, updated: false };
-
-    switch (candidate.domain) {
-      case 'aiCurrent': {
-        const rows = await this.db
-          .update(platformAiProviders)
-          .set({ encryptedKeyVaults: ciphertext, secretKeyId: targetKeyId })
-          .where(
-            and(
-              eq(platformAiProviders.id, candidate.id),
-              eq(platformAiProviders.encryptedKeyVaults, candidate.ciphertext),
-              candidate.revision === null
-                ? isNull(platformAiProviders.secretKeyVersion)
-                : eq(platformAiProviders.secretKeyVersion, candidate.revision),
-            ),
-          )
-          .returning({ id: platformAiProviders.id });
-        return { currentSynchronized: false, updated: rows.length === 1 };
-      }
-      case 'aiImmutable': {
-        if (candidate.revision === null) return noCurrent;
-        const revision = candidate.revision;
-        const rotate = async (tx: LobeChatDatabase | Transaction) => {
-          const immutable = await tx
-            .update(platformAiProviderSecrets)
-            .set({ ciphertext, keyId: targetKeyId })
-            .where(
-              and(
-                eq(platformAiProviderSecrets.id, candidate.id),
-                eq(platformAiProviderSecrets.ciphertext, candidate.ciphertext),
-                eq(platformAiProviderSecrets.keyVersion, revision),
-              ),
-            )
-            .returning({ id: platformAiProviderSecrets.id });
-          if (immutable.length !== 1) return noCurrent;
-          if (!candidate.ownerId || !candidate.fingerprint) {
-            return { currentSynchronized: false, updated: true };
-          }
-
-          const current = await tx
-            .update(platformAiProviders)
-            .set({ encryptedKeyVaults: ciphertext, secretKeyId: targetKeyId })
-            .where(
-              and(
-                eq(platformAiProviders.id, candidate.ownerId),
-                eq(platformAiProviders.secretFingerprint, candidate.fingerprint),
-                eq(platformAiProviders.encryptedKeyVaults, candidate.ciphertext),
-                eq(platformAiProviders.secretKeyVersion, revision),
-              ),
-            )
-            .returning({ id: platformAiProviders.id });
-          return { currentSynchronized: current.length === 1, updated: true };
-        };
-        if (this.transactionScoped) return rotate(this.db);
-        return (this.db as LobeChatDatabase).transaction(rotate);
-      }
-      case 'connector': {
-        if (candidate.revision === null) return noCurrent;
-        const rows = await this.db
-          .update(platformConnectorSecrets)
-          .set({ ciphertext, keyId: targetKeyId })
-          .where(
-            and(
-              eq(platformConnectorSecrets.id, candidate.id),
-              eq(platformConnectorSecrets.ciphertext, candidate.ciphertext),
-              keyIdCondition(platformConnectorSecrets.keyId, candidate.storedKeyId),
-              eq(platformConnectorSecrets.revision, candidate.revision),
-            ),
-          )
-          .returning({ id: platformConnectorSecrets.id });
-        return { currentSynchronized: false, updated: rows.length === 1 };
-      }
-      case 'identityProvider': {
-        if (candidate.revision === null) return noCurrent;
-        const rows = await this.db
-          .update(platformIdentityProviderSecrets)
-          .set({ ciphertext, keyId: targetKeyId })
-          .where(
-            and(
-              eq(platformIdentityProviderSecrets.id, candidate.id),
-              eq(platformIdentityProviderSecrets.ciphertext, candidate.ciphertext),
-              keyIdCondition(platformIdentityProviderSecrets.keyId, candidate.storedKeyId),
-              eq(platformIdentityProviderSecrets.revision, candidate.revision),
-            ),
-          )
-          .returning({ id: platformIdentityProviderSecrets.id });
-        return { currentSynchronized: false, updated: rows.length === 1 };
-      }
-      case 'identityProviderTestPkce': {
-        const rows = await this.db
-          .update(platformIdentityProviderTestAttempts)
-          .set({ pkceCiphertext: ciphertext, pkceKeyId: targetKeyId })
-          .where(
-            and(
-              eq(platformIdentityProviderTestAttempts.id, candidate.id),
-              eq(platformIdentityProviderTestAttempts.pkceCiphertext, candidate.ciphertext),
-              keyIdCondition(platformIdentityProviderTestAttempts.pkceKeyId, candidate.storedKeyId),
-            ),
-          )
-          .returning({ id: platformIdentityProviderTestAttempts.id });
-        return { currentSynchronized: false, updated: rows.length === 1 };
-      }
-    }
-  };
+  }): Promise<PlatformSecretRotationCasResult> =>
+    handlerFor(params.candidate.domain).rotateExact(
+      { db: this.db, transactionScoped: this.transactionScoped },
+      params,
+    );
 }

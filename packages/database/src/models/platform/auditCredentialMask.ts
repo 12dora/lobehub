@@ -11,17 +11,24 @@
  */
 
 import { REDACTED_PLACEHOLDER, redactSensitive } from './redact';
+import {
+  AWS_ACCESS_KEY_GLOBAL,
+  GCP_API_KEY_GLOBAL,
+  JWT_GLOBAL,
+  normalizeSecretKey,
+  PEM_PRIVATE_KEY_GLOBAL,
+  PREFIXED_SECRET_GLOBAL,
+  SENSITIVE_KEY_EXACT,
+} from './secretPatterns';
 
 const REDACTED = REDACTED_PLACEHOLDER;
 
-const PREFIXED_SECRET =
-  /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/giu;
-const JWT = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/gu;
+const PREFIXED_SECRET = PREFIXED_SECRET_GLOBAL;
+const JWT = JWT_GLOBAL;
 const BEARER = /\b(bearer)\s+([\w.~+/-]{8,})/giu;
-const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
-const GCP_API_KEY = /\bAIza[\w-]{35}\b/g;
-const PEM_PRIVATE_KEY =
-  /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g;
+const AWS_ACCESS_KEY = AWS_ACCESS_KEY_GLOBAL;
+const GCP_API_KEY = GCP_API_KEY_GLOBAL;
+const PEM_PRIVATE_KEY = PEM_PRIVATE_KEY_GLOBAL;
 // Bare values stop at query/fragment delimiters so `token=…&name=report` does not
 // swallow the rest of a URL (signed-URL param masking runs afterward).
 const INLINE_ASSIGNMENT =
@@ -45,47 +52,14 @@ const SIGNED_URL_AUTH_KEYS = new Set([
   'key',
 ]);
 
-const normalizeKey = (key: string): string => key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase();
+const normalizeKey = normalizeSecretKey;
 
 /**
  * Exact credential object keys (normalized). Short tokens like `token`/`secret`
  * only match exact keys, not business compounds such as `tokenCount`.
+ * Shared source: `SENSITIVE_KEY_EXACT` in secretPatterns.ts.
  */
-const CREDENTIAL_KEY_EXACT = new Set(
-  [
-    'apikey',
-    'apisecret',
-    'apitoken',
-    'clientsecret',
-    'secret',
-    'token',
-    'password',
-    'passwd',
-    'authorization',
-    'authorizationheader',
-    'authheader',
-    'cookie',
-    'setcookie',
-    'keyvault',
-    'keyvaults',
-    'encryptedkeyvaults',
-    'encryptedclientsecret',
-    'accesstoken',
-    'refreshtoken',
-    'idtoken',
-    'sessiontoken',
-    'privatekey',
-    'accesskey',
-    'accesskeyid',
-    'secretaccesskey',
-    'awssecretaccesskey',
-    'openaiapikey',
-    'xapikey',
-    'bearer',
-    'credential',
-    'credentials',
-  ].map(normalizeKey),
-);
+const CREDENTIAL_KEY_EXACT = SENSITIVE_KEY_EXACT;
 
 /**
  * Credential compound suffixes only (openaiApiKey → openaiapikey ends with apikey).

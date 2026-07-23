@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 
 import {
   MANAGED_RESOURCE_KINDS,
@@ -130,25 +130,26 @@ export class PlatformManagedResourcePolicyModel {
     updatedBy?: string | null;
   }): Promise<void> => {
     const now = new Date();
-    for (const resource of MANAGED_RESOURCE_KINDS) {
-      const [row] = await this.db
-        .select({ config: platformManagedResourcePolicies.config })
-        .from(platformManagedResourcePolicies)
-        .where(eq(platformManagedResourcePolicies.resource, resource))
-        .limit(1);
+    // One SELECT for all five fixed rows, then one CASE UPDATE (true batch write).
+    const rows = await this.listRows();
+    const byResource = new Map(rows.map((row) => [row.resource, row]));
+    const updates = MANAGED_RESOURCE_KINDS.map((resource) => {
+      const row = byResource.get(resource);
       if (!row) throw new Error(`Managed resource policy row missing: ${resource}`);
-      const item = params.draft[resource];
-      await this.db
-        .update(platformManagedResourcePolicies)
-        .set({
-          config: { draft: item, published: normalizeItem(row.config?.published) },
-          // Compatibility column mirrors effective published state, never mutable draft.
-          enforcement: normalizeItem(row.config?.published).enforcementMode,
-          updatedAt: now,
-          updatedBy: params.updatedBy ?? null,
-        })
-        .where(eq(platformManagedResourcePolicies.resource, resource));
-    }
+      const published = normalizeItem(row.config?.published);
+      return {
+        // Compatibility column mirrors effective published state, never mutable draft.
+        config: { draft: params.draft[resource], published },
+        enforcement: published.enforcementMode,
+        resource,
+      };
+    });
+
+    await this.batchUpdateResourceConfigs({
+      now,
+      updates,
+      updatedBy: params.updatedBy,
+    });
   };
 
   updatePointer = async (revision: number, status: PlatformRevisionStatus): Promise<void> => {
@@ -168,20 +169,69 @@ export class PlatformManagedResourcePolicyModel {
     updatedBy?: string | null;
   }): Promise<void> => {
     const now = new Date();
-    for (const resource of MANAGED_RESOURCE_KINDS) {
+    const updates = MANAGED_RESOURCE_KINDS.map((resource) => {
       const item = params.policies[resource];
-      await this.db
-        .update(platformManagedResourcePolicies)
-        .set({
-          config: { draft: item, published: item },
-          enforcement: item.enforcementMode,
-          revision: params.revision,
-          status: 'published',
-          updatedAt: now,
-          updatedBy: params.updatedBy ?? null,
-        })
-        .where(eq(platformManagedResourcePolicies.resource, resource));
-    }
+      return {
+        config: { draft: item, published: item },
+        enforcement: item.enforcementMode,
+        resource,
+      };
+    });
+
+    await this.batchUpdateResourceConfigs({
+      now,
+      revision: params.revision,
+      status: 'published',
+      updates,
+      updatedBy: params.updatedBy,
+    });
+  };
+
+  /**
+   * Single-statement multi-row UPDATE via CASE … WHEN resource … END.
+   * Bounded to the five fixed managed-resource kinds; keeps lock hold time to one write.
+   */
+  private batchUpdateResourceConfigs = async (params: {
+    now: Date;
+    revision?: number;
+    status?: PlatformRevisionStatus;
+    updates: Array<{
+      config: PlatformManagedResourcePolicyConfig;
+      enforcement: ManagedResourcePolicyItem['enforcementMode'];
+      resource: ManagedResourceKind;
+    }>;
+    updatedBy?: string | null;
+  }): Promise<void> => {
+    if (params.updates.length === 0) return;
+
+    // Cast THEN branches: Drizzle params default to text without an explicit cast.
+    const configCases = params.updates.map(
+      (item) =>
+        sql`WHEN ${platformManagedResourcePolicies.resource} = ${item.resource} THEN ${JSON.stringify(item.config)}::jsonb`,
+    );
+    const enforcementCases = params.updates.map(
+      (item) =>
+        sql`WHEN ${platformManagedResourcePolicies.resource} = ${item.resource} THEN ${item.enforcement}`,
+    );
+
+    await this.db
+      .update(platformManagedResourcePolicies)
+      .set({
+        config: sql`CASE ${sql.join(configCases, sql` `)} END`,
+        enforcement: sql`CASE ${sql.join(enforcementCases, sql` `)} END`,
+        ...(params.revision !== undefined ? { revision: params.revision } : {}),
+        ...(params.status !== undefined
+          ? { status: params.status === 'published' ? 'published' : 'archived' }
+          : {}),
+        updatedAt: params.now,
+        updatedBy: params.updatedBy ?? null,
+      })
+      .where(
+        inArray(
+          platformManagedResourcePolicies.resource,
+          params.updates.map((item) => item.resource),
+        ),
+      );
   };
 }
 
