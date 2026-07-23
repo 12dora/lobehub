@@ -1915,8 +1915,7 @@ export default {
   'system.dependencies.objectStorage': 'Object storage',
   'system.dependencies.redis': 'Redis',
   'system.dependencies.title': 'Dependencies',
-  'system.description':
-    'Inspect runtime health, configuration convergence, instance state, and operational jobs.',
+  'system.description': 'Check platform health, sign-in, background tasks, and running services.',
   'system.domains.columns.domain': 'Domain',
   'system.domains.columns.instances': 'Instance convergence',
   'system.domains.columns.runtime': 'Runtime policy',
@@ -1945,8 +1944,7 @@ export default {
   'system.instances.columns.health': 'Instance state',
   'system.instances.columns.heartbeat': 'Last heartbeat',
   'system.instances.columns.instance': 'Instance',
-  'system.instances.description':
-    'Fresh heartbeats show the revision and source currently loaded by each runtime.',
+  'system.instances.description': 'Each running service and when it was last seen.',
   'system.instances.empty': 'No fresh or retained instance heartbeats are available.',
   'system.instances.end': 'All loaded instances are shown.',
   'system.instances.fresh': 'Fresh',
@@ -1959,7 +1957,7 @@ export default {
   'system.instances.refreshFailed':
     'Could not refresh instance revisions. Previously loaded rows are preserved.',
   'system.instances.stale': 'Stale',
-  'system.instances.title': 'Instances',
+  'system.instances.title': 'Running services',
   'system.jobs.actions.applyUpdates': 'Apply updates',
   'system.jobs.actions.cancel': 'Cancel job',
   'system.jobs.actions.loadMore': 'Load more',
@@ -1974,7 +1972,7 @@ export default {
   'system.jobs.committedRefreshFailed':
     "Your change was saved, but the latest status couldn't be reloaded. Refresh to update.",
   'system.jobs.description':
-    'Review recent work and control supported jobs. Cancel does not roll back completed items.',
+    'Review recent background work. Cancelling does not undo work that already finished.',
   'system.jobs.empty': 'No operational jobs have been recorded.',
   'system.jobs.end': 'All loaded jobs are shown.',
   'system.jobs.failedCount': '{{count}} failed',
@@ -2002,7 +2000,7 @@ export default {
   'system.jobs.summary.total': 'Total',
   'system.jobs.summaryTitle': 'Background tasks',
   'system.jobs.summaryUnavailable': 'Task totals are temporarily unavailable. Try Refresh.',
-  'system.jobs.title': 'Recent jobs',
+  'system.jobs.title': 'Recent tasks',
   'system.jobs.toast.cancelFailed': 'Could not request job cancellation.',
   'system.jobs.toast.cancelRequested': 'Job cancellation requested.',
   'system.jobs.toast.committedRefreshFailed':
