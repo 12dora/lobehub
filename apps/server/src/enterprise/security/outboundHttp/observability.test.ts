@@ -60,20 +60,28 @@ afterEach(() => {
 
 describe('SafeOutboundHttp denial observability', () => {
   it('maps URL, protocol, credential, and DNS denials to closed categories', async () => {
-    await expectSingleDenial(() => new SafeOutboundHttpClient().fetch('https://'), 'invalid_url');
     await expectSingleDenial(
-      () => new SafeOutboundHttpClient().fetch('file:///etc/passwd'),
+      () => new SafeOutboundHttpClient({ mode: 'allow-private' }).fetch('https://'),
+      'invalid_url',
+    );
+    await expectSingleDenial(
+      () => new SafeOutboundHttpClient({ mode: 'allow-private' }).fetch('file:///etc/passwd'),
       'protocol_denied',
     );
     await expectSingleDenial(
-      () => new SafeOutboundHttpClient().fetch('https://user:password@tenant.example/private'),
+      () =>
+        new SafeOutboundHttpClient({ mode: 'allow-private' }).fetch(
+          'https://user:password@tenant.example/private',
+        ),
       'credential_url',
     );
     await expectSingleDenial(
       () =>
-        new SafeOutboundHttpClient({ resolve: async () => [], transport: vi.fn() }).fetch(
-          'https://tenant.example/path',
-        ),
+        new SafeOutboundHttpClient({
+          mode: 'allow-private',
+          resolve: async () => [],
+          transport: vi.fn(),
+        }).fetch('https://tenant.example/path'),
       'dns_unavailable',
     );
   });
@@ -116,6 +124,7 @@ describe('SafeOutboundHttp denial observability', () => {
     await expectSingleDenial(
       () =>
         new SafeOutboundHttpClient({
+          mode: 'allow-private',
           resolve: async () => [{ address: 'tenant-address', family: 4 }],
           transport: vi.fn(),
         }).fetch('https://tenant.example/path'),
@@ -138,6 +147,7 @@ describe('SafeOutboundHttp denial observability', () => {
   it('maps changed and unavailable policy snapshots without exposing policy data', async () => {
     let policyVersion = 0;
     const changedClient = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       policyProvider: () => ({
         policy: { allowlist: [], mode: 'allow-private' },
         version: (policyVersion += 1),
@@ -151,6 +161,7 @@ describe('SafeOutboundHttp denial observability', () => {
     );
 
     const unavailableClient = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       policyProvider: () => {
         throw new Error('tenant policy backend unavailable');
       },
@@ -174,16 +185,22 @@ describe('SafeOutboundHttp denial observability', () => {
 
     await expectSingleDenial(
       () =>
-        new SafeOutboundHttpClient({ maxRedirects: 0, resolve, transport }).fetch(
-          'https://tenant.example/start',
-        ),
+        new SafeOutboundHttpClient({
+          mode: 'allow-private',
+          maxRedirects: 0,
+          resolve,
+          transport,
+        }).fetch('https://tenant.example/start'),
       'redirect_limit',
     );
     await expectSingleDenial(
       () =>
-        new SafeOutboundHttpClient({ resolve, transport }).fetch('https://tenant.example/start', {
-          secretBearing: true,
-        }),
+        new SafeOutboundHttpClient({ mode: 'allow-private', resolve, transport }).fetch(
+          'https://tenant.example/start',
+          {
+            secretBearing: true,
+          },
+        ),
       'secret_redirect',
     );
   });
@@ -204,16 +221,19 @@ describe('SafeOutboundHttp denial observability', () => {
     try {
       await expectSingleDenial(
         () =>
-          new SafeOutboundHttpClient({ maxRedirects: 0 }).streamFetch(
+          new SafeOutboundHttpClient({ mode: 'allow-private', maxRedirects: 0 }).streamFetch(
             `http://127.0.0.1:${port}/redirect-loop`,
           ),
         'redirect_limit',
       );
       await expectSingleDenial(
         () =>
-          new SafeOutboundHttpClient().streamFetch(`http://127.0.0.1:${port}/secret`, {
-            secretBearing: true,
-          }),
+          new SafeOutboundHttpClient({ mode: 'allow-private' }).streamFetch(
+            `http://127.0.0.1:${port}/secret`,
+            {
+              secretBearing: true,
+            },
+          ),
         'secret_redirect',
       );
     } finally {
@@ -227,6 +247,7 @@ describe('SafeOutboundHttp denial observability', () => {
     await expectSingleDenial(
       () =>
         new SafeOutboundHttpClient({
+          mode: 'allow-private',
           resolve: async () => [],
           timeoutMs: 0,
           transport: vi.fn(),
@@ -236,6 +257,7 @@ describe('SafeOutboundHttp denial observability', () => {
     await expectSingleDenial(
       () =>
         new SafeOutboundHttpClient({
+          mode: 'allow-private',
           resolve: async () => await new Promise(() => {}),
           timeoutMs: 5,
           transport: vi.fn(),
@@ -254,7 +276,7 @@ describe('SafeOutboundHttp denial observability', () => {
 
     let thrown: unknown;
     try {
-      await new SafeOutboundHttpClient().fetch('file:///private/path');
+      await new SafeOutboundHttpClient({ mode: 'allow-private' }).fetch('file:///private/path');
     } catch (error) {
       thrown = error;
     }

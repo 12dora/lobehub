@@ -7,9 +7,10 @@ import { ssrfBlocked } from './errors';
 /**
  * G-07 outbound policy modes.
  *
- * - allow-private (default): private/loopback allowed; public allowed;
- *   cloud Metadata endpoints always blocked.
- * - public-only: public Internet addresses only; private/loopback/link-local and Metadata denied.
+ * - public-only (default): public Internet addresses only; private/loopback/link-local
+ *   and Metadata denied. Safe generic default for user-influenced URLs.
+ * - allow-private: private/loopback allowed; public allowed; cloud Metadata always blocked.
+ *   Requires explicit opt-in (e.g. connector MCP policy provider).
  * - allowlist: only hostnames/IPs in allowlist (after DNS); Metadata still
  *   always blocked even if listed.
  */
@@ -52,7 +53,7 @@ export const outboundPolicySnapshotSchema = z
 
 export const DEFAULT_OUTBOUND_POLICY: OutboundPolicy = {
   allowlist: [],
-  mode: 'allow-private',
+  mode: 'public-only',
 };
 
 export const DEFAULT_PUBLIC_TRANSLATION_PREFIXES = ['64:ff9b::/96', '64:ff9b:1::/48'];

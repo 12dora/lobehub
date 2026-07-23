@@ -1,0 +1,166 @@
+import {
+  assetNoLkg,
+  conditionalReauth,
+  dangerousMutation,
+  recentReauth,
+  regularMutation,
+  remoteProbeNoLkg,
+  safeOutbound,
+} from './helpers';
+import type { AdminMutationDefinition } from './types';
+
+export const ADMIN_MUTATION_ENTRIES_AUDIT_CONNECTORS = {
+  'admin.audit.exports.cancel': dangerousMutation(
+    'admin.audit.exports.cancel',
+    'high',
+    'Cancel a platform audit export job with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.exports.create': dangerousMutation(
+    'admin.audit.exports.create',
+    'high',
+    'Create a platform audit export job with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.exports.download': dangerousMutation(
+    'admin.audit.exports.download',
+    'high',
+    'Issue a short-lived signed download URL for an audit export with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.legalHolds.create': dangerousMutation(
+    'admin.audit.legalHolds.create',
+    'high',
+    'Create a platform audit legal hold with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.legalHolds.release': dangerousMutation(
+    'admin.audit.legalHolds.release',
+    'high',
+    'Release a platform audit legal hold with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.policy.update': dangerousMutation(
+    'admin.audit.policy.update',
+    'high',
+    'Update platform audit policy with CAS, reason, and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.retention.cancel': dangerousMutation(
+    'admin.audit.retention.cancel',
+    'high',
+    'Cancel a platform audit retention run with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.retention.dryRun': dangerousMutation(
+    'admin.audit.retention.dryRun',
+    'high',
+    'Start a platform audit retention dry-run with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.audit.retention.run': dangerousMutation(
+    'admin.audit.retention.run',
+    'high',
+    'Start a platform audit retention execute run with reason and recent reauth.',
+    { reauth: recentReauth },
+  ),
+  'admin.connectors.applyImmediate': dangerousMutation(
+    'admin.connectors.applyImmediate',
+    'high',
+    'Create or update a connector draft and publish immediately.',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
+  'admin.connectors.archive': dangerousMutation(
+    'admin.connectors.archive',
+    'high',
+    'Archive a published connector.',
+    { reauth: recentReauth },
+  ),
+  'admin.connectors.createDraft': regularMutation(
+    'admin.connectors.createDraft',
+    'medium',
+    'Create a connector draft.',
+    { reauth: conditionalReauth },
+  ),
+  'admin.connectors.deleteDraft': regularMutation(
+    'admin.connectors.deleteDraft',
+    'medium',
+    'Delete an unpublished connector draft.',
+  ),
+  'admin.connectors.discover': regularMutation(
+    'admin.connectors.discover',
+    'medium',
+    'Discover connector tools through the guarded remote boundary.',
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
+  ),
+  'admin.connectors.publish': dangerousMutation(
+    'admin.connectors.publish',
+    'high',
+    'Publish connector configuration for runtime use.',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
+  'admin.connectors.publishNow': dangerousMutation(
+    'admin.connectors.publishNow',
+    'high',
+    'Retry publish for a connector draft (banner path).',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
+  'admin.connectors.revokeAllBindings': dangerousMutation(
+    'admin.connectors.revokeAllBindings',
+    'critical',
+    'Revoke every user binding for a connector.',
+    { reauth: recentReauth },
+  ),
+  'admin.connectors.rollback': dangerousMutation(
+    'admin.connectors.rollback',
+    'high',
+    'Roll back published connector configuration.',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
+  'admin.connectors.setSharedAuthorization': dangerousMutation(
+    'admin.connectors.setSharedAuthorization',
+    'high',
+    'Designate or clear the org-wide shared connector OAuth identity.',
+    { reauth: recentReauth },
+  ),
+  'admin.connectors.test': regularMutation(
+    'admin.connectors.test',
+    'medium',
+    'Test a connector through the guarded remote boundary.',
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
+  ),
+  'admin.connectors.updateBuiltinToolPolicy': regularMutation(
+    'admin.connectors.updateBuiltinToolPolicy',
+    'medium',
+    'Replace the org builtin connector tool permission matrix and publish.',
+  ),
+  'admin.connectors.updateDraft': regularMutation(
+    'admin.connectors.updateDraft',
+    'medium',
+    'Change a connector draft.',
+    { reauth: conditionalReauth },
+  ),
+  'admin.branding.publish': dangerousMutation(
+    'admin.branding.publish',
+    'high',
+    'Publish global product branding.',
+    { reauth: recentReauth },
+  ),
+  'admin.branding.rollback': dangerousMutation(
+    'admin.branding.rollback',
+    'high',
+    'Restore an earlier branding revision.',
+    { reauth: recentReauth },
+  ),
+  'admin.branding.saveDraft': regularMutation(
+    'admin.branding.saveDraft',
+    'medium',
+    'Change the global branding draft.',
+  ),
+  'admin.branding.uploadAsset': regularMutation(
+    'admin.branding.uploadAsset',
+    'medium',
+    'Upload and validate a branding asset.',
+    { lastKnownGood: assetNoLkg },
+  ),
+} as const satisfies Record<`admin.${string}`, AdminMutationDefinition>;

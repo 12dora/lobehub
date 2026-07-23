@@ -19,9 +19,12 @@ import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 
+import { getEnterpriseErrorBody } from './enterpriseErrors';
 import {
   assertAgentNotPlatformManaged,
   assertAgentsNotPlatformManaged,
+  MANAGED_AGENT_BATCH_LIMIT_CODE,
+  MANAGED_AGENT_BATCH_LIMIT_REASON,
   MAX_MANAGED_AGENT_GUARD_IDS,
   pickAgentId,
   pickAgentIds,
@@ -191,7 +194,7 @@ describe('assertAgentsNotPlatformManaged (RR2-4 batch)', () => {
     expect(countingDb.select).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects oversized batches before any query', async () => {
+  it('rejects oversized batches before any query with structured i18n details', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
     const countingDb = Object.create(db) as LobeChatDatabase;
     countingDb.select = vi.fn(db.select.bind(db)) as never;
@@ -207,7 +210,26 @@ describe('assertAgentsNotPlatformManaged (RR2-4 batch)', () => {
     );
     expect(error).toBeInstanceOf(TRPCError);
     expect((error as TRPCError).code).toBe('BAD_REQUEST');
+    expect((error as TRPCError).message).toBe(MANAGED_AGENT_BATCH_LIMIT_CODE);
+    expect(getEnterpriseErrorBody(error)).toEqual({
+      code: MANAGED_AGENT_BATCH_LIMIT_CODE,
+      details: {
+        max: MAX_MANAGED_AGENT_GUARD_IDS,
+        reason: MANAGED_AGENT_BATCH_LIMIT_REASON,
+      },
+      message: MANAGED_AGENT_BATCH_LIMIT_CODE,
+    });
     expect(countingDb.select).not.toHaveBeenCalled();
+  });
+
+  it('exposes a dedicated batch-limit code + details.max contract for client i18n', () => {
+    // Server contract only — client mapper + locale keys are OUT_OF_SCOPE shared-infra/i18n.
+    expect(MANAGED_AGENT_BATCH_LIMIT_CODE).toBe('MANAGED_AGENT_BATCH_LIMIT');
+    expect(MANAGED_AGENT_BATCH_LIMIT_REASON).toBe('managed_agent_batch_limit');
+    // i18n key shape clients must register: enterprise.error.MANAGED_AGENT_BATCH_LIMIT with {{max}}.
+    const i18nKey = `enterprise.error.${MANAGED_AGENT_BATCH_LIMIT_CODE}`;
+    expect(i18nKey).toBe('enterprise.error.MANAGED_AGENT_BATCH_LIMIT');
+    expect(MAX_MANAGED_AGENT_GUARD_IDS).toBe(100);
   });
 });
 

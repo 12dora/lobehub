@@ -20,7 +20,8 @@ export const PLATFORM_BLOCKED_BETTER_AUTH_ADMIN_PATHS = [
   '/admin/list-users',
   '/admin/list-user-sessions',
   '/admin/get-user',
-  '/admin/user-has-permission',
+  // better-auth admin plugin path (userHasPermission → /admin/has-permission)
+  '/admin/has-permission',
 ] as const;
 
 export type BlockedBetterAuthAdminPath = (typeof PLATFORM_BLOCKED_BETTER_AUTH_ADMIN_PATHS)[number];
@@ -63,8 +64,8 @@ export const maybeBlockBetterAuthAdminMutation = (requestUrl: string): Response 
   return Response.json(
     {
       code: 'ADMIN_FEATURE_DISABLED',
-      message:
-        'Better Auth admin mutations are disabled when platform admin is enabled. Use admin.users / admin.roles APIs.',
+      // Stable code for client i18n mapping; avoid free-text English as the contract.
+      message: 'ADMIN_FEATURE_DISABLED',
     },
     { status: 403 },
   );

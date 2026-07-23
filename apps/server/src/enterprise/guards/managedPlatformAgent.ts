@@ -1,5 +1,7 @@
 import { TRPCError } from '@trpc/server';
 
+import type { EnterpriseErrorCode } from '@/const/platform/errorCodes';
+import { MANAGED_ERROR_CODES } from '@/const/platform/errorCodes';
 import { AgentModel } from '@/database/models/agent';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import type { LobeChatDatabase } from '@/database/type';
@@ -7,13 +9,25 @@ import { trpc } from '@/libs/trpc/lambda/init';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { PlatformDefaultInboxService } from '../services/agentCatalog/defaultInbox';
+import { throwEnterpriseError } from './enterpriseErrors';
 
+/** Stable enterprise code for client i18n (`enterprise.error.MANAGED_RESOURCE_BY_PLATFORM`). */
 export const MANAGED_AGENT_MUTATION_FORBIDDEN = {
-  code: 'FORBIDDEN',
-  message: 'This agent is managed by your organization and cannot be modified here.',
-} as const;
+  code: 'FORBIDDEN' as const,
+  message: MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM,
+};
 
 export const MAX_MANAGED_AGENT_GUARD_IDS = 100;
+
+/**
+ * Dedicated enterprise code for managed-agent batch size limit.
+ * Not yet in packages/const ENTERPRISE_ERROR_CODES — shared-infra must register it.
+ * Client i18n key: `enterprise.error.MANAGED_AGENT_BATCH_LIMIT` with `{{max}}`.
+ */
+export const MANAGED_AGENT_BATCH_LIMIT_CODE = 'MANAGED_AGENT_BATCH_LIMIT' as const;
+
+/** `details.reason` when a batch mutation exceeds {@link MAX_MANAGED_AGENT_GUARD_IDS}. */
+export const MANAGED_AGENT_BATCH_LIMIT_REASON = 'managed_agent_batch_limit' as const;
 
 /** Guard mutation paths that target the stable builtin inbox without carrying its local id. */
 export const assertDefaultInboxNotPlatformManaged = async (params: {
@@ -72,9 +86,17 @@ export const assertAgentsNotPlatformManaged = async (params: {
   const uniqueIds = [...new Set(params.agentIds)].filter((id) => id.length > 0);
   if (uniqueIds.length === 0) return;
   if (uniqueIds.length > MAX_MANAGED_AGENT_GUARD_IDS) {
-    throw new TRPCError({
-      code: 'BAD_REQUEST',
-      message: `A maximum of ${MAX_MANAGED_AGENT_GUARD_IDS} agents can be mutated at once.`,
+    // Dedicated code + structured max for client i18n (`enterprise.error.MANAGED_AGENT_BATCH_LIMIT`, {{max}}).
+    // PLATFORM_INVALID_INPUT stays generic — do not overload it with batch-specific copy.
+    throwEnterpriseError({
+      // Cast until packages/const registers MANAGED_AGENT_BATCH_LIMIT (OUT_OF_SCOPE shared-infra).
+      code: MANAGED_AGENT_BATCH_LIMIT_CODE as EnterpriseErrorCode,
+      details: {
+        max: MAX_MANAGED_AGENT_GUARD_IDS,
+        reason: MANAGED_AGENT_BATCH_LIMIT_REASON,
+      },
+      httpCode: 'BAD_REQUEST',
+      message: MANAGED_AGENT_BATCH_LIMIT_CODE,
     });
   }
   const repository = new PlatformAgentCatalogRepository(params.db);

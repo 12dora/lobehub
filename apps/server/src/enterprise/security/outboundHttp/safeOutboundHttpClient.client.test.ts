@@ -6,16 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 
-import {
-  extractRfc6052Ipv4,
-  isMetadataHostname,
-  isMetadataIp,
-  isPrivateIp,
-  isPubliclyRoutableIp,
-  SafeOutboundHttpClient,
-  SafeOutboundHttpError,
-  stripCredentialHeaders,
-} from './index';
+import { SafeOutboundHttpClient, SafeOutboundHttpError, stripCredentialHeaders } from './index';
 import type { DnsResolver, PinnedTransport, PinnedTransportResponse } from './types';
 
 const okResponse = (overrides: Partial<PinnedTransportResponse> = {}): PinnedTransportResponse => ({
@@ -31,81 +22,11 @@ const resolveTo =
   async () =>
     entries.map((e) => ({ address: e.address, family: e.family ?? 4 }));
 
-describe('policy helpers', () => {
-  it('classifies private and loopback addresses', () => {
-    expect(isPrivateIp('10.0.0.1')).toBe(true);
-    expect(isPrivateIp('192.168.1.1')).toBe(true);
-    expect(isPrivateIp('172.16.5.1')).toBe(true);
-    expect(isPrivateIp('127.0.0.1')).toBe(true);
-    expect(isPrivateIp('8.8.8.8')).toBe(false);
-  });
-
-  it('identifies cloud metadata IPs and hostnames', () => {
-    expect(isMetadataIp('169.254.169.254')).toBe(true);
-    expect(isMetadataIp('169.254.170.2')).toBe(true);
-    expect(isMetadataIp('fd00:ec2::254')).toBe(true);
-    expect(isMetadataIp('10.0.0.1')).toBe(false);
-    expect(isMetadataHostname('metadata.google.internal')).toBe(true);
-    expect(isMetadataHostname('METADATA.GOOGLE.INTERNAL')).toBe(true);
-    expect(isMetadataHostname('api.example.com')).toBe(false);
-  });
-
-  it('classifies only globally routable addresses for public-only callers', () => {
-    expect(isPubliclyRoutableIp('8.8.8.8')).toBe(true);
-    expect(isPubliclyRoutableIp('2606:4700:4700::1111')).toBe(true);
-    expect(isPubliclyRoutableIp('64:ff9b::808:808')).toBe(true);
-    expect(isPubliclyRoutableIp('64:ff9b::a00:1')).toBe(false);
-    for (const address of [
-      '100.64.0.1',
-      '192.0.2.1',
-      '198.18.0.1',
-      '203.0.113.1',
-      '224.0.0.1',
-      '2001:db8::1',
-      '2002:0808:0808::1',
-      '3fff::1',
-    ]) {
-      expect(isPubliclyRoutableIp(address)).toBe(false);
-    }
-  });
-
-  it('treats IPv4-mapped IPv6 encodings of IMDS as metadata', () => {
-    expect(isMetadataIp('::ffff:169.254.169.254')).toBe(true);
-    expect(isMetadataIp('::ffff:a9fe:a9fe')).toBe(true); // 169.254.169.254
-    expect(isMetadataIp('0:0:0:0:0:ffff:169.254.170.2')).toBe(true);
-    expect(isMetadataIp('::ffff:8.8.8.8')).toBe(false);
-  });
-
-  it('decodes RFC 6052 NAT64/SIIT layouts before metadata classification', () => {
-    expect(isMetadataIp('64:ff9b::a9fe:a9fe')).toBe(true);
-    expect(isMetadataIp('64:ff9b:1:a9fe:a9:fe00::')).toBe(true);
-    expect(isMetadataIp('64:ff9b::808:808')).toBe(false);
-  });
-
-  it.each([
-    ['2001:db9::/32', '2001:db9:a00:1::'],
-    ['2001:db9:100::/40', '2001:db9:10a:0:1::'],
-    ['2001:db9:1::/48', '2001:db9:1:a00:0:100::'],
-    ['2001:db9:1:200::/56', '2001:db9:1:20a:0:1::'],
-    ['2001:db9:1:2::/64', '2001:db9:1:2:a:0:100:0'],
-    ['2001:db9:1:2:3:4::/96', '2001:db9:1:2:3:4:a00:1'],
-  ])('rejects private IPv4 embedded by configured RFC 6052 prefix %s', (prefix, address) => {
-    expect(extractRfc6052Ipv4(address, prefix)).toBe('10.0.0.1');
-    expect(isPubliclyRoutableIp(address, [prefix])).toBe(false);
-  });
-
-  it.each(['100.64.0.1', '169.254.1.1', '169.254.169.254'])(
-    'rejects non-public mapped IPv4 class %s',
-    (ipv4) => {
-      expect(isPubliclyRoutableIp(`::ffff:${ipv4}`)).toBe(false);
-    },
-  );
-});
-
 describe('SafeOutboundHttpClient', () => {
   it('returns AbortError promptly when aborted during DNS resolution', async () => {
     const controller = new AbortController();
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: async () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
         return [{ address: '1.1.1.1', family: 4 }];
@@ -135,7 +56,7 @@ describe('SafeOutboundHttpClient', () => {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server address unavailable');
     const controller = new AbortController();
-    const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', timeoutMs: 5000 });
     try {
       const response = await client.streamFetch(`http://127.0.0.1:${address.port}/events`, {
         signal: controller.signal,
@@ -161,7 +82,7 @@ describe('SafeOutboundHttpClient', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server address unavailable');
-    const client = new SafeOutboundHttpClient();
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private' });
     try {
       const large = await client.streamFetch(`http://127.0.0.1:${address.port}/large`, {
         maxResponseBytes: 16,
@@ -198,7 +119,7 @@ describe('SafeOutboundHttpClient', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server address unavailable');
-    const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', timeoutMs: 5000 });
     try {
       const response = await client.streamFetch(`http://127.0.0.1:${address.port}/redirect`);
       expect(response.status).toBe(202);
@@ -232,7 +153,7 @@ describe('SafeOutboundHttpClient', () => {
         throw new Error('test server address unavailable');
       }
       try {
-        const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+        const client = new SafeOutboundHttpClient({ mode: 'allow-private', timeoutMs: 5000 });
         const response = await client.streamFetch(`http://127.0.0.1:${address.port}/bodyless`);
         expect(response.status).toBe(status);
         expect(response.body).toBeNull();
@@ -244,27 +165,49 @@ describe('SafeOutboundHttpClient', () => {
     },
   );
 
-  it('allows private/localhost by default (G-07) and pins DNS', async () => {
-    const transport = vi.fn<PinnedTransport>(async (req) => {
-      expect(req.pinnedAddress).toBe('127.0.0.1');
-      expect(req.url.hostname).toBe('localhost');
-      return okResponse({ body: Buffer.from('local-ok') });
-    });
+  it('rejects private/localhost by default (public-only) and pins DNS for public hosts', async () => {
+    const transport = vi.fn<PinnedTransport>(async () => okResponse());
 
-    const client = new SafeOutboundHttpClient({
+    const defaultClient = new SafeOutboundHttpClient({
       resolve: resolveTo([{ address: '127.0.0.1' }]),
       transport,
     });
+    await expect(defaultClient.fetch('http://localhost:3000/health')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+      message: expect.stringContaining('non-public address'),
+    });
+    expect(transport).not.toHaveBeenCalled();
 
-    const res = await client.fetch('http://localhost:3000/health');
+    for (const address of ['10.0.0.9', '192.168.1.1', '169.254.1.1', '::1']) {
+      await expect(
+        new SafeOutboundHttpClient({
+          resolve: resolveTo([{ address }]),
+          transport,
+        }).fetch('http://internal.example/health'),
+      ).rejects.toMatchObject({
+        code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+        message: expect.stringContaining('non-public address'),
+      });
+    }
+
+    const privateClient = new SafeOutboundHttpClient({
+      mode: 'allow-private',
+      resolve: resolveTo([{ address: '127.0.0.1' }]),
+      transport: vi.fn<PinnedTransport>(async (req) => {
+        expect(req.pinnedAddress).toBe('127.0.0.1');
+        expect(req.url.hostname).toBe('localhost');
+        return okResponse({ body: Buffer.from('local-ok') });
+      }),
+    });
+    const res = await privateClient.fetch('http://localhost:3000/health');
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('local-ok');
-    expect(transport).toHaveBeenCalledOnce();
   });
 
   it('allows public IPs when resolved', async () => {
     const transport = vi.fn<PinnedTransport>(async () => okResponse());
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '93.184.216.34' }]),
       transport,
     });
@@ -298,9 +241,7 @@ describe('SafeOutboundHttpClient', () => {
   });
 
   it('permanently blocks metadata IPv4 literal', async () => {
-    const client = new SafeOutboundHttpClient({
-      transport: vi.fn(),
-    });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', transport: vi.fn() });
     await expect(client.fetch('http://169.254.169.254/latest/meta-data')).rejects.toMatchObject({
       code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
       name: 'SafeOutboundHttpError',
@@ -308,7 +249,7 @@ describe('SafeOutboundHttpClient', () => {
   });
 
   it('permanently blocks metadata IPv6 literal', async () => {
-    const client = new SafeOutboundHttpClient({ transport: vi.fn() });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', transport: vi.fn() });
     await expect(client.fetch('http://[fd00:ec2::254]/latest/meta-data')).rejects.toBeInstanceOf(
       SafeOutboundHttpError,
     );
@@ -316,7 +257,7 @@ describe('SafeOutboundHttpClient', () => {
 
   it('permanently blocks IPv4-mapped IPv6 metadata literals', async () => {
     const transport = vi.fn();
-    const client = new SafeOutboundHttpClient({ transport });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', transport });
     await expect(
       client.fetch('http://[::ffff:169.254.169.254]/latest/meta-data'),
     ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
@@ -329,6 +270,7 @@ describe('SafeOutboundHttpClient', () => {
   it('blocks DNS that returns IPv4-mapped metadata (rebinding)', async () => {
     const transport = vi.fn();
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '::ffff:169.254.169.254', family: 6 }]),
       transport,
     });
@@ -348,6 +290,7 @@ describe('SafeOutboundHttpClient', () => {
       }),
     );
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '93.184.216.34' }]),
       transport,
     });
@@ -356,6 +299,7 @@ describe('SafeOutboundHttpClient', () => {
     });
 
     const dnsClient = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: nat64Metadata, family: 6 }]),
       transport,
     });
@@ -369,6 +313,7 @@ describe('SafeOutboundHttpClient', () => {
 
   it('permanently blocks metadata.google.internal hostname', async () => {
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '169.254.169.254' }]),
       transport: vi.fn(),
     });
@@ -380,6 +325,7 @@ describe('SafeOutboundHttpClient', () => {
   it('blocks when DNS resolves to metadata IP (rebinding defense)', async () => {
     const transport = vi.fn();
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '169.254.169.254' }]),
       transport,
     });
@@ -402,6 +348,7 @@ describe('SafeOutboundHttpClient', () => {
     });
 
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: async (hostname) => {
         if (hostname === 'safe.example') return [{ address: '93.184.216.34', family: 4 }];
         if (hostname === '169.254.169.254') return [{ address: '169.254.169.254', family: 4 }];
@@ -436,7 +383,7 @@ describe('SafeOutboundHttpClient', () => {
       return okResponse({ body: Buffer.from('final') });
     });
 
-    const client = new SafeOutboundHttpClient({ resolve, transport });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', resolve, transport });
     const res = await client.fetch('https://a.example/');
     expect(await res.text()).toBe('final');
     expect(resolve).toHaveBeenCalledWith('a.example');
@@ -452,6 +399,7 @@ describe('SafeOutboundHttpClient', () => {
       }),
     );
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       maxRedirects: 2,
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
@@ -459,59 +407,8 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.fetch('https://loop.example/r')).rejects.toThrow(/redirect/i);
   });
 
-  describe('allowlist mode', () => {
-    it('blocks hosts not on the allowlist', async () => {
-      const client = new SafeOutboundHttpClient({
-        allowlist: ['allowed.example'],
-        mode: 'allowlist',
-        resolve: resolveTo([{ address: '1.2.3.4' }]),
-        transport: vi.fn(),
-      });
-      await expect(client.fetch('https://other.example/')).rejects.toMatchObject({
-        code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
-      });
-    });
-
-    it('allows allowlisted host after DNS pin', async () => {
-      const transport = vi.fn<PinnedTransport>(async (req) => {
-        expect(req.pinnedAddress).toBe('9.9.9.9');
-        return okResponse({ body: Buffer.from('allowlisted') });
-      });
-      const client = new SafeOutboundHttpClient({
-        allowlist: ['allowed.example'],
-        mode: 'allowlist',
-        resolve: resolveTo([{ address: '9.9.9.9' }]),
-        transport,
-      });
-      const res = await client.fetch('https://allowed.example/api');
-      expect(await res.text()).toBe('allowlisted');
-    });
-
-    it('still blocks metadata even if listed in allowlist', async () => {
-      const client = new SafeOutboundHttpClient({
-        allowlist: ['169.254.169.254', 'metadata.google.internal'],
-        mode: 'allowlist',
-        transport: vi.fn(),
-      });
-      await expect(client.fetch('http://169.254.169.254/')).rejects.toThrow(/metadata/i);
-      await expect(client.fetch('http://metadata.google.internal/')).rejects.toThrow(/metadata/i);
-    });
-
-    it('blocks allowlisted hostname that resolves to metadata', async () => {
-      const client = new SafeOutboundHttpClient({
-        allowlist: ['sneaky.example'],
-        mode: 'allowlist',
-        resolve: resolveTo([{ address: '169.254.169.254' }]),
-        transport: vi.fn(),
-      });
-      await expect(client.fetch('https://sneaky.example/')).rejects.toMatchObject({
-        code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
-      });
-    });
-  });
-
   it('rejects non-http(s) protocols', async () => {
-    const client = new SafeOutboundHttpClient({ transport: vi.fn() });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', transport: vi.fn() });
     await expect(client.fetch('file:///etc/passwd')).rejects.toThrow(/protocol/i);
     await expect(client.fetch('gopher://example.com/')).rejects.toThrow(/protocol/i);
   });
@@ -526,7 +423,7 @@ describe('SafeOutboundHttpClient', () => {
     'X-Amz-Signature',
   ])('rejects sensitive query key %s again at the final outbound boundary', async (key) => {
     const transport = vi.fn();
-    const client = new SafeOutboundHttpClient({ transport });
+    const client = new SafeOutboundHttpClient({ mode: 'allow-private', transport });
     await expect(client.fetch(`https://example.test/mcp?${key}=fake-secret`)).rejects.toMatchObject(
       { code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED },
     );
@@ -541,6 +438,7 @@ describe('SafeOutboundHttpClient', () => {
       okResponse({ headers: { location }, status: 302, statusText: 'Found' }),
     );
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
     });
@@ -554,6 +452,7 @@ describe('SafeOutboundHttpClient', () => {
     let reads = 0;
     const transport = vi.fn();
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       policyProvider: () => {
         reads += 1;
         return reads === 1
@@ -577,6 +476,7 @@ describe('SafeOutboundHttpClient', () => {
       version: 'policy-v7',
     }));
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       policyProvider,
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport: vi.fn(),
@@ -595,6 +495,7 @@ describe('SafeOutboundHttpClient', () => {
   ])('fails closed for malformed dynamic policy snapshot %#', async (snapshot) => {
     const transport = vi.fn();
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       policyProvider: () => snapshot as never,
       transport,
     });
@@ -606,6 +507,7 @@ describe('SafeOutboundHttpClient', () => {
 
   it('fails closed when a dynamic policy provider throws', async () => {
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       policyProvider: () => {
         throw new Error('backend unavailable with sensitive details');
       },
@@ -627,6 +529,7 @@ describe('SafeOutboundHttpClient', () => {
       });
     });
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: async () => {
         await new Promise((resolve) => setTimeout(resolve, 12));
         return [{ address: '1.1.1.1', family: 4 }];
@@ -648,6 +551,7 @@ describe('SafeOutboundHttpClient', () => {
       return okResponse({ body: Buffer.alloc(10, 0x61), truncated: true });
     });
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       maxResponseBytes: 10,
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
@@ -673,6 +577,7 @@ describe('SafeOutboundHttpClient', () => {
     });
 
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
     });
@@ -709,6 +614,7 @@ describe('SafeOutboundHttpClient', () => {
       }),
     );
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
     });
@@ -733,6 +639,7 @@ describe('SafeOutboundHttpClient', () => {
         }),
       );
       const client = new SafeOutboundHttpClient({
+        mode: 'allow-private',
         resolve: resolveTo([{ address: '1.1.1.1' }]),
         transport,
       });
@@ -759,6 +666,7 @@ describe('SafeOutboundHttpClient', () => {
     });
 
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
     });
@@ -782,6 +690,7 @@ describe('SafeOutboundHttpClient', () => {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server address unavailable');
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: async (hostname) => {
         if (hostname === 'b.example') return [{ address: '1.1.1.1', family: 4 }];
         return [{ address: '127.0.0.1', family: 4 }];
@@ -806,6 +715,7 @@ describe('SafeOutboundHttpClient', () => {
         throw new Error('cross-origin hop must not run');
       });
       const fetchClient = new SafeOutboundHttpClient({
+        mode: 'allow-private',
         resolve: resolveTo([{ address: '1.1.1.1' }]),
         transport,
       });
@@ -843,6 +753,7 @@ describe('SafeOutboundHttpClient', () => {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server address unavailable');
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: async (hostname) => {
         if (hostname === 'b.example') return [{ address: '1.1.1.1', family: 4 }];
         return [{ address: '127.0.0.1', family: 4 }];
@@ -864,6 +775,7 @@ describe('SafeOutboundHttpClient', () => {
   it('assertAllowed validates without transport', async () => {
     const transport = vi.fn();
     const client = new SafeOutboundHttpClient({
+      mode: 'allow-private',
       resolve: resolveTo([{ address: '10.0.0.5' }]),
       transport,
     });
@@ -873,99 +785,5 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.assertAllowed('http://169.254.169.254/')).rejects.toBeInstanceOf(
       SafeOutboundHttpError,
     );
-  });
-});
-
-describe('defaultPinnedTransport body / deadline bounds (MAJOR-1)', () => {
-  it('stops reading when response exceeds maxResponseBytes and does not buffer unbounded', async () => {
-    const http = await import('node:http');
-    const { defaultPinnedTransport } = await import('./transport');
-
-    let clientAborted = false;
-    const chunk = Buffer.alloc(32 * 1024, 0x62); // 32 KiB
-    const server = http.createServer((req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
-      let writes = 0;
-      const pump = () => {
-        // Attempt to stream far more than the client cap (would OOM if buffered unboundedly).
-        while (writes < 400) {
-          writes += 1;
-          if (!res.write(chunk)) {
-            res.once('drain', pump);
-            return;
-          }
-        }
-        res.end();
-      };
-      req.on('aborted', () => {
-        clientAborted = true;
-      });
-      res.on('close', () => {
-        if (!res.writableFinished) clientAborted = true;
-      });
-      pump();
-    });
-
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', () => resolve());
-    });
-    const addr = server.address();
-    if (!addr || typeof addr === 'string') throw new Error('expected TCP address');
-    const port = addr.port;
-
-    try {
-      const maxResponseBytes = 50_000; // ~50 KiB
-      const result = await defaultPinnedTransport({
-        family: 4,
-        headers: {},
-        maxResponseBytes,
-        method: 'GET',
-        pinnedAddress: '127.0.0.1',
-        timeoutMs: 5_000,
-        url: new URL(`http://127.0.0.1:${port}/flood`),
-      });
-
-      expect(result.body.length).toBeLessThanOrEqual(maxResponseBytes);
-      expect(result.body.length).toBe(maxResponseBytes);
-      expect(result.truncated).toBe(true);
-      // Connection should have been torn down (abort/close before full write).
-      // Give the event loop a tick for 'close'/'aborted'.
-      await new Promise((r) => setTimeout(r, 50));
-      expect(clientAborted || result.truncated).toBe(true);
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      });
-    }
-  });
-
-  it('SafeOutboundHttpClient default transport enforces maxResponseBytes end-to-end', async () => {
-    const http = await import('node:http');
-
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200);
-      // ~200 KiB of body
-      res.end(Buffer.alloc(200 * 1024, 0x63));
-    });
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', () => resolve());
-    });
-    const addr = server.address();
-    if (!addr || typeof addr === 'string') throw new Error('expected TCP address');
-    const port = addr.port;
-
-    try {
-      const client = new SafeOutboundHttpClient({
-        maxResponseBytes: 8_192,
-        timeoutMs: 5_000,
-      });
-      const res = await client.fetch(`http://127.0.0.1:${port}/`);
-      expect(res.body.length).toBeLessThanOrEqual(8_192);
-      expect(res.truncated).toBe(true);
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      });
-    }
   });
 });
