@@ -58,7 +58,6 @@ export const platformPublicSnapshotSchema = z
   });
 
 export type PlatformPublicSnapshot = z.infer<typeof platformPublicSnapshotSchema>;
-export type PlatformPublicLoginSnapshot = PlatformPublicSnapshot['login'];
 
 export const DISABLED_PLATFORM_PUBLIC_SNAPSHOT: PlatformPublicSnapshot = {
   branding: null,

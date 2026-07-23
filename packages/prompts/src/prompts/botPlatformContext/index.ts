@@ -5,6 +5,13 @@ export interface BotPlatformInfo {
   warnings?: string[];
 }
 
+/** Escape HTML/XML-significant characters to keep prompt injection vectors closed. */
+const sanitizePromptText = (text: string) =>
+  text.replaceAll(
+    /[<>&"']/g,
+    (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' })[ch]!,
+  );
+
 /**
  * Format bot platform context into a system-level instruction.
  *
@@ -16,9 +23,10 @@ export const formatBotPlatformContext = ({
   supportsMarkdown,
   warnings,
 }: BotPlatformInfo): string => {
+  const safePlatformName = sanitizePromptText(platformName);
   const lines = [
-    `<bot_platform_context platform="${platformName}">`,
-    `You are a participant in a **${platformName}** conversation — not an external assistant being consulted.`,
+    `<bot_platform_context platform="${safePlatformName}">`,
+    `You are a participant in a **${safePlatformName}** conversation — not an external assistant being consulted.`,
     '',
     '<behavior>',
     '- Act like a knowledgeable group member: respond naturally, stay on topic, and match the conversational tone.',
@@ -55,18 +63,12 @@ export const formatBotPlatformContext = ({
   if (warnings && warnings.length > 0) {
     // Sanitize warning text to prevent prompt injection via user-controlled content
     // (e.g. filenames containing XML tags or special characters)
-    const sanitize = (text: string) =>
-      text.replaceAll(
-        /[<>&"']/g,
-        (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' })[ch]!,
-      );
-
     lines.push(
       '',
       '<processing_warnings>',
       "The following issues occurred while processing the user's message.",
       'Briefly inform the user about these issues in your response:',
-      ...warnings.map((w) => `- ${sanitize(w)}`),
+      ...warnings.map((w) => `- ${sanitizePromptText(w)}`),
       '</processing_warnings>',
     );
   }

@@ -216,54 +216,77 @@ export const setEnterpriseRevisionLagMetricSnapshot = (
   };
 };
 
+type GaugeObserveResult = {
+  observe: (value: number, attributes: ReturnType<typeof buildJobBacklogAttributes>) => void;
+};
+
+const withActiveCollectorSnapshot = <T>(
+  collector: EnterpriseOperationalCollector,
+  snapshot: T | null,
+  run: (snapshot: T) => void,
+): void => {
+  if (!activeOperationalCollectors.has(collector) || !snapshot) return;
+  run(snapshot);
+};
+
+const observeJobBacklog = (
+  result: GaugeObserveResult,
+  valueSelector: (entry: EnterpriseJobBacklogMetricSnapshot['entries'][number]) => number,
+): void => {
+  withActiveCollectorSnapshot('job_backlog', jobBacklogSnapshot, (snapshot) => {
+    for (const entry of snapshot.entries) {
+      const attributes = buildJobBacklogAttributes(entry);
+      if (!attributes['enterprise.state']) continue;
+      result.observe(valueSelector(entry), attributes);
+    }
+  });
+};
+
 jobBacklogGauge.addCallback((result) => {
-  if (!activeOperationalCollectors.has('job_backlog') || !jobBacklogSnapshot) return;
-  for (const entry of jobBacklogSnapshot.entries) {
-    const attributes = buildJobBacklogAttributes(entry);
-    if (!attributes['enterprise.state']) continue;
-    result.observe(entry.count, attributes);
-  }
+  observeJobBacklog(result, (entry) => entry.count);
 });
 
 jobBacklogOldestAgeGauge.addCallback((result) => {
-  if (!activeOperationalCollectors.has('job_backlog') || !jobBacklogSnapshot) return;
-  for (const entry of jobBacklogSnapshot.entries) {
-    const attributes = buildJobBacklogAttributes(entry);
-    if (!attributes['enterprise.state']) continue;
-    result.observe(entry.oldestAgeSeconds, attributes);
-  }
+  observeJobBacklog(result, (entry) => entry.oldestAgeSeconds);
 });
 
 revisionLagInstancesGauge.addCallback((result) => {
-  if (!activeOperationalCollectors.has('revision_lag') || !revisionLagSnapshot) return;
-  for (const entry of revisionLagSnapshot.laggingInstances) {
-    const attributes = buildRevisionLagAttributes({
-      domain: revisionLagSnapshot.domain,
-      reason: entry.reason,
-    });
-    if (!attributes['enterprise.domain'] || !attributes['enterprise.reason']) continue;
-    result.observe(entry.count, attributes);
-  }
+  withActiveCollectorSnapshot('revision_lag', revisionLagSnapshot, (snapshot) => {
+    for (const entry of snapshot.laggingInstances) {
+      const attributes = buildRevisionLagAttributes({
+        domain: snapshot.domain,
+        reason: entry.reason,
+      });
+      if (!attributes['enterprise.domain'] || !attributes['enterprise.reason']) continue;
+      result.observe(entry.count, attributes);
+    }
+  });
 });
 
 revisionFreshInstancesGauge.addCallback((result) => {
-  if (!activeOperationalCollectors.has('revision_lag') || !revisionLagSnapshot) return;
-  const attributes = buildRevisionFreshAttributes({ domain: revisionLagSnapshot.domain });
-  if (!attributes['enterprise.domain']) return;
-  result.observe(revisionLagSnapshot.freshInstances, attributes);
+  withActiveCollectorSnapshot('revision_lag', revisionLagSnapshot, (snapshot) => {
+    const attributes = buildRevisionFreshAttributes({ domain: snapshot.domain });
+    if (!attributes['enterprise.domain']) return;
+    result.observe(snapshot.freshInstances, attributes);
+  });
 });
+
+const snapshotForCollector = (collector: EnterpriseOperationalCollector) =>
+  collector === 'job_backlog' ? jobBacklogSnapshot : revisionLagSnapshot;
 
 operationalSnapshotReadyGauge.addCallback((result) => {
   for (const collector of activeOperationalCollectors) {
-    const snapshot = collector === 'job_backlog' ? jobBacklogSnapshot : revisionLagSnapshot;
-    result.observe(Number(Boolean(snapshot)), buildOperationalCollectorAttributes({ collector }));
+    result.observe(
+      Number(Boolean(snapshotForCollector(collector))),
+      buildOperationalCollectorAttributes({ collector }),
+    );
   }
 });
 
 operationalSnapshotAgeGauge.addCallback((result) => {
   const now = Date.now();
   for (const collector of activeOperationalCollectors) {
-    const snapshot = collector === 'job_backlog' ? jobBacklogSnapshot : revisionLagSnapshot;
+    const snapshot = snapshotForCollector(collector);
     if (!snapshot) continue;
     result.observe(
       Math.max(0, (now - snapshot.collectedAtMs) / 1000),
