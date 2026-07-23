@@ -8,8 +8,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
 import { topics, users } from '../../schemas';
-import { platformAuditExports } from '../../schemas/platform';
+import { platformAuditExports, platformAuditLegalHolds } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+import { PlatformAuditLegalHoldModel } from '../platform/auditLegalHold';
 import {
   encodeRetentionCursor,
   PlatformAuditRetentionRepository,
@@ -28,6 +29,7 @@ const topicUserId = 'audit-ret-topic-user';
 
 afterEach(async () => {
   await serverDB.delete(platformAuditExports);
+  await serverDB.delete(platformAuditLegalHolds);
   await serverDB.delete(topics);
   await serverDB.delete(users).where(eq(users.id, topicUserId));
 });
@@ -237,5 +239,148 @@ describe('PlatformAuditRetentionRepository topic status allowlist', () => {
       'topic-protected-running',
       'topic-unknown-future',
     ]);
+  });
+
+  it('refuses to delete a purgeable topic covered by an active legal hold', async () => {
+    await serverDB.insert(topics).values({
+      id: 'topic-held-purgeable',
+      status: 'completed',
+      title: 'held',
+      updatedAt: oldDate,
+      userId: topicUserId,
+    });
+
+    await new PlatformAuditLegalHoldModel(serverDB).create({
+      createdBy: 'admin-hold',
+      reason: 'litigation',
+      scopeId: 'topic-held-purgeable',
+      scopeType: 'topic',
+    });
+
+    expect(
+      await repo.deleteTopicRechecked({
+        cutoffAt: cutoff,
+        topicId: 'topic-held-purgeable',
+      }),
+    ).toBe(false);
+
+    const stillThere = await serverDB
+      .select({ id: topics.id })
+      .from(topics)
+      .where(eq(topics.id, 'topic-held-purgeable'));
+    expect(stillThere).toHaveLength(1);
+  });
+});
+
+describe('PlatformAuditRetentionRepository export artifact purge outbox race', () => {
+  const exportId = 'paex_purge_race';
+  const storageKey = 'audit-exports/purge-race/evidence.ndjson';
+
+  beforeEach(async () => {
+    await serverDB.delete(platformAuditExports);
+    await serverDB.delete(platformAuditLegalHolds);
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 10,
+      artifactChecksum: 'sha256:race',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      filterSnapshot: { userId: 'user-held-export' },
+      finishedAt: oldDate,
+      id: exportId,
+      kind: 'conversations',
+      requestedBy: 'admin-1',
+      status: 'completed',
+      storageKey,
+    });
+  });
+
+  it('aborts object delete when a legal hold is inserted between claim and authorize', async () => {
+    // Phase 1: claim under lock with no holds — durable outbox + clear storageKey.
+    const claimed = await repo.claimExportArtifactsRechecked({
+      cutoffAt: cutoff,
+      ids: [exportId],
+      now,
+      resolveHeldIds: async () => new Set(),
+    });
+    expect(claimed).toEqual([{ id: exportId, storageKey }]);
+
+    const afterClaim = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(afterClaim[0]?.status).toBe('expired');
+    expect(afterClaim[0]?.storageKey).toBeNull();
+    expect(afterClaim[0]?.error?.code).toBe('ARTIFACT_PURGE_PENDING');
+    expect(afterClaim[0]?.error?.purgeStorageKey).toBe(storageKey);
+
+    // Interleave: legal hold created AFTER claim-commit, BEFORE external object delete.
+    await new PlatformAuditLegalHoldModel(serverDB).create({
+      createdBy: 'admin-hold',
+      reason: 'litigation mid-flight',
+      scopeId: 'user-held-export',
+      scopeType: 'user',
+    });
+
+    // Phase 2: recheck holds immediately before object delete — must abort/defer.
+    // resolveHeldIds must use the locked TX (PGlite single-connection; no outer DB).
+    const authorized = await repo.authorizeExportArtifactObjectDeletes({
+      ids: [exportId],
+      resolveHeldIds: async (tx, rows) => {
+        const holds = await new PlatformAuditLegalHoldModel(tx).findActiveScopes([
+          { scopeId: 'user-held-export', scopeType: 'user' },
+        ]);
+        const held = new Set<string>();
+        if (holds.length > 0) {
+          for (const row of rows) held.add(row.id);
+        }
+        return held;
+      },
+    });
+    expect(authorized).toEqual([]);
+
+    // Evidence remains addressable; outbox deferred — must NOT complete as deleted.
+    const afterAbort = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(afterAbort[0]?.storageKey).toBe(storageKey);
+    expect(afterAbort[0]?.error?.code).toBe('ARTIFACT_PURGE_DEFERRED_HOLD');
+
+    // Completing a deferred outbox is a no-op (object must still exist).
+    expect(await repo.completeExportArtifactObjectDeletes([exportId])).toBe(0);
+    const still = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(still[0]?.storageKey).toBe(storageKey);
+  });
+
+  it('authorizes then completes outbox only after successful object-delete path', async () => {
+    const claimed = await repo.claimExportArtifactsRechecked({
+      cutoffAt: cutoff,
+      ids: [exportId],
+      now,
+      resolveHeldIds: async () => new Set(),
+    });
+    expect(claimed).toHaveLength(1);
+
+    const authorized = await repo.authorizeExportArtifactObjectDeletes({
+      ids: [exportId],
+      resolveHeldIds: async () => new Set(),
+    });
+    expect(authorized).toEqual([{ id: exportId, storageKey }]);
+
+    // Simulate successful external delete, then mark outbox complete.
+    expect(await repo.completeExportArtifactObjectDeletes([exportId])).toBe(1);
+
+    const done = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(done[0]?.status).toBe('expired');
+    expect(done[0]?.storageKey).toBeNull();
+    expect(done[0]?.error).toBeNull();
+    // History retained
+    expect(done[0]?.artifactChecksum).toBe('sha256:race');
   });
 });

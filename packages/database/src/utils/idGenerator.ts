@@ -47,6 +47,7 @@ const prefixes = {
   platformConnectorSecrets: 'pcs',
   platformConnectorTools: 'pct',
   platformGlobalCredentialSecrets: 'pgcs',
+  platformGlobalCredentialUploads: 'pgcu',
 
   platformIdentityProviders: 'pidp',
   platformIdentityProviderSecrets: 'pids',

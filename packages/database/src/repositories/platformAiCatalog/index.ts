@@ -77,18 +77,13 @@ export class PlatformAiCatalogRepository {
     return rows.length;
   };
 
-  /** Hard-delete the unified revision-log rows for a provider (no FK — must be removed explicitly). */
-  deleteProviderRevisions = async (providerId: string): Promise<number> => {
-    const rows = await this.db
-      .delete(platformResourceRevisions)
-      .where(
-        and(
-          eq(platformResourceRevisions.resourceType, 'provider'),
-          eq(platformResourceRevisions.resourceId, providerId),
-        ),
-      )
-      .returning({ id: platformResourceRevisions.id });
-    return rows.length;
+  /**
+   * Revision rows are immutable (migration 0145): never hard-delete them.
+   * Provider teardown leaves revision history as an audit trail keyed by the
+   * former provider id. Returns 0 always for API compatibility.
+   */
+  deleteProviderRevisions = async (_providerId: string): Promise<number> => {
+    return 0;
   };
 
   /** Hard-delete a provider row; encrypted secret versions cascade automatically. */

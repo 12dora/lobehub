@@ -10,9 +10,12 @@ import { messages, topics } from '../../schemas';
 import {
   type PlatformAuditExportItem,
   platformAuditExports,
+  platformAuditLegalHolds,
   platformAuditLogs,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { PlatformAuditExportModel } from './auditExport';
+import { acquirePlatformAuditRetentionHoldLock } from './auditRetentionHoldLock';
 import { clampListLimit, encodeCompositeCursor, parseCompositeCursor } from './cursor';
 
 /** Topic statuses that must never be purged by chat-history retention. */
@@ -86,12 +89,83 @@ export const parseRetentionCursor = (
 /**
  * Retention-specific DB queries. Intentionally separate from append-only audit log model.
  */
+/**
+ * SQL fragment: active, non-expired legal hold covering a topic candidate.
+ * Over-skips (global / user / topic / session / workspace).
+ */
+const topicProtectedByActiveHoldSql = sql`
+  EXISTS (
+    SELECT 1
+    FROM ${platformAuditLegalHolds} h
+    WHERE h.status = 'active'
+      AND (h.expires_at IS NULL OR h.expires_at > NOW())
+      AND (
+        h.scope_type = 'global'
+        OR (h.scope_type = 'user' AND h.scope_id = ${topics.userId})
+        OR (h.scope_type = 'topic' AND h.scope_id = ${topics.id})
+        OR (h.scope_type = 'session' AND h.scope_id IS NOT NULL AND h.scope_id = ${topics.sessionId})
+        OR (h.scope_type = 'workspace' AND h.scope_id IS NOT NULL AND h.scope_id = ${topics.workspaceId})
+      )
+  )
+`;
+
+/**
+ * SQL fragment: active, non-expired legal hold covering an operation-log row.
+ * Mirrors retentionWorker.operationLogHeld over-skip policy.
+ */
+const operationLogProtectedByActiveHoldSql = sql`
+  EXISTS (
+    SELECT 1
+    FROM ${platformAuditLegalHolds} h
+    WHERE h.status = 'active'
+      AND (h.expires_at IS NULL OR h.expires_at > NOW())
+      AND (
+        h.scope_type = 'global'
+        OR (
+          h.scope_type = 'user'
+          AND (
+            h.scope_id = ${platformAuditLogs.actorUserId}
+            OR (${platformAuditLogs.targetType} = 'user' AND h.scope_id = ${platformAuditLogs.targetId})
+          )
+        )
+        OR (
+          h.scope_type = 'session'
+          AND ${platformAuditLogs.targetType} = 'session'
+          AND h.scope_id = ${platformAuditLogs.targetId}
+        )
+        OR (
+          h.scope_type = 'topic'
+          AND ${platformAuditLogs.targetType} = 'topic'
+          AND h.scope_id = ${platformAuditLogs.targetId}
+        )
+        OR (
+          h.scope_type = 'workspace'
+          AND ${platformAuditLogs.targetType} = 'workspace'
+          AND h.scope_id = ${platformAuditLogs.targetId}
+        )
+        OR (
+          h.scope_id IS NOT NULL
+          AND ${platformAuditLogs.targetId} IS NOT NULL
+          AND h.scope_id = ${platformAuditLogs.targetId}
+          AND ${platformAuditLogs.targetType} NOT IN ('user', 'session', 'topic', 'workspace')
+        )
+      )
+  )
+`;
+
 export class PlatformAuditRetentionRepository {
   private readonly db: LobeChatDatabase | Transaction;
 
   constructor(db: LobeChatDatabase | Transaction) {
     this.db = db;
   }
+
+  private readonly inTransaction = async <T>(callback: (tx: Transaction) => Promise<T>) => {
+    const database = this.db as LobeChatDatabase;
+    return typeof database.transaction === 'function'
+      ? database.transaction(callback)
+      : callback(this.db as Transaction);
+  };
 
   // ── operation logs ────────────────────────────────────────────────────────
 
@@ -140,7 +214,9 @@ export class PlatformAuditRetentionRepository {
   };
 
   /**
-   * Delete only the given ids that still match createdAt < cutoff (recheck).
+   * Delete only the given ids that still match createdAt < cutoff and are not
+   * covered by an active legal hold. Hold check + DELETE run under the shared
+   * retention/hold advisory lock in one transaction.
    * Returns number of rows actually deleted.
    */
   deleteOperationLogsRechecked = async (params: {
@@ -148,16 +224,22 @@ export class PlatformAuditRetentionRepository {
     ids: string[];
   }): Promise<number> => {
     if (params.ids.length === 0) return 0;
-    const deleted = await this.db
-      .delete(platformAuditLogs)
-      .where(
-        and(
-          inArray(platformAuditLogs.id, params.ids),
-          lt(platformAuditLogs.createdAt, params.cutoffAt),
-        ),
-      )
-      .returning({ id: platformAuditLogs.id });
-    return deleted.length;
+    return this.inTransaction(async (tx) => {
+      await acquirePlatformAuditRetentionHoldLock(tx);
+      // Opt-in escape hatch for the append-only audit-log trigger (migration 0145).
+      await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+      const deleted = await tx
+        .delete(platformAuditLogs)
+        .where(
+          and(
+            inArray(platformAuditLogs.id, params.ids),
+            lt(platformAuditLogs.createdAt, params.cutoffAt),
+            sql`NOT (${operationLogProtectedByActiveHoldSql})`,
+          ),
+        )
+        .returning({ id: platformAuditLogs.id });
+      return deleted.length;
+    });
   };
 
   // ── conversations (topics) ────────────────────────────────────────────────
@@ -231,28 +313,147 @@ export class PlatformAuditRetentionRepository {
   };
 
   /**
-   * Delete a single topic after recheck: still past cutoff and still allowlisted.
+   * Delete a single topic after recheck: still past cutoff, still allowlisted,
+   * and not covered by an active legal hold. Hold check + DELETE run under the
+   * shared retention/hold advisory lock in one transaction.
    * Cascade removes messages/threads/children. Never touches sessions/users/agents.
    * Returns true when the topic row was deleted.
    */
   deleteTopicRechecked = async (params: { cutoffAt: Date; topicId: string }): Promise<boolean> => {
-    const deleted = await this.db
-      .delete(topics)
-      .where(
-        and(
-          eq(topics.id, params.topicId),
-          lt(topics.updatedAt, params.cutoffAt),
-          or(
-            sql`${topics.status} IS NULL`,
-            inArray(topics.status, [...RETENTION_PURGEABLE_TOPIC_STATUSES]),
-          )!,
-        ),
-      )
-      .returning({ id: topics.id });
-    return deleted.length > 0;
+    return this.inTransaction(async (tx) => {
+      await acquirePlatformAuditRetentionHoldLock(tx);
+      const deleted = await tx
+        .delete(topics)
+        .where(
+          and(
+            eq(topics.id, params.topicId),
+            lt(topics.updatedAt, params.cutoffAt),
+            or(
+              sql`${topics.status} IS NULL`,
+              inArray(topics.status, [...RETENTION_PURGEABLE_TOPIC_STATUSES]),
+            )!,
+            sql`NOT (${topicProtectedByActiveHoldSql})`,
+          ),
+        )
+        .returning({ id: topics.id });
+      return deleted.length > 0;
+    });
   };
 
   // ── export artifacts ──────────────────────────────────────────────────────
+
+  /**
+   * Under the shared retention/hold lock: re-load eligibility, let the caller
+   * resolve held ids against a fresh hold index (same TX), then durable-tombstone
+   * claim each free row (clear storageKey, expire, persist purge outbox).
+   * Returns claimed private keys for object-store delete **after** a final
+   * {@link authorizeExportArtifactObjectDeletes} hold recheck.
+   */
+  claimExportArtifactsRechecked = async (params: {
+    cutoffAt: Date;
+    ids: string[];
+    now?: Date;
+    /**
+     * Called after the advisory lock is held. Must re-query holds and return
+     * the set of candidate ids that are still protected.
+     */
+    resolveHeldIds: (
+      tx: Transaction,
+      rows: Array<{
+        filterSnapshot: PlatformAuditExportItem['filterSnapshot'];
+        id: string;
+        kind: PlatformAuditExportItem['kind'];
+      }>,
+    ) => Promise<Set<string>>;
+  }): Promise<Array<{ id: string; storageKey: string }>> => {
+    if (params.ids.length === 0) return [];
+    const now = params.now ?? new Date();
+    return this.inTransaction(async (tx) => {
+      await acquirePlatformAuditRetentionHoldLock(tx);
+
+      // Re-select still-eligible rows with a private object inside the locked TX.
+      const sortAtExpr = sql<Date>`coalesce(${platformAuditExports.finishedAt}, ${platformAuditExports.createdAt})`;
+      const eligibility = or(
+        sql`${sortAtExpr} < ${params.cutoffAt}`,
+        and(isNotNull(platformAuditExports.expiresAt), lte(platformAuditExports.expiresAt, now)),
+      )!;
+
+      const rows = await tx
+        .select({
+          filterSnapshot: platformAuditExports.filterSnapshot,
+          id: platformAuditExports.id,
+          kind: platformAuditExports.kind,
+          storageKey: platformAuditExports.storageKey,
+        })
+        .from(platformAuditExports)
+        .where(
+          and(
+            inArray(platformAuditExports.id, params.ids),
+            inArray(platformAuditExports.status, ['completed', 'expired']),
+            isNotNull(platformAuditExports.storageKey),
+            eligibility,
+          ),
+        );
+
+      const heldIds = await params.resolveHeldIds(
+        tx,
+        rows.map((r) => ({
+          filterSnapshot: r.filterSnapshot,
+          id: r.id,
+          kind: r.kind,
+        })),
+      );
+
+      const claimed: Array<{ id: string; storageKey: string }> = [];
+      const exportsModel = new PlatformAuditExportModel(tx);
+
+      for (const row of rows) {
+        if (!row.storageKey) continue;
+        if (heldIds.has(row.id)) continue;
+
+        const result = await exportsModel.claimArtifactStorageForPurge(row.id, tx);
+        if (result?.storageKey) claimed.push(result);
+      }
+      return claimed;
+    });
+  };
+
+  /**
+   * Immediate pre-delete hold recheck for claimed purge outboxes.
+   * A hold created after claim-commit must abort/defer the object delete and
+   * restore `storageKey` so held evidence remains addressable.
+   */
+  authorizeExportArtifactObjectDeletes = async (params: {
+    ids: string[];
+    resolveHeldIds: (
+      tx: Transaction,
+      rows: Array<{
+        filterSnapshot: PlatformAuditExportItem['filterSnapshot'];
+        id: string;
+        kind: PlatformAuditExportItem['kind'];
+      }>,
+    ) => Promise<Set<string>>;
+  }): Promise<Array<{ id: string; storageKey: string }>> => {
+    const exportsModel = new PlatformAuditExportModel(this.db);
+    return exportsModel.authorizeArtifactObjectDeletes(params.ids, {
+      db: this.db as LobeChatDatabase,
+      resolveHeldIds: params.resolveHeldIds,
+    });
+  };
+
+  /**
+   * Mark purge outboxes complete only after successful external object deletes.
+   * Returns the number of outbox rows cleared.
+   */
+  completeExportArtifactObjectDeletes = async (ids: string[]): Promise<number> => {
+    if (ids.length === 0) return 0;
+    const exportsModel = new PlatformAuditExportModel(this.db);
+    let n = 0;
+    for (const id of ids) {
+      if (await exportsModel.completeArtifactObjectDelete(id)) n += 1;
+    }
+    return n;
+  };
 
   /**
    * completed/expired rows that still hold a private object (`storageKey IS NOT NULL`).

@@ -16,6 +16,7 @@ import {
   PlatformGlobalCredentialFileTooLargeError,
   PlatformGlobalCredentialModel,
   PlatformGlobalCredentialNotFoundError,
+  PlatformGlobalCredentialValidationError,
 } from './globalCredential';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -122,6 +123,7 @@ describe('PlatformGlobalCredentialModel', () => {
 
     await expect(
       model.stageUpload({
+        createdBy: 'admin-size',
         envelope: fakeEnvelope('upload'),
         expiresAt: new Date(Date.now() + 60_000),
         fileHashId: 'a'.repeat(64),
@@ -188,7 +190,9 @@ describe('PlatformGlobalCredentialModel', () => {
   it('stages and consumes file uploads', async () => {
     const model = new PlatformGlobalCredentialModel(db);
     const hash = 'b'.repeat(64);
+    const actor = 'admin-stage-consume';
     await model.stageUpload({
+      createdBy: actor,
       envelope: fakeEnvelope('upload-body'),
       expiresAt: new Date(Date.now() + 60_000),
       fileHashId: hash,
@@ -197,14 +201,85 @@ describe('PlatformGlobalCredentialModel', () => {
       fileType: 'application/json',
     });
 
-    const consumed = await model.consumeUpload(hash);
+    const consumed = await model.consumeUpload(hash, actor);
     expect(consumed?.fileName).toBe('sa.json');
     expect(consumed?.ciphertext).toBe('aihub.secret.v1.test.upload-body');
-    await expect(model.consumeUpload(hash)).resolves.toBeNull();
+    await expect(model.consumeUpload(hash, actor)).resolves.toBeNull();
+  });
+
+  it("rejects replacing another actor's staged upload", async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const hash = 'f'.repeat(64);
+    await model.stageUpload({
+      createdBy: 'admin-a',
+      envelope: fakeEnvelope('a-body'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hash,
+      fileName: 'a.json',
+      fileSize: 8,
+      fileType: 'application/json',
+    });
+
+    // Same content hash, different owner → separate row (no overwrite of A).
+    await model.stageUpload({
+      createdBy: 'admin-b',
+      envelope: fakeEnvelope('b-body'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hash,
+      fileName: 'b.json',
+      fileSize: 9,
+      fileType: 'application/json',
+    });
+
+    const a = await model.getStagedUpload(hash, 'admin-a');
+    const b = await model.getStagedUpload(hash, 'admin-b');
+    expect(a?.fileName).toBe('a.json');
+    expect(a?.ciphertext).toBe('aihub.secret.v1.test.a-body');
+    expect(b?.fileName).toBe('b.json');
+    expect(b?.ciphertext).toBe('aihub.secret.v1.test.b-body');
+    expect(a?.id).not.toBe(b?.id);
+  });
+
+  it("rejects consuming another actor's upload", async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const hash = '1'.repeat(64);
+    await model.stageUpload({
+      createdBy: 'admin-a',
+      envelope: fakeEnvelope('owned-by-a'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hash,
+      fileName: 'secret.json',
+      fileSize: 12,
+      fileType: 'application/json',
+    });
+
+    await expect(model.consumeUpload(hash, 'admin-b')).resolves.toBeNull();
+    await expect(model.getStagedUpload(hash, 'admin-a')).resolves.toMatchObject({
+      fileName: 'secret.json',
+    });
+
+    await expect(
+      model.createFromStagedUpload({
+        createdBy: 'admin-b',
+        fileHashId: hash,
+        key: 'stolen-key',
+        name: 'Stolen',
+      }),
+    ).rejects.toBeInstanceOf(PlatformGlobalCredentialValidationError);
+
+    const created = await model.createFromStagedUpload({
+      createdBy: 'admin-a',
+      fileHashId: hash,
+      key: 'owned-key',
+      name: 'Owned',
+    });
+    expect(created.key).toBe('owned-key');
+    expect(created.createdBy).toBe('admin-a');
   });
 
   it('createFromStagedUpload keeps staging on key conflict and succeeds on retry', async () => {
     const model = new PlatformGlobalCredentialModel(db);
+    const actor = 'admin-retry';
     await model.create({
       envelope: fakeEnvelope('existing'),
       key: 'dup-file-key',
@@ -214,6 +289,7 @@ describe('PlatformGlobalCredentialModel', () => {
 
     const hash = 'c'.repeat(64);
     await model.stageUpload({
+      createdBy: actor,
       envelope: fakeEnvelope('staged-file'),
       expiresAt: new Date(Date.now() + 60_000),
       fileHashId: hash,
@@ -224,6 +300,7 @@ describe('PlatformGlobalCredentialModel', () => {
 
     await expect(
       model.createFromStagedUpload({
+        createdBy: actor,
         fileHashId: hash,
         key: 'dup-file-key',
         name: 'Conflict',
@@ -231,25 +308,28 @@ describe('PlatformGlobalCredentialModel', () => {
     ).rejects.toBeInstanceOf(PlatformGlobalCredentialConflictError);
 
     // Staging must survive the conflict so the admin can retry with a new key.
-    await expect(model.getStagedUpload(hash)).resolves.toMatchObject({
+    await expect(model.getStagedUpload(hash, actor)).resolves.toMatchObject({
       fileName: 'retry.json',
     });
 
     const created = await model.createFromStagedUpload({
+      createdBy: actor,
       fileHashId: hash,
       key: 'unique-file-key',
       name: 'Retry ok',
     });
     expect(created.key).toBe('unique-file-key');
     expect(created.fileName).toBe('retry.json');
-    await expect(model.getStagedUpload(hash)).resolves.toBeNull();
+    await expect(model.getStagedUpload(hash, actor)).resolves.toBeNull();
   });
 
   it('stageUpload GCs expired staging rows', async () => {
     const model = new PlatformGlobalCredentialModel(db);
+    const actor = 'admin-gc';
     const expired = 'd'.repeat(64);
     const fresh = 'e'.repeat(64);
     await model.stageUpload({
+      createdBy: actor,
       envelope: fakeEnvelope('expired'),
       expiresAt: new Date(Date.now() - 1000),
       fileHashId: expired,
@@ -260,6 +340,7 @@ describe('PlatformGlobalCredentialModel', () => {
     // Expired rows are not returned by getStagedUpload (expiresAt filter),
     // but they still exist until the next stageUpload GCs them.
     await model.stageUpload({
+      createdBy: actor,
       envelope: fakeEnvelope('fresh'),
       expiresAt: new Date(Date.now() + 60_000),
       fileHashId: fresh,
@@ -267,6 +348,8 @@ describe('PlatformGlobalCredentialModel', () => {
       fileSize: 8,
       fileType: 'application/octet-stream',
     });
-    await expect(model.getStagedUpload(fresh)).resolves.toMatchObject({ fileName: 'new.bin' });
+    await expect(model.getStagedUpload(fresh, actor)).resolves.toMatchObject({
+      fileName: 'new.bin',
+    });
   });
 });

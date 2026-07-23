@@ -1,15 +1,10 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
 import { checksumPayload } from '../../models/platform/checksum';
-import {
-  platformAiModels,
-  platformAiProviders,
-  platformAiProviderSecrets,
-  platformResourceRevisions,
-} from '../../schemas/platform';
+import { platformAiProviderSecrets, platformResourceRevisions } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import { PlatformAiCatalogRepository } from '.';
 
@@ -17,9 +12,16 @@ const serverDB: LobeChatDatabase = await getTestDB();
 const repository = new PlatformAiCatalogRepository(serverDB);
 
 const cleanup = async () => {
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(platformAiModels);
-  await serverDB.delete(platformAiProviders);
+  // TRUNCATE bypasses row-level immutability triggers (migration 0145).
+  await serverDB.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_resource_revisions,
+        platform_ai_models,
+        platform_ai_providers
+      CASCADE
+    `),
+  );
 };
 
 beforeEach(cleanup);
@@ -198,10 +200,11 @@ describe('PlatformAiCatalogRepository', () => {
     ]);
 
     expect(await repository.deleteProviderModels(alpha.id)).toBe(2);
-    expect(await repository.deleteProviderRevisions(alpha.id)).toBe(1);
+    // Revisions are immutable — hard-delete is a no-op that retains audit history.
+    expect(await repository.deleteProviderRevisions(alpha.id)).toBe(0);
     expect(await repository.deleteProvider(alpha.id)).toMatchObject({ id: alpha.id });
 
-    // Alpha and everything it owns is gone; Beta and its children are untouched.
+    // Alpha provider/models/secrets are gone; revision history remains; Beta untouched.
     expect(await repository.getProvider(alpha.id)).toBeUndefined();
     expect(await repository.listModels(alpha.id)).toHaveLength(0);
     expect(
@@ -210,6 +213,12 @@ describe('PlatformAiCatalogRepository', () => {
         .from(platformAiProviderSecrets)
         .where(eq(platformAiProviderSecrets.providerId, alpha.id)),
     ).toHaveLength(0);
+    expect(
+      await serverDB
+        .select()
+        .from(platformResourceRevisions)
+        .where(eq(platformResourceRevisions.resourceId, alpha.id)),
+    ).toHaveLength(1);
     expect(await repository.getProvider(beta.id)).toMatchObject({ id: beta.id });
     expect(await repository.listModels(beta.id)).toHaveLength(1);
   });

@@ -1,13 +1,9 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import {
-  platformAuditLogs,
-  platformBranding,
-  platformResourceRevisions,
-} from '../../schemas/platform';
+import { platformAuditLogs, platformBranding } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import {
   containsSensitiveMaterial,
@@ -23,10 +19,20 @@ const revisionModel = new PlatformRevisionModel(serverDB);
 
 let brandingId: string;
 
+const cleanup = async () => {
+  await serverDB.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_audit_logs,
+        platform_resource_revisions,
+        platform_branding
+      CASCADE
+    `),
+  );
+};
+
 beforeEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(platformBranding);
+  await cleanup();
 
   const [row] = await serverDB
     .insert(platformBranding)
@@ -39,11 +45,7 @@ beforeEach(async () => {
   brandingId = row.id;
 });
 
-afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(platformBranding);
-});
+afterEach(cleanup);
 
 describe('PlatformRevisionModel', () => {
   describe('publishDraft', () => {

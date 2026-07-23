@@ -100,9 +100,11 @@ export interface UpdatePlatformGlobalCredentialParams {
 }
 
 export interface StagePlatformGlobalCredentialUploadParams {
-  createdBy?: string | null;
+  /** Required owning administrator — staging rows are never anonymous. */
+  createdBy: string;
   envelope: PlatformGlobalCredentialEnvelope;
   expiresAt: Date;
+  /** SHA-256 of plaintext content (metadata only; not the sole ownership key). */
   fileHashId: string;
   fileName: string;
   fileSize: number;
@@ -362,6 +364,8 @@ export class PlatformGlobalCredentialModel {
   ): Promise<{ fileHashId: string; fileName: string }> => {
     assertPlatformGlobalCredentialFileSize(params.fileSize);
     this.assertEnvelope(params.envelope);
+    this.assertActor(params.createdBy);
+    this.assertFileHashId(params.fileHashId);
 
     const ref =
       params.envelope.ref ?? `kms://platform-global-credentials/upload/${params.fileHashId}`;
@@ -372,11 +376,12 @@ export class PlatformGlobalCredentialModel {
         .delete(platformGlobalCredentialUploads)
         .where(lt(platformGlobalCredentialUploads.expiresAt, new Date()));
 
+      // Owner-scoped upsert only — never overwrite another administrator's staging row.
       await tx
         .insert(platformGlobalCredentialUploads)
         .values({
           ciphertext: params.envelope.ciphertext,
-          createdBy: params.createdBy ?? null,
+          createdBy: params.createdBy,
           expiresAt: params.expiresAt,
           fileHashId: params.fileHashId,
           fileName: params.fileName,
@@ -389,7 +394,6 @@ export class PlatformGlobalCredentialModel {
         .onConflictDoUpdate({
           set: {
             ciphertext: params.envelope.ciphertext,
-            createdBy: params.createdBy ?? null,
             expiresAt: params.expiresAt,
             fileName: params.fileName,
             fileSize: params.fileSize,
@@ -398,7 +402,10 @@ export class PlatformGlobalCredentialModel {
             keyId: params.envelope.keyId,
             ref,
           },
-          target: platformGlobalCredentialUploads.fileHashId,
+          target: [
+            platformGlobalCredentialUploads.createdBy,
+            platformGlobalCredentialUploads.fileHashId,
+          ],
         });
 
       return { fileHashId: params.fileHashId, fileName: params.fileName };
@@ -409,9 +416,10 @@ export class PlatformGlobalCredentialModel {
    * Create a file credential from a staged upload in one transaction.
    * On key conflict the TX rolls back and the staging row remains for retry.
    * Staging is deleted only after credential+secret insert succeeds.
+   * Requires `createdBy` to match the owning administrator of the staged row.
    */
   createFromStagedUpload = async (params: {
-    createdBy?: string | null;
+    createdBy: string;
     fileHashId: string;
     key: string;
     meta?: PlatformGlobalCredentialMeta;
@@ -419,6 +427,8 @@ export class PlatformGlobalCredentialModel {
   }): Promise<PlatformGlobalCredentialPublicView> => {
     this.assertKey(params.key);
     this.assertName(params.name);
+    this.assertActor(params.createdBy);
+    this.assertFileHashId(params.fileHashId);
 
     return this.inTransaction(async (tx) => {
       const [upload] = await tx
@@ -427,6 +437,7 @@ export class PlatformGlobalCredentialModel {
         .where(
           and(
             eq(platformGlobalCredentialUploads.fileHashId, params.fileHashId),
+            eq(platformGlobalCredentialUploads.createdBy, params.createdBy),
             gt(platformGlobalCredentialUploads.expiresAt, new Date()),
           ),
         )
@@ -450,13 +461,13 @@ export class PlatformGlobalCredentialModel {
         const [row] = await tx
           .insert(platformGlobalCredentials)
           .values({
-            createdBy: params.createdBy ?? null,
+            createdBy: params.createdBy,
             enabled: true,
             key: params.key,
             meta,
             name: params.name,
             type: 'file',
-            updatedBy: params.createdBy ?? null,
+            updatedBy: params.createdBy,
           } satisfies NewPlatformGlobalCredential)
           .returning();
         if (!row) throw new PlatformGlobalCredentialValidationError('Failed to insert credential');
@@ -480,10 +491,15 @@ export class PlatformGlobalCredentialModel {
         revision: 1,
       });
 
-      // Only remove staging after credential is durable.
+      // Only remove the owner's staging row after credential is durable.
       await tx
         .delete(platformGlobalCredentialUploads)
-        .where(eq(platformGlobalCredentialUploads.fileHashId, params.fileHashId));
+        .where(
+          and(
+            eq(platformGlobalCredentialUploads.id, upload.id),
+            eq(platformGlobalCredentialUploads.createdBy, params.createdBy),
+          ),
+        );
 
       return toPublicView(inserted);
     });
@@ -491,17 +507,21 @@ export class PlatformGlobalCredentialModel {
 
   /**
    * Peek a staged upload without consuming it (tests / diagnostics).
-   * Internal only.
+   * Always scoped to the owning administrator.
    */
   getStagedUpload = async (
     fileHashId: string,
+    createdBy: string,
   ): Promise<PlatformGlobalCredentialUploadItem | null> => {
+    this.assertActor(createdBy);
+    this.assertFileHashId(fileHashId);
     const [row] = await this.db
       .select()
       .from(platformGlobalCredentialUploads)
       .where(
         and(
           eq(platformGlobalCredentialUploads.fileHashId, fileHashId),
+          eq(platformGlobalCredentialUploads.createdBy, createdBy),
           gt(platformGlobalCredentialUploads.expiresAt, new Date()),
         ),
       )
@@ -510,12 +530,15 @@ export class PlatformGlobalCredentialModel {
   };
 
   /**
-   * Consume a staged upload (delete + return envelope). Returns null if missing/expired.
+   * Consume a staged upload (delete + return envelope). Returns null if missing/expired/wrong owner.
    * Prefer {@link createFromStagedUpload} for createFile to avoid destroying staging on conflict.
    */
   consumeUpload = async (
     fileHashId: string,
+    createdBy: string,
   ): Promise<PlatformGlobalCredentialUploadItem | null> => {
+    this.assertActor(createdBy);
+    this.assertFileHashId(fileHashId);
     return this.inTransaction(async (tx) => {
       const [row] = await tx
         .select()
@@ -523,6 +546,7 @@ export class PlatformGlobalCredentialModel {
         .where(
           and(
             eq(platformGlobalCredentialUploads.fileHashId, fileHashId),
+            eq(platformGlobalCredentialUploads.createdBy, createdBy),
             gt(platformGlobalCredentialUploads.expiresAt, new Date()),
           ),
         )
@@ -530,7 +554,12 @@ export class PlatformGlobalCredentialModel {
       if (!row) return null;
       await tx
         .delete(platformGlobalCredentialUploads)
-        .where(eq(platformGlobalCredentialUploads.fileHashId, fileHashId));
+        .where(
+          and(
+            eq(platformGlobalCredentialUploads.id, row.id),
+            eq(platformGlobalCredentialUploads.createdBy, createdBy),
+          ),
+        );
       return row;
     });
   };
@@ -555,6 +584,20 @@ export class PlatformGlobalCredentialModel {
   private assertName = (name: string) => {
     if (!name || name.length > 255) {
       throw new PlatformGlobalCredentialValidationError('Credential name must be 1–255 characters');
+    }
+  };
+
+  private assertActor = (actor: string | null | undefined) => {
+    if (!actor || !actor.trim()) {
+      throw new PlatformGlobalCredentialValidationError(
+        'createdBy is required for staged credential uploads',
+      );
+    }
+  };
+
+  private assertFileHashId = (fileHashId: string) => {
+    if (!/^[a-f0-9]{64}$/.test(fileHashId)) {
+      throw new PlatformGlobalCredentialValidationError('fileHashId must be a 64-char hex SHA-256');
     }
   };
 

@@ -276,8 +276,9 @@ export class PlatformAuditConversationModel {
     const rows = await this.db
       .select({
         agentId: messages.agentId,
-        content: messages.content,
         createdAt: messages.createdAt,
+        // Metadata-only list: never project message bodies — only a SQL boolean.
+        hasContent: sql<boolean>`COALESCE(length(${messages.content}), 0) > 0`.mapWith(Boolean),
         id: messages.id,
         model: messages.model,
         parentId: messages.parentId,
@@ -298,7 +299,7 @@ export class PlatformAuditConversationModel {
     const items: PlatformAuditConversationMessageListItem[] = slice.map((row) => ({
       agentId: row.agentId,
       createdAt: row.createdAt,
-      hasContent: Boolean(row.content && row.content.length > 0),
+      hasContent: row.hasContent,
       id: row.id,
       model: row.model,
       parentId: row.parentId,

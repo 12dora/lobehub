@@ -8,6 +8,7 @@ export * from './auditLegalHold';
 export * from './auditLog';
 export * from './auditPolicy';
 export * from './auditRetention';
+export * from './auditRetentionHoldLock';
 export * from './auditRetentionRun';
 export * from './authSettings';
 export * from './branding';

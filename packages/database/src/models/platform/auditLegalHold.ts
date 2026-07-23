@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, lt, or } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt, lte, or } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditLegalHold,
@@ -8,6 +8,7 @@ import {
   type PlatformAuditLegalHoldStatus,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { acquirePlatformAuditRetentionHoldLock } from './auditRetentionHoldLock';
 import {
   clampListLimit,
   encodeCreatedAtCursor as encodeCursor,
@@ -85,6 +86,52 @@ export class PlatformAuditLegalHoldModel {
     this.db = db;
   }
 
+  private readonly inTransaction = async <T>(callback: (tx: Transaction) => Promise<T>) => {
+    const database = this.db as LobeChatDatabase;
+    return typeof database.transaction === 'function'
+      ? database.transaction(callback)
+      : callback(this.db as Transaction);
+  };
+
+  /**
+   * Transition expired `active` holds to `released` so the partial unique indexes
+   * no longer block a replacement hold for the same scope.
+   */
+  private releaseExpiredActiveForScope = async (
+    tx: Transaction,
+    scopeType: PlatformAuditLegalHoldScopeType,
+    scopeId: string | null,
+    now: Date,
+  ): Promise<void> => {
+    const scopeMatch =
+      scopeId === null
+        ? and(
+            eq(platformAuditLegalHolds.scopeType, scopeType),
+            isNull(platformAuditLegalHolds.scopeId),
+          )
+        : and(
+            eq(platformAuditLegalHolds.scopeType, scopeType),
+            eq(platformAuditLegalHolds.scopeId, scopeId),
+          );
+
+    await tx
+      .update(platformAuditLegalHolds)
+      .set({
+        releaseReason: 'auto-released: hold expired',
+        releasedAt: now,
+        releasedBy: 'system:legal-hold-expiry',
+        status: 'released',
+        updatedAt: now,
+      })
+      .where(
+        and(
+          scopeMatch!,
+          eq(platformAuditLegalHolds.status, 'active'),
+          lte(platformAuditLegalHolds.expiresAt, now),
+        ),
+      );
+  };
+
   create = async (
     params: CreatePlatformAuditLegalHoldParams,
   ): Promise<PlatformAuditLegalHoldItem> => {
@@ -104,11 +151,20 @@ export class PlatformAuditLegalHoldModel {
       scopeType: params.scopeType,
       status: 'active',
     };
-    const [row] = await this.db.insert(platformAuditLegalHolds).values(values).returning();
-    if (!row) {
-      throw new Error('Failed to create platform audit legal hold');
-    }
-    return row;
+
+    return this.inTransaction(async (tx) => {
+      // Serialize with retention deletes; release expired active rows for this scope
+      // so the partial unique index does not block a legitimate replacement hold.
+      await acquirePlatformAuditRetentionHoldLock(tx);
+      const now = new Date();
+      await this.releaseExpiredActiveForScope(tx, params.scopeType, scopeId, now);
+
+      const [row] = await tx.insert(platformAuditLegalHolds).values(values).returning();
+      if (!row) {
+        throw new Error('Failed to create platform audit legal hold');
+      }
+      return row;
+    });
   };
 
   get = async (id: string): Promise<PlatformAuditLegalHoldItem | undefined> => {
@@ -193,7 +249,9 @@ export class PlatformAuditLegalHoldModel {
 
   /**
    * All active, non-expired legal holds (any scope).
-   * Used by retention workers to index user/session/topic/workspace/global holds.
+   * Prefer {@link findActiveScopes} / {@link summarizeActiveHoldClasses} for
+   * retention batches — this full inventory is only appropriate for small admin
+   * views / cold-start indexes.
    */
   listActive = async (): Promise<PlatformAuditLegalHoldItem[]> => {
     const now = new Date();
@@ -206,6 +264,40 @@ export class PlatformAuditLegalHoldModel {
       .from(platformAuditLegalHolds)
       .where(and(eq(platformAuditLegalHolds.status, 'active'), notExpired))
       .orderBy(desc(platformAuditLegalHolds.createdAt));
+  };
+
+  /**
+   * Lightweight class presence for export over-skip without loading full inventory.
+   * Returns at most one row per scope type (5 classes).
+   */
+  summarizeActiveHoldClasses = async (): Promise<{
+    global: boolean;
+    hasSession: boolean;
+    hasTopic: boolean;
+    hasUser: boolean;
+    hasWorkspace: boolean;
+  }> => {
+    const now = new Date();
+    const notExpired = or(
+      isNull(platformAuditLegalHolds.expiresAt),
+      gt(platformAuditLegalHolds.expiresAt, now),
+    )!;
+    const rows = await this.db
+      .select({
+        scopeType: platformAuditLegalHolds.scopeType,
+      })
+      .from(platformAuditLegalHolds)
+      .where(and(eq(platformAuditLegalHolds.status, 'active'), notExpired))
+      .groupBy(platformAuditLegalHolds.scopeType);
+
+    const types = new Set(rows.map((r) => r.scopeType));
+    return {
+      global: types.has('global'),
+      hasSession: types.has('session'),
+      hasTopic: types.has('topic'),
+      hasUser: types.has('user'),
+      hasWorkspace: types.has('workspace'),
+    };
   };
 
   /**

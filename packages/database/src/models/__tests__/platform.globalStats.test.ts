@@ -8,7 +8,7 @@ import { agentOperations } from '../../schemas/agentOperations';
 import type { LobeChatDatabase } from '../../type';
 import { AgentModel } from '../agent';
 import { MessageModel } from '../message';
-import { PlatformGlobalStatsModel } from '../platform/globalStats';
+import { MAX_USAGE_DETAIL_ROWS, PlatformGlobalStatsModel } from '../platform/globalStats';
 import { TopicModel } from '../topic';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -205,12 +205,184 @@ describe('PlatformGlobalStatsModel', () => {
       expect(bob?.userDisplay).toBe('bob');
 
       const logs = await globalStats.findAndGroupByDay(mo);
-      expect(logs.length).toBeGreaterThan(0);
+      // Full calendar month including final day (June has 30 days).
+      expect(logs).toHaveLength(dayjs(fixedDate).daysInMonth());
+      expect(logs.at(-1)?.day).toBe(dayjs(fixedDate).endOf('month').format('YYYY-MM-DD'));
       const dayWithData = logs.find((l) => l.totalRequests > 0);
       expect(dayWithData?.totalRequests).toBe(2);
-      expect(dayWithData?.records.every((r) => r.userDisplay)).toBe(true);
+      expect(dayWithData?.totalSpend).toBeCloseTo(0.3);
+      expect(dayWithData?.totalTokens).toBe(40);
+      // Chart path: per-day dimension aggregates (model×provider×user), not raw messages.
+      expect(dayWithData?.records).toHaveLength(2);
+      const aliceAgg = dayWithData?.records.find((r) => r.userId === USER_A);
+      const bobAgg = dayWithData?.records.find((r) => r.userId === USER_B);
+      expect(aliceAgg?.model).toBe('gpt-4');
+      expect(aliceAgg?.provider).toBe('openai');
+      expect(aliceAgg?.spend).toBeCloseTo(0.1);
+      expect(aliceAgg?.totalTokens).toBe(30);
+      expect(aliceAgg?.userDisplay).toBe('Alice Full');
+      expect(bobAgg?.spend).toBeCloseTo(0.2);
+      expect(bobAgg?.totalTokens).toBe(10);
+      expect(bobAgg?.userDisplay).toBe('bob');
 
       vi.useRealTimers();
+    });
+
+    it('includes the final calendar day of the month in daily grouping', async () => {
+      vi.useFakeTimers();
+      const fixedDate = new Date('2024-06-15T12:00:00Z');
+      vi.setSystemTime(fixedDate);
+
+      const mo = '2024-06';
+      const monthEnd = dayjs('2024-06-30').hour(15).toDate();
+      await serverDB.insert(messages).values({
+        content: 'month-end',
+        createdAt: monthEnd,
+        id: 'month-end-msg',
+        model: 'gpt-4',
+        provider: 'openai',
+        role: 'assistant',
+        usage: { cost: 1.5, totalInputTokens: 100, totalOutputTokens: 50 },
+        userId: USER_A,
+      });
+
+      const logs = await globalStats.findAndGroupByDay(mo);
+      expect(logs).toHaveLength(30);
+      const last = logs.find((l) => l.day === '2024-06-30');
+      expect(last).toBeDefined();
+      expect(last?.totalRequests).toBe(1);
+      expect(last?.totalSpend).toBe(1.5);
+      expect(last?.totalTokens).toBe(150);
+
+      vi.useRealTimers();
+    });
+
+    it('includes February 29 in leap-year daily grouping with exactly 29 buckets', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2024-02-15T12:00:00Z'));
+
+      const mo = '2024-02';
+      const leapDay = dayjs('2024-02-29').hour(10).toDate();
+      await serverDB.insert(messages).values({
+        content: 'leap',
+        createdAt: leapDay,
+        id: 'leap-day-msg',
+        model: 'gpt-4',
+        provider: 'openai',
+        role: 'assistant',
+        usage: { cost: 0.5, totalInputTokens: 10, totalOutputTokens: 10 },
+        userId: USER_A,
+      });
+
+      const logs = await globalStats.findAndGroupByDay(mo);
+      expect(logs).toHaveLength(29);
+      const feb29 = logs.find((l) => l.day === '2024-02-29');
+      expect(feb29).toBeDefined();
+      expect(feb29?.totalRequests).toBe(1);
+      expect(feb29?.totalSpend).toBe(0.5);
+      expect(feb29?.totalTokens).toBe(20);
+      expect(feb29?.records).toHaveLength(1);
+      expect(feb29?.records[0]?.model).toBe('gpt-4');
+      expect(feb29?.records[0]?.spend).toBe(0.5);
+
+      vi.useRealTimers();
+    });
+
+    it('paginates monthly detail without silent full-month truncation', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2024-06-15T12:00:00Z'));
+
+      const mo = '2024-06';
+      const base = dayjs('2024-06-10').hour(12);
+      await serverDB.insert(messages).values(
+        Array.from({ length: 5 }, (_, i) => ({
+          content: `p${i}`,
+          createdAt: base.add(i, 'minute').toDate(),
+          id: `page-msg-${i}`,
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant' as const,
+          usage: { cost: 0.01, totalInputTokens: 1, totalOutputTokens: 1 },
+          userId: USER_A,
+        })),
+      );
+
+      const page1 = await globalStats.findByMonthPage(mo, { limit: 2 });
+      expect(page1.items).toHaveLength(2);
+      expect(page1.nextCursor).toBeTruthy();
+
+      const page2 = await globalStats.findByMonthPage(mo, {
+        cursor: page1.nextCursor!,
+        limit: 2,
+      });
+      expect(page2.items).toHaveLength(2);
+      expect(page2.nextCursor).toBeTruthy();
+
+      const page3 = await globalStats.findByMonthPage(mo, {
+        cursor: page2.nextCursor!,
+        limit: 2,
+      });
+      expect(page3.items).toHaveLength(1);
+      expect(page3.nextCursor).toBeNull();
+
+      const allIds = [...page1.items, ...page2.items, ...page3.items].map((r) => r.id);
+      expect(new Set(allIds).size).toBe(5);
+
+      // First-page helper never silently returns a capped full month without cursor.
+      const firstOnly = await globalStats.findByMonth(mo, { limit: 2 });
+      expect(firstOnly).toHaveLength(2);
+
+      vi.useRealTimers();
+    });
+
+    it('stops uncapped findByDateRange drain at MAX_USAGE_DETAIL_ROWS', async () => {
+      const pageMax = PlatformGlobalStatsModel.USAGE_PAGE_MAX;
+      let callCount = 0;
+      let totalRequested = 0;
+
+      const spy = vi
+        .spyOn(globalStats, 'findByDateRangePage')
+        .mockImplementation(async (_startAt, _endAt, options) => {
+          callCount += 1;
+          const limit = options?.limit ?? pageMax;
+          totalRequested += limit;
+          // Always claim more pages exist so the drain would be unbounded without the cap.
+          const offset = (callCount - 1) * pageMax;
+          const items = Array.from({ length: limit }, (_, i) => {
+            const n = offset + i;
+            const createdAt = new Date(Date.UTC(2024, 5, 1, 0, 0, n % 60));
+            return {
+              createdAt,
+              id: `cap-row-${n}`,
+              model: 'gpt-4',
+              provider: 'openai',
+              spend: 0,
+              totalInputTokens: 0,
+              totalOutputTokens: 0,
+              totalTokens: 0,
+              tps: 0,
+              ttft: 0,
+              type: 'chat' as const,
+              updatedAt: createdAt,
+              userDisplay: 'Alice Full',
+              userId: USER_A,
+            };
+          });
+          return {
+            items,
+            nextCursor: `${items.at(-1)!.createdAt.toISOString()}|${items.at(-1)!.id}`,
+          };
+        });
+
+      const rows = await globalStats.findByDateRange('2024-06-01', '2024-06-30');
+
+      expect(rows).toHaveLength(MAX_USAGE_DETAIL_ROWS);
+      expect(totalRequested).toBe(MAX_USAGE_DETAIL_ROWS);
+      expect(callCount).toBe(Math.ceil(MAX_USAGE_DETAIL_ROWS / pageMax));
+      // One more call would exceed the cap — drain must have stopped.
+      expect(callCount).toBeLessThan(Math.ceil((MAX_USAGE_DETAIL_ROWS + pageMax) / pageMax));
+
+      spy.mockRestore();
     });
 
     it('falls back to legacy flat metadata.tps / metadata.ttft when performance is absent', async () => {

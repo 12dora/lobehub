@@ -1015,6 +1015,13 @@
       "when": 1784800200000,
       "tag": "0144_drop_platform_easyauth_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1784832040377,
+      "tag": "0145_platform_db_hardening",
+      "breakpoints": true
     }
   ],
   "version": "6"

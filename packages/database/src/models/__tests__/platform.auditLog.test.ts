@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -10,7 +11,8 @@ const serverDB: LobeChatDatabase = await getTestDB();
 const auditModel = new PlatformAuditLogModel(serverDB);
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  // TRUNCATE bypasses append-only DELETE triggers (migration 0145).
+  await serverDB.execute(sql.raw('TRUNCATE TABLE platform_audit_logs CASCADE'));
 });
 
 describe('PlatformAuditLogModel', () => {

@@ -254,7 +254,16 @@ export const platformAuditExports = pgTable(
     rowCount: integer('row_count'),
 
     expiresAt: timestamptz('expires_at'),
-    error: jsonb('error').$type<{ code?: string; message?: string } | null>(),
+    /**
+     * Terminal failure payload, or durable artifact-purge outbox:
+     * `{ code: 'ARTIFACT_PURGE_PENDING', purgeStorageKey }` while object delete is in flight.
+     */
+    error: jsonb('error').$type<{
+      code?: string;
+      message?: string;
+      /** Private storage key awaiting object-store purge (outbox; never a signed URL). */
+      purgeStorageKey?: string;
+    } | null>(),
 
     /** Actor who requested the export (required for accountability). */
     requestedBy: text('requested_by').notNull(),

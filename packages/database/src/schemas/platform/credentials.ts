@@ -127,11 +127,20 @@ export type NewPlatformGlobalCredentialSecret = typeof platformGlobalCredentialS
 /**
  * Short-lived staging for file credential uploads (uploadFile → createFile).
  * Ciphertext only; consumed once on createFile or expired by TTL.
+ *
+ * Ownership: rows are bound to `createdBy`. `fileHashId` is content-hash
+ * metadata only — never the sole lookup key. Primary key is an opaque upload id
+ * so two admins uploading identical bytes never overwrite each other.
  */
 export const platformGlobalCredentialUploads = pgTable(
   'platform_global_credential_uploads',
   {
-    fileHashId: varchar('file_hash_id', { length: 64 }).primaryKey().notNull(),
+    id: text('id')
+      .$defaultFn(() => idGenerator('platformGlobalCredentialUploads', 16))
+      .primaryKey()
+      .notNull(),
+    /** SHA-256 of plaintext bytes — non-identifying metadata, not a sole key. */
+    fileHashId: varchar('file_hash_id', { length: 64 }).notNull(),
     fileName: varchar('file_name', { length: 255 }).notNull(),
     fileType: varchar('file_type', { length: 128 }).notNull(),
     fileSize: integer('file_size').notNull(),
@@ -139,15 +148,26 @@ export const platformGlobalCredentialUploads = pgTable(
     ref: text('ref').notNull(),
     ciphertext: text('ciphertext').notNull(),
     keyId: varchar('key_id', { length: 256 }).notNull(),
-    createdBy: text('created_by'),
+    /** Required owning administrator — every stage/read/consume filters on this. */
+    createdBy: text('created_by').notNull(),
     expiresAt: timestamptz('expires_at').notNull(),
     createdAt: createdAt(),
   },
   (t) => [
     index('platform_global_credential_uploads_expires_at_idx').on(t.expiresAt),
+    // One pending upload per (owner, content hash); same admin may re-stage.
+    uniqueIndex('platform_global_credential_uploads_owner_hash_unique').on(
+      t.createdBy,
+      t.fileHashId,
+    ),
+    index('platform_global_credential_uploads_created_by_idx').on(t.createdBy),
     check(
       'platform_global_credential_uploads_fingerprint_check',
       sql`${t.fingerprint} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      'platform_global_credential_uploads_file_hash_id_check',
+      sql`${t.fileHashId} ~ '^[a-f0-9]{64}$'`,
     ),
     check(
       'platform_global_credential_uploads_file_size_check',
