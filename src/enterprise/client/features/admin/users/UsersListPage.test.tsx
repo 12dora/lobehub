@@ -12,6 +12,7 @@ const sampleList = {
   items: [
     {
       avatar: null,
+      dingtalkTitle: null,
       createdAt: new Date('2024-01-01'),
       email: 'alice@example.com',
       fullName: 'Alice',

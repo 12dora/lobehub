@@ -161,6 +161,12 @@ const UsersListPage = memo(() => {
         render: (value: string | null) => value ?? '—',
       },
       {
+        dataIndex: 'dingtalkTitle',
+        key: 'dingtalkTitle',
+        title: t('users.list.columns.jobTitle'),
+        render: (value: string | null) => (value?.trim() ? value : '—'),
+      },
+      {
         dataIndex: 'status',
         key: 'status',
         title: t('users.list.columns.status'),

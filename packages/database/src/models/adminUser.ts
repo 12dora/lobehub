@@ -56,6 +56,7 @@ export interface AdminUserListFilters {
 export interface AdminUserListItem {
   avatar: string | null;
   createdAt: Date;
+  dingtalkTitle: string | null;
   email: string | null;
   fullName: string | null;
   id: string;
@@ -95,6 +96,7 @@ export interface AdminUserDetail {
   banned: boolean;
   banReason: string | null;
   createdAt: Date;
+  dingtalkTitle: string | null;
   email: string | null;
   emailVerified: boolean;
   fullName: string | null;
@@ -228,6 +230,7 @@ export class AdminUserModel {
         banExpires: users.banExpires,
         banned: users.banned,
         createdAt: users.createdAt,
+        dingtalkTitle: users.dingtalkTitle,
         email: users.email,
         fullName: users.fullName,
         id: users.id,
@@ -251,6 +254,7 @@ export class AdminUserModel {
     const items: AdminUserListItem[] = page.map((row) => ({
       avatar: row.avatar ?? null,
       createdAt: row.createdAt,
+      dingtalkTitle: row.dingtalkTitle ?? null,
       email: row.email ?? null,
       fullName: row.fullName ?? null,
       id: row.id,
@@ -275,6 +279,7 @@ export class AdminUserModel {
         banReason: users.banReason,
         banned: users.banned,
         createdAt: users.createdAt,
+        dingtalkTitle: users.dingtalkTitle,
         email: users.email,
         emailVerified: users.emailVerified,
         fullName: users.fullName,
@@ -306,6 +311,7 @@ export class AdminUserModel {
       banReason: row.banReason ?? null,
       banned: Boolean(row.banned),
       createdAt: row.createdAt,
+      dingtalkTitle: row.dingtalkTitle ?? null,
       email: row.email ?? null,
       emailVerified: Boolean(row.emailVerified),
       fullName: row.fullName ?? null,

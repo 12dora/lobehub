@@ -159,6 +159,8 @@ export const buildPlatformIdentityProvider = (
     clientSecret: provider.clientSecret,
     disableImplicitSignUp: !provider.autoProvision,
     disableSignUp: !provider.autoProvision,
+    // Enterprise directory is authoritative: refresh name/avatar/dingtalk fields each login.
+    overrideUserInfo: true,
     getToken: async ({ code, codeVerifier, redirectURI: callbackRedirectURI }) => {
       let isAccountLink = false;
       try {

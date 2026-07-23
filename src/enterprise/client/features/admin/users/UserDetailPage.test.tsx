@@ -170,6 +170,7 @@ vi.mock('./hooks/useAdminUsers', () => ({
 
 const baseUser = {
   avatar: null,
+  dingtalkTitle: null,
   banExpires: null,
   banReason: null,
   banned: false,
