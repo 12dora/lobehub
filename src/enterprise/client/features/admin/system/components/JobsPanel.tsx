@@ -79,16 +79,11 @@ export const JobsPanel = memo<JobsPanelProps>(({ canOperate, mutations, state })
   const columns = useMemo<TableColumnsType<AdminSystemJob>>(
     () => [
       {
-        dataIndex: 'jobId',
-        key: 'jobId',
-        render: (jobId: string, job) => (
-          <Flexbox gap={4}>
-            <Text className={styles.code}>{jobId}</Text>
-            <Text type="secondary">{t(`system.values.jobKind.${job.kind}` as never)}</Text>
-          </Flexbox>
-        ),
+        dataIndex: 'kind',
+        key: 'kind',
+        render: (kind: string) => <Text>{t(`system.values.jobKind.${kind}` as never)}</Text>,
         title: t('system.jobs.columns.job'),
-        width: 250,
+        width: 220,
       },
       {
         dataIndex: 'status',

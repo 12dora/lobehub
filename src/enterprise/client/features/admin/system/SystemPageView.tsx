@@ -16,13 +16,11 @@ import type {
 } from '@/enterprise/client/features/admin/system/hooks/useAdminSystem';
 import type { AdminSystemStatus } from '@/enterprise/client/services/adminSystem';
 
-import { DomainConvergenceTable } from './components/DomainConvergenceTable';
 import { InstancesTable } from './components/InstancesTable';
 import { JobsPanel } from './components/JobsPanel';
 import {
   BuildSummary,
   DependencyGrid,
-  FeatureFlagGrid,
   JobsSummary,
   OidcSummary,
   PublishFailures,
@@ -111,15 +109,9 @@ export const SystemPageView = memo<SystemPageViewProps>(
           <Flexbox gap={20}>
             <BuildSummary status={status.data} />
             <DependencyGrid status={status.data} />
-            <JobsSummary status={status.data} />
-            <div className={styles.section}>
-              <SectionTitle>{t('system.domains.title')}</SectionTitle>
-              <Text type="secondary">{t('system.domains.description')}</Text>
-              <DomainConvergenceTable domains={status.data.domains} />
-            </div>
             <OidcSummary status={status.data} />
+            <JobsSummary status={status.data} />
             <PublishFailures status={status.data} />
-            <FeatureFlagGrid status={status.data} />
           </Flexbox>
         ) : null}
 
