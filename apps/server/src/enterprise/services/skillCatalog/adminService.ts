@@ -9,6 +9,7 @@ import {
   type PlatformSkillVersionView,
 } from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
+import type { PlatformSkillValidationResult } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type {
@@ -69,6 +70,13 @@ const validationView = (
     validatedAt: new Date(validation.validatedAt),
   };
 };
+
+/** Persist validation with ISO string timestamps (DB jsonb shape). */
+const toStoredValidation = (validation: SkillValidationResult): PlatformSkillValidationResult => ({
+  issues: validation.issues,
+  validatedAt: validation.validatedAt.toISOString(),
+  validatorVersion: validation.validatorVersion,
+});
 
 const versionView = (version: PlatformSkillVersionView): ImmutableSkillVersion => ({
   ...version,
@@ -463,7 +471,7 @@ export class SkillCatalogAdminService {
           actorUserId,
           ...values,
           checksum,
-          validation: { ...validation, validatedAt: validation.validatedAt.toISOString() },
+          validation: toStoredValidation(validation),
         });
         if (!result) throw new SkillCatalogNotFoundError();
         return result;
@@ -518,6 +526,22 @@ export class SkillCatalogAdminService {
    * Attempt publish; soft-fail returns published:false + publishError (never secrets).
    * When softFail is false and baseRevision > 0, rethrows so the UI can surface failures.
    */
+  /**
+   * Map publish failures to stable machine-readable codes for client i18n.
+   * Never return free-form English messages or raw implementation wording.
+   */
+  private publishErrorCode = (error: unknown): string => {
+    if (error instanceof SkillCatalogValidationError) {
+      const codes = error.issues
+        .filter((issue) => issue.severity === 'error')
+        .map((issue) => issue.code);
+      if (codes.length === 0) return 'validation_failed';
+      // Prefer a single code when possible; comma-join keeps multi-issue soft-fails diagnosable.
+      return [...new Set(codes)].slice(0, 5).join(',').slice(0, 500);
+    }
+    return 'publish_failed';
+  };
+
   private tryPublishImmediate = async (
     actorUserId: string,
     skillId: string,
@@ -532,7 +556,7 @@ export class SkillCatalogAdminService {
         draft: detail.draft,
         draftToken: detail.draftToken,
         published: false,
-        publishError: 'A skill version is required before publish',
+        publishError: 'version_required',
         revision: detail.baseRevision,
         versionId: null as string | null,
       };
@@ -558,15 +582,7 @@ export class SkillCatalogAdminService {
       };
     } catch (error) {
       const after = await this.getDetail(skillId);
-      const reasonText =
-        error instanceof SkillCatalogValidationError
-          ? error.issues
-              .map((issue) => issue.message)
-              .join('; ')
-              .slice(0, 500)
-          : error instanceof Error
-            ? error.message.slice(0, 500)
-            : 'Publish failed';
+      const reasonText = this.publishErrorCode(error);
       if (options?.softFail || after.baseRevision === 0) {
         return {
           auditId: null as string | null,

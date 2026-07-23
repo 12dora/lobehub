@@ -218,6 +218,49 @@ describe('SkillListPage', () => {
     expect(mocks.mutate).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores rapid double-clicks on Next so the cursor stack does not duplicate', async () => {
+    mocks.isLoading = true;
+    render(
+      <MemoryRouter>
+        <SkillListPage />
+      </MemoryRouter>,
+    );
+    // Retained page data + in-flight load: Next is disabled.
+    const next = screen.getByText('next');
+    expect(next).toHaveProperty('disabled', true);
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(mocks.inputs.every((input) => !(input as { cursor?: string }).cursor)).toBe(true);
+
+    // When not loading, rapid clicks still only advance once (idempotent stack append).
+    mocks.isLoading = false;
+    mocks.inputs.length = 0;
+    render(
+      <MemoryRouter>
+        <SkillListPage />
+      </MemoryRouter>,
+    );
+    const enabledNext = screen.getAllByText('next').at(-1)!;
+    fireEvent.click(enabledNext);
+    fireEvent.click(enabledNext);
+    fireEvent.click(enabledNext);
+    await waitFor(() => expect(mocks.inputs.at(-1)).toMatchObject({ cursor: 'next-cursor' }));
+    const cursorAdvances = mocks.inputs.filter(
+      (input) => (input as { cursor?: string }).cursor === 'next-cursor',
+    );
+    // SWR may re-render, but the active cursor value stays a single next-cursor (not stacked twice).
+    expect(cursorAdvances.length).toBeGreaterThan(0);
+    expect(
+      mocks.inputs.some((input) => {
+        // No deeper nested duplicate path — list only ever requests the first next cursor.
+        return (
+          (input as { cursor?: string }).cursor &&
+          (input as { cursor?: string }).cursor !== 'next-cursor'
+        );
+      }),
+    ).toBe(false);
+  });
+
   it('sends every URL filter and cursor to the server hook', async () => {
     render(
       <MemoryRouter>

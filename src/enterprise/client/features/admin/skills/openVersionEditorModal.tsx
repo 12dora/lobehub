@@ -101,25 +101,14 @@ const VersionEditorContent = memo<VersionEditorModalProps>(
     return (
       <div className={styles.body}>
         <Text type="secondary">{t('skillCatalog.version.desc')}</Text>
-        <div className={styles.grid}>
-          <div className={styles.field}>
-            <Text strong>{t('skillCatalog.detail.version.version')}</Text>
-            <Input
-              disabled={loading}
-              maxLength={64}
-              value={draft.version}
-              onChange={(e) => update('version', e.target.value)}
-            />
-          </div>
-          <div className={styles.field}>
-            <Text strong>{t('skillCatalog.version.contentRef')}</Text>
-            <Input
-              disabled={loading}
-              maxLength={520}
-              value={draft.contentRef}
-              onChange={(e) => update('contentRef', e.target.value)}
-            />
-          </div>
+        <div className={styles.field}>
+          <Text strong>{t('skillCatalog.detail.version.version')}</Text>
+          <Input
+            disabled={loading}
+            maxLength={64}
+            value={draft.version}
+            onChange={(e) => update('version', e.target.value)}
+          />
         </div>
         <div className={styles.field}>
           <Text strong>{t('skillCatalog.detail.version.content')}</Text>

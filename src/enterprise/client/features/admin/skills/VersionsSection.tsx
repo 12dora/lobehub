@@ -16,6 +16,7 @@ import {
   skillDetailSectionStyles,
   useCursorStack,
 } from './useCursorPagedList';
+import { isRollbackableSkillVersion } from './writeOperation';
 
 const PAGE_LIMIT = 20;
 
@@ -173,7 +174,7 @@ const VersionRow = memo<{
           ? t('skillCatalog.detail.versions.selected')
           : t('skillCatalog.detail.versions.view')}
       </Button>
-      {canRollback && version.lastPublishedRevision !== null ? (
+      {canRollback && isRollbackableSkillVersion(version) ? (
         <Button danger disabled={actionLoading} onClick={() => onRollback(version.id)}>
           {t('skillCatalog.actions.rollback.label')}
         </Button>
@@ -258,7 +259,10 @@ export const VersionDetail = memo<{
                         </Text>
                         <details>
                           <summary>{t('skillCatalog.validation.technicalDetails')}</summary>
-                          <Text>{issue.message}</Text>
+                          <Text type="secondary">
+                            {t('skillCatalog.validation.untranslatedDiagnostics')}
+                          </Text>
+                          <Text code>{issue.message}</Text>
                         </details>
                       </Flexbox>
                     </div>

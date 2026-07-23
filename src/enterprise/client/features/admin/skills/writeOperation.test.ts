@@ -4,7 +4,7 @@ import type { AdminSkillGetOutput, AdminSkillVersionSummary } from './types';
 import {
   createSkillWriteEpochGuard,
   freezeSkillWriteSnapshot,
-  rollbackableSkillVersions,
+  isRollbackableSkillVersion,
 } from './writeOperation';
 
 const snapshot = (id = 'skill-1', revision = 3): AdminSkillGetOutput => ({
@@ -56,9 +56,8 @@ describe('M08 frozen write operations', () => {
   });
 
   it('offers rollback only for versions with server publication provenance', () => {
-    expect(
-      rollbackableSkillVersions([version('v1', 2), version('v2', null)]).map((v) => v.id),
-    ).toEqual(['v1']);
+    expect(isRollbackableSkillVersion(version('v1', 2))).toBe(true);
+    expect(isRollbackableSkillVersion(version('v2', null))).toBe(false);
   });
 
   it('invalidates callbacks captured for another resource or prior epoch', () => {

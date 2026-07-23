@@ -23,7 +23,7 @@ const DEFAULT_MAX_DEPENDENCY_EDGES = 512;
 const DEFAULT_MAX_DEPENDENCY_NODES = 256;
 const DEFAULT_MAX_ISSUES = 100;
 const DEFAULT_MAX_RESOLVER_CALLS = 256;
-const VALIDATOR_VERSION = 'm08-v2';
+const VALIDATOR_VERSION = 'm08-v3';
 
 const HEURISTIC_INSTRUCTION_PATTERNS = [
   /\b(?:jailbreak|prompt\s+injection|system\s+prompt)\b/i,
@@ -509,6 +509,30 @@ export class SkillCatalogValidator {
         ),
       );
     }
+    // Managed runtime only executes fully inline content (contentRef must stay null).
+    // Reject every non-null value, including corrupted legacy empty-string rows.
+    if (input.contentRef !== null && input.contentRef !== undefined) {
+      this.pushIssue(
+        issue(
+          'non_inline_content',
+          ['contentRef'],
+          'Managed Skill runtime requires inline content; opaque contentRef is not executable',
+        ),
+      );
+    }
+    const resources = input.resources ?? [];
+    for (const [index, resource] of resources.entries()) {
+      if (resource.contentRef !== undefined || resource.content === undefined) {
+        this.pushIssue(
+          issue(
+            'non_inline_content',
+            ['resources', index, resource.contentRef !== undefined ? 'contentRef' : 'content'],
+            'Managed Skill runtime requires inline resource content',
+          ),
+        );
+      }
+    }
+
     if (containsEnterpriseSecretMaterial(input.content)) {
       this.pushIssue(
         issue(

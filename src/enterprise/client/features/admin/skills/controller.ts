@@ -8,6 +8,7 @@ import {
 import type {
   AdminSkillCreateVersionInput,
   AdminSkillGetOutput,
+  AdminSkillParseImportSourceOutput,
   AdminSkillUpdateDraftInput,
   AdminSkillValidateOutput,
 } from './types';
@@ -191,10 +192,10 @@ export const buildSkillVersionPayload = (params: {
   const reason = params.reason.trim();
   const version = params.draft.version.trim();
   if (!parsed.valid || !parsed.manifest || !parsed.resources || !reason || !version) return null;
-  const contentRef = params.draft.contentRef.trim() || null;
   return {
     content: params.draft.content,
-    contentRef,
+    // Managed runtime is inline-only; opaque refs are rejected at validation/publish.
+    contentRef: null,
     expectedDraftToken: params.draftToken,
     expectedRevision: params.revision,
     manifest: parsed.manifest,
@@ -205,7 +206,7 @@ export const buildSkillVersionPayload = (params: {
   };
 };
 
-/** Minimal valid platform skill manifest for applyImmediate create/import. */
+/** Minimal valid platform skill manifest for first-time builtin override materialization. */
 export const buildMinimalSkillManifest = (params: {
   description?: string | null;
   displayName: string;
@@ -223,47 +224,92 @@ export const buildMinimalSkillManifest = (params: {
   toolDependencies: [],
 });
 
-/** Version fields embedded in applyImmediate(mode:'create') without CAS tokens. */
-export const buildApplyImmediateVersionPayload = (params: {
-  content: string;
-  contentRef?: string | null;
-  description?: string | null;
-  displayName: string;
-  manifestText?: string;
-  resourcesText?: string;
-  version: string;
-}): {
+export type ApplyImmediateVersionPayload = {
   content: string;
   contentRef: string | null;
   manifest: SkillManifest;
   resources: SkillResource[];
   version: string;
-} | null => {
+};
+
+/**
+ * Import-only conversion: requires a typed parse-import result with a required
+ * enterprise manifest. Never synthesizes the empty-permissions minimal stub.
+ * Truncated resource packages fail closed (no silent partial import).
+ */
+export const buildApplyImmediateVersionPayloadFromImport = (
+  parsed: AdminSkillParseImportSourceOutput,
+): ApplyImmediateVersionPayload | { error: 'resources_truncated' | 'invalid' } => {
+  if (parsed.resourcesTruncated) return { error: 'resources_truncated' };
+  const content = parsed.content.trim();
+  const version = (parsed.packageVersion ?? '1.0.0').trim();
+  if (!content || !version) return { error: 'invalid' };
+  try {
+    const manifest = skillManifestSchema.parse(parsed.manifest);
+    const resources = skillResourceSchema.array().max(100).parse(parsed.resources);
+    return {
+      content,
+      // Managed runtime is inline-only; never carry opaque refs through applyImmediate.
+      contentRef: null,
+      manifest,
+      resources,
+      version,
+    };
+  } catch {
+    return { error: 'invalid' };
+  }
+};
+
+/**
+ * Version fields for applyImmediate(mode:'create') without CAS tokens.
+ * Used for builtin override materialization and other non-import creates that
+ * may legitimately synthesize a minimal manifest. Import callers must use
+ * {@link buildApplyImmediateVersionPayloadFromImport} instead.
+ */
+export const buildApplyImmediateVersionPayload = (params: {
+  content: string;
+  contentRef?: string | null;
+  description?: string | null;
+  displayName: string;
+  /** Explicit manifest when available (still optional for non-import paths). */
+  manifest?: SkillManifest;
+  manifestText?: string;
+  resources?: SkillResource[];
+  resourcesText?: string;
+  version: string;
+}): ApplyImmediateVersionPayload | null => {
   const content = params.content.trim();
   const version = params.version.trim();
   if (!content || !version) return null;
   let manifest: SkillManifest;
   try {
-    manifest = params.manifestText
-      ? skillManifestSchema.parse(JSON.parse(params.manifestText))
-      : buildMinimalSkillManifest({
-          description: params.description,
-          displayName: params.displayName,
-        });
+    if (params.manifest) {
+      manifest = skillManifestSchema.parse(params.manifest);
+    } else if (params.manifestText) {
+      manifest = skillManifestSchema.parse(JSON.parse(params.manifestText));
+    } else {
+      manifest = buildMinimalSkillManifest({
+        description: params.description,
+        displayName: params.displayName,
+      });
+    }
   } catch {
     return null;
   }
   let resources: SkillResource[] = [];
-  if (params.resourcesText) {
-    try {
+  try {
+    if (params.resources) {
+      resources = skillResourceSchema.array().max(100).parse(params.resources);
+    } else if (params.resourcesText) {
       resources = skillResourceSchema.array().max(100).parse(JSON.parse(params.resourcesText));
-    } catch {
-      return null;
     }
+  } catch {
+    return null;
   }
   return {
     content,
-    contentRef: params.contentRef?.trim() || null,
+    // Managed runtime is inline-only; never carry opaque refs through applyImmediate.
+    contentRef: null,
     manifest,
     resources,
     version,

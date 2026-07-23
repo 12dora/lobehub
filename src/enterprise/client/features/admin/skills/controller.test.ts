@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import {
+  buildApplyImmediateVersionPayloadFromImport,
   buildSkillUpdatePayload,
   buildSkillVersionPayload,
   deriveSkillPermissions,
@@ -13,7 +14,11 @@ import {
   summarizeSkillValidation,
   toEditableSkillDraft,
 } from './controller';
-import type { AdminSkillGetOutput, AdminSkillValidateOutput } from './types';
+import type {
+  AdminSkillGetOutput,
+  AdminSkillParseImportSourceOutput,
+  AdminSkillValidateOutput,
+} from './types';
 
 const manifest = {
   description: 'Safe Skill',
@@ -59,7 +64,76 @@ const snapshot = (): AdminSkillGetOutput => ({
   publishedVersion: null,
 });
 
+const parseImportOutput = (
+  overrides: Partial<AdminSkillParseImportSourceOutput> = {},
+): AdminSkillParseImportSourceOutput => ({
+  content: '# Imported skill body',
+  description: 'From package',
+  displayName: 'Imported Skill',
+  manifest: {
+    ...manifest,
+    description: 'From package',
+    displayName: 'Imported Skill',
+    permissions: {
+      filesystem: 'read',
+      network: { allowedHosts: ['api.example.com'], enabled: true },
+      tools: { allow: ['web_search'] },
+    },
+    skillDependencies: [{ optional: false, skillKey: 'dep.skill', version: '1.0.0' }],
+    toolDependencies: [{ optional: true, toolKey: 'web_search' }],
+  },
+  packageVersion: '2.3.4',
+  resources: [
+    {
+      checksum: 'c'.repeat(64),
+      content: 'helper text',
+      mediaType: 'text/plain',
+      path: 'helpers/note.txt',
+      sizeBytes: new TextEncoder().encode('helper text').byteLength,
+    },
+  ],
+  suggestedSkillKey: 'imported.skill',
+  ...overrides,
+});
+
 describe('M08 Skill UI controller', () => {
+  it('converts parseImportSource output with required manifest and rejects truncation', () => {
+    const payload = buildApplyImmediateVersionPayloadFromImport(parseImportOutput());
+    expect(payload).toMatchObject({
+      content: '# Imported skill body',
+      contentRef: null,
+      version: '2.3.4',
+    });
+    expect('error' in payload ? null : payload.manifest).toMatchObject({
+      permissions: {
+        filesystem: 'read',
+        network: { allowedHosts: ['api.example.com'], enabled: true },
+        tools: { allow: ['web_search'] },
+      },
+      skillDependencies: [{ skillKey: 'dep.skill', version: '1.0.0' }],
+      toolDependencies: [{ optional: true, toolKey: 'web_search' }],
+    });
+    expect('error' in payload ? null : payload.resources).toHaveLength(1);
+
+    expect(
+      buildApplyImmediateVersionPayloadFromImport(parseImportOutput({ resourcesTruncated: true })),
+    ).toEqual({ error: 'resources_truncated' });
+
+    // Defaults packageVersion when the package omitted a valid SemVer.
+    const withoutPackageVersion = buildApplyImmediateVersionPayloadFromImport(
+      parseImportOutput({ packageVersion: undefined }),
+    );
+    expect(withoutPackageVersion).toMatchObject({ version: '1.0.0' });
+    // Still carries the typed enterprise manifest — never an empty-permissions stub.
+    expect(
+      'error' in withoutPackageVersion ? null : withoutPackageVersion.manifest.permissions,
+    ).toEqual({
+      filesystem: 'read',
+      network: { allowedHosts: ['api.example.com'], enabled: true },
+      tools: { allow: ['web_search'] },
+    });
+  });
+
   it('requires confirmation for every dirty hydration without a safe recovery copy', () => {
     for (const persistenceStatus of ['sensitive', 'invalid', 'too_large', 'unavailable']) {
       expect(

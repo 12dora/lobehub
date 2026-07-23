@@ -3,7 +3,7 @@
 import { Alert, Empty } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
@@ -25,7 +25,6 @@ export interface UseCursorStackResult {
   goNext: (nextCursor: string) => void;
   goPrevious: () => void;
   hasPrevious: boolean;
-  reset: () => void;
 }
 
 /**
@@ -39,10 +38,6 @@ export const useCursorStack = (resetKey?: string | number | null): UseCursorStac
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const cursor = cursorStack.at(-1) ?? null;
 
-  const reset = useCallback(() => {
-    setCursorStack([]);
-  }, []);
-
   useEffect(() => {
     setCursorStack([]);
   }, [resetKey]);
@@ -50,13 +45,16 @@ export const useCursorStack = (resetKey?: string | number | null): UseCursorStac
   return {
     cursor: cursor ?? undefined,
     goNext: (nextCursor) => {
-      setCursorStack((current) => [...current, nextCursor]);
+      setCursorStack((current) => {
+        // Idempotent: ignore duplicate Next while the same cursor is already active/pending.
+        if (current.at(-1) === nextCursor) return current;
+        return [...current, nextCursor];
+      });
     },
     goPrevious: () => {
       setCursorStack((current) => current.slice(0, -1));
     },
     hasPrevious: cursorStack.length > 0,
-    reset,
   };
 };
 
@@ -126,14 +124,14 @@ export function CursorPagedListSurface<TItem>({
         <>
           {renderItems(data.items)}
           <div aria-label={t('skillCatalog.pagination.label')} className={styles.pager}>
-            <Button disabled={!pagination.hasPrevious} onClick={onPrevious}>
+            <Button disabled={!pagination.hasPrevious || isLoading} onClick={onPrevious}>
               {t('skillCatalog.pagination.previous')}
             </Button>
             <Button
-              disabled={!data.nextCursor || Boolean(error)}
+              disabled={!data.nextCursor || Boolean(error) || isLoading}
               onClick={() => {
                 const next = data.nextCursor;
-                if (next) onNext(next);
+                if (next && !isLoading) onNext(next);
               }}
             >
               {t('skillCatalog.pagination.next')}

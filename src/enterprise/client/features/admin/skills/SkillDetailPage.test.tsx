@@ -318,6 +318,48 @@ describe('SkillDetailPage independent async states', () => {
     });
   });
 
+  it('ignores rapid double-clicks on detail pagers so cursors do not stack twice', async () => {
+    mocks.versionListError = undefined;
+    mocks.versionListData = { items: [summary], nextCursor: 'version-cursor-2' };
+    mocks.versionListLoading = false;
+    mocks.dependentError = undefined;
+    mocks.dependentData = {
+      items: [{ id: 'agent-1', key: 'agent.one', name: 'Agent One', type: 'agent', version: '1' }],
+      nextCursor: 'dependent-cursor-2',
+    };
+    mocks.dependentLoading = false;
+    render(
+      <MemoryRouter initialEntries={['/admin/skills/s1']}>
+        <Routes>
+          <Route element={<SkillDetailPage />} path="/admin/skills/:id" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const nextButtons = screen.getAllByText('skillCatalog.pagination.next');
+    // Triple-click each Next; goNext is idempotent for the same cursor token.
+    fireEvent.click(nextButtons[0]);
+    fireEvent.click(nextButtons[0]);
+    fireEvent.click(nextButtons[0]);
+    fireEvent.click(nextButtons[1]);
+    fireEvent.click(nextButtons[1]);
+    fireEvent.click(nextButtons[1]);
+
+    await waitFor(() => {
+      expect(mocks.versionListInputs.at(-1)).toMatchObject({ cursor: 'version-cursor-2' });
+      expect(mocks.dependentInputs.at(-1)).toMatchObject({ cursor: 'dependent-cursor-2' });
+    });
+
+    // One Previous from each pager returns to page 1 (no duplicate stack entries).
+    const previousButtons = screen.getAllByText('skillCatalog.pagination.previous');
+    fireEvent.click(previousButtons[0]);
+    fireEvent.click(previousButtons[1]);
+    await waitFor(() => {
+      expect(mocks.versionListInputs.at(-1)).toMatchObject({ cursor: undefined });
+      expect(mocks.dependentInputs.at(-1)).toMatchObject({ cursor: undefined });
+    });
+  });
+
   it('keeps prior sub-list results and Previous when later cursor pages fail', async () => {
     mocks.versionListError = undefined;
     mocks.versionListData = { items: [summary], nextCursor: 'version-cursor-2' };

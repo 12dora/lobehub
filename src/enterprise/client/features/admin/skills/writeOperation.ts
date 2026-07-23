@@ -24,10 +24,8 @@ export const freezeSkillWriteSnapshot = (
     ...version,
   });
 
-export const rollbackableSkillVersions = (
-  versions: readonly AdminSkillVersionSummary[],
-): AdminSkillVersionSummary[] =>
-  versions.filter((version) => version.lastPublishedRevision !== null);
+export const isRollbackableSkillVersion = (version: AdminSkillVersionSummary): boolean =>
+  version.lastPublishedRevision !== null;
 
 export interface SkillWriteEpochGuard {
   assertCurrent: (epoch: number, resourceId: string) => void;
