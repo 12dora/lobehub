@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditExport,
@@ -9,6 +9,7 @@ import {
   type PlatformAuditExportStatus,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { withPlatformAuditRetentionHoldLock } from './auditRetentionHoldLock';
 import {
   clampListLimit,
   encodeCreatedAtCursor as encodeCursor,
@@ -20,6 +21,23 @@ export type {
   PlatformAuditExportItem,
   PlatformAuditExportKind,
   PlatformAuditExportStatus,
+};
+
+/** Durable outbox marker: private key pending external object delete. */
+export const ARTIFACT_PURGE_PENDING_CODE = 'ARTIFACT_PURGE_PENDING';
+/** Outbox aborted because a legal hold appeared after claim-commit. */
+export const ARTIFACT_PURGE_DEFERRED_HOLD_CODE = 'ARTIFACT_PURGE_DEFERRED_HOLD';
+
+type ExportErrorPayload = {
+  code?: string;
+  message?: string;
+  purgeStorageKey?: string;
+} | null;
+
+export const readPurgeOutboxStorageKey = (error: ExportErrorPayload | undefined): string | null => {
+  if (!error || error.code !== ARTIFACT_PURGE_PENDING_CODE) return null;
+  const key = error.purgeStorageKey;
+  return key && key.length > 0 ? key : null;
 };
 
 export interface CreatePlatformAuditExportParams {
@@ -318,6 +336,191 @@ export class PlatformAuditExportModel {
       )
       .returning();
     return row;
+  };
+
+  /**
+   * Durable tombstone + purge outbox claim for retention.
+   *
+   * Under the caller's TX (hold lock + hold recheck already applied):
+   * 1. Read prior private `storageKey`
+   * 2. Clear `storageKey` / mark `expired` so the row leaves the candidate set
+   * 3. Persist the key on the row as a purge-pending outbox (`error.purgeStorageKey`)
+   *
+   * The returned key is for callers that still delete immediately; the **safe**
+   * path rechecks holds via {@link authorizeArtifactObjectDelete} immediately
+   * before the external object delete, then {@link completeArtifactObjectDelete}.
+   * A hold that appears after claim must abort/defer — never destroy held evidence.
+   */
+  claimArtifactStorageForPurge = async (
+    id: string,
+    executor: LobeChatDatabase | Transaction = this.db,
+  ): Promise<{ id: string; storageKey: string } | undefined> => {
+    const [existing] = await executor
+      .select({
+        id: platformAuditExports.id,
+        status: platformAuditExports.status,
+        storageKey: platformAuditExports.storageKey,
+      })
+      .from(platformAuditExports)
+      .where(
+        and(
+          eq(platformAuditExports.id, id),
+          or(
+            eq(platformAuditExports.status, 'completed'),
+            eq(platformAuditExports.status, 'expired'),
+          ),
+          isNotNull(platformAuditExports.storageKey),
+        ),
+      )
+      .limit(1);
+
+    if (!existing?.storageKey) return undefined;
+
+    const now = new Date();
+    const [row] = await executor
+      .update(platformAuditExports)
+      .set({
+        // Durable outbox: key survives crash between claim-commit and object delete.
+        error: {
+          code: ARTIFACT_PURGE_PENDING_CODE,
+          purgeStorageKey: existing.storageKey,
+        },
+        status: 'expired',
+        storageKey: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(platformAuditExports.id, id),
+          isNotNull(platformAuditExports.storageKey),
+          or(
+            eq(platformAuditExports.status, 'completed'),
+            eq(platformAuditExports.status, 'expired'),
+          ),
+        ),
+      )
+      .returning({ id: platformAuditExports.id });
+
+    if (!row) return undefined;
+    return { id: row.id, storageKey: existing.storageKey };
+  };
+
+  /**
+   * Final pre-delete authorization for one or more purge outboxes, under the
+   * shared retention/hold advisory lock.
+   *
+   * - Hold free → returns the private storage key (caller may delete the object).
+   * - Hold active → restores `storageKey` onto the export (evidence addressable again),
+   *   marks outbox deferred, omits from the result (caller must NOT delete).
+   */
+  authorizeArtifactObjectDeletes = async (
+    ids: string[],
+    params: {
+      db?: LobeChatDatabase;
+      resolveHeldIds: (
+        tx: Transaction,
+        rows: Array<{
+          filterSnapshot: PlatformAuditExportItem['filterSnapshot'];
+          id: string;
+          kind: PlatformAuditExportItem['kind'];
+        }>,
+      ) => Promise<Set<string>>;
+    },
+  ): Promise<Array<{ id: string; storageKey: string }>> => {
+    if (ids.length === 0) return [];
+    const db = params.db ?? (this.db as LobeChatDatabase);
+
+    return withPlatformAuditRetentionHoldLock(db, async (tx) => {
+      const existingRows = await tx
+        .select({
+          error: platformAuditExports.error,
+          filterSnapshot: platformAuditExports.filterSnapshot,
+          id: platformAuditExports.id,
+          kind: platformAuditExports.kind,
+        })
+        .from(platformAuditExports)
+        .where(inArray(platformAuditExports.id, ids));
+
+      const pending = existingRows
+        .map((row) => {
+          const storageKey = readPurgeOutboxStorageKey(row.error);
+          return storageKey ? { ...row, storageKey } : null;
+        })
+        .filter((row): row is NonNullable<typeof row> => row !== null);
+
+      if (pending.length === 0) return [];
+
+      const heldIds = await params.resolveHeldIds(
+        tx,
+        pending.map((r) => ({
+          filterSnapshot: r.filterSnapshot,
+          id: r.id,
+          kind: r.kind,
+        })),
+      );
+
+      const authorized: Array<{ id: string; storageKey: string }> = [];
+      const now = new Date();
+
+      for (const row of pending) {
+        if (heldIds.has(row.id)) {
+          // Defer: restore addressable key; leave status expired so retention may
+          // re-scan once the hold is released (storageKey IS NOT NULL).
+          await tx
+            .update(platformAuditExports)
+            .set({
+              error: {
+                code: ARTIFACT_PURGE_DEFERRED_HOLD_CODE,
+                message: 'legal hold active between claim and object delete',
+              },
+              storageKey: row.storageKey,
+              updatedAt: now,
+            })
+            .where(eq(platformAuditExports.id, row.id));
+          continue;
+        }
+        authorized.push({ id: row.id, storageKey: row.storageKey });
+      }
+
+      return authorized;
+    });
+  };
+
+  /**
+   * Mark purge outbox complete **only** after a successful external object delete.
+   * No-op when the outbox is already cleared or was deferred/restored.
+   */
+  completeArtifactObjectDelete = async (
+    id: string,
+    executor: LobeChatDatabase | Transaction = this.db,
+  ): Promise<boolean> => {
+    const [existing] = await executor
+      .select({
+        error: platformAuditExports.error,
+        id: platformAuditExports.id,
+      })
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, id))
+      .limit(1);
+
+    if (!readPurgeOutboxStorageKey(existing?.error)) return false;
+
+    const [row] = await executor
+      .update(platformAuditExports)
+      .set({
+        error: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(platformAuditExports.id, id),
+          // Only clear while still purge-pending (lost races / double-complete stay safe).
+          sql`${platformAuditExports.error}->>'code' = ${ARTIFACT_PURGE_PENDING_CODE}`,
+        ),
+      )
+      .returning({ id: platformAuditExports.id });
+
+    return Boolean(row);
   };
 
   /** True when the export is in a terminal lifecycle state. */

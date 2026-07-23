@@ -1,16 +1,12 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import {
-  platformAuditLogs,
-  platformResourceRevisions,
-  platformSettingPolicies,
-  platformSettingsBundle,
-  userSettingOverrideRevisions,
-  userSettingOverrides,
-} from '../../schemas/platform';
+import { users } from '../../schemas';
+import { userSettingOverrideRevisions, userSettingOverrides } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+import { AdminUserModel } from '../adminUser';
 import { PlatformRevisionModel } from '../platform/revision';
 import {
   createSettingsPointerAdapter,
@@ -21,23 +17,36 @@ import {
 const serverDB: LobeChatDatabase = await getTestDB();
 const model = new PlatformSettingsModel(serverDB);
 
-beforeEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(userSettingOverrides);
-  await serverDB.delete(userSettingOverrideRevisions);
-  await serverDB.delete(platformSettingPolicies);
-  await serverDB.delete(platformSettingsBundle);
-});
+const cleanup = async () => {
+  // TRUNCATE bypasses row-level immutability triggers (migration 0145).
+  await serverDB.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_audit_logs,
+        platform_resource_revisions,
+        user_setting_overrides,
+        user_setting_override_revisions,
+        platform_setting_policies,
+        platform_settings_bundle
+      CASCADE
+    `),
+  );
+  await serverDB
+    .delete(users)
+    .where(sql`${users.id} IN ('user-a', 'user-b', 'u1', 'u2', 'cascade-user')`);
+};
 
-afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(userSettingOverrides);
-  await serverDB.delete(userSettingOverrideRevisions);
-  await serverDB.delete(platformSettingPolicies);
-  await serverDB.delete(platformSettingsBundle);
-});
+beforeEach(cleanup);
+afterEach(cleanup);
+
+const ensureUsers = async (...ids: string[]) => {
+  for (const id of ids) {
+    await serverDB
+      .insert(users)
+      .values({ id, username: id })
+      .onConflictDoNothing({ target: users.id });
+  }
+};
 
 describe('PlatformSettingsModel', () => {
   it('ensures singleton bundle and saves draft', async () => {
@@ -103,6 +112,7 @@ describe('PlatformSettingsModel', () => {
   });
 
   it('user overrides isolate by userId and bump revision on last delete', async () => {
+    await ensureUsers('user-a', 'user-b');
     await model.upsertUserOverride({
       path: 'general.fontSize',
       userId: 'user-a',
@@ -130,6 +140,7 @@ describe('PlatformSettingsModel', () => {
   });
 
   it('countOverridesByPaths uses aggregate query (no user scan)', async () => {
+    await ensureUsers('u1', 'u2');
     await model.upsertUserOverride({ path: 'general.fontSize', userId: 'u1', value: 16 });
     await model.upsertUserOverride({ path: 'general.fontSize', userId: 'u2', value: 18 });
     await model.upsertUserOverride({ path: 'memory.enabled', userId: 'u1', value: false });
@@ -226,5 +237,35 @@ describe('PlatformSettingsModel', () => {
     expect(rev1?.payload).toMatchObject({ policies: { a: 1 } });
     const rev2 = history.find((r) => r.revision === 2);
     expect(rev2?.payload).toMatchObject({ policies: { a: 2 } });
+  });
+
+  it('cascades user setting overrides and revisions on hard user delete', async () => {
+    await ensureUsers('cascade-user');
+    await model.upsertUserOverride({
+      path: 'general.fontSize',
+      userId: 'cascade-user',
+      value: 22,
+    });
+    await model.upsertUserOverride({
+      path: 'memory.enabled',
+      userId: 'cascade-user',
+      value: true,
+    });
+    // Ensure revision row exists
+    expect(await model.getUserOverrideRevision('cascade-user')).toBeGreaterThan(0);
+
+    const deleted = await new AdminUserModel(serverDB).hardDeleteUser('cascade-user');
+    expect(deleted).toBe(true);
+
+    const overrides = await serverDB
+      .select()
+      .from(userSettingOverrides)
+      .where(sql`${userSettingOverrides.userId} = 'cascade-user'`);
+    const revs = await serverDB
+      .select()
+      .from(userSettingOverrideRevisions)
+      .where(sql`${userSettingOverrideRevisions.userId} = 'cascade-user'`);
+    expect(overrides).toHaveLength(0);
+    expect(revs).toHaveLength(0);
   });
 });

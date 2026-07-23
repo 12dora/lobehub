@@ -7,7 +7,7 @@ import {
 } from '@/types/platform/authSettings';
 
 import { platformAuthSettings } from '../../schemas/platform';
-import type { LobeChatDatabase } from '../../type';
+import type { LobeChatDatabase, Transaction } from '../../type';
 
 /** Singleton row identity — there is exactly one platform auth-settings document. */
 export const PLATFORM_AUTH_SETTINGS_ID = 'global';
@@ -17,9 +17,9 @@ export const PLATFORM_AUTH_SETTINGS_ID = 'global';
  * Absent row → built-in defaults (open registration, no domain restriction).
  */
 export class PlatformAuthSettingsModel {
-  private readonly db: LobeChatDatabase;
+  private readonly db: LobeChatDatabase | Transaction;
 
-  constructor(db: LobeChatDatabase) {
+  constructor(db: LobeChatDatabase | Transaction) {
     this.db = db;
   }
 

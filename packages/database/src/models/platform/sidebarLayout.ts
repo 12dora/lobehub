@@ -7,7 +7,7 @@ import {
 } from '@/types/platform/sidebarLayout';
 
 import { platformSidebarLayout } from '../../schemas/platform';
-import type { LobeChatDatabase } from '../../type';
+import type { LobeChatDatabase, Transaction } from '../../type';
 
 /** Singleton row identity — there is exactly one platform sidebar-layout document. */
 export const PLATFORM_SIDEBAR_LAYOUT_ID = 'global';
@@ -17,9 +17,9 @@ export const PLATFORM_SIDEBAR_LAYOUT_ID = 'global';
  * Absent row → built-in default (mode 'user', no platform layout).
  */
 export class PlatformSidebarLayoutModel {
-  private readonly db: LobeChatDatabase;
+  private readonly db: LobeChatDatabase | Transaction;
 
-  constructor(db: LobeChatDatabase) {
+  constructor(db: LobeChatDatabase | Transaction) {
     this.db = db;
   }
 

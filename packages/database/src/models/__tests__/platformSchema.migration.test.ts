@@ -7,25 +7,25 @@ import { sql } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import {
-  platformAuditLogs,
-  platformBranding,
-  platformJobs,
-  platformResourceRevisions,
-  platformSettingPolicies,
-} from '../../schemas/platform';
+import { platformAuditLogs, platformJobs, platformResourceRevisions } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 
 afterEach(async () => {
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformJobs);
-  await serverDB.delete(platformSettingPolicies);
-  await serverDB.delete(platformBranding);
+  // TRUNCATE bypasses revision/audit immutability triggers (migration 0145).
+  await serverDB.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_resource_revisions,
+        platform_audit_logs,
+        platform_jobs,
+        platform_setting_policies,
+        platform_branding
+      CASCADE
+    `),
+  );
 });
-
 describe('platform Migration 0 tables', () => {
   it('exposes all platform_* tables in information_schema', async () => {
     const result = await serverDB.execute(sql`

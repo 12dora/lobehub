@@ -9,7 +9,21 @@ import { INBOX_SESSION_ID } from '@lobechat/const';
 import type { AgentRankItem, ModelRankItem, TopicRankItem } from '@lobechat/types';
 import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
-import { and, asc, count, desc, eq, gt, gte, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import type { MessageMetadata } from '@/types/message';
 import type { UsageLog, UsageRecordItem } from '@/types/usage/usageRecord';
@@ -20,6 +34,14 @@ import { agentOperations } from '../../schemas/agentOperations';
 import type { LobeChatDatabase } from '../../type';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../../utils/genWhere';
 import { normalizeInboxAgentMeta } from '../../utils/inboxAgent';
+
+/**
+ * Hard safety cap for uncapped {@link PlatformGlobalStatsModel.findByDateRange} /
+ * {@link PlatformGlobalStatsModel.findByMonth} drains. Prevents unbounded in-memory
+ * materialization of raw message rows (admin OOM risk). Prefer keyset paging via
+ * findByDateRangePage / findByMonthPage for large ranges; charts use findAndGroupByDay.
+ */
+export const MAX_USAGE_DETAIL_ROWS = 20000;
 
 /** Usage row with platform-global user display name (join users). */
 export type GlobalUsageRecordItem = UsageRecordItem & { userDisplay: string };
@@ -35,11 +57,6 @@ export type GlobalStatsTotals = {
   /** Users active within the last `activeDays` (by lastActiveAt). */
   usersActive: number;
   usersTotal: number;
-};
-
-const formatDay = (date?: Date) => {
-  if (!date) return '--';
-  return dayjs(date).format('YYYY-MM-DD');
 };
 
 // Heatmap intensity buckets. The message heatmap keys off an absolute count (one level per
@@ -363,7 +380,47 @@ export class PlatformGlobalStatsModel {
     return row?.seconds ?? 0;
   };
 
-  findByDateRange = async (startAt: string, endAt: string): Promise<GlobalUsageRecordItem[]> => {
+  /**
+   * Explicit page size for detail usage rows. Chart aggregation never materializes
+   * this set — use {@link findAndGroupByDay}. Prefer paging via
+   * {@link findByDateRangePage} / {@link findByMonthPage}; uncapped drain is
+   * hard-capped at {@link MAX_USAGE_DETAIL_ROWS} to avoid OOM.
+   */
+  static readonly USAGE_PAGE_DEFAULT = 100;
+  static readonly USAGE_PAGE_MAX = 500;
+
+  /**
+   * Keyset-paginated usage detail for a date range (inclusive calendar days).
+   * Does not return a truncated full-month array — use `nextCursor` to continue.
+   */
+  findByDateRangePage = async (
+    startAt: string,
+    endAt: string,
+    options?: { cursor?: string; limit?: number },
+  ): Promise<{ items: GlobalUsageRecordItem[]; nextCursor: string | null }> => {
+    const limit = Math.min(
+      Math.max(Math.floor(options?.limit ?? PlatformGlobalStatsModel.USAGE_PAGE_DEFAULT), 1),
+      PlatformGlobalStatsModel.USAGE_PAGE_MAX,
+    );
+
+    const conditions = genWhere([
+      eq(messages.role, 'assistant'),
+      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+    ]);
+
+    const cursor = options?.cursor;
+    let cursorCondition: ReturnType<typeof and> | undefined;
+    if (cursor?.includes('|')) {
+      const [iso, id] = cursor.split('|');
+      const at = new Date(iso);
+      if (!Number.isNaN(at.getTime()) && id) {
+        cursorCondition = or(
+          lt(messages.createdAt, at),
+          and(eq(messages.createdAt, at), lt(messages.id, id)),
+        )!;
+      }
+    }
+
     const spends = await this.db
       .select({
         createdAt: messages.createdAt,
@@ -378,15 +435,13 @@ export class PlatformGlobalStatsModel {
       })
       .from(messages)
       .leftJoin(users, eq(messages.userId, users.id))
-      .where(
-        genWhere([
-          eq(messages.role, 'assistant'),
-          genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
-        ]),
-      )
-      .orderBy(desc(messages.createdAt));
+      .where(cursorCondition ? and(conditions, cursorCondition) : conditions)
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit + 1);
 
-    return spends.map((spend) => {
+    const hasMore = spends.length > limit;
+    const page = hasMore ? spends.slice(0, limit) : spends;
+    const items = page.map((spend) => {
       const metadata = spend.metadata as MessageMetadata | null;
       // Prefer the dedicated `usage` column, then nested metadata.usage /
       // metadata.performance, then deprecated flat metadata fields (parity with
@@ -413,17 +468,207 @@ export class PlatformGlobalStatsModel {
         userId: spend.userId,
       } satisfies GlobalUsageRecordItem;
     });
+
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null,
+    };
   };
 
-  findByMonth = async (mo?: string): Promise<GlobalUsageRecordItem[]> => {
+  /**
+   * Date-range usage detail. When `limit` is set, returns a single page (use
+   * {@link findByDateRangePage} for cursors). When omitted, drains keyset pages
+   * up to {@link MAX_USAGE_DETAIL_ROWS} (hard safety cap against OOM).
+   */
+  findByDateRange = async (
+    startAt: string,
+    endAt: string,
+    options?: { limit?: number },
+  ): Promise<GlobalUsageRecordItem[]> => {
+    if (options?.limit !== undefined) {
+      const { items } = await this.findByDateRangePage(startAt, endAt, options);
+      return items;
+    }
+
+    const items: GlobalUsageRecordItem[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const remaining = MAX_USAGE_DETAIL_ROWS - items.length;
+      if (remaining <= 0) break;
+
+      const page = await this.findByDateRangePage(startAt, endAt, {
+        cursor,
+        limit: Math.min(PlatformGlobalStatsModel.USAGE_PAGE_MAX, remaining),
+      });
+      items.push(...page.items);
+      if (!page.nextCursor || items.length >= MAX_USAGE_DETAIL_ROWS) break;
+      cursor = page.nextCursor;
+    }
+    return items.length > MAX_USAGE_DETAIL_ROWS ? items.slice(0, MAX_USAGE_DETAIL_ROWS) : items;
+  };
+
+  /**
+   * Explicitly paginated monthly usage detail (bounded page size; never silent full-month cap).
+   */
+  findByMonthPage = async (
+    mo?: string,
+    options?: { cursor?: string; limit?: number },
+  ): Promise<{ items: GlobalUsageRecordItem[]; nextCursor: string | null }> => {
+    const { endAt, startAt } = this.resolveMonthRange(mo);
+    return this.findByDateRangePage(startAt, endAt, options);
+  };
+
+  /**
+   * Monthly usage detail. When `limit` is set, returns a single page; otherwise
+   * drains via {@link findByDateRange} (hard-capped at {@link MAX_USAGE_DETAIL_ROWS}).
+   */
+  findByMonth = async (
+    mo?: string,
+    options?: { limit?: number },
+  ): Promise<GlobalUsageRecordItem[]> => {
+    if (options?.limit !== undefined) {
+      const { items } = await this.findByMonthPage(mo, options);
+      return items;
+    }
+
     const { endAt, startAt } = this.resolveMonthRange(mo);
     return this.findByDateRange(startAt, endAt);
   };
 
+  /**
+   * Daily chart aggregates computed in SQL. Never materializes unbounded raw
+   * message rows. Populates `records` with **per-day dimension aggregates**
+   * (model × provider × user) so upstream charts can derive categories /
+   * spend / tokens / call-group counts without loading every message.
+   */
   findAndGroupByDay = async (mo?: string): Promise<GlobalUsageLog[]> => {
     const { endAt, startAt } = this.resolveMonthRange(mo);
-    const spends = await this.findByDateRange(startAt, endAt);
-    return this.groupByDay(spends, startAt, endAt);
+
+    // Cost / token extraction mirrors findByDateRange fallback chain in SQL.
+    const costExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'cost')::double precision,
+      (${messages.metadata}->'usage'->>'cost')::double precision,
+      (${messages.metadata}->>'cost')::double precision,
+      0
+    )`;
+    const inputTokensExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'totalInputTokens')::double precision,
+      (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
+      (${messages.metadata}->>'totalInputTokens')::double precision,
+      0
+    )`;
+    const outputTokensExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'totalOutputTokens')::double precision,
+      (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
+      (${messages.metadata}->>'totalOutputTokens')::double precision,
+      0
+    )`;
+    const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt}), 'YYYY-MM-DD')`;
+    const modelExpr = sql<string>`COALESCE(${messages.model}, '')`;
+    const providerExpr = sql<string>`COALESCE(${messages.provider}, '')`;
+
+    const rangeWhere = genWhere([
+      eq(messages.role, 'assistant'),
+      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+    ]);
+
+    const [dayTotals, dimRows] = await Promise.all([
+      this.db
+        .select({
+          day: dayExpr.as('day'),
+          totalRequests: count(messages.id).mapWith(Number),
+          totalSpend: sql<number>`COALESCE(SUM(${costExpr}), 0)`.mapWith(Number),
+          totalTokens:
+            sql<number>`COALESCE(SUM(${inputTokensExpr} + ${outputTokensExpr}), 0)`.mapWith(Number),
+        })
+        .from(messages)
+        .where(rangeWhere)
+        .groupBy(dayExpr)
+        .orderBy(asc(dayExpr)),
+      // Dimension rollup for chart categories (bounded by distinct combos/day, not raw rows).
+      this.db
+        .select({
+          day: dayExpr.as('day'),
+          model: modelExpr.as('model'),
+          provider: providerExpr.as('provider'),
+          spend: sql<number>`COALESCE(SUM(${costExpr}), 0)`.mapWith(Number),
+          totalInputTokens: sql<number>`COALESCE(SUM(${inputTokensExpr}), 0)`.mapWith(Number),
+          totalOutputTokens: sql<number>`COALESCE(SUM(${outputTokensExpr}), 0)`.mapWith(Number),
+          userDisplay: userDisplaySql.as('user_display'),
+          userId: messages.userId,
+        })
+        .from(messages)
+        .leftJoin(users, eq(messages.userId, users.id))
+        .where(rangeWhere)
+        .groupBy(dayExpr, modelExpr, providerExpr, messages.userId, userDisplaySql)
+        .orderBy(asc(dayExpr)),
+    ]);
+
+    const recordsByDay = new Map<string, GlobalUsageRecordItem[]>();
+    for (const row of dimRows) {
+      const dayAt = dayjs(row.day).startOf('day').toDate();
+      const totalInputTokens = row.totalInputTokens;
+      const totalOutputTokens = row.totalOutputTokens;
+      // One row per (day, model, provider, user) — bounded by distinct combos, not raw msgs.
+      // UI charts sum spend/tokens and collect model/provider/userId categories from these.
+      // Call counts should use log.totalRequests (not records.length); see OUT_OF_SCOPE if UI still uses length.
+      const record: GlobalUsageRecordItem = {
+        createdAt: dayAt,
+        id: `agg:${row.day}:${row.model}:${row.provider}:${row.userId}`,
+        model: row.model,
+        provider: row.provider,
+        spend: row.spend,
+        totalInputTokens,
+        totalOutputTokens,
+        totalTokens: totalInputTokens + totalOutputTokens,
+        tps: 0,
+        ttft: 0,
+        type: 'chat',
+        updatedAt: dayAt,
+        userDisplay: row.userDisplay || row.userId,
+        userId: row.userId,
+      };
+      const list = recordsByDay.get(row.day) ?? [];
+      list.push(record);
+      recordsByDay.set(row.day, list);
+    }
+
+    const byDay = new Map(
+      dayTotals.map((row) => [
+        row.day,
+        {
+          date: dayjs(row.day).toDate().getTime(),
+          day: row.day,
+          records: recordsByDay.get(row.day) ?? [],
+          totalRequests: row.totalRequests,
+          totalSpend: row.totalSpend,
+          totalTokens: row.totalTokens,
+        } satisfies GlobalUsageLog,
+      ]),
+    );
+
+    // Inclusive end day (was exclusive isBefore → dropped last calendar day).
+    const startDate = dayjs(startAt).startOf('day');
+    const endDate = dayjs(endAt).startOf('day');
+    const padded: GlobalUsageLog[] = [];
+    for (let date = startDate; !date.isAfter(endDate, 'day'); date = date.add(1, 'day')) {
+      const key = date.format('YYYY-MM-DD');
+      const found = byDay.get(key);
+      if (found) {
+        padded.push(found);
+      } else {
+        padded.push({
+          date: date.toDate().getTime(),
+          day: key,
+          records: [],
+          totalRequests: 0,
+          totalSpend: 0,
+          totalTokens: 0,
+        });
+      }
+    }
+    return padded;
   };
 
   private resolveMonthRange = (mo?: string): { endAt: string; startAt: string } => {
@@ -437,53 +682,5 @@ export class PlatformGlobalStatsModel {
       endAt: dayjs().endOf('month').format('YYYY-MM-DD'),
       startAt: dayjs().startOf('month').format('YYYY-MM-DD'),
     };
-  };
-
-  private groupByDay = (
-    spends: GlobalUsageRecordItem[],
-    startAt: string,
-    endAt: string,
-  ): GlobalUsageLog[] => {
-    const usages = new Map<string, { date: Date; logs: GlobalUsageRecordItem[] }>();
-    for (const spend of spends) {
-      const day = formatDay(spend.createdAt);
-      if (!usages.has(day)) {
-        usages.set(day, { date: spend.createdAt, logs: [spend] });
-        continue;
-      }
-      usages.get(day)?.logs.push(spend);
-    }
-
-    const usageLogs: GlobalUsageLog[] = [];
-    usages.forEach((bucket, day) => {
-      usageLogs.push({
-        date: bucket.date.getTime(),
-        day,
-        records: bucket.logs,
-        totalRequests: bucket.logs.length,
-        totalSpend: bucket.logs.reduce((acc, s) => acc + s.spend, 0),
-        totalTokens: bucket.logs.reduce((acc, s) => (s.totalTokens || 0) + acc, 0),
-      });
-    });
-
-    const startDate = dayjs(startAt);
-    const endDate = dayjs(endAt);
-    const padded: GlobalUsageLog[] = [];
-    for (let date = startDate; date.isBefore(endDate); date = date.add(1, 'day')) {
-      const found = usageLogs.find((l) => l.day === date.format('YYYY-MM-DD'));
-      if (found) {
-        padded.push(found);
-      } else {
-        padded.push({
-          date: date.toDate().getTime(),
-          day: date.format('YYYY-MM-DD'),
-          records: [],
-          totalRequests: 0,
-          totalSpend: 0,
-          totalTokens: 0,
-        });
-      }
-    }
-    return padded;
   };
 }

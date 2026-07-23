@@ -1,6 +1,7 @@
 import { index, integer, jsonb, pgTable, primaryKey, text, varchar } from 'drizzle-orm/pg-core';
 
 import { createdAt, timestamptz, updatedAt } from '../_helpers';
+import { users } from '../user';
 import type { PlatformResourceStatus } from './common';
 
 /**
@@ -93,11 +94,14 @@ export type NewPlatformSettingPolicy = typeof platformSettingPolicies.$inferInse
 /**
  * Explicit per-user setting overrides.
  * Row existence = explicit user intent (even when value equals current default).
+ * Cascades with hard user deletion via users.id FK.
  */
 export const userSettingOverrides = pgTable(
   'user_setting_overrides',
   {
-    userId: text('user_id').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
     path: text('path').notNull(),
     value: jsonb('value').$type<unknown>(),
     source: varchar('source', { length: 32 }).notNull().default('user'),
@@ -116,9 +120,13 @@ export type NewUserSettingOverride = typeof userSettingOverrides.$inferInsert;
 /**
  * Monotonic per-user override revision token.
  * Survives deleting the last override so cache keys still change.
+ * Cascades with hard user deletion via users.id FK.
  */
 export const userSettingOverrideRevisions = pgTable('user_setting_override_revisions', {
-  userId: text('user_id').primaryKey().notNull(),
+  userId: text('user_id')
+    .primaryKey()
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   revision: integer('revision').notNull().default(0),
   updatedAt: timestamptz('updated_at').notNull().defaultNow(),
 });

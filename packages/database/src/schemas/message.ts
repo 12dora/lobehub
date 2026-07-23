@@ -166,6 +166,15 @@ export const messages = pgTable(
     index('messages_agent_id_idx').on(table.agentId),
     index('messages_group_id_idx').on(table.groupId),
     index('messages_message_group_id_idx').on(table.messageGroupId),
+    // Audit conversation listMessages: user+topic filter, created_at/id keyset.
+    index('messages_user_id_topic_id_created_at_id_idx').on(
+      table.userId,
+      table.topicId,
+      table.createdAt,
+      table.id,
+    ),
+    // Platform global monthly usage: assistant messages by created_at.
+    index('messages_role_created_at_idx').on(table.role, table.createdAt),
     // Expression indexes on the promoted `usage` jsonb, so cost / total-token
     // aggregations and range filters don't scan the full column.
     index('messages_usage_cost_idx').on(sql`(("usage"->>'cost')::numeric)`),

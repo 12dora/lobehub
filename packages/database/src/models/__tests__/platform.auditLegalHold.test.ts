@@ -251,4 +251,32 @@ describe('PlatformAuditLegalHoldModel', () => {
   it('get returns undefined for missing ids', async () => {
     await expect(model.get('palh_missing')).resolves.toBeUndefined();
   });
+
+  it('creates a replacement hold after the previous active hold expires', async () => {
+    const first = await model.create({
+      createdBy: 'admin-1',
+      expiresAt: new Date('2020-01-01T12:00:00.000Z'),
+      reason: 'expired hold',
+      scopeId: 'topic-replace',
+      scopeType: 'topic',
+    });
+    expect(first.status).toBe('active');
+
+    // Expired active rows still block the partial unique index until create
+    // transactionally releases them.
+    const replacement = await model.create({
+      createdBy: 'admin-2',
+      reason: 'replacement after expiry',
+      scopeId: 'topic-replace',
+      scopeType: 'topic',
+    });
+    expect(replacement.status).toBe('active');
+    expect(replacement.scopeId).toBe('topic-replace');
+    expect(replacement.id).not.toBe(first.id);
+
+    const previous = await model.get(first.id);
+    expect(previous?.status).toBe('released');
+    expect(previous?.releasedBy).toBe('system:legal-hold-expiry');
+    expect(previous?.releaseReason).toContain('expired');
+  });
 });

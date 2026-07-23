@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { eq, inArray, or, sql } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -48,14 +48,8 @@ const cleanup = async () => {
   await serverDB
     .delete(platformConnectors)
     .where(sql`${platformConnectors.id} LIKE ${`${connectorPrefix}%`}`);
-  await serverDB
-    .delete(platformResourceRevisions)
-    .where(
-      and(
-        eq(platformResourceRevisions.resourceType, 'connector'),
-        sql`${platformResourceRevisions.resourceId} LIKE ${`${connectorPrefix}%`}`,
-      ),
-    );
+  // Immutability triggers (0145) reject row DELETE; TRUNCATE for test isolation only.
+  await serverDB.execute(sql.raw('TRUNCATE TABLE platform_resource_revisions CASCADE'));
   await serverDB.delete(users).where(inArray(users.id, userIds));
 };
 
