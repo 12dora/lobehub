@@ -17,6 +17,7 @@ import {
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { boundedLimit } from '../platformPagination';
+import { likeContains } from '../platformSearch';
 
 export interface PlatformSkillPage {
   items: PlatformSkillItem[];
@@ -161,7 +162,7 @@ export class PlatformSkillCatalogRepository {
     }
     if (params.enabled !== undefined) conditions.push(eq(platformSkills.enabled, params.enabled));
     if (params.query) {
-      const query = `%${params.query}%`;
+      const query = likeContains(params.query);
       conditions.push(
         or(
           ilike(platformSkills.skillKey, query),

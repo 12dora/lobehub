@@ -22,6 +22,7 @@ import type { PlatformResourceRevisionItem } from '../../schemas/platform/revisi
 import { platformResourceRevisions } from '../../schemas/platform/revisions';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { boundedLimit } from '../platformPagination';
+import { likeContains } from '../platformSearch';
 
 export const MAX_PLATFORM_CONNECTOR_TOOLS = 1000;
 
@@ -59,9 +60,6 @@ type ManagedConnectorSecretColumns = Pick<
 >;
 
 const sqlIncrement = (column: typeof platformUserConnectorBindings.revision) => sql`${column} + 1`;
-
-const escapeLike = (value: string): string =>
-  value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 
 const isRootDatabase = (db: LobeChatDatabase | Transaction): db is LobeChatDatabase =>
   'transaction' in db;
@@ -467,8 +465,8 @@ export class PlatformConnectorCatalogRepository {
       ...(params.query
         ? [
             or(
-              ilike(platformConnectors.connectorKey, `%${escapeLike(params.query)}%`),
-              ilike(platformConnectors.displayName, `%${escapeLike(params.query)}%`),
+              ilike(platformConnectors.connectorKey, likeContains(params.query)),
+              ilike(platformConnectors.displayName, likeContains(params.query)),
             )!,
           ]
         : []),

@@ -15,6 +15,7 @@ import {
   type PlatformResourceStatus,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { likeContains } from '../platformSearch';
 
 export interface PlatformAiProviderPage {
   items: PlatformAiProviderItem[];
@@ -305,7 +306,7 @@ export class PlatformAiCatalogRepository {
     if (params.status) conditions.push(eq(platformAiModels.status, params.status));
     if (params.enabled !== undefined) conditions.push(eq(platformAiModels.enabled, params.enabled));
     if (params.query) {
-      const query = `%${params.query}%`;
+      const query = likeContains(params.query);
       conditions.push(
         or(
           ilike(platformAiModels.modelKey, query),
@@ -383,7 +384,7 @@ export class PlatformAiCatalogRepository {
       conditions.push(eq(platformAiProviders.enabled, params.enabled));
     }
     if (params.query) {
-      const query = `%${params.query}%`;
+      const query = likeContains(params.query);
       conditions.push(
         or(
           ilike(platformAiProviders.providerKey, query),
