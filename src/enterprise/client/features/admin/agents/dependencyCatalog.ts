@@ -232,7 +232,7 @@ export const isModelCurrent = (
 
 /** Order-independent canonical form of a tool-key set (dedup + sort). */
 const canonicalToolSet = (toolKeys: readonly string[]): string =>
-  [...new Set(toolKeys)].sort().join(' ');
+  [...new Set(toolKeys)].sort().join('\u0000');
 
 /**
  * A skill ref is current only when EVERY contract field (skillKey + version + checksum) still
