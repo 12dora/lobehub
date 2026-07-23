@@ -2,36 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import { CONNECTOR_TOOL_VALIDATION_CODES } from '../services/connectorCatalog/toolDefinitionValidator';
 import {
-  ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS,
-  adminConnectorArchiveInputSchema,
   adminConnectorCreateDraftInputSchema,
   adminConnectorDiscoverOutputSchema,
   adminConnectorDraftSchema,
   adminConnectorUpdateDraftInputSchema,
   collectConnectorSecretLeaves,
-  connectorConnectionTestStateSchema,
-  connectorEffectiveToolPolicyOutputSchema,
-  connectorOAuthCallbackInputSchema,
   connectorOAuthClientSecretMutationSchema,
-  connectorOAuthStatePayloadSchema,
-  connectorReturnToSchema,
-  connectorRuntimeResolutionSchema,
   connectorSafeMessageSchema,
-  connectorScopesSchema,
   connectorSharedSecretMutationSchema,
-  connectorToolDraftSchema,
   loadTrustedConnectorSecretContext,
-  managedConnectorSchema,
   normalizeAdminConnectorCreateInput,
   normalizeAdminConnectorUpdateInput,
   PlatformConnectorContractError,
-  userConnectorDisconnectInputSchema,
-  userConnectorGetAuthorizationStatusInputSchema,
-  userConnectorGetAuthorizationStatusOutputSchema,
-  userConnectorListManagedInputSchema,
-  userConnectorStartAuthorizationInputSchema,
-  userConnectorStartAuthorizationOutputSchema,
-  webConnectorTransportSchema,
 } from './platformConnectors';
 
 const secretState = { configured: false, fingerprint: null, updatedAt: null } as const;
@@ -81,7 +63,7 @@ const createDerived = {
   toolIds: [],
 };
 
-describe('platform connector contracts', () => {
+describe('platform connector contracts — secrets', () => {
   it('models independent shared and OAuth client secret mutations', () => {
     expect(connectorSharedSecretMutationSchema.parse({ operation: 'keep' })).toEqual({
       operation: 'keep',
@@ -108,22 +90,6 @@ describe('platform connector contracts', () => {
       }).success,
     ).toBe(false);
   });
-
-  it('accepts only HTTP transport in the web contract and fails stdio closed', () => {
-    expect(webConnectorTransportSchema.parse('http')).toBe('http');
-    expect(webConnectorTransportSchema.safeParse('stdio').success).toBe(false);
-    expect(
-      adminConnectorCreateDraftInputSchema.safeParse({
-        credentialMode: 'none',
-        displayName: 'Unsafe',
-        endpoint: 'https://example.test',
-        key: 'unsafe',
-        reason: 'create',
-        transport: 'stdio',
-      }).success,
-    ).toBe(false);
-  });
-
   it('keeps credential modes mutually exclusive', () => {
     const base = {
       displayName: 'Connector',
@@ -167,7 +133,6 @@ describe('platform connector contracts', () => {
       }).success,
     ).toBe(false);
   });
-
   it('revalidates a complete Draft after patch merge and clears incompatible secrets on mode switch', async () => {
     const secretContext = await trustedSecrets();
     const update = {
@@ -215,7 +180,6 @@ describe('platform connector contracts', () => {
       ),
     ).toThrow();
   });
-
   it('distinguishes undefined/null and reflects Secret clear in the complete candidate', async () => {
     const emptyContext = await trustedSecrets();
     const basePatch = {
@@ -284,7 +248,6 @@ describe('platform connector contracts', () => {
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
-
   it('requires current, patch, and trusted Secret context connector identities to match', async () => {
     const basePatch = {
       expectedDraftToken: 'd'.repeat(64),
@@ -338,7 +301,6 @@ describe('platform connector contracts', () => {
       }
     }
   });
-
   it('enforces bidirectional Secret slot consistency without cross-slot substitution', async () => {
     const basePatch = {
       expectedDraftToken: 'd'.repeat(64),
@@ -384,7 +346,6 @@ describe('platform connector contracts', () => {
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
-
   it('requires create/update normalizers to reject current and replacement secrets in persisted text', async () => {
     const currentSecret = 'old-random-secret-123';
     const replacementSecret = 'new-random-secret-456';
@@ -487,41 +448,6 @@ describe('platform connector contracts', () => {
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
-
-  it('constructs create Draft only from the command and server-derived identity', async () => {
-    const context = await trustedSecrets();
-    const command = {
-      credentialMode: 'none' as const,
-      displayName: 'None Connector',
-      endpoint: 'https://none.example.test/mcp',
-      key: 'none-connector',
-      reason: 'create connector',
-    };
-    const normalized = normalizeAdminConnectorCreateInput(command, createDerived, context);
-    expect(normalized.draft).toMatchObject({
-      credentialMode: 'none',
-      displayName: 'None Connector',
-      endpoint: 'https://none.example.test/mcp',
-      id: 'connector-1',
-      key: 'none-connector',
-      oauthConfig: null,
-      status: 'draft',
-    });
-    for (const untrustedDerived of [
-      draft as never,
-      { ...createDerived, extraMetadata: 'attacker-controlled' } as never,
-      { ...createDerived, toolIds: ['unexpected-tool-id'] },
-    ]) {
-      try {
-        normalizeAdminConnectorCreateInput(command, untrustedDerived, context);
-        expect.unreachable('untrusted create Draft metadata must be rejected');
-      } catch (error) {
-        expect(error).toBeInstanceOf(PlatformConnectorContractError);
-        expect(error).toMatchObject({ code: 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH' });
-      }
-    }
-  });
-
   it('rejects credential-bearing endpoints, sensitive JSON, and secret-bearing reason text', () => {
     const base = {
       credentialMode: 'none',
@@ -591,7 +517,6 @@ describe('platform connector contracts', () => {
     if (!invalidResult.success)
       expect(JSON.stringify(invalidResult.error)).not.toContain(invalidSecretUrl);
   });
-
   it('rejects secret-bearing discover/test messages at the output contract', () => {
     expect(connectorSafeMessageSchema.parse('connector.operation_failed')).toBe(
       'connector.operation_failed',
@@ -605,31 +530,6 @@ describe('platform connector contracts', () => {
       expect(connectorSafeMessageSchema.safeParse(unsafe).success).toBe(false);
     }
   });
-
-  it('binds connection-test status to exactly one message code', () => {
-    const base = {
-      errorCategory: null,
-      latencyMs: 1,
-      stale: false,
-      status: 'success' as const,
-      testedAt: new Date(),
-      testedDraftToken: 'd'.repeat(64),
-      testedRevision: 1,
-    };
-    expect(
-      connectorConnectionTestStateSchema.safeParse({
-        ...base,
-        messageCode: 'connector.operation_succeeded',
-      }).success,
-    ).toBe(true);
-    expect(
-      connectorConnectionTestStateSchema.safeParse({
-        ...base,
-        messageCode: 'connector.operation_failed',
-      }).success,
-    ).toBe(false);
-  });
-
   it('returns only secret state in admin projections', () => {
     expect(adminConnectorDraftSchema.parse(draft)).toEqual(draft);
     expect(
@@ -643,60 +543,6 @@ describe('platform connector contracts', () => {
       }).success,
     ).toBe(false);
   });
-
-  it('validates input/output JSON Schema without rejecting sensitive property names', () => {
-    const baseTool = {
-      description: null,
-      displayName: 'Login',
-      enabled: true,
-      id: 'tool-1',
-      platformPolicy: 'allow',
-      requiresConfirmation: true,
-      riskLevel: 'high',
-      sort: 0,
-      toolKey: 'login',
-    } as const;
-    expect(
-      connectorToolDraftSchema.safeParse({
-        ...baseTool,
-        inputSchema: {
-          properties: { apiKey: { type: 'string' }, password: { type: 'string' } },
-          required: ['apiKey', 'password'],
-          type: 'object',
-        },
-      }).success,
-    ).toBe(true);
-    for (const inputSchema of [
-      { properties: { apiKey: { default: 'Authorization: Bearer fake-token-value' } } },
-      { properties: { password: { example: 'Authorization: Bearer fake-token-value' } } },
-      { properties: { token: { const: 'https://user:password@example.test' } } },
-    ]) {
-      expect(connectorToolDraftSchema.safeParse({ ...baseTool, inputSchema }).success).toBe(false);
-    }
-    const secretOutput = connectorToolDraftSchema.safeParse({
-      ...baseTool,
-      inputSchema: {},
-      outputSchema: { example: 'Authorization: Bearer output-token' },
-    });
-    expect(secretOutput.success).toBe(false);
-    if (!secretOutput.success) {
-      expect(secretOutput.error.issues[0]?.message).toBe(
-        CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret,
-      );
-    }
-    const unconfirmed = connectorToolDraftSchema.safeParse({
-      ...baseTool,
-      inputSchema: {},
-      requiresConfirmation: false,
-    });
-    expect(unconfirmed.success).toBe(false);
-    if (!unconfirmed.success) {
-      expect(unconfirmed.error.issues[0]?.message).toBe(
-        CONNECTOR_TOOL_VALIDATION_CODES.confirmationRequired,
-      );
-    }
-  });
-
   it('rejects secret-bearing discovery output without echoing the schema leaf', () => {
     const secret = 'Authorization: Bearer discovery-output-never-echo';
     const result = adminConnectorDiscoverOutputSchema.safeParse({
@@ -723,7 +569,6 @@ describe('platform connector contracts', () => {
       expect(JSON.stringify(result.error.issues)).not.toContain(secret);
     }
   });
-
   it('collects Secret leaves schema-aware while preserving known structured field names', () => {
     const dynamicSecretKey = 'dynamic-real-secret-key';
     const leaves = collectConnectorSecretLeaves({
@@ -744,198 +589,5 @@ describe('platform connector contracts', () => {
     );
     expect(leaves.has('apiKey')).toBe(false);
     expect(leaves.has('password')).toBe(false);
-  });
-
-  it('never exposes endpoint, OAuth client, or secret metadata to ordinary users', () => {
-    const managed = {
-      binding: null,
-      credentialMode: 'per_user_oauth',
-      description: 'Issue tracker',
-      displayName: 'Issues',
-      id: 'connector-1',
-      key: 'issues',
-      publishedRevision: 4,
-      tools: [],
-    };
-    expect(managedConnectorSchema.parse(managed)).toEqual(managed);
-    for (const leaked of [
-      { endpoint: 'https://mcp.example.test' },
-      { oauthConfig: draft.oauthConfig },
-      { oauthClientSecret: secretState },
-      { sharedSecret: secretState },
-      { transport: 'http' },
-    ]) {
-      expect(managedConnectorSchema.safeParse({ ...managed, ...leaked }).success).toBe(false);
-    }
-    expect(
-      managedConnectorSchema.safeParse({
-        ...managed,
-        description: 'Authorization: Bearer fake-token-value',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('binds callback authority exclusively to server-side state', () => {
-    const now = Date.now();
-    const state = {
-      bindingId: 'binding-1',
-      codeChallengeMethod: 'S256',
-      codeVerifier: 'a'.repeat(43),
-      connectorId: 'connector-1',
-      expiresAt: now + 600_000,
-      issuedAt: now,
-      publishedRevision: 7,
-      redirectUri: 'https://aihub.example.test/oauth/connector/callback',
-      returnTo: '/settings/connectors?connected=1',
-      scopes: ['issues:read'],
-      stateHash: 'a'.repeat(64),
-      stateId: 'b'.repeat(32),
-      userId: 'user-1',
-    };
-    expect(connectorOAuthStatePayloadSchema.parse(state)).toEqual(state);
-    expect(
-      connectorOAuthCallbackInputSchema.parse({ code: 'code', state: 's'.repeat(32) }),
-    ).toEqual({
-      code: 'code',
-      state: 's'.repeat(32),
-    });
-    expect(
-      connectorOAuthCallbackInputSchema.safeParse({
-        code: 'code',
-        connectorId: 'attacker-selected',
-        state: 's'.repeat(32),
-      }).success,
-    ).toBe(false);
-    expect(
-      connectorOAuthStatePayloadSchema.safeParse({ ...state, expiresAt: now - 1 }).success,
-    ).toBe(false);
-  });
-
-  it('accepts only site-relative returnTo paths and an allowlisted scope set', () => {
-    for (const valid of ['/settings/connectors', '/settings/connectors?status=ok#binding']) {
-      expect(connectorReturnToSchema.parse(valid)).toBe(valid);
-      expect(
-        userConnectorStartAuthorizationInputSchema.safeParse({
-          connectorId: 'connector-1',
-          returnTo: valid,
-        }).success,
-      ).toBe(true);
-    }
-    for (const invalid of [
-      'https://evil.example',
-      '//evil.example/path',
-      '/%2f%2fevil.example/path',
-      '/%255c%255cevil.example/path',
-      '/%25252525252525252525252f%25252525252525252525252fevil.example/path',
-      '/settings%0d%0aLocation:%20https://evil.example',
-      '/settings%00/connectors',
-      '/settings%7f/connectors',
-      '/\\evil.example',
-    ]) {
-      expect(connectorReturnToSchema.safeParse(invalid).success).toBe(false);
-    }
-    expect(connectorScopesSchema.parse(['openid', 'issues:read'])).toEqual([
-      'openid',
-      'issues:read',
-    ]);
-    expect(connectorScopesSchema.safeParse(['openid', 'openid']).success).toBe(false);
-    expect(connectorScopesSchema.safeParse(['openid profile']).success).toBe(false);
-  });
-
-  it('requires one opaque attempt id across authorization start and status polling', () => {
-    const attemptId = 'a'.repeat(32);
-    expect(
-      userConnectorStartAuthorizationOutputSchema.parse({
-        attemptId,
-        authorizationUrl: 'https://identity.example.test/authorize',
-        bindingId: 'binding-1',
-      }),
-    ).toMatchObject({ attemptId });
-    expect(
-      userConnectorGetAuthorizationStatusInputSchema.safeParse({ connectorId: 'connector-1' })
-        .success,
-    ).toBe(false);
-    expect(
-      userConnectorGetAuthorizationStatusInputSchema.safeParse({
-        attemptId: 'not-opaque',
-        connectorId: 'connector-1',
-      }).success,
-    ).toBe(false);
-    expect(
-      userConnectorGetAuthorizationStatusOutputSchema.parse({
-        attemptId,
-        binding: null,
-        status: 'pending',
-      }),
-    ).toEqual({ attemptId, binding: null, status: 'pending' });
-    expect(
-      userConnectorGetAuthorizationStatusOutputSchema.safeParse({
-        attemptId,
-        binding: { status: 'connected' },
-        status: 'pending',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('defines archive and minimal admin permissions while user inputs never accept userId', () => {
-    const publication = {
-      expectedDraftToken: 'd'.repeat(64),
-      expectedRevision: 2,
-      id: 'connector-1',
-      reason: 'archive unused connector',
-    };
-    expect(adminConnectorArchiveInputSchema.parse(publication)).toEqual(publication);
-    expect(ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS).toMatchObject({
-      archive: 'platform_connector:delete:all',
-      create: 'platform_connector:create:all',
-      get: 'platform_connector:read:all',
-      list: 'platform_connector:read:all',
-      test: 'platform_connector:test:all',
-      update: 'platform_connector:update:all',
-    });
-    const userInputs = [
-      [userConnectorListManagedInputSchema, { userId: 'other-user' }],
-      [userConnectorStartAuthorizationInputSchema, { connectorId: 'connector-1', userId: 'other' }],
-      [
-        userConnectorGetAuthorizationStatusInputSchema,
-        { attemptId: 'a'.repeat(32), connectorId: 'connector-1', userId: 'other' },
-      ],
-      [userConnectorDisconnectInputSchema, { connectorId: 'connector-1', userId: 'other' }],
-    ] as const;
-    for (const [schema, value] of userInputs) expect(schema.safeParse(value).success).toBe(false);
-  });
-
-  it('keeps server-only runtime credentials discriminated and policy outputs relational', () => {
-    const runtime = {
-      connectorId: 'connector-1',
-      credentialMode: 'none',
-      endpoint: 'https://mcp.example.test/v1',
-      publishedRevision: 2,
-      tool: {
-        description: null,
-        displayName: 'Search',
-        inputSchema: { type: 'object' },
-        outputSchema: {},
-        platformPolicy: 'allow',
-        requiresConfirmation: false,
-        riskLevel: 'low',
-        sort: 0,
-        toolKey: 'search',
-      },
-      transport: 'http',
-    };
-    expect(connectorRuntimeResolutionSchema.parse(runtime)).toEqual(runtime);
-    expect(
-      connectorRuntimeResolutionSchema.safeParse({ ...runtime, credentials: { apiKey: 'fake' } })
-        .success,
-    ).toBe(false);
-    expect(
-      connectorEffectiveToolPolicyOutputSchema.safeParse({ allowed: true, deniedBy: 'platform' })
-        .success,
-    ).toBe(false);
-    expect(
-      connectorEffectiveToolPolicyOutputSchema.safeParse({ allowed: false, deniedBy: null })
-        .success,
-    ).toBe(false);
   });
 });

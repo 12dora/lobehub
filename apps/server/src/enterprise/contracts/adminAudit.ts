@@ -28,6 +28,7 @@ export {
   ADMIN_AUDIT_Q_MAX_LENGTH,
   ADMIN_AUDIT_REASON_MAX_LENGTH,
   adminAuditCursorSchema,
+  dateInputSchema,
   platformAuditContentAccessModeSchema,
   platformAuditLegalHoldScopeTypeSchema,
   platformAuditLegalHoldStatusSchema,
@@ -85,6 +86,7 @@ export {
 export {
   adminAuditLegalHoldItemSchema,
   type AdminAuditLegalHoldsCreateInput,
+  type AdminAuditLegalHoldsCreateInputParsed,
   adminAuditLegalHoldsCreateInputSchema,
   adminAuditLegalHoldsCreateOutputSchema,
   adminAuditLegalHoldsGetInputSchema,

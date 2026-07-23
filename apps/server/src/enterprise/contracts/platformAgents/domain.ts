@@ -1,12 +1,13 @@
 import {
   PLATFORM_AGENT_ASSIGNMENT_MODES,
-  PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES,
   PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
-  PLATFORM_AGENT_GLOBAL_TARGET_ID,
-  PLATFORM_AGENT_VERSION_POLICIES,
 } from '@lobechat/types';
 import { z } from 'zod';
 
+import {
+  platformAgentAssignmentCoreFields,
+  refinePlatformAgentAssignmentInvariants,
+} from './assignmentCore';
 import {
   checksumSchema,
   idSchema,
@@ -56,26 +57,11 @@ export const platformAgentImmutableVersionSchema = z
 export const platformAgentAssignmentSchema = z
   .object({
     agentId: idSchema,
-    enabled: z.boolean(),
     id: idSchema,
-    mode: z.enum(PLATFORM_AGENT_ASSIGNMENT_MODES),
-    pinnedVersionId: idSchema.nullable(),
-    targetId: idSchema,
-    targetType: z.enum(PLATFORM_AGENT_ASSIGNMENT_TARGET_TYPES),
-    versionPolicy: z.enum(PLATFORM_AGENT_VERSION_POLICIES),
+    ...platformAgentAssignmentCoreFields,
   })
   .strict()
-  .superRefine((assignment, ctx) => {
-    if (
-      (assignment.targetType === 'global') !==
-      (assignment.targetId === PLATFORM_AGENT_GLOBAL_TARGET_ID)
-    ) {
-      ctx.addIssue({ code: 'custom', message: 'global assignment target is invalid' });
-    }
-    if ((assignment.versionPolicy === 'pinned') !== (assignment.pinnedVersionId !== null)) {
-      ctx.addIssue({ code: 'custom', message: 'pinned policy requires exactly one version' });
-    }
-  });
+  .superRefine(refinePlatformAgentAssignmentInvariants);
 
 export const platformEffectiveAgentSchema = z
   .object({

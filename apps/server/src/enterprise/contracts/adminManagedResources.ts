@@ -1,6 +1,14 @@
 import { z } from 'zod';
 
-export const managedResourceEnforcementModeSchema = z.enum(['observe', 'ui-only', 'enforced']);
+import {
+  MANAGED_RESOURCE_ENFORCEMENT_MODES,
+  MANAGED_RESOURCE_KINDS,
+  type ManagedResourceKind,
+} from '@/const/platform/managedResources';
+
+import { secretSafeAuditReasonSchema, secretSafeOptionalCommentSchema } from './shared';
+
+export const managedResourceEnforcementModeSchema = z.enum(MANAGED_RESOURCE_ENFORCEMENT_MODES);
 
 export const managedResourcePolicyItemSchema = z
   .object({
@@ -9,25 +17,17 @@ export const managedResourcePolicyItemSchema = z
   })
   .strict();
 
-export const managedResourcePolicyMapSchema = z
-  .object({
-    agents: managedResourcePolicyItemSchema,
-    aiModels: managedResourcePolicyItemSchema,
-    aiProviders: managedResourcePolicyItemSchema,
-    connectors: managedResourcePolicyItemSchema,
-    skills: managedResourcePolicyItemSchema,
-  })
-  .strict();
+const managedResourceMapShape = Object.fromEntries(
+  MANAGED_RESOURCE_KINDS.map((kind) => [kind, managedResourcePolicyItemSchema]),
+) as Record<ManagedResourceKind, typeof managedResourcePolicyItemSchema>;
 
-export const managedResourceReadinessMapSchema = z
-  .object({
-    agents: z.boolean(),
-    aiModels: z.boolean(),
-    aiProviders: z.boolean(),
-    connectors: z.boolean(),
-    skills: z.boolean(),
-  })
-  .strict();
+const managedResourceReadinessShape = Object.fromEntries(
+  MANAGED_RESOURCE_KINDS.map((kind) => [kind, z.boolean()]),
+) as Record<ManagedResourceKind, z.ZodBoolean>;
+
+export const managedResourcePolicyMapSchema = z.object(managedResourceMapShape).strict();
+
+export const managedResourceReadinessMapSchema = z.object(managedResourceReadinessShape).strict();
 
 export const adminManagedResourcesGetOutputSchema = z
   .object({
@@ -44,7 +44,7 @@ export const adminManagedResourcesSaveDraftInputSchema = z
   .object({
     draft: managedResourcePolicyMapSchema,
     expectedDraftToken: z.string().length(64),
-    reason: z.string().trim().min(1).max(2000),
+    reason: secretSafeAuditReasonSchema,
   })
   .strict();
 
@@ -58,10 +58,10 @@ export const adminManagedResourcesSaveDraftOutputSchema = z
 
 export const adminManagedResourcesPublishInputSchema = z
   .object({
-    comment: z.string().trim().min(1).max(2000).optional(),
+    comment: secretSafeOptionalCommentSchema,
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
-    reason: z.string().trim().min(1).max(2000),
+    reason: secretSafeAuditReasonSchema,
   })
   .strict();
 

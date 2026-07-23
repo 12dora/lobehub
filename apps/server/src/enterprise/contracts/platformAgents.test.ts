@@ -378,7 +378,7 @@ describe('platform Agent contracts', () => {
     ).toBe(false);
   });
 
-  it('keeps assignment upsert and preview target/version invariants identical', () => {
+  it('keeps assignment upsert, preview, and output target/version invariants identical', () => {
     const write = {
       agentId: 'agent-id',
       enabled: true,
@@ -391,26 +391,73 @@ describe('platform Agent contracts', () => {
       targetType: 'global' as const,
       versionPolicy: 'latest_published' as const,
     };
-    expect(adminPlatformAgentAssignmentUpsertInputSchema.safeParse(write).success).toBe(true);
-    expect(
-      adminPlatformAgentAssignmentUpsertInputSchema.safeParse({
-        ...write,
-        targetId: 'not-global',
-      }).success,
-    ).toBe(false);
     const {
       agentId: _,
       expectedDraftToken: __,
       expectedRevision: ___,
       reason: ____,
-      ...preview
+      ...core
     } = write;
-    expect(
+
+    const parseUpsert = (value: unknown) =>
+      adminPlatformAgentAssignmentUpsertInputSchema.safeParse(value).success;
+    const parsePreview = (assignment: unknown) =>
       adminPlatformAgentAssignmentPreviewInputSchema.safeParse({
         agentId: 'agent-id',
-        assignment: preview,
-      }).success,
-    ).toBe(true);
+        assignment,
+      }).success;
+    const parseOutput = (assignment: unknown) =>
+      platformAgentAssignmentSchema.safeParse({
+        agentId: 'agent-id',
+        id: 'assignment-id',
+        ...(assignment as object),
+      }).success;
+
+    // Valid global + latest_published on every derived schema.
+    expect(parseUpsert(write)).toBe(true);
+    expect(parsePreview(core)).toBe(true);
+    expect(parseOutput(core)).toBe(true);
+
+    // Invalid global target pairing rejected identically.
+    expect(parseUpsert({ ...write, targetId: 'not-global' })).toBe(false);
+    expect(parsePreview({ ...core, targetId: 'not-global' })).toBe(false);
+    expect(parseOutput({ ...core, targetId: 'not-global' })).toBe(false);
+    expect(parseUpsert({ ...write, targetId: 'user-1', targetType: 'global' })).toBe(false);
+    expect(
+      parsePreview({ ...core, targetId: PLATFORM_AGENT_GLOBAL_TARGET_ID, targetType: 'user' }),
+    ).toBe(false);
+    expect(
+      parseOutput({ ...core, targetId: PLATFORM_AGENT_GLOBAL_TARGET_ID, targetType: 'user' }),
+    ).toBe(false);
+
+    // Pinned policy requires a version id on every derived schema.
+    const pinned = {
+      ...core,
+      pinnedVersionId: 'version-id',
+      versionPolicy: 'pinned' as const,
+    };
+    expect(parseUpsert({ ...write, ...pinned })).toBe(true);
+    expect(parsePreview(pinned)).toBe(true);
+    expect(parseOutput(pinned)).toBe(true);
+
+    const pinnedWithoutVersion = {
+      ...core,
+      pinnedVersionId: null,
+      versionPolicy: 'pinned' as const,
+    };
+    expect(parseUpsert({ ...write, ...pinnedWithoutVersion })).toBe(false);
+    expect(parsePreview(pinnedWithoutVersion)).toBe(false);
+    expect(parseOutput(pinnedWithoutVersion)).toBe(false);
+
+    const unpinnedWithVersion = {
+      ...core,
+      pinnedVersionId: 'version-id',
+      versionPolicy: 'latest_published' as const,
+    };
+    expect(parseUpsert({ ...write, ...unpinnedWithVersion })).toBe(false);
+    expect(parsePreview(unpinnedWithVersion)).toBe(false);
+    expect(parseOutput(unpinnedWithVersion)).toBe(false);
+
     expect(
       adminPlatformAgentAssignmentRemoveInputSchema.safeParse({
         agentId: 'agent-id',
@@ -429,7 +476,21 @@ describe('platform Agent contracts', () => {
     ).toBe(false);
   });
 
-  it('gates rollout mutations with Agent and job CAS', () => {
+  it('accepts SemVer build metadata on platform agent versions', () => {
+    expect(
+      platformAgentImmutableVersionSchema.safeParse({ ...version, version: '2.4.0+corp.17' })
+        .success,
+    ).toBe(true);
+    expect(
+      platformAgentImmutableVersionSchema.safeParse({ ...version, version: '1.2.3+build.5' })
+        .success,
+    ).toBe(true);
+    expect(
+      platformAgentImmutableVersionSchema.safeParse({ ...version, version: 'v2.4.0' }).success,
+    ).toBe(false);
+  });
+
+  it('gates rollout mutations with Agent and job CAS and operation-specific statuses', () => {
     expect(
       adminPlatformAgentRolloutStartInputSchema.safeParse({
         agentId: 'agent-id',
@@ -452,34 +513,66 @@ describe('platform Agent contracts', () => {
         jobId: 'job-id',
       }).success,
     ).toBe(false);
-    expect(
-      adminPlatformAgentRolloutCancelInputSchema.safeParse({
-        agentId: 'agent-id',
-        expectedJobRevision: 2,
-        expectedStatus: 'running',
-        jobId: 'job-id',
-        reason: 'stop rollout',
-      }).success,
-    ).toBe(true);
-    expect(
-      adminPlatformAgentRolloutRetryInputSchema.safeParse({
-        agentId: 'agent-id',
-        expectedJobRevision: 2,
-        expectedStatus: 'dead',
-        jobId: 'job-id',
-        reason: 'retry rollout',
-      }).success,
-    ).toBe(true);
+
+    const cancelBase = {
+      agentId: 'agent-id',
+      expectedJobRevision: 2,
+      jobId: 'job-id',
+      reason: 'stop rollout',
+    };
+    for (const expectedStatus of ['pending', 'running'] as const) {
+      expect(
+        adminPlatformAgentRolloutCancelInputSchema.safeParse({ ...cancelBase, expectedStatus })
+          .success,
+      ).toBe(true);
+    }
+    for (const expectedStatus of ['cancelled', 'completed', 'dead', 'failed'] as const) {
+      expect(
+        adminPlatformAgentRolloutCancelInputSchema.safeParse({ ...cancelBase, expectedStatus })
+          .success,
+      ).toBe(false);
+    }
+
+    const retryBase = {
+      agentId: 'agent-id',
+      expectedJobRevision: 2,
+      jobId: 'job-id',
+      reason: 'retry rollout',
+    };
+    for (const expectedStatus of ['cancelled', 'dead', 'failed'] as const) {
+      expect(
+        adminPlatformAgentRolloutRetryInputSchema.safeParse({ ...retryBase, expectedStatus })
+          .success,
+      ).toBe(true);
+    }
+    for (const expectedStatus of ['pending', 'running', 'completed'] as const) {
+      expect(
+        adminPlatformAgentRolloutRetryInputSchema.safeParse({ ...retryBase, expectedStatus })
+          .success,
+      ).toBe(false);
+    }
+
+    const rollbackBase = {
+      agentId: 'agent-id',
+      expectedJobRevision: 2,
+      jobId: 'job-id',
+      reason: 'compensate rollout',
+      targetVersionId: 'version-id',
+    };
     expect(
       adminPlatformAgentRolloutRollbackInputSchema.safeParse({
-        agentId: 'agent-id',
-        expectedJobRevision: 2,
-        expectedStatus: 'dead',
-        jobId: 'job-id',
-        reason: 'compensate rollout',
-        targetVersionId: 'version-id',
+        ...rollbackBase,
+        expectedStatus: 'completed',
       }).success,
     ).toBe(true);
+    for (const expectedStatus of ['pending', 'running', 'cancelled', 'dead', 'failed'] as const) {
+      expect(
+        adminPlatformAgentRolloutRollbackInputSchema.safeParse({
+          ...rollbackBase,
+          expectedStatus,
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it('bounds and redacts dependent endpoint output', () => {

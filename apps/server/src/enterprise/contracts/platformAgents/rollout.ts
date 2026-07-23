@@ -55,28 +55,33 @@ export const adminPlatformAgentRolloutGetInputSchema = z
   })
   .strict();
 
-export const adminPlatformAgentRolloutMutationInputSchema = z
+const rolloutJobMutationBaseSchema = z
   .object({
     agentId: idSchema,
     expectedJobRevision: revisionSchema,
-    expectedStatus: z.enum(['cancelled', 'completed', 'dead', 'failed', 'pending', 'running']),
     jobId: idSchema,
     reason: reasonSchema,
   })
   .strict();
 
-export const adminPlatformAgentRolloutCancelInputSchema =
-  adminPlatformAgentRolloutMutationInputSchema;
-export const adminPlatformAgentRolloutRetryInputSchema =
-  adminPlatformAgentRolloutMutationInputSchema;
+/** Cancel is only valid while the job is still queued or actively running. */
+export const adminPlatformAgentRolloutCancelInputSchema = rolloutJobMutationBaseSchema
+  .extend({
+    expectedStatus: z.enum(['pending', 'running']),
+  })
+  .strict();
 
-export const adminPlatformAgentRolloutRollbackInputSchema = z
-  .object({
-    agentId: idSchema,
-    expectedJobRevision: revisionSchema,
-    expectedStatus: z.enum(['cancelled', 'completed', 'dead', 'failed', 'pending', 'running']),
-    jobId: idSchema,
-    reason: reasonSchema,
+/** Retry is only valid from terminal failure-like states. */
+export const adminPlatformAgentRolloutRetryInputSchema = rolloutJobMutationBaseSchema
+  .extend({
+    expectedStatus: z.enum(['cancelled', 'dead', 'failed']),
+  })
+  .strict();
+
+/** Rollback is only valid after a completed (succeeded) rollout. */
+export const adminPlatformAgentRolloutRollbackInputSchema = rolloutJobMutationBaseSchema
+  .extend({
+    expectedStatus: z.enum(['completed']),
     targetVersionId: idSchema,
   })
   .strict();

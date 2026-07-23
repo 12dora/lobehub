@@ -116,15 +116,14 @@ describe('Skill catalog contracts', () => {
       version: '1.2.3-alpha.1',
     };
     expect(adminSkillCreateVersionInputSchema.safeParse(input).success).toBe(true);
-    for (const version of [
-      '01.2.3',
-      '1.02.3',
-      '1.2.03',
-      '1.2.3-',
-      '1.2.3-alpha..1',
-      '1.2.3+build.5',
-      'v1.2.3',
-    ]) {
+    // Build metadata is valid SemVer 2.0 and must be accepted.
+    expect(
+      adminSkillCreateVersionInputSchema.safeParse({ ...input, version: '1.2.3+build.5' }).success,
+    ).toBe(true);
+    expect(
+      adminSkillCreateVersionInputSchema.safeParse({ ...input, version: '2.4.0+corp.17' }).success,
+    ).toBe(true);
+    for (const version of ['01.2.3', '1.02.3', '1.2.03', '1.2.3-', '1.2.3-alpha..1', 'v1.2.3']) {
       expect(adminSkillCreateVersionInputSchema.safeParse({ ...input, version }).success).toBe(
         false,
       );

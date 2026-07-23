@@ -7,6 +7,10 @@ import {
   aiModelDraftSchema,
   aiProviderDraftSchema,
   aiSecretMutationSchema,
+  BOUNDED_JSON_MAX_DEPTH,
+  BOUNDED_JSON_MAX_KEYS_PER_OBJECT,
+  BOUNDED_JSON_MAX_NODES,
+  BOUNDED_JSON_MAX_SERIALIZED_BYTES,
   publishedAiCatalogSchema,
 } from './aiCatalog';
 
@@ -165,6 +169,87 @@ describe('AI catalog contracts', () => {
         config: { contextWindowTokens: 128_000, maxTokens: 4096 },
       }).success,
     ).toBe(true);
+  });
+
+  it('bounds recursive JSON depth/nodes/keys without throwing RangeError', () => {
+    const base = {
+      displayName: 'Alpha',
+      providerKey: 'alpha',
+      reason: 'create',
+    };
+
+    // Deep nesting just within / over the depth limit.
+    let deepOk: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < BOUNDED_JSON_MAX_DEPTH; i += 1) {
+      deepOk = { child: deepOk };
+    }
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({ ...base, config: deepOk }).success,
+    ).toBe(true);
+
+    let deepBad: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < BOUNDED_JSON_MAX_DEPTH + 2; i += 1) {
+      deepBad = { child: deepBad };
+    }
+    const deepResult = adminAiProviderCreateDraftInputSchema.safeParse({
+      ...base,
+      config: deepBad,
+    });
+    expect(deepResult.success).toBe(false);
+
+    // Too many keys on a single object.
+    const manyKeys: Record<string, number> = {};
+    for (let i = 0; i < BOUNDED_JSON_MAX_KEYS_PER_OBJECT + 1; i += 1) {
+      manyKeys[`k${i}`] = i;
+    }
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({ ...base, config: manyKeys }).success,
+    ).toBe(false);
+
+    // Too many total nodes (wide shallow tree).
+    const wide: unknown[] = [];
+    for (let i = 0; i < BOUNDED_JSON_MAX_NODES + 10; i += 1) {
+      wide.push(i);
+    }
+    const wideResult = adminAiProviderCreateDraftInputSchema.safeParse({
+      ...base,
+      config: { items: wide },
+    });
+    expect(wideResult.success).toBe(false);
+
+    // Serialized-size boundary: under limit accepts, over limit is a Zod failure.
+    const underSize = 'x'.repeat(Math.max(1, BOUNDED_JSON_MAX_SERIALIZED_BYTES - 64));
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { blob: underSize.slice(0, 100) },
+      }).success,
+    ).toBe(true);
+    const overSizeBlob = 'y'.repeat(BOUNDED_JSON_MAX_SERIALIZED_BYTES);
+    const sizeResult = adminAiProviderCreateDraftInputSchema.safeParse({
+      ...base,
+      config: { blob: overSizeBlob },
+    });
+    expect(sizeResult.success).toBe(false);
+    if (!sizeResult.success) {
+      expect(sizeResult.error.issues.some((issue) => /serialized size/i.test(issue.message))).toBe(
+        true,
+      );
+    }
+
+    // Genuinely stack-exhausting nesting: iterative walk returns a Zod failure, never throws.
+    let stackDeep: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 10_000; i += 1) {
+      stackDeep = { child: stackDeep };
+    }
+    let stackResult: ReturnType<typeof adminAiProviderCreateDraftInputSchema.safeParse>;
+    expect(() => {
+      stackResult = adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: stackDeep,
+      });
+    }).not.toThrow();
+    expect(stackResult!.success).toBe(false);
   });
 
   it('publishes only the deploymentName model config field', () => {

@@ -1,8 +1,8 @@
 import { PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY } from '@lobechat/types';
-import semver from 'semver';
 import { z } from 'zod';
 
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
+import { isStrictSemVer } from '../shared';
 
 export const addSecretIssue = (value: string, ctx: z.RefinementCtx) => {
   if (containsEnterpriseSecretMaterial(value)) {
@@ -32,7 +32,7 @@ export const platformAgentVersionSchema = z
   .trim()
   .min(1)
   .max(64)
-  .refine((value) => semver.valid(value) === value, 'version must be valid SemVer');
+  .refine(isStrictSemVer, 'version must be valid SemVer');
 
 export const platformAgentSystemKeySchema = z
   .literal(PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY)

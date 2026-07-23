@@ -7,6 +7,8 @@ import {
   platformBrandingPublishedSchema,
 } from '@/types/platform/branding';
 
+import { secretSafeAuditReasonSchema } from './shared';
+
 const PLATFORM_BRANDING_ASSET_ID_PATTERN =
   /^pba_[\da-f]{8}-[\da-f]{4}-[1-8][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/;
 
@@ -103,7 +105,7 @@ export const adminBrandingGetDraftOutputSchema = z
 
 const mutationContextSchema = z
   .object({
-    reason: z.string().trim().min(1).max(2000),
+    reason: secretSafeAuditReasonSchema,
     requestId: z.string().uuid(),
   })
   .strict();
@@ -167,7 +169,7 @@ export const adminBrandingUploadAssetInputSchema = z
     bytesBase64: z.string().min(4).max(8_000_000),
     fileName: z.string().trim().min(1).max(255),
     kind: adminBrandingAssetKindSchema,
-    reason: z.string().trim().min(1).max(2000),
+    reason: secretSafeAuditReasonSchema,
     requestId: z.string().uuid(),
   })
   .strict();

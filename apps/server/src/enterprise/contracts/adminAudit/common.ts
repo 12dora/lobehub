@@ -15,30 +15,22 @@
 
 import { z } from 'zod';
 
-import { containsEnterpriseSecretMaterial } from '../../security/redaction';
+import { SECRET_SAFE_TEXT_MAX, secretSafeAuditReasonSchema, strictDateSchema } from '../shared';
 
 export const ADMIN_AUDIT_LIST_DEFAULT_LIMIT = 50;
 export const ADMIN_AUDIT_LIST_MAX_LIMIT = 200;
 export const ADMIN_AUDIT_FACET_DEFAULT_LIMIT = 20;
 export const ADMIN_AUDIT_FACET_MAX_LIMIT = 50;
 export const ADMIN_AUDIT_Q_MAX_LENGTH = 200;
-export const ADMIN_AUDIT_REASON_MAX_LENGTH = 2000;
+export const ADMIN_AUDIT_REASON_MAX_LENGTH = SECRET_SAFE_TEXT_MAX;
 
 /** Opaque keyset cursor: `${createdAt.toISOString()}|${id}`. */
 export const adminAuditCursorSchema = z.string().min(1).max(128);
 
-export const auditReasonSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(ADMIN_AUDIT_REASON_MAX_LENGTH)
-  .refine(
-    (value) => !containsEnterpriseSecretMaterial(value),
-    'credential material is not allowed in audit reasons',
-  );
+export const auditReasonSchema = secretSafeAuditReasonSchema;
 
-/** Bounded date — real Date via superjson; reject invalid. */
-export const dateInputSchema = z.coerce.date();
+/** Bounded date — real `Date` instances only (SuperJSON); reject coerce traps. */
+export const dateInputSchema = strictDateSchema;
 
 export const limitSchema = z.number().int().min(1).max(ADMIN_AUDIT_LIST_MAX_LIMIT).optional();
 
