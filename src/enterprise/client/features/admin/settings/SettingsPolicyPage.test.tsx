@@ -23,6 +23,12 @@ const mocks = vi.hoisted(() => ({
   publish: vi.fn(),
   saveDraft: vi.fn(),
   toastError: vi.fn(),
+  useBlocker: vi.fn((when: boolean | ((args: unknown) => boolean)) => {
+    const enabled = typeof when === 'function' ? true : Boolean(when);
+    return enabled && mocks.blocker.state === 'blocked'
+      ? mocks.blocker
+      : { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' };
+  }),
 }));
 
 vi.mock('antd-style', () => ({
@@ -82,12 +88,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('react-router', () => ({
-  useBlocker: (when: boolean | ((args: unknown) => boolean)) => {
-    const enabled = typeof when === 'function' ? true : Boolean(when);
-    return enabled && mocks.blocker.state === 'blocked'
-      ? mocks.blocker
-      : { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' };
-  },
+  useBlocker: mocks.useBlocker,
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
@@ -197,6 +198,7 @@ describe('SettingsPolicyPage', () => {
     mocks.blocker.state = 'unblocked';
     mocks.blocker.proceed.mockReset();
     mocks.blocker.reset.mockReset();
+    mocks.useBlocker.mockClear();
   });
 
   it.each([
@@ -541,5 +543,33 @@ describe('SettingsPolicyPage', () => {
     await waitFor(() => expect(mocks.confirmModal).toHaveBeenCalled());
     act(() => mocks.confirmModal.mock.calls[0]![0].onCancel());
     expect(mocks.blocker.reset).toHaveBeenCalled();
+  });
+
+  it('only guards the exit while the draft actually diverges from the published policy', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    render(<SettingsPolicyPage />);
+    const editor = await screen.findByLabelText('editor-font.title:general.fontSize');
+
+    // The latest blocker predicate, evaluated for a real cross-page navigation.
+    const blocksPageExit = () => {
+      const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
+      if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
+      return shouldBlock({
+        currentLocation: { pathname: '/admin/unified' },
+        nextLocation: { pathname: '/admin/users' },
+      });
+    };
+
+    // Clean editor (draft === published) never prompts.
+    expect(blocksPageExit()).toBe(false);
+
+    // A real edit diverges from the published value → guard the exit.
+    fireEvent.change(editor, { target: { value: 'edited' } });
+    await waitFor(() => expect(blocksPageExit()).toBe(true));
+
+    // Reverting to the published value leaves no effective change → stop nagging even though
+    // the sticky `dirty` flag is still set.
+    fireEvent.change(editor, { target: { value: 'old' } });
+    await waitFor(() => expect(blocksPageExit()).toBe(false));
   });
 });
