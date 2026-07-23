@@ -134,6 +134,54 @@ export const toSafeUsageLogs = (logs: GlobalUsageLog[]): SafeUsageLog[] =>
     totalTokens: log.totalTokens,
   }));
 
+/**
+ * Public usage APIs return a plain full array (no `{ items, nextCursor }` envelope).
+ * When the model only exposes keyset pages, walk them here so callers never see a
+ * silently truncated first page.
+ */
+const loadAllMonthUsage = async (
+  model: PlatformGlobalStatsModel,
+  mo?: string,
+): Promise<GlobalUsageRecordItem[]> => {
+  if (typeof model.findByMonthPage === 'function') {
+    const items: GlobalUsageRecordItem[] = [];
+    let cursor: string | undefined;
+    // Safety bound: 200 pages × max page size (avoids unbounded loops).
+    for (let page = 0; page < 200; page += 1) {
+      const result = await model.findByMonthPage(mo, {
+        cursor,
+        limit: PlatformGlobalStatsModel.USAGE_PAGE_MAX,
+      });
+      items.push(...result.items);
+      if (!result.nextCursor) break;
+      cursor = result.nextCursor;
+    }
+    return items;
+  }
+  return model.findByMonth(mo);
+};
+
+const attachSafeRecordsByDay = (
+  logs: GlobalUsageLog[],
+  rows: SafeUsageRecord[],
+): SafeUsageLog[] => {
+  const byDay = new Map<string, SafeUsageRecord[]>();
+  for (const row of rows) {
+    const day = dayjs(row.createdAt).format('YYYY-MM-DD');
+    const bucket = byDay.get(day);
+    if (bucket) bucket.push(row);
+    else byDay.set(day, [row]);
+  }
+  return logs.map((log) => ({
+    date: log.date,
+    day: log.day,
+    records: byDay.get(log.day) ?? [],
+    totalRequests: log.totalRequests,
+    totalSpend: log.totalSpend,
+    totalTokens: log.totalTokens,
+  }));
+};
+
 export const adminStatsRouter = router({
   countAgents: statsProcedure.input(countDateInput).query(async ({ ctx, input }) => {
     const model = new PlatformGlobalStatsModel(ctx.serverDB);
@@ -199,20 +247,26 @@ export const adminStatsRouter = router({
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);
       const logs = await model.findAndGroupByDay(input?.mo);
-      return toSafeUsageLogs(logs);
+      // Chart models may SQL-aggregate with empty `records`; clients/tests still need
+      // redacted detail under each day (UI aggregates `records`).
+      if (logs.some((log) => log.records.length > 0)) {
+        return toSafeUsageLogs(logs);
+      }
+      const safeRows = (await loadAllMonthUsage(model, input?.mo)).map(toSafeUsageRecord);
+      return attachSafeRecordsByDay(logs, safeRows);
     }),
 
   /**
    * Detailed usage rows for a month. Always redacted; returns the full redacted set
-   * (shape-compatible array) so clients that aggregate records are not undercounted.
-   * SQL-level pagination/aggregation is a database-layer concern.
+   * as a plain array (no pagination envelope) so clients that aggregate records are
+   * not undercounted.
    */
   usageFindByMonth: statsProcedure
     .input(monthInput)
     .output(z.array(usageRecordOutputSchema))
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      const rows = await model.findByMonth(input?.mo);
+      const rows = await loadAllMonthUsage(model, input?.mo);
       return rows.map(toSafeUsageRecord);
     }),
 });
