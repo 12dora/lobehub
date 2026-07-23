@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -22,7 +22,9 @@ import {
 } from '../platformConfigInvalidation';
 import { ConnectorGovernanceAdminService } from './adminService';
 import { resolveConnectorGovernance } from './resolve';
+import * as governanceService from './service';
 import {
+  getLastKnownConnectorGovernance,
   resetConnectorGovernanceCacheForTest,
   resolvePublishedConnectorGovernance,
 } from './service';
@@ -35,7 +37,11 @@ const flagOff = { ENABLE_PLATFORM_MANAGED_CONNECTORS: '0' };
 let publisher: InMemoryPlatformConfigInvalidationPublisher;
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
+  // Migration 0145 makes audit logs append-only; tests use the session GUC escape hatch.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
   await db.delete(platformConnectorGovernance);
   await db.delete(platformManagedResourcePolicies);
   await db.delete(users).where(sql`${users.id} LIKE 'gov-%'`);
@@ -50,6 +56,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   resetConnectorGovernanceCacheForTest();
   setPlatformConfigInvalidationPublisher(null);
   await cleanup();
@@ -153,12 +160,126 @@ describe('resolvePublishedConnectorGovernance', () => {
     ).resolves.toMatchObject({ sharedAuthOwnerUserId: 'gov-owner' });
   });
 
-  it('fail-opens to the per-user default through resolveConnectorGovernance', async () => {
+  it('governance_read_failure_denies_or_uses_last_known_policy', async () => {
+    const { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER, DENIED_CONNECTOR_GOVERNANCE } =
+      await import('./types');
     const broken = { transaction: () => {} } as unknown as LobeChatDatabase;
-    await expect(resolveConnectorGovernance(broken)).resolves.toEqual({
-      active: false,
-      builtinToolPolicies: {},
-      sharedAuthOwnerUserId: null,
+    // No LKG for an unknown source → deny-all shape upstream already enforces.
+    const denied = await resolveConnectorGovernance(broken);
+    expect(denied.active).toBe(true);
+    expect(denied.sharedAuthOwnerUserId).toBe(CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER);
+    expect('unavailable' in denied).toBe(false);
+    // At least one known builtin API must be explicitly disabled (execution gate).
+    const sampleDisabled = Object.values(denied.builtinToolPolicies).some((apis) =>
+      Object.values(apis).includes('disabled'),
+    );
+    expect(sampleDisabled).toBe(true);
+    expect(denied).toEqual(DENIED_CONNECTOR_GOVERNANCE);
+
+    // Successful resolve seeds LKG under a known epoch.
+    await publishEnforcedConnectorPolicy();
+    await publishGovernanceDoc();
+    const epoch = 'gov-epoch-1';
+    const lkg = await resolvePublishedConnectorGovernance(db, {
+      env: flagOn,
+      getCacheEpoch: async () => epoch,
+    });
+    expect(lkg).toMatchObject({
+      active: true,
+      builtinToolPolicies: { 'lobe-task': { createTask: 'disabled' } },
+      sharedAuthOwnerUserId: 'gov-owner',
+    });
+    expect(getLastKnownConnectorGovernance(db)).toEqual(lkg);
+    expect(governanceService.getLastKnownConnectorGovernanceEpoch(db)).toBe(epoch);
+
+    // Same epoch → LKG is eligible.
+    await expect(
+      governanceService.getLastKnownConnectorGovernanceIfCurrent(db, {
+        getCacheEpoch: async () => epoch,
+      }),
+    ).resolves.toEqual(lkg);
+
+    // After policy invalidation (epoch advanced), LKG must not be returned.
+    await expect(
+      governanceService.getLastKnownConnectorGovernanceIfCurrent(db, {
+        getCacheEpoch: async () => 'gov-epoch-2-after-restrict',
+      }),
+    ).resolves.toBeNull();
+
+    // resolveConnectorGovernance uses live epoch check: force epoch mismatch path.
+    const publishedSpy = vi
+      .spyOn(governanceService, 'resolvePublishedConnectorGovernance')
+      .mockRejectedValue(new Error('simulated governance read failure'));
+    const ifCurrentSpy = vi
+      .spyOn(governanceService, 'getLastKnownConnectorGovernanceIfCurrent')
+      .mockResolvedValue(null);
+    await expect(resolveConnectorGovernance(db)).resolves.toEqual(DENIED_CONNECTOR_GOVERNANCE);
+    expect(ifCurrentSpy).toHaveBeenCalled();
+    publishedSpy.mockRestore();
+    ifCurrentSpy.mockRestore();
+
+    // Same-epoch failure still serves LKG (fail-closed degradation, not fail-open).
+    vi.spyOn(governanceService, 'resolvePublishedConnectorGovernance').mockRejectedValue(
+      new Error('simulated governance read failure'),
+    );
+    vi.spyOn(governanceService, 'getLastKnownConnectorGovernanceIfCurrent').mockResolvedValue(lkg);
+    await expect(resolveConnectorGovernance(db)).resolves.toEqual(lkg);
+    vi.restoreAllMocks();
+  });
+
+  it('invalidation_failure_does_not_reclassify_committed_governance_mutation', async () => {
+    await publishEnforcedConnectorPolicy();
+    const failingPublisher = {
+      publish: vi.fn().mockRejectedValue(new Error('bus down')),
+    };
+    const service = new ConnectorGovernanceAdminService(db, {
+      env: flagOn,
+      invalidation: failingPublisher as never,
+    });
+    const before = await service.get();
+    await expect(
+      service.setSharedAuthorization({
+        actorUserId: 'gov-admin',
+        expectedRevision: before.revision,
+        ownerUserId: 'gov-owner',
+        reason: 'commit must succeed when only invalidation fails',
+      }),
+    ).resolves.toMatchObject({ revision: before.revision + 1 });
+    // Authoritative document advanced despite invalidation failure.
+    await expect(service.get()).resolves.toMatchObject({
+      doc: { sharedAuthorization: { ownerUserId: 'gov-owner' } },
+      revision: before.revision + 1,
+    });
+    expect(failingPublisher.publish).toHaveBeenCalled();
+  });
+
+  it('success_audit_failure_rolls_back_governance_mutation', async () => {
+    await publishEnforcedConnectorPolicy();
+    const service = new ConnectorGovernanceAdminService(db, {
+      env: flagOn,
+      invalidation: { publish: vi.fn(async () => {}) } as never,
+    });
+    const before = await service.get();
+    // PlatformAuditService.append is an instance field — mock the constructor.
+    const platformAudit = await import('../platformAudit');
+    vi.spyOn(platformAudit, 'PlatformAuditService').mockImplementation(
+      () =>
+        ({
+          append: vi.fn().mockRejectedValue(new Error('audit backend unavailable')),
+        }) as never,
+    );
+    await expect(
+      service.setSharedAuthorization({
+        actorUserId: 'gov-admin',
+        expectedRevision: before.revision,
+        ownerUserId: 'gov-owner',
+        reason: 'must not commit without success audit',
+      }),
+    ).rejects.toThrow(/audit backend unavailable/);
+    // Mutation must not stick when the success audit cannot be written.
+    await expect(service.get()).resolves.toMatchObject({
+      doc: { sharedAuthorization: { ownerUserId: null } },
+      revision: before.revision,
     });
   });
 });

@@ -30,7 +30,7 @@ export const resolveConnectorCatalogRuntimeReadiness = async (
   params: {
     db?: LobeChatDatabase;
     env?: ConnectorOAuthRuntimeEnv;
-    readService?: Pick<ConnectorCatalogReadService, 'getSnapshot'>;
+    readService?: Pick<ConnectorCatalogReadService, 'getSnapshot' | 'getSnapshotsBatch'>;
     repository?: Pick<PlatformConnectorCatalogRepository, 'listConnectors'>;
     runtime?: ConnectorOAuthRuntimeDependencies;
   } = {},
@@ -55,8 +55,18 @@ export const resolveConnectorCatalogRuntimeReadiness = async (
       status: 'published',
     });
     if (published + page.items.length > MAX_READINESS_ITEMS) return false;
-    for (const listed of page.items) {
-      const snapshot = await read.getSnapshot(listed.id);
+
+    // One snapshot batch query per page instead of N getSnapshot calls.
+    const snapshotsById =
+      read.getSnapshotsBatch !== undefined
+        ? await read.getSnapshotsBatch(page.items.map((item) => item.id))
+        : null;
+
+    const CONCURRENCY = 8;
+    const checkOne = async (listed: (typeof page.items)[number]): Promise<boolean> => {
+      const snapshot =
+        snapshotsById?.get(listed.id) ?? (await read.getSnapshot(listed.id).catch(() => null));
+      if (!snapshot) return false;
       if (
         snapshot.provenance.revision !== listed.publishedRevision ||
         snapshot.payload.connector.credentialMode !== listed.credentialMode
@@ -83,7 +93,13 @@ export const resolveConnectorCatalogRuntimeReadiness = async (
           connector.oauthClientSecretFingerprint,
         );
       }
-      published += 1;
+      return true;
+    };
+    for (let i = 0; i < page.items.length; i += CONCURRENCY) {
+      const slice = page.items.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(slice.map((listed) => checkOne(listed)));
+      if (results.some((ok) => !ok)) return false;
+      published += slice.length;
     }
     if (!page.nextCursor) return published > 0;
     const nextCursorKey = cursorKey(page.nextCursor);

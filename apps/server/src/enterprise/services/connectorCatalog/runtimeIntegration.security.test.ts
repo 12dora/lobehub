@@ -45,6 +45,13 @@ vi.mock('./runtimeEffectiveState', async (importOriginal) => ({
   ...(await importOriginal<typeof RuntimeEffectiveStateModule>()),
   getConnectorRuntimeEffectiveState: vi.fn(async () => ({ mode: 'enforced', revision: 8 })),
 }));
+vi.mock('../connectorGovernance/resolve', () => ({
+  resolveConnectorGovernance: vi.fn(async () => ({
+    active: false,
+    builtinToolPolicies: {},
+    sharedAuthOwnerUserId: null,
+  })),
+}));
 
 const env = {
   ENABLE_PLATFORM_MANAGED_CONNECTORS: 'true',
@@ -315,9 +322,13 @@ describe('managed Connector operation integration security', () => {
       expect.objectContaining({
         api: [],
         identifier: 'catalog',
+        meta: expect.objectContaining({ description: '' }),
         platformConnectorTombstone: true,
+        platformConnectorTombstoneMessageCode: 'connectorCatalog.tombstone.unavailable',
       }),
     ]);
+    // User-visible description stays empty; code is a dedicated machine field.
+    expect(result.manifests[0]?.meta?.description).toBe('');
   });
 
   it('rejects dispatch when the connector archives after manifest construction', async () => {

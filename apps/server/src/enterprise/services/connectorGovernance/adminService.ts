@@ -1,3 +1,4 @@
+import debug from 'debug';
 import { eq } from 'drizzle-orm';
 
 import {
@@ -19,6 +20,8 @@ import {
 } from '../platformConfigInvalidation';
 import { CONNECTOR_GOVERNANCE_INVALIDATION_SCOPE } from './service';
 import type { ConnectorBuiltinToolPolicyMap, ConnectorGovernanceDoc } from './types';
+
+const log = debug('lobe-server:connector-governance-admin');
 
 /** Thrown when a designated shared-auth owner does not exist in the users table. */
 export class ConnectorGovernanceOwnerNotFoundError extends Error {
@@ -129,24 +132,37 @@ export class ConnectorGovernanceAdminService {
     expectedRevision: number;
     reason: string;
   }): Promise<{ revision: number }> => {
+    // Mutation + success audit are one transaction: either both commit or neither.
+    // Invalidation remains post-commit best-effort (never reclassifies success).
+    let revision: number;
     try {
-      const { revision } = await this.model.publishGovernance({
-        doc: params.doc,
-        expectedRevision: params.expectedRevision,
-        updatedBy: params.actorUserId,
+      revision = await this.db.transaction(async (tx) => {
+        const model = new PlatformConnectorGovernanceModel(tx);
+        const published = await model.publishGovernance({
+          doc: params.doc,
+          expectedRevision: params.expectedRevision,
+          updatedBy: params.actorUserId,
+        });
+        await new PlatformAuditService(tx).append({
+          action: params.action,
+          actorUserId: params.actorUserId,
+          afterDiff: { doc: params.doc },
+          beforeDiff: { doc: params.before },
+          configRevision: published.revision,
+          reason: params.reason,
+          result: 'success',
+          targetId: CONNECTOR_GOVERNANCE_RESOURCE_ID,
+          targetType: CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
+        });
+        return published.revision;
       });
-      await new PlatformAuditService(this.db).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { doc: params.doc },
-        beforeDiff: { doc: params.before },
-        configRevision: revision,
-        reason: params.reason,
-        result: 'success',
-        targetId: CONNECTOR_GOVERNANCE_RESOURCE_ID,
-        targetType: CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
-      });
-      // Best-effort by design: publisher failures degrade to TTL-bounded caches.
+    } catch (error) {
+      await this.appendFailureAudit(params);
+      throw error;
+    }
+
+    // Best-effort by design: publisher failures degrade to TTL-bounded caches.
+    try {
       await this.invalidation.publish({
         at: new Date().toISOString(),
         resourceId: CONNECTOR_GOVERNANCE_RESOURCE_ID,
@@ -154,11 +170,13 @@ export class ConnectorGovernanceAdminService {
         revision,
         scopes: [CONNECTOR_GOVERNANCE_INVALIDATION_SCOPE],
       });
-      return { revision };
-    } catch (error) {
-      await this.appendFailureAudit(params);
-      throw error;
+    } catch (invalidationError) {
+      log(
+        'invalidation publish failed after commit errorClass=%s',
+        invalidationError instanceof Error ? invalidationError.name : 'UnknownError',
+      );
     }
+    return { revision };
   };
 
   private appendFailureAudit = async (params: {
@@ -178,7 +196,10 @@ export class ConnectorGovernanceAdminService {
         targetType: CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
       });
     } catch (auditError) {
-      console.error('[admin.connectors.governance] failure audit append failed', auditError);
+      log(
+        'failure audit append failed errorClass=%s',
+        auditError instanceof Error ? auditError.name : 'UnknownError',
+      );
     }
   };
 }

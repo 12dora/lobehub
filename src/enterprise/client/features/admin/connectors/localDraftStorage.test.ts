@@ -27,7 +27,8 @@ const baseValue = (): StoredAdminConnectorDraft => ({
   savedAt: new Date(0).toISOString(),
 });
 
-const key = 'aihub.admin.connectors.draft.connector-1';
+const key = 'aihub.admin.connectors.draft.v2.connector-1';
+const legacyKey = 'aihub.admin.connectors.draft.connector-1';
 
 describe('Connector local draft storage', () => {
   beforeEach(() => localStorage.clear());
@@ -37,7 +38,10 @@ describe('Connector local draft storage', () => {
     saveAdminConnectorDraft('connector-1', baseValue());
 
     const raw = localStorage.getItem(key);
-    expect(raw).not.toContain('secret');
+    expect(raw).toBeTruthy();
+    // secretIntent is safe metadata (operation only); secret *values* must never appear.
+    expect(raw).not.toMatch(/bearerToken|apiKey|password|private-token/i);
+    expect(JSON.parse(raw!).secretIntent).toBe('keep');
     expect(loadAdminConnectorDraft('connector-1')?.draft.displayName).toBe('Calendar');
   });
 
@@ -64,6 +68,42 @@ describe('Connector local draft storage', () => {
     saveAdminConnectorDraft('connector-1', value);
     expect(localStorage.getItem(key)).toBeNull();
     expect(loadAdminConnectorDraft('connector-1')).toBeNull();
+  });
+
+  it('local_draft_rejects_arbitrary_current_secret_in_public_field', () => {
+    const value = baseValue();
+    value.draft.description = 'note: correct-horse-battery-staple is temporary';
+    saveAdminConnectorDraft('connector-1', value, {
+      secretLeaves: ['correct-horse-battery-staple'],
+    });
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(loadAdminConnectorDraft('connector-1')).toBeNull();
+  });
+
+  it('restored_clear_secret_intent_is_preserved', () => {
+    const value = baseValue();
+    value.secretIntent = 'clear';
+    saveAdminConnectorDraft('connector-1', value);
+    expect(loadAdminConnectorDraft('connector-1')?.secretIntent).toBe('clear');
+  });
+
+  it('preserves replace_requires_reentry intent without secret bytes', () => {
+    const value = baseValue();
+    value.secretIntent = 'replace_requires_reentry';
+    saveAdminConnectorDraft('connector-1', value);
+    const loaded = loadAdminConnectorDraft('connector-1');
+    expect(loaded?.secretIntent).toBe('replace_requires_reentry');
+    // Intent metadata only — never a replacement secret value.
+    expect(JSON.stringify(loaded)).not.toContain('correct-horse');
+    expect(JSON.stringify(loaded)).not.toMatch(/"value"\s*:/);
+  });
+
+  it('purges legacy pre-v2 draft entries that cannot be re-scanned', () => {
+    const legacy = baseValue();
+    legacy.draft.description = 'note: correct-horse-battery-staple is temporary';
+    localStorage.setItem(legacyKey, JSON.stringify(legacy));
+    expect(loadAdminConnectorDraft('connector-1')).toBeNull();
+    expect(localStorage.getItem(legacyKey)).toBeNull();
   });
 
   it('fails closed when the scan node budget is exhausted', () => {

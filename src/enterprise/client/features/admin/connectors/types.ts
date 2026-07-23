@@ -33,8 +33,6 @@ import type {
   adminConnectorTestOutputSchema,
   adminConnectorUpdateDraftInputSchema,
   connectorCredentialModeSchema,
-  connectorOAuthClientSecretMutationSchema,
-  connectorSharedSecretMutationSchema,
   connectorToolDraftSchema,
 } from '@/server/enterprise/contracts/platformConnectors';
 
@@ -90,10 +88,6 @@ export type AdminConnectorTestOutput = z.infer<typeof adminConnectorTestOutputSc
 export type AdminConnectorToolDraft = z.infer<typeof connectorToolDraftSchema>;
 export type AdminConnectorUpdateDraftInput = z.infer<typeof adminConnectorUpdateDraftInputSchema>;
 export type ConnectorCredentialMode = z.infer<typeof connectorCredentialModeSchema>;
-export type ConnectorOAuthClientSecretMutation = z.infer<
-  typeof connectorOAuthClientSecretMutationSchema
->;
-export type ConnectorSharedSecretMutation = z.infer<typeof connectorSharedSecretMutationSchema>;
 
 /**
  * Production uses the real lambda adapter. Tests may inject an explicit Mock at the SWR boundary.

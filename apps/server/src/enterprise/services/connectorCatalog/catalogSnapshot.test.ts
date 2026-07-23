@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -338,10 +338,14 @@ describe('ConnectorCatalogReadService exact snapshot boundary', () => {
     await expect(read.getSnapshot(connectorId)).resolves.toMatchObject({
       provenance: { checksum },
     });
-    await db
-      .update(platformResourceRevisions)
-      .set({ payload: payload('https://tampered-after-cache.example.test/mcp') })
-      .where(eq(platformResourceRevisions.id, row.id));
+    // Test-only bypass of the immutable-revision trigger (migration 0145).
+    await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL session_replication_role = 'replica'`));
+      await tx
+        .update(platformResourceRevisions)
+        .set({ payload: payload('https://tampered-after-cache.example.test/mcp') })
+        .where(eq(platformResourceRevisions.id, row.id));
+    });
 
     await expect(read.getSnapshot(connectorId)).rejects.toMatchObject({
       code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',

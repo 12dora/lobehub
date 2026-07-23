@@ -8,7 +8,7 @@ import {
   platformConnectors,
   platformConnectorSecrets,
   platformConnectorTools,
-  platformResourceRevisions,
+  platformJobs,
   platformUserConnectorBindings,
 } from '@/database/schemas/platform';
 import { users } from '@/database/schemas/user';
@@ -21,17 +21,39 @@ import type {
 } from './catalogTypes';
 
 export const cleanupM09ServiceData = async (db: LobeChatDatabase): Promise<void> => {
+  // Collect connector ids before child rows go away so revision cleanup stays scoped.
+  const connectorRows = await db.select({ id: platformConnectors.id }).from(platformConnectors);
+  const connectorIds = connectorRows.map((row) => row.id);
+
   await db.delete(platformConnectorOAuthStates);
   await db.delete(platformUserConnectorBindings);
   await db.delete(platformConnectorSecrets);
   await db.delete(platformConnectorTools);
+  await db.delete(platformJobs).where(eq(platformJobs.type, 'connector.oauth.refresh.v1'));
   await db.delete(platformConnectors);
-  await db
-    .delete(platformResourceRevisions)
-    .where(eq(platformResourceRevisions.resourceType, 'connector'));
-  await db
-    .delete(platformAuditLogs)
-    .where(inArray(platformAuditLogs.targetType, ['connector', 'connector_binding']));
+  // Migration 0145: revisions reject row DELETE. Temporarily disable user triggers in
+  // this session so we can remove only connector revision rows (not TRUNCATE the
+  // whole table, which would wipe unrelated parallel-suite fixtures).
+  if (connectorIds.length > 0) {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL session_replication_role = 'replica'`));
+      await tx.execute(sql`
+        DELETE FROM platform_resource_revisions
+        WHERE resource_type = 'connector'
+          AND resource_id IN (${sql.join(
+            connectorIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
+      `);
+    });
+  }
+  // Migration 0145: audit logs are append-only; tests use the session GUC escape hatch.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx
+      .delete(platformAuditLogs)
+      .where(inArray(platformAuditLogs.targetType, ['connector', 'connector_binding']));
+  });
   await db.delete(users).where(sql`${users.id} LIKE 'm09-service-user-%'`);
 };
 

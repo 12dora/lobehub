@@ -13,6 +13,7 @@ import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { resolveConnectorGovernance } from '../connectorGovernance/resolve';
+import { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER } from '../connectorGovernance/types';
 import { PlatformAuditService } from '../platformAudit';
 import { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorOutboundPolicyProvider } from './connectorOutboundPolicy';
@@ -48,6 +49,8 @@ export interface PlatformConnectorRuntimeManifest extends ToolManifest {
   };
   platformConnectorProof?: ConnectorOwnedOperationProof;
   platformConnectorTombstone?: boolean;
+  /** Stable machine code for presentation-layer i18n (never a raw locale string). */
+  platformConnectorTombstoneMessageCode?: string;
 }
 
 export interface ManagedConnectorExecutionResult {
@@ -308,9 +311,15 @@ export const buildManagedConnectorManifests = async (params: {
       manifests.push({
         api: [],
         identifier: connectorKey,
-        meta: { description: 'Managed Connector is unavailable', title: connectorKey },
+        // Do not put i18n keys in user-visible description — presentation
+        // localizes via platformConnectorTombstone + messageCode only.
+        meta: {
+          description: '',
+          title: connectorKey,
+        },
         platformConnectorAgentPolicy: { revision: effectiveState.revision, selections: [] },
         platformConnectorTombstone: true,
+        platformConnectorTombstoneMessageCode: 'connectorCatalog.tombstone.unavailable',
         type: 'mcp',
       });
       continue;
@@ -602,10 +611,17 @@ export const executeManagedConnectorTool = async (params: {
     // Org-wide shared OAuth identity (connector governance): while the
     // connectors managed policy is enforced with a designated owner,
     // per_user_oauth executions load/refresh the OWNER's platform binding so
-    // every user shares that one authorization. Resolved once per execution;
-    // the resolver fails open, so a governance read failure degrades to the
-    // per-user default. User bindings are never written from here.
+    // every user shares that one authorization. Resolved once per execution.
+    // Unresolvable governance returns DENIED_CONNECTOR_GOVERNANCE (active +
+    // synthetic shared owner) — never fall back to the invoking user's binding.
+    // User bindings are never written from here.
     const governance = await resolveConnectorGovernance(params.db);
+    if (
+      governance.active &&
+      governance.sharedAuthOwnerUserId === CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER
+    ) {
+      return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
+    }
     const effectiveBindingUserId =
       governance.active && governance.sharedAuthOwnerUserId
         ? governance.sharedAuthOwnerUserId

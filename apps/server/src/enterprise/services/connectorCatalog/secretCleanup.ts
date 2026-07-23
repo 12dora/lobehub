@@ -1,4 +1,8 @@
+import debug from 'debug';
+
 import type { ConnectorCatalogSecretStore, ConnectorSecretSlot } from './catalogTypes';
+
+const log = debug('lobe-server:connector-secret-cleanup');
 
 const SECRET_REVOKE_TIMEOUT_MS = 1000;
 const SECRET_REVOKE_CONCURRENCY = 8;
@@ -9,11 +13,26 @@ export interface ConnectorSecretCleanupRef {
   slot: ConnectorSecretSlot;
 }
 
+/**
+ * Refs that failed bounded revoke are remembered so opportunistic GC can retry
+ * (process-local; survives until the next successful revoke or process restart).
+ */
+const pendingGcRetry = new Set<string>();
+
+const cleanupKey = (cleanup: ConnectorSecretCleanupRef): string =>
+  `${cleanup.connectorId}:${cleanup.slot}:${cleanup.ref}`;
+
+export const getPendingConnectorSecretCleanupCountForTest = (): number => pendingGcRetry.size;
+
+export const clearPendingConnectorSecretCleanupForTest = (): void => {
+  pendingGcRetry.clear();
+};
+
 const revokeOne = async (
   secrets: ConnectorCatalogSecretStore,
   cleanup: ConnectorSecretCleanupRef,
-): Promise<void> => {
-  if (!secrets.revokeSecretRef) return;
+): Promise<boolean> => {
+  if (!secrets.revokeSecretRef) return true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -25,10 +44,16 @@ const revokeOne = async (
         );
       }),
     ]);
+    pendingGcRetry.delete(cleanupKey(cleanup));
+    return true;
   } catch (error) {
-    console.error('[connectorSecretCleanup] best-effort revoke failed', {
-      errorClass: error instanceof Error ? error.name : 'UnknownError',
-    });
+    pendingGcRetry.add(cleanupKey(cleanup));
+    log(
+      'best-effort revoke failed errorClass=%s slot=%s',
+      error instanceof Error ? error.name : 'UnknownError',
+      cleanup.slot,
+    );
+    return false;
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -55,4 +80,15 @@ export const cleanupConnectorSecretRefs = async (
     },
   );
   await Promise.all(workers);
+  // When immediate revoke fails, ask the store GC path to collect later.
+  if (pendingGcRetry.size > 0 && secrets.garbageCollectOrphanedSecrets) {
+    try {
+      await secrets.garbageCollectOrphanedSecrets();
+    } catch (error) {
+      log(
+        'deferred GC after failed revoke errorClass=%s',
+        error instanceof Error ? error.name : 'UnknownError',
+      );
+    }
+  }
 };

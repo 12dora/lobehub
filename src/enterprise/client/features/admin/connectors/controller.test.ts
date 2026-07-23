@@ -6,6 +6,7 @@ import {
   changeConnectorCredentialMode,
   clearConnectorSecretEdit,
   deriveAdminConnectorPermissions,
+  isPersistedConnectorTestCurrent,
   normalizeConnectorTools,
   resolveAdminConnectorPrimaryAction,
   sortConnectorTools,
@@ -111,6 +112,72 @@ describe('admin Connector controller', () => {
         testPassed: true,
       }),
     ).toBe('publish');
+  });
+
+  it('successful_test_survives_refetch_and_unlocks_publish', () => {
+    const draftToken = 'b'.repeat(64);
+    const snapshot = {
+      baseRevision: 3,
+      draft: {
+        connectionTest: null,
+        credentialMode: 'none' as const,
+        description: null,
+        displayName: 'Calendar',
+        enabled: true,
+        endpoint: 'https://calendar.example.com/mcp',
+        id: 'connector-1',
+        key: 'calendar',
+        oauthClientSecret: { configured: false, fingerprint: null, updatedAt: null },
+        oauthConfig: null,
+        revision: 3,
+        sharedSecret: { configured: false, fingerprint: null, updatedAt: null },
+        sort: 0,
+        status: 'draft' as const,
+        tools: [],
+        transport: 'http' as const,
+      },
+      draftToken,
+      published: null,
+    } satisfies AdminConnectorGetOutput;
+
+    // Without session retention, null server projection keeps Publish locked.
+    expect(isPersistedConnectorTestCurrent(snapshot)).toBe(false);
+    expect(
+      resolveAdminConnectorPrimaryAction({
+        canPublish: true,
+        canSave: true,
+        canTest: true,
+        conflict: false,
+        dirty: false,
+        saveFailed: false,
+        testPassed: isPersistedConnectorTestCurrent(snapshot),
+      }),
+    ).toBe('test');
+
+    // Session-retained success for the current revision/token unlocks Publish
+    // even after a refetch that still projects connectionTest: null.
+    const sessionTest = {
+      status: 'success' as const,
+      testedDraftToken: draftToken,
+      testedRevision: 3,
+    };
+    expect(isPersistedConnectorTestCurrent(snapshot, sessionTest)).toBe(true);
+    expect(
+      resolveAdminConnectorPrimaryAction({
+        canPublish: true,
+        canSave: true,
+        canTest: true,
+        conflict: false,
+        dirty: false,
+        saveFailed: false,
+        testPassed: isPersistedConnectorTestCurrent(snapshot, sessionTest),
+      }),
+    ).toBe('publish');
+
+    // Token change (draft saved) invalidates the retained success.
+    expect(
+      isPersistedConnectorTestCurrent({ ...snapshot, draftToken: 'c'.repeat(64) }, sessionTest),
+    ).toBe(false);
   });
 
   it('updates only the selected Tool policy', () => {

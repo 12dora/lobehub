@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -10,7 +10,7 @@ import {
   platformUserConnectorBindings,
 } from '@/database/schemas/platform';
 import { users } from '@/database/schemas/user';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { ConnectorCatalogReadService } from './catalogSnapshot';
@@ -29,6 +29,17 @@ const db: LobeChatDatabase = await getTestDB();
 
 beforeEach(() => cleanupM09ServiceData(db));
 afterEach(() => cleanupM09ServiceData(db));
+
+/**
+ * Test-only: mutation of `platform_resource_revisions` is blocked by migration 0145.
+ * Disable user triggers for the duration of the transaction so adversarial fixtures
+ * can seed checksum/payload tampering without changing production code.
+ */
+const withRevisionMutationBypass = async <T>(fn: (tx: Transaction) => Promise<T>): Promise<T> =>
+  db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL session_replication_role = 'replica'`));
+    return fn(tx);
+  });
 
 const createHarness = (lifecycle: ConnectorCatalogLifecycle = {}) => {
   const secrets = new MemoryConnectorSecretStore(db);
@@ -148,15 +159,15 @@ describe('ConnectorCatalogPublicationService', () => {
           status: 'draft',
         })
         .where(eq(platformConnectors.id, draft.draft.id));
-      await db
-        .update(platformResourceRevisions)
-        .set({ checksum: '0'.repeat(64) })
-        .where(
-          eq(
-            platformResourceRevisions.id,
-            (await db.select().from(platformResourceRevisions))[0]!.id,
-          ),
-        );
+      // Adversarial race: target revision checksum changes after preflight.
+      // Use the test-only trigger bypass — production never mutates revisions.
+      await withRevisionMutationBypass(async (tx) => {
+        const [row] = await tx.select().from(platformResourceRevisions);
+        await tx
+          .update(platformResourceRevisions)
+          .set({ checksum: '0'.repeat(64) })
+          .where(eq(platformResourceRevisions.id, row!.id));
+      });
     };
 
     await expect(
@@ -194,14 +205,18 @@ describe('ConnectorCatalogPublicationService', () => {
       })
       .where(eq(platformConnectors.id, draft.draft.id));
     const published = await harness.drafts.getDraft(draft.draft.id);
-    const [row] = await db.select().from(platformResourceRevisions);
-    const malicious = structuredClone(row.payload) as Record<string, unknown>;
-    (malicious.connector as Record<string, unknown>).description =
-      'hidden vault://historical/revision';
-    await db
-      .update(platformResourceRevisions)
-      .set({ checksum: checksumPayload(malicious), payload: malicious })
-      .where(eq(platformResourceRevisions.id, row.id));
+    // Adversarial historical revision: checksum-valid payload that embeds a Secret ref.
+    // Seed past the immutability trigger (test-only); production never mutates revisions.
+    await withRevisionMutationBypass(async (tx) => {
+      const [row] = await tx.select().from(platformResourceRevisions);
+      const malicious = structuredClone(row!.payload) as Record<string, unknown>;
+      (malicious.connector as Record<string, unknown>).description =
+        'hidden vault://historical/revision';
+      await tx
+        .update(platformResourceRevisions)
+        .set({ checksum: checksumPayload(malicious), payload: malicious })
+        .where(eq(platformResourceRevisions.id, row!.id));
+    });
 
     await expect(
       harness.publication.rollback('admin-user', {
@@ -556,6 +571,63 @@ describe('ConnectorCatalogPublicationService', () => {
     });
     await expect(harness.read.getTrustedPublished(draft.draft.id)).rejects.toMatchObject({
       code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+    });
+  });
+});
+
+describe('ConnectorCatalogService publish secret boundary', () => {
+  it('publish_error_does_not_echo_canary_secret_from_exception', async () => {
+    const { ConnectorCatalogService } = await import('./catalogService');
+    const canary = 'canary-vault-secret-never-echo-9f3a2b';
+    const secrets = new MemoryConnectorSecretStore(db);
+    const outbound = {
+      assertAllowed: vi.fn(async () => {}),
+      getPolicyVersion: vi.fn(() => 1),
+      preflight: vi.fn(async () => ({ policyVersion: 1 })),
+      requestJson: vi.fn(async () => ({ body: {}, status: 200 })),
+    } as unknown as ConnectorOutboundClient;
+    const service = new ConnectorCatalogService(db, outbound, secrets, {
+      redirectUri: 'https://aihub.example.test/oauth/connector/callback',
+    });
+    const created = await service.applyImmediate('admin-user', {
+      credentialMode: 'none',
+      displayName: 'Canary Connector',
+      enabled: true,
+      endpoint: 'https://connector-canary.example.test/mcp',
+      key: `canary-pub-${Date.now()}`,
+      mode: 'create',
+      reason: 'seed published connector for hard-fail',
+      tools: [connectorToolFixture()],
+      transport: 'http',
+    });
+    expect(created.published).toBe(true);
+
+    outbound.preflight = vi.fn(async () => {
+      throw new Error(`upstream hard-fail leaked ${canary} in vault://payload`);
+    });
+
+    await expect(
+      service.applyImmediate('admin-user', {
+        displayName: 'Canary Renamed',
+        expectedDraftToken: created.draftToken,
+        expectedRevision: created.revision,
+        id: created.draft.id,
+        mode: 'update',
+        reason: 'force hard-fail publish',
+      }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toMatchObject({
+        message: 'PLATFORM_CONNECTOR_PUBLISH_FAILED',
+        name: 'ConnectorPublishImmediateError',
+      });
+      const safeError =
+        error instanceof Error
+          ? { message: error.message, name: error.name, stack: error.stack }
+          : error;
+      const text = JSON.stringify(safeError);
+      expect(text).not.toContain(canary);
+      expect(text).not.toContain('vault://');
+      return true;
     });
   });
 });

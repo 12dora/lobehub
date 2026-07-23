@@ -41,6 +41,7 @@ const ConnectorDetailContent = memo(
         draft={editor.draft}
         permissions={permissions}
         primaryAction={actions.primaryAction}
+        restoreNotice={editor.restoreNotice}
         saveState={editor.saveState}
         secret={editor.secret}
         snapshot={data}

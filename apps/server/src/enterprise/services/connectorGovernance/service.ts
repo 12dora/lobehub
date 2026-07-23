@@ -22,6 +22,15 @@ const resolvedCache = new Map<
   number,
   { epoch: string; expiresAt: number; resolved: ResolvedConnectorGovernance }
 >();
+/**
+ * Last successfully resolved snapshot per source — used as fail-closed LKG.
+ * Epoch is retained so callers can reason about staleness; LKG is only returned
+ * when a live resolve fails (not when policy intentionally changed).
+ */
+const lastKnownGoodCache = new Map<
+  number,
+  { epoch: string; resolved: ResolvedConnectorGovernance }
+>();
 const sourceIds = new WeakMap<object, number>();
 let nextSourceId = 1;
 
@@ -63,9 +72,19 @@ export const resolvePublishedConnectorGovernance = async (
 ): Promise<ResolvedConnectorGovernance> => {
   const sourceId = getSourceId(db as object);
   const now = options.now?.() ?? Date.now();
-  const epoch = await (options.getCacheEpoch ?? readCacheEpoch)().catch(() => 'unavailable');
-  const cached = resolvedCache.get(sourceId);
-  if (cached && cached.epoch === epoch && cached.expiresAt > now) return cached.resolved;
+  // Epoch read failure → do not invent a synthetic cache key. Serve a live
+  // resolve without caching so we never pin policy under "unavailable".
+  let epoch: string | null;
+  try {
+    epoch = await (options.getCacheEpoch ?? readCacheEpoch)();
+    if (!epoch || epoch === 'unavailable') epoch = null;
+  } catch {
+    epoch = null;
+  }
+  if (epoch) {
+    const cached = resolvedCache.get(sourceId);
+    if (cached && cached.epoch === epoch && cached.expiresAt > now) return cached.resolved;
+  }
 
   const flags = parseEnterpriseFeatureFlags(options.env ?? process.env);
   const [policySnapshot, governance] = await Promise.all([
@@ -84,14 +103,55 @@ export const resolvePublishedConnectorGovernance = async (
     builtinToolPolicies: governance.published.builtinToolPolicies,
     sharedAuthOwnerUserId: active ? governance.published.sharedAuthorization.ownerUserId : null,
   };
-  resolvedCache.set(sourceId, {
-    epoch,
-    expiresAt: now + (options.cacheTtlMs ?? CACHE_TTL_MS),
-    resolved,
-  });
+  // Only cache + LKG under a real invalidation epoch. Synthetic/missing epochs
+  // must not retain policy that later restrictive publishes cannot invalidate.
+  if (epoch) {
+    resolvedCache.set(sourceId, {
+      epoch,
+      expiresAt: now + (options.cacheTtlMs ?? CACHE_TTL_MS),
+      resolved,
+    });
+    lastKnownGoodCache.set(sourceId, { epoch, resolved });
+  }
   return resolved;
+};
+
+/** Process-local last-known-good for fail-closed degradation (may be stale). */
+export const getLastKnownConnectorGovernance = (
+  db: LobeChatDatabase,
+): ResolvedConnectorGovernance | null => {
+  const sourceId = getSourceId(db as object);
+  return lastKnownGoodCache.get(sourceId)?.resolved ?? null;
+};
+
+/** Test/diagnostic: epoch that produced the retained LKG, if any. */
+export const getLastKnownConnectorGovernanceEpoch = (db: LobeChatDatabase): string | null => {
+  const sourceId = getSourceId(db as object);
+  return lastKnownGoodCache.get(sourceId)?.epoch ?? null;
+};
+
+/**
+ * Return LKG only when its stored invalidation epoch still matches the live
+ * epoch. If the epoch advanced (policy/governance published) or cannot be
+ * read, return null so consumers deny rather than applying a stale policy.
+ */
+export const getLastKnownConnectorGovernanceIfCurrent = async (
+  db: LobeChatDatabase,
+  options: ResolveConnectorGovernanceOptions = {},
+): Promise<ResolvedConnectorGovernance | null> => {
+  const sourceId = getSourceId(db as object);
+  const lkg = lastKnownGoodCache.get(sourceId);
+  if (!lkg || lkg.epoch === 'unavailable') return null;
+  try {
+    const epoch = await (options.getCacheEpoch ?? readCacheEpoch)();
+    if (!epoch || epoch === 'unavailable' || epoch !== lkg.epoch) return null;
+    return lkg.resolved;
+  } catch {
+    return null;
+  }
 };
 
 export const resetConnectorGovernanceCacheForTest = () => {
   resolvedCache.clear();
+  lastKnownGoodCache.clear();
 };
