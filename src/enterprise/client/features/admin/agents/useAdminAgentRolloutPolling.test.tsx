@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { SWRConfig } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMockAdminAgentsClient } from './mockAdminAgents';
+import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
 import type { AdminAgentDetailOutput } from './types';
 import { fetchAdminAgentDetail, useFetchAdminAgent } from './useAdminAgents';
 

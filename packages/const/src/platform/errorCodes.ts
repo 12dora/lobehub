@@ -84,15 +84,3 @@ const ALL_CODE_VALUES = new Set<string>(Object.values(ENTERPRISE_ERROR_CODES));
 
 export const isEnterpriseErrorCode = (value: string): value is EnterpriseErrorCode =>
   ALL_CODE_VALUES.has(value);
-
-/** Required prefixes for every enterprise business error code. */
-export const ENTERPRISE_ERROR_CODE_PREFIXES = [
-  'PLATFORM_',
-  'ADMIN_',
-  'MANAGED_',
-  // M06 public contract spelling retained for legacy-router compatibility.
-  'RESOURCE_',
-] as const;
-
-export const hasEnterpriseErrorPrefix = (code: string): boolean =>
-  ENTERPRISE_ERROR_CODE_PREFIXES.some((prefix) => code.startsWith(prefix));

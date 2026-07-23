@@ -134,6 +134,15 @@ const hangForLateSuccess = () => {
   };
 };
 
+/**
+ * Deterministically drain the promise/microtask queue. The late-success path is pure async/await
+ * (resolve → signal.aborted check → throw/retry) with no timers, so flushing microtasks lets a
+ * wrongful retry increment `attempts` before we assert — no wall-clock race like a fixed sleep.
+ */
+const flushMicrotasks = async () => {
+  for (let i = 0; i < 5; i += 1) await Promise.resolve();
+};
+
 /** Hang until signal aborts (for Cancel button path that rejects via abort). */
 const hangUntilAbort = ({ signal }: { signal?: AbortSignal }) =>
   new Promise<void>((_resolve, reject) => {
@@ -278,7 +287,7 @@ describe('ReasonModalContent lifecycle (R4)', () => {
 
     // Late success after unmount must not trigger retry (mounted guards + abort)
     deliverLateSuccess();
-    await new Promise((r) => setTimeout(r, 50));
+    await flushMicrotasks();
     expect(attempts).toBe(1);
   });
 
@@ -306,7 +315,7 @@ describe('ReasonModalContent lifecycle (R4)', () => {
     // destroy: onOpenChange(false) + unmount — distinct from bare Escape if both fire
     instance.destroy();
     deliverLateSuccess();
-    await new Promise((r) => setTimeout(r, 50));
+    await flushMicrotasks();
     expect(attempts).toBe(1);
   });
 
