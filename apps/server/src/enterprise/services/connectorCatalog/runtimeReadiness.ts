@@ -101,7 +101,3 @@ export const ensureConnectorCatalogReadinessRegistered = (): void => {
   registered = true;
   registerManagedResourceReadiness('connectors', () => resolveConnectorCatalogRuntimeReadiness());
 };
-
-export const resetConnectorCatalogReadinessRegistrationForTest = (): void => {
-  registered = false;
-};

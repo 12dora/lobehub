@@ -1,9 +1,5 @@
 import { INBOX_SESSION_ID } from '@lobechat/const';
-import {
-  type AgentItem,
-  type LobeAgentConfig,
-  PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
-} from '@lobechat/types';
+import { type AgentItem, PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY } from '@lobechat/types';
 
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import type { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
@@ -99,8 +95,3 @@ export class PlatformDefaultInboxService {
     };
   };
 }
-
-/** Client/store helper: platform-managed state is carried by the effective config itself. */
-export const isPlatformManagedInboxConfig = (
-  config: Pick<LobeAgentConfig, 'platform'> | null | undefined,
-): boolean => config?.platform?.managed === true;

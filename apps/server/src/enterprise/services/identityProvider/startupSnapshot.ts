@@ -26,8 +26,6 @@ import { parsePublishedIdentityProviderPayload } from './publicationService';
 import {
   commitIdentityProviderStartupFailure,
   commitIdentityProviderStartupSnapshot,
-  getIdentityProviderStartupArtifactHealth,
-  type IdentityProviderStartupHealth,
   type IdentityProviderStartupSnapshot,
   markIdentityProviderStartupLoading,
   resetIdentityProviderStartupArtifactForTest,
@@ -464,9 +462,6 @@ export const loadIdentityProviderStartupSnapshot = async (
     });
   return startupPromise;
 };
-
-export const getIdentityProviderStartupHealth = (): IdentityProviderStartupHealth | null =>
-  getIdentityProviderStartupArtifactHealth();
 
 export const resetIdentityProviderStartupSnapshotForTest = (): void => {
   startupPromise = null;

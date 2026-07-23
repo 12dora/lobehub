@@ -56,19 +56,10 @@ export interface AiCatalogShadowComparison {
   upstreamProviderCount: number;
 }
 
-let lastShadowComparison: AiCatalogShadowComparison | null = null;
-
 export const recordAiCatalogShadowComparison = (
   upstream: AiProviderRuntimeState,
   managed: AiProviderRuntimeState,
-): AiCatalogShadowComparison => {
-  const comparison = compareAiCatalogRuntimeStates(upstream, managed);
-  lastShadowComparison = comparison;
-  return comparison;
-};
-
-export const getLastAiCatalogShadowComparison = (): AiCatalogShadowComparison | null =>
-  lastShadowComparison;
+): AiCatalogShadowComparison => compareAiCatalogRuntimeStates(upstream, managed);
 
 const MAX_SHADOW_DIFFERENCE_ITEMS = 100;
 

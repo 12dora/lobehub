@@ -94,11 +94,6 @@ export const resolvePublishedManagedResourcePolicies = async (params: {
   return { effectiveModes, publicCapabilities, published, readiness, revision: snapshot.revision };
 };
 
-export const isPublishedResourceManaged = (
-  resolved: ResolvedManagedResourcePolicies,
-  resource: ManagedResourceKind,
-): boolean => resolved.publicCapabilities[resource];
-
 /**
  * Resolve the trusted Skill runtime mode without touching catalog/readiness.
  * Warm operations read only the shared invalidation epoch; policy DB reads are

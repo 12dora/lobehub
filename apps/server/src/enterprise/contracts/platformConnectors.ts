@@ -1306,16 +1306,6 @@ export const connectorEffectiveToolPolicyOutputSchema = z
     }
   });
 
-export const connectorRuntimeResolveInputSchema = z
-  .object({
-    agentId: connectorIdSchema,
-    connectorId: connectorIdSchema,
-    expectedPublishedRevision: z.number().int().positive(),
-    toolKey: connectorToolKeySchema,
-    userId: connectorIdSchema,
-  })
-  .strict();
-
 const connectorSha256Schema = z
   .string()
   .length(64)
@@ -1424,32 +1414,6 @@ export const trustedPublishedConnectorSchema = z.discriminatedUnion('credentialM
     })
     .strict(),
 ]);
-
-/** Trusted server record; policy booleans never come from the request identity payload. */
-export const trustedConnectorToolPolicyRecordSchema = z
-  .object({
-    agentAllowed: z.boolean(),
-    agentId: connectorIdSchema,
-    connectorId: connectorIdSchema,
-    publishedRevision: z.number().int().positive(),
-    toolKey: connectorToolKeySchema,
-    userEnabled: z.boolean(),
-    userId: connectorIdSchema,
-  })
-  .strict();
-
-export const trustedConnectorOAuthBindingSchema = z
-  .object({
-    accessToken: z.string().min(1).max(32_768),
-    bindingId: connectorIdSchema,
-    connectorId: connectorIdSchema,
-    expiresAt: z.date().nullable(),
-    publishedRevision: z.number().int().positive(),
-    scopes: connectorScopesSchema,
-    status: z.literal('connected'),
-    userId: connectorIdSchema,
-  })
-  .strict();
 
 export const ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS = {
   archive: 'platform_connector:delete:all',

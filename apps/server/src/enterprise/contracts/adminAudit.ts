@@ -65,19 +65,6 @@ export const platformAuditLegalHoldScopeTypeSchema = z.enum([
 ]);
 export const platformAuditLegalHoldStatusSchema = z.enum(['active', 'released']);
 
-// ── shared window ────────────────────────────────────────────────────────────
-
-/**
- * Optional inclusive `from` + exclusive `to`.
- * Service enforces maxListWindowDays and defaults the window when omitted.
- */
-export const adminAuditTimeWindowSchema = z
-  .object({
-    from: dateInputSchema.optional(),
-    to: dateInputSchema.optional(),
-  })
-  .strict();
-
 // ── policy ───────────────────────────────────────────────────────────────────
 
 export const adminAuditPolicyGetOutputSchema = z

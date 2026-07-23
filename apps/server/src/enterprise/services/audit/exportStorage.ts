@@ -130,9 +130,6 @@ export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
   };
 }
 
-/** @deprecated Use AuditExportPrivateS3Storage — alias kept for existing imports. */
-export const AuditExportFileS3Storage = AuditExportPrivateS3Storage;
-
 /** In-memory storage for unit tests (no S3 / network). */
 export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactStorage {
   readonly objects = new Map<string, Buffer>();

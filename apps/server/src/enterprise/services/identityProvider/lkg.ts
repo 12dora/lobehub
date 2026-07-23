@@ -57,8 +57,6 @@ export class IdentityProviderLkgError extends Error {
   }
 }
 
-export const emptyIdentityProviderLkgGeneration = EMPTY_GENERATION;
-
 export const identityProviderLkgIdentity = (
   providers: Pick<
     IdentityProviderLkgProvider,

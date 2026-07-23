@@ -51,7 +51,3 @@ export const ensureAiCatalogReadinessRegistered = (): void => {
   registerManagedResourceReadiness('aiProviders', probe);
   registerManagedResourceReadiness('aiModels', probe);
 };
-
-export const resetAiCatalogReadinessRegistrationForTest = (): void => {
-  registered = false;
-};

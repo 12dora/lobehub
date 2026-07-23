@@ -242,15 +242,6 @@ export const platformAgentRolloutProjectionSchema = z
     message: 'rollout counters exceed total',
   });
 
-export const platformUserAgentMaterializationSchema = z
-  .object({
-    materializedAgentId: idSchema.nullable(),
-    platformAgentId: idSchema,
-    platformAgentVersionId: idSchema,
-    userId: idSchema,
-  })
-  .strict();
-
 export const adminPlatformAgentCreateInputSchema = z
   .object({
     agentKey: platformAgentKeySchema,
