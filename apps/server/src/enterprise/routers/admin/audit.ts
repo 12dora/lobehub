@@ -72,13 +72,12 @@ import {
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   AdminAuditExportService,
   AdminAuditRetentionService,
   AdminAuditService,
 } from '../../services/audit';
-import { PlatformAuditService } from '../../services/platformAudit';
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -113,37 +112,23 @@ const assertAuditDangerousReauth = async (params: {
     | 'admin.audit.retention.run';
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   reason: string;
   serverDB: LobeChatDatabase;
   targetId?: string;
   targetType: string;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: params.reason,
-        result: 'denied',
-        targetId: params.targetId ?? null,
-        targetType: params.targetType,
-      });
-    } catch (auditError) {
-      console.error('[admin.audit] reauth denied audit unavailable', {
-        action: params.action,
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[admin.audit] reauth denied audit unavailable',
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: params.reason,
+    serverDB: params.serverDB,
+    targetId: params.targetId ?? null,
+    targetType: params.targetType,
+  });
 
 const policyRouter = router({
   get: auditRead.output(adminAuditPolicyGetOutputSchema).query(async ({ ctx }) => {

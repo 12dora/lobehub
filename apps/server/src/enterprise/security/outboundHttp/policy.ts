@@ -128,6 +128,29 @@ const ipv6Bytes = (ip: string): number[] | null => {
 };
 
 /**
+ * Single source of truth for RFC 6052 IPv4-embedded IPv6 layouts
+ * (/32,/40,/48,/56,/64,/96). Candidate-scan and prefix-anchored decode both
+ * derive from this table so a layout fix cannot drift between the two paths.
+ */
+const RFC6052_LAYOUTS = [
+  { indexes: [4, 5, 6, 7] as const, prefixLength: 32, requiresZeroUOctet: true },
+  { indexes: [5, 6, 7, 9] as const, prefixLength: 40, requiresZeroUOctet: true },
+  { indexes: [6, 7, 9, 10] as const, prefixLength: 48, requiresZeroUOctet: true },
+  { indexes: [7, 9, 10, 11] as const, prefixLength: 56, requiresZeroUOctet: true },
+  { indexes: [9, 10, 11, 12] as const, prefixLength: 64, requiresZeroUOctet: true },
+  { indexes: [12, 13, 14, 15] as const, prefixLength: 96, requiresZeroUOctet: false },
+] as const;
+
+type Rfc6052PrefixLength = (typeof RFC6052_LAYOUTS)[number]['prefixLength'];
+
+const RFC6052_LAYOUT_BY_PREFIX = new Map(
+  RFC6052_LAYOUTS.map((layout) => [layout.prefixLength, layout] as const),
+);
+
+const isRfc6052PrefixLength = (value: number): value is Rfc6052PrefixLength =>
+  RFC6052_LAYOUTS.some((layout) => layout.prefixLength === value);
+
+/**
  * Decode RFC 6052 IPv4-embedded IPv6 layouts (/32,/40,/48,/56,/64,/96).
  * We inspect every standards-defined layout so network-specific NAT64/SIIT
  * prefixes cannot disguise a permanently blocked IPv4 metadata endpoint.
@@ -135,17 +158,9 @@ const ipv6Bytes = (ip: string): number[] | null => {
 export const extractRfc6052Ipv4Candidates = (ip: string): string[] => {
   const bytes = ipv6Bytes(ip);
   if (!bytes) return [];
-  const layouts = [
-    { indexes: [4, 5, 6, 7], requiresZeroUOctet: true },
-    { indexes: [5, 6, 7, 9], requiresZeroUOctet: true },
-    { indexes: [6, 7, 9, 10], requiresZeroUOctet: true },
-    { indexes: [7, 9, 10, 11], requiresZeroUOctet: true },
-    { indexes: [9, 10, 11, 12], requiresZeroUOctet: true },
-    { indexes: [12, 13, 14, 15], requiresZeroUOctet: false },
-  ] as const;
 
   const candidates = new Set<string>();
-  for (const layout of layouts) {
+  for (const layout of RFC6052_LAYOUTS) {
     if (layout.requiresZeroUOctet && bytes[8] !== 0) continue;
     const candidate = layout.indexes.map((index) => bytes[index]).join('.');
     if (isIP(candidate) === 4) candidates.add(candidate);
@@ -153,29 +168,21 @@ export const extractRfc6052Ipv4Candidates = (ip: string): string[] => {
   return [...candidates];
 };
 
-const RFC6052_LAYOUTS = new Map<number, readonly number[]>([
-  [32, [4, 5, 6, 7]],
-  [40, [5, 6, 7, 9]],
-  [48, [6, 7, 9, 10]],
-  [56, [7, 9, 10, 11]],
-  [64, [9, 10, 11, 12]],
-  [96, [12, 13, 14, 15]],
-]);
-
 /** Decode an embedded IPv4 only when the IPv6 address matches an explicit RFC 6052 prefix. */
 export const extractRfc6052Ipv4 = (ip: string, prefixCidr: string): string | null => {
   const separator = prefixCidr.lastIndexOf('/');
   const prefixLength = Number(prefixCidr.slice(separator + 1));
-  const indexes = RFC6052_LAYOUTS.get(prefixLength);
+  if (!isRfc6052PrefixLength(prefixLength)) return null;
+  const layout = RFC6052_LAYOUT_BY_PREFIX.get(prefixLength);
   const addressBytes = ipv6Bytes(ip);
   const prefixBytes = ipv6Bytes(prefixCidr.slice(0, separator));
-  if (!indexes || !addressBytes || !prefixBytes) return null;
+  if (!layout || !addressBytes || !prefixBytes) return null;
   const fullBytes = Math.floor(prefixLength / 8);
   for (let index = 0; index < fullBytes; index += 1) {
     if (addressBytes[index] !== prefixBytes[index]) return null;
   }
-  if (prefixLength !== 96 && addressBytes[8] !== 0) return null;
-  const candidate = indexes.map((index) => addressBytes[index]).join('.');
+  if (layout.requiresZeroUOctet && addressBytes[8] !== 0) return null;
+  const candidate = layout.indexes.map((index) => addressBytes[index]).join('.');
   return isIP(candidate) === 4 ? candidate : null;
 };
 

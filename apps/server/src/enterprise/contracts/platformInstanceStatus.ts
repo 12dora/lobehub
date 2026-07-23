@@ -448,7 +448,6 @@ export type PlatformConvergenceFallbackPolicy = z.infer<
   typeof platformConvergenceFallbackPolicySchema
 >;
 export type PlatformConvergenceLoadMode = z.infer<typeof platformConvergenceLoadModeSchema>;
-export type PlatformConvergenceSource = z.infer<typeof platformConvergenceSourceSchema>;
 export type PlatformConvergenceStatus = z.infer<typeof platformConvergenceStatusSchema>;
 export type PlatformDomainConvergence = z.infer<typeof platformDomainConvergenceSchema>;
 export type PlatformDomainTarget = z.infer<typeof platformDomainTargetSchema>;

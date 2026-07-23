@@ -25,10 +25,17 @@ vi.mock('@/database/models/aiProvider');
 vi.mock('@/database/models/user');
 const catalogRepositoryMocks = vi.hoisted(() => ({
   getProviderSecretVersion: vi.fn(),
-  listLatestPublishedProviderRevisions: vi.fn(),
+}));
+const catalogAuthorityMocks = vi.hoisted(() => ({
+  loadCurrentAiCatalogSnapshot: vi.fn(),
 }));
 vi.mock('@/database/repositories/platformAiCatalog', () => ({
   PlatformAiCatalogRepository: vi.fn(() => catalogRepositoryMocks),
+}));
+// Production path uses catalog pointer authority (not listLatestPublished*).
+vi.mock('@/server/enterprise/services/platformInstance/catalogAuthority', () => ({
+  loadCurrentAiCatalogSnapshot: (...args: unknown[]) =>
+    catalogAuthorityMocks.loadCurrentAiCatalogSnapshot(...args),
 }));
 vi.mock('@/server/modules/ModelRuntime', async (importOriginal) => ({
   ...(await importOriginal()),
@@ -195,7 +202,7 @@ describe('aiProviderRouter', () => {
       const secrets = new PlatformSecretService({ keyProvider });
       const ciphertext = await secrets.encrypt(JSON.stringify({ apiKey: plaintext }));
       const revision = {
-        checksum: 'safe-checksum',
+        checksum: 'a'.repeat(64),
         payload: {
           models: [
             {
@@ -220,7 +227,10 @@ describe('aiProviderRouter', () => {
         revision: 1,
         secretFingerprint: fingerprint,
       };
-      catalogRepositoryMocks.listLatestPublishedProviderRevisions.mockResolvedValue([revision]);
+      catalogAuthorityMocks.loadCurrentAiCatalogSnapshot.mockResolvedValue({
+        revisions: [revision],
+        token: { kind: 'immutable_id', value: 'b'.repeat(64) },
+      });
       catalogRepositoryMocks.getProviderSecretVersion.mockResolvedValue({
         ciphertext,
         fingerprint,
@@ -261,6 +271,7 @@ describe('aiProviderRouter', () => {
         expect(response).not.toContain('user-endpoint.example.test');
       }
       expect(mockGetState).not.toHaveBeenCalled();
+      expect(catalogAuthorityMocks.loadCurrentAiCatalogSnapshot).toHaveBeenCalled();
     });
   });
 

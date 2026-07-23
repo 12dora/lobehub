@@ -768,6 +768,99 @@ describe('SafeOutboundHttpClient', () => {
     expect(await res.text()).toBe('same');
   });
 
+  it('streamFetch and fetch share secret-bearing cross-origin rejection (fixed for whole chain)', async () => {
+    const server = createServer((request, response) => {
+      if (request.url === '/start') {
+        response.writeHead(302, { Location: 'https://b.example/next' });
+        response.end('redirect-body');
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'text/plain' });
+      response.end('should-not-reach');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const client = new SafeOutboundHttpClient({
+      resolve: async (hostname) => {
+        if (hostname === 'b.example') return [{ address: '1.1.1.1', family: 4 }];
+        return [{ address: '127.0.0.1', family: 4 }];
+      },
+      timeoutMs: 2000,
+    });
+    try {
+      await expect(
+        client.streamFetch(`http://127.0.0.1:${address.port}/start`, {
+          headers: { Authorization: 'Bearer stream-token' },
+        }),
+      ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+
+      const transport = vi.fn<PinnedTransport>(async (req) => {
+        if (req.url.hostname === 'a.example') {
+          return okResponse({
+            headers: { location: 'https://b.example/next' },
+            status: 302,
+            statusText: 'Found',
+          });
+        }
+        throw new Error('cross-origin hop must not run');
+      });
+      const fetchClient = new SafeOutboundHttpClient({
+        resolve: resolveTo([{ address: '1.1.1.1' }]),
+        transport,
+      });
+      await expect(
+        fetchClient.fetch('https://a.example/start', {
+          headers: { Authorization: 'Bearer fetch-token' },
+        }),
+      ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+      expect(transport).toHaveBeenCalledOnce();
+    } finally {
+      server.close();
+    }
+  });
+
+  it('streamFetch cancels intermediate redirect body before rejecting secret cross-origin hop', async () => {
+    let redirectClosed = false;
+    const server = createServer((request, response) => {
+      if (request.url === '/start') {
+        response.writeHead(302, {
+          'Content-Type': 'text/plain',
+          'Location': 'https://b.example/stolen',
+        });
+        const interval = setInterval(() => response.write('still-streaming-redirect'), 5);
+        response.on('close', () => {
+          clearInterval(interval);
+          redirectClosed = true;
+        });
+        response.write('redirect-body');
+        return;
+      }
+      response.writeHead(200);
+      response.end('nope');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const client = new SafeOutboundHttpClient({
+      resolve: async (hostname) => {
+        if (hostname === 'b.example') return [{ address: '1.1.1.1', family: 4 }];
+        return [{ address: '127.0.0.1', family: 4 }];
+      },
+      timeoutMs: 2000,
+    });
+    try {
+      await expect(
+        client.streamFetch(`http://127.0.0.1:${address.port}/start`, {
+          headers: { Authorization: 'Bearer cancel-on-reject' },
+        }),
+      ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+      await vi.waitFor(() => expect(redirectClosed).toBe(true));
+    } finally {
+      server.close();
+    }
+  });
+
   it('assertAllowed validates without transport', async () => {
     const transport = vi.fn();
     const client = new SafeOutboundHttpClient({

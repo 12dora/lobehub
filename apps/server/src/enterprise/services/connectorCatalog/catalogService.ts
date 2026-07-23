@@ -93,6 +93,35 @@ export class ConnectorCatalogService {
     });
   };
 
+  /**
+   * Bulk draft detail for admin tool-scope.
+   * True batch: 1 connectors + 1 tools + 1 published-runtime query (not N getDraft).
+   * Per-id failures are reported in `failedIds` (partial success).
+   */
+  getDraftBatch = async (ids: string[]) => {
+    const draftsById = await this.drafts.loadDraftsBatch(ids);
+    const publishedById = await this.read.getAdminPublishedMapBatch(ids);
+
+    const items: Awaited<ReturnType<ConnectorCatalogService['getDraft']>>[] = [];
+    const failedIds: string[] = [];
+    for (const id of ids) {
+      const detail = draftsById.get(id);
+      if (!detail) {
+        failedIds.push(id);
+        continue;
+      }
+      items.push(
+        adminConnectorGetOutputSchema.parse({
+          baseRevision: detail.draft.revision,
+          draft: detail.draft,
+          draftToken: detail.draftToken,
+          published: publishedById.get(id) ?? null,
+        }),
+      );
+    }
+    return { failedIds, items };
+  };
+
   /** Bounded batch exact published projection (≤100 ids, one query) for agent dependency validation. */
   getPublishedBatch = (ids: string[]) => this.read.getAdminPublishedBatch(ids);
 

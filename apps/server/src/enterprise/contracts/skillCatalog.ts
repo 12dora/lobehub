@@ -576,7 +576,6 @@ export type ImmutableSkillVersion = z.infer<typeof immutableSkillVersionSchema>;
 export type PlatformSkillPinnedRef = z.infer<typeof platformSkillPinnedRefSchema>;
 export type PublishedSkill = z.infer<typeof publishedSkillSchema>;
 export type SkillResource = z.infer<typeof skillResourceSchema>;
-export type SkillIdentityDraft = z.infer<typeof skillIdentityDraftSchema>;
 export type SkillManifest = z.infer<typeof skillManifestSchema>;
 export type SkillValidationIssue = z.infer<typeof skillValidationIssueSchema>;
 export type SkillValidationResult = z.infer<typeof skillValidationResultSchema>;

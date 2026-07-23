@@ -9,6 +9,8 @@ const randomSecret = 'aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW1xY';
 const sensitiveCases = [
   ['Bearer value', `Bearer ${randomSecret}`],
   ['short Bearer value', 'Bearer abc123'],
+  // Documentation-looking tokens must still fail closed on assignment forms.
+  ['Bearer fake documentation lookalike', 'Authorization: Bearer fake-token-value'],
   ['JWT value', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMzQ1NiJ9.c2lnbmF0dXJlX3ZhbHVlXzEyMzQ1Ng'],
   ['prefixed API key', `sk-proj-${randomSecret}`],
   ['client secret assignment', `client_secret=${randomSecret}`],

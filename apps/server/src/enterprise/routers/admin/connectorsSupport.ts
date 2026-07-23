@@ -11,7 +11,7 @@ import {
   PlatformConnectorContractError,
 } from '../../contracts/platformConnectors';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import type { OutboundPolicySnapshot } from '../../security/outboundHttp';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
@@ -389,49 +389,36 @@ export const assertConnectorDangerousReauth = async (params: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   reason: string;
   replacementSecrets?: unknown[];
   runtime: AdminConnectorRuntime;
   serverDB: LobeChatDatabase;
   targetId: string;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    let safeReason: string | null = null;
-    try {
-      const current = await params.runtime.secrets.loadCurrentSecretSources(params.targetId);
-      safeReason = assertConnectorPersistentTextSafe(
-        params.reason,
-        collectConnectorSecretLeaves(
-          current.oauthClientSecret,
-          current.sharedSecret,
-          ...(params.replacementSecrets ?? []),
-        ),
-      );
-    } catch {
-      // A denied action must never persist a reason that could contain an unknown Secret.
-    }
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: safeReason,
-        result: 'denied',
-        targetId: params.targetId,
-        targetType: 'connector',
-      });
-    } catch (auditError) {
-      console.error('[admin.connectors] reauth denied audit failed', {
-        action: params.action,
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[admin.connectors] reauth denied audit failed',
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    resolveDeniedReason: async () => {
+      try {
+        const current = await params.runtime.secrets.loadCurrentSecretSources(params.targetId);
+        return assertConnectorPersistentTextSafe(
+          params.reason,
+          collectConnectorSecretLeaves(
+            current.oauthClientSecret,
+            current.sharedSecret,
+            ...(params.replacementSecrets ?? []),
+          ),
+        );
+      } catch {
+        // A denied action must never persist a reason that could contain an unknown Secret.
+        return null;
+      }
+    },
+    serverDB: params.serverDB,
+    targetId: params.targetId,
+    targetType: 'connector',
+  });

@@ -219,7 +219,27 @@ export const adminAiProviderListOutputSchema = z
   })
   .strict();
 
-export const adminAiProviderGetInputSchema = z.object({ id: z.string().min(1) }).strict();
+/**
+ * Exactly one of `id` (platform UUID) or `providerKey` (user-facing key).
+ * Client admin adapters pass providerKey on nearly every mutation path.
+ */
+export const adminAiProviderGetInputSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    providerKey: providerKeySchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const hasId = Boolean(value.id);
+    const hasKey = Boolean(value.providerKey);
+    if (hasId === hasKey) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'exactly one of id or providerKey is required',
+        path: hasId ? ['providerKey'] : ['id'],
+      });
+    }
+  });
 
 export const adminAiProviderGetOutputSchema = z
   .object({
@@ -227,6 +247,33 @@ export const adminAiProviderGetOutputSchema = z
     draft: aiProviderDraftSchema,
     draftToken: z.string().length(64),
     published: publishedAiProviderSchema.nullable(),
+  })
+  .strict();
+
+/** Bounded bulk detail read for runtime-state / multi-provider UI (≤100 ids, one RPC). */
+export const adminAiProviderGetBatchInputSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).min(1).max(100).optional(),
+    providerKeys: z.array(providerKeySchema).min(1).max(100).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const hasIds = Boolean(value.ids?.length);
+    const hasKeys = Boolean(value.providerKeys?.length);
+    if (hasIds === hasKeys) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'exactly one of ids or providerKeys is required',
+        path: hasIds ? ['providerKeys'] : ['ids'],
+      });
+    }
+  });
+
+export const adminAiProviderGetBatchOutputSchema = z
+  .object({
+    failedIds: z.array(z.string().min(1)),
+    failedProviderKeys: z.array(providerKeySchema),
+    items: z.array(adminAiProviderGetOutputSchema),
   })
   .strict();
 
@@ -602,7 +649,6 @@ export const adminAiModelApplyImmediateInputSchema = z.discriminatedUnion('opera
   modelApplyBase.extend({ operation: z.literal('clear') }).strict(),
 ]);
 
-export type AiModelDraft = z.infer<typeof aiModelDraftSchema>;
 export type AiProviderDraft = z.infer<typeof aiProviderDraftSchema>;
 export type PublishedAiCatalog = z.infer<typeof publishedAiCatalogSchema>;
 export type PublishedAiProvider = z.infer<typeof publishedAiProviderSchema>;

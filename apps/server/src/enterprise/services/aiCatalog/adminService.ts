@@ -170,9 +170,20 @@ export class AiCatalogAdminService {
     targetId?: string;
   }) => appendAiCatalogFailureAudit(this.db, params);
 
-  getDetail = async (providerId: string) => {
+  /**
+   * Load provider detail by platform UUID, or by user-facing providerKey.
+   * String argument is treated as platform UUID (legacy call sites).
+   */
+  getDetail = async (providerIdOrLookup: string | { id?: string; providerKey?: string }) => {
     const model = new PlatformAiCatalogModel(this.db);
-    const draft = await model.getProvider(providerId);
+    let draft: PlatformAiProviderDraftView | undefined;
+    if (typeof providerIdOrLookup === 'string') {
+      draft = await model.getProvider(providerIdOrLookup);
+    } else if (providerIdOrLookup.id) {
+      draft = await model.getProvider(providerIdOrLookup.id);
+    } else if (providerIdOrLookup.providerKey) {
+      draft = await model.getProviderByKey(providerIdOrLookup.providerKey);
+    }
     if (!draft) throw new AiCatalogNotFoundError();
     const publishedCatalog = await new AiCatalogReadService(this.db).getPublished();
     const published =
@@ -183,6 +194,46 @@ export class AiCatalogAdminService {
       draft: toProviderDraft(draft),
       draftToken: aiCatalogDraftToken(draft),
       published,
+    };
+  };
+
+  /**
+   * Bounded bulk detail for runtime-state assembly.
+   * True batch path: 1 providers query + 1 models query + 1 published snapshot
+   * (does not hide N+1 behind Promise.all of getDetail).
+   * Missing ids/keys are reported in failed* arrays rather than aborting.
+   */
+  getDetailsBatch = async (input: { ids?: string[]; providerKeys?: string[] }) => {
+    const ids = input.ids ?? [];
+    const providerKeys = input.providerKeys ?? [];
+    const model = new PlatformAiCatalogModel(this.db);
+    const drafts = await model.getProvidersBatch(ids.length > 0 ? { ids } : { providerKeys });
+    const publishedCatalog = await new AiCatalogReadService(this.db).getPublished();
+    const publishedByKey = new Map(
+      publishedCatalog.providers.map((provider) => [provider.providerKey, provider] as const),
+    );
+
+    const items = drafts.map((draft) => ({
+      baseRevision: draft.revision,
+      draft: toProviderDraft(draft),
+      draftToken: aiCatalogDraftToken(draft),
+      published: publishedByKey.get(draft.providerKey) ?? null,
+    }));
+
+    if (ids.length > 0) {
+      const found = new Set(drafts.map((draft) => draft.id));
+      return {
+        failedIds: ids.filter((id) => !found.has(id)),
+        failedProviderKeys: [] as string[],
+        items,
+      };
+    }
+
+    const foundKeys = new Set(drafts.map((draft) => draft.providerKey));
+    return {
+      failedIds: [] as string[],
+      failedProviderKeys: providerKeys.filter((key) => !foundKeys.has(key)),
+      items,
     };
   };
 

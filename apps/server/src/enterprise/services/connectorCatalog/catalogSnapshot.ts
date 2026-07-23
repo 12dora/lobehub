@@ -192,6 +192,63 @@ const requireSecret = async (
   return resolved;
 };
 
+/** Project a validated published snapshot into the full admin published connector shape. */
+const projectAdminPublished = (
+  payload: PlatformConnectorRevisionPayload,
+  provenance: PlatformConnectorRuntimeRevision['provenance'],
+) => {
+  const connector = payload.connector;
+  const common = {
+    description: connector.description,
+    displayName: connector.displayName,
+    enabled: connector.enabled,
+    endpoint: connector.endpoint,
+    id: connector.id,
+    key: connector.key,
+    publishedAt: provenance.publishedAt,
+    // Already computed for this published revision; surfaced read-only (see contract note).
+    publishedChecksum: provenance.checksum,
+    publishedRevision: provenance.revision,
+    sort: connector.sort,
+    tools: payload.tools,
+    transport: connector.transport,
+  };
+  const empty = { configured: false, fingerprint: null, updatedAt: null } as const;
+  return adminPublishedConnectorSchema.parse(
+    connector.credentialMode === 'none'
+      ? {
+          ...common,
+          credentialMode: 'none',
+          oauthClientSecret: empty,
+          oauthConfig: null,
+          sharedSecret: empty,
+        }
+      : connector.credentialMode === 'shared_service_account'
+        ? {
+            ...common,
+            credentialMode: 'shared_service_account',
+            oauthClientSecret: empty,
+            oauthConfig: null,
+            sharedSecret: {
+              configured: true,
+              fingerprint: connector.sharedSecretFingerprint,
+              updatedAt: null,
+            },
+          }
+        : {
+            ...common,
+            credentialMode: 'per_user_oauth',
+            oauthClientSecret: {
+              configured: connector.oauthClientSecretConfigured,
+              fingerprint: connector.oauthClientSecretFingerprint,
+              updatedAt: null,
+            },
+            oauthConfig: connector.oauthConfig,
+            sharedSecret: empty,
+          },
+  );
+};
+
 export class ConnectorCatalogReadService {
   private readonly repository: PlatformConnectorCatalogRepository;
 
@@ -224,56 +281,30 @@ export class ConnectorCatalogReadService {
 
   getAdminPublished = async (connectorId: string) => {
     const { payload, provenance } = await this.getSnapshot(connectorId);
-    const connector = payload.connector;
-    const common = {
-      description: connector.description,
-      displayName: connector.displayName,
-      enabled: connector.enabled,
-      endpoint: connector.endpoint,
-      id: connector.id,
-      key: connector.key,
-      publishedAt: provenance.publishedAt,
-      // Already computed for this published revision; surfaced read-only (see contract note).
-      publishedChecksum: provenance.checksum,
-      publishedRevision: provenance.revision,
-      sort: connector.sort,
-      tools: payload.tools,
-      transport: connector.transport,
-    };
-    const empty = { configured: false, fingerprint: null, updatedAt: null } as const;
-    return adminPublishedConnectorSchema.parse(
-      connector.credentialMode === 'none'
-        ? {
-            ...common,
-            credentialMode: 'none',
-            oauthClientSecret: empty,
-            oauthConfig: null,
-            sharedSecret: empty,
-          }
-        : connector.credentialMode === 'shared_service_account'
-          ? {
-              ...common,
-              credentialMode: 'shared_service_account',
-              oauthClientSecret: empty,
-              oauthConfig: null,
-              sharedSecret: {
-                configured: true,
-                fingerprint: connector.sharedSecretFingerprint,
-                updatedAt: null,
-              },
-            }
-          : {
-              ...common,
-              credentialMode: 'per_user_oauth',
-              oauthClientSecret: {
-                configured: connector.oauthClientSecretConfigured,
-                fingerprint: connector.oauthClientSecretFingerprint,
-                updatedAt: null,
-              },
-              oauthConfig: connector.oauthConfig,
-              sharedSecret: empty,
-            },
-    );
+    return projectAdminPublished(payload, provenance);
+  };
+
+  /**
+   * Full admin published projection for many connectors in ONE runtime query.
+   * Same shape as {@link getAdminPublished}; missing / invalid / disabled → absent.
+   */
+  getAdminPublishedMapBatch = async (connectorIds: string[]) => {
+    const byId = new Map<string, ReturnType<typeof projectAdminPublished>>();
+    if (connectorIds.length === 0) return byId;
+    const snapshots = await this.repository.getCurrentPublishedRuntimeBatch(connectorIds);
+    for (const snapshot of snapshots) {
+      try {
+        const payload = parseExactSnapshot(snapshot);
+        if (!payload.connector.enabled) continue;
+        byId.set(
+          snapshot.provenance.connectorId,
+          projectAdminPublished(payload, snapshot.provenance),
+        );
+      } catch {
+        // Partial batch success: drop a single bad row rather than failing closed for all.
+      }
+    }
+    return byId;
   };
 
   /**

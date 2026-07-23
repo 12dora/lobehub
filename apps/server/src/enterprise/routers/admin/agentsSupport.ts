@@ -6,7 +6,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   PlatformAgentDefaultRequiredError,
   PlatformAgentDependencyValidationError,
@@ -16,7 +16,6 @@ import {
   PlatformAgentRevisionConflictError,
   PlatformAgentUnavailableError,
 } from '../../services/agentCatalog';
-import { PlatformAuditService } from '../../services/platformAudit';
 
 const log = debug('lobe-server:admin-agents');
 
@@ -91,33 +90,20 @@ export const assertAgentDangerousReauth = async (params: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   reason: string;
   serverDB: LobeChatDatabase;
   targetId: string;
-}) => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: params.authenticatedAt,
-      authMethod: params.authMethod,
-    });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: params.reason,
-        result: 'denied',
-        targetId: params.targetId,
-        targetType: 'agent',
-      });
-    } catch (auditError) {
-      log(
-        'reauth denied audit failed class=%s',
-        auditError instanceof Error ? auditError.name : 'UnknownError',
-      );
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    // Legacy agents path logged audit failures via debug only; keep silent here.
+    auditFailureLog: false,
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: params.reason,
+    serverDB: params.serverDB,
+    targetId: params.targetId,
+    targetType: 'agent',
+  });

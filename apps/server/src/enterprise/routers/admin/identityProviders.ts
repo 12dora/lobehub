@@ -32,13 +32,12 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
 import { IdentityProviderValidationError } from '../../services/identityProvider/discoveryValidator';
 import { IdentityProviderPublicationService } from '../../services/identityProvider/publicationService';
 import { IdentityProviderSecretStore } from '../../services/identityProvider/secretStore';
-import { PlatformAuditService } from '../../services/platformAudit';
 import {
   createAdminIdentityProviderRuntime,
   isIdentityProviderFeatureEnabled,
@@ -146,35 +145,24 @@ const assertIdentityDangerousReauth = async (input: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
-  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
   currentSecretTargetId?: string | null;
   reason: string;
   replacementSecrets?: unknown[];
   serverDB: Parameters<typeof createAdminIdentityProviderRuntime>[0];
   targetId: string;
-}) => {
-  try {
-    assertRecentReauth({ authenticatedAt: input.authenticatedAt, authMethod: input.authMethod });
-  } catch (error) {
-    try {
-      await new PlatformAuditService(input.serverDB).append({
-        action: input.action,
-        actorUserId: input.actorUserId,
-        afterDiff: { error: 'reauth_required' },
-        reason: await safeIdentityDeniedReason(input),
-        result: 'denied',
-        targetId: input.targetId,
-        targetType: 'identity_provider',
-      });
-    } catch (auditError) {
-      console.error('[admin.identityProviders] reauth denied audit unavailable', {
-        action: input.action,
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-    throw error;
-  }
-};
+}) =>
+  assertDangerousReauthWithAudit({
+    action: input.action,
+    actorUserId: input.actorUserId,
+    auditFailureLog: '[admin.identityProviders] reauth denied audit unavailable',
+    authenticatedAt: input.authenticatedAt,
+    authMethod: input.authMethod,
+    resolveDeniedReason: () => safeIdentityDeniedReason(input),
+    serverDB: input.serverDB,
+    targetId: input.targetId,
+    targetType: 'identity_provider',
+  });
 
 /** The flag middleware intentionally precedes DB/user/RBAC middleware: flag-off is a zero-I/O path. */
 const identityProviderProcedure = preAccessAuthedProcedure
