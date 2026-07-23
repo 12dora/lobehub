@@ -32,4 +32,13 @@ describe('computeJsonDiff', () => {
     expect(formatJsonValue({ x: 1 })).toContain('"x"');
     expect(formatJsonValue(undefined)).toBe('undefined');
   });
+
+  it('treats non-serializable values as opaque changes without throwing', () => {
+    const before = { n: 1n };
+    const after = { n: 2n };
+    expect(() => computeJsonDiff(before, after)).not.toThrow();
+    const line = computeJsonDiff(before, after).find((l) => l.path === 'n');
+    expect(line?.kind).toBe('changed');
+    expect(formatJsonValue(1n)).toBe('1');
+  });
 });

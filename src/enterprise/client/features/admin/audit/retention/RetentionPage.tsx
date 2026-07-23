@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Flexbox, InputNumber, Tag, Text } from '@lobehub/ui';
 import { Button, Modal, Select, Switch } from '@lobehub/ui/base-ui';
 import { Descriptions, Drawer, Progress, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
@@ -8,7 +8,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type {
   AdminAuditPolicy,
@@ -40,18 +40,35 @@ const styles = createStaticStyles(({ css }) => ({
     border-radius: ${cssVar.borderRadiusLG};
     background: ${cssVar.colorBgContainer};
   `,
-  highlight: css`
-    outline: 2px solid ${cssVar.colorPrimary};
-    outline-offset: 2px;
-  `,
   section: css`
     display: flex;
     flex-direction: column;
     gap: 12px;
+
+    @keyframes audit-highlight-fade {
+      0% {
+        background: ${cssVar.colorPrimaryBg};
+        box-shadow: inset 0 0 0 2px ${cssVar.colorPrimary};
+      }
+
+      100% {
+        background: transparent;
+        box-shadow: none;
+      }
+    }
   `,
 }));
 
 const SCOPES = ['all', 'operation_logs', 'conversations', 'export_artifacts'] as const;
+
+const CONTENT_ACCESS_MODE_KEYS = {
+  content_allowed: 'audit.retention.policy.mode.content_allowed',
+  disabled: 'audit.retention.policy.mode.disabled',
+  metadata_only: 'audit.retention.policy.mode.metadata_only',
+} as const;
+
+const clampInt = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, Number.isFinite(value) ? Math.trunc(value) : min));
 
 const totalDeleted = (counts: AdminAuditRetentionRunItem['counts']) =>
   (counts.operationLogsDeleted ?? 0) +
@@ -69,6 +86,7 @@ const RetentionPage = memo(() => {
   const { updatePolicy, retentionDryRun, retentionRun, cancelRetentionRun } =
     useAdminAuditMutations();
 
+  // policy.get is AUDIT_READ-class; operate/update roles already imply read on this page.
   const policy = useFetchAuditPolicy(canOperate || canUpdatePolicy);
   const [scope, setScope] = useState<(typeof SCOPES)[number]>('all');
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
@@ -79,19 +97,15 @@ const RetentionPage = memo(() => {
   const runsRef = useRef<HTMLDivElement>(null);
   const currentCursor = cursorStack.at(-1) ?? null;
 
-  const runs = useFetchAuditRetentionRuns({ cursor: currentCursor, limit }, canOperate);
-  const items = runs.data?.items ?? [];
-  const hasActive = items.some((i) => i.status === 'pending' || i.status === 'running');
-  const polled = useFetchAuditRetentionRuns(
-    { cursor: currentCursor, limit },
-    canOperate && hasActive,
-    { refreshInterval: hasActive ? POLL_MS : 0 },
-  );
-  const data = hasActive ? (polled.data ?? runs.data) : runs.data;
+  const runs = useFetchAuditRetentionRuns({ cursor: currentCursor, limit }, canOperate, {
+    refreshInterval: (latest) =>
+      latest?.items?.some((i) => i.status === 'pending' || i.status === 'running') ? POLL_MS : 0,
+  });
+  const data = runs.data;
   const rows = data?.items ?? [];
-  const mutate = hasActive ? polled.mutate : runs.mutate;
-  const isLoading = hasActive ? polled.isLoading : runs.isLoading;
-  const error = hasActive ? polled.error : runs.error;
+  const mutate = runs.mutate;
+  const isLoading = runs.isLoading;
+  const error = runs.error;
 
   const startCleanup = useCallback(
     (mode: 'dry_run' | 'execute') => {
@@ -113,7 +127,10 @@ const RetentionPage = memo(() => {
             setHighlightIds(ids);
             setCursorStack([]);
             void mutate();
-            runsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            // Scroll runs table into view; row highlight is applied via rowClassName.
+            window.setTimeout(() => {
+              runsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 50);
           },
           submitLabel:
             mode === 'execute'
@@ -266,10 +283,19 @@ const RetentionPage = memo(() => {
               </Button>
             ) : null}
           </Flexbox>
-          {p ? (
+          {policy.error && !p ? (
+            <Flexbox align="flex-start" gap={8}>
+              <Text role="alert" type="danger">
+                {t('audit.retention.policy.loadError')}
+              </Text>
+              <Button size="small" type="default" onClick={() => void policy.mutate()}>
+                {t('primitives.dataTable.retry')}
+              </Button>
+            </Flexbox>
+          ) : p ? (
             <Descriptions column={2} size="small">
               <Descriptions.Item label={t('audit.retention.policy.contentAccessMode')}>
-                {t(`audit.retention.policy.mode.${p.contentAccessMode}` as never)}
+                {t(CONTENT_ACCESS_MODE_KEYS[p.contentAccessMode])}
               </Descriptions.Item>
               <Descriptions.Item label={t('audit.retention.policy.redactionProfile')}>
                 {p.redactionProfile}
@@ -359,6 +385,14 @@ const RetentionPage = memo(() => {
               onRetry={() => void mutate()}
               onRowActivate={(row) => setDetail(row)}
             />
+            {/* Highlight newly created runs (class applied via rowKey match below). */}
+            {highlightIds.length > 0 ? (
+              <style>{`
+                ${highlightIds.map((id) => `[data-row-key="${id}"]`).join(',')} {
+                  animation: audit-highlight-fade 2.4s ease-out;
+                }
+              `}</style>
+            ) : null}
           </div>
           {highlightIds.length > 0 ? (
             <Text style={{ marginBlockStart: 8 }} type="secondary">
@@ -379,15 +413,9 @@ const RetentionPage = memo(() => {
             setEditOpen(false);
             await refreshAuditPolicy();
           } catch (err) {
-            const mapped = mapEnterpriseError(err);
-            const trpcCode = (err as { data?: { code?: string } })?.data?.code;
-            if (
-              mapped?.code === 'PLATFORM_REVISION_CONFLICT' ||
-              trpcCode === 'CONFLICT' ||
-              /conflict|revision/i.test(String((err as Error)?.message ?? ''))
-            ) {
-              throw new Error(t('audit.retention.policy.conflict'), { cause: err });
-            }
+            // Always refresh so expectedRevision is no longer stale after conflict.
+            await refreshAuditPolicy();
+            // openReasonModal maps PLATFORM_REVISION_CONFLICT via getAdminUsersMutationErrorKey.
             throw err;
           }
         }}
@@ -439,7 +467,7 @@ const RetentionPage = memo(() => {
 });
 
 const PolicyEditModal = memo<{
-  authMethod?: string | null;
+  authMethod?: AdminReauthAuthMethod | null;
   onClose: () => void;
   onSubmit: (input: AdminAuditPolicyUpdateInput) => Promise<void>;
   open: boolean;
@@ -478,13 +506,15 @@ const PolicyEditModal = memo<{
   );
 
   const numberInput = (value: number, onChange: (n: number) => void, min: number, max: number) => (
-    <input
+    <InputNumber
       max={max}
       min={min}
-      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--ant-color-border)' }}
-      type="number"
+      style={{ width: '100%' }}
       value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
+      onChange={(v) => {
+        const n = typeof v === 'number' ? v : Number(v);
+        onChange(clampInt(n, min, max));
+      }}
     />
   );
 
@@ -492,18 +522,18 @@ const PolicyEditModal = memo<{
     if (!policy) return;
     const fields = {
       contentAccessMode,
-      conversationRetentionDays,
-      exportArtifactRetentionDays,
-      maxExportRows,
-      maxListWindowDays,
+      conversationRetentionDays: clampInt(conversationRetentionDays, 1, 3650),
+      exportArtifactRetentionDays: clampInt(exportArtifactRetentionDays, 1, 365),
+      maxExportRows: clampInt(maxExportRows, 1, 1_000_000),
+      maxListWindowDays: clampInt(maxListWindowDays, 1, 365),
       messageBodyInExport,
-      operationLogRetentionDays,
+      operationLogRetentionDays: clampInt(operationLogRetentionDays, 1, 3650),
       redactionProfile,
     };
 
     const apply = () => {
       openAuditReasonModal({
-        authMethod: (authMethod as never) ?? undefined,
+        authMethod: authMethod ?? undefined,
         buildPayload: (reason) => ({
           ...fields,
           expectedRevision: policy.revision,

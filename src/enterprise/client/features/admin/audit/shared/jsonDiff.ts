@@ -13,9 +13,21 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 
 const pathKey = (base: string, key: string) => (base ? `${base}.${key}` : key);
 
+/** Safe equality for values that may include BigInt / circular / non-JSON types. */
+const valuesEqual = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) return true;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    // Non-serializable (e.g. BigInt): treat as opaque change unless same ref.
+    return false;
+  }
+};
+
 /**
  * Shallow key-level + recursive object diff for audit before/after snapshots.
  * Arrays are compared by JSON stringify equality (treated as opaque values).
+ * Non-serializable values fall back to an opaque "changed" marker.
  */
 export const computeJsonDiff = (before: unknown, after: unknown, basePath = ''): JsonDiffLine[] => {
   if (before === undefined && after === undefined) return [];
@@ -27,10 +39,7 @@ export const computeJsonDiff = (before: unknown, after: unknown, basePath = ''):
     const lines: JsonDiffLine[] = [];
 
     // If one side is not an object, mark the whole node as changed first.
-    if (
-      (!isPlainObject(before) || !isPlainObject(after)) &&
-      JSON.stringify(before) !== JSON.stringify(after)
-    ) {
+    if ((!isPlainObject(before) || !isPlainObject(after)) && !valuesEqual(before, after)) {
       lines.push({ path: basePath || '(root)', kind: 'changed', before, after });
     }
 
@@ -54,7 +63,7 @@ export const computeJsonDiff = (before: unknown, after: unknown, basePath = ''):
         lines.push(...computeJsonDiff(b, a, nextPath));
         continue;
       }
-      if (JSON.stringify(b) === JSON.stringify(a)) {
+      if (valuesEqual(b, a)) {
         lines.push({ path: nextPath, kind: 'same', before: b, after: a });
       } else {
         lines.push({ path: nextPath, kind: 'changed', before: b, after: a });
@@ -63,7 +72,7 @@ export const computeJsonDiff = (before: unknown, after: unknown, basePath = ''):
     return lines;
   }
 
-  if (JSON.stringify(before) === JSON.stringify(after)) {
+  if (valuesEqual(before, after)) {
     return [{ path: basePath || '(root)', kind: 'same', before, after }];
   }
   if (before === undefined) {

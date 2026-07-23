@@ -8,11 +8,14 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { AdminAuditExportsCreateInput } from '@/enterprise/client/services/adminAudit';
 
 import { useFetchAuditPolicy } from '../hooks/useAdminAudit';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
+import { hasPermission } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
 import { getDefaultAuditTimeWindow, parseAuditDate } from '../shared/timeWindow';
 
@@ -59,7 +62,11 @@ export interface CreateExportModalProps {
 const CreateExportModal = memo<CreateExportModalProps>(
   ({ open, onClose, onCreated, onSubmit, authMethod, searchParams }) => {
     const { t } = useTranslation('admin');
-    const policy = useFetchAuditPolicy(open);
+    const { permissions } = useAdminAccess();
+    const canReadPolicy = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
+    const canSearchUsers = canReadPolicy;
+    // policy.get requires AUDIT_READ — never fetch without it.
+    const policy = useFetchAuditPolicy(open && canReadPolicy);
     const defaultWindow = useMemo(() => getDefaultAuditTimeWindow(), []);
 
     const [step, setStep] = useState(0);
@@ -69,6 +76,7 @@ const CreateExportModal = memo<CreateExportModalProps>(
       dayjs(defaultWindow.to),
     ]);
     const [userId, setUserId] = useState<string | undefined>();
+    const [actorUserId, setActorUserId] = useState<string | undefined>();
     const [topicId, setTopicId] = useState('');
     const [q, setQ] = useState('');
     const [includeBodies, setIncludeBodies] = useState(false);
@@ -88,16 +96,38 @@ const CreateExportModal = memo<CreateExportModalProps>(
       if (act) setAction(act);
       const uid = searchParams.get('userId');
       if (uid) setUserId(uid);
+      const actor = searchParams.get('actorUserId');
+      if (actor) setActorUserId(actor);
       setStep(k ? 1 : 0);
     }, [open, searchParams]);
 
+    // Conservative: without policy read, never enable includeMessageBodies.
     const bodyAllowed =
-      policy.data?.contentAccessMode === 'content_allowed' && policy.data?.messageBodyInExport;
+      canReadPolicy &&
+      policy.data?.contentAccessMode === 'content_allowed' &&
+      policy.data?.messageBodyInExport;
 
     const canNextFromFilters = () => {
       if (!range[0] || !range[1]) return false;
       if ((kind === 'conversations' || kind === 'user_timeline') && !userId) return false;
       return true;
+    };
+
+    const kindLabel = (k: ExportKind) => {
+      switch (k) {
+        case 'operation_logs': {
+          return t('audit.exports.kind.operation_logs');
+        }
+        case 'conversations': {
+          return t('audit.exports.kind.conversations');
+        }
+        case 'user_timeline': {
+          return t('audit.exports.kind.user_timeline');
+        }
+        default: {
+          return k;
+        }
+      }
     };
 
     const submitWithReason = () => {
@@ -110,7 +140,10 @@ const CreateExportModal = memo<CreateExportModalProps>(
             reason,
             to: range[1].toDate(),
           };
-          if (kind === 'operation_logs' && action.trim()) base.action = action.trim();
+          if (kind === 'operation_logs') {
+            if (action.trim()) base.action = action.trim();
+            if (actorUserId) base.actorUserId = actorUserId;
+          }
           if (kind === 'conversations' || kind === 'user_timeline') {
             base.userId = userId;
           }
@@ -128,7 +161,7 @@ const CreateExportModal = memo<CreateExportModalProps>(
           setStep(0);
         },
         submitLabel: t('audit.exports.create.submit'),
-        targetLabel: t(`audit.exports.kind.${kind}` as never),
+        targetLabel: kindLabel(kind),
         title: t('audit.exports.create.title'),
       });
     };
@@ -197,15 +230,29 @@ const CreateExportModal = memo<CreateExportModalProps>(
               />
             </div>
             {kind === 'operation_logs' ? (
-              <div className={styles.field}>
-                <Text>{t('audit.exports.create.action')}</Text>
-                <Input value={action} onChange={(e) => setAction(e.target.value)} />
-              </div>
+              <>
+                <div className={styles.field}>
+                  <Text>{t('audit.exports.create.action')}</Text>
+                  <Input value={action} onChange={(e) => setAction(e.target.value)} />
+                </div>
+                <div className={styles.field}>
+                  <Text>{t('audit.exports.create.actor')}</Text>
+                  <AuditUserSearchSelect
+                    enabled={canSearchUsers}
+                    value={actorUserId}
+                    onChange={(id) => setActorUserId(id)}
+                  />
+                </div>
+              </>
             ) : null}
             {kind === 'conversations' || kind === 'user_timeline' ? (
               <div className={styles.field}>
                 <Text>{t('audit.exports.create.user')}</Text>
-                <AuditUserSearchSelect enabled value={userId} onChange={(id) => setUserId(id)} />
+                <AuditUserSearchSelect
+                  enabled={canSearchUsers}
+                  value={userId}
+                  onChange={(id) => setUserId(id)}
+                />
               </div>
             ) : null}
             {kind === 'conversations' ? (
