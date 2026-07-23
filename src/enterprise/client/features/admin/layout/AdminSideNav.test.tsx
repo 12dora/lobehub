@@ -71,7 +71,9 @@ describe('AdminSideNav (canonical NavItem)', () => {
     expect(screen.getByText('nav.overview')).toBeTruthy();
     expect(screen.getByText('nav.users')).toBeTruthy();
     expect(screen.getByText('nav.aiProviders')).toBeTruthy();
-    expect(screen.getByText('nav.managedResources')).toBeTruthy();
+    // Managed resources is now hidden from the nav (merged into the unified-management surface).
+    expect(screen.getByText('nav.unifiedManagement')).toBeTruthy();
+    expect(screen.queryByText('nav.managedResources')).toBeNull();
     expect(screen.queryByText('nav.userDetail')).toBeNull();
     expect(screen.queryByText('nav.audit')).toBeNull();
   });

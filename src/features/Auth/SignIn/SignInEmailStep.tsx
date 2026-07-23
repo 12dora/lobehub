@@ -7,6 +7,7 @@ import { type CSSProperties, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AuthIcons from '@/components/AuthIcons';
+import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import AuthCard from '@/features/AuthCard';
 import { AuthAgreement } from '@/features/AuthShell';
@@ -67,6 +68,9 @@ export const SignInEmailStep = ({
 }: SignInEmailStepProps) => {
   const { t } = useTranslation('auth');
   const branding = useBranding();
+  // Admin "open registration" toggle (M15) — hide the sign-up link when closed.
+  // Defaults to open, so the link stays available when the platform feature is off.
+  const openRegistration = useEnterprisePlatform().publicSnapshot.login.openRegistration;
   const emailInputRef = useRef<InputRef>(null);
 
   useEffect(() => {
@@ -239,7 +243,7 @@ export const SignInEmailStep = ({
         </Text>
       )}
       <AuthAgreement />
-      {showEmailForm && (
+      {showEmailForm && openRegistration && (
         <Text align={'center'} fontSize={13} style={{ marginTop: 16 }} type={'secondary'}>
           {t('betterAuth.signin.noAccount')}{' '}
           <a
