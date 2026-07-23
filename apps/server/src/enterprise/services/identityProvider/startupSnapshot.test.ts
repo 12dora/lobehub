@@ -4,7 +4,7 @@ import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Client, Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +41,7 @@ const directories: string[] = [];
 const discovery = {
   discover: async (issuer: string) => ({
     authorizationEndpoint: 'https://login.example.test/authorize',
+    authorizationResponseIssParameterSupported: false,
     codeChallengeMethodsSupported: ['S256'],
     idTokenSigningAlgValuesSupported: ['RS256'],
     issuer,
@@ -176,9 +177,13 @@ const publishRevision = async (input: {
 
 const cleanup = async () => {
   resetIdentityProviderStartupSnapshotForTest();
-  await db.delete(platformIdentityProviderSecrets);
-  await db.delete(platformIdentityProviders);
-  await db.delete(platformResourceRevisions);
+  // Immutable revision rows need trigger bypass for fixture teardown.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.delete(platformIdentityProviderSecrets);
+    await tx.delete(platformIdentityProviders);
+    await tx.delete(platformResourceRevisions);
+  });
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
   );
@@ -264,10 +269,13 @@ describe('identity provider startup snapshot', () => {
       string,
       unknown
     >;
-    await db
-      .update(platformResourceRevisions)
-      .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
-      .where(eq(platformResourceRevisions.id, revision.id));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformResourceRevisions)
+        .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
+        .where(eq(platformResourceRevisions.id, revision.id));
+    });
 
     const discover = vi.fn(discovery.discover);
     const database = await loadIdentityProviderStartupSnapshot({
@@ -428,10 +436,13 @@ describe('identity provider startup snapshot', () => {
     const env = { ...(await baseEnv()), AUTH_SSO_PROVIDERS: 'authentik' };
     const { provider } = await seedPublished(env, 'authentik');
     await seedPublished(env, 'work');
-    await db
-      .update(platformResourceRevisions)
-      .set({ payload: { providerKey: 'authentik', unexpectedSecret: 'damaged-shadow-row' } })
-      .where(eq(platformResourceRevisions.resourceId, provider.id));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformResourceRevisions)
+        .set({ payload: { providerKey: 'authentik', unexpectedSecret: 'damaged-shadow-row' } })
+        .where(eq(platformResourceRevisions.resourceId, provider.id));
+    });
 
     const snapshot = await loadSnapshot({ cache: false, db, env });
     expect(snapshot.providerIds).toEqual(['authentik', 'work']);
@@ -457,19 +468,25 @@ describe('identity provider startup snapshot', () => {
     [
       'revision checksum',
       async (providerId: string) => {
-        await db
-          .update(platformResourceRevisions)
-          .set({ checksum: 'f'.repeat(64) })
-          .where(eq(platformResourceRevisions.resourceId, providerId));
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+          await tx
+            .update(platformResourceRevisions)
+            .set({ checksum: 'f'.repeat(64) })
+            .where(eq(platformResourceRevisions.resourceId, providerId));
+        });
       },
     ],
     [
       'independent revision secret fingerprint',
       async (providerId: string) => {
-        await db
-          .update(platformResourceRevisions)
-          .set({ secretFingerprint: 'f'.repeat(64) })
-          .where(eq(platformResourceRevisions.resourceId, providerId));
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+          await tx
+            .update(platformResourceRevisions)
+            .set({ secretFingerprint: 'f'.repeat(64) })
+            .where(eq(platformResourceRevisions.resourceId, providerId));
+        });
       },
     ],
   ])('rejects a published snapshot with a tampered %s', async (_label, tamper) => {

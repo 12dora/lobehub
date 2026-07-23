@@ -239,10 +239,13 @@ const parsePayload = (value: unknown): IdentityProviderLkgPayload => {
     throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
   }
   const providers = payload.providers.map(parseProvider);
+  // Generation may exceed the max provider generation when a signed tombstone
+  // advanced the snapshot without materializing the removed provider.
+  const providerGeneration = identityProviderLkgGeneration(providers);
   if (
     new Set(providers.map((provider) => provider.providerId)).size !== providers.length ||
     identityProviderLkgIdentity(providers) !== payload.identityRevision ||
-    identityProviderLkgGeneration(providers) !== payload.generation
+    payload.generation < providerGeneration
   ) {
     throw new IdentityProviderLkgError('OIDC_LKG_IDENTITY_INVALID');
   }
@@ -304,7 +307,13 @@ const compareSnapshots = (
   let upgraded = false;
   for (const existing of current.providers) {
     const next = candidateById.get(existing.providerId);
-    if (!next || next.revision < existing.revision) return 'rejected';
+    // Authenticated monotonic removal (tombstone/revoke): a higher-generation
+    // candidate may drop providers so outage LKG cannot resurrect them.
+    if (!next) {
+      upgraded = true;
+      continue;
+    }
+    if (next.revision < existing.revision) return 'rejected';
     if (next.revision === existing.revision) {
       if (
         next.checksum !== existing.checksum ||
@@ -318,6 +327,8 @@ const compareSnapshots = (
     }
   }
   if (candidate.providers.length > current.providers.length) upgraded = true;
+  // Pure removal with higher generation is still an upgrade.
+  if (!upgraded && candidate.providers.length < current.providers.length) upgraded = true;
   return upgraded ? 'upgrade' : 'rejected';
 };
 

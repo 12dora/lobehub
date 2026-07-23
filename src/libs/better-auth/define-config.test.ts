@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   betterAuth: vi.fn((options) => options),
   ensureDefaultPlatformUserRole: vi.fn(async () => undefined),
+  enforcePlatformOidcGroupRoleMappingForUserAccounts: vi.fn(async () => undefined),
+  enforcePlatformOidcGroupRoleMappingOnLogin: vi.fn(async () => undefined),
   EnvHttpProxyAgent: vi.fn((options) => ({ options })),
   initUser: vi.fn(async () => undefined),
   setGlobalDispatcher: vi.fn(),
@@ -19,10 +21,26 @@ vi.mock('@better-auth/passkey', () => ({
 vi.mock('@lobechat/database', () => ({
   createNanoId: vi.fn(() => vi.fn(() => 'generated-id')),
   idGenerator: vi.fn(() => 'generated-user-id'),
-  serverDB: {},
+  serverDB: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => [{ accountId: 'idp-subject-1', providerId: 'corp-oidc' }]),
+      })),
+    })),
+  },
 }));
 
-vi.mock('@lobechat/database/schemas', () => ({}));
+vi.mock('@lobechat/database/schemas', () => ({
+  account: {
+    accountId: 'account_id',
+    providerId: 'provider_id',
+    userId: 'user_id',
+  },
+}));
+
+vi.mock('drizzle-orm', () => ({
+  eq: vi.fn((left, right) => ({ left, right })),
+}));
 
 vi.mock('bcryptjs', () => ({
   default: {
@@ -102,6 +120,9 @@ vi.mock('@/libs/better-auth/sso', () => ({
 
 vi.mock('@/libs/better-auth/sso/platformIdentityProvider', () => ({
   buildPlatformIdentityProvider: vi.fn((provider) => ({ providerId: provider.providerKey })),
+  enforcePlatformOidcGroupRoleMappingForUserAccounts:
+    mocks.enforcePlatformOidcGroupRoleMappingForUserAccounts,
+  enforcePlatformOidcGroupRoleMappingOnLogin: mocks.enforcePlatformOidcGroupRoleMappingOnLogin,
 }));
 
 vi.mock('@/libs/better-auth/sso/platformIdentityProviderState', () => ({
@@ -298,5 +319,53 @@ describe('defineConfig', () => {
       }),
     );
     expect(mocks.ensureDefaultPlatformUserRole).toHaveBeenCalledWith(serverDB, 'user_new_signup');
+  });
+
+  it('enforces IdP group→role mapping on account create/update and session create', async () => {
+    const { defineConfig } = await import('./define-config');
+    const { serverDB } = await import('@lobechat/database');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0] as {
+      databaseHooks: {
+        account: {
+          create: { after: (account: Record<string, unknown>) => Promise<void> };
+          update: { after: (account: Record<string, unknown>) => Promise<void> };
+        };
+        session: {
+          create: { after: (session: Record<string, unknown>) => Promise<void> };
+        };
+      };
+    };
+
+    const account = {
+      accountId: 'idp-subject-1',
+      providerId: 'corp-oidc',
+      userId: 'user_sso_1',
+    };
+    await options.databaseHooks.account.create.after(account);
+    expect(mocks.enforcePlatformOidcGroupRoleMappingOnLogin).toHaveBeenCalledWith({
+      accountId: 'idp-subject-1',
+      db: serverDB,
+      providerId: 'corp-oidc',
+      userId: 'user_sso_1',
+    });
+
+    mocks.enforcePlatformOidcGroupRoleMappingOnLogin.mockClear();
+    await options.databaseHooks.account.update.after(account);
+    expect(mocks.enforcePlatformOidcGroupRoleMappingOnLogin).toHaveBeenCalledWith({
+      accountId: 'idp-subject-1',
+      db: serverDB,
+      providerId: 'corp-oidc',
+      userId: 'user_sso_1',
+    });
+
+    await options.databaseHooks.session.create.after({ userId: 'user_sso_1' });
+    expect(mocks.enforcePlatformOidcGroupRoleMappingForUserAccounts).toHaveBeenCalledWith({
+      accounts: [{ accountId: 'idp-subject-1', providerId: 'corp-oidc' }],
+      db: serverDB,
+      userId: 'user_sso_1',
+    });
   });
 });

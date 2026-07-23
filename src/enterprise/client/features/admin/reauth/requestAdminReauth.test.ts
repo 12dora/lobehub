@@ -4,6 +4,7 @@ import {
   ADMIN_REAUTH_MESSAGE_TYPE,
   AdminReauthBlockedError,
   AdminReauthCancelledError,
+  AdminReauthTimeoutError,
   createAdminReauthState,
   requestAdminReauth,
   withAdminReauthRetry,
@@ -77,6 +78,31 @@ describe('requestAdminReauth binding', () => {
     emit({});
     expect(popup.close).toHaveBeenCalled();
     addSpy.mockRestore();
+  });
+
+  it('rejects with timeout after the overall deadline and closes the popup', async () => {
+    vi.useFakeTimers();
+    try {
+      const state = 'ee'.repeat(16);
+      const popup = { close: vi.fn(), closed: false } as unknown as Window;
+      vi.spyOn(window, 'addEventListener').mockImplementation(() => undefined);
+      vi.spyOn(window, 'removeEventListener').mockImplementation(() => undefined);
+
+      const promise = requestAdminReauth({
+        openWindow: () => popup,
+        origin: 'https://app.example.com',
+        createState: () => state,
+        pollMs: 50_000,
+        timeoutMs: 1_000,
+      });
+      // Attach rejection handler before advancing timers to avoid unhandled rejection.
+      const assertion = expect(promise).rejects.toBeInstanceOf(AdminReauthTimeoutError);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+      expect(popup.close).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('abort signal cancels and ignores later success', async () => {

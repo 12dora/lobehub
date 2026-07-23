@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -36,11 +36,15 @@ const requestId = '550e8400-e29b-41d4-a716-446655440056';
 const now = new Date();
 
 const cleanup = async () => {
-  await db.delete(platformIdentityProviderRestartRequests);
-  await db.delete(platformIdentityProviderInstances);
-  await db.delete(platformIdentityProviders);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformAuditLogs);
+  // Immutable revisions + append-only audit require trigger bypass for test fixtures.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.delete(platformIdentityProviderRestartRequests);
+    await tx.delete(platformIdentityProviderInstances);
+    await tx.delete(platformIdentityProviders);
+    await tx.delete(platformResourceRevisions);
+    await tx.delete(platformAuditLogs);
+  });
   resetIdentityProviderStartupArtifactForTest();
   stopIdentityProviderHeartbeatForTest();
 };
@@ -151,11 +155,49 @@ describe('IdentityProviderSystemService', () => {
       active: { allFreshInstancesActive: false, partial: true, staleInstances: 1 },
       pendingRestart: true,
       restart: { reason: null, supported: true },
+      restartRequest: null,
       targetIdentityRevision: target,
     });
     expect(status.instances).toHaveLength(3);
     const [provider] = await db.select().from(platformIdentityProviders);
     expect(provider.status).toBe('pending_restart');
+  });
+
+  it('surfaces terminal schedule failure on the next auth snapshot status poll', async () => {
+    await seedPendingTarget();
+    const local = getIdentityProviderProcessInstance();
+    commitArtifact('a'.repeat(64));
+    await insertInstance({ activeIdentityRevision: 'a'.repeat(64), instanceId: local.instanceId });
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => {
+        throw new Error('schedule unavailable');
+      },
+    };
+    const afterResponse: Array<() => Promise<void>> = [];
+    // Wall-clock now so acceptedAt cannot precede DB-side createdAt (time_check).
+    const service = new IdentityProviderSystemService(
+      db,
+      controller,
+      () => new Date(),
+      (task) => afterResponse.push(task),
+    );
+    const prepared = await service.prepareRestart('admin-1', {
+      reason: 'Activate the tested work login',
+      requestId,
+    });
+    await service.requestRestart('admin-1', {
+      intentToken: prepared.intentToken,
+      reason: 'Activate the tested work login',
+      requestId,
+    });
+    await afterResponse.shift()!();
+    const status = await service.getAuthSnapshotStatus();
+    expect(status.restartRequest).toMatchObject({
+      requestId,
+      resultCategory: 'signal_schedule_failed',
+      status: 'failed',
+    });
   });
 
   it('signals only after accepted state commits and exact duplicates never signal twice', async () => {
@@ -266,10 +308,13 @@ describe('IdentityProviderSystemService', () => {
       providers: [],
     });
 
-    await db
-      .update(platformResourceRevisions)
-      .set({ payload: { providerKey: 'work', secretFingerprint: 'broken' } })
-      .where(eq(platformResourceRevisions.resourceId, 'provider-work'));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformResourceRevisions)
+        .set({ payload: { providerKey: 'work', secretFingerprint: 'broken' } })
+        .where(eq(platformResourceRevisions.resourceId, 'provider-work'));
+    });
     await expect(loadPublishedIdentityTarget(db, { AUTH_SSO_PROVIDERS: 'work' })).resolves.toEqual({
       environmentShadowed: [{ providerId: 'provider-work', providerKey: 'work' }],
       identityRevision: null,

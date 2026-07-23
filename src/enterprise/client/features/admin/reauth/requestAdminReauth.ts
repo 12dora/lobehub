@@ -36,6 +36,17 @@ export class AdminReauthBlockedError extends Error {
   }
 }
 
+export class AdminReauthTimeoutError extends Error {
+  readonly code = 'ADMIN_REAUTH_TIMEOUT';
+  constructor(message = 'Admin re-authentication timed out') {
+    super(message);
+    this.name = 'AdminReauthTimeoutError';
+  }
+}
+
+/** Default overall deadline for the reauth popup (5 minutes). */
+export const ADMIN_REAUTH_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+
 /** Generate URL-safe crypto state (no Math.random). */
 export const createAdminReauthState = (
   randomSource: { getRandomValues: (a: Uint8Array) => Uint8Array } = crypto,
@@ -58,6 +69,11 @@ export interface RequestAdminReauthOptions {
   pollMs?: number;
   /** Abort cancels the flow; late success must not resolve. */
   signal?: AbortSignal;
+  /**
+   * Overall deadline for the reauth popup. Defaults to
+   * {@link ADMIN_REAUTH_DEFAULT_TIMEOUT_MS}. Pass `0` to disable.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -82,6 +98,7 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
   const origin = options.origin ?? window.location.origin;
   const openWindow = options.openWindow ?? window.open.bind(window);
   const pollMs = options.pollMs ?? 400;
+  const timeoutMs = options.timeoutMs ?? ADMIN_REAUTH_DEFAULT_TIMEOUT_MS;
   const state = (options.createState ?? createAdminReauthState)();
 
   // Only non-secret state in the callback URL — never reason/payload/token.
@@ -97,10 +114,12 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     let expectedState: string | null = state;
+    let deadlineTimer: number | undefined;
 
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
       window.clearInterval(timer);
+      if (deadlineTimer !== undefined) window.clearTimeout(deadlineTimer);
       options.signal?.removeEventListener('abort', onAbort);
     };
 
@@ -112,13 +131,17 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
       fn();
     };
 
+    const closePopup = () => {
+      try {
+        popup.close();
+      } catch {
+        // ignore
+      }
+    };
+
     const onAbort = () => {
       settle(() => {
-        try {
-          popup.close();
-        } catch {
-          // ignore
-        }
+        closePopup();
         reject(new AdminReauthCancelledError());
       });
     };
@@ -134,11 +157,7 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
 
       if (data.status === 'success') {
         settle(() => {
-          try {
-            popup.close();
-          } catch {
-            // ignore
-          }
+          closePopup();
           resolve();
         });
         return;
@@ -146,11 +165,7 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
 
       if (data.status === 'cancel') {
         settle(() => {
-          try {
-            popup.close();
-          } catch {
-            // ignore
-          }
+          closePopup();
           reject(new AdminReauthCancelledError());
         });
       }
@@ -163,6 +178,15 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
       if (!popup.closed) return;
       settle(() => reject(new AdminReauthCancelledError()));
     }, pollMs);
+
+    if (timeoutMs > 0) {
+      deadlineTimer = window.setTimeout(() => {
+        settle(() => {
+          closePopup();
+          reject(new AdminReauthTimeoutError());
+        });
+      }, timeoutMs);
+    }
   });
 };
 

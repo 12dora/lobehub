@@ -199,7 +199,7 @@ describe('identity provider editor controller', () => {
         nowMonotonic: receivedAtMonotonic,
         phase: 'accepted',
       }),
-    ).toBe('accepted');
+    ).toBe('failed');
     expect(
       resolveIdentityProviderRestartPhase({
         attempt,
@@ -208,7 +208,7 @@ describe('identity provider editor controller', () => {
         phase: 'accepted',
         status: pending,
       }),
-    ).toBe('accepted');
+    ).toBe('failed');
     expect(
       resolveIdentityProviderRestartPhase({
         attempt,
@@ -227,6 +227,39 @@ describe('identity provider editor controller', () => {
         status: pending,
       }),
     ).toBe('failed');
+    expect(
+      resolveIdentityProviderRestartPhase({
+        attempt,
+        error: null,
+        nowMonotonic: receivedAtMonotonic,
+        phase: 'accepted',
+        status: {
+          ...pending,
+          restartRequest: {
+            requestId: 'request-1',
+            resultCategory: 'signal_schedule_failed',
+            status: 'failed',
+          },
+        },
+      }),
+    ).toBe('failed');
+    // A failed request for a different restart must not poison this attempt.
+    expect(
+      resolveIdentityProviderRestartPhase({
+        attempt,
+        error: null,
+        nowMonotonic: receivedAtMonotonic,
+        phase: 'accepted',
+        status: {
+          ...pending,
+          restartRequest: {
+            requestId: 'other-request',
+            resultCategory: 'signal_schedule_failed',
+            status: 'failed',
+          },
+        },
+      }),
+    ).toBe('accepted');
   });
 
   it('accepts restart polling only for matching server evidence', () => {

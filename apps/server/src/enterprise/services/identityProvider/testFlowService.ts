@@ -1,6 +1,5 @@
 import {
   PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS,
-  type PlatformIdentityProviderClaimMapping,
   type PlatformIdentityProviderClaimPreview,
   type PlatformOidcDiscoveryMetadata,
 } from '@lobechat/types';
@@ -15,7 +14,11 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import type { PlatformSecretService } from '../../security/secret';
 import { type CreatePlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
-import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { buildIdentityProviderClaimPreview } from './claimValidation';
+import {
+  assertAuthorizationResponseIssuer,
+  type IdentityProviderDiscoveryValidator,
+} from './discoveryValidator';
 import { verifyPlatformOidcIdToken } from './idTokenVerifier';
 import { IdentityProviderSecretStore } from './secretStore';
 import { IdentityProviderTestAttemptStore } from './testAttemptStore';
@@ -24,6 +27,7 @@ import { exchangePlatformOidcAuthorizationCode } from './tokenExchange';
 const TOKEN_TIMEOUT_MS = 5000;
 const TOKEN_MAX_BYTES = 64 * 1024;
 
+export { buildIdentityProviderClaimPreview } from './claimValidation';
 export { createClientSecretBasicAuthorization } from './tokenExchange';
 
 type AuditAppender = (
@@ -45,30 +49,6 @@ const safeJson = async (response: Awaited<ReturnType<SafeOutboundHttpClient['fet
     throw new Error('OIDC_TEST_REMOTE_INVALID');
   }
   return response.json();
-};
-
-const firstClaim = (claims: Record<string, unknown>, candidates: string[]): string | undefined => {
-  for (const candidate of candidates) {
-    const value = claims[candidate];
-    if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 4096);
-  }
-};
-
-export const buildIdentityProviderClaimPreview = (
-  claims: Record<string, unknown>,
-  mapping: PlatformIdentityProviderClaimMapping,
-): PlatformIdentityProviderClaimPreview => {
-  const previewClaims: PlatformIdentityProviderClaimPreview['claims'] = {};
-  for (const key of PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS) {
-    const value = claims[key];
-    if (typeof value === 'string' && value.trim()) previewClaims[key] = value.trim().slice(0, 4096);
-  }
-  const issues: PlatformIdentityProviderClaimPreview['issues'] = [];
-  if (!firstClaim(claims, mapping.subject))
-    issues.push({ code: 'required_claim_missing', field: 'subject' });
-  if (!firstClaim(claims, mapping.name))
-    issues.push({ code: 'required_claim_missing', field: 'name' });
-  return { claims: previewClaims, issues, valid: issues.length === 0 };
 };
 
 export const summarizeIdentityProviderClaimPreview = (
@@ -93,6 +73,7 @@ const failureCategory = (error: unknown): string => {
   if (error.message.includes('CALLBACK_ORIGIN')) return 'callback_origin_invalid';
   if (error.message.includes('PROVIDER_CHANGED')) return 'provider_changed';
   if (error.message.includes('CLAIM')) return 'claim_validation_failed';
+  if (error.message.includes('RESPONSE_ISSUER')) return 'response_issuer_invalid';
   if (error.message.includes('NONCE') || error.message.includes('ID_TOKEN')) {
     return 'id_token_validation_failed';
   }
@@ -322,6 +303,8 @@ export class IdentityProviderTestFlowService {
   callback = async (input: {
     code: string;
     effectiveOrigin: string;
+    /** RFC 9207 authorization-response issuer (optional when OP does not advertise support). */
+    iss?: string | null;
     state: string;
   }): Promise<{ attemptId: string; valid: boolean }> => {
     await this.reapExpiredBestEffort();
@@ -341,6 +324,7 @@ export class IdentityProviderTestFlowService {
         throw new Error('OIDC_TEST_PROVIDER_CHANGED');
       }
       const metadata = await this.discovery.discover(provider.issuer);
+      assertAuthorizationResponseIssuer({ iss: input.iss, metadata });
       const [currentBinding] = await this.db
         .select({
           fingerprint: platformIdentityProviders.secretFingerprint,
@@ -394,7 +378,11 @@ export class IdentityProviderTestFlowService {
         if (userinfo.sub !== idClaims.sub) throw new Error('OIDC_TEST_SUBJECT_MISMATCH');
         claims = { ...idClaims, ...userinfo };
       }
-      const preview = buildIdentityProviderClaimPreview(claims, provider.claimMapping);
+      const preview = buildIdentityProviderClaimPreview(
+        claims,
+        provider.claimMapping,
+        provider.domainAllowlist,
+      );
       await this.db.transaction(async (tx) => {
         const store = new IdentityProviderTestAttemptStore(tx, this.secretService);
         if (preview.valid) {

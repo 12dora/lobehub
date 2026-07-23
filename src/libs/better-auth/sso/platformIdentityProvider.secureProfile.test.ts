@@ -84,6 +84,7 @@ const setup = async (options?: {
   const publicJwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'key-1', use: 'sig' };
   const oidcMetadata = {
     authorizationEndpoint: 'https://login.example.test/application/o/authorize/',
+    authorizationResponseIssParameterSupported: false,
     codeChallengeMethodsSupported: ['S256'],
     idTokenSigningAlgValuesSupported: ['RS256'],
     issuer,

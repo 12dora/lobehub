@@ -111,6 +111,8 @@ export class IdentityProviderSecretStore {
           ref,
         });
       }
+      // Lifecycle status is owned by AdminIdentityProviderService (or other callers).
+      // Mutating status here races with outer CAS that still expects the pre-mutation status.
       const nextRevision = expectedRevision + 1;
       const [updated] = await tx
         .update(platformIdentityProviders)
@@ -120,7 +122,6 @@ export class IdentityProviderSecretStore {
           secretFingerprint: fingerprint,
           secretRef: ref,
           secretUpdatedAt: updatedAt,
-          status: 'draft',
         })
         .where(
           and(
@@ -160,8 +161,9 @@ export class IdentityProviderSecretStore {
           resourceType: 'identity_provider',
         });
       }
+      // Lifecycle status is owned by the outer admin mutation (see persistClientSecret).
       const nextRevision = expectedRevision + 1;
-      await tx
+      const [updated] = await tx
         .update(platformIdentityProviders)
         .set({
           activationRevision: null,
@@ -169,9 +171,22 @@ export class IdentityProviderSecretStore {
           secretFingerprint: null,
           secretRef: null,
           secretUpdatedAt: null,
-          status: 'draft',
         })
-        .where(eq(platformIdentityProviders.id, providerId));
+        .where(
+          and(
+            eq(platformIdentityProviders.id, providerId),
+            eq(platformIdentityProviders.revision, expectedRevision),
+          ),
+        )
+        .returning({ id: platformIdentityProviders.id });
+      if (!updated) {
+        throw new PlatformRevisionConflictError('Identity provider revision changed', {
+          currentRevision: provider.revision,
+          expectedRevision,
+          resourceId: providerId,
+          resourceType: 'identity_provider',
+        });
+      }
       return { configured: false, fingerprint: null, revision: nextRevision, updatedAt: null };
     });
   };

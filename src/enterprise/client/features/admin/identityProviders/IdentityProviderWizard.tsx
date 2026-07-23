@@ -65,7 +65,9 @@ const fromProvider = (provider: PlatformIdentityProviderDraft): EditableDraft =>
   clientId: provider.clientId ?? '',
   displayName: provider.displayName,
   domainAllowlist: [...provider.domainAllowlist],
-  groupRoleMapping: structuredClone(provider.groupRoleMapping),
+  // Preserve existing mapping across unrelated edits; Policy UI edits remain out of scope
+  // until a dedicated group-mapping editor ships. Runtime enforces non-empty maps at login.
+  groupRoleMapping: { ...provider.groupRoleMapping },
   icon: provider.icon,
   issuer: provider.issuer ?? '',
   providerKey: provider.providerKey,
@@ -131,10 +133,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             }),
     );
     const [claimJson, setClaimJson] = useState(() => JSON.stringify(draft.claimMapping, null, 2));
-    const [groupRoleJson, setGroupRoleJson] = useState(() =>
-      JSON.stringify(draft.groupRoleMapping, null, 2),
-    );
-    const [jsonErrors, setJsonErrors] = useState({ claims: false, groups: false });
+    const [jsonErrors, setJsonErrors] = useState({ claims: false });
     const [secret, setSecret] = useState('');
     const [clearSecret, setClearSecret] = useState(false);
     const [discovery, setDiscovery] = useState<Awaited<
@@ -165,7 +164,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       // eslint-disable-next-line react-hooks/exhaustive-deps -- baseline is fixed at mount via key remount
       [provider, createSeed],
     );
-    const invalidJson = jsonErrors.claims || jsonErrors.groups;
+    const invalidJson = jsonErrors.claims;
     const dirty = JSON.stringify(draft) !== baseline || Boolean(secret) || clearSecret;
 
     useEffect(() => {
@@ -183,8 +182,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       const refreshed = fromProvider(provider);
       setDraft(refreshed);
       setClaimJson(JSON.stringify(refreshed.claimMapping, null, 2));
-      setGroupRoleJson(JSON.stringify(refreshed.groupRoleMapping, null, 2));
-      setJsonErrors({ claims: false, groups: false });
+      setJsonErrors({ claims: false });
       setSecret('');
       setClearSecret(false);
     }, [provider]);
@@ -273,9 +271,11 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               : secret
                 ? ({ operation: 'replace', value: secret } as const)
                 : ({ operation: 'keep' } as const);
+            // Preserve persisted groupRoleMapping on edit; new drafts start empty.
+            const policyDraft = { ...draft };
             if (provider) {
               await adminIdentityProvidersService.update({
-                ...draft,
+                ...policyDraft,
                 expectedRevision: provider.revision,
                 id: provider.id,
                 reason,
@@ -283,7 +283,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               });
             } else {
               await adminIdentityProvidersService.create({
-                ...draft,
+                ...policyDraft,
                 reason,
                 secret:
                   secretMutation.operation === 'keep' ? { operation: 'clear' } : secretMutation,
@@ -302,14 +302,13 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       });
     };
 
+    // Discover alone validates network + endpoints; do not also call validateNetwork
+    // (that would preflight the same discovery URL a second time).
     const discover = () =>
       void run(
         'discover',
         async () => {
-          const [metadata] = await Promise.all([
-            adminIdentityProvidersService.discover({ issuer: draft.issuer }),
-            adminIdentityProvidersService.validateNetwork({ issuer: draft.issuer }),
-          ]);
+          const metadata = await adminIdentityProvidersService.discover({ issuer: draft.issuer });
           setDiscovery(metadata);
           setNetworkValid(true);
         },
@@ -401,14 +400,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         patch('claimMapping', parsed.value as unknown as EditableDraft['claimMapping']);
     };
 
-    const handleGroupRoleJsonChange = (raw: string) => {
-      setGroupRoleJson(raw);
-      const parsed = parseIdentityProviderJsonObject(raw);
-      setJsonErrors((current) => ({ ...current, groups: !parsed.valid }));
-      if (parsed.valid)
-        patch('groupRoleMapping', parsed.value as EditableDraft['groupRoleMapping']);
-    };
-
     const stepStates = useMemo((): Partial<
       Record<IdentityProviderStep, IdentityProviderStepState>
     > => {
@@ -416,7 +407,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       const discoveryComplete = Boolean(draft.issuer && networkValid && discovery);
       const clientComplete = Boolean(draft.clientId && (secret || provider?.secret.configured));
       const claimsComplete = !jsonErrors.claims;
-      const policyComplete = !jsonErrors.groups;
       const testComplete =
         testResult.data?.status === 'succeeded' && Boolean(testResult.data.result?.valid);
       return {
@@ -424,7 +414,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         claims: jsonErrors.claims ? 'error' : claimsComplete ? 'complete' : 'pending',
         client: clientComplete ? 'complete' : 'pending',
         discovery: discoveryComplete ? 'complete' : 'pending',
-        policy: jsonErrors.groups ? 'error' : policyComplete ? 'complete' : 'pending',
+        policy: 'complete',
         publish:
           provider?.status === 'published' ||
           provider?.status === 'active' ||
@@ -444,7 +434,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       draft.issuer,
       draft.providerKey,
       jsonErrors.claims,
-      jsonErrors.groups,
       networkValid,
       provider?.secret.configured,
       provider?.status,
@@ -500,15 +489,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           );
         }
         case 'policy': {
-          return (
-            <PolicyStep
-              draft={draft}
-              groupRoleJson={groupRoleJson}
-              invalidJson={jsonErrors.groups}
-              patch={patch}
-              onGroupRoleJsonChange={handleGroupRoleJsonChange}
-            />
-          );
+          return <PolicyStep draft={draft} patch={patch} />;
         }
         case 'test': {
           return (

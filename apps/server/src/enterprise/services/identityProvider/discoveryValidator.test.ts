@@ -8,6 +8,7 @@ import type {
 } from '../../security/outboundHttp';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import {
+  assertAuthorizationResponseIssuer,
   IdentityProviderDiscoveryValidator,
   IdentityProviderValidationError,
 } from './discoveryValidator';
@@ -51,16 +52,57 @@ const validatorFor = (options: { resolve?: DnsResolver; transport?: PinnedTransp
     }),
   );
 
+describe('assertAuthorizationResponseIssuer (RFC 9207)', () => {
+  const issuer = 'https://login.example.com/application/o/work/';
+
+  it('requires exact iss when discovery advertises support', () => {
+    const metadata = {
+      authorizationResponseIssParameterSupported: true,
+      issuer,
+    };
+    expect(() => assertAuthorizationResponseIssuer({ iss: issuer, metadata })).not.toThrow();
+    expect(() => assertAuthorizationResponseIssuer({ iss: null, metadata })).toThrow(
+      'OIDC_TEST_RESPONSE_ISSUER_INVALID',
+    );
+    expect(() =>
+      assertAuthorizationResponseIssuer({ iss: 'https://evil.example.com/', metadata }),
+    ).toThrow('OIDC_TEST_RESPONSE_ISSUER_INVALID');
+  });
+
+  it('allows missing iss when support is not advertised, but rejects mismatches', () => {
+    const metadata = {
+      authorizationResponseIssParameterSupported: false,
+      issuer,
+    };
+    expect(() => assertAuthorizationResponseIssuer({ iss: null, metadata })).not.toThrow();
+    expect(() => assertAuthorizationResponseIssuer({ iss: issuer, metadata })).not.toThrow();
+    expect(() =>
+      assertAuthorizationResponseIssuer({ iss: 'https://evil.example.com/', metadata }),
+    ).toThrow('OIDC_TEST_RESPONSE_ISSUER_INVALID');
+  });
+});
+
 describe('IdentityProviderDiscoveryValidator', () => {
   it('accepts Authentik-compatible metadata and returns a bounded structured contract', async () => {
     const result = await validatorFor().discover('https://login.example.com/application/o/work/');
     expect(result).toMatchObject({
+      authorizationResponseIssParameterSupported: false,
       codeChallengeMethodsSupported: ['S256'],
       issuer: 'https://login.example.com/application/o/work/',
       scopesSupported: ['openid', 'profile', 'email', 'dingtalk'],
       tokenEndpointAuthMethodsSupported: ['client_secret_basic'],
     });
     expect(result).not.toHaveProperty('unknown_server_field');
+  });
+
+  it('preserves authorization_response_iss_parameter_supported when advertised', async () => {
+    const validator = validatorFor({
+      transport: async () =>
+        response(metadata({ authorization_response_iss_parameter_supported: true })),
+    });
+    await expect(
+      validator.discover('https://login.example.com/application/o/work/'),
+    ).resolves.toMatchObject({ authorizationResponseIssParameterSupported: true });
   });
 
   it('uses the OIDC client_secret_basic default only when the auth-method field is absent', async () => {

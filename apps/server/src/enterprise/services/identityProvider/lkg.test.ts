@@ -196,6 +196,35 @@ describe('identity provider LKG', () => {
     await expect(readIdentityProviderLkg({ env, secrets: secrets() })).resolves.toEqual(newer);
   });
 
+  it('permits authenticated monotonic provider removal (tombstone / outage fallback)', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    const withProvider = payload(new Date().toISOString(), 3);
+    await writeIdentityProviderLkg({ env, payload: withProvider, secrets: secrets() });
+
+    // Higher generation with empty provider set = signed revoke must stick.
+    // Generation may exceed the (empty) provider max because the tombstone floor advanced it.
+    const emptyProviders: typeof withProvider.providers = [];
+    const revoked = {
+      ...withProvider,
+      createdAt: new Date().toISOString(),
+      generation: '2026-12-01T00:00:00.000Z:tombstone',
+      identityRevision: identityProviderLkgIdentity(emptyProviders),
+      providers: emptyProviders,
+    };
+    await expect(
+      writeIdentityProviderLkg({ env, payload: revoked, secrets: secrets() }),
+    ).resolves.toBe('written');
+    await expect(readIdentityProviderLkg({ env, secrets: secrets() })).resolves.toMatchObject({
+      generation: revoked.generation,
+      providers: [],
+    });
+    // Outage must not resurrect the revoked provider via lower-generation LKG write.
+    await expect(
+      writeIdentityProviderLkg({ env, payload: withProvider, secrets: secrets() }),
+    ).resolves.toBe('rejected');
+  });
+
   it('serializes old/new writes and cannot downgrade after interleaving', async () => {
     const path = await createPath();
     const env = { PLATFORM_OIDC_LKG_PATH: path };

@@ -1,8 +1,14 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import {
+  resetIdentityProviderGroupRoleMappingRuntimeForTest,
+  takeIdentityProviderGroupRoleMapping,
+} from '@/server/enterprise/services/identityProvider/groupRoleMappingRuntime';
 
 import {
   buildPlatformIdentityProvider,
+  enforcePlatformOidcGroupRoleMappingOnLogin,
   getStableDingTalkClaims,
   type RuntimeIdentityProvider,
 } from './platformIdentityProvider';
@@ -28,6 +34,7 @@ const provider = {
   issuer: 'https://login.example.test/application/o/work/',
   oidcMetadata: {
     authorizationEndpoint: 'https://login.example.test/application/o/authorize/',
+    authorizationResponseIssParameterSupported: false,
     codeChallengeMethodsSupported: ['S256'],
     idTokenSigningAlgValuesSupported: ['RS256'],
     issuer: 'https://login.example.test/application/o/work/',
@@ -195,4 +202,52 @@ describe('platform identity provider Better Auth adapter', () => {
       ),
     ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   });
+
+  it('stashes IdP groups on mapProfileToUser and login enforce consumes the pending mapping', async () => {
+    resetIdentityProviderGroupRoleMappingRuntimeForTest();
+    const mappedProvider = {
+      ...provider,
+      groupRoleMapping: { engineering: 'ai_admin' },
+    } as const satisfies RuntimeIdentityProvider;
+    const config = buildPlatformIdentityProvider(mappedProvider, 'https://app.example.test');
+    config.mapProfileToUser!({
+      display_name: 'Ada',
+      employee_id: 'employee-1',
+      groups: ['engineering'],
+      mail: 'ada@example.test',
+    });
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'employee-1',
+      }),
+    ).toMatchObject({
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+    });
+
+    // Re-stash; enforceOnLogin takes pending (apply may no-op on fake db — non-blocking).
+    config.mapProfileToUser!({
+      display_name: 'Ada',
+      employee_id: 'employee-1',
+      groups: ['engineering'],
+      mail: 'ada@example.test',
+    });
+    await enforcePlatformOidcGroupRoleMappingOnLogin({
+      accountId: 'employee-1',
+      db: { __test: true } as never,
+      providerId: 'corp-oidc',
+      userId: 'user_local_1',
+    });
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'employee-1',
+      }),
+    ).toBeNull();
+  });
+});
+
+afterEach(() => {
+  resetIdentityProviderGroupRoleMappingRuntimeForTest();
 });
