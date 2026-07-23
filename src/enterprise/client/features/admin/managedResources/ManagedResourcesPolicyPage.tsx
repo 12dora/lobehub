@@ -78,8 +78,9 @@ const styles = createStaticStyles(({ css }) => ({
     /* Equal-height rows so every managed-resource box lines up as a uniform tile. */
     grid-auto-rows: 1fr;
 
-    /* Cards stay readable; do not force all boxes into one cramped row. */
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    /* Cards stay readable; do not force all boxes into one cramped row. 320px leaves room
+       for the title next to the fixed-width mode select so long labels don't truncate. */
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 12px;
   `,
   status: css`
