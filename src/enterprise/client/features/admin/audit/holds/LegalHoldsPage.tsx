@@ -51,8 +51,8 @@ const LegalHoldsPage = memo(() => {
   const canManage = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE);
   const { createLegalHold, releaseLegalHold } = useAdminAuditMutations();
 
-  const [status, setStatus] = useState<string | undefined>();
-  const [scopeType, setScopeType] = useState<string | undefined>();
+  const [status, setStatus] = useState<AdminAuditLegalHoldItem['status'] | undefined>();
+  const [scopeType, setScopeType] = useState<AdminAuditLegalHoldItem['scopeType'] | undefined>();
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
   const [createOpen, setCreateOpen] = useState(false);
@@ -218,7 +218,7 @@ const LegalHoldsPage = memo(() => {
               { label: t('audit.status.hold.released'), value: 'released' },
             ]}
             onChange={(v) => {
-              setStatus((v as string | undefined) || undefined);
+              setStatus((v as AdminAuditLegalHoldItem['status'] | undefined) || undefined);
               setCursorStack([]);
             }}
           />
@@ -232,7 +232,7 @@ const LegalHoldsPage = memo(() => {
               value: s,
             }))}
             onChange={(v) => {
-              setScopeType((v as string | undefined) || undefined);
+              setScopeType((v as AdminAuditLegalHoldItem['scopeType'] | undefined) || undefined);
               setCursorStack([]);
             }}
           />

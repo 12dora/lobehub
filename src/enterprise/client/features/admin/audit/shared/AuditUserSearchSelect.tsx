@@ -10,6 +10,8 @@ import { adminAuditService } from '@/enterprise/client/services/adminAudit';
 import { displayAuditUserLabel } from './format';
 
 const DEBOUNCE_MS = 300;
+/** Synthetic option value for free-form ID fallback (must not collide with real user ids). */
+const USE_TYPED_PREFIX = '__use_typed__:';
 
 export interface AuditUserSearchSelectProps {
   allowClear?: boolean;
@@ -26,6 +28,7 @@ export interface AuditUserSearchSelectProps {
 /**
  * Remote user search against `admin.audit.users.search` (requires AUDIT_READ).
  * Debounced; does not request when disabled or `enabled=false`.
+ * Always allows free-form user ID entry as a fallback (legal holds / offline search).
  */
 const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
   ({
@@ -41,6 +44,7 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
     const { t } = useTranslation('admin');
     const [options, setOptions] = useState<{ label: string; value: string }[]>([]);
     const [inputValue, setInputValue] = useState(valueLabel ?? value ?? '');
+    const [errorHint, setErrorHint] = useState<string | null>(null);
     const debounceRef = useRef<number | null>(null);
     const usersById = useRef(new Map<string, AdminAuditUserSearchItem>());
 
@@ -48,39 +52,66 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
       if (valueLabel) setInputValue(valueLabel);
       else if (value && usersById.current.has(value)) {
         setInputValue(displayAuditUserLabel(usersById.current.get(value)!));
+      } else if (value) {
+        setInputValue(value);
       } else if (!value) {
         setInputValue('');
       }
     }, [value, valueLabel]);
 
+    const withTypedFallback = useCallback(
+      (base: { label: string; value: string }[], typed: string) => {
+        const trimmed = typed.trim();
+        if (!trimmed) return base;
+        const useTyped = {
+          label: t('audit.shared.userSearchUseId', {
+            id: trimmed,
+            defaultValue: `Use ID: ${trimmed}`,
+          }),
+          value: `${USE_TYPED_PREFIX}${trimmed}`,
+        };
+        if (base.some((o) => o.value === trimmed)) return base;
+        return [...base, useTyped];
+      },
+      [t],
+    );
+
     const runSearch = useCallback(
       async (q: string) => {
-        if (!enabled || q.trim().length < 1) {
+        const trimmed = q.trim();
+        if (!enabled) {
+          setErrorHint(t('audit.shared.userSearchNoPermission'));
+          setOptions(withTypedFallback([], trimmed));
+          return;
+        }
+        if (trimmed.length < 1) {
           setOptions([]);
+          setErrorHint(null);
           return;
         }
         try {
-          const result = await adminAuditService.searchUsers({ limit: 20, q: q.trim() });
+          const result = await adminAuditService.searchUsers({ limit: 20, q: trimmed });
+          setErrorHint(null);
           for (const item of result.items) {
             usersById.current.set(item.id, item);
           }
-          setOptions(
-            result.items.map((item) => ({
-              label: [
-                displayAuditUserLabel(item),
-                item.email ? `(${item.email})` : null,
-                item.username ? `@${item.username}` : null,
-              ]
-                .filter(Boolean)
-                .join(' '),
-              value: item.id,
-            })),
-          );
+          const mapped = result.items.map((item) => ({
+            label: [
+              displayAuditUserLabel(item),
+              item.email ? `(${item.email})` : null,
+              item.username ? `@${item.username}` : null,
+            ]
+              .filter(Boolean)
+              .join(' '),
+            value: item.id,
+          }));
+          setOptions(withTypedFallback(mapped, trimmed));
         } catch {
-          setOptions([]);
+          setErrorHint(t('audit.shared.userSearchFailed'));
+          setOptions(withTypedFallback([], trimmed));
         }
       },
-      [enabled],
+      [enabled, t, withTypedFallback],
     );
 
     const scheduleSearch = useCallback(
@@ -100,39 +131,70 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
       [],
     );
 
+    const commitValue = useCallback(
+      (raw: string) => {
+        const text = raw ?? '';
+        if (text.startsWith(USE_TYPED_PREFIX)) {
+          const id = text.slice(USE_TYPED_PREFIX.length).trim();
+          setInputValue(id);
+          onChange(id || undefined);
+          return;
+        }
+        if (usersById.current.has(text)) {
+          onChange(text, usersById.current.get(text));
+          setInputValue(displayAuditUserLabel(usersById.current.get(text)!));
+          return;
+        }
+        const byLabel = options.find(
+          (o) => o.label === text && !o.value.startsWith(USE_TYPED_PREFIX),
+        );
+        if (byLabel) {
+          onChange(byLabel.value, usersById.current.get(byLabel.value));
+          return;
+        }
+        // Free-form: treat current text as user id
+        const id = text.trim();
+        onChange(id || undefined);
+      },
+      [onChange, options],
+    );
+
     return (
-      <AutoComplete
-        allowClear={allowClear}
-        disabled={disabled || !enabled}
-        options={options}
-        placeholder={placeholder ?? t('audit.shared.userSearchPlaceholder')}
-        style={style ?? { minWidth: 220 }}
-        value={inputValue}
-        onChange={(next) => {
-          const text = next ?? '';
-          setInputValue(text);
-          // Selecting an option sets value to the option value (user id)
-          if (usersById.current.has(text)) {
-            onChange(text, usersById.current.get(text));
-            setInputValue(displayAuditUserLabel(usersById.current.get(text)!));
-            return;
-          }
-          // Match by label
-          const byLabel = options.find((o) => o.label === text);
-          if (byLabel) {
-            onChange(byLabel.value, usersById.current.get(byLabel.value));
-            return;
-          }
-          if (!text.trim()) {
-            onChange(undefined);
-          }
-          scheduleSearch(text);
-        }}
-        onSearch={(q) => {
-          setInputValue(q);
-          scheduleSearch(q);
-        }}
-      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220, ...style }}>
+        <AutoComplete
+          allowClear={allowClear}
+          disabled={disabled}
+          options={options}
+          placeholder={placeholder ?? t('audit.shared.userSearchPlaceholder')}
+          style={{ width: '100%' }}
+          value={inputValue}
+          onChange={(next) => {
+            const text = next ?? '';
+            setInputValue(text);
+            if (!text.trim()) {
+              onChange(undefined);
+              setOptions([]);
+              setErrorHint(null);
+              return;
+            }
+            // Immediate commit when user picks an option value (id or use-typed)
+            if (text.startsWith(USE_TYPED_PREFIX) || usersById.current.has(text)) {
+              commitValue(text);
+              return;
+            }
+            scheduleSearch(text);
+          }}
+          onSearch={(q) => {
+            setInputValue(q);
+            scheduleSearch(q);
+          }}
+        />
+        {errorHint ? (
+          <span role="status" style={{ fontSize: 12, opacity: 0.75 }}>
+            {errorHint}
+          </span>
+        ) : null}
+      </div>
     );
   },
 );

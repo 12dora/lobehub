@@ -1,10 +1,10 @@
 'use client';
 
-import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -26,6 +26,7 @@ import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
 import EventDetailDrawer from './EventDetailDrawer';
 
 const DEFAULT_LIST_LIMIT = 50;
+const DEBOUNCE_MS = 300;
 
 const styles = createStaticStyles(({ css }) => ({
   facetRow: css`
@@ -120,9 +121,29 @@ const OperationLogsPage = memo(() => {
   const [requestIdDraft, setRequestIdDraft] = useState('');
   const [targetTypeDraft, setTargetTypeDraft] = useState('');
   const [targetIdDraft, setTargetIdDraft] = useState('');
+  const requestIdDebounceRef = useRef<number | null>(null);
 
   const { filters, cursorStack, limit } = queryState;
   const currentCursor = cursorStack.at(-1) ?? null;
+
+  // Debounce requestId: draft keystrokes must not fire list/access-audit per key.
+  useEffect(() => {
+    if (requestIdDebounceRef.current) window.clearTimeout(requestIdDebounceRef.current);
+    requestIdDebounceRef.current = window.setTimeout(() => {
+      const next = requestIdDraft.trim() || undefined;
+      setQueryState((prev) => {
+        if (prev.filters.requestId === next) return prev;
+        return {
+          ...prev,
+          cursorStack: [],
+          filters: { ...prev.filters, requestId: next },
+        };
+      });
+    }, DEBOUNCE_MS);
+    return () => {
+      if (requestIdDebounceRef.current) window.clearTimeout(requestIdDebounceRef.current);
+    };
+  }, [requestIdDraft]);
 
   const listInput = useMemo(
     () => ({
@@ -393,39 +414,23 @@ const OperationLogsPage = memo(() => {
                   value={filters.actorUserId}
                   onChange={(userId) => patchFilters({ actorUserId: userId })}
                 />
-                <input
+                <Input
                   placeholder={t('audit.logs.filters.targetType')}
+                  style={{ minWidth: 120 }}
                   value={targetTypeDraft}
-                  style={{
-                    minWidth: 120,
-                    padding: '4px 8px',
-                    border: `1px solid ${cssVar.colorBorder}`,
-                    borderRadius: 6,
-                  }}
-                  onChange={(e) => setTargetTypeDraft(e.target.value)}
                   onBlur={() => patchFilters({ targetType: targetTypeDraft.trim() || undefined })}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      patchFilters({ targetType: targetTypeDraft.trim() || undefined });
-                    }
-                  }}
+                  onChange={(e) => setTargetTypeDraft(e.target.value)}
+                  onPressEnter={() =>
+                    patchFilters({ targetType: targetTypeDraft.trim() || undefined })
+                  }
                 />
-                <input
+                <Input
                   placeholder={t('audit.logs.filters.targetId')}
+                  style={{ minWidth: 120 }}
                   value={targetIdDraft}
-                  style={{
-                    minWidth: 120,
-                    padding: '4px 8px',
-                    border: `1px solid ${cssVar.colorBorder}`,
-                    borderRadius: 6,
-                  }}
                   onBlur={() => patchFilters({ targetId: targetIdDraft.trim() || undefined })}
                   onChange={(e) => setTargetIdDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      patchFilters({ targetId: targetIdDraft.trim() || undefined });
-                    }
-                  }}
+                  onPressEnter={() => patchFilters({ targetId: targetIdDraft.trim() || undefined })}
                 />
               </Flexbox>
             }
@@ -444,8 +449,8 @@ const OperationLogsPage = memo(() => {
                 setQueryState(emptyQuery());
                 return;
               }
+              // Search keystrokes only update draft; debounce commits requestId.
               setRequestIdDraft(next.query ?? '');
-              patchFilters({ requestId: next.query?.trim() || undefined });
             }}
           />
         </Flexbox>

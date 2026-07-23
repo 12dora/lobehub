@@ -5,14 +5,17 @@ import { mutate } from 'swr';
 
 import {
   type AdminAuditEventsListInput,
+  type AdminAuditExportItem,
   type AdminAuditExportsCancelInput,
   type AdminAuditExportsCreateInput,
   type AdminAuditExportsDownloadInput,
+  type AdminAuditLegalHoldItem,
   type AdminAuditLegalHoldsCreateInput,
   type AdminAuditLegalHoldsReleaseInput,
   type AdminAuditPolicyUpdateInput,
   type AdminAuditRetentionCancelInput,
   type AdminAuditRetentionCreateInput,
+  type AdminAuditRetentionRunItem,
   adminAuditService,
 } from '@/enterprise/client/services/adminAudit';
 import { useClientDataSWR } from '@/libs/swr';
@@ -30,12 +33,10 @@ import {
   buildAdminAuditEventsFacetsKey,
   buildAdminAuditEventsListKey,
   buildAdminAuditEventsStatsKey,
-  buildAdminAuditExportGetKey,
   buildAdminAuditExportsListKey,
   buildAdminAuditHoldsListKey,
   buildAdminAuditPolicyKey,
   buildAdminAuditRetentionRunsKey,
-  buildAdminAuditRetentionStatusKey,
   buildAdminAuditUserSummaryKey,
   buildAdminAuditUserTimelineKey,
 } from '../swrKeys';
@@ -178,13 +179,15 @@ export const useFetchAuditUserTimeline = (
 export const useFetchAuditExportsList = (
   params: {
     cursor?: string | null;
-    kind?: string;
+    kind?: AdminAuditExportItem['kind'];
     limit?: number;
     mine?: boolean;
-    status?: string;
+    status?: AdminAuditExportItem['status'];
   },
   enabled = true,
-  options?: { refreshInterval?: number },
+  options?: {
+    refreshInterval?: number | ((data: { items: AdminAuditExportItem[] } | undefined) => number);
+  },
 ) => {
   const key = enabled ? buildAdminAuditExportsListKey(params) : null;
   return useClientDataSWR(
@@ -192,26 +195,21 @@ export const useFetchAuditExportsList = (
     () =>
       adminAuditService.listExports({
         cursor: params.cursor ?? undefined,
-        kind: params.kind as never,
+        kind: params.kind,
         limit: params.limit,
         mine: params.mine,
-        status: params.status as never,
+        status: params.status,
       }),
     { refreshInterval: options?.refreshInterval },
   );
-};
-
-export const useFetchAuditExport = (id: string | undefined, enabled = true) => {
-  const key = enabled && id ? buildAdminAuditExportGetKey(id) : null;
-  return useClientDataSWR(key, () => adminAuditService.getExport({ id: id! }));
 };
 
 export const useFetchAuditHoldsList = (
   params: {
     cursor?: string | null;
     limit?: number;
-    scopeType?: string;
-    status?: string;
+    scopeType?: AdminAuditLegalHoldItem['scopeType'];
+    status?: AdminAuditLegalHoldItem['status'];
   },
   enabled = true,
 ) => {
@@ -220,8 +218,8 @@ export const useFetchAuditHoldsList = (
     adminAuditService.listLegalHolds({
       cursor: params.cursor ?? undefined,
       limit: params.limit,
-      scopeType: params.scopeType as never,
-      status: params.status as never,
+      scopeType: params.scopeType,
+      status: params.status,
     }),
   );
 };
@@ -230,13 +228,16 @@ export const useFetchAuditRetentionRuns = (
   params: {
     cursor?: string | null;
     limit?: number;
-    mode?: string;
+    mode?: AdminAuditRetentionRunItem['mode'];
     mine?: boolean;
-    scope?: string;
-    status?: string;
+    scope?: AdminAuditRetentionRunItem['scope'];
+    status?: AdminAuditRetentionRunItem['status'];
   },
   enabled = true,
-  options?: { refreshInterval?: number },
+  options?: {
+    refreshInterval?:
+      number | ((data: { items: AdminAuditRetentionRunItem[] } | undefined) => number);
+  },
 ) => {
   const key = enabled ? buildAdminAuditRetentionRunsKey(params) : null;
   return useClientDataSWR(
@@ -245,24 +246,13 @@ export const useFetchAuditRetentionRuns = (
       adminAuditService.listRetentionRuns({
         cursor: params.cursor ?? undefined,
         limit: params.limit,
-        mode: params.mode as never,
+        mode: params.mode,
         mine: params.mine,
-        scope: params.scope as never,
-        status: params.status as never,
+        scope: params.scope,
+        status: params.status,
       }),
     { refreshInterval: options?.refreshInterval },
   );
-};
-
-export const useFetchAuditRetentionStatus = (
-  id: string | undefined,
-  enabled = true,
-  options?: { refreshInterval?: number },
-) => {
-  const key = enabled && id ? buildAdminAuditRetentionStatusKey(id) : null;
-  return useClientDataSWR(key, () => adminAuditService.getRetentionStatus({ id: id! }), {
-    refreshInterval: options?.refreshInterval,
-  });
 };
 
 export const refreshAuditEventsList = async () => {

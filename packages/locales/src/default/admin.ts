@@ -2316,4 +2316,11 @@ export default {
   'audit.retention.runs.countMetric': 'Metric',
   'audit.retention.runs.scanned': 'Scanned',
   'audit.retention.runs.highlighted': 'New run(s): {{ids}}',
+  'errors.revisionConflict': 'This record was changed by someone else. Refresh and try again.',
+  'audit.retention.policy.loadError': 'Could not load audit policy.',
+  'audit.shared.userSearchNoPermission': 'No search permission — you can still enter a user ID.',
+  'audit.shared.userSearchFailed': 'User search failed. You can still enter a user ID.',
+  'audit.shared.userSearchUseId': 'Use ID: {{id}}',
+  'audit.exports.create.actor': 'Actor (optional)',
+  'audit.conversations.topic.loadError': 'Could not load messages.',
 };

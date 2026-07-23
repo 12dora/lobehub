@@ -194,7 +194,17 @@ const ConversationTopicPage = memo(() => {
             )}
           </div>
         ))}
-        {!items.length && !messages.isLoading ? (
+        {messages.error && !messages.data ? (
+          <Flexbox align="flex-start" gap={8}>
+            <Text role="alert" type="danger">
+              {t('audit.conversations.topic.loadError')}
+            </Text>
+            <Button size="small" type="default" onClick={() => void messages.mutate()}>
+              {t('primitives.dataTable.retry')}
+            </Button>
+          </Flexbox>
+        ) : null}
+        {!items.length && !messages.isLoading && !messages.error ? (
           <Text type="secondary">{t('audit.conversations.topic.emptyMessages')}</Text>
         ) : null}
       </div>

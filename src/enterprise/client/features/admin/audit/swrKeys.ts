@@ -11,10 +11,8 @@ export const ADMIN_AUDIT_CONVERSATIONS_MESSAGES_KEY = 'admin.audit.conversations
 export const ADMIN_AUDIT_USERS_SUMMARY_KEY = 'admin.audit.users.summary' as const;
 export const ADMIN_AUDIT_USERS_TIMELINE_KEY = 'admin.audit.users.timeline' as const;
 export const ADMIN_AUDIT_EXPORTS_LIST_KEY = 'admin.audit.exports.list' as const;
-export const ADMIN_AUDIT_EXPORTS_GET_KEY = 'admin.audit.exports.get' as const;
 export const ADMIN_AUDIT_HOLDS_LIST_KEY = 'admin.audit.legalHolds.list' as const;
 export const ADMIN_AUDIT_RETENTION_RUNS_KEY = 'admin.audit.retention.listRuns' as const;
-export const ADMIN_AUDIT_RETENTION_STATUS_KEY = 'admin.audit.retention.status' as const;
 
 const iso = (value?: Date | string | null) => {
   if (!value) return '';
@@ -125,9 +123,6 @@ export const buildAdminAuditExportsListKey = (params: {
     params.limit ?? 50,
   ] as const;
 
-export const buildAdminAuditExportGetKey = (id: string) =>
-  [ADMIN_AUDIT_EXPORTS_GET_KEY, id] as const;
-
 export const buildAdminAuditHoldsListKey = (params: {
   cursor?: string | null;
   limit?: number;
@@ -159,6 +154,3 @@ export const buildAdminAuditRetentionRunsKey = (params: {
     params.cursor ?? '',
     params.limit ?? 50,
   ] as const;
-
-export const buildAdminAuditRetentionStatusKey = (id: string) =>
-  [ADMIN_AUDIT_RETENTION_STATUS_KEY, id] as const;

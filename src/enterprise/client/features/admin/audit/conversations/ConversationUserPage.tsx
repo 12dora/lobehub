@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
@@ -168,15 +168,10 @@ const ConversationUserPage = memo(() => {
       }
       toolbar={
         <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
-          <input
+          <Input
             placeholder={t('audit.conversations.user.searchTitle')}
+            style={{ minWidth: 200 }}
             value={qDraft}
-            style={{
-              minWidth: 200,
-              padding: '4px 8px',
-              border: `1px solid ${cssVar.colorBorder}`,
-              borderRadius: 6,
-            }}
             onChange={(e) => {
               setQDraft(e.target.value);
               setCursorStack([]);

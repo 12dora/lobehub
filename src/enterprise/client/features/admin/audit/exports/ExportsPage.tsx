@@ -14,11 +14,7 @@ import type { AdminAuditExportItem } from '@/enterprise/client/services/adminAud
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable from '../../primitives/DataTable';
-import {
-  useAdminAuditMutations,
-  useFetchAuditExportsList,
-  useFetchAuditPolicy,
-} from '../hooks/useAdminAudit';
+import { useAdminAuditMutations, useFetchAuditExportsList } from '../hooks/useAdminAudit';
 import AuditStatusTag from '../shared/AuditStatusTag';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
@@ -72,24 +68,18 @@ const ExportsPage = memo(() => {
   const [detail, setDetail] = useState<AdminAuditExportItem | null>(null);
   const currentCursor = cursorStack.at(-1) ?? null;
 
-  const list = useFetchAuditExportsList({ cursor: currentCursor, limit, mine }, canExport);
+  const list = useFetchAuditExportsList({ cursor: currentCursor, limit, mine }, canExport, {
+    // Single SWR key: poll only while any row is still in flight.
+    refreshInterval: (latest) =>
+      latest?.items?.some((i) => i.status === 'pending' || i.status === 'running') ? POLL_MS : 0,
+  });
 
-  const items = list.data?.items ?? [];
-  const hasActive = items.some((i) => i.status === 'pending' || i.status === 'running');
-  const polled = useFetchAuditExportsList(
-    { cursor: currentCursor, limit, mine },
-    canExport && hasActive,
-    { refreshInterval: hasActive ? POLL_MS : 0 },
-  );
-  // Prefer polled data when polling is active
-  const data = hasActive ? (polled.data ?? list.data) : list.data;
+  const data = list.data;
   const rows = data?.items ?? [];
   const nextCursor = data?.nextCursor ?? null;
-  const error = hasActive ? polled.error : list.error;
-  const isLoading = hasActive ? polled.isLoading : list.isLoading;
-  const mutate = hasActive ? polled.mutate : list.mutate;
-
-  useFetchAuditPolicy(canExport); // warm policy for create wizard
+  const error = list.error;
+  const isLoading = list.isLoading;
+  const mutate = list.mutate;
 
   const onDownload = useCallback(
     (row: AdminAuditExportItem) => {
