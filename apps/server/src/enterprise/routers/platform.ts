@@ -4,7 +4,10 @@ import { RbacModel } from '@/database/models/rbac';
 import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { platformPublicSnapshotSchema } from '@/types/platform/publicSnapshot';
-import { sidebarLayoutPolicySchema } from '@/types/platform/sidebarLayout';
+import {
+  DEFAULT_SIDEBAR_LAYOUT_POLICY,
+  sidebarLayoutPolicySchema,
+} from '@/types/platform/sidebarLayout';
 
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
@@ -21,6 +24,7 @@ import { publishConnectorRuntimeCapabilityState } from '../services/connectorCat
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
+import { withActiveUserWhenManaged } from './managedActiveUser';
 import { platformAgentsRouter } from './platformAgents';
 import { platformSkillsRouter } from './platformSkills';
 
@@ -50,6 +54,7 @@ export const platformRouter = router({
   aiCatalog: router({
     getPublished: authedProcedure
       .use(serverDatabase)
+      .use(withActiveUserWhenManaged('ENABLE_PLATFORM_MANAGED_AI'))
       .output(publishedAiCatalogSchema)
       .query(async ({ ctx }) => {
         const flags = parseEnterpriseFeatureFlags(process.env);
@@ -104,11 +109,18 @@ export const platformRouter = router({
    * Home-sidebar layout policy for the current user (M15).
    * When the platform manages the sidebar, `managed` is true and (if configured) `layout`
    * carries the layout to apply; the client then hides its sidebar-customization controls.
+   *
+   * When ENABLE_PLATFORM_ADMIN is off, always return the default (unmanaged) policy so a
+   * stale platform-mode row cannot alter user-visible behavior after the flag is closed.
    */
   getSidebarLayout: authedProcedure
     .use(serverDatabase)
     .output(sidebarLayoutPolicySchema)
     .query(async ({ ctx }) => {
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      if (!flags.ENABLE_PLATFORM_ADMIN) {
+        return { ...DEFAULT_SIDEBAR_LAYOUT_POLICY };
+      }
       const policy = await new PlatformSidebarLayoutModel(ctx.serverDB).get();
       const managed = policy.mode === 'platform';
       return { layout: managed ? policy.layout : null, managed };

@@ -296,5 +296,3 @@ export const adminUsersRouter = router({
       );
     }),
 });
-
-export type AdminUsersRouter = typeof adminUsersRouter;

@@ -23,9 +23,13 @@ import {
   selectPlatformOperationSkills,
   SkillCatalogReadService,
 } from '../services/skillCatalog';
+import { withActiveUserWhenManaged } from './managedActiveUser';
+
+const managedSkillsActive = withActiveUserWhenManaged('ENABLE_PLATFORM_MANAGED_SKILLS');
 
 const getPublishedCatalog = authedProcedure
   .use(serverDatabase)
+  .use(managedSkillsActive)
   .output(publishedSkillCatalogSchema)
   .query(async ({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);
@@ -47,6 +51,7 @@ export const platformSkillsRouter = router({
   /** Freeze the current published refs into a short-lived, user/agent/operation-bound proof. */
   beginOperation: wsCompatProcedure
     .use(serverDatabase)
+    .use(managedSkillsActive)
     .input(beginPlatformSkillOperationInputSchema)
     .output(platformSkillOperationProofSchema)
     .mutation(async ({ ctx, input }) => {

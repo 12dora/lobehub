@@ -541,5 +541,3 @@ export const adminConnectorsRouter = router({
       }),
     ),
 });
-
-export type AdminConnectorsRouter = typeof adminConnectorsRouter;
