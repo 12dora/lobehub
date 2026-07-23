@@ -89,7 +89,14 @@ export const useUnsavedChangesGuard = ({
       leaveModalRef.current = null;
       return;
     }
-    if (leaveModalRef.current) return;
+    // base-ui `confirmModal` cannot report dismissals via the close icon / ESC / mask click
+    // (only the Stay/Leave buttons fire `onCancel`/`onOk`), so a dismissed prompt leaves the
+    // router blocker stuck in `blocked`. Rebuild the prompt on every fresh blocked navigation
+    // — each re-registers new `proceed`/`reset` handlers, so this effect only re-runs when a
+    // new navigation is attempted — instead of bailing out on a stale, already-closed
+    // instance. Otherwise the nav bar silently freezes: further clicks re-block but no modal
+    // ever reappears, and the pending navigation can never be resolved.
+    leaveModalRef.current?.destroy();
 
     const currentMessages = messagesRef.current;
     const decision = createUnsavedNavigationDecision({

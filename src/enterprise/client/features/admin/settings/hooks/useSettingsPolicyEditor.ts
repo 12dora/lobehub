@@ -106,11 +106,18 @@ export const useSettingsPolicyEditor = () => {
     validatedForFingerprint: validatedFingerprint,
   });
 
+  // Prompt on exit only when the draft actually diverges from the published policy.
+  // The settings editor restores a durable localStorage draft as `dirty` on entry, and an
+  // edit reverted to its published value stays `dirty` too — so guarding on the raw flag
+  // nags even when nothing changed. `preview` is the effective change set (mode/visibility/
+  // value vs published), so an empty preview means "nothing to save".
+  const hasUnsavedChanges = dirty && preview.length > 0;
+
   // Only guard real page exits — a same-path `?tab=` switch inside the unified page must not prompt.
   const shouldBlockPageExit = useCallback<BlockerFunction>(
     ({ currentLocation, nextLocation }) =>
-      dirty && currentLocation.pathname !== nextLocation.pathname,
-    [dirty],
+      hasUnsavedChanges && currentLocation.pathname !== nextLocation.pathname,
+    [hasUnsavedChanges],
   );
   const unsavedMessages = useMemo(
     () => ({
@@ -122,7 +129,7 @@ export const useSettingsPolicyEditor = () => {
     [t],
   );
   useUnsavedChangesGuard({
-    enabled: dirty,
+    enabled: hasUnsavedChanges,
     messages: unsavedMessages,
     shouldBlock: shouldBlockPageExit,
   });
