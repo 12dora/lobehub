@@ -12,6 +12,7 @@ vi.mock('@/libs/trpc/client', () => ({
         deleteDraft: { mutate: (...args: unknown[]) => mutate('deleteDraft', ...args) },
         discover: { mutate: (...args: unknown[]) => mutate('discover', ...args) },
         get: { query: (...args: unknown[]) => query('get', ...args) },
+        getBatch: { query: (...args: unknown[]) => query('getBatch', ...args) },
         list: { query: (...args: unknown[]) => query('list', ...args) },
         publish: { mutate: (...args: unknown[]) => mutate('publish', ...args) },
         revokeAllBindings: {
@@ -35,6 +36,7 @@ describe('adminConnectorsService', () => {
     const { adminConnectorsService } = await import('@/enterprise/client/services/adminConnectors');
     await adminConnectorsService.list({ limit: 20 });
     await adminConnectorsService.get({ id: 'c1' });
+    await adminConnectorsService.getBatch({ ids: ['c1', 'c2'] });
     await adminConnectorsService.discover({ id: 'c1', reason: 'discover' });
     await adminConnectorsService.test({ id: 'c1', reason: 'test' });
     await adminConnectorsService.rollback({
@@ -47,6 +49,7 @@ describe('adminConnectorsService', () => {
 
     expect(query).toHaveBeenCalledWith('list', { limit: 20 });
     expect(query).toHaveBeenCalledWith('get', { id: 'c1' });
+    expect(query).toHaveBeenCalledWith('getBatch', { ids: ['c1', 'c2'] });
     expect(mutate).toHaveBeenCalledWith('discover', { id: 'c1', reason: 'discover' });
     expect(mutate).toHaveBeenCalledWith('test', { id: 'c1', reason: 'test' });
     expect(mutate).toHaveBeenCalledWith('rollback', {

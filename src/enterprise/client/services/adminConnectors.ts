@@ -63,6 +63,13 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
 
   get = async (input: { id: string }) => lambdaClient.admin.connectors.get.query(input);
 
+  /**
+   * Bulk draft detail (tools + CAS tokens). One RPC for up to 50 ids;
+   * `failedIds` reports partial failures without aborting the batch.
+   */
+  getBatch = async (input: { ids: string[] }) =>
+    lambdaClient.admin.connectors.getBatch.query(input);
+
   getGovernance = async (): Promise<AdminConnectorGovernanceGetOutput> =>
     lambdaClient.admin.connectors.getGovernance.query();
 
