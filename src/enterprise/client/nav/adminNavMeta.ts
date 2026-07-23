@@ -34,6 +34,13 @@ export type AdminNavLabelKey =
   | 'nav.securityAuth'
   | 'nav.branding'
   | 'nav.audit'
+  | 'nav.auditLogs'
+  | 'nav.auditConversations'
+  | 'nav.auditConversationUser'
+  | 'nav.auditConversationTopic'
+  | 'nav.auditExports'
+  | 'nav.auditLegalHolds'
+  | 'nav.auditRetention'
   | 'nav.system';
 
 /**
@@ -293,11 +300,65 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
   },
   {
+    children: [
+      {
+        id: 'audit-logs',
+        labelKey: 'nav.auditLogs',
+        path: '/admin/audit/logs',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_READ],
+      },
+      {
+        id: 'audit-conversations',
+        labelKey: 'nav.auditConversations',
+        path: '/admin/audit/conversations',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'audit-conversation-user',
+        labelKey: 'nav.auditConversationUser',
+        path: '/admin/audit/conversations/:userId',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'audit-conversation-topic',
+        labelKey: 'nav.auditConversationTopic',
+        path: '/admin/audit/conversations/:userId/topics/:topicId',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
+      },
+      {
+        id: 'audit-exports',
+        labelKey: 'nav.auditExports',
+        path: '/admin/audit/exports',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT],
+      },
+      {
+        id: 'audit-legal-holds',
+        labelKey: 'nav.auditLegalHolds',
+        path: '/admin/audit/holds',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE],
+      },
+      {
+        id: 'audit-retention',
+        labelKey: 'nav.auditRetention',
+        path: '/admin/audit/retention',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE],
+      },
+    ],
     id: 'audit',
     labelKey: 'nav.audit',
     path: '/admin/audit',
-    placeholder: true,
-    requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_READ],
+    placeholder: false,
+    // Group shell: visible when any child is allowed (same as `ai` group).
+    requiredPermissions: [],
   },
   {
     id: 'system',

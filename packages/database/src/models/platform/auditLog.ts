@@ -1,14 +1,15 @@
-import { and, desc, eq, lt, or } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditLog,
   type PlatformAuditLogItem,
   platformAuditLogs,
 } from '../../schemas/platform';
+import type { PlatformAuditResult } from '../../schemas/platform/common';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { redactSensitive } from './redact';
 
-export type { PlatformAuditLogItem };
+export type { PlatformAuditLogItem, PlatformAuditResult };
 
 export interface CreatePlatformAuditLogParams {
   action: string;
@@ -34,12 +35,50 @@ export interface CreatePlatformAuditLogParams {
 export type PlatformAuditCursor = string;
 
 export interface ListPlatformAuditLogParams {
+  action?: string;
+  actions?: string[];
   actorUserId?: string;
   /** Composite cursor, legacy ISO date string, or valid Date. */
   cursor?: PlatformAuditCursor | Date;
+  from?: Date;
   limit?: number;
+  requestId?: string;
+  result?: PlatformAuditResult;
+  results?: PlatformAuditResult[];
   targetId?: string;
   targetType?: string;
+  to?: Date;
+}
+
+export interface PlatformAuditLogFacetBucket {
+  count: number;
+  value: string;
+}
+
+export interface PlatformAuditLogFacets {
+  actions: PlatformAuditLogFacetBucket[];
+  results: PlatformAuditLogFacetBucket[];
+}
+
+export interface PlatformAuditLogStats {
+  denied: number;
+  failure: number;
+  success: number;
+  total: number;
+}
+
+export interface PlatformAuditLogFacetsParams {
+  /** Inclusive lower bound (createdAt). */
+  from?: Date;
+  /** Max distinct values per facet dimension (default 20, max 50). */
+  limit?: number;
+  /** Exclusive upper bound (createdAt). */
+  to?: Date;
+}
+
+export interface PlatformAuditLogStatsParams {
+  from?: Date;
+  to?: Date;
 }
 
 export const encodeAuditCursor = (row: Pick<PlatformAuditLogItem, 'createdAt' | 'id'>): string =>
@@ -111,30 +150,137 @@ export class PlatformAuditLogModel {
   };
 
   findById = async (id: string): Promise<PlatformAuditLogItem | undefined> => {
-    return this.db.query.platformAuditLogs.findFirst({
-      where: eq(platformAuditLogs.id, id),
-    });
+    const [row] = await this.db
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.id, id))
+      .limit(1);
+    return row;
   };
 
   /**
-   * Cursor pagination by (createdAt, id) descending.
+   * Cursor pagination by (createdAt, id) descending with actor/action/result/time filters.
    * Composite cursor prevents skipping same-millisecond rows.
    * Callers should pass nextCursor as a string (not `new Date(nextCursor)`).
    */
   list = async (
     params: ListPlatformAuditLogParams = {},
   ): Promise<{ items: PlatformAuditLogItem[]; nextCursor: string | null }> => {
-    const limit = Math.min(params.limit ?? 50, 200);
+    const limit = Math.min(Math.max(Math.floor(params.limit ?? 50), 1), 200);
+    const conditions = this.buildListConditions(params);
+
+    const rows = await this.db
+      .select()
+      .from(platformAuditLogs)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(platformAuditLogs.createdAt), desc(platformAuditLogs.id))
+      .limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items.at(-1);
+    const nextCursor = hasMore && last ? encodeAuditCursor(last) : null;
+
+    return { items, nextCursor };
+  };
+
+  /**
+   * Bounded facet counts for admin filter chips (action / result).
+   * Caps distinct buckets to avoid unbounded group-by cost.
+   */
+  getFacets = async (
+    params: PlatformAuditLogFacetsParams = {},
+  ): Promise<PlatformAuditLogFacets> => {
+    const limit = Math.min(Math.max(params.limit ?? 20, 1), 50);
+    const conditions = this.buildTimeConditions(params.from, params.to);
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [actionRows, resultRows] = await Promise.all([
+      this.db
+        .select({
+          count: count().as('count'),
+          value: platformAuditLogs.action,
+        })
+        .from(platformAuditLogs)
+        .where(where)
+        .groupBy(platformAuditLogs.action)
+        .orderBy(desc(sql`count`), desc(platformAuditLogs.action))
+        .limit(limit),
+      this.db
+        .select({
+          count: count().as('count'),
+          value: platformAuditLogs.result,
+        })
+        .from(platformAuditLogs)
+        .where(where)
+        .groupBy(platformAuditLogs.result)
+        .orderBy(desc(sql`count`), desc(platformAuditLogs.result))
+        .limit(limit),
+    ]);
+
+    return {
+      actions: actionRows.map((r) => ({ count: Number(r.count), value: r.value })),
+      results: resultRows.map((r) => ({ count: Number(r.count), value: r.value })),
+    };
+  };
+
+  /** Aggregate success/failure/denied totals within an optional time window. */
+  getStats = async (params: PlatformAuditLogStatsParams = {}): Promise<PlatformAuditLogStats> => {
+    const conditions = this.buildTimeConditions(params.from, params.to);
+
+    const rows = await this.db
+      .select({
+        count: count().as('count'),
+        result: platformAuditLogs.result,
+      })
+      .from(platformAuditLogs)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .groupBy(platformAuditLogs.result);
+
+    const stats: PlatformAuditLogStats = { denied: 0, failure: 0, success: 0, total: 0 };
+    for (const row of rows) {
+      const n = Number(row.count);
+      stats.total += n;
+      if (row.result === 'success') stats.success = n;
+      else if (row.result === 'failure') stats.failure = n;
+      else if (row.result === 'denied') stats.denied = n;
+    }
+    return stats;
+  };
+
+  private buildTimeConditions = (from?: Date, to?: Date) => {
     const conditions = [];
+    if (from) conditions.push(gte(platformAuditLogs.createdAt, from));
+    if (to) conditions.push(lt(platformAuditLogs.createdAt, to));
+    return conditions;
+  };
+
+  private buildListConditions = (params: ListPlatformAuditLogParams) => {
+    const conditions = this.buildTimeConditions(params.from, params.to);
 
     if (params.actorUserId) {
       conditions.push(eq(platformAuditLogs.actorUserId, params.actorUserId));
+    }
+    if (params.action) {
+      conditions.push(eq(platformAuditLogs.action, params.action));
+    }
+    if (params.actions && params.actions.length > 0) {
+      conditions.push(inArray(platformAuditLogs.action, params.actions));
+    }
+    if (params.result) {
+      conditions.push(eq(platformAuditLogs.result, params.result));
+    }
+    if (params.results && params.results.length > 0) {
+      conditions.push(inArray(platformAuditLogs.result, params.results));
     }
     if (params.targetType) {
       conditions.push(eq(platformAuditLogs.targetType, params.targetType));
     }
     if (params.targetId) {
       conditions.push(eq(platformAuditLogs.targetId, params.targetId));
+    }
+    if (params.requestId) {
+      conditions.push(eq(platformAuditLogs.requestId, params.requestId));
     }
 
     const parsed = parseAuditCursor(params.cursor);
@@ -154,17 +300,6 @@ export class PlatformAuditLogModel {
       }
     }
 
-    const rows = await this.db.query.platformAuditLogs.findMany({
-      limit: limit + 1,
-      orderBy: [desc(platformAuditLogs.createdAt), desc(platformAuditLogs.id)],
-      where: conditions.length > 0 ? and(...conditions) : undefined,
-    });
-
-    const hasMore = rows.length > limit;
-    const items = hasMore ? rows.slice(0, limit) : rows;
-    const last = items.at(-1);
-    const nextCursor = hasMore && last ? encodeAuditCursor(last) : null;
-
-    return { items, nextCursor };
+    return conditions;
   };
 }

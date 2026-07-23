@@ -27,6 +27,7 @@ import { LastSuperAdminError, PlatformRbacService } from '../services/platformRb
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { adminAgentsRouter } from './admin/agents';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
+import { adminAuditRouter } from './admin/audit';
 import { adminAuthSettingsRouter } from './admin/authSettings';
 import { adminBrandingRouter } from './admin/branding';
 import { adminConnectorsRouter } from './admin/connectors';
@@ -272,47 +273,6 @@ export const adminEasyauthRouter = router({
         reason: input.reason,
         userId: input.userId,
       });
-    }),
-});
-
-export const adminAuditRouter = router({
-  list: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_READ))
-    .input(
-      z
-        .object({
-          actorUserId: z.string().optional(),
-          cursor: z.string().optional(),
-          limit: z.number().int().min(1).max(200).optional(),
-          targetId: z.string().optional(),
-          targetType: z.string().optional(),
-        })
-        .optional(),
-    )
-    .query(async ({ ctx, input }) => {
-      const service = new PlatformAuditService(ctx.serverDB);
-      return service.list({
-        actorUserId: input?.actorUserId,
-        cursor: input?.cursor,
-        limit: input?.limit,
-        targetId: input?.targetId,
-        targetType: input?.targetType,
-      });
-    }),
-
-  get: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_READ))
-    .input(z.object({ id: z.string().min(1) }))
-    .query(async ({ ctx, input }) => {
-      const service = new PlatformAuditService(ctx.serverDB);
-      const row = await service.findById(input.id);
-      if (!row) {
-        throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-      return row;
     }),
 });
 

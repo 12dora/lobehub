@@ -7,6 +7,7 @@
 export * from './adminMutationRate';
 export * from './agents';
 export * from './ai';
+export * from './auditAdmin';
 export * from './auditLogs';
 export * from './authSettings';
 export * from './branding';
