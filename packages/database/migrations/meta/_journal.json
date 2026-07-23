@@ -1008,6 +1008,13 @@
       "when": 1784800100000,
       "tag": "0143_platform_sidebar_layout",
       "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1784800200000,
+      "tag": "0144_drop_platform_easyauth_snapshots",
+      "breakpoints": true
     }
   ],
   "version": "6"

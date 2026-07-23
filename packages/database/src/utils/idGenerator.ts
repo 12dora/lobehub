@@ -48,7 +48,6 @@ const prefixes = {
   platformConnectorTools: 'pct',
   platformGlobalCredentialSecrets: 'pgcs',
 
-  platformEasyauthGrantSnapshots: 'peas',
   platformIdentityProviders: 'pidp',
   platformIdentityProviderSecrets: 'pids',
   platformIdentityProviderTestAttempts: 'pita',

@@ -14,7 +14,6 @@ import { REDACTED_PLACEHOLDER, redactSensitive } from './redact';
 
 const REDACTED = REDACTED_PLACEHOLDER;
 
-const EASYAUTH_APP_TOKEN = /(?<![\w-])eat_(?:live|test)_[\w-]{15,}[a-z0-9](?![\w-])/giu;
 const PREFIXED_SECRET =
   /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/giu;
 const JWT = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/gu;
@@ -151,7 +150,6 @@ export const maskCredentialsInText = (value: string): string => {
 
   let out = value;
   out = out.replaceAll(PEM_PRIVATE_KEY, REDACTED);
-  out = out.replaceAll(EASYAUTH_APP_TOKEN, REDACTED);
   out = out.replaceAll(PREFIXED_SECRET, REDACTED);
   out = out.replaceAll(JWT, REDACTED);
   out = out.replaceAll(AWS_ACCESS_KEY, REDACTED);

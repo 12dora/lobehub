@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from './permissions';
-import {
-  EASYAUTH_GROUP_TO_ROLE,
-  EASYAUTH_MANAGED_ROLES,
-  PLATFORM_ROLE_PERMISSIONS,
-  PLATFORM_SYSTEM_ROLES,
-} from './roles';
+import { PLATFORM_ROLE_PERMISSIONS, PLATFORM_SYSTEM_ROLES } from './roles';
 
 describe('platform system roles', () => {
-  it('never puts super_admin in EasyAuth managed set', () => {
-    expect(EASYAUTH_MANAGED_ROLES).not.toContain(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN);
-    expect(EASYAUTH_GROUP_TO_ROLE).not.toHaveProperty('super_admin');
+  it('defines the expected system role set', () => {
+    expect(Object.values(PLATFORM_SYSTEM_ROLES)).toEqual(
+      expect.arrayContaining([
+        PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
+        PLATFORM_SYSTEM_ROLES.USER_ADMIN,
+        PLATFORM_SYSTEM_ROLES.AI_ADMIN,
+        PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
+        PLATFORM_SYSTEM_ROLES.AUDITOR,
+        PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+      ]),
+    );
   });
 
   it('super_admin has every platform permission', () => {
