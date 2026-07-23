@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   betterAuth: vi.fn((options) => options),
+  ensureDefaultPlatformUserRole: vi.fn(async () => undefined),
   EnvHttpProxyAgent: vi.fn((options) => ({ options })),
+  initUser: vi.fn(async () => undefined),
   setGlobalDispatcher: vi.fn(),
 }));
 
@@ -88,7 +90,7 @@ vi.mock('@/libs/better-auth/plugins/registration-guard', () => ({
 }));
 
 vi.mock('@/database/models/platform/ensureDefaultRole', () => ({
-  ensureDefaultPlatformUserRole: vi.fn(async () => undefined),
+  ensureDefaultPlatformUserRole: mocks.ensureDefaultPlatformUserRole,
 }));
 
 vi.mock('@/libs/better-auth/sso', () => ({
@@ -123,7 +125,9 @@ vi.mock('@/server/services/email', () => ({
 }));
 
 vi.mock('@/server/services/user', () => ({
-  UserService: vi.fn(),
+  UserService: vi.fn().mockImplementation(() => ({
+    initUser: mocks.initUser,
+  })),
 }));
 
 describe('defineConfig', () => {
@@ -264,5 +268,35 @@ describe('defineConfig', () => {
     const { mergeLocalNoProxy } = await import('./define-config');
 
     expect(mergeLocalNoProxy('*')).toBe('*');
+  });
+
+  it('grants default platform_user via user.create.after hook', async () => {
+    const { defineConfig } = await import('./define-config');
+    const { serverDB } = await import('@lobechat/database');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0] as {
+      databaseHooks: {
+        user: { create: { after: (user: Record<string, unknown>) => Promise<void> } };
+      };
+    };
+    const user = {
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      email: 'new@example.com',
+      id: 'user_new_signup',
+      username: 'newuser',
+    };
+
+    await options.databaseHooks.user.create.after(user);
+
+    expect(mocks.initUser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'new@example.com',
+        id: 'user_new_signup',
+        username: 'newuser',
+      }),
+    );
+    expect(mocks.ensureDefaultPlatformUserRole).toHaveBeenCalledWith(serverDB, 'user_new_signup');
   });
 });

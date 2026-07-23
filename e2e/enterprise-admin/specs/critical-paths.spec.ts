@@ -152,7 +152,8 @@ test('ordinary user and workspace owner are denied /admin and admin APIs', async
 
       const system = await trpcQuery(context.request, 'admin.system.getStatus');
       expect(system.ok).toBe(false);
-      // Ordinary/owner hit the access gate, not operate-permission denial.
+      // Ordinary/owner lack admin permissions → withPlatformPermission denial
+      // (PLATFORM_PERMISSION_DENIED; legacy access-gate helper aliases to the same assert).
       assertExactAccessNotGranted(system);
 
       const page = await context.newPage();
