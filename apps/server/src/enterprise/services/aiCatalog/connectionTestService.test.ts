@@ -6,7 +6,27 @@ import { createSafeOutboundHttpClient } from '../../security/outboundHttp';
 import {
   AiCatalogConnectionTestService,
   createSafeAiConnectionProbe,
+  resolveAiConnectionProbeApiMode,
 } from './connectionTestService';
+
+const chatMock = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 })),
+);
+
+vi.mock('@lobechat/model-runtime', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    runWithBoundFetch: async (_fetch: unknown, fn: () => Promise<unknown>) => fn(),
+  };
+});
+
+vi.mock('@/server/modules/ModelRuntime', () => ({
+  buildPayloadFromKeyVaults: () => ({}),
+  initModelRuntimeWithUserPayload: () => ({
+    chat: chatMock,
+  }),
+}));
 
 const provider = {
   checkModel: 'test-model',
@@ -23,7 +43,71 @@ const provider = {
   status: 'draft',
 } as PlatformAiProviderItem;
 
+describe('resolveAiConnectionProbeApiMode', () => {
+  it('forwards explicit enableResponseApi to responses / chatCompletion apiMode', () => {
+    expect(resolveAiConnectionProbeApiMode(true)).toBe('responses');
+    expect(resolveAiConnectionProbeApiMode(false)).toBe('chatCompletion');
+    expect(resolveAiConnectionProbeApiMode(undefined)).toBeUndefined();
+    expect(resolveAiConnectionProbeApiMode(null)).toBeUndefined();
+  });
+});
+
 describe('AiCatalogConnectionTestService', () => {
+  it('createSafeAiConnectionProbe forwards apiMode responses and chatCompletion to runtime.chat', async () => {
+    chatMock.mockClear();
+    const probe = createSafeAiConnectionProbe(
+      createSafeOutboundHttpClient({
+        resolve: async () => [{ address: '203.0.113.10', family: 4 }],
+        transport: vi.fn(),
+      }),
+    );
+
+    await probe({
+      keyVaults: { apiKey: 'fake-key' },
+      provider: {
+        ...provider,
+        checkModel: 'gpt-test',
+        config: { enableResponseApi: true },
+      } as PlatformAiProviderItem,
+      runtimeProvider: 'openai',
+    });
+    expect(chatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ apiMode: 'responses', model: 'gpt-test', stream: false }),
+      expect.anything(),
+    );
+
+    chatMock.mockClear();
+    await probe({
+      keyVaults: { apiKey: 'fake-key' },
+      provider: {
+        ...provider,
+        checkModel: 'gpt-test',
+        config: { enableResponseApi: false },
+      } as PlatformAiProviderItem,
+      runtimeProvider: 'openai',
+    });
+    expect(chatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ apiMode: 'chatCompletion', model: 'gpt-test', stream: false }),
+      expect.anything(),
+    );
+
+    chatMock.mockClear();
+    await probe({
+      keyVaults: { apiKey: 'fake-key' },
+      provider: {
+        ...provider,
+        checkModel: 'gpt-test',
+        config: {},
+      } as PlatformAiProviderItem,
+      runtimeProvider: 'openai',
+    });
+    expect(chatMock).toHaveBeenCalled();
+    const lastCall = chatMock.mock.calls.at(-1);
+    const payload = lastCall?.[0] as Record<string, unknown> | undefined;
+    expect(payload).toBeDefined();
+    expect(payload).not.toHaveProperty('apiMode');
+  });
+
   it('returns only bounded status metadata on success', async () => {
     const service = new AiCatalogConnectionTestService(async () => {});
     const result = await service.test({

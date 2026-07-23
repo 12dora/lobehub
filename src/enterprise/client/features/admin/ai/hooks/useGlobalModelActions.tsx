@@ -26,7 +26,7 @@ import type {
   AdminAiModelUpdateInput,
 } from '../types';
 import { createAiCatalogWriteEpochGuard } from '../writeEpochGuard';
-import { refreshAdminAiModelLists } from './useAdminAiCatalog';
+import { refreshAdminAiModelLists, refreshAdminAiProvider } from './useAdminAiCatalog';
 
 export const useGlobalModelActions = (params: {
   authMethod: AdminReauthAuthMethod | null;
@@ -39,6 +39,8 @@ export const useGlobalModelActions = (params: {
   const [refreshPending, setRefreshPending] = useState(false);
   const [refreshRetrying, setRefreshRetrying] = useState(false);
   const refreshGenerationRef = useRef(0);
+  /** Provider whose detail must be re-invalidated on retry (survives list-only retry bugs). */
+  const pendingProviderRefreshRef = useRef<string | undefined>(undefined);
   const writeGuardRef = useRef(createAiCatalogWriteEpochGuard());
   const writeGuard = writeGuardRef.current;
   const reloadRequired = refreshFailed || refreshPending;
@@ -53,12 +55,19 @@ export const useGlobalModelActions = (params: {
     [t],
   );
 
+  /** Invalidate model lists and the owning provider detail (draft token / models). */
+  const refreshAfterModelMutation = useCallback(async (providerId?: string) => {
+    await refreshAdminAiModelLists();
+    if (providerId) await refreshAdminAiProvider(providerId);
+  }, []);
+
   const commitAndRefresh = useCallback(
-    async <Result,>(commit: () => Promise<Result>, successKey: string) => {
+    async <Result,>(commit: () => Promise<Result>, successKey: string, providerId?: string) => {
       const generation = ++refreshGenerationRef.current;
+      if (providerId) pendingProviderRefreshRef.current = providerId;
       return commitThenScheduleRefresh({
         commit,
-        refresh: refreshAdminAiModelLists,
+        refresh: () => refreshAfterModelMutation(providerId),
         onCommitted: () => {
           writeGuard.lock();
           setRefreshFailed(false);
@@ -67,6 +76,7 @@ export const useGlobalModelActions = (params: {
         },
         onRefreshed: () => {
           if (refreshGenerationRef.current === generation) {
+            pendingProviderRefreshRef.current = undefined;
             writeGuard.unlock();
             setRefreshFailed(false);
             setRefreshPending(false);
@@ -80,17 +90,20 @@ export const useGlobalModelActions = (params: {
         },
       });
     },
-    [t, writeGuard],
+    [refreshAfterModelMutation, t, writeGuard],
   );
 
   const retryRefresh = useCallback(async () => {
     const generation = ++refreshGenerationRef.current;
+    const providerId = pendingProviderRefreshRef.current;
     writeGuard.lock();
     setRefreshRetrying(true);
     setRefreshPending(true);
     try {
-      await refreshAdminAiModelLists();
+      // Full invalidation: model lists + provider detail/draft token when applicable.
+      await refreshAfterModelMutation(providerId);
       if (refreshGenerationRef.current === generation) {
+        pendingProviderRefreshRef.current = undefined;
         writeGuard.unlock();
         setRefreshFailed(false);
         setRefreshPending(false);
@@ -103,7 +116,7 @@ export const useGlobalModelActions = (params: {
     } finally {
       if (refreshGenerationRef.current === generation) setRefreshRetrying(false);
     }
-  }, [writeGuard]);
+  }, [refreshAfterModelMutation, writeGuard]);
 
   const handleCreate = useCallback(
     async (providerId: string) => {
@@ -130,6 +143,7 @@ export const useGlobalModelActions = (params: {
               await commitAndRefresh(
                 () => adminAiCatalogService.createModel(input),
                 'aiCatalog.toast.modelCreated',
+                providerId,
               );
             } finally {
               setActionLoadingId(null);
@@ -180,6 +194,7 @@ export const useGlobalModelActions = (params: {
               await commitAndRefresh(
                 () => adminAiCatalogService.updateModel(input),
                 'aiCatalog.toast.modelUpdated',
+                model.providerId,
               );
             } finally {
               setActionLoadingId(null);
@@ -245,6 +260,7 @@ export const useGlobalModelActions = (params: {
               await commitAndRefresh(
                 () => adminAiCatalogService.deleteModel(input as AdminAiModelDeleteInput),
                 'aiCatalog.toast.modelDeleted',
+                model.providerId,
               );
             } finally {
               setActionLoadingId(null);
@@ -298,6 +314,7 @@ export const useGlobalModelActions = (params: {
               await commitAndRefresh(
                 () => adminAiCatalogService.reorderModels(input as AdminAiModelReorderInput),
                 'aiCatalog.toast.modelsReordered',
+                model.providerId,
               );
             } finally {
               setActionLoadingId(null);

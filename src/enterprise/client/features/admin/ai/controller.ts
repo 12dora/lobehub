@@ -20,7 +20,6 @@ export interface AiCatalogPermissions {
   canCreateProvider: boolean;
   canDeleteModel: boolean;
   canDeleteProvider: boolean;
-  canPublishModel: boolean;
   canPublishProvider: boolean;
   canReadModels: boolean;
   canReadProviders: boolean;
@@ -40,7 +39,6 @@ export const deriveAiCatalogPermissions = (
     canCreateProvider: granted.has(PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE),
     canDeleteModel: granted.has(PLATFORM_PERMISSIONS.AI_MODEL_DELETE),
     canDeleteProvider: granted.has(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE),
-    canPublishModel: granted.has(PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH),
     canPublishProvider: granted.has(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH),
     canReadModels: granted.has(PLATFORM_PERMISSIONS.AI_MODEL_READ),
     canReadProviders: granted.has(PLATFORM_PERMISSIONS.AI_PROVIDER_READ),

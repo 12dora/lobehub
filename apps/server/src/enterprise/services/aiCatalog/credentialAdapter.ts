@@ -198,8 +198,100 @@ export const normalizeAiCatalogExecutionCredentials = (params: {
   return { keyVaults, runtimeProvider };
 };
 
+/**
+ * Keys whose string values are actual secret material. Structural fields such as
+ * `authType`, `region`, `apiVersion`, and public endpoints (`baseURL`) are excluded so
+ * benign public catalog data (e.g. region labels, auth mode enums) is not treated as a
+ * credential leaf for leakage checks.
+ */
+const SECRET_CREDENTIAL_STRING_KEYS = new Set([
+  'accessKeyId',
+  'apiKey',
+  'bearerToken',
+  'oauthAccessToken',
+  'password',
+  'secretAccessKey',
+  'sessionToken',
+]);
+
+/**
+ * Substring matching below this length collides with public tokens (regions, enums).
+ * Short secrets from known secret keys are still extracted; callers must match them
+ * with exact/token-aware rules ({@link credentialAppearsInPublicText}).
+ */
+export const MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH = 8;
+
+/** @deprecated Use {@link MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH}. */
+export const MIN_CREDENTIAL_LEAF_LENGTH = MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH;
+
+/** Header names whose values are treated as secret material (case-insensitive). */
+const SECRET_CUSTOM_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'x-auth-token',
+  'x-access-token',
+]);
+
+/**
+ * Extract secret-bearing string leaves from a credential vault for public-field leakage checks.
+ * - Known secret keys (`apiKey`, `password`, …) contribute every non-empty value, including short ones.
+ * - Unstructured top-level strings always contribute (they are the secret itself).
+ * - Custom headers contribute only secret-bearing header names, or sufficiently long values.
+ */
 export const credentialStringLeaves = (value: unknown): string[] => {
-  if (typeof value === 'string') return value ? [value] : [];
-  if (!value || typeof value !== 'object') return [];
-  return Object.values(value).flatMap(credentialStringLeaves);
+  const leaves: string[] = [];
+
+  const push = (text: string) => {
+    if (text) leaves.push(text);
+  };
+
+  const walk = (node: unknown, parentKey?: string): void => {
+    if (typeof node === 'string') {
+      if (!node) return;
+      // Unstructured top-level secret, or a known secret-bearing field — never drop short secrets.
+      if (parentKey === undefined || SECRET_CREDENTIAL_STRING_KEYS.has(parentKey)) {
+        push(node);
+      }
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, parentKey);
+      return;
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (key === 'customHeaders' && child && typeof child === 'object' && !Array.isArray(child)) {
+        for (const [headerName, headerValue] of Object.entries(child as Record<string, unknown>)) {
+          if (typeof headerValue !== 'string' || !headerValue) continue;
+          const secretHeader = SECRET_CUSTOM_HEADER_NAMES.has(headerName.toLowerCase());
+          // Authorization-like headers always; other long header values still screened.
+          if (secretHeader || headerValue.length >= MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH) {
+            push(headerValue);
+          }
+        }
+        continue;
+      }
+      walk(child, key);
+    }
+  };
+
+  walk(value);
+  return leaves;
+};
+
+/**
+ * True when a public-field string discloses a credential leaf.
+ * Short secrets use exact equality or token boundaries so "us"/"east" style fragments
+ * do not false-positive; longer secrets use substring inclusion (and entropy-style overlap).
+ */
+export const credentialAppearsInPublicText = (text: string, credential: string): boolean => {
+  if (!credential || !text) return false;
+  if (credential.length < MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH) {
+    if (text === credential) return true;
+    // Token-aware: whole-token match with non-alnum boundaries (or string edges).
+    const escaped = credential.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^A-Za-z0-9_+/=-])${escaped}(?:$|[^A-Za-z0-9_+/=-])`).test(text);
+  }
+  return text.includes(credential);
 };

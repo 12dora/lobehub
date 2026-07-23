@@ -51,10 +51,36 @@ vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   useTranslation: () => ({
     i18n: { language: 'en-US' },
-    t: (key: string, options?: string | { defaultValue?: string }) => {
+    t: (key: string, options?: string | { defaultValue?: string; count?: number }) => {
       if (typeof options === 'string') return options;
-      return options?.defaultValue ?? key;
+      if (options?.defaultValue) return options.defaultValue;
+      if (typeof options?.count === 'number' && key.includes('partialLoadFailed')) {
+        return `${options.count} connectors failed to load; retry to refresh.`;
+      }
+      return key;
     },
+  }),
+}));
+
+const accessMocks = vi.hoisted(() => ({
+  permissions: [
+    'platform_skill:read:all',
+    'platform_skill:create:all',
+    'platform_skill:update:all',
+    'platform_skill:delete:all',
+    'platform_skill:publish:all',
+    'platform_connector:read:all',
+    'platform_connector:create:all',
+    'platform_connector:update:all',
+    'platform_connector:delete:all',
+    'platform_connector:publish:all',
+  ] as string[],
+}));
+
+vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
+  useAdminAccess: () => ({
+    authMethod: null,
+    permissions: accessMocks.permissions,
   }),
 }));
 
@@ -142,6 +168,18 @@ const renderScope = (view: 'connector' | 'skill') =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  accessMocks.permissions = [
+    'platform_skill:read:all',
+    'platform_skill:create:all',
+    'platform_skill:update:all',
+    'platform_skill:delete:all',
+    'platform_skill:publish:all',
+    'platform_connector:read:all',
+    'platform_connector:create:all',
+    'platform_connector:update:all',
+    'platform_connector:delete:all',
+    'platform_connector:publish:all',
+  ];
   vi.spyOn(toast, 'success').mockImplementation(() => '' as never);
   vi.spyOn(toast, 'warning').mockImplementation(() => '' as never);
   vi.spyOn(toast, 'error').mockImplementation(() => '' as never);
@@ -161,6 +199,140 @@ afterEach(() => {
 });
 
 describe('useAdminGlobalToolScope', () => {
+  describe('capabilities', () => {
+    it('exposes platform SKILL_* / CONNECTOR_* capabilities from admin access', async () => {
+      const { result } = renderScope('skill');
+      await waitFor(() => expect(result.current.capabilities.canCreateSkill).toBe(true));
+      expect(result.current.capabilities).toEqual({
+        canCreateConnector: true,
+        canCreateSkill: true,
+        canDeleteConnector: true,
+        canDeleteSkill: true,
+        canUpdateConnector: true,
+        canUpdateSkill: true,
+      });
+    });
+
+    it('read-only without mutation permissions', async () => {
+      accessMocks.permissions = ['platform_skill:read:all', 'platform_connector:read:all'];
+      const { result } = renderScope('skill');
+      await waitFor(() => expect(result.current.listLoading).toBe(false));
+      expect(result.current.capabilities).toEqual({
+        canCreateConnector: false,
+        canCreateSkill: false,
+        canDeleteConnector: false,
+        canDeleteSkill: false,
+        canUpdateConnector: false,
+        canUpdateSkill: false,
+      });
+    });
+
+    it('requires PUBLISH alongside create/delete/update for immediate operations', async () => {
+      // Mutation grants without publish → all false (immediate ops always publish).
+      accessMocks.permissions = [
+        'platform_skill:create:all',
+        'platform_skill:update:all',
+        'platform_skill:delete:all',
+        'platform_connector:create:all',
+        'platform_connector:update:all',
+        'platform_connector:delete:all',
+      ];
+      const { result } = renderScope('skill');
+      await waitFor(() => expect(result.current.listLoading).toBe(false));
+      expect(result.current.capabilities).toEqual({
+        canCreateConnector: false,
+        canCreateSkill: false,
+        canDeleteConnector: false,
+        canDeleteSkill: false,
+        canUpdateConnector: false,
+        canUpdateSkill: false,
+      });
+    });
+
+    it('create works when create+publish are granted without update/delete', async () => {
+      accessMocks.permissions = [
+        'platform_skill:create:all',
+        'platform_skill:publish:all',
+        'platform_connector:create:all',
+        'platform_connector:publish:all',
+      ];
+      const { result } = renderScope('skill');
+      await waitFor(() => expect(result.current.listLoading).toBe(false));
+      expect(result.current.capabilities).toEqual({
+        canCreateConnector: true,
+        canCreateSkill: true,
+        canDeleteConnector: false,
+        canDeleteSkill: false,
+        canUpdateConnector: false,
+        canUpdateSkill: false,
+      });
+    });
+  });
+
+  describe('catalog pagination', () => {
+    it('traverses all skill list cursors beyond 100 items', async () => {
+      const page1 = Array.from({ length: 100 }, (_, i) =>
+        skillRow({
+          displayName: `Skill ${i}`,
+          id: `skill-${i}`,
+          skillKey: `uploaded.skill-${i}`,
+        }),
+      );
+      const page2 = [
+        skillRow({
+          displayName: 'Skill 100',
+          id: 'skill-100',
+          skillKey: 'uploaded.skill-100',
+        }),
+      ];
+      mocks.skills.list
+        .mockResolvedValueOnce({ items: page1, nextCursor: 'cursor-page-2' })
+        .mockResolvedValueOnce({ items: page2, nextCursor: null });
+
+      const { result } = renderScope('skill');
+      await waitFor(() => expect(result.current.orgSkills).toHaveLength(101));
+      expect(mocks.skills.list).toHaveBeenCalledTimes(2);
+      expect(mocks.skills.list).toHaveBeenNthCalledWith(1, { cursor: undefined, limit: 100 });
+      expect(mocks.skills.list).toHaveBeenNthCalledWith(2, {
+        cursor: 'cursor-page-2',
+        limit: 100,
+      });
+    });
+
+    it('loads connector details in batches of 50 for catalogs larger than 50', async () => {
+      const listItems = Array.from({ length: 51 }, (_, i) => ({
+        description: null,
+        displayName: `Conn ${i}`,
+        enabled: true,
+        id: `conn-${i}`,
+        key: `conn-key-${i}`,
+        revision: 1,
+        sort: i,
+        status: 'published' as const,
+      }));
+      mocks.connectors.list.mockResolvedValue({ items: listItems, nextCursor: null });
+      mocks.connectors.getBatch.mockImplementation(async ({ ids }: { ids: string[] }) => ({
+        failedIds: [],
+        items: ids.map((id) =>
+          connectorDetail({
+            draft: {
+              ...connectorDetail().draft,
+              displayName: id,
+              id,
+              key: id,
+            },
+          }),
+        ),
+      }));
+
+      const { result } = renderScope('connector');
+      await waitFor(() => expect(result.current.connectors.length).toBeGreaterThanOrEqual(51));
+      expect(mocks.connectors.getBatch).toHaveBeenCalledTimes(2);
+      expect(mocks.connectors.getBatch.mock.calls[0][0].ids).toHaveLength(50);
+      expect(mocks.connectors.getBatch.mock.calls[1][0].ids).toHaveLength(1);
+    });
+  });
+
   describe('orgSkills', () => {
     it('maps only uploaded non-archived catalog rows into SkillListItem shape', async () => {
       mocks.skills.list.mockResolvedValue({

@@ -81,12 +81,18 @@ const createPublishedAgentDependency = async (params: {
 };
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.execute(sql`TRUNCATE TABLE ${platformAgentVersions}, ${platformAgents} CASCADE`);
-  await db.delete(platformSettingPolicies);
-  await db.delete(platformAiModels);
-  await db.delete(platformAiProviders);
+  // Migration 0145: audit logs are append-only; TRUNCATE bypasses the row trigger.
+  await db.execute(sql`
+    TRUNCATE TABLE
+      ${platformAuditLogs},
+      ${platformResourceRevisions},
+      ${platformAgentVersions},
+      ${platformAgents},
+      ${platformSettingPolicies},
+      ${platformAiModels},
+      ${platformAiProviders}
+    RESTART IDENTITY CASCADE
+  `);
 };
 
 beforeEach(cleanup);

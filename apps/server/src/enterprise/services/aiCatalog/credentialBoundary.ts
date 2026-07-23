@@ -1,5 +1,5 @@
 import { containsSensitiveMaterial, isCredentialBearingUrl } from '../../security/redaction';
-import { credentialStringLeaves } from './credentialAdapter';
+import { credentialAppearsInPublicText, credentialStringLeaves } from './credentialAdapter';
 import { AiCatalogValidationError } from './errors';
 
 const containsForbiddenPublicString = (value: unknown, credentialLeaves: string[]): boolean => {
@@ -7,7 +7,7 @@ const containsForbiddenPublicString = (value: unknown, credentialLeaves: string[
     return (
       containsSensitiveMaterial(value) ||
       isCredentialBearingUrl(value) ||
-      credentialLeaves.some((credential) => value.includes(credential))
+      credentialLeaves.some((credential) => credentialAppearsInPublicText(value, credential))
     );
   }
   if (!value || typeof value !== 'object') return false;

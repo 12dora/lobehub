@@ -142,14 +142,24 @@ const ProviderListPage = memo(() => {
                   onClick={(event) => {
                     // Row is clickable (navigates to detail) — keep the delete click local.
                     event.stopPropagation();
-                    openDeleteProviderModal({
-                      authMethod: authMethod ?? undefined,
-                      displayName: item.displayName,
-                      providerId: item.id,
-                      onDeleted: () => {
-                        void mutate();
-                      },
-                    });
+                    void (async () => {
+                      try {
+                        // List rows omit draftToken; fetch CAS identity at click time.
+                        const detail = await adminAiCatalogService.getProvider({ id: item.id });
+                        openDeleteProviderModal({
+                          authMethod: authMethod ?? undefined,
+                          displayName: item.displayName,
+                          expectedDraftToken: detail.draftToken,
+                          expectedRevision: detail.draft.revision,
+                          providerId: item.id,
+                          onDeleted: () => {
+                            void mutate();
+                          },
+                        });
+                      } catch {
+                        toast.error(t('aiCatalog.errors.generic'));
+                      }
+                    })();
                   }}
                 >
                   {t('aiCatalog.providers.actions.delete')}
