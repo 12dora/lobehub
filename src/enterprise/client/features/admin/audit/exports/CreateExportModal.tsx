@@ -228,6 +228,18 @@ const CreateExportModal = memo<CreateExportModalProps>(
                   if (vals?.[0] && vals[1]) setRange([vals[0], vals[1]]);
                 }}
               />
+              {policy.data?.maxListWindowDays ? (
+                <Text style={{ fontSize: 12 }} type="secondary">
+                  {t('audit.exports.create.timeRangeHint', {
+                    days: policy.data.maxListWindowDays,
+                  })}
+                </Text>
+              ) : null}
+              {policy.data?.maxExportRows ? (
+                <Text style={{ fontSize: 12 }} type="secondary">
+                  {t('audit.exports.create.maxRowsHint', { rows: policy.data.maxExportRows })}
+                </Text>
+              ) : null}
             </div>
             {kind === 'operation_logs' ? (
               <>
