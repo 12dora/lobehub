@@ -5,7 +5,11 @@ import { SWRConfig } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
-import type { AdminAgentDetailOutput } from './types';
+import type {
+  AdminAgentDetailOutput,
+  AdminPlatformAgentRolloutGetInput,
+  AdminPlatformAgentRolloutGetOutput,
+} from './types';
 import { fetchAdminAgentDetail, useFetchAdminAgent } from './useAdminAgents';
 
 vi.mock('@/business/client/hooks/useActiveWorkspaceId', () => ({
@@ -33,7 +37,13 @@ const createPollingClient = async () => {
     [second.jobId, second],
   ]);
   vi.spyOn(client, 'listRollouts').mockResolvedValue({ items: [first, second], nextCursor: null });
-  vi.spyOn(client, 'getRollout').mockImplementation(async ({ jobId }) => current.get(jobId)!);
+  const getRolloutImpl = (async ({
+    jobId,
+  }: AdminPlatformAgentRolloutGetInput): Promise<AdminPlatformAgentRolloutGetOutput> =>
+    current.get(jobId)!) satisfies (
+    input: AdminPlatformAgentRolloutGetInput,
+  ) => Promise<AdminPlatformAgentRolloutGetOutput>;
+  vi.spyOn(client, 'getRollout').mockImplementation(getRolloutImpl);
   return { client, current, first, second };
 };
 

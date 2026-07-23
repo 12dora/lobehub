@@ -20,10 +20,8 @@ import AuditStatusTag from '../shared/AuditStatusTag';
 import { formatAdminDateTime, hasPermission, humanizeAuditToken } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
 import { formatAuditBytes } from '../shared/timeWindow';
+import { pollWhileInFlight, useCursorPagination } from '../shared/useCursorPagination';
 import CreateExportModal from './CreateExportModal';
-
-const DEFAULT_LIST_LIMIT = 50;
-const POLL_MS = 4000;
 
 const styles = createStaticStyles(({ css }) => ({
   mono: css`
@@ -79,16 +77,21 @@ const ExportsPage = memo(() => {
   const { createExport, downloadExport, cancelExport } = useAdminAuditMutations();
 
   const [mine, setMine] = useState(false);
-  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
-  const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
+  const {
+    currentCursor,
+    hasPrevious,
+    limit,
+    onNext,
+    onPageSizeChange,
+    onPrevious,
+    reset: resetCursor,
+  } = useCursorPagination();
   const [createOpen, setCreateOpen] = useState(searchParams.get('create') === '1');
   const [detail, setDetail] = useState<AdminAuditExportItem | null>(null);
-  const currentCursor = cursorStack.at(-1) ?? null;
 
   const list = useFetchAuditExportsList({ cursor: currentCursor, limit, mine }, canExport, {
     // Single SWR key: poll only while any row is still in flight.
-    refreshInterval: (latest) =>
-      latest?.items?.some((i) => i.status === 'pending' || i.status === 'running') ? POLL_MS : 0,
+    refreshInterval: pollWhileInFlight(),
   });
 
   const data = list.data;
@@ -243,7 +246,7 @@ const ExportsPage = memo(() => {
             checked={mine}
             onChange={(v) => {
               setMine(Boolean(v));
-              setCursorStack([]);
+              resetCursor();
             }}
           />
         </Flexbox>
@@ -260,16 +263,11 @@ const ExportsPage = memo(() => {
         scroll={{ x: 1200 }}
         cursorPagination={{
           hasNext: Boolean(nextCursor),
-          hasPrevious: cursorStack.length > 0,
-          onNext: () => {
-            if (nextCursor) setCursorStack((p) => [...p, nextCursor]);
-          },
-          onPrevious: () => setCursorStack((p) => p.slice(0, -1)),
+          hasPrevious,
+          onNext: () => onNext(nextCursor),
+          onPrevious,
           pageSize: limit,
-          onPageSizeChange: (size) => {
-            setLimit(size);
-            setCursorStack([]);
-          },
+          onPageSizeChange,
         }}
         onRetry={() => void mutate()}
         onRowActivate={(row) => setDetail(row)}

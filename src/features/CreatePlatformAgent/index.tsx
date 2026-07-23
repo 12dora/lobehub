@@ -161,15 +161,17 @@ const CreatePlatformAgentContent = memo<CreatePlatformAgentContentProps>(
 
     const selectedPlatformDef = platformDefs.find((p) => p.type === platform)!;
 
+    // Autofill only empty fields on step/profile transitions. Functional updaters keep the
+    // latest name/description without listing them as deps (which would re-fill after clear).
     useEffect(() => {
       if (step !== 2) return;
       if (agentProfile !== null) {
-        if (!agentName) setAgentName(agentProfile.title ?? selectedPlatformDef.name);
-        if (!agentDescription) setAgentDescription(agentProfile.description ?? '');
-      } else if (!fetchingProfile && !agentName) {
-        setAgentName(selectedPlatformDef.name);
+        setAgentName((current) => current || (agentProfile.title ?? selectedPlatformDef.name));
+        setAgentDescription((current) => current || (agentProfile.description ?? ''));
+      } else if (!fetchingProfile) {
+        setAgentName((current) => current || selectedPlatformDef.name);
       }
-    }, [step, agentProfile, fetchingProfile]);
+    }, [step, agentProfile, fetchingProfile, selectedPlatformDef.name]);
 
     const handlePlatformChange = useCallback((type: RemoteHeterogeneousAgentType) => {
       setPlatform(type);

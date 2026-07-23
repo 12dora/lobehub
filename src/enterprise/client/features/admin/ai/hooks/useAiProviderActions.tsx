@@ -138,6 +138,102 @@ export const useAiProviderActions = ({
     [data, editor, writeGuard],
   );
 
+  /** Begin a write epoch when `enabled`; returns null when blocked or locked. */
+  const beginGuardedWrite = useCallback(
+    (enabled: boolean): number | null => {
+      if (!enabled) return null;
+      return writeGuard.begin();
+    },
+    [writeGuard],
+  );
+
+  /**
+   * Shared commit path for every guarded mutation (reason modal or custom modal):
+   * assertCurrent → beforeCommit → optional loadingId → commitAndRefresh → afterError/handleMutationError.
+   */
+  const runGuardedCommit = useCallback(
+    async <Result, Input = unknown>(
+      epoch: number,
+      input: Input,
+      options: {
+        afterError?: (cause: unknown) => void | Promise<void>;
+        beforeCommit?: () => void;
+        clearTest?: boolean;
+        commit: (input: Input) => Promise<Result>;
+        loadingId?: string;
+        onCommitted?: (result: Result) => void;
+      },
+    ): Promise<void> => {
+      writeGuard.assertCurrent(epoch);
+      options.beforeCommit?.();
+      if (options.loadingId !== undefined) setActionLoadingId(options.loadingId);
+      try {
+        await commitAndRefresh({
+          clearTest: options.clearTest,
+          commit: () => options.commit(input),
+          onCommitted: options.onCommitted,
+        });
+      } catch (cause) {
+        await options.afterError?.(cause);
+        await handleMutationError(cause);
+        throw cause;
+      } finally {
+        if (options.loadingId !== undefined) setActionLoadingId(null);
+      }
+    },
+    [commitAndRefresh, handleMutationError, writeGuard],
+  );
+
+  /**
+   * Shared scaffold for epoch-guarded reason modals:
+   * begin epoch (or reuse `epoch`) → openReasonModal → runGuardedCommit.
+   */
+  const openGuardedReasonMutation = useCallback(
+    <Result, Input = unknown>(options: {
+      afterError?: (cause: unknown) => void | Promise<void>;
+      beforeCommit?: () => void;
+      buildPayload: (reason: string) => Input;
+      clearTest?: boolean;
+      commit: (input: Input) => Promise<Result>;
+      danger?: boolean;
+      description: string;
+      /** When `epoch` is omitted, start a new epoch only if true. Default true. */
+      enabled?: boolean;
+      /** Pre-started epoch from `beginGuardedWrite` (skips begin). */
+      epoch?: number;
+      impact?: string;
+      loadingId?: string;
+      onCommitted?: (result: Result) => void;
+      submitLabel: string;
+      targetLabel: string;
+      title: string;
+    }) => {
+      const epoch = options.epoch ?? beginGuardedWrite(options.enabled ?? true);
+      if (epoch === null) return;
+      openReasonModal({
+        authMethod: authMethod ?? undefined,
+        buildPayload: (reason) => options.buildPayload(reason) as unknown,
+        danger: options.danger,
+        description: options.description,
+        impact: options.impact,
+        onSubmit: async (input) => {
+          await runGuardedCommit(epoch, input as Input, {
+            afterError: options.afterError,
+            beforeCommit: options.beforeCommit,
+            clearTest: options.clearTest,
+            commit: options.commit,
+            loadingId: options.loadingId,
+            onCommitted: options.onCommitted,
+          });
+        },
+        submitLabel: options.submitLabel,
+        targetLabel: options.targetLabel,
+        title: options.title,
+      });
+    },
+    [authMethod, beginGuardedWrite, runGuardedCommit],
+  );
+
   const retryRefresh = useCallback(async () => {
     const generation = ++refreshGenerationRef.current;
     writeGuard.lock();
@@ -166,21 +262,15 @@ export const useAiProviderActions = ({
   }, [data.draft.id, writeGuard]);
 
   const openSave = useCallback(() => {
-    if (
-      !editor.draft ||
-      reloadRequired ||
-      editor.conflict ||
-      !editor.dirty ||
-      !editor.valid ||
-      !permissions.canUpdateProvider
-    ) {
-      return;
-    }
-    const epoch = writeGuard.begin();
-    if (epoch === null) return;
+    if (!editor.draft) return;
     const draftSnapshot = structuredClone(editor.draft);
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
+    openGuardedReasonMutation({
+      afterError: () => {
+        editor.setSaveState('failed');
+      },
+      beforeCommit: () => {
+        editor.setSaveState('saving');
+      },
       buildPayload: (reason) =>
         buildProviderUpdatePayload({
           draft: draftSnapshot,
@@ -189,141 +279,73 @@ export const useAiProviderActions = ({
           reason,
           revision: data.baseRevision,
         }),
+      commit: (input) =>
+        adminAiCatalogService.updateProvider(input as AdminAiProviderUpdateDraftInput),
       description: t('aiCatalog.actions.save.desc'),
-      onSubmit: async (input) => {
-        writeGuard.assertCurrent(epoch);
-        editor.setSaveState('saving');
-        try {
-          await commitAndRefresh({
-            commit: () =>
-              adminAiCatalogService.updateProvider(input as AdminAiProviderUpdateDraftInput),
-            onCommitted: () => {
-              editor.markSaved();
-              toast.success(t('aiCatalog.toast.draftSaved'));
-            },
-          });
-        } catch (cause) {
-          editor.setSaveState('failed');
-          await handleMutationError(cause);
-          throw cause;
-        }
+      enabled:
+        !reloadRequired &&
+        !editor.conflict &&
+        editor.dirty &&
+        editor.valid &&
+        permissions.canUpdateProvider,
+      onCommitted: () => {
+        editor.markSaved();
+        toast.success(t('aiCatalog.toast.draftSaved'));
       },
       submitLabel: t('aiCatalog.actions.save.label'),
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.save.title'),
     });
-  }, [
-    authMethod,
-    commitAndRefresh,
-    data,
-    editor,
-    handleMutationError,
-    permissions,
-    reloadRequired,
-    t,
-    writeGuard,
-  ]);
+  }, [data, editor, openGuardedReasonMutation, permissions, reloadRequired, t]);
 
   const openTest = useCallback(() => {
-    if (
-      reloadRequired ||
-      editor.dirty ||
-      editor.conflict ||
-      !editor.valid ||
-      !permissions.canTestProvider
-    ) {
-      return;
-    }
-    const epoch = writeGuard.begin();
-    if (epoch === null) return;
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
+    openGuardedReasonMutation({
       buildPayload: (reason) => ({ id: data.draft.id, reason }),
+      clearTest: false,
+      commit: (input) => adminAiCatalogService.testProvider(input as AdminAiProviderTestInput),
       description: t('aiCatalog.actions.test.desc'),
-      onSubmit: async (input) => {
-        writeGuard.assertCurrent(epoch);
-        try {
-          await commitAndRefresh({
-            clearTest: false,
-            commit: () => adminAiCatalogService.testProvider(input as AdminAiProviderTestInput),
-            onCommitted: (result) => {
-              toast[result.status === 'success' ? 'success' : 'warning'](
-                t(`aiCatalog.toast.test.${result.status}` as never),
-              );
-            },
-          });
-        } catch (cause) {
-          await handleMutationError(cause);
-          throw cause;
-        }
+      enabled:
+        !reloadRequired &&
+        !editor.dirty &&
+        !editor.conflict &&
+        editor.valid &&
+        permissions.canTestProvider,
+      onCommitted: (result) => {
+        toast[result.status === 'success' ? 'success' : 'warning'](
+          t(`aiCatalog.toast.test.${result.status}` as never),
+        );
       },
       submitLabel: t('aiCatalog.actions.test.label'),
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.test.title'),
     });
-  }, [
-    authMethod,
-    commitAndRefresh,
-    data.draft,
-    editor,
-    handleMutationError,
-    permissions,
-    reloadRequired,
-    t,
-    writeGuard,
-  ]);
+  }, [data.draft, editor, openGuardedReasonMutation, permissions, reloadRequired, t]);
 
   const openPublish = useCallback(() => {
-    if (
-      editor.dirty ||
-      reloadRequired ||
-      editor.conflict ||
-      !editor.valid ||
-      !editor.connectionTest.canPublish ||
-      !permissions.canPublishProvider
-    ) {
-      return;
-    }
-    const epoch = writeGuard.begin();
-    if (epoch === null) return;
     const snapshot = {
       expectedDraftToken: data.draftToken,
       expectedRevision: data.baseRevision,
       id: data.draft.id,
     };
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
+    openGuardedReasonMutation({
       buildPayload: (reason) => ({ ...snapshot, reason }),
+      commit: (input) =>
+        adminAiCatalogService.publishProvider(input as AdminAiProviderPublishInput),
       description: t('aiCatalog.actions.publish.desc'),
+      enabled:
+        !editor.dirty &&
+        !reloadRequired &&
+        !editor.conflict &&
+        editor.valid &&
+        editor.connectionTest.canPublish &&
+        permissions.canPublishProvider,
       impact: t('aiCatalog.actions.publish.impact'),
-      onSubmit: async (input) => {
-        writeGuard.assertCurrent(epoch);
-        try {
-          await commitAndRefresh({
-            commit: () =>
-              adminAiCatalogService.publishProvider(input as AdminAiProviderPublishInput),
-            onCommitted: () => toast.success(t('aiCatalog.toast.published')),
-          });
-        } catch (cause) {
-          await handleMutationError(cause);
-          throw cause;
-        }
-      },
+      onCommitted: () => toast.success(t('aiCatalog.toast.published')),
       submitLabel: t('aiCatalog.actions.publish.label'),
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.publish.title'),
     });
-  }, [
-    authMethod,
-    commitAndRefresh,
-    data,
-    editor,
-    handleMutationError,
-    permissions,
-    reloadRequired,
-    t,
-    writeGuard,
-  ]);
+  }, [data, editor, openGuardedReasonMutation, permissions, reloadRequired, t]);
 
   const primaryAction = reloadRequired
     ? 'none'
@@ -348,8 +370,9 @@ export const useAiProviderActions = ({
   }, [openPublish, openSave, openTest, primaryAction]);
 
   const handleSecret = useCallback(() => {
-    if (reloadRequired || editor.dirty || editor.conflict || !permissions.canUpdateProvider) return;
-    const epoch = writeGuard.begin();
+    const epoch = beginGuardedWrite(
+      !reloadRequired && !editor.dirty && !editor.conflict && permissions.canUpdateProvider,
+    );
     if (epoch === null) return;
     const snapshot = {
       expectedDraftToken: data.draftToken,
@@ -361,187 +384,128 @@ export const useAiProviderActions = ({
       configured: data.draft.secret.configured,
       providerName: data.draft.displayName,
       onSubmit: async ({ reason, secret }: { reason: string; secret: AiSecretMutation }) => {
-        writeGuard.assertCurrent(epoch);
-        try {
-          await commitAndRefresh({
-            commit: () => adminAiCatalogService.updateProvider({ ...snapshot, reason, secret }),
+        await runGuardedCommit(
+          epoch,
+          { reason, secret },
+          {
+            commit: ({ reason: nextReason, secret: nextSecret }) =>
+              adminAiCatalogService.updateProvider({
+                ...snapshot,
+                reason: nextReason,
+                secret: nextSecret,
+              }),
             onCommitted: () => {
               editor.markSaved();
               toast.success(t('aiCatalog.toast.secretUpdated'));
             },
-          });
-        } catch (cause) {
-          await handleMutationError(cause);
-          throw cause;
-        }
+          },
+        );
       },
     });
   }, [
     authMethod,
-    commitAndRefresh,
+    beginGuardedWrite,
     data,
     editor,
-    handleMutationError,
     permissions,
     reloadRequired,
+    runGuardedCommit,
     t,
-    writeGuard,
   ]);
 
   const handleArchive = useCallback(() => {
-    if (
-      editor.dirty ||
-      reloadRequired ||
-      editor.conflict ||
-      data.draft.status === 'archived' ||
-      !permissions.canArchiveProvider
-    ) {
-      return;
-    }
-    const epoch = writeGuard.begin();
-    if (epoch === null) return;
     const snapshot = {
       expectedDraftToken: data.draftToken,
       expectedRevision: data.baseRevision,
       id: data.draft.id,
     };
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
+    openGuardedReasonMutation({
       buildPayload: (reason) => ({ ...snapshot, reason }),
+      commit: (input) =>
+        adminAiCatalogService.archiveProvider(input as AdminAiProviderArchiveInput),
       danger: true,
       description: t('aiCatalog.actions.archive.desc'),
-      onSubmit: async (input) => {
-        writeGuard.assertCurrent(epoch);
-        try {
-          await commitAndRefresh({
-            commit: () =>
-              adminAiCatalogService.archiveProvider(input as AdminAiProviderArchiveInput),
-            onCommitted: () => toast.success(t('aiCatalog.toast.archived')),
-          });
-        } catch (cause) {
-          await handleMutationError(cause);
-          throw cause;
-        }
-      },
+      enabled:
+        !editor.dirty &&
+        !reloadRequired &&
+        !editor.conflict &&
+        data.draft.status !== 'archived' &&
+        permissions.canArchiveProvider,
+      onCommitted: () => toast.success(t('aiCatalog.toast.archived')),
       submitLabel: t('aiCatalog.actions.archive.label'),
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.archive.title'),
     });
-  }, [
-    authMethod,
-    commitAndRefresh,
-    data,
-    editor,
-    handleMutationError,
-    permissions,
-    reloadRequired,
-    t,
-    writeGuard,
-  ]);
+  }, [data, editor, openGuardedReasonMutation, permissions, reloadRequired, t]);
 
   const handleRollback = useCallback(
     (targetRevision: number) => {
-      if (reloadRequired || editor.dirty || editor.conflict || !permissions.canPublishProvider) {
-        return;
-      }
-      const epoch = writeGuard.begin();
-      if (epoch === null) return;
       const snapshot = {
         expectedDraftToken: data.draftToken,
         expectedRevision: data.baseRevision,
         id: data.draft.id,
         targetRevision,
       };
-      openReasonModal({
-        authMethod: authMethod ?? undefined,
+      openGuardedReasonMutation({
         buildPayload: (reason) => ({ ...snapshot, reason }),
+        commit: (input) =>
+          adminAiCatalogService.rollbackProvider(input as AdminAiProviderRollbackInput),
         danger: true,
         description: t('aiCatalog.actions.rollback.desc', { revision: targetRevision }),
-        onSubmit: async (input) => {
-          writeGuard.assertCurrent(epoch);
-          try {
-            await commitAndRefresh({
-              commit: () =>
-                adminAiCatalogService.rollbackProvider(input as AdminAiProviderRollbackInput),
-              onCommitted: () => toast.success(t('aiCatalog.toast.rolledBack')),
-            });
-          } catch (cause) {
-            await handleMutationError(cause);
-            throw cause;
-          }
-        },
+        enabled:
+          !reloadRequired && !editor.dirty && !editor.conflict && permissions.canPublishProvider,
+        onCommitted: () => toast.success(t('aiCatalog.toast.rolledBack')),
         submitLabel: t('aiCatalog.actions.rollback.label'),
         targetLabel: data.draft.displayName,
         title: t('aiCatalog.actions.rollback.title'),
       });
     },
-    [
-      authMethod,
-      commitAndRefresh,
-      data,
-      editor,
-      handleMutationError,
-      permissions,
-      reloadRequired,
-      t,
-      writeGuard,
-    ],
+    [data, editor, openGuardedReasonMutation, permissions, reloadRequired, t],
   );
 
   const handleCreateModel = useCallback(() => {
-    if (reloadRequired || editor.dirty || editor.conflict || !permissions.canCreateModel) return;
-    const epoch = writeGuard.begin();
+    const epoch = beginGuardedWrite(
+      !reloadRequired && !editor.dirty && !editor.conflict && permissions.canCreateModel,
+    );
     if (epoch === null) return;
     const draftToken = data.draftToken;
     openModelEditorModal({
       authMethod: authMethod ?? undefined,
       onSubmit: async ({ fields, modelKey, reason }) => {
-        writeGuard.assertCurrent(epoch);
-        setActionLoadingId('models');
-        try {
-          const input: AdminAiModelCreateInput = {
-            ...fields,
-            expectedDraftToken: draftToken,
-            modelKey,
-            providerId: data.draft.id,
-            reason,
-          };
-          await commitAndRefresh({
-            commit: () => adminAiCatalogService.createModel(input),
-            onCommitted: () => toast.success(t('aiCatalog.toast.modelCreated')),
-          });
-        } catch (cause) {
-          await handleMutationError(cause);
-          throw cause;
-        } finally {
-          setActionLoadingId(null);
-        }
+        const input: AdminAiModelCreateInput = {
+          ...fields,
+          expectedDraftToken: draftToken,
+          modelKey,
+          providerId: data.draft.id,
+          reason,
+        };
+        await runGuardedCommit(epoch, input, {
+          commit: (payload) => adminAiCatalogService.createModel(payload),
+          loadingId: 'models',
+          onCommitted: () => toast.success(t('aiCatalog.toast.modelCreated')),
+        });
       },
     });
   }, [
     authMethod,
-    commitAndRefresh,
+    beginGuardedWrite,
     data,
     editor,
-    handleMutationError,
     permissions,
     reloadRequired,
+    runGuardedCommit,
     t,
-    writeGuard,
   ]);
 
   const handleEditModel = useCallback(
     async (model: AdminAiModelDraft) => {
-      if (
-        editor.dirty ||
-        reloadRequired ||
-        editor.conflict ||
-        !permissions.canReadModels ||
-        !permissions.canUpdateModel
-      ) {
-        return;
-      }
-      const epoch = writeGuard.begin();
+      const epoch = beginGuardedWrite(
+        !editor.dirty &&
+          !reloadRequired &&
+          !editor.conflict &&
+          permissions.canReadModels &&
+          permissions.canUpdateModel,
+      );
       if (epoch === null) return;
       setActionLoadingId(model.id);
       try {
@@ -556,27 +520,19 @@ export const useAiProviderActions = ({
           disableAvailability: model.enabled && hasBlockingModelDependents(dependents),
           model,
           onSubmit: async ({ fields, reason }) => {
-            writeGuard.assertCurrent(epoch);
-            setActionLoadingId(model.id);
-            try {
-              const input: AdminAiModelUpdateInput = {
-                ...fields,
-                expectedDraftToken: draftToken,
-                expectedRevision: model.revision,
-                id: model.id,
-                providerId: data.draft.id,
-                reason,
-              };
-              await commitAndRefresh({
-                commit: () => adminAiCatalogService.updateModel(input),
-                onCommitted: () => toast.success(t('aiCatalog.toast.modelUpdated')),
-              });
-            } catch (cause) {
-              await handleMutationError(cause);
-              throw cause;
-            } finally {
-              setActionLoadingId(null);
-            }
+            const input: AdminAiModelUpdateInput = {
+              ...fields,
+              expectedDraftToken: draftToken,
+              expectedRevision: model.revision,
+              id: model.id,
+              providerId: data.draft.id,
+              reason,
+            };
+            await runGuardedCommit(epoch, input, {
+              commit: (payload) => adminAiCatalogService.updateModel(payload),
+              loadingId: model.id,
+              onCommitted: () => toast.success(t('aiCatalog.toast.modelUpdated')),
+            });
           },
         });
       } catch (cause) {
@@ -589,14 +545,14 @@ export const useAiProviderActions = ({
     },
     [
       authMethod,
+      beginGuardedWrite,
       data,
       editor,
       errorText,
-      handleMutationError,
       permissions.canReadModels,
       permissions.canUpdateModel,
-      commitAndRefresh,
       reloadRequired,
+      runGuardedCommit,
       t,
       writeGuard,
     ],
@@ -604,16 +560,13 @@ export const useAiProviderActions = ({
 
   const handleDeleteModel = useCallback(
     async (model: AdminAiModelDraft) => {
-      if (
-        editor.dirty ||
-        reloadRequired ||
-        editor.conflict ||
-        !permissions.canDeleteModel ||
-        !permissions.canReadModels
-      ) {
-        return;
-      }
-      const epoch = writeGuard.begin();
+      const epoch = beginGuardedWrite(
+        !editor.dirty &&
+          !reloadRequired &&
+          !editor.conflict &&
+          permissions.canDeleteModel &&
+          permissions.canReadModels,
+      );
       if (epoch === null) return;
       setActionLoadingId(model.id);
       try {
@@ -640,31 +593,20 @@ export const useAiProviderActions = ({
           return;
         }
         const draftToken = data.draftToken;
-        openReasonModal({
-          authMethod: authMethod ?? undefined,
-          buildPayload: (reason) => ({
-            expectedDraftToken: draftToken,
-            id: model.id,
-            providerId: data.draft.id,
-            reason,
-          }),
+        openGuardedReasonMutation({
+          buildPayload: (reason) =>
+            ({
+              expectedDraftToken: draftToken,
+              id: model.id,
+              providerId: data.draft.id,
+              reason,
+            }) satisfies AdminAiModelDeleteInput,
+          commit: (input) => adminAiCatalogService.deleteModel(input),
           danger: true,
           description: t('aiCatalog.actions.deleteModel.desc'),
-          onSubmit: async (input) => {
-            writeGuard.assertCurrent(epoch);
-            setActionLoadingId(model.id);
-            try {
-              await commitAndRefresh({
-                commit: () => adminAiCatalogService.deleteModel(input as AdminAiModelDeleteInput),
-                onCommitted: () => toast.success(t('aiCatalog.toast.modelDeleted')),
-              });
-            } catch (cause) {
-              await handleMutationError(cause);
-              throw cause;
-            } finally {
-              setActionLoadingId(null);
-            }
-          },
+          epoch,
+          loadingId: model.id,
+          onCommitted: () => toast.success(t('aiCatalog.toast.modelDeleted')),
           submitLabel: t('aiCatalog.models.actions.delete'),
           targetLabel: model.displayName || model.modelKey,
           title: t('aiCatalog.actions.deleteModel.title'),
@@ -678,14 +620,13 @@ export const useAiProviderActions = ({
       }
     },
     [
-      authMethod,
+      beginGuardedWrite,
       data,
       editor,
       errorText,
-      handleMutationError,
+      openGuardedReasonMutation,
       permissions.canDeleteModel,
       permissions.canReadModels,
-      commitAndRefresh,
       reloadRequired,
       t,
       writeGuard,
@@ -694,10 +635,9 @@ export const useAiProviderActions = ({
 
   const handleReorderModels = useCallback(
     (orderedIds: string[]) => {
-      if (reloadRequired || editor.dirty || editor.conflict || !permissions.canReorderModels)
+      if (reloadRequired || editor.dirty || editor.conflict || !permissions.canReorderModels) {
         return;
-      const epoch = writeGuard.begin();
-      if (epoch === null) return;
+      }
       const items = buildCompleteModelOrder(
         data.draft.models.map((model) => model.id),
         orderedIds,
@@ -707,46 +647,24 @@ export const useAiProviderActions = ({
         return;
       }
       const draftToken = data.draftToken;
-      openReasonModal({
-        authMethod: authMethod ?? undefined,
-        buildPayload: (reason) => ({
-          expectedDraftToken: draftToken,
-          items,
-          providerId: data.draft.id,
-          reason,
-        }),
+      openGuardedReasonMutation({
+        buildPayload: (reason) =>
+          ({
+            expectedDraftToken: draftToken,
+            items,
+            providerId: data.draft.id,
+            reason,
+          }) satisfies AdminAiModelReorderInput,
+        commit: (input) => adminAiCatalogService.reorderModels(input),
         description: t('aiCatalog.actions.reorder.desc'),
-        onSubmit: async (input) => {
-          writeGuard.assertCurrent(epoch);
-          setActionLoadingId('models');
-          try {
-            await commitAndRefresh({
-              commit: () => adminAiCatalogService.reorderModels(input as AdminAiModelReorderInput),
-              onCommitted: () => toast.success(t('aiCatalog.toast.modelsReordered')),
-            });
-          } catch (cause) {
-            await handleMutationError(cause);
-            throw cause;
-          } finally {
-            setActionLoadingId(null);
-          }
-        },
+        loadingId: 'models',
+        onCommitted: () => toast.success(t('aiCatalog.toast.modelsReordered')),
         submitLabel: t('aiCatalog.actions.reorder.label'),
         targetLabel: data.draft.displayName,
         title: t('aiCatalog.actions.reorder.title'),
       });
     },
-    [
-      authMethod,
-      commitAndRefresh,
-      data,
-      editor,
-      handleMutationError,
-      permissions,
-      reloadRequired,
-      t,
-      writeGuard,
-    ],
+    [data, editor, openGuardedReasonMutation, permissions, reloadRequired, t],
   );
 
   return {

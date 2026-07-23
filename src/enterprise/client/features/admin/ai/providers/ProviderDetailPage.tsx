@@ -1,6 +1,6 @@
 'use client';
 
-import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useState } from 'react';
@@ -9,24 +9,22 @@ import { useNavigate, useParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
-import { formatAdminDateTime } from '@/enterprise/client/features/admin/users/utils';
 import type { AdminAccessContextValue } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import RevisionBanner from '../../primitives/RevisionBanner';
-import StatusBadge from '../../primitives/StatusBadge';
 import type { AiCatalogPermissions, EditableAiProviderDraft } from '../controller';
 import { deriveAiCatalogPermissions } from '../controller';
-import {
-  useFetchAdminAiProvider,
-  useFetchAdminAiProviderRevisions,
-} from '../hooks/useAdminAiCatalog';
+import { useFetchAdminAiProvider } from '../hooks/useAdminAiCatalog';
 import { useAiProviderActions } from '../hooks/useAiProviderActions';
 import { useAiProviderEditor } from '../hooks/useAiProviderEditor';
 import ProviderModelsSection from '../models/ProviderModelsSection';
 import type { AdminAiProviderGetOutput } from '../types';
+import ProviderConnectionTestPanel from './ProviderConnectionTestPanel';
 import ProviderEditorFields from './ProviderEditorFields';
+import ProviderRevisionsPanel from './ProviderRevisionsPanel';
+import ProviderSecretPanel from './ProviderSecretPanel';
 
 const styles = createStaticStyles(({ css }) => ({
   footer: css`
@@ -45,43 +43,6 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgLayout};
   `,
-  revision: css`
-    display: grid;
-    grid-template-columns: 100px 120px minmax(180px, 1fr) auto;
-    gap: 12px;
-    align-items: center;
-
-    padding-block: 10px;
-    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
-
-    @media (width <= 800px) {
-      grid-template-columns: 1fr;
-    }
-  `,
-  revisions: css`
-    padding: 16px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadiusLG};
-    background: ${cssVar.colorBgContainer};
-  `,
-  secret: css`
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: center;
-    justify-content: space-between;
-
-    padding: 16px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadiusLG};
-
-    background: ${cssVar.colorBgContainer};
-  `,
-  testResult: css`
-    padding: 12px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadius};
-  `,
 }));
 
 interface ProviderDetailContentProps {
@@ -97,13 +58,6 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
     const { t } = useTranslation('admin');
     const navigate = useNavigate();
     const [rebaseLoading, setRebaseLoading] = useState(false);
-    const [revisionCursorStack, setRevisionCursorStack] = useState<number[]>([]);
-    const revisionCursor = revisionCursorStack.at(-1);
-    const revisions = useFetchAdminAiProviderRevisions(
-      data.draft.id,
-      permission.canReadProviders,
-      revisionCursor,
-    );
     const actions = useAiProviderActions({
       authMethod: authMethod ?? null,
       data,
@@ -251,124 +205,23 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
           }
         />
 
-        <section className={styles.secret}>
-          <Flexbox gap={4}>
-            <Flexbox horizontal align="center" gap={8}>
-              <Text strong>{t('aiCatalog.editor.secret.title')}</Text>
-              <Tag color={data.draft.secret.configured ? 'success' : 'warning'}>
-                {t(
-                  data.draft.secret.configured
-                    ? 'aiCatalog.providers.secret.configured'
-                    : 'aiCatalog.providers.secret.missing',
-                )}
-              </Tag>
-            </Flexbox>
-            <Text type="secondary">{t('aiCatalog.editor.secret.neverReveal')}</Text>
-            {data.draft.secret.fingerprint ? (
-              <Text code type="secondary">
-                {data.draft.secret.fingerprint}
-              </Text>
-            ) : null}
-          </Flexbox>
-          {permission.canUpdateProvider ? (
-            <Button disabled={collectionLocked} onClick={actions.handleSecret}>
-              {t('aiCatalog.secret.apply')}
-            </Button>
-          ) : null}
-        </section>
+        <ProviderSecretPanel
+          canUpdate={permission.canUpdateProvider}
+          disabled={collectionLocked}
+          secret={data.draft.secret}
+          onApply={actions.handleSecret}
+        />
 
-        <section aria-live="polite" className={styles.testResult}>
-          {editor.connectionTest.state ? (
-            <Flexbox gap={4}>
-              <Flexbox horizontal align="center" gap={8}>
-                <Text strong>
-                  {t(`aiCatalog.editor.test.${editor.connectionTest.state.status}` as never)}
-                </Text>
-                {editor.connectionTest.stale ? (
-                  <Tag color="warning">{t('aiCatalog.editor.test.stale')}</Tag>
-                ) : null}
-              </Flexbox>
-              <Text type="secondary">
-                {t('aiCatalog.editor.test.summary', {
-                  latency: editor.connectionTest.state.latencyMs ?? '—',
-                  message: editor.connectionTest.state.sanitizedMessage,
-                })}
-              </Text>
-              <Text type="secondary">
-                {t('aiCatalog.editor.test.testedAt', {
-                  time: formatAdminDateTime(editor.connectionTest.state.testedAt),
-                })}
-              </Text>
-            </Flexbox>
-          ) : (
-            <Text type="secondary">{t('aiCatalog.editor.test.notRun')}</Text>
-          )}
-        </section>
+        <ProviderConnectionTestPanel connectionTest={editor.connectionTest} />
 
-        <section className={styles.revisions}>
-          <Flexbox gap={4}>
-            <Text strong>{t('aiCatalog.revisions.title')}</Text>
-            <Text type="secondary">{t('aiCatalog.revisions.desc')}</Text>
-          </Flexbox>
-          {revisions.error ? (
-            <Alert
-              showIcon
-              message={t('aiCatalog.revisions.error')}
-              type="error"
-              extra={
-                <Button onClick={() => void revisions.mutate()}>
-                  {t('aiCatalog.revisions.retry')}
-                </Button>
-              }
-            />
-          ) : revisions.isLoading && !revisions.data ? (
-            <Text type="secondary">{t('aiCatalog.revisions.loading')}</Text>
-          ) : revisions.data?.items.length ? (
-            <>
-              {revisions.data.items.map((revision) => (
-                <div className={styles.revision} key={revision.revision}>
-                  <Text>#{revision.revision}</Text>
-                  <StatusBadge status={revision.status} />
-                  <Flexbox gap={2}>
-                    <Text>{revision.comment || t('aiCatalog.revisions.noComment')}</Text>
-                    <Text type="secondary">{formatAdminDateTime(revision.publishedAt)}</Text>
-                  </Flexbox>
-                  {permission.canPublishProvider &&
-                  revision.status === 'published' &&
-                  revision.revision !== data.baseRevision ? (
-                    <Button
-                      danger
-                      disabled={collectionLocked}
-                      onClick={() => actions.handleRollback(revision.revision)}
-                    >
-                      {t('aiCatalog.actions.rollback.label')}
-                    </Button>
-                  ) : null}
-                </div>
-              ))}
-              <Flexbox horizontal gap={8} justify="flex-end">
-                <Button
-                  disabled={revisionCursorStack.length === 0}
-                  onClick={() => setRevisionCursorStack((current) => current.slice(0, -1))}
-                >
-                  {t('aiCatalog.revisions.previous')}
-                </Button>
-                <Button
-                  disabled={!revisions.data.nextCursor}
-                  onClick={() => {
-                    const nextCursor = revisions.data?.nextCursor;
-                    if (!nextCursor) return;
-                    setRevisionCursorStack((current) => [...current, nextCursor]);
-                  }}
-                >
-                  {t('aiCatalog.revisions.next')}
-                </Button>
-              </Flexbox>
-            </>
-          ) : (
-            <Text type="secondary">{t('aiCatalog.revisions.empty')}</Text>
-          )}
-        </section>
+        <ProviderRevisionsPanel
+          baseRevision={data.baseRevision}
+          canPublish={permission.canPublishProvider}
+          canRead={permission.canReadProviders}
+          disabled={collectionLocked}
+          providerId={data.draft.id}
+          onRollback={(revision) => actions.handleRollback(revision)}
+        />
 
         {actions.reloadRequired ? (
           <Alert

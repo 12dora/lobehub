@@ -1,10 +1,9 @@
 'use client';
 
-import { confirmModal } from '@lobehub/ui/base-ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useBlocker } from 'react-router';
 
+import { useUnsavedChangesGuard } from '../../primitives/useUnsavedChangesGuard';
 import {
   type AiCatalogSaveState,
   type AiProviderRebaseConflict,
@@ -35,7 +34,6 @@ export const useAiProviderEditor = (
   const [testLocallyStale, setTestLocallyStale] = useState(false);
   const [rebaseConflicts, setRebaseConflicts] = useState<AiProviderRebaseConflict[]>([]);
   const hydratedKeyRef = useRef<string | null>(null);
-  const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -79,47 +77,16 @@ export const useAiProviderEditor = (
     });
   }, [baseDraft, dirty, draft, editable, snapshot]);
 
-  useEffect(() => {
-    if (!editable || !dirty) return;
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [dirty, editable]);
-
-  const blocker = useBlocker(editable && dirty);
-  useEffect(() => {
-    if (blocker.state !== 'blocked') {
-      leaveModalRef.current?.close();
-      leaveModalRef.current = null;
-      return;
-    }
-    if (leaveModalRef.current) return;
-    leaveModalRef.current = confirmModal({
+  const unsavedMessages = useMemo(
+    () => ({
       cancelText: t('aiCatalog.editor.unsaved.stay'),
       content: t('aiCatalog.editor.unsaved.desc'),
       okText: t('aiCatalog.editor.unsaved.leave'),
       title: t('aiCatalog.editor.unsaved.title'),
-      onCancel: () => {
-        leaveModalRef.current = null;
-        blocker.reset?.();
-      },
-      onOk: () => {
-        leaveModalRef.current = null;
-        blocker.proceed?.();
-      },
-    });
-  }, [blocker.proceed, blocker.reset, blocker.state, t]);
-
-  useEffect(
-    () => () => {
-      leaveModalRef.current?.destroy();
-      leaveModalRef.current = null;
-    },
-    [],
+    }),
+    [t],
   );
+  useUnsavedChangesGuard({ enabled: editable && dirty, messages: unsavedMessages });
 
   const updateDraft = useCallback(
     <Key extends keyof EditableAiProviderDraft>(key: Key, value: EditableAiProviderDraft[Key]) => {

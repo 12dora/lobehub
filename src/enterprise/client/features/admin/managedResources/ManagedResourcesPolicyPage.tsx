@@ -1,11 +1,11 @@
 'use client';
 
 import { Alert, Flexbox, Text } from '@lobehub/ui';
-import { Button, confirmModal, Select } from '@lobehub/ui/base-ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useBlocker } from 'react-router';
+import type { BlockerFunction } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
@@ -15,10 +15,10 @@ import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseErro
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { adminManagedResourcesService } from '@/enterprise/client/services/adminManagedResources';
-import type { AdminManagedResourcesGetOutput } from '@/server/enterprise/contracts/adminManagedResources';
 import type { ManagedResourcePolicyMap } from '@/types/platform/managedResources';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
+import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import { publishManagedResourcePolicy, saveManagedResourceDraft } from './actions';
 import {
   deriveManagedResourcePermissions,
@@ -33,7 +33,6 @@ import {
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
 import SharedOAuthAuthorizationControl from './SharedOAuthAuthorizationControl';
 import SidebarLayoutControl from './SidebarLayoutControl';
-import { createUnsavedNavigationDecision } from './unsavedNavigationDecision';
 
 const styles = createStaticStyles(({ css }) => ({
   card: css`
@@ -103,77 +102,36 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   const [saveState, setSaveState] = useState<ManagedResourceSaveState>('idle');
   const [actionError, setActionError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
-  const [activeBaseRevision, setActiveBaseRevision] = useState(0);
   const [activeDraftToken, setActiveDraftToken] = useState('');
   const hydratedRef = useRef(false);
-  const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
   // Direct-save UX: editing applies immediately; there is no local draft cache, so entering
   // the tab is never spuriously "dirty" and leaving only prompts when there are real edits.
   // Only guard real page exits — a same-path `?tab=` switch inside the unified page must not prompt.
-  const blocker = useBlocker(
-    useCallback(
-      ({
-        currentLocation,
-        nextLocation,
-      }: {
-        currentLocation: { pathname: string };
-        nextLocation: { pathname: string };
-      }) => dirty && currentLocation.pathname !== nextLocation.pathname,
-      [dirty],
-    ),
+  const shouldBlockPageExit = useCallback<BlockerFunction>(
+    ({ currentLocation, nextLocation }) =>
+      dirty && currentLocation.pathname !== nextLocation.pathname,
+    [dirty],
   );
-  useEffect(() => {
-    if (blocker.state !== 'blocked') {
-      leaveModalRef.current?.close();
-      leaveModalRef.current = null;
-      return;
-    }
-    if (leaveModalRef.current) return;
-
-    const decision = createUnsavedNavigationDecision({
-      onCancel: () => {
-        leaveModalRef.current = null;
-        blocker.reset?.();
-      },
-      onProceed: () => {
-        leaveModalRef.current = null;
-        blocker.proceed?.();
-      },
-    });
-    leaveModalRef.current = confirmModal({
+  const unsavedMessages = useMemo(
+    () => ({
       cancelText: t('managedResources.unsavedStay'),
       content: t('managedResources.unsavedLeave'),
       okText: t('managedResources.unsavedConfirm'),
-      onCancel: decision.cancel,
-      onOk: decision.proceed,
       title: t('managedResources.unsavedTitle'),
-    });
-  }, [blocker.proceed, blocker.reset, blocker.state, t]);
-
-  useEffect(
-    () => () => {
-      leaveModalRef.current?.destroy();
-      leaveModalRef.current = null;
-    },
-    [],
+    }),
+    [t],
   );
-
-  useEffect(() => {
-    if (!dirty) return;
-    const handler = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [dirty]);
+  useUnsavedChangesGuard({
+    enabled: dirty,
+    messages: unsavedMessages,
+    shouldBlock: shouldBlockPageExit,
+  });
 
   useEffect(() => {
     if (!data || hydratedRef.current) return;
     hydratedRef.current = true;
     setDraft(data.draft);
-    setActiveBaseRevision(data.baseRevision);
     setActiveDraftToken(data.draftToken);
     setDirty(false);
     setSaveState('idle');
@@ -215,7 +173,6 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       const latest = await mutate();
       if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
       setDraft(latest.draft);
-      setActiveBaseRevision(latest.baseRevision);
       setActiveDraftToken(latest.draftToken);
       setDirty(false);
       setSaveState('idle');
@@ -239,10 +196,10 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
         saveDraft: adminManagedResourcesService.saveDraft,
       });
       setDraft(normalizedDraft);
-      // Persist the advanced CAS token/revision immediately: if the publish step below fails
+      // Persist the advanced CAS token immediately: if the publish step below fails
       // (e.g. cancelled reauth, catalog-not-ready), a Save retry must use the just-saved token,
       // not the stale pre-save one — otherwise it would raise a spurious revision conflict.
-      setActiveBaseRevision(saved.baseRevision);
+      // Publish uses `saved.baseRevision` from this response (not local revision state).
       setActiveDraftToken(saved.draftToken);
       await publishManagedResourcePolicy({
         authMethod: authMethod ?? null,
@@ -286,7 +243,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     unready.length,
   ]);
 
-  const renderLoaded = (snapshot: AdminManagedResourcesGetOutput) => {
+  const renderLoaded = () => {
     if (!draft) return <Loading debugId="AdminManagedResources > Hydrate" />;
 
     const canSave = canUpdate && canPublish;
@@ -394,7 +351,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       loading={<Loading debugId="AdminManagedResources" />}
       onRetry={() => void mutate()}
     >
-      {data ? renderLoaded(data) : null}
+      {data ? renderLoaded() : null}
     </AsyncBoundary>
   );
 });

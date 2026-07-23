@@ -3,19 +3,17 @@
 import { Text, TextArea } from '@lobehub/ui';
 import { Button, createModal, type ModalInstance, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, type ReactNode, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import {
-  type AdminReauthAuthMethod,
-  AdminReauthBlockedError,
-  AdminReauthCancelledError,
-  withAdminReauthRetry,
-} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+  type AdminReauthBusyPhase,
+  useReauthMutation,
+} from '@/enterprise/client/features/admin/primitives/useReauthMutation';
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 
 import { getAdminUsersMutationErrorKey } from '../utils';
-import { cloneFromCanonical, createCanonicalSnapshot } from './payloadSnapshot';
 
 const styles = createStaticStyles(({ css }) => ({
   body: css`
@@ -96,42 +94,26 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     const { close } = useModalContext();
     const [reason, setReason] = useState('');
     const [phase, setPhase] = useState<ReasonModalPhase>('idle');
-    const [errorKey, setErrorKey] = useState<string | null>(null);
-    /** Private canonical snapshot — never passed to onSubmit. */
-    const canonicalRef = useRef<unknown>(null);
-    const localAbortRef = useRef<AbortController | null>(null);
-    const abortRef = abortControllerRef ?? localAbortRef;
-    const mountedRef = useRef(true);
 
-    const setPhaseBoth = useCallback(
-      (next: ReasonModalPhase) => {
-        if (!mountedRef.current) return;
+    const resetBusyPhase = useCallback(() => {
+      setPhase((p) => (p === 'mutating' || p === 'reauthing' ? 'idle' : p));
+    }, []);
+
+    const {
+      abortActive,
+      cancelReauth,
+      clearCanonical,
+      errorKey,
+      runReauthedSubmit,
+      setErrorKeySafe,
+    } = useReauthMutation({
+      abortControllerRef,
+      resetBusyPhase,
+      setPhase: (next: AdminReauthBusyPhase) => {
         setPhase(next);
         onPhaseChange?.(next);
       },
-      [onPhaseChange],
-    );
-
-    const setErrorKeySafe = useCallback((key: string | null) => {
-      if (!mountedRef.current) return;
-      setErrorKey(key);
-    }, []);
-
-    const abortActive = useCallback(() => {
-      abortRef.current?.abort();
-      abortRef.current = null;
-    }, [abortRef]);
-
-    // Complements onOpenChange(false) / Cancel: unmount must still abort + clear snapshot.
-    useEffect(() => {
-      mountedRef.current = true;
-      return () => {
-        mountedRef.current = false;
-        abortRef.current?.abort();
-        abortRef.current = null;
-        canonicalRef.current = null;
-      };
-    }, [abortRef]);
+    });
 
     const locked = phase !== 'idle';
     const canSubmit = (hideReason || reason.trim().length > 0) && phase === 'idle';
@@ -139,17 +121,21 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     const handleClose = useCallback(() => {
       // Immediate abort — Escape/close must not wait for unmount cleanup.
       abortActive();
-      canonicalRef.current = null;
+      clearCanonical();
       close();
-    }, [abortActive, close]);
+    }, [abortActive, clearCanonical, close]);
 
     const handleCancelReauth = useCallback(() => {
-      // Only reauth is abortable; do not pretend an in-flight server mutation cancels.
-      if (phase !== 'reauthing') return;
-      abortActive();
-      setPhaseBoth('idle');
-      setErrorKeySafe('users.errors.reauthCancelled');
-    }, [abortActive, phase, setErrorKeySafe, setPhaseBoth]);
+      cancelReauth(phase);
+    }, [cancelReauth, phase]);
+
+    const mapReasonModalError = useCallback((error: unknown) => {
+      const mapped = mapEnterpriseError(error);
+      if (mapped?.action === 'reauth') {
+        return 'users.errors.reauthRequired';
+      }
+      return getAdminUsersMutationErrorKey(error);
+    }, []);
 
     const handleSubmit = useCallback(async () => {
       if (phase !== 'idle') return;
@@ -164,72 +150,32 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
         return;
       }
 
-      // Build live payload once, then store a private structured-cloned freeze.
+      // Build live payload once; runner stores a private structured-cloned freeze.
       const built = buildPayload(trimmed);
-      canonicalRef.current = createCanonicalSnapshot(built);
 
-      setErrorKeySafe(null);
-      const ac = new AbortController();
-      abortRef.current = ac;
-
-      try {
-        await withAdminReauthRetry(
-          async () => {
-            setPhaseBoth('mutating');
-            const canonical = canonicalRef.current;
-            if (canonical === null || ac.signal.aborted || !mountedRef.current) {
-              throw new AdminReauthCancelledError();
-            }
-            // Fresh clone per attempt — first call mutation cannot poison retry.
-            const attemptPayload = cloneFromCanonical(canonical);
-            await onSubmit(attemptPayload);
-          },
-          {
-            authMethod: authMethod ?? null,
-            signal: ac.signal,
-            onReauthStart: () => {
-              setPhaseBoth('reauthing');
-            },
-          },
-        );
-        if (!mountedRef.current) return;
-        canonicalRef.current = null;
-        close();
-      } catch (error) {
-        if (!mountedRef.current) return;
-        if (error instanceof AdminReauthCancelledError) {
-          setErrorKeySafe('users.errors.reauthCancelled');
-        } else if (error instanceof AdminReauthBlockedError) {
-          setErrorKeySafe('users.errors.reauthBlocked');
-        } else {
-          const mapped = mapEnterpriseError(error);
-          if (mapped?.action === 'reauth') {
-            setErrorKeySafe('users.errors.reauthRequired');
-          } else {
-            setErrorKeySafe(getAdminUsersMutationErrorKey(error));
-          }
-        }
-        setPhaseBoth('idle');
-      } finally {
-        if (abortRef.current === ac) {
-          abortRef.current = null;
-        }
-        if (mountedRef.current) {
-          setPhase((p) => (p === 'mutating' || p === 'reauthing' ? 'idle' : p));
-        }
-      }
+      await runReauthedSubmit({
+        authMethod,
+        mapError: mapReasonModalError,
+        payload: built,
+        onSubmit: async (attemptPayload) => {
+          await onSubmit(attemptPayload);
+        },
+        onSuccess: () => {
+          close();
+        },
+      });
     }, [
-      abortRef,
       authMethod,
       autoReason,
       buildPayload,
       close,
       hideReason,
+      mapReasonModalError,
       onSubmit,
       phase,
       reason,
+      runReauthedSubmit,
       setErrorKeySafe,
-      setPhaseBoth,
       validateExtra,
     ]);
 

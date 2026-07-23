@@ -1,6 +1,13 @@
+import {
+  carriesLocalDraftSecretMaterial,
+  utf8ByteLength,
+} from '@/enterprise/client/features/admin/primitives/localDraftSafety';
+
 import type { EditableAdminConnectorDraft } from './controller';
 
 const STORAGE_PREFIX = 'aihub.admin.connectors.draft.';
+/** Hard backstop against a public draft filling local-storage quota. */
+export const MAX_CONNECTOR_DRAFT_BYTES = 256 * 1024;
 
 export interface StoredAdminConnectorDraft {
   baseRevision: number;
@@ -41,16 +48,29 @@ const sanitizeStoredDraft = (value: StoredAdminConnectorDraft): StoredAdminConne
   savedAt: value.savedAt,
 });
 
+/**
+ * Connector recovery stores only the public field whitelist. After whitelist sanitization,
+ * run the shared client secret-value scan so a secret pasted into a public field cannot
+ * persist (keys like `credentialMode` / `draftToken` are allow-listed by the shared helper).
+ */
 export const loadAdminConnectorDraft = (id: string): StoredAdminConnectorDraft | null => {
   try {
     const raw = localStorage.getItem(keyFor(id));
     if (!raw) return null;
+    if (utf8ByteLength(raw) > MAX_CONNECTOR_DRAFT_BYTES) {
+      safeRemove(id);
+      return null;
+    }
     const parsed = JSON.parse(raw) as StoredAdminConnectorDraft;
     if (!parsed.draft || typeof parsed.baseRevision !== 'number' || !parsed.draftToken) {
       safeRemove(id);
       return null;
     }
     const sanitized = sanitizeStoredDraft(parsed);
+    if (carriesLocalDraftSecretMaterial(sanitized)) {
+      safeRemove(id);
+      return null;
+    }
     try {
       localStorage.setItem(keyFor(id), JSON.stringify(sanitized));
     } catch {
@@ -65,7 +85,17 @@ export const loadAdminConnectorDraft = (id: string): StoredAdminConnectorDraft |
 
 export const saveAdminConnectorDraft = (id: string, value: StoredAdminConnectorDraft) => {
   try {
-    localStorage.setItem(keyFor(id), JSON.stringify(sanitizeStoredDraft(value)));
+    const sanitized = sanitizeStoredDraft(value);
+    if (carriesLocalDraftSecretMaterial(sanitized)) {
+      safeRemove(id);
+      return;
+    }
+    const serialized = JSON.stringify(sanitized);
+    if (utf8ByteLength(serialized) > MAX_CONNECTOR_DRAFT_BYTES) {
+      safeRemove(id);
+      return;
+    }
+    localStorage.setItem(keyFor(id), serialized);
   } catch {
     // Quota exceeded / private-mode SecurityError — fail closed without crashing the editor.
   }

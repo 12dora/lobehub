@@ -1,81 +1,11 @@
 import { z } from 'zod';
 
+import {
+  carriesLocalDraftSecretMaterial,
+  utf8ByteLength,
+} from '@/enterprise/client/features/admin/primitives/localDraftSafety';
+
 import type { AdminAgentDraft } from './types';
-
-/**
- * Schema keys whose NAMES look credential-ish (they contain "key"/"token") but are opaque
- * catalog identifiers / CAS tokens — never secrets. Allow-listed so a legitimate draft is not
- * mis-flagged, while any OTHER sensitive-looking key still blocks persistence.
- */
-const BENIGN_KEYS = new Set(
-  ['allowedToolKeys', 'connectorKey', 'draftToken', 'modelKey', 'providerKey', 'skillKey'].map(
-    (name) => name.toLowerCase(),
-  ),
-);
-
-/**
- * Self-contained secret detection. This stays a light client module — it deliberately does NOT
- * import the server/database redaction chain, so it never persists common credential material.
- */
-const SENSITIVE_KEY_PATTERN =
-  /password|passwd|pwd|secret|credential|private[-_]?key|api[-_]?key|access[-_]?key|auth[-_]?token|bearer|session[-_]?id|cookie|\btoken\b/i;
-
-const SECRET_VALUE_PATTERNS: RegExp[] = [
-  /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/,
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
-  /\bAIza[\w-]{35}\b/,
-  /\bsk-[A-Za-z0-9]{16,}\b/,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
-  /\bBearer\s+[\w.-]{16,}\b/i,
-  /["']?type["']?\s*:\s*["']service_account["']/i,
-];
-
-/**
- * Hard cap on nodes scanned. A legitimate draft is small (a few hundred nodes); anything larger
- * is refused rather than partially scanned, so a secret can never hide past the limit.
- */
-const MAX_SCAN_NODES = 10_000;
-
-const isSensitiveKeyName = (key: string) =>
-  !BENIGN_KEYS.has(key.toLowerCase()) && SENSITIVE_KEY_PATTERN.test(key);
-
-const containsSecretValue = (value: string) =>
-  SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value));
-
-/**
- * FAIL-CLOSED secret scan tuned for the draft shape: flags secret-bearing string VALUES anywhere
- * and any sensitive foreign KEY name (e.g. `password`, `apiKey`) that is not an allow-listed
- * schema identifier. If the traversal cannot COMPLETE within {@link MAX_SCAN_NODES} it returns
- * `true` (treat incomplete traversal as sensitive) so a secret placed past the cap — or a
- * benignly oversized tree — is never persisted. Rejected content is never returned or logged.
- */
-const carriesSecretMaterial = (value: unknown): boolean => {
-  const stack: unknown[] = [value];
-  const seen = new WeakSet<object>();
-  let visited = 0;
-  while (stack.length > 0) {
-    if (visited >= MAX_SCAN_NODES) return true; // could not finish the scan → fail closed
-    const current = stack.pop();
-    visited += 1;
-    if (typeof current === 'string') {
-      if (containsSecretValue(current)) return true;
-      continue;
-    }
-    if (!current || typeof current !== 'object') continue;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    if (Array.isArray(current)) {
-      stack.push(...current);
-      continue;
-    }
-    for (const [key, child] of Object.entries(current)) {
-      if (isSensitiveKeyName(key) && child != null) return true;
-      stack.push(child);
-    }
-  }
-  return false;
-};
 
 const STORAGE_PREFIX = 'aihub.admin.agents.draft.';
 
@@ -85,6 +15,19 @@ const STORAGE_PREFIX = 'aihub.admin.agents.draft.';
  * hard backstop against a payload filling local-storage quota.
  */
 export const MAX_DRAFT_BYTES = 512 * 1024;
+
+/** Agent catalog identifier keys that match the sensitive-name pattern but are never secrets. */
+const AGENT_DRAFT_BENIGN_KEYS = [
+  'allowedToolKeys',
+  'connectorKey',
+  'draftToken',
+  'modelKey',
+  'providerKey',
+  'skillKey',
+] as const;
+
+const carriesSecretMaterial = (value: unknown) =>
+  carriesLocalDraftSecretMaterial(value, { benignKeys: AGENT_DRAFT_BENIGN_KEYS });
 
 /**
  * Recovery validation deliberately checks only shape, primitive types and hard size bounds. An
@@ -189,8 +132,6 @@ export type DraftPersistStatus = 'blocked' | 'invalid' | 'saved' | 'too_large' |
 
 const keyFor = (id: string) => `${STORAGE_PREFIX}${id}`;
 
-const byteLength = (value: string) => new TextEncoder().encode(value).length;
-
 const safeRemove = (id: string) => {
   try {
     localStorage.removeItem(keyFor(id));
@@ -251,7 +192,7 @@ export const saveAdminAgentDraft = (
     return 'unavailable';
   }
   // 3. Envelope size bound (a contract-valid draft can still be large via many tools).
-  if (byteLength(serialized) > MAX_DRAFT_BYTES) {
+  if (utf8ByteLength(serialized) > MAX_DRAFT_BYTES) {
     safeRemove(id);
     return 'too_large';
   }

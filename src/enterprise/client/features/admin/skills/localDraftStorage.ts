@@ -1,8 +1,11 @@
 import {
+  carriesLocalDraftSecretMaterial,
+  utf8ByteLength,
+} from '@/enterprise/client/features/admin/primitives/localDraftSafety';
+import {
   skillManifestSchema,
   skillResourceSchema,
 } from '@/server/enterprise/contracts/skillCatalog';
-import { containsEnterpriseSecretMaterial } from '@/server/enterprise/security/redaction/detectSecretMaterial';
 
 import type {
   EditableSkillDraft,
@@ -11,10 +14,15 @@ import type {
 } from './controller';
 
 const STORAGE_PREFIX = 'aihub.admin.skills.draft.';
-const MAX_LOCAL_DRAFT_BYTES = 1_900_000;
+/** Hard backstop against a Skill recovery draft filling local-storage quota. */
+export const MAX_SKILL_LOCAL_DRAFT_BYTES = 1_900_000;
 const MAX_MANIFEST_TEXT_BYTES = 262_144;
 const MAX_RESOURCES_TEXT_BYTES = 1_500_000;
 
+/**
+ * Skill-specific recovery status names (UI/i18n keys). `sensitive` is the secret/scan-block
+ * outcome equivalent to agents' `blocked`.
+ */
 export type SkillDraftPersistenceStatus =
   'saved' | 'invalid' | 'sensitive' | 'too_large' | 'unavailable';
 
@@ -27,7 +35,6 @@ export interface StoredSkillDraft {
 }
 
 const storageKey = (id: string) => `${STORAGE_PREFIX}${id}`;
-const byteLength = (value: string) => new TextEncoder().encode(value).byteLength;
 const hasOnlyKeys = (value: Record<string, unknown>, keys: readonly string[]) => {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -64,13 +71,13 @@ const normalizeVersionDraft = (value: unknown): EditableSkillVersionDraft | null
   if (
     !hasOnlyKeys(draft, ['content', 'contentRef', 'manifestText', 'resourcesText', 'version']) ||
     typeof draft.content !== 'string' ||
-    byteLength(draft.content) > 1_048_576 ||
+    utf8ByteLength(draft.content) > 1_048_576 ||
     typeof draft.contentRef !== 'string' ||
     draft.contentRef.length > 520 ||
     typeof draft.manifestText !== 'string' ||
-    byteLength(draft.manifestText) > MAX_MANIFEST_TEXT_BYTES ||
+    utf8ByteLength(draft.manifestText) > MAX_MANIFEST_TEXT_BYTES ||
     typeof draft.resourcesText !== 'string' ||
-    byteLength(draft.resourcesText) > MAX_RESOURCES_TEXT_BYTES ||
+    utf8ByteLength(draft.resourcesText) > MAX_RESOURCES_TEXT_BYTES ||
     typeof draft.version !== 'string' ||
     draft.version.length > 64
   ) {
@@ -126,11 +133,18 @@ export const saveSkillLocalDraft = (
     removeStoredDraft(id);
     return 'invalid';
   }
-  const rawPayload = JSON.stringify(payload);
-  if (byteLength(rawPayload) > MAX_LOCAL_DRAFT_BYTES) {
+
+  let rawPayload: string;
+  try {
+    rawPayload = JSON.stringify(payload);
+  } catch {
+    return 'unavailable';
+  }
+  if (utf8ByteLength(rawPayload) > MAX_SKILL_LOCAL_DRAFT_BYTES) {
     removeStoredDraft(id);
     return 'too_large';
   }
+
   const normalizedBase = normalizeDraft(payload.baseDraft);
   const normalizedDraft = normalizeDraft(payload.draft);
   if (!normalizedBase || !normalizedDraft) {
@@ -144,12 +158,20 @@ export const saveSkillLocalDraft = (
     draft: normalizedDraft,
     savedAt: payload.savedAt,
   } satisfies StoredSkillDraft;
-  if (containsEnterpriseSecretMaterial(safePayload)) {
+
+  // Shared client secret scan (never import the server redaction chain into the SPA).
+  if (carriesLocalDraftSecretMaterial(safePayload)) {
     removeStoredDraft(id);
     return 'sensitive';
   }
-  const serialized = JSON.stringify(safePayload);
-  if (byteLength(serialized) > MAX_LOCAL_DRAFT_BYTES) {
+
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(safePayload);
+  } catch {
+    return 'unavailable';
+  }
+  if (utf8ByteLength(serialized) > MAX_SKILL_LOCAL_DRAFT_BYTES) {
     removeStoredDraft(id);
     return 'too_large';
   }
@@ -166,7 +188,7 @@ export const loadSkillLocalDraft = (id: string): StoredSkillDraft | null => {
   try {
     const raw = window.localStorage.getItem(storageKey(id));
     if (!raw) return null;
-    if (byteLength(raw) > MAX_LOCAL_DRAFT_BYTES) {
+    if (utf8ByteLength(raw) > MAX_SKILL_LOCAL_DRAFT_BYTES) {
       removeStoredDraft(id);
       return null;
     }
@@ -199,7 +221,7 @@ export const loadSkillLocalDraft = (id: string): StoredSkillDraft | null => {
       parsed.baseRevision < 0 ||
       typeof parsed.savedAt !== 'string' ||
       !Number.isFinite(Date.parse(parsed.savedAt)) ||
-      containsEnterpriseSecretMaterial(parsed)
+      carriesLocalDraftSecretMaterial(parsed)
     ) {
       removeStoredDraft(id);
       return null;

@@ -1,10 +1,9 @@
 'use client';
 
-import { confirmModal } from '@lobehub/ui/base-ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useBlocker } from 'react-router';
 
+import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import {
   changeConnectorCredentialMode,
   clearConnectorSecretEdit,
@@ -36,7 +35,6 @@ export const useConnectorEditor = (
   const [actionError, setActionError] = useState<string | null>(null);
   const [secret, setSecret] = useState(createEmptyConnectorSecretEdit);
   const hydratedRef = useRef('');
-  const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -68,33 +66,16 @@ export const useConnectorEditor = (
     });
   }, [dirty, draft, editable, snapshot]);
 
-  useEffect(() => {
-    if (!editable || !dirty) return;
-    const beforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', beforeUnload);
-    return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [dirty, editable]);
-
-  const blocker = useBlocker(editable && dirty);
-  useEffect(() => {
-    if (blocker.state !== 'blocked') {
-      leaveModalRef.current?.close();
-      leaveModalRef.current = null;
-      return;
-    }
-    if (leaveModalRef.current) return;
-    leaveModalRef.current = confirmModal({
+  const unsavedMessages = useMemo(
+    () => ({
       cancelText: t('connectorCatalog.unsaved.stay'),
       content: t('connectorCatalog.unsaved.description'),
       okText: t('connectorCatalog.unsaved.leave'),
       title: t('connectorCatalog.unsaved.title'),
-      onCancel: () => blocker.reset?.(),
-      onOk: () => blocker.proceed?.(),
-    });
-  }, [blocker, t]);
+    }),
+    [t],
+  );
+  useUnsavedChangesGuard({ enabled: editable && dirty, messages: unsavedMessages });
 
   const updateDraft = useCallback(
     <Key extends keyof EditableAdminConnectorDraft>(
@@ -108,8 +89,7 @@ export const useConnectorEditor = (
             ? changeConnectorCredentialMode(
                 current,
                 value as EditableAdminConnectorDraft['credentialMode'],
-                secret,
-              ).draft
+              )
             : current,
         );
         setSecret(createEmptyConnectorSecretEdit());

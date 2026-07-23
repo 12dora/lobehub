@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { EditableSkillDraft } from './controller';
 import {
   clearSkillLocalDraft,
   loadSkillLocalDraft,
+  MAX_SKILL_LOCAL_DRAFT_BYTES,
   saveSkillLocalDraft,
   type StoredSkillDraft,
 } from './localDraftStorage';
@@ -47,8 +48,11 @@ const payload = (draft = editableDraft()): StoredSkillDraft => ({
   savedAt: '2026-07-17T00:00:00.000Z',
 });
 
+const key = 'aihub.admin.skills.draft.skill-1';
+
 describe('M08 Skill local draft storage', () => {
   beforeEach(() => localStorage.clear());
+  afterEach(() => vi.restoreAllMocks());
 
   it('restores a bounded safe draft by Skill id without persisting extra reason fields', () => {
     const withReason = {
@@ -57,7 +61,7 @@ describe('M08 Skill local draft storage', () => {
     };
     expect(saveSkillLocalDraft('skill-1', withReason)).toBe('saved');
     expect(loadSkillLocalDraft('skill-1')).toEqual(payload());
-    expect(localStorage.getItem('aihub.admin.skills.draft.skill-1')).not.toContain('must never');
+    expect(localStorage.getItem(key)).not.toContain('must never');
     expect(loadSkillLocalDraft('skill-2')).toBeNull();
   });
 
@@ -66,6 +70,7 @@ describe('M08 Skill local draft storage', () => {
     '-----BEGIN PRIVATE KEY----- fake material',
     'Connect to postgres://admin:password@db.internal/catalog',
     '{"type":"service_account","project_id":"example"}',
+    'use api_key AKIA1234567890ABCD99 to call the tool',
   ])('fails closed and removes durable recovery for suspicious material: %s', (content) => {
     expect(saveSkillLocalDraft('skill-1', payload())).toBe('saved');
     expect(saveSkillLocalDraft('skill-1', payload(editableDraft(content)))).toBe('sensitive');
@@ -80,16 +85,42 @@ describe('M08 Skill local draft storage', () => {
   });
 
   it.each([
-    ['oversized payload', 'x'.repeat(1_900_001)],
+    ['oversized payload', 'x'.repeat(MAX_SKILL_LOCAL_DRAFT_BYTES + 1)],
     ['malformed JSON', '{malformed'],
     [
       'strict-invalid payload',
       JSON.stringify({ ...payload(), unexpectedCredential: 'must-not-survive' }),
     ],
   ])('removes an unusable recovery entry immediately: %s', (_name, raw) => {
-    localStorage.setItem('aihub.admin.skills.draft.skill-1', raw);
+    localStorage.setItem(key, raw);
     expect(loadSkillLocalDraft('skill-1')).toBeNull();
-    expect(localStorage.getItem('aihub.admin.skills.draft.skill-1')).toBeNull();
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('rejects oversized writes as too_large without persisting', () => {
+    // Envelope size gate runs on the raw payload before whitelist normalization.
+    const oversized = {
+      ...payload(),
+      pad: 'z'.repeat(MAX_SKILL_LOCAL_DRAFT_BYTES),
+    } as unknown as StoredSkillDraft;
+    expect(saveSkillLocalDraft('skill-1', oversized)).toBe('too_large');
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('reports unavailable when serialization fails', () => {
+    const value = payload();
+    vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+      throw new TypeError('Converting circular structure to JSON');
+    });
+    expect(saveSkillLocalDraft('skill-1', value)).toBe('unavailable');
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('reports unavailable when storage write throws (quota / private mode)', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('QuotaExceededError');
+    });
+    expect(saveSkillLocalDraft('skill-1', payload())).toBe('unavailable');
   });
 
   it('clears only the selected Skill recovery slot', () => {

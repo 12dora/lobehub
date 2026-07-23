@@ -29,9 +29,7 @@ import {
 import AuditStatusTag from '../shared/AuditStatusTag';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
 import { openAuditReasonModal } from '../shared/openAuditReasonModal';
-
-const DEFAULT_LIST_LIMIT = 50;
-const POLL_MS = 4000;
+import { pollWhileInFlight, useCursorPagination } from '../shared/useCursorPagination';
 
 const styles = createStaticStyles(({ css }) => ({
   card: css`
@@ -101,17 +99,22 @@ const RetentionPage = memo(() => {
   // policy.get is AUDIT_READ-class; operate/update roles already imply read on this page.
   const policy = useFetchAuditPolicy(canOperate || canUpdatePolicy);
   const [scope, setScope] = useState<(typeof SCOPES)[number]>('all');
-  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
-  const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
+  const {
+    currentCursor,
+    hasPrevious,
+    limit,
+    onNext,
+    onPageSizeChange,
+    onPrevious,
+    reset: resetCursor,
+  } = useCursorPagination();
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
   const [detail, setDetail] = useState<AdminAuditRetentionRunItem | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const runsRef = useRef<HTMLDivElement>(null);
-  const currentCursor = cursorStack.at(-1) ?? null;
 
   const runs = useFetchAuditRetentionRuns({ cursor: currentCursor, limit }, canOperate, {
-    refreshInterval: (latest) =>
-      latest?.items?.some((i) => i.status === 'pending' || i.status === 'running') ? POLL_MS : 0,
+    refreshInterval: pollWhileInFlight(),
   });
   const data = runs.data;
   const rows = data?.items ?? [];
@@ -137,7 +140,7 @@ const RetentionPage = memo(() => {
               mode === 'execute' ? await retentionRun(input) : await retentionDryRun(input);
             const ids = result.items.map((i) => i.id);
             setHighlightIds(ids);
-            setCursorStack([]);
+            resetCursor();
             void mutate();
             // Scroll runs table into view; row highlight is applied via rowClassName.
             window.setTimeout(() => {
@@ -168,7 +171,7 @@ const RetentionPage = memo(() => {
         void run();
       }
     },
-    [authMethod, mutate, retentionDryRun, retentionRun, scope, t],
+    [authMethod, mutate, resetCursor, retentionDryRun, retentionRun, scope, t],
   );
 
   const onCancelRun = useCallback(
@@ -381,17 +384,11 @@ const RetentionPage = memo(() => {
               scroll={{ x: 1200 }}
               cursorPagination={{
                 hasNext: Boolean(data?.nextCursor),
-                hasPrevious: cursorStack.length > 0,
-                onNext: () => {
-                  const next = data?.nextCursor;
-                  if (next) setCursorStack((p) => [...p, next]);
-                },
-                onPrevious: () => setCursorStack((p) => p.slice(0, -1)),
+                hasPrevious,
+                onNext: () => onNext(data?.nextCursor),
+                onPrevious,
                 pageSize: limit,
-                onPageSizeChange: (size) => {
-                  setLimit(size);
-                  setCursorStack([]);
-                },
+                onPageSizeChange,
               }}
               onRetry={() => void mutate()}
               onRowActivate={(row) => setDetail(row)}

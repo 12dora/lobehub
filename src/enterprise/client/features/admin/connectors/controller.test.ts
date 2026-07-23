@@ -175,22 +175,18 @@ describe('admin Connector controller', () => {
     });
   });
 
-  it('clears the in-memory credential on both credential mode switch directions', () => {
+  it('switches credential mode without mutating unrelated draft fields', () => {
     const shared = draft();
     shared.credentialMode = 'shared_service_account';
-    const oauth = changeConnectorCredentialMode(
-      shared,
-      'per_user_oauth',
-      updateConnectorSecretEdit('shared-bearer-token'),
-    );
-    expect(oauth.secret).toEqual({ operation: 'keep', value: '' });
+    shared.displayName = 'Shared connector';
+    const oauth = changeConnectorCredentialMode(shared, 'per_user_oauth');
+    expect(oauth).toMatchObject({
+      credentialMode: 'per_user_oauth',
+      displayName: 'Shared connector',
+    });
 
-    const backToShared = changeConnectorCredentialMode(
-      oauth.draft,
-      'shared_service_account',
-      updateConnectorSecretEdit('oauth-client-secret'),
-    );
-    expect(backToShared.secret).toEqual({ operation: 'keep', value: '' });
+    const backToShared = changeConnectorCredentialMode(oauth, 'shared_service_account');
+    expect(backToShared.credentialMode).toBe('shared_service_account');
   });
 
   it('emits explicit shared credential replace and clear operations', () => {

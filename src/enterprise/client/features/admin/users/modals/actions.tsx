@@ -134,23 +134,31 @@ export const openBanUserModal = (params: {
   targetLabel: string;
   userId: string;
 }) => {
-  let mode: BanMode = 'permanent';
-  let expiresAt: Dayjs | null = null;
+  // Updated only from onChange handlers — never during render.
+  const banState = {
+    expiresAt: null as Dayjs | null,
+    mode: 'permanent' as BanMode,
+  };
 
   const ControlledBan = memo<{ locked: boolean }>(({ locked }) => {
     const [m, setM] = useState<BanMode>('permanent');
     const [exp, setExp] = useState<Dayjs | null>(null);
-    mode = m;
-    expiresAt = exp;
     return (
       <BanExtraFields
         expiresAt={exp}
         locked={locked}
         mode={m}
-        onExpiresAtChange={setExp}
+        onExpiresAtChange={(next) => {
+          setExp(next);
+          banState.expiresAt = next;
+        }}
         onModeChange={(next) => {
           setM(next);
-          if (next === 'permanent') setExp(null);
+          banState.mode = next;
+          if (next === 'permanent') {
+            setExp(null);
+            banState.expiresAt = null;
+          }
         }}
       />
     );
@@ -167,15 +175,15 @@ export const openBanUserModal = (params: {
     title: t('users.modals.ban.title'),
     extra: ({ locked }) => <ControlledBan locked={locked} />,
     validateExtra: () => {
-      if (mode === 'permanent') return null;
-      if (!expiresAt) return 'users.modals.ban.expiryRequired';
-      if (!expiresAt.isAfter(dayjs())) return 'users.modals.ban.expiryFuture';
+      if (banState.mode === 'permanent') return null;
+      if (!banState.expiresAt) return 'users.modals.ban.expiryRequired';
+      if (!banState.expiresAt.isAfter(dayjs())) return 'users.modals.ban.expiryFuture';
       return null;
     },
     buildPayload: (reason) => {
       const payload: Omit<AdminUsersBanInput, 'userId'> = { reason };
-      if (mode === 'temporary' && expiresAt) {
-        payload.expiresAt = expiresAt.toDate();
+      if (banState.mode === 'temporary' && banState.expiresAt) {
+        payload.expiresAt = banState.expiresAt.toDate();
       }
       return payload;
     },
@@ -244,12 +252,21 @@ export const openRevokeSessionsModal = (params: {
   targetLabel: string;
   userId: string;
 }) => {
-  let includeCurrent = false;
+  // Updated only from onChange handlers — never during render.
+  const revokeState = { includeCurrent: false };
 
   const ControlledRevoke = memo<{ locked: boolean }>(({ locked }) => {
     const [inc, setInc] = useState(false);
-    includeCurrent = inc;
-    return <RevokeSelfExtra includeCurrent={inc} locked={locked} onIncludeCurrentChange={setInc} />;
+    return (
+      <RevokeSelfExtra
+        includeCurrent={inc}
+        locked={locked}
+        onIncludeCurrentChange={(next) => {
+          setInc(next);
+          revokeState.includeCurrent = next;
+        }}
+      />
+    );
   });
   ControlledRevoke.displayName = 'ControlledRevoke';
 
@@ -266,7 +283,7 @@ export const openRevokeSessionsModal = (params: {
     title: t('users.modals.revoke.titleAll'),
     extra: params.isSelf ? ({ locked }) => <ControlledRevoke locked={locked} /> : undefined,
     buildPayload: (reason) => ({
-      includeCurrent: params.isSelf ? includeCurrent : true,
+      includeCurrent: params.isSelf ? revokeState.includeCurrent : true,
       reason,
     }),
     onSubmit: async (payload) => {
@@ -370,21 +387,25 @@ export const openReplaceRolesModal = (params: {
     params.currentRoles.filter((r) => (eligible as readonly string[]).includes(r)),
   );
 
-  let selected = new Set(initial);
-  let expiresAt: Dayjs | null = null;
+  // Updated only from onChange handlers — never during render.
+  const rolesState = {
+    expiresAt: null as Dayjs | null,
+    selected: new Set(initial),
+  };
 
   const ControlledRoles = memo<{ locked: boolean }>(({ locked }) => {
     const [sel, setSel] = useState(() => new Set(initial));
     const [exp, setExp] = useState<Dayjs | null>(null);
-    selected = sel;
-    expiresAt = exp;
     return (
       <RolesExtra
         eligible={eligible}
         expiresAt={exp}
         locked={locked}
         selected={sel}
-        onExpiresAtChange={setExp}
+        onExpiresAtChange={(next) => {
+          setExp(next);
+          rolesState.expiresAt = next;
+        }}
         onToggle={(role, checked) => {
           setSel((prev) => {
             const next = new Set(prev);
@@ -393,7 +414,9 @@ export const openReplaceRolesModal = (params: {
             // Super admin cannot be temporary — clear expiry when selecting super.
             if (role === PLATFORM_SYSTEM_ROLES.SUPER_ADMIN && checked) {
               setExp(null);
+              rolesState.expiresAt = null;
             }
+            rolesState.selected = next;
             return next;
           });
         }}
@@ -412,21 +435,21 @@ export const openReplaceRolesModal = (params: {
     extra: ({ locked }) => <ControlledRoles locked={locked} />,
     validateExtra: () => {
       if (
-        selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) &&
+        rolesState.selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) &&
         !eligible.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)
       ) {
         return 'users.modals.roles.superAdminForbidden';
       }
-      if (selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) && expiresAt) {
+      if (rolesState.selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) && rolesState.expiresAt) {
         return 'users.modals.roles.superAdminNoExpiry';
       }
-      if (expiresAt && !expiresAt.isAfter(dayjs())) {
+      if (rolesState.expiresAt && !rolesState.expiresAt.isAfter(dayjs())) {
         return 'users.modals.roles.expiryFuture';
       }
       return null;
     },
     buildPayload: (reason) => {
-      const roleNames = [...selected].filter((r) =>
+      const roleNames = [...rolesState.selected].filter((r) =>
         (eligible as readonly string[]).includes(r),
       ) as PlatformSystemRoleName[];
       const payload: Omit<AdminUsersReplaceGlobalRolesInput, 'userId'> = {
@@ -434,8 +457,8 @@ export const openReplaceRolesModal = (params: {
         roleNames,
       };
       // Never pair super_admin with finite expiry.
-      if (expiresAt && !roleNames.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {
-        payload.expiresAt = expiresAt.toDate();
+      if (rolesState.expiresAt && !roleNames.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {
+        payload.expiresAt = rolesState.expiresAt.toDate();
       }
       return payload;
     },

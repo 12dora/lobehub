@@ -13,11 +13,10 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
-  type AdminReauthAuthMethod,
-  AdminReauthBlockedError,
-  AdminReauthCancelledError,
-  withAdminReauthRetry,
-} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+  type AdminReauthBusyPhase,
+  useReauthMutation,
+} from '@/enterprise/client/features/admin/primitives/useReauthMutation';
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type {
   AdminUsersCreateInput,
   AdminUsersCreateOutput,
@@ -25,7 +24,6 @@ import type {
 
 import { getAdminUsersCreateErrorKey } from '../utils';
 import { generatePassword } from './generatePassword';
-import { cloneFromCanonical, createCanonicalSnapshot } from './payloadSnapshot';
 
 const styles = createStaticStyles(({ css }) => ({
   body: css`
@@ -135,31 +133,31 @@ export const CreateUserModalContent = memo<CreateUserModalContentProps>(
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [phase, setPhase] = useState<CreateUserModalPhase>('idle');
-    const [errorKey, setErrorKey] = useState<string | null>(null);
     /** One-time credentials — lives only in modal state, cleared on close/unmount. */
     const [credentials, setCredentials] = useState<{ email: string; password: string } | null>(
       null,
     );
 
-    /** Private canonical snapshot — never passed to onSubmit. */
-    const canonicalRef = useRef<unknown>(null);
-    const localAbortRef = useRef<AbortController | null>(null);
-    const abortRef = abortControllerRef ?? localAbortRef;
-    const mountedRef = useRef(true);
     /** Live phase for non-React listeners (Escape blocker) — synced before re-render. */
     const phaseRef = useRef<CreateUserModalPhase>('idle');
 
-    const setPhaseBoth = useCallback(
+    const syncPhaseRefs = useCallback(
       (next: CreateUserModalPhase) => {
         // Refs sync synchronously so a dismissal arriving before the re-render
         // (Escape right after Confirm) already sees the new phase.
         phaseRef.current = next;
         if (dismissGuardRef) dismissGuardRef.current.phase = next;
-        if (!mountedRef.current) return;
+      },
+      [dismissGuardRef],
+    );
+
+    const setPhaseBoth = useCallback(
+      (next: CreateUserModalPhase) => {
+        syncPhaseRefs(next);
         setPhase(next);
         onPhaseChange?.(next);
       },
-      [dismissGuardRef, onPhaseChange],
+      [onPhaseChange, syncPhaseRefs],
     );
 
     // Catch-all: keep refs in sync with any phase update that bypassed setPhaseBoth.
@@ -186,26 +184,23 @@ export const CreateUserModalContent = memo<CreateUserModalContentProps>(
       return () => document.removeEventListener('keydown', blockEscape, true);
     }, []);
 
-    const setErrorKeySafe = useCallback((key: string | null) => {
-      if (!mountedRef.current) return;
-      setErrorKey(key);
+    const resetBusyPhase = useCallback(() => {
+      setPhase((p) => (p === 'mutating' || p === 'reauthing' ? 'idle' : p));
     }, []);
 
-    const abortActive = useCallback(() => {
-      abortRef.current?.abort();
-      abortRef.current = null;
-    }, [abortRef]);
-
-    // Complements onOpenChange(false) / Cancel: unmount must still abort + clear secrets.
-    useEffect(() => {
-      mountedRef.current = true;
-      return () => {
-        mountedRef.current = false;
-        abortRef.current?.abort();
-        abortRef.current = null;
-        canonicalRef.current = null;
-      };
-    }, [abortRef]);
+    const {
+      abortActive,
+      cancelReauth,
+      clearCanonical,
+      errorKey,
+      runReauthedSubmit,
+      setErrorKeySafe,
+    } = useReauthMutation({
+      abortControllerRef,
+      resetBusyPhase,
+      // CreateUser phases are a superset; busy path only emits idle|reauthing|mutating.
+      setPhase: (next: AdminReauthBusyPhase) => setPhaseBoth(next),
+    });
 
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedFullName = fullName.trim();
@@ -236,8 +231,8 @@ export const CreateUserModalContent = memo<CreateUserModalContentProps>(
     const clearSecrets = useCallback(() => {
       setPassword('');
       setCredentials(null);
-      canonicalRef.current = null;
-    }, []);
+      clearCanonical();
+    }, [clearCanonical]);
 
     const handleClose = useCallback(() => {
       // Immediate abort — Escape/close must not wait for unmount cleanup.
@@ -248,12 +243,8 @@ export const CreateUserModalContent = memo<CreateUserModalContentProps>(
     }, [abortActive, clearSecrets, close, dismissGuardRef]);
 
     const handleCancelReauth = useCallback(() => {
-      // Only reauth is abortable; do not pretend an in-flight server mutation cancels.
-      if (phase !== 'reauthing') return;
-      abortActive();
-      setPhaseBoth('idle');
-      setErrorKeySafe('users.errors.reauthCancelled');
-    }, [abortActive, phase, setErrorKeySafe, setPhaseBoth]);
+      cancelReauth(phase);
+    }, [cancelReauth, phase]);
 
     const handleGenerate = useCallback(() => {
       setPassword(generatePassword());
@@ -270,64 +261,28 @@ export const CreateUserModalContent = memo<CreateUserModalContentProps>(
         reason: CREATE_USER_AUTO_REASON,
         ...(trimmedUsername ? { username: trimmedUsername } : {}),
       };
-      canonicalRef.current = createCanonicalSnapshot(input);
 
-      setErrorKeySafe(null);
-      const ac = new AbortController();
-      abortRef.current = ac;
-
-      try {
-        await withAdminReauthRetry(
-          async () => {
-            setPhaseBoth('mutating');
-            const canonical = canonicalRef.current;
-            if (canonical === null || ac.signal.aborted || !mountedRef.current) {
-              throw new AdminReauthCancelledError();
-            }
-            // Fresh clone per attempt — first call mutation cannot poison retry.
-            const attemptPayload = cloneFromCanonical(canonical) as AdminUsersCreateInput;
-            await onSubmit(attemptPayload);
-          },
-          {
-            authMethod: authMethod ?? null,
-            signal: ac.signal,
-            onReauthStart: () => {
-              setPhaseBoth('reauthing');
-            },
-          },
-        );
-        if (!mountedRef.current) return;
-        canonicalRef.current = null;
-        // One-time panel: keep the password in modal state only until Done/close.
-        setCredentials({ email: trimmedEmail, password });
-        setPhaseBoth('success');
-        toast.success(t('users.toast.createSuccess'));
-      } catch (error) {
-        if (!mountedRef.current) return;
-        if (error instanceof AdminReauthCancelledError) {
-          setErrorKeySafe('users.errors.reauthCancelled');
-        } else if (error instanceof AdminReauthBlockedError) {
-          setErrorKeySafe('users.errors.reauthBlocked');
-        } else {
-          setErrorKeySafe(getAdminUsersCreateErrorKey(error));
-        }
-        setPhaseBoth('idle');
-      } finally {
-        if (abortRef.current === ac) {
-          abortRef.current = null;
-        }
-        if (mountedRef.current) {
-          setPhase((p) => (p === 'mutating' || p === 'reauthing' ? 'idle' : p));
-        }
-      }
+      await runReauthedSubmit({
+        authMethod,
+        mapError: getAdminUsersCreateErrorKey,
+        payload: input,
+        onSubmit: async (attemptPayload) => {
+          await onSubmit(attemptPayload);
+        },
+        onSuccess: () => {
+          // One-time panel: keep the password in modal state only until Done/close.
+          setCredentials({ email: trimmedEmail, password });
+          setPhaseBoth('success');
+          toast.success(t('users.toast.createSuccess'));
+        },
+      });
     }, [
-      abortRef,
       authMethod,
       formValid,
       onSubmit,
       password,
       phase,
-      setErrorKeySafe,
+      runReauthedSubmit,
       setPhaseBoth,
       t,
       trimmedEmail,

@@ -222,7 +222,8 @@ const UsersListPage = memo(() => {
 
   const handleFilterBarChange = useCallback((next: AdminFilterValues) => {
     // Clear button → empty all fields (draft + committed filters + cursor) in one shot.
-    if (!hasActiveAdminFiltersHelper(next) || isClearPayload(next)) {
+    // `!hasActiveAdminFiltersHelper` is equivalent to every field being empty (clear payload).
+    if (!hasActiveAdminFiltersHelper(next)) {
       setSearchDraft('');
       setQueryState(emptyQuery());
       return;
@@ -369,11 +370,6 @@ const UsersListPage = memo(() => {
 
 const hasActiveAdminFiltersHelper = (values: AdminFilterValues) =>
   Object.values(values).some((v) => Boolean(v && String(v).trim()));
-
-const isClearPayload = (next: AdminFilterValues) => {
-  // clearAdminFilters sets every key to ''
-  return Object.values(next).every((v) => !v || !String(v).trim());
-};
 
 UsersListPage.displayName = 'AdminUsersListPage';
 

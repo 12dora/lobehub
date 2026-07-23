@@ -1227,6 +1227,9 @@ export default {
     'Platform settings policy is not enabled on this deployment. No draft requests are made.',
   'settingsPolicy.readOnlyHint': 'You have read-only access.',
   'settingsPolicy.unsavedLeave': 'You have unsaved settings policy changes. Leave anyway?',
+  'settingsPolicy.unsavedTitle': 'Unsaved settings policy changes',
+  'settingsPolicy.unsavedStay': 'Keep editing',
+  'settingsPolicy.unsavedConfirm': 'Leave without saving',
   'settingsPolicy.publishRequiresValidate':
     'Validate the current draft (and review impact) before publishing.',
   'settingsPolicy.changePreview': 'Change preview',

@@ -1,67 +1,123 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { StoredAdminConnectorDraft } from './localDraftStorage';
-import { loadAdminConnectorDraft, saveAdminConnectorDraft } from './localDraftStorage';
+import {
+  loadAdminConnectorDraft,
+  MAX_CONNECTOR_DRAFT_BYTES,
+  saveAdminConnectorDraft,
+} from './localDraftStorage';
+
+const baseValue = (): StoredAdminConnectorDraft => ({
+  baseRevision: 1,
+  draft: {
+    credentialMode: 'none',
+    description: '',
+    displayName: 'Calendar',
+    enabled: true,
+    endpoint: 'https://calendar.example.com/mcp',
+    oauthAuthorizationEndpoint: '',
+    oauthClientId: '',
+    oauthIssuer: '',
+    oauthScopes: '',
+    oauthTokenEndpoint: '',
+    sort: 0,
+    tools: [],
+  },
+  draftToken: 'a'.repeat(64),
+  savedAt: new Date(0).toISOString(),
+});
+
+const key = 'aihub.admin.connectors.draft.connector-1';
 
 describe('Connector local draft storage', () => {
   beforeEach(() => localStorage.clear());
+  afterEach(() => vi.restoreAllMocks());
 
   it('persists only public draft fields and never accepts a secret slot', () => {
-    saveAdminConnectorDraft('connector-1', {
-      baseRevision: 1,
-      draft: {
-        credentialMode: 'none',
-        description: '',
-        displayName: 'Calendar',
-        enabled: true,
-        endpoint: 'https://calendar.example.com/mcp',
-        oauthAuthorizationEndpoint: '',
-        oauthClientId: '',
-        oauthIssuer: '',
-        oauthScopes: '',
-        oauthTokenEndpoint: '',
-        sort: 0,
-        tools: [],
-      },
-      draftToken: 'a'.repeat(64),
-      savedAt: new Date(0).toISOString(),
-    });
+    saveAdminConnectorDraft('connector-1', baseValue());
 
-    const raw = localStorage.getItem('aihub.admin.connectors.draft.connector-1');
+    const raw = localStorage.getItem(key);
     expect(raw).not.toContain('secret');
     expect(loadAdminConnectorDraft('connector-1')?.draft.displayName).toBe('Calendar');
   });
 
   it('strips unexpected secret-shaped fields on save and recovery', () => {
     const value = {
-      baseRevision: 1,
+      ...baseValue(),
       draft: {
+        ...baseValue().draft,
         credentialMode: 'shared_service_account',
-        description: '',
-        displayName: 'Calendar',
-        enabled: true,
-        endpoint: 'https://calendar.example.com/mcp',
-        oauthAuthorizationEndpoint: '',
-        oauthClientId: '',
-        oauthIssuer: '',
-        oauthScopes: '',
-        oauthTokenEndpoint: '',
         secret: 'must-not-persist',
-        sort: 0,
-        tools: [],
       },
-      draftToken: 'a'.repeat(64),
-      savedAt: new Date(0).toISOString(),
     } as unknown as StoredAdminConnectorDraft;
     saveAdminConnectorDraft('connector-1', value);
-    expect(localStorage.getItem('aihub.admin.connectors.draft.connector-1')).not.toContain(
-      'must-not-persist',
-    );
+    expect(localStorage.getItem(key)).not.toContain('must-not-persist');
 
-    localStorage.setItem('aihub.admin.connectors.draft.connector-1', JSON.stringify(value));
+    localStorage.setItem(key, JSON.stringify(value));
     expect(loadAdminConnectorDraft('connector-1')?.draft).not.toHaveProperty('secret');
-    expect(localStorage.getItem('aihub.admin.connectors.draft.connector-1')).not.toContain(
-      'must-not-persist',
+    expect(localStorage.getItem(key)).not.toContain('must-not-persist');
+  });
+
+  it('fails closed when a secret value is pasted into a public field', () => {
+    const value = baseValue();
+    value.draft.description = 'rotate with AKIA1234567890ABCD99 immediately';
+    saveAdminConnectorDraft('connector-1', value);
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(loadAdminConnectorDraft('connector-1')).toBeNull();
+  });
+
+  it('fails closed when the scan node budget is exhausted', () => {
+    const value = baseValue();
+    // Whitelisted `tools` keeps filler after sanitize. Compact nodes stay under the byte cap
+    // while exceeding the shared 10k-node scan budget → fail closed as un-scannable.
+    value.draft.tools = Array.from(
+      { length: 10_050 },
+      (_, i) => i,
+    ) as unknown as StoredAdminConnectorDraft['draft']['tools'];
+    expect(new TextEncoder().encode(JSON.stringify(value)).length).toBeLessThanOrEqual(
+      MAX_CONNECTOR_DRAFT_BYTES,
     );
+    saveAdminConnectorDraft('connector-1', value);
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('fails closed on oversized recovery payloads', () => {
+    const value = baseValue();
+    value.draft.description = 'x'.repeat(MAX_CONNECTOR_DRAFT_BYTES);
+    saveAdminConnectorDraft('connector-1', value);
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('fails closed when serialization throws', () => {
+    vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+      throw new TypeError('Converting circular structure to JSON');
+    });
+    saveAdminConnectorDraft('connector-1', baseValue());
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('fails closed when storage write throws (quota / private mode)', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('QuotaExceededError');
+    });
+    saveAdminConnectorDraft('connector-1', baseValue());
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it('purges oversized or secret-bearing raw entries on load', () => {
+    localStorage.setItem(key, 'x'.repeat(MAX_CONNECTOR_DRAFT_BYTES + 1));
+    expect(loadAdminConnectorDraft('connector-1')).toBeNull();
+    expect(localStorage.getItem(key)).toBeNull();
+
+    const secretRaw = {
+      ...baseValue(),
+      draft: {
+        ...baseValue().draft,
+        description: '-----BEGIN PRIVATE KEY----- fake',
+      },
+    };
+    localStorage.setItem(key, JSON.stringify(secretRaw));
+    expect(loadAdminConnectorDraft('connector-1')).toBeNull();
+    expect(localStorage.getItem(key)).toBeNull();
   });
 });

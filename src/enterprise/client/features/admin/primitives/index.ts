@@ -17,6 +17,14 @@ export {
   hasActiveAdminFilters,
   matchAdminFilterQuery,
 } from './filterBar.utils';
+export {
+  carriesLocalDraftSecretMaterial,
+  DEFAULT_LOCAL_DRAFT_BENIGN_KEYS,
+  type LocalDraftSecretScanOptions,
+  MAX_LOCAL_DRAFT_SCAN_NODES,
+  utf8ByteLength,
+} from './localDraftSafety';
+export { cloneFromCanonical, createCanonicalSnapshot, deepFreeze } from './payloadSnapshot';
 export { default as RevisionBanner, type RevisionBannerProps } from './RevisionBanner';
 export { default as StatusBadge, type StatusBadgeProps } from './StatusBadge';
 export {
@@ -25,3 +33,15 @@ export {
   getAdminStatusPresentation,
   normalizeAdminStatus,
 } from './statusBadge.utils';
+export {
+  type AdminReauthBusyPhase,
+  type RunReauthedSubmitOptions,
+  useReauthMutation,
+  type UseReauthMutationOptions,
+} from './useReauthMutation';
+export {
+  createUnsavedNavigationDecision,
+  type UnsavedChangesGuardMessages,
+  useUnsavedChangesGuard,
+  type UseUnsavedChangesGuardOptions,
+} from './useUnsavedChangesGuard';

@@ -1,10 +1,9 @@
 'use client';
 
-import { confirmModal } from '@lobehub/ui/base-ui';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useBlocker } from 'react-router';
 
+import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import {
   clearAdminAgentDraft,
   type DraftPersistStatus,
@@ -81,7 +80,6 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
   // snapshot: a background refresh must never silently rebase a dirty form or rewrite its recovery
   // envelope to a CAS the draft was not authored from.
   const [draftBaseline, setDraftBaseline] = useState<AgentDraftBaseline | null>(null);
-  const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -128,33 +126,16 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     setPersistState(status);
   }, [dirty, draft, draftBaseline, editable]);
 
-  useEffect(() => {
-    if (!editable || !dirty) return;
-    const handler = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [dirty, editable]);
-
-  const blocker = useBlocker(editable && dirty);
-  useEffect(() => {
-    if (blocker.state !== 'blocked') {
-      leaveModalRef.current?.close();
-      leaveModalRef.current = null;
-      return;
-    }
-    if (leaveModalRef.current) return;
-    leaveModalRef.current = confirmModal({
+  const unsavedMessages = useMemo(
+    () => ({
       cancelText: t('agentCatalog.unsaved.stay'),
       content: t('agentCatalog.unsaved.description'),
       okText: t('agentCatalog.unsaved.leave'),
       title: t('agentCatalog.unsaved.title'),
-      onCancel: () => blocker.reset?.(),
-      onOk: () => blocker.proceed?.(),
-    });
-  }, [blocker, t]);
+    }),
+    [t],
+  );
+  useUnsavedChangesGuard({ enabled: editable && dirty, messages: unsavedMessages });
 
   const updateDraft = useCallback(
     (updater: (current: AdminAgentDraft) => AdminAgentDraft) => {
