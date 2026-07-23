@@ -10,18 +10,13 @@ import { useNavigate } from 'react-router';
 
 import { useFetchAuditEventDetail } from '../hooks/useAdminAudit';
 import AuditStatusTag from '../shared/AuditStatusTag';
-import { formatAdminDateTime } from '../shared/format';
+import { auditActionLabel, auditTargetTypeLabel, formatAdminDateTime } from '../shared/format';
 import JsonDiffView from '../shared/JsonDiffView';
 import { toIsoOrUndefined } from '../shared/timeWindow';
 
 const styles = createStaticStyles(({ css }) => ({
   label: css`
     color: ${cssVar.colorTextSecondary};
-  `,
-  mono: css`
-    font-family: ${cssVar.fontFamilyCode};
-    font-size: 12px;
-    word-break: break-all;
   `,
   row: css`
     display: grid;
@@ -102,29 +97,17 @@ const EventDetailDrawer = memo<EventDetailDrawerProps>(
               <Field label={t('audit.logs.columns.time')}>
                 {formatAdminDateTime(data.createdAt)}
               </Field>
-              <Field label={t('audit.logs.columns.action')}>{data.action}</Field>
+              <Field label={t('audit.logs.columns.action')}>
+                {auditActionLabel(t, data.action)}
+              </Field>
               <Field label={t('audit.logs.columns.actor')}>{data.actorUserId ?? '—'}</Field>
               <Field label={t('audit.logs.columns.result')}>
                 <AuditStatusTag kind="result" value={data.result} />
               </Field>
               <Field label={t('audit.logs.columns.target')}>
-                {data.targetType}
-                {data.targetId ? ` / ${data.targetId}` : ''}
+                {auditTargetTypeLabel(t, data.targetType)}
               </Field>
               <Field label={t('audit.logs.columns.reason')}>{data.reason ?? '—'}</Field>
-              <Field label={t('audit.logs.columns.requestId')}>
-                <span className={styles.mono}>{data.requestId ?? '—'}</span>
-              </Field>
-              <Field label={t('audit.logs.detail.ipHash')}>
-                <span className={styles.mono}>{data.ipHash ?? '—'}</span>
-              </Field>
-              <Field label={t('audit.logs.detail.userAgent')}>{data.userAgent ?? '—'}</Field>
-              <Field label={t('audit.logs.detail.configRevision')}>
-                {data.configRevision ?? '—'}
-              </Field>
-              <Field label="ID">
-                <span className={styles.mono}>{data.id}</span>
-              </Field>
             </div>
             <div className={styles.section}>
               <Text style={{ fontWeight: 600 }}>{t('audit.logs.diff.title')}</Text>

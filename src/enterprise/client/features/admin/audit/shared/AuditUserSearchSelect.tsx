@@ -45,6 +45,9 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
     const [options, setOptions] = useState<{ label: string; value: string }[]>([]);
     const [inputValue, setInputValue] = useState(valueLabel ?? value ?? '');
     const [errorHint, setErrorHint] = useState<string | null>(null);
+    // Only open the dropdown once the user has typed something. Base-ui AutoComplete
+    // sets openOnInputClick:true, which otherwise pops an empty result box on focus.
+    const [open, setOpen] = useState(false);
     const debounceRef = useRef<number | null>(null);
     const usersById = useRef(new Map<string, AdminAuditUserSearchItem>());
 
@@ -138,11 +141,13 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
           const id = text.slice(USE_TYPED_PREFIX.length).trim();
           setInputValue(id);
           onChange(id || undefined);
+          setOpen(false);
           return;
         }
         if (usersById.current.has(text)) {
           onChange(text, usersById.current.get(text));
           setInputValue(displayAuditUserLabel(usersById.current.get(text)!));
+          setOpen(false);
           return;
         }
         const byLabel = options.find(
@@ -150,6 +155,7 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
         );
         if (byLabel) {
           onChange(byLabel.value, usersById.current.get(byLabel.value));
+          setOpen(false);
           return;
         }
         // Free-form: treat current text as user id
@@ -163,11 +169,11 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220, ...style }}>
         <AutoComplete
           allowClear={allowClear}
-          disabled={disabled}
           options={options}
           placeholder={placeholder ?? t('audit.shared.userSearchPlaceholder')}
           style={{ width: '100%' }}
           value={inputValue}
+          onOpenChange={setOpen}
           onChange={(next) => {
             const text = next ?? '';
             setInputValue(text);
@@ -175,6 +181,7 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
               onChange(undefined);
               setOptions([]);
               setErrorHint(null);
+              setOpen(false);
               return;
             }
             // Immediate commit when user picks an option value (id or use-typed)
@@ -182,12 +189,17 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
               commitValue(text);
               return;
             }
+            setOpen(true);
             scheduleSearch(text);
           }}
           onSearch={(q) => {
             setInputValue(q);
+            setOpen(q.trim().length > 0);
             scheduleSearch(q);
           }}
+          disabled={disabled}
+          // Suppress the empty popup on focus; only surface it once a query has matches.
+          open={open && inputValue.trim().length > 0 && options.length > 0}
         />
         {errorHint ? (
           <span role="status" style={{ fontSize: 12, opacity: 0.75 }}>

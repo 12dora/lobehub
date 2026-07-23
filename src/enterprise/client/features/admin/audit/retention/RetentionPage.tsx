@@ -298,7 +298,9 @@ const RetentionPage = memo(() => {
                 {t(CONTENT_ACCESS_MODE_KEYS[p.contentAccessMode])}
               </Descriptions.Item>
               <Descriptions.Item label={t('audit.retention.policy.redactionProfile')}>
-                {p.redactionProfile}
+                {t(`audit.retention.redaction.${p.redactionProfile}` as never, {
+                  defaultValue: p.redactionProfile,
+                })}
               </Descriptions.Item>
               <Descriptions.Item label={t('audit.retention.policy.conversationDays')}>
                 {p.conversationRetentionDays}
@@ -317,9 +319,6 @@ const RetentionPage = memo(() => {
               </Descriptions.Item>
               <Descriptions.Item label={t('audit.retention.policy.messageBodyInExport')}>
                 {p.messageBodyInExport ? t('audit.shared.yes') : t('audit.shared.no')}
-              </Descriptions.Item>
-              <Descriptions.Item label={t('audit.retention.policy.revision')}>
-                {p.revision}
               </Descriptions.Item>
               <Descriptions.Item label={t('audit.retention.policy.updatedBy')}>
                 {p.updatedBy ?? '—'}
@@ -449,7 +448,7 @@ const RetentionPage = memo(() => {
                 ] as const
               ).map(([label, scanned, deleted]) => (
                 <tr key={label}>
-                  <td>{label}</td>
+                  <td>{t(`audit.retention.runs.metric.${label}` as never)}</td>
                   <td style={{ textAlign: 'right' }}>{detail.counts[scanned] ?? 0}</td>
                   <td style={{ textAlign: 'right' }}>{detail.counts[deleted] ?? 0}</td>
                 </tr>
@@ -592,8 +591,8 @@ const PolicyEditModal = memo<{
           style={{ width: '100%' }}
           value={redactionProfile}
           options={[
-            { label: 'strict', value: 'strict' },
-            { label: 'standard', value: 'standard' },
+            { label: t('audit.retention.redaction.strict'), value: 'strict' },
+            { label: t('audit.retention.redaction.standard'), value: 'standard' },
           ]}
           onChange={(v) => setRedactionProfile(v as AdminAuditPolicy['redactionProfile'])}
         />,
