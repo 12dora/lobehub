@@ -71,9 +71,12 @@ describe('AdminSideNav (canonical NavItem)', () => {
     expect(screen.getByText('nav.overview')).toBeTruthy();
     expect(screen.getByText('nav.users')).toBeTruthy();
     expect(screen.getByText('nav.aiProviders')).toBeTruthy();
-    expect(screen.getByText('nav.managedResources')).toBeTruthy();
+    // settings/managed-resources are hidden back-compat routes; shell shows unified-management
+    expect(screen.getByText('nav.unifiedManagement')).toBeTruthy();
     expect(screen.queryByText('nav.userDetail')).toBeNull();
+    // audit group only appears when at least one child permission is granted
     expect(screen.queryByText('nav.audit')).toBeNull();
+    expect(screen.queryByText('nav.auditLogs')).toBeNull();
   });
 
   it('link navigates via router (no full reload)', () => {
