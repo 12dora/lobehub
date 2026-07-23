@@ -1,7 +1,7 @@
 /**
  * Platform access status helpers.
  *
- * Global aihub.access gate was removed with EasyAuth. Authenticated users are
+ * Authenticated users are
  * always admitted; this module still exposes resolveAccessStatus for
  * platform.getAccessStatus / admin.auth.getMyAccess compatibility shapes.
  */
@@ -29,7 +29,7 @@ export const resolveAccessStatus = async (params: {
 };
 
 /**
- * Always resolves successfully after EasyAuth removal (kept for call-site stability).
+ * Always resolves successfully (kept for call-site stability).
  */
 export const assertAccessGranted = async (params: {
   db: LobeChatDatabase;

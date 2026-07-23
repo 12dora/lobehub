@@ -30,7 +30,7 @@ export const publicProcedure = baseProcedure;
 
 /**
  * Authenticated procedure (OIDC/session + userAuth).
- * EasyAuth aihub.access gate removed — Authentik login is admission.
+ * Authentik login is admission (external access gate removed).
  */
 /** Alias kept for call sites that historically needed pre-access auth (env feature gates). */
 export const preAccessAuthedProcedure = baseProcedure.use(oidcAuth).use(userAuth);

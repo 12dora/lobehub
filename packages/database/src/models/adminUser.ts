@@ -502,7 +502,7 @@ export class AdminUserModel {
    * `passwordHash` must already be hashed (Better Auth scrypt) — never a raw password.
    * Email is verified and onboarding finished, matching platform seed conventions.
    * The account row's accountId is the LOCAL user id (Better Auth credential
-   * convention) — never the email, so EasyAuth external-id resolvers can't
+   * convention) — never the email, so SSO external-id resolvers can't
    * mistake it for an SSO subject id.
    */
   createCredentialUser = async (params: {

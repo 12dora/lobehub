@@ -2,7 +2,7 @@
  * Platform access resolution — usable from tRPC middleware without
  * importing apps/server enterprise modules (path-boundary safe).
  *
- * Post EasyAuth removal: any authenticated user is admitted. Identity
+ * Any authenticated user is admitted. Identity
  * allowlisting is owned by Authentik (DingTalk allowlist, fail-closed).
  */
 import { isEnterpriseFlagTruthy } from '@/const/platform/featureFlags';
@@ -14,7 +14,7 @@ export interface PlatformAccessStatus {
   accessGranted: boolean;
   degraded: boolean;
   grantVersion: number | null;
-  /** Always null after EasyAuth removal; kept for response shape compatibility. */
+  /** Always null; kept for response shape compatibility. */
   permissionRequestUrl: string | null;
   reason: 'granted' | 'super_admin' | 'not_granted' | 'feature_disabled';
 }

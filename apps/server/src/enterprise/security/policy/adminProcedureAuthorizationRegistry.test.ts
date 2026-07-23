@@ -62,8 +62,7 @@ describe('admin procedure authorization registry', () => {
   it('reconciles all live procedures, middleware gates, root mounts, and mutation risks', () => {
     expect(() => reconcile()).not.toThrow();
 
-    // Prior baseline 191 including admin.easyauth.* (2 queries + 1 mutation).
-    // EasyAuth procedures removed → 191 - 3 = 188.
+    // Registry length after external access-module procedure removal.
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(188);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),

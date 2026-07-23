@@ -580,7 +580,7 @@ export class AdminUserService {
 
   /**
    * Create a credential (email + password) user with base platform access.
-   * Users row + Better Auth credential account + EasyAuth access snapshot +
+   * Users row + Better Auth credential account +
    * `platform_user` role + success audit commit in ONE transaction. The raw
    * password is hashed (Better Auth scrypt) before the transaction; neither the
    * password nor its hash ever reaches audit rows, logs, or error messages.
