@@ -1050,6 +1050,41 @@
       "when": 1784900000000,
       "tag": "0150_round2_platform-instance",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1784950000000,
+      "tag": "0151_round2_sidebar_cas",
+      "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1784950100000,
+      "tag": "0152_round2_rbac_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1784950200000,
+      "tag": "0153_round2_connector_test_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1784950300000,
+      "tag": "0154_round2_catalog_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1784960000000,
+      "tag": "0155_round2_skill_validation_trigger",
+      "breakpoints": true
     }
   ],
   "version": "6"

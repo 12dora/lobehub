@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
+import { check, integer, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
 
 import type { SidebarLayoutConfig } from '@/types/platform/sidebarLayout';
 
@@ -10,8 +10,8 @@ import { createdAt, updatedAt } from '../_helpers';
  * `mode` is 'user' (each user customizes their own) or 'platform' (centrally managed).
  * `layout` holds the platform-managed layout; null until an admin configures it.
  *
- * DB CHECK constraints are declared here for schema documentation / future migrations.
- * Applying them on existing installations requires a db-core migration (not created here).
+ * `revision` is a monotonic CAS token: writers must supply the expected revision
+ * and the model advances it only on a successful conditional update.
  */
 export const platformSidebarLayout = pgTable(
   'platform_sidebar_layout',
@@ -20,6 +20,8 @@ export const platformSidebarLayout = pgTable(
 
     layout: jsonb('layout').$type<SidebarLayoutConfig | null>(),
     mode: text('mode').notNull().default('user'),
+    /** Optimistic concurrency token; update requires expectedRevision match. */
+    revision: integer('revision').notNull().default(0),
 
     updatedBy: text('updated_by'),
     createdAt: createdAt(),
@@ -28,6 +30,7 @@ export const platformSidebarLayout = pgTable(
   (t) => [
     check('platform_sidebar_layout_id_singleton', sql`${t.id} = 'global'`),
     check('platform_sidebar_layout_mode_check', sql`${t.mode} IN ('user', 'platform')`),
+    check('platform_sidebar_layout_revision_check', sql`${t.revision} >= 0`),
   ],
 );
 

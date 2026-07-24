@@ -12,6 +12,7 @@ export * from './auditRetentionHoldLock';
 export * from './auditRetentionRun';
 export * from './authSettings';
 export * from './branding';
+export * from './catalogAuthority';
 export * from './checksum';
 export * from './connectorGovernance';
 export * from './cursor';
