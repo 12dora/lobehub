@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
   PLATFORM_AGENT_GLOBAL_TARGET_ID,
@@ -30,6 +32,7 @@ import {
 
 import type { AdminAgentDetailOutput, AdminAgentListItem, AdminAgentsClient } from '../types';
 
+/** Stable 64-hex filler for version/provider seeds (not identity CAS tokens). */
 const checksum = (seed: string) => seed.padEnd(64, seed.at(-1) ?? '0').slice(0, 64);
 
 const seedAgents = (): AdminAgentDetailOutput[] => [
@@ -195,28 +198,25 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
   /**
    * Draft token derived from the same identity fields as production `platformAgentDraftToken`
    * (agentKey, currentVersionId, draftSequence, id, isDefault, migrationRequired, revision,
-   * status, systemKey). Not a cryptographic twin of the server SHA-256 — a stable mock digest
-   * that still satisfies the wire schema's 64-char hex constraint.
+   * status, systemKey). Uses a full SHA-256 digest over the complete identity — never a
+   * truncated hex prefix, which would ignore `draftSequence` for long agent keys (F4).
    */
-  const draftTokenFromIdentity = (identity: AdminAgentDetailOutput['identity']) => {
-    const seed = [
-      identity.agentKey,
-      identity.currentVersionId ?? '',
-      String(identity.draftSequence),
-      identity.id,
-      identity.isDefault ? '1' : '0',
-      identity.migrationRequired ? '1' : '0',
-      String(identity.revision),
-      identity.status,
-      identity.systemKey ?? '',
-    ].join('|');
-    // Fold to a hex stream so the token remains schema-valid (`/^[a-f0-9]{64}$/`).
-    let hex = '';
-    for (let i = 0; i < seed.length; i += 1) {
-      hex += seed.charCodeAt(i).toString(16).padStart(2, '0');
-    }
-    return checksum(hex);
-  };
+  const draftTokenFromIdentity = (identity: AdminAgentDetailOutput['identity']) =>
+    createHash('sha256')
+      .update(
+        JSON.stringify({
+          agentKey: identity.agentKey,
+          currentVersionId: identity.currentVersionId,
+          draftSequence: identity.draftSequence,
+          id: identity.id,
+          isDefault: identity.isDefault,
+          migrationRequired: identity.migrationRequired,
+          revision: identity.revision,
+          status: identity.status,
+          systemKey: identity.systemKey,
+        }),
+      )
+      .digest('hex');
   const requireCas = (id: string, expectedRevision: number, expectedDraftToken: string) => {
     const record = requireRecord(id);
     if (record.identity.revision !== expectedRevision || record.draftToken !== expectedDraftToken) {

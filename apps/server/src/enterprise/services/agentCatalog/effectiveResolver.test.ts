@@ -14,7 +14,11 @@ import type { LobeChatDatabase } from '@/database/type';
 import {
   PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
   PLATFORM_AGENT_EFFECTIVE_LIST_MAX,
+  type PlatformAgentEffectiveInputsFilter,
   PlatformAgentEffectiveResolver,
+  projectFirstWinnersThenHide,
+  projectVisibleWinnersFromPage,
+  sliceEffectiveInputsByKeyset,
 } from './effectiveResolver';
 import { PlatformAgentUnavailableError } from './errors';
 
@@ -46,6 +50,8 @@ const row = (params: {
   agentId: string;
   agentKey: string;
   assignmentId: string;
+  /** ISO / Date — used for winner list keyset (createdAt DESC, id DESC). */
+  createdAt?: Date | string;
   config?: typeof config;
   mode?: 'default' | 'mandatory' | 'optional';
   priority: 1 | 2 | 3;
@@ -59,6 +65,7 @@ const row = (params: {
       systemKey: params.systemKey ?? null,
     },
     assignment: {
+      createdAt: params.createdAt ?? new Date(0),
       id: params.assignmentId,
       mode: params.mode ?? 'optional',
     },
@@ -71,24 +78,46 @@ const row = (params: {
     },
   }) as unknown as PlatformAgentEffectiveInput;
 
+/** Newest-first createdAt so index order matches previous key-${index} expectations. */
+const createdAtForIndex = (index: number, total: number) =>
+  new Date(Date.UTC(2020, 0, 1) + (total - index) * 1000);
+
 const db = {} as LobeChatDatabase;
+
+/**
+ * Faithful in-memory stand-in for production full-list SQL
+ * (DISTINCT ON first-winner → hidden filter → createdAt DESC keyset).
+ * Scale regressions exercise the real SQL path in the *.pg.test.ts suite — not this helper.
+ */
+const productionWinnerPageQuery =
+  (allRows: PlatformAgentEffectiveInput[], hidden: ReadonlySet<string> = new Set()) =>
+  async (
+    _db: LobeChatDatabase,
+    _userId: string,
+    filter?: PlatformAgentEffectiveInputsFilter,
+  ): Promise<PlatformAgentEffectiveInput[]> =>
+    sliceEffectiveInputsByKeyset(allRows, { ...filter, hidden });
 
 describe('PlatformAgentEffectiveResolver', () => {
   const getSnapshot = vi.fn();
   const listEffectiveInputs = vi.fn();
   const listHiddenPlatformAgentIds = vi.fn();
+  const queryEffectiveInputsPage = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     getSnapshot.mockResolvedValue(managedPolicy());
     listEffectiveInputs.mockResolvedValue([]);
     listHiddenPlatformAgentIds.mockResolvedValue(new Set<string>());
+    // Full-list defaults to empty production pages (not the repository surface).
+    queryEffectiveInputsPage.mockResolvedValue([]);
   });
 
   const createResolver = (enabledFlags = flags) =>
     new PlatformAgentEffectiveResolver(db, {
       flags: enabledFlags,
       policyModel: { getSnapshot },
+      queryEffectiveInputsPage,
       repository: {
         listEffectiveInputs,
         listHiddenPlatformAgentIds,
@@ -98,56 +127,134 @@ describe('PlatformAgentEffectiveResolver', () => {
       >,
     });
 
-  it('effective list handles the 1000/1001 boundary', async () => {
-    listEffectiveInputs.mockResolvedValue(
-      Array.from({ length: PLATFORM_AGENT_EFFECTIVE_LIST_MAX + 1 }, (_, index) =>
+  describe('sliceEffectiveInputsByKeyset (winner pagination contract)', () => {
+    it('returns first-winner then createdAt DESC pages and advances strictly after the cursor', () => {
+      const total = 5;
+      const allRows = Array.from({ length: total }, (_, index) =>
         row({
           agentId: `agent-${index}`,
-          agentKey: `key-${String(index).padStart(4, '0')}`,
+          agentKey: `key-${index}`,
           assignmentId: `asg-${index}`,
+          createdAt: createdAtForIndex(index, total),
           priority: 1,
         }),
-      ),
+      );
+      // Winner order: createdAt DESC → asg-0, asg-1, ... (newest first via createdAtForIndex)
+      const page1 = sliceEffectiveInputsByKeyset(allRows, { limit: 2 });
+      expect(page1.map((r) => r.assignment.id)).toEqual(['asg-0', 'asg-1']);
+
+      const page2 = sliceEffectiveInputsByKeyset(allRows, {
+        cursor: {
+          createdAt: page1[1]!.assignment.createdAt,
+          id: page1[1]!.assignment.id,
+        },
+        limit: 2,
+      });
+      expect(page2.map((r) => r.assignment.id)).toEqual(['asg-2', 'asg-3']);
+      expect(page2[0]?.assignment.id).not.toBe(page1[0]?.assignment.id);
+    });
+
+    it('suppresses a whole key when the first winner is hidden (no lower-priority resurfacing)', () => {
+      const rows = [
+        row({
+          agentId: 'dup',
+          agentKey: 'dup',
+          assignmentId: 'asg-user',
+          createdAt: new Date('2024-06-01T00:00:00Z'),
+          mode: 'optional',
+          priority: 3,
+        }),
+        row({
+          agentId: 'dup',
+          agentKey: 'dup',
+          assignmentId: 'asg-global',
+          createdAt: new Date('2024-01-01T00:00:00Z'),
+          mode: 'optional',
+          priority: 1,
+        }),
+        row({
+          agentId: 'other',
+          agentKey: 'other',
+          assignmentId: 'asg-other',
+          createdAt: new Date('2024-03-01T00:00:00Z'),
+          mode: 'optional',
+          priority: 1,
+        }),
+      ];
+      // First winner for "dup" is the user assignment (priority 3); hidden → key fully excluded.
+      const page = sliceEffectiveInputsByKeyset(rows, {
+        hidden: new Set(['dup']),
+        limit: 10,
+      });
+      expect(page.map((r) => r.agent.id)).toEqual(['other']);
+    });
+
+    it('returns empty when the cursor is past the last row', () => {
+      const allRows = [
+        row({
+          agentId: 'a',
+          agentKey: 'a',
+          assignmentId: 'asg-a',
+          createdAt: new Date('2020-01-01T00:00:00Z'),
+          priority: 1,
+        }),
+      ];
+      expect(
+        sliceEffectiveInputsByKeyset(allRows, {
+          cursor: { createdAt: new Date('1970-01-01T00:00:00Z'), id: 'asg-z' },
+          limit: 10,
+        }),
+      ).toEqual([]);
+    });
+  });
+
+  it('effective list handles the 1000/1001 boundary', async () => {
+    const total = PLATFORM_AGENT_EFFECTIVE_LIST_MAX + 1;
+    const allRows = Array.from({ length: total }, (_, index) =>
+      row({
+        agentId: `agent-${index}`,
+        agentKey: `key-${String(index).padStart(4, '0')}`,
+        assignmentId: `asg-${index}`,
+        createdAt: createdAtForIndex(index, total),
+        priority: 1,
+      }),
     );
+    queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(allRows));
 
     const result = await createResolver().getEffectiveList('user');
     expect(result.agents).toHaveLength(PLATFORM_AGENT_EFFECTIVE_LIST_MAX);
-    // Contract ceiling — must never exceed the wire max even when the catalog is larger.
     expect(result.agents.length).toBeLessThanOrEqual(1000);
-    // Full-list path starts with a bounded SQL batch (never unbounded / undefined).
-    expect(listEffectiveInputs).toHaveBeenCalledWith('user', {
+    expect(listEffectiveInputs).not.toHaveBeenCalled();
+    expect(queryEffectiveInputsPage).toHaveBeenCalledWith(db, 'user', {
+      cursor: undefined,
       limit: PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
     });
   });
 
   it('filters hidden before the wire-cap so visible agents past the first 1000 slots survive', async () => {
     // First 1000 authorized winners are hidden optional Agents; the next 50 are visible.
-    // Truncating BEFORE hidden filter would return [] — wrong. Hidden-then-slice fills the list.
-    listEffectiveInputs.mockResolvedValue(
-      Array.from({ length: PLATFORM_AGENT_EFFECTIVE_LIST_MAX + 50 }, (_, index) =>
-        row({
-          agentId: `agent-${index}`,
-          agentKey: `key-${String(index).padStart(4, '0')}`,
-          assignmentId: `asg-${index}`,
-          mode: 'optional',
-          priority: 1,
-        }),
-      ),
+    const total = PLATFORM_AGENT_EFFECTIVE_LIST_MAX + 50;
+    const allRows = Array.from({ length: total }, (_, index) =>
+      row({
+        agentId: `agent-${index}`,
+        agentKey: `key-${String(index).padStart(4, '0')}`,
+        assignmentId: `asg-${index}`,
+        createdAt: createdAtForIndex(index, total),
+        mode: 'optional',
+        priority: 1,
+      }),
     );
-    listHiddenPlatformAgentIds.mockResolvedValue(
-      new Set(
-        Array.from({ length: PLATFORM_AGENT_EFFECTIVE_LIST_MAX }, (_, index) => `agent-${index}`),
-      ),
+    const hidden = new Set(
+      Array.from({ length: PLATFORM_AGENT_EFFECTIVE_LIST_MAX }, (_, index) => `agent-${index}`),
     );
+    queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(allRows, hidden));
 
     const result = await createResolver().getEffectiveList('user');
     expect(result.agents).toHaveLength(50);
     expect(result.agents[0]?.platformAgentId).toBe(`agent-${PLATFORM_AGENT_EFFECTIVE_LIST_MAX}`);
   });
 
-  it('expands the SQL window past the first batch when leading rows are hidden or duplicated', async () => {
-    // More than one batch of leading hidden optionals would starve a fixed one-shot overscan.
-    // Progressive expansion must keep growing the limit until visible winners appear.
+  it('pages with keyset cursor past the first batch when leading rows are hidden', async () => {
     const hiddenLead = PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH + 200;
     const visibleTail = 30;
     const total = hiddenLead + visibleTail;
@@ -156,26 +263,80 @@ describe('PlatformAgentEffectiveResolver', () => {
         agentId: `agent-${index}`,
         agentKey: `key-${String(index).padStart(4, '0')}`,
         assignmentId: `asg-${index}`,
+        createdAt: createdAtForIndex(index, total),
         mode: 'optional',
         priority: 1,
       }),
     );
-    listEffectiveInputs.mockImplementation(async (_userId, filter) => {
-      const limit = filter?.limit ?? allRows.length;
-      return allRows.slice(0, limit);
-    });
-    listHiddenPlatformAgentIds.mockResolvedValue(
-      new Set(Array.from({ length: hiddenLead }, (_, index) => `agent-${index}`)),
-    );
+    const hidden = new Set(Array.from({ length: hiddenLead }, (_, index) => `agent-${index}`));
+    queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(allRows, hidden));
 
     const result = await createResolver().getEffectiveList('user');
     expect(result.agents).toHaveLength(visibleTail);
     expect(result.agents[0]?.platformAgentId).toBe(`agent-${hiddenLead}`);
-    // Must have expanded beyond the initial batch to reach the visible tail.
-    const limits = listEffectiveInputs.mock.calls.map(([, filter]) => filter?.limit);
-    expect(Math.max(...limits.map((n) => n ?? 0))).toBeGreaterThan(
-      PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
+    // Visible winners fit in one page after SQL-level hidden filter — at least one call.
+    expect(queryEffectiveInputsPage.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(listEffectiveInputs).not.toHaveBeenCalled();
+    const firstFilter = queryEffectiveInputsPage.mock.calls[0]?.[2] as
+      PlatformAgentEffectiveInputsFilter | undefined;
+    expect(firstFilter?.cursor).toBeUndefined();
+    expect(firstFilter?.limit).toBe(PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH);
+  });
+
+  it('fills the wire max from a single winner page when BATCH equals MAX', async () => {
+    // Winner-level SQL returns up to BATCH unique visible winners; with BATCH === MAX the
+    // list completes in one page. Cursor multi-page is covered by queryVisibleWinnerPage
+    // (real SQL) when more winners exist than a single limit.
+    const total = PLATFORM_AGENT_EFFECTIVE_LIST_MAX + 50;
+    const allRows = Array.from({ length: total }, (_, index) =>
+      row({
+        agentId: `agent-${index}`,
+        agentKey: `key-${String(index).padStart(4, '0')}`,
+        assignmentId: `asg-${index}`,
+        createdAt: createdAtForIndex(index, total),
+        mode: 'optional',
+        priority: 1,
+      }),
     );
+    queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(allRows));
+
+    const result = await createResolver().getEffectiveList('user');
+    expect(result.agents).toHaveLength(PLATFORM_AGENT_EFFECTIVE_LIST_MAX);
+    expect(queryEffectiveInputsPage).toHaveBeenCalledTimes(1);
+    expect(queryEffectiveInputsPage).toHaveBeenCalledWith(db, 'user', {
+      cursor: undefined,
+      limit: PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
+    });
+  });
+
+  it('stops without looping when production keyset SQL ignores the cursor', async () => {
+    const total = 3_000;
+    const allRows = Array.from({ length: total }, (_, index) =>
+      row({
+        agentId: `agent-${index}`,
+        agentKey: `key-${String(index).padStart(4, '0')}`,
+        assignmentId: `asg-${index}`,
+        createdAt: createdAtForIndex(index, total),
+        mode: 'optional',
+        priority: 1,
+      }),
+    );
+    queryEffectiveInputsPage.mockImplementation(async (_db, _userId, filter) => {
+      // Ignore cursor — always the first page of winners.
+      const limit = filter?.limit ?? allRows.length;
+      return productionWinnerPageQuery(allRows)(_db, _userId, { limit });
+    });
+
+    const result = await createResolver().getEffectiveList('user');
+    expect(queryEffectiveInputsPage.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(result.agents).toHaveLength(PLATFORM_AGENT_EFFECTIVE_LIST_MAX);
+    // Without cursor advance, only the first batch of winners is reachable.
+    expect(
+      result.agents.every((a) => {
+        const n = Number(a.platformAgentId.replace('agent-', ''));
+        return n < PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH;
+      }),
+    ).toBe(true);
   });
 
   it('de-dupes multi-assignment rows so six matches for one agent still leave room for others', async () => {
@@ -185,15 +346,57 @@ describe('PlatformAgentEffectiveResolver', () => {
           agentId: 'shared',
           agentKey: 'shared',
           assignmentId: `asg-shared-${index}`,
+          createdAt: new Date(`2024-01-0${index + 1}T00:00:00Z`),
           priority: 3,
         }),
       ),
-      row({ agentId: 'other', agentKey: 'other', assignmentId: 'asg-other', priority: 1 }),
+      row({
+        agentId: 'other',
+        agentKey: 'other',
+        assignmentId: 'asg-other',
+        createdAt: new Date('2023-01-01T00:00:00Z'),
+        priority: 1,
+      }),
     ];
-    listEffectiveInputs.mockResolvedValue(rows);
+    queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(rows));
 
     const result = await createResolver().getEffectiveList('user');
     expect(result.agents.map((agent) => agent.platformAgentId)).toEqual(['shared', 'other']);
+  });
+
+  it('first-winner-then-hide never resurfaces a lower-priority duplicate (F5)', () => {
+    const rows = [
+      row({
+        agentId: 'dup',
+        agentKey: 'dup',
+        assignmentId: 'high',
+        createdAt: new Date('2024-06-01'),
+        mode: 'optional',
+        priority: 3,
+      }),
+      row({
+        agentId: 'dup',
+        agentKey: 'dup',
+        assignmentId: 'low',
+        createdAt: new Date('2024-01-01'),
+        mode: 'optional',
+        priority: 1,
+      }),
+    ];
+    const visible = projectFirstWinnersThenHide(rows, new Set(['dup']));
+    expect(visible).toEqual([]);
+    // Hide-then-dedupe would incorrectly keep the low-priority row — lock the correct order.
+    const winnerAgentIds = new Set<string>();
+    const winnerSystemKeys = new Set<string>();
+    const projected = projectVisibleWinnersFromPage(
+      rows,
+      new Set(['dup']),
+      winnerAgentIds,
+      winnerSystemKeys,
+      PLATFORM_AGENT_EFFECTIVE_LIST_MAX,
+    );
+    expect(projected).toHaveLength(0);
+    expect(winnerAgentIds.size).toBe(0);
   });
 
   it('getEffectiveAgent uses a targeted repository filter and never full-list projection', async () => {
@@ -204,7 +407,6 @@ describe('PlatformAgentEffectiveResolver', () => {
     const result = await createResolver().getEffectiveAgent('user', 'only');
     expect(result).toMatchObject({ platformAgentId: 'only' });
     expect(listEffectiveInputs).toHaveBeenCalledWith('user', { platformAgentId: 'only' });
-    // Single-agent path must not re-enter with an unfiltered full catalog scan.
     expect(listEffectiveInputs).toHaveBeenCalledTimes(1);
   });
 
@@ -214,6 +416,7 @@ describe('PlatformAgentEffectiveResolver', () => {
     expect(result.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(listEffectiveInputs).not.toHaveBeenCalled();
+    expect(queryEffectiveInputsPage).not.toHaveBeenCalled();
     expect(listHiddenPlatformAgentIds).not.toHaveBeenCalled();
   });
 
@@ -238,7 +441,7 @@ describe('PlatformAgentEffectiveResolver', () => {
     };
 
     it('redacts a raw error from getEffectiveList', async () => {
-      listEffectiveInputs.mockRejectedValueOnce(rawDbError);
+      queryEffectiveInputsPage.mockRejectedValueOnce(rawDbError);
       await expectRedacted(() => createResolver().getEffectiveList('user'));
     });
 
@@ -260,11 +463,13 @@ describe('PlatformAgentEffectiveResolver', () => {
     });
     expect((await createResolver().getEffectiveList('user')).agents).toEqual([]);
     expect(listEffectiveInputs).not.toHaveBeenCalled();
+    expect(queryEffectiveInputsPage).not.toHaveBeenCalled();
     expect(listHiddenPlatformAgentIds).not.toHaveBeenCalled();
   });
 
   it('applies user > global role > global priority and de-duplicates Agent/system keys', async () => {
-    listEffectiveInputs.mockResolvedValue([
+    // Full-list mock must return already-winner-projected rows (production SQL contract).
+    const raw = [
       row({ agentId: 'same', agentKey: 'same', assignmentId: 'global', priority: 1 }),
       row({
         agentId: 'inbox-low',
@@ -289,7 +494,8 @@ describe('PlatformAgentEffectiveResolver', () => {
         priority: 3,
         versionId: 'same-user-version',
       }),
-    ]);
+    ];
+    queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(raw));
 
     const result = await createResolver().getEffectiveList('user');
     expect(result.agents).toHaveLength(2);
@@ -327,22 +533,37 @@ describe('PlatformAgentEffectiveResolver', () => {
   });
 
   // R1: mandatory ignores hidden; default / optional respect the requesting user's hidden set.
+  // Full-list production SQL applies hidden after first-winner; mocks must do the same.
   describe('owner-scoped hidden filtering (R1)', () => {
-    beforeEach(() => {
-      listEffectiveInputs.mockResolvedValue([
-        row({
-          agentId: 'mand',
-          agentKey: 'mand',
-          assignmentId: 'a1',
-          mode: 'mandatory',
-          priority: 3,
-        }),
-        row({ agentId: 'def', agentKey: 'def', assignmentId: 'a2', mode: 'default', priority: 3 }),
-        row({ agentId: 'opt', agentKey: 'opt', assignmentId: 'a3', mode: 'optional', priority: 3 }),
-      ]);
-    });
+    const catalog = [
+      row({
+        agentId: 'mand',
+        agentKey: 'mand',
+        assignmentId: 'a1',
+        createdAt: new Date('2024-03-01'),
+        mode: 'mandatory',
+        priority: 3,
+      }),
+      row({
+        agentId: 'def',
+        agentKey: 'def',
+        assignmentId: 'a2',
+        createdAt: new Date('2024-02-01'),
+        mode: 'default',
+        priority: 3,
+      }),
+      row({
+        agentId: 'opt',
+        agentKey: 'opt',
+        assignmentId: 'a3',
+        createdAt: new Date('2024-01-01'),
+        mode: 'optional',
+        priority: 3,
+      }),
+    ];
 
     it('keeps every Agent visible when nothing is hidden', async () => {
+      queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(catalog));
       const result = await createResolver().getEffectiveList('user');
       expect(result.agents.map((agent) => agent.platformAgentId).sort()).toEqual([
         'def',
@@ -352,14 +573,21 @@ describe('PlatformAgentEffectiveResolver', () => {
     });
 
     it('hides default / optional but never mandatory', async () => {
-      listHiddenPlatformAgentIds.mockResolvedValue(new Set(['mand', 'def', 'opt']));
+      queryEffectiveInputsPage.mockImplementation(
+        productionWinnerPageQuery(catalog, new Set(['mand', 'def', 'opt'])),
+      );
       const result = await createResolver().getEffectiveList('user');
       expect(result.agents.map((agent) => agent.platformAgentId)).toEqual(['mand']);
     });
 
-    it('reads the hidden set strictly for the requesting user', async () => {
+    it('full-list path invokes production winner SQL with the requesting userId', async () => {
+      queryEffectiveInputsPage.mockImplementation(productionWinnerPageQuery(catalog));
       await createResolver().getEffectiveList('user-a');
-      expect(listHiddenPlatformAgentIds).toHaveBeenCalledWith('user-a');
+      expect(queryEffectiveInputsPage).toHaveBeenCalledWith(
+        db,
+        'user-a',
+        expect.objectContaining({ limit: PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH }),
+      );
     });
   });
 
@@ -378,7 +606,6 @@ describe('PlatformAgentEffectiveResolver', () => {
       });
       expect(Object.isFrozen(snapshot)).toBe(true);
       expect(Object.isFrozen(snapshot.config)).toBe(true);
-      // Deep clone: mutating the source config does not change the captured snapshot.
       expect(snapshot.config).not.toBe(config);
       expect(() => {
         (snapshot.config as { displayName: string }).displayName = 'tampered';
@@ -396,7 +623,6 @@ describe('PlatformAgentEffectiveResolver', () => {
       const first = handle!.getSnapshot();
       const second = handle!.getSnapshot();
       const third = handle!.getSnapshot();
-      // No re-resolution: still one repository call, and the same frozen value every time.
       expect(listEffectiveInputs).toHaveBeenCalledTimes(1);
       expect(second).toBe(first);
       expect(third).toBe(first);
@@ -409,13 +635,11 @@ describe('PlatformAgentEffectiveResolver', () => {
       const resolver = createResolver();
       const operationA = await resolver.beginOperation('user', 'ver');
 
-      // Publish v2 (the current pointer now resolves to a new version).
       listEffectiveInputs.mockResolvedValue([
         row({ agentId: 'ver', agentKey: 'ver', assignmentId: 'a', priority: 1, versionId: 'v2' }),
       ]);
       const operationB = await resolver.beginOperation('user', 'ver');
 
-      // The handle replays its captured version no matter how often it is read.
       expect(operationA!.getSnapshot().versionId).toBe('v1');
       expect(operationA!.getSnapshot().versionId).toBe('v1');
       expect(operationB!.getSnapshot().versionId).toBe('v2');
@@ -455,7 +679,6 @@ describe('PlatformAgentEffectiveResolver', () => {
 
       const handle = await createResolver().beginSystemOperation('user', 'default-inbox');
       expect(handle?.getSnapshot()).toMatchObject({ platformAgentId: 'inbox', versionId: 'v2' });
-      // System roles deliberately ignore the list-only hidden preference.
       expect(listHiddenPlatformAgentIds).not.toHaveBeenCalled();
     });
 
