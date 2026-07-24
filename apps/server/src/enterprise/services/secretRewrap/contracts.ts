@@ -36,6 +36,29 @@ export const platformSecretRewrapReasonSchema = z
   .max(1000)
   .superRefine(addSecretIssue);
 export const platformSecretRewrapKeyIdSchema = z.string().regex(/^[A-Z0-9][\w.:@+-]{0,127}$/i);
+
+/**
+ * Recover `targetKeyId` from a rewrap idempotency key when the stored job input is unusable
+ * (e.g. `invalid_job_contract` dead rows). Accepts current versioned keys and the pre-version
+ * legacy form `rewrap:<targetKeyId>`.
+ */
+export const platformSecretRewrapTargetKeyIdFromIdempotencyKey = (
+  idempotencyKey: string,
+): string | null => {
+  const versioned = /^rewrap:d\d+:(.+)$/.exec(idempotencyKey);
+  if (versioned?.[1]) {
+    const parsed = platformSecretRewrapKeyIdSchema.safeParse(versioned[1]);
+    return parsed.success ? parsed.data : null;
+  }
+  if (idempotencyKey.startsWith('rewrap:') && !/^rewrap:d\d+:/.test(idempotencyKey)) {
+    const parsed = platformSecretRewrapKeyIdSchema.safeParse(
+      idempotencyKey.slice('rewrap:'.length),
+    );
+    return parsed.success ? parsed.data : null;
+  }
+  return null;
+};
+
 const rowIdSchema = z
   .string()
   .min(1)

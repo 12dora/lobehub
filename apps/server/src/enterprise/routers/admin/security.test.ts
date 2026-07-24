@@ -196,4 +196,34 @@ describe('admin.security.secretRotation router', () => {
       expect(getEnterpriseErrorBody(error)?.code).toBe('PLATFORM_REVISION_CONFLICT');
     }
   });
+
+  it('restarts a cancelled job through the admin router', async () => {
+    const contexts = await fixture.createContexts(db);
+    const caller = createCaller(contexts.superAdmin as never).security.secretRotation;
+    const started = await caller.start({
+      reason: 'start for cancel then restart',
+      requestId: randomUUID(),
+      targetKeyId,
+    });
+    const cancelled = await caller.cancel({
+      expectedRevision: started.revision,
+      expectedStatus: 'pending',
+      jobId: started.jobId,
+      reason: 'cancel then restart via router',
+      requestId: randomUUID(),
+    });
+    const restarted = await caller.restart({
+      expectedRevision: cancelled.revision,
+      expectedStatus: 'cancelled',
+      jobId: cancelled.jobId,
+      reason: 'restart cancelled rotation via router',
+      requestId: randomUUID(),
+    });
+    expect(restarted).toMatchObject({
+      jobId: started.jobId,
+      revision: cancelled.revision + 1,
+      status: 'pending',
+      targetKeyId,
+    });
+  });
 });
