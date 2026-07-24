@@ -1,0 +1,4 @@
+  F1 (VERIFIED HIGH): Secret-bearing versions are permanently persisted despite validation failure
+  F2 (VERIFIED HIGH): Resource canonicalization corrupts size metadata and can disable the entire managed catalog
+     scope-correction: Scope: impact is availability (catalog DoS) not security bypass; requires admin with skill create+publish rights. HIGH stands.
+  F3 (VERIFIED HIGH): Archiving a built-in override can silently reactivate the bundled skill

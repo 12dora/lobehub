@@ -1,0 +1,9 @@
+  F1 (VERIFIED CRITICAL): Destructive jobs become runnable before their required audit record exists
+  F2 (VERIFIED HIGH): User timeline bypasses the conversation-evidence permission and disabled policy
+  F3 (VERIFIED HIGH): Disabling conversation access does not stop conversation exports
+  F4 (VERIFIED HIGH): Stats-only roles can read global conversation titles
+  F5 (codex said HIGH; VERIFIED MEDIUM): Required audit records are written after cancellation and terminal worker commits
+     scope-correction: Finding's code claims are fully accurate (ordering and non-transactionality verified, line numbers match). Severity is overstated: impact is a bounded audit-log-completeness gap gated on a narrow transient-DB-failure window, with domain state (run/export row counts+status) and the request-time audit retained, and cancel being the safe direction — not evidence destruction/state loss/auth bypass. Corrected HIGH -> MEDIUM.
+  F6 (VERIFIED HIGH): Failed cleanup can leave sensitive export objects permanently orphaned
+  F7 (codex said HIGH; VERIFIED MEDIUM): Lease expiry can make retention report zero objects deleted after committed destruction
+     scope-correction: Severity overstated. The finding proves only that the retention run's aggregate exportArtifactsDeleted count can be under-reported after a lease loss; the destruction itself is correct and durable (outbox completed = object deleted), there is no orphaning, no data loss, and no security impact. It also requires slow storage (50 deletes exceeding the 60s lease within one batch) plus a competing worker, an atypical precondition. Corrected to MEDIUM.

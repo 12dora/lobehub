@@ -1,0 +1,30 @@
+You are a senior TypeScript engineer fixing VERIFIED bugs in the "AIHub" enterprise secondary-development (二开) layer (built on LobeHub, Next.js 16 + React 19 + Drizzle + tRPC).
+
+CONTEXT TO READ FIRST:
+- audit/round2/partitions/users-rbac.md  — the full findings for your partition (evidence, failure scenario, suggested Fix per finding).
+- audit/round2/fix/verify/users-rbac.verified.txt — the VERIFIED severity + scope corrections from an independent cross-model review. TRUST THIS for scope: some findings codex marked HIGH/CRITICAL were verified down to MEDIUM/LOW with a precise reason. Fix the REAL defect at the RIGHT scope — do not over-engineer a MEDIUM into a huge refactor, and do implement the CRITICAL/HIGH fixes properly.
+
+YOUR JOB: Fix EVERY finding in users-rbac.md that is a real defect, dead code, or rotten test:
+- Functional bug (⑤): implement the Fix described (use your judgment; the report's "Fix:" is guidance, not gospel). Match surrounding code style, idioms, and error/CAS/transaction patterns already used in these files.
+- Dead code (③): delete it (and its now-orphaned imports/exports/tests).
+- Rotten test (②): FIX it to assert correct behavior, or DELETE it if it has no value, exactly as the finding says. When a finding says a test "locks in the bug", the test MUST be updated to assert the NEW correct behavior you just implemented.
+- Missing regression (② ADD): add a focused test ONLY if it is quick and the test file/harness already exists nearby; otherwise skip and note it.
+- Skip pure "split this large file into modules" refactors (dimension ① size-only) — note them as deferred; do not do large mechanical refactors.
+
+STRICT RULES:
+- Edit ONLY files under these OWNED PATHS:
+  - apps/server/src/enterprise/routers/admin/users.ts (+ users.*.test.ts)
+  - packages/database/src/models/platform/ensureDefaultRole.ts (+ *.test.ts)
+  - src/enterprise/client/features/admin/users/**
+- Do NOT edit any file outside your owned paths. In particular do NOT edit locale files (packages/locales/**, locales/**) — i18n is a SEPARATE batch. If your fix needs a new user-facing string, call t('<namespace>.<key>', { defaultValue: '<English>' }) with a defaultValue and list the new key in your summary; the i18n batch will add zh-CN.
+- Do NOT run git (no add/commit/push/checkout). Leave changes in the working tree.
+- Do NOT run the full test suite or a full build (too slow). You MAY read files freely and MAY run `bunx tsc`/typecheck on a single file if quick, but it is optional.
+- Keep fixes MINIMAL and correct. Preserve public contracts unless the fix requires changing them; if a client and server contract both need changing and one side is outside your owned paths, implement your side and NOTE the counterpart needed.
+- DATABASE MIGRATIONS: if (and only if) a fix genuinely requires a schema change, create exactly ONE new migration file: packages/database/migrations/0149_round2_users-rbac.sql . Make every statement idempotent (IF NOT EXISTS / guarded DO blocks / CREATE ... IF NOT EXISTS). Follow the style of existing 013x/014x platform migrations. Also update the matching Drizzle schema file (in your owned paths) to match. Do NOT create any other-numbered migration. If you are unsure a migration is needed, prefer a code-level fix.
+
+FINISH by printing a concise summary: for each finding ID in users-rbac.md, one line — FIXED (what you changed) / DELETED / TEST-FIXED / SKIPPED (why) / DEFERRED (why). Then list any new i18n keys and any cross-batch counterparts you could not touch.
+
+PARTITION-SPECIFIC GUIDANCE:
+users-rbac/F2: run cache invalidations with Promise.allSettled (list+detail+audit all attempted, warn once). F3: render a persistent stale-data warning + disable high-risk actions when error && data. F4: replace the `ctx as never` withReauth wrapper with the shared typed helper. F5 add partial-refresh regression. users-rbac/F1 (verified MEDIUM, post-compromise defense-in-depth, RISKY): the GUC-trust hardening (revoke DELETE + SECURITY DEFINER routines) can break the app if done wrong. Implement it CONSERVATIVELY in migration 0149 ONLY if you are confident the app's normal delete paths still work (they route through the guarded transaction GUC); if uncertain, SKIP the privilege revocation and instead add a defensive note + keep the current-setting guard. Prefer safety over completeness for F1.
+
+MIGRATION when-VALUE: if (and only if) you create migration 0149, it MUST use `when`: 1784900000002 in its _journal.json entry (must exceed the current max 1784900000000). Match the existing hand-written migration style; do NOT run drizzle-kit generate. REMINDER: prefer SKIPPING the F1 DELETE-privilege revocation if you are not fully confident the app's normal delete paths survive — safety over completeness.

@@ -1,0 +1,11 @@
+You are a senior TypeScript engineer doing a REWORK pass on AIHub enterprise 二开 fixes. An independent codex reviewer found gaps in the first fix pass. 
+
+READ: audit/round2/fix/verify/reports/ai.fixcheck.md — a table with one row per finding marked FIXED_OK / PARTIAL / NOT_FIXED / REGRESSION and a Note explaining the gap.
+
+YOUR JOB: resolve every REGRESSION and NOT_FIXED row, and every PARTIAL row that is a REAL logic/runtime bug (not merely a missing regression test). KEEP the FIXED_OK work intact. Prioritize RUNTIME-BREAKING issues (zod .parse() output-validation failures, broken saves/reads, wrong data). For rows that are only "missing a regression test", add the test if the harness is right there and quick; otherwise leave it.
+
+RULES: edit only within these owned paths: apps/server/src/enterprise/services/aiCatalog/**, packages/database/src/models/platform/aiCatalog.ts, src/enterprise/client/features/admin/ai/**. Do NOT edit locale files (packages/locales/**, locales/**) — use t(key,{defaultValue}) for any new string. Do NOT run git. Do NOT run the full suite (you MAY run a single related test). Match existing style. FINISH with one line per row you changed.
+
+PARTITION-SPECIFIC APPROACH:
+F1 (contracts F1 REGRESSION): aiSecretStateSchema is .strict() and intentionally OMITS fingerprint. Ensure the CLIENT-FACING secret-state mapper/projection that feeds provider list & detail outputs does NOT include a `fingerprint` key (the internal `secretFingerprint` on revision rows must stay server-side and never reach the client DTO). Verify provider read output validates against the strict schema. 
+F2 (PARTIAL, real bug): a superseded connection-test attempt (CAS finalization no-op because a newer attempt won) must NOT throw into the outer catch and write a FAILURE audit. Detect the superseded/no-op CAS result and return the persisted authoritative state (no misleading failure audit).

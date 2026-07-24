@@ -1,0 +1,6 @@
+  F1 (codex said HIGH; VERIFIED MEDIUM): Read-only AI DTOs expose a deterministic credential verifier (fingerprint)
+     scope-correction: The finding's technical claims are all correct; only the severity is overstated. Impact is bounded because disclosure is to a trusted read-only admin role rather than an external attacker, no actual secret/plaintext/ciphertext is exposed, and the offline-verification attack is only practical for the minority of low-entropy structured credentials (basic-auth / short header tokens), not the high-entropy API keys that dominate real deployments. Hence MEDIUM, not HIGH.
+  F2 (VERIFIED HIGH): Enabled email-domain allowlisting fails open when the list is empty
+  F3 (codex said HIGH; VERIFIED MEDIUM): Full-document settings updates allow stale administrators to overwrite security changes
+     scope-correction: Finding labels HIGH but true severity is MEDIUM: it is a lost-update concurrency defect between two trusted admins (needs concurrent stale-document editing), not an attacker-reachable auth bypass, and the transactional audit append (router lines 51-62) records the resulting security-setting state per actor, so the change is not truly silent and is detectable/correctable.
+  F4 (VERIFIED HIGH): Cancelled and dead secret-rotation jobs cannot be restarted

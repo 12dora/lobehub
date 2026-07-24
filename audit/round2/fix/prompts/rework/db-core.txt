@@ -1,0 +1,11 @@
+You are a senior TypeScript engineer doing a REWORK pass on AIHub enterprise 二开 fixes. An independent codex reviewer found gaps in the first fix pass. 
+
+READ: audit/round2/fix/verify/reports/db-core.fixcheck.md — a table with one row per finding marked FIXED_OK / PARTIAL / NOT_FIXED / REGRESSION and a Note explaining the gap.
+
+YOUR JOB: resolve every REGRESSION and NOT_FIXED row, and every PARTIAL row that is a REAL logic/runtime bug (not merely a missing regression test). KEEP the FIXED_OK work intact. Prioritize RUNTIME-BREAKING issues (zod .parse() output-validation failures, broken saves/reads, wrong data). For rows that are only "missing a regression test", add the test if the harness is right there and quick; otherwise leave it.
+
+RULES: edit only within these owned paths: packages/database/src/models/platform/{job,revision,checksum,cursor,errors,managedResourcePolicy}.ts, packages/database/src/schemas/platform/{common,revisions,jobs,managedPolicy}.ts, packages/database/migrations/0148_round2_db-core.sql, packages/database/migrations/meta/**. Do NOT edit locale files (packages/locales/**, locales/**) — use t(key,{defaultValue}) for any new string. Do NOT run git. Do NOT run the full suite (you MAY run a single related test). Match existing style. FINISH with one line per row you changed.
+
+PARTITION-SPECIFIC APPROACH:
+F3 (REGRESSION, data-safety): migration 0148 must NOT DELETE unexpected auth_settings/sidebar rows. Instead reject (raise an exception in a DO block) or leave them; never silently DELETE data in a migration. 
+F2 (REGRESSION, migration meta): the journal currently has entries out of idx order (147,150,148) and is missing meta/0147_snapshot.json and meta/0148_snapshot.json while all prior migrations have snapshots. Create minimal valid meta/0147_snapshot.json and meta/0148_snapshot.json consistent with the existing snapshot format (copy the structure of 0146_snapshot.json / 0150_snapshot.json and adjust id/prevId/tables as minimally needed) so migration-guard tooling that expects a snapshot per journal entry does not break. Do NOT change already-applied migrations 0141/0145 themselves.

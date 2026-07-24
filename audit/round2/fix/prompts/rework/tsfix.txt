@@ -1,0 +1,17 @@
+You are fixing the remaining 11 TypeScript compile errors in the AIHub enterprise 二开 tree so that `bun run check --type` passes. These arose from cross-batch seams in a large fix operation. Fix them at the RIGHT scope. Do NOT run git. Do NOT run the full suite. You MAY run `bun run check --type` to confirm.
+
+DECISION FOR THE SIDEBAR ERRORS: the platform_sidebar_layout table/model has NO revision column — the CAS was added to the contract (apps/server/src/enterprise/contracts/adminSidebarLayout.ts: `revision` on read, `expectedRevision` on write) but never implemented server-side. REVERT the sidebar CAS back to DIRECT-SAVE: remove `revision` from the sidebar GET output schema and `expectedRevision` from the sidebar UPDATE input schema in adminSidebarLayout.ts, and update all consumers to match:
+  - src/enterprise/client/features/admin/managedResources/SidebarLayoutControl.tsx — revert to `adminSidebarLayoutService.update(next)` (no expectedRevision; you may keep or drop the `!data` guard).
+  - apps/server/src/enterprise/routers/admin/sidebarLayout.ts get/update handlers — back to direct-save shape.
+  - apps/server/src/enterprise/routers/admin/sidebarLayout.test.ts — remove expectedRevision from the fixtures.
+(Keep the AUTH-SETTINGS CAS fully intact — only the SIDEBAR CAS is reverted. Add a short code comment noting sidebar lost-update is a known follow-up.)
+
+THE EXACT ERRORS TO RESOLVE:
+1. apps/server/src/enterprise/routers/admin/authSettings.ts(118,13): `error.details as Record<string, unknown>` not assignable to the enterprise-error details type `Record<string, string | number | boolean | null> | undefined`. Cast/normalize error.details to that exact type (e.g. `error.details as Record<string, string | number | boolean | null> | undefined`).
+2-4,5-6. apps/server/src/enterprise/routers/admin/sidebarLayout.ts(38,44) + sidebarLayout.test.ts(90,110,117): resolved by the sidebar direct-save revert above.
+7-8. apps/server/src/enterprise/services/platformInstance/domainTargets.test.ts(53,188): the mock loader must return a NON-null `identityRevision` (and correctly-typed providers/environmentShadowed) to match `loadPublishedIdentityTarget`'s new non-null contract — update the mock return type/values.
+9. apps/server/src/enterprise/services/skillCatalog/adminService.test.ts(568,40): the version fixture is missing `contentRef` and `resources` — add them (contentRef: string | null, resources: appropriate empty array/shape).
+10. scripts/enterprise/upstream-rebase-ci/failureDrillGate.ts(94,79): `report.assertionTitles` does not exist on the FAILURE_DRILL_SCENARIOS report type — either add an `assertionTitles` field to those scenario report definitions (an array of the expected assertion titles) or change buildMinimalVitestReport to not require it. Keep the F5 raw-digest verification behavior intact.
+11. src/enterprise/client/features/admin/agents/versionSelection.test.ts(16,3): fixture-type mismatch — the config object has non-null fields where the type allows null; make the fixture satisfy the type (fix the fixture shape; use `as unknown as <T>` only as a last resort).
+
+After fixing, run `bun run check --type` and confirm 0 TS errors. Edit only the files named above (+ the sidebar files listed). FINISH with the final TS error count.

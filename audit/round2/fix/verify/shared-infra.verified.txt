@@ -1,0 +1,2 @@
+  F1 (codex said HIGH; VERIFIED MEDIUM): Post-publish refresh can overwrite newer policy edits
+     scope-correction: The technical defect is real and reachable, but the claimed HIGH severity is overstated: the loss is a bounded, fully-recoverable client-side state race over a single unsaved edit within one SWR revalidation window — no persisted-data loss, no auth/security impact. True severity is MEDIUM.

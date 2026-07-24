@@ -1,0 +1,15 @@
+Fix these ESLint ERRORS (introduced by a large fix operation) so `bun run check --lint` passes with 0 errors (warnings are acceptable). Fix each at the correct scope; preserve behavior. Do NOT run git. You MAY run `bun run check --lint` to confirm.
+
+ERRORS:
+1. apps/server/src/enterprise/contracts/aiCatalog.ts:191 — no-control-regex: the regex intentionally detects control characters (\x00-\x1f) for JSON-value validation. Keep the behavior; add `// eslint-disable-next-line no-control-regex` with a brief comment, OR rewrite using a non-literal-control-char construction (e.g. a char-code check). Do NOT weaken the control-char rejection.
+2. apps/server/src/enterprise/contracts/platformConnectors/common.ts:183 — same no-control-regex (header-map control-char rejection). Same approach.
+3. apps/server/src/enterprise/services/identityProvider/groupRoleMappingRuntime.ts:87 — no-useless-catch: a try/catch merely rethrows. Remove the useless wrapper (keep any surrounding logic intact).
+4. apps/server/src/enterprise/services/platformInstance/domainTargets.ts:86 — consistent-type-imports: replace the inline `import('./catalogTokens').SkillCatalogTokenEntry` type with a top-level `import type { SkillCatalogTokenEntry } from './catalogTokens';` and use the bare name.
+5. scripts/enterprise/check-path-boundaries.ts:48 — preserve-caught-error: the thrown error has no `cause`. Attach `{ cause: <caughtError> }` to the thrown error.
+6. scripts/enterprise/prometheus-alerts/composeWiring.ts:89 — same preserve-caught-error: attach `{ cause }`.
+7. scripts/enterprise/verify-migration/migrations.ts:276 — regexp/no-super-linear-backtracking: rewrite the regex to remove the polynomial-backtracking risk (the `\s+` that can exchange with `.+`), keeping the same match semantics for the destructive-migration detector.
+8. scripts/enterprise/verify-migration/migrations.ts:293 — regexp/no-contradiction-with-assertion: fix the `[\s\S]*?` + `\b` contradiction (set the quantifier minimum to 1 `+?` or adjust the assertion), keeping intended matches.
+
+Also fix the 2 warnings if trivial: scripts/enterprise/prometheus-alerts/checkRules.integration.test.ts:34 unused 'rulesPath' and scripts/enterprise/verify-migration/migrations.ts:264 unused 'upper' (prefix with `_` or remove).
+
+After fixing, run `bun run check --lint` and confirm 0 errors. Edit only the files named. FINISH with the final lint status.
