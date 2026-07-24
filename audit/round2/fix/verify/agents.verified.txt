@@ -1,4 +1,0 @@
-  F1 (VERIFIED HIGH): Draft-only commits permanently engage the refresh lock
-  F2 (VERIFIED HIGH): The UI publishes and edits an arbitrarily ordered version
-  F3 (codex said HIGH; VERIFIED LOW): Disabling managed agents leaks materialized clones into ordinary local-agent lists
-     scope-correction: Code behavior is accurately described, but severity is overstated: the effect is owner-scoped, non-secret, reversible on re-enable, and only occurs on a deliberate full-feature-flag rollback. It reflects a uniform, documented architecture where disabling the flag reverts the entire managed system to legacy behavior (all guards/resolvers no-op), not a targeted list-projection defect. The proposed fail-closed fix would hide the user's own agents and message history and contradict the rest of the layer's flag-off behavior.
