@@ -56,6 +56,14 @@ export const deriveGlobalModelActions = (permissions: AiCatalogPermissions) => (
   canReorder: permissions.canReorderModels && permissions.canReadModels,
 });
 
+/**
+ * Hard-delete is only safe for never-published drafts (`revision === 0`).
+ * Ever-published providers must keep a fail-closed tombstone (archive/disable)
+ * so runtime never confuses deliberate removal with "unmanaged" BYOK fallback.
+ */
+export const canHardDeleteAiProvider = (provider: { revision: number }): boolean =>
+  provider.revision === 0;
+
 export const buildModelCreateTargetListInput = (params: {
   cursor?: string;
   limit?: number;
