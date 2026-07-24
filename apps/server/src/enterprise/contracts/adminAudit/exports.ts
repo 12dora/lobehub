@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   ADMIN_AUDIT_LIST_DEFAULT_LIMIT,
   adminAuditCursorSchema,
+  adminAuditJobErrorSchema,
   auditReasonSchema,
   dateInputSchema,
   idSchema,
@@ -119,12 +120,8 @@ export const adminAuditExportItemSchema = z
     artifactBytes: z.number().int().nonnegative().nullable(),
     artifactChecksum: z.string().nullable(),
     createdAt: z.date(),
-    error: z
-      .object({
-        code: z.string().optional(),
-        message: z.string().optional(),
-      })
-      .nullable(),
+    /** Bounded stable code only — never raw exception messages or storage keys. */
+    error: adminAuditJobErrorSchema.nullable(),
     expiresAt: z.date().nullable(),
     filterSnapshot: z
       .object({

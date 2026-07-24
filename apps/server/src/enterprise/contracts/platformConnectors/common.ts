@@ -177,11 +177,47 @@ export const connectorScopesSchema = z
     }
   });
 
+/** Max header entries on connector shared credentials (aligned with AI catalog). */
+export const CONNECTOR_HEADER_MAP_MAX_ENTRIES = 50;
+
+// Intentional: reject ASCII control chars in connector HTTP header maps.
+// eslint-disable-next-line no-control-regex -- control-char class is the validation target
+const connectorHeaderControlCharPattern = /[\u0000-\u001F\u007F]/;
+
+const connectorHeaderNameSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) => !connectorHeaderControlCharPattern.test(value),
+    'header name must not contain control characters',
+  );
+
+const connectorHeaderValueSchema = z
+  .string()
+  .min(1)
+  .max(32_768)
+  .refine(
+    (value) => !connectorHeaderControlCharPattern.test(value),
+    'header value must not contain control characters',
+  );
+
+const connectorHeaderMapSchema = z
+  .record(connectorHeaderNameSchema, connectorHeaderValueSchema)
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > CONNECTOR_HEADER_MAP_MAX_ENTRIES) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `header map exceeds max entry count of ${CONNECTOR_HEADER_MAP_MAX_ENTRIES}`,
+      });
+    }
+  });
+
 export const connectorSharedCredentialSchema = z
   .object({
     apiKey: z.string().min(1).max(32_768).optional(),
     bearerToken: z.string().min(1).max(32_768).optional(),
-    headers: z.record(z.string().min(1).max(200), z.string().min(1).max(32_768)).optional(),
+    headers: connectorHeaderMapSchema.optional(),
     password: z.string().min(1).max(32_768).optional(),
     username: z.string().min(1).max(1000).optional(),
   })

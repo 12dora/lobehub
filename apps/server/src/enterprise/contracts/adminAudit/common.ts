@@ -62,3 +62,28 @@ export const platformAuditLegalHoldStoredStatusSchema = z.enum(['active', 'relea
  * `active` but `expiresAt` has elapsed (retention already ignores these).
  */
 export const platformAuditLegalHoldStatusSchema = z.enum(['active', 'released', 'expired']);
+
+/**
+ * Stable public error codes for audit export / retention job projections.
+ * Free-form Error.name / Error.message must never reach the DTO.
+ */
+export const adminAuditJobErrorCodeSchema = z.enum([
+  'ARTIFACT_TOO_LARGE',
+  'CONTENT_ACCESS_DISABLED',
+  'EXPORT_FAILED',
+  'EXPORT_TERMINAL',
+  'INTERNAL_ERROR',
+  'INVALID_FILTER_SNAPSHOT',
+  'INVALID_INPUT',
+  'MAX_EXPORT_ROWS_EXCEEDED',
+  'NOT_FOUND',
+  'RETENTION_FAILED',
+  'RUN_TERMINAL',
+]);
+
+/** Public job error — code only; no raw exception message. */
+export const adminAuditJobErrorSchema = z
+  .object({
+    code: adminAuditJobErrorCodeSchema,
+  })
+  .strict();

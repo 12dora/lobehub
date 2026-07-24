@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   adminSecretRotationCancelInputSchema,
   adminSecretRotationJobSchema,
+  adminSecretRotationRestartInputSchema,
+  adminSecretRotationRetryInputSchema,
   adminSecretRotationStartInputSchema,
 } from './adminSecretRotation';
 
@@ -52,5 +54,49 @@ describe('admin secret rotation contracts', () => {
         requestId: '11111111-1111-4111-8111-111111111111',
       }),
     ).toThrow();
+  });
+
+  it('models restart for cancelled/dead terminal jobs separately from failed-ledger retry', () => {
+    const requestId = '22222222-2222-4222-8222-222222222222';
+    for (const expectedStatus of ['cancelled', 'dead'] as const) {
+      expect(
+        adminSecretRotationRestartInputSchema.parse({
+          expectedRevision: 3,
+          expectedStatus,
+          jobId: 'job-safe',
+          reason: 'restart after cancel',
+          requestId,
+        }),
+      ).toMatchObject({ expectedRevision: 3, expectedStatus, jobId: 'job-safe' });
+    }
+    // Failed jobs stay on the retry contract (failure ledger path).
+    expect(
+      adminSecretRotationRestartInputSchema.safeParse({
+        expectedRevision: 1,
+        expectedStatus: 'failed',
+        jobId: 'job-safe',
+        reason: 'not a restart path',
+        requestId,
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSecretRotationRetryInputSchema.parse({
+        expectedRevision: 1,
+        expectedStatus: 'failed',
+        jobId: 'job-safe',
+        reason: 'retry failed ledger',
+        requestId,
+      }).expectedStatus,
+    ).toBe('failed');
+    // Active statuses cannot restart.
+    expect(
+      adminSecretRotationRestartInputSchema.safeParse({
+        expectedRevision: 0,
+        expectedStatus: 'pending',
+        jobId: 'job-safe',
+        reason: 'still active',
+        requestId,
+      }).success,
+    ).toBe(false);
   });
 });

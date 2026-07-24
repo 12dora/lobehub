@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   ADMIN_AUDIT_LIST_DEFAULT_LIMIT,
   adminAuditCursorSchema,
+  adminAuditJobErrorSchema,
   auditReasonSchema,
   idSchema,
   limitSchema,
@@ -59,12 +60,8 @@ export const adminAuditRetentionRunItemSchema = z
     counts: adminAuditRetentionCountsSchema,
     createdAt: z.date(),
     cutoffAt: z.date(),
-    error: z
-      .object({
-        code: z.string().optional(),
-        message: z.string().optional(),
-      })
-      .nullable(),
+    /** Bounded stable code only — never raw exception messages or storage keys. */
+    error: adminAuditJobErrorSchema.nullable(),
     finishedAt: z.date().nullable(),
     id: z.string(),
     jobId: z.string().nullable(),

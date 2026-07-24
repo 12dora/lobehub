@@ -90,6 +90,32 @@ describe('platform connector contracts — secrets', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('bounds connector credential header maps by entry count and control characters', () => {
+    expect(
+      connectorSharedSecretMutationSchema.safeParse({
+        operation: 'replace',
+        value: { headers: { Authorization: 'Bearer fake-token' } },
+      }).success,
+    ).toBe(true);
+    expect(
+      connectorSharedSecretMutationSchema.safeParse({
+        operation: 'replace',
+        value: { headers: { 'X-Api\nKey': 'v' } },
+      }).success,
+    ).toBe(false);
+    const tooMany: Record<string, string> = {};
+    for (let i = 0; i < 51; i += 1) {
+      tooMany[`h${i}`] = 'v';
+    }
+    expect(
+      connectorSharedSecretMutationSchema.safeParse({
+        operation: 'replace',
+        value: { headers: tooMany },
+      }).success,
+    ).toBe(false);
+  });
+
   it('keeps credential modes mutually exclusive', () => {
     const base = {
       displayName: 'Connector',

@@ -10,6 +10,7 @@ import {
   adminAuditLegalHoldsCreateInputSchema,
   adminAuditLegalHoldsListInputSchema,
   adminAuditPolicyUpdateInputSchema,
+  adminAuditRetentionRunItemSchema,
   adminAuditUsersSearchInputSchema,
   dateInputSchema,
 } from './adminAudit';
@@ -130,6 +131,75 @@ describe('adminAudit contracts', () => {
         storageKey: 'platform-audit-exports/x/evidence.ndjson',
       }),
     ).toThrow();
+  });
+
+  it('export/retention error DTOs accept only bounded codes and reject raw messages', () => {
+    const exportBase = {
+      artifactBytes: null,
+      artifactChecksum: null,
+      createdAt: new Date(),
+      error: { code: 'EXPORT_FAILED' as const },
+      expiresAt: null,
+      filterSnapshot: {},
+      finishedAt: new Date(),
+      id: 'paex_err',
+      includesMessageBodies: false,
+      jobId: null,
+      kind: 'operation_logs' as const,
+      requestedBy: 'admin',
+      rowCount: null,
+      startedAt: new Date(),
+      status: 'failed' as const,
+      updatedAt: new Date(),
+    };
+    expect(adminAuditExportItemSchema.parse(exportBase).error).toEqual({ code: 'EXPORT_FAILED' });
+    // Free-form messages and storage-key leakage must not pass the public DTO.
+    expect(
+      adminAuditExportItemSchema.safeParse({
+        ...exportBase,
+        error: {
+          code: 'EXPORT_FAILED',
+          message: 'S3 key platform-audit-exports/secret/evidence.ndjson missing',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAuditExportItemSchema.safeParse({
+        ...exportBase,
+        error: { code: 'Error' },
+      }).success,
+    ).toBe(false);
+
+    const retentionBase = {
+      counts: {},
+      createdAt: new Date(),
+      cutoffAt: new Date(),
+      error: { code: 'RETENTION_FAILED' as const },
+      finishedAt: new Date(),
+      id: 'parr_err',
+      jobId: null,
+      mode: 'execute' as const,
+      policyRevision: 1,
+      progressDone: 0,
+      progressTotal: null,
+      requestedBy: 'admin',
+      scope: 'operation_logs' as const,
+      startedAt: new Date(),
+      status: 'failed' as const,
+      updatedAt: new Date(),
+    };
+    expect(adminAuditRetentionRunItemSchema.parse(retentionBase).error).toEqual({
+      code: 'RETENTION_FAILED',
+    });
+    expect(
+      adminAuditRetentionRunItemSchema.safeParse({
+        ...retentionBase,
+        error: {
+          code: 'RETENTION_FAILED',
+          message: 'relation "platform_audit_exports" does not exist',
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects boolean/null/number/string date coercion traps', () => {

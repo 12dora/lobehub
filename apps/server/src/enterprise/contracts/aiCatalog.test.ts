@@ -7,10 +7,15 @@ import {
   aiModelDraftSchema,
   aiProviderDraftSchema,
   aiSecretMutationSchema,
+  aiSecretStateSchema,
+  BOUNDED_HEADER_MAP_MAX_ENTRIES,
+  BOUNDED_HEADER_NAME_MAX,
+  BOUNDED_HEADER_VALUE_MAX,
   BOUNDED_JSON_MAX_DEPTH,
   BOUNDED_JSON_MAX_KEYS_PER_OBJECT,
   BOUNDED_JSON_MAX_NODES,
   BOUNDED_JSON_MAX_SERIALIZED_BYTES,
+  boundedHeaderMapSchema,
   publishedAiCatalogSchema,
 } from './aiCatalog';
 
@@ -78,7 +83,7 @@ describe('AI catalog contracts', () => {
     expect(aiModelDraftSchema.parse({ ...model, type: 'realtime' }).type).toBe('realtime');
   });
 
-  it('rejects ciphertext and secret references from admin and public outputs', () => {
+  it('rejects ciphertext, secret references, and credential fingerprints from admin and public outputs', () => {
     const admin = {
       checkModel: null,
       config: {},
@@ -91,14 +96,29 @@ describe('AI catalog contracts', () => {
       models: [],
       providerKey: 'alpha',
       revision: 0,
-      secret: { configured: true, fingerprint: 'fp', updatedAt: null },
+      secret: { configured: true, updatedAt: null },
       settings: {},
       sort: 0,
       source: 'custom',
       status: 'draft',
     };
+    expect(aiProviderDraftSchema.safeParse(admin).success).toBe(true);
     expect(
       aiProviderDraftSchema.safeParse({ ...admin, encryptedKeyVaults: 'cipher' }).success,
+    ).toBe(false);
+    // Fingerprint is server-internal — client-facing secret state must reject it.
+    expect(
+      aiSecretStateSchema.safeParse({
+        configured: true,
+        fingerprint: 'fp',
+        updatedAt: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      aiProviderDraftSchema.safeParse({
+        ...admin,
+        secret: { configured: true, fingerprint: 'fp', updatedAt: null },
+      }).success,
     ).toBe(false);
     expect(
       publishedAiCatalogSchema.safeParse({
@@ -250,6 +270,70 @@ describe('AI catalog contracts', () => {
       });
     }).not.toThrow();
     expect(stackResult!.success).toBe(false);
+  });
+
+  it('rejects non-JSON values that would reshape under JSONB persistence', () => {
+    const base = {
+      displayName: 'Alpha',
+      providerKey: 'alpha',
+      reason: 'create',
+    };
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { temperature: undefined },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { threshold: Number.NaN },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { threshold: Number.POSITIVE_INFINITY },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { seenAt: new Date('2026-01-01T00:00:00.000Z') },
+      }).success,
+    ).toBe(false);
+    // Still accepts pure JSON primitives / containers.
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { flag: true, nested: { n: 1.5, s: 'ok' }, items: [null, false] },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('bounds credential header maps by entry count, name/value length, and control chars', () => {
+    expect(boundedHeaderMapSchema.safeParse({ Authorization: 'Bearer token-value' }).success).toBe(
+      true,
+    );
+    expect(boundedHeaderMapSchema.safeParse({ 'X-Api\nKey': 'v' }).success).toBe(false);
+    expect(boundedHeaderMapSchema.safeParse({ 'X-Key': 'a\u0000b' }).success).toBe(false);
+    expect(
+      boundedHeaderMapSchema.safeParse({ ['k'.repeat(BOUNDED_HEADER_NAME_MAX + 1)]: 'v' }).success,
+    ).toBe(false);
+    expect(
+      boundedHeaderMapSchema.safeParse({ k: 'v'.repeat(BOUNDED_HEADER_VALUE_MAX + 1) }).success,
+    ).toBe(false);
+    const tooMany: Record<string, string> = {};
+    for (let i = 0; i < BOUNDED_HEADER_MAP_MAX_ENTRIES + 1; i += 1) {
+      tooMany[`h${i}`] = 'v';
+    }
+    expect(boundedHeaderMapSchema.safeParse(tooMany).success).toBe(false);
+    expect(
+      aiSecretMutationSchema.safeParse({
+        operation: 'replace',
+        value: { customHeaders: tooMany },
+      }).success,
+    ).toBe(false);
   });
 
   it('publishes only the deploymentName model config field', () => {
