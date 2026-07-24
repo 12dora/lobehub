@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import { PlatformSkillCatalogRepository } from '../../repositories/platformSkillCatalog';
 import type {
@@ -256,12 +256,23 @@ export class PlatformSkillCatalogModel {
   /**
    * Persist a re-validated result onto an immutable version row (metadata only).
    * Content fields are never rewritten.
+   *
+   * Escape hatch: transaction-local GUC `lobe.allow_platform_skill_version_validation_update=on`
+   * is the intended contract for `prevent_platform_skill_version_mutation` (same pattern as
+   * agent version delete / audit retention). Callers MUST run this inside an open transaction
+   * so the GUC stays local and rolls back atomically with the validation write + required
+   * success audit. Does **not** disable triggers (no `session_replication_role`).
+   *
+   * Requires the migration-owned trigger to honor the GUC for validation_result-only UPDATEs.
    */
   updateVersionValidation = async (params: {
     skillId: string;
     validation: PlatformSkillValidationResult;
     versionId: string;
   }): Promise<boolean> => {
+    await this.db.execute(
+      sql`SELECT set_config('lobe.allow_platform_skill_version_validation_update', 'on', true)`,
+    );
     const [row] = await this.db
       .update(platformSkillVersions)
       .set({ validationResult: params.validation })

@@ -31,6 +31,11 @@ vi.mock('@/enterprise/client/errors/mapEnterpriseError', () => ({
 vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () => ({
   openReasonModal: mocks.openReasonModal,
 }));
+// Keep the published-catalog side effect out of the write-action suite (avoids pulling
+// business-config / model-bank into this happy-dom unit test).
+vi.mock('@/enterprise/client/features/skills', () => ({
+  invalidatePublishedSkillCatalog: vi.fn(),
+}));
 vi.mock('@/enterprise/client/services/adminSkills', () => ({
   adminSkillsService: {
     archive: mocks.archive,
@@ -293,5 +298,101 @@ describe('M08 Skill write actions', () => {
     await act(() => modal.onSubmit(structuredClone(frozen)));
     expect(mocks.publish).toHaveBeenNthCalledWith(2, frozen);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
+  });
+
+  it('accepts validate when getVersion returns the fresh timestamped result (not the create-time stamp)', async () => {
+    const currentEditor = { ...editor(), dirty: false };
+    const oldValidation = {
+      issues: [],
+      validatedAt: new Date('2020-01-01T00:00:00.000Z'),
+      validatorVersion: 'v1',
+    };
+    const freshValidation = {
+      issues: [],
+      validatedAt: new Date('2024-06-15T12:00:00.000Z'),
+      validatorVersion: 'v1',
+    };
+    expect(oldValidation.validatedAt.getTime()).not.toBe(freshValidation.validatedAt.getTime());
+    mocks.validate.mockResolvedValueOnce(freshValidation);
+    // Server must have persisted the same fresh stamp (F4 contract).
+    mocks.getVersion.mockResolvedValueOnce({ validation: freshValidation });
+    mocks.refresh.mockResolvedValueOnce(data('skill-1', 3));
+
+    const { result } = renderHook(() =>
+      useSkillActions({
+        authMethod: null,
+        data: data(),
+        editor: currentEditor as any,
+        permissions,
+        selectedValidation: oldValidation,
+        selectedVersionId: 'version-1',
+      }),
+    );
+    expect(result.current.validation?.validatedAt.getTime()).toBe(
+      oldValidation.validatedAt.getTime(),
+    );
+
+    act(() => result.current.openValidate());
+    const modal = mocks.openReasonModal.mock.calls[0][0];
+    await act(() => modal.onSubmit(modal.buildPayload('revalidate')));
+
+    expect(mocks.validate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skillId: 'skill-1',
+        versionId: 'version-1',
+        reason: 'revalidate',
+      }),
+    );
+    expect(mocks.getVersion).toHaveBeenCalledWith({
+      skillId: 'skill-1',
+      versionId: 'version-1',
+    });
+    // Distinct timestamps: UI advances only when persisted validation matches validate().
+    expect(result.current.validation?.validatedAt.getTime()).toBe(
+      freshValidation.validatedAt.getTime(),
+    );
+    expect(result.current.refreshFailed).toBe(false);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
+  });
+
+  it('locks writes as refreshFailed when validate returns a fresh stamp but getVersion is still stale', async () => {
+    const currentEditor = { ...editor(), dirty: false };
+    const oldValidation = {
+      issues: [],
+      validatedAt: new Date('2020-01-01T00:00:00.000Z'),
+      validatorVersion: 'v1',
+    };
+    const freshValidation = {
+      issues: [],
+      validatedAt: new Date('2024-06-15T12:00:00.000Z'),
+      validatorVersion: 'v1',
+    };
+    mocks.validate.mockResolvedValueOnce(freshValidation);
+    // Stale create-time stamp still on the version row → verify fails (pre-F4 bug).
+    mocks.getVersion.mockResolvedValueOnce({ validation: oldValidation });
+    mocks.refresh.mockResolvedValueOnce(data('skill-1', 3));
+
+    const { result } = renderHook(() =>
+      useSkillActions({
+        authMethod: null,
+        data: data(),
+        editor: currentEditor as any,
+        permissions,
+        selectedValidation: oldValidation,
+        selectedVersionId: 'version-1',
+      }),
+    );
+
+    act(() => result.current.openValidate());
+    const modal = mocks.openReasonModal.mock.calls[0][0];
+    await act(() => modal.onSubmit(modal.buildPayload('revalidate')));
+
+    // onCommitted still sets local validation from the validate response…
+    expect(result.current.validation?.validatedAt.getTime()).toBe(
+      freshValidation.validatedAt.getTime(),
+    );
+    // …but verify fails, so writes stay locked until a refresh sees the new stamp.
+    expect(result.current.refreshFailed).toBe(true);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.refresh.failed');
   });
 });
