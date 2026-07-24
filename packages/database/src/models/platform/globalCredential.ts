@@ -22,6 +22,7 @@ import {
   platformGlobalCredentialUploads,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { PlatformRevisionConflictError } from './errors';
 
 export class PlatformGlobalCredentialConflictError extends Error {
   readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_CONFLICT';
@@ -30,6 +31,8 @@ export class PlatformGlobalCredentialConflictError extends Error {
     this.name = 'PlatformGlobalCredentialConflictError';
   }
 }
+
+export { PlatformRevisionConflictError };
 
 export class PlatformGlobalCredentialNotFoundError extends Error {
   readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_NOT_FOUND';
@@ -68,6 +71,8 @@ export interface PlatformGlobalCredentialPublicView {
   key: string;
   maskedPreview?: string;
   name: string;
+  /** Optimistic CAS generation; clients must echo this on update. */
+  revision: number;
   type: PlatformGlobalCredentialType;
   updatedAt: Date;
   updatedBy: string | null;
@@ -93,6 +98,11 @@ export interface CreatePlatformGlobalCredentialParams {
 
 export interface UpdatePlatformGlobalCredentialParams {
   envelope?: PlatformGlobalCredentialEnvelope;
+  /**
+   * Required optimistic CAS token. Must equal the locked row's revision or the
+   * update is rejected with {@link PlatformRevisionConflictError}.
+   */
+  expectedRevision: number;
   id: number;
   meta?: PlatformGlobalCredentialMeta;
   name?: string;
@@ -126,6 +136,7 @@ const toPublicView = (row: PlatformGlobalCredentialItem): PlatformGlobalCredenti
     key: row.key,
     maskedPreview: meta.maskedPreview,
     name: row.name,
+    revision: row.revision,
     type: row.type,
     updatedAt: row.updatedAt,
     updatedBy: row.updatedBy ?? null,
@@ -296,6 +307,11 @@ export class PlatformGlobalCredentialModel {
     if (params.meta?.fileSize !== undefined) {
       assertPlatformGlobalCredentialFileSize(params.meta.fileSize);
     }
+    if (!Number.isInteger(params.expectedRevision) || params.expectedRevision < 0) {
+      throw new PlatformGlobalCredentialValidationError(
+        'expectedRevision must be a non-negative integer',
+      );
+    }
 
     return this.inTransaction(async (tx) => {
       const [existing] = await tx
@@ -304,22 +320,50 @@ export class PlatformGlobalCredentialModel {
         .where(eq(platformGlobalCredentials.id, params.id))
         .for('update');
       if (!existing) throw new PlatformGlobalCredentialNotFoundError();
+      if (existing.revision !== params.expectedRevision) {
+        throw new PlatformRevisionConflictError(
+          'Credential revision conflict: expectedRevision does not match current revision',
+          {
+            currentRevision: existing.revision,
+            expectedRevision: params.expectedRevision,
+            resourceId: String(params.id),
+            resourceType: 'platform_global_credential',
+          },
+        );
+      }
 
       const nextMeta: PlatformGlobalCredentialMeta = {
         ...existing.meta,
         ...params.meta,
       };
+      const nextRevision = existing.revision + 1;
 
       const [updated] = await tx
         .update(platformGlobalCredentials)
         .set({
           meta: nextMeta,
           name: params.name ?? existing.name,
+          revision: nextRevision,
           updatedBy: params.updatedBy ?? existing.updatedBy,
         })
-        .where(eq(platformGlobalCredentials.id, params.id))
+        .where(
+          and(
+            eq(platformGlobalCredentials.id, params.id),
+            eq(platformGlobalCredentials.revision, params.expectedRevision),
+          ),
+        )
         .returning();
-      if (!updated) throw new PlatformGlobalCredentialNotFoundError();
+      if (!updated) {
+        // Lost the CAS race after the lock was released (should be rare under FOR UPDATE).
+        throw new PlatformRevisionConflictError(
+          'Credential revision conflict: expectedRevision does not match current revision',
+          {
+            expectedRevision: params.expectedRevision,
+            resourceId: String(params.id),
+            resourceType: 'platform_global_credential',
+          },
+        );
+      }
 
       if (params.envelope) {
         await tx
@@ -351,6 +395,145 @@ export class PlatformGlobalCredentialModel {
           revision: (prev?.revision ?? 0) + 1,
         });
       }
+
+      return toPublicView(updated);
+    });
+  };
+
+  /**
+   * Rotate a file credential from an owner-bound staged upload under the same
+   * row lock + optimistic CAS as {@link update}. Consumes the staging row only
+   * after the new secret revision is inserted.
+   */
+  updateFromStagedUpload = async (params: {
+    createdBy: string;
+    expectedRevision: number;
+    fileHashId: string;
+    id: number;
+    meta?: PlatformGlobalCredentialMeta;
+    name?: string;
+  }): Promise<PlatformGlobalCredentialPublicView> => {
+    this.assertActor(params.createdBy);
+    this.assertFileHashId(params.fileHashId);
+    if (params.name !== undefined) this.assertName(params.name);
+    if (!Number.isInteger(params.expectedRevision) || params.expectedRevision < 0) {
+      throw new PlatformGlobalCredentialValidationError(
+        'expectedRevision must be a non-negative integer',
+      );
+    }
+
+    return this.inTransaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(platformGlobalCredentials)
+        .where(eq(platformGlobalCredentials.id, params.id))
+        .for('update');
+      if (!existing) throw new PlatformGlobalCredentialNotFoundError();
+      if (existing.type !== 'file') {
+        throw new PlatformGlobalCredentialValidationError(
+          'Staged file uploads can only rotate file credentials',
+        );
+      }
+      if (existing.revision !== params.expectedRevision) {
+        throw new PlatformRevisionConflictError(
+          'Credential revision conflict: expectedRevision does not match current revision',
+          {
+            currentRevision: existing.revision,
+            expectedRevision: params.expectedRevision,
+            resourceId: String(params.id),
+            resourceType: 'platform_global_credential',
+          },
+        );
+      }
+
+      const [upload] = await tx
+        .select()
+        .from(platformGlobalCredentialUploads)
+        .where(
+          and(
+            eq(platformGlobalCredentialUploads.fileHashId, params.fileHashId),
+            eq(platformGlobalCredentialUploads.createdBy, params.createdBy),
+            gt(platformGlobalCredentialUploads.expiresAt, new Date()),
+          ),
+        )
+        .for('update');
+      if (!upload) {
+        throw new PlatformGlobalCredentialValidationError(
+          'Uploaded file not found or expired; please re-upload',
+        );
+      }
+
+      const fileName = params.meta?.fileName ?? upload.fileName;
+      const nextMeta: PlatformGlobalCredentialMeta = {
+        ...existing.meta,
+        ...params.meta,
+        fileName,
+        fileSize: upload.fileSize,
+        maskedPreview: params.meta?.maskedPreview ?? fileName,
+      };
+      const nextRevision = existing.revision + 1;
+
+      const [updated] = await tx
+        .update(platformGlobalCredentials)
+        .set({
+          meta: nextMeta,
+          name: params.name ?? existing.name,
+          revision: nextRevision,
+          updatedBy: params.createdBy,
+        })
+        .where(
+          and(
+            eq(platformGlobalCredentials.id, params.id),
+            eq(platformGlobalCredentials.revision, params.expectedRevision),
+          ),
+        )
+        .returning();
+      if (!updated) {
+        throw new PlatformRevisionConflictError(
+          'Credential revision conflict: expectedRevision does not match current revision',
+          {
+            expectedRevision: params.expectedRevision,
+            resourceId: String(params.id),
+            resourceType: 'platform_global_credential',
+          },
+        );
+      }
+
+      await tx
+        .update(platformGlobalCredentialSecrets)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(platformGlobalCredentialSecrets.credentialId, params.id),
+            isNull(platformGlobalCredentialSecrets.revokedAt),
+          ),
+        );
+
+      const [prev] = await tx
+        .select({ revision: platformGlobalCredentialSecrets.revision })
+        .from(platformGlobalCredentialSecrets)
+        .where(eq(platformGlobalCredentialSecrets.credentialId, params.id))
+        .orderBy(sql`${platformGlobalCredentialSecrets.revision} DESC`)
+        .limit(1);
+
+      const ref = `kms://platform-global-credentials/${params.id}/${randomUUID()}`;
+      await tx.insert(platformGlobalCredentialSecrets).values({
+        ciphertext: upload.ciphertext,
+        credentialId: params.id,
+        fingerprint: upload.fingerprint,
+        keyId: upload.keyId,
+        ref,
+        revision: (prev?.revision ?? 0) + 1,
+      });
+
+      await tx
+        .delete(platformGlobalCredentialUploads)
+        .where(
+          and(
+            eq(platformGlobalCredentialUploads.id, upload.id),
+            eq(platformGlobalCredentialUploads.createdBy, params.createdBy),
+          ),
+        );
 
       return toPublicView(updated);
     });

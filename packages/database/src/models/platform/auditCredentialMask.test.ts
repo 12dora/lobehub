@@ -10,7 +10,18 @@ import {
   maskCredentialsDeep,
   maskCredentialsInText,
 } from './auditCredentialMask';
-import { isSensitiveKey } from './redact';
+import { containsSensitiveMaterial, isSensitiveKey, redactSensitive } from './redact';
+
+const githubFineGrained = `github_pat_${'A'.repeat(22)}_${'b'.repeat(59)}`;
+const githubClassic = `ghp_${'a'.repeat(36)}`;
+const githubOauth = `gho_${'c'.repeat(36)}`;
+const githubUserToServer = `ghu_${'d'.repeat(36)}`;
+const githubServerToServer = `ghs_${'e'.repeat(36)}`;
+const githubRefresh = `ghr_${'f'.repeat(36)}`;
+const awsAccessKey = 'AKIAABCDEFGHIJKLMNOP';
+const gcpApiKey = 'AIzaSyA12345678901234567890123456789012';
+const pemBlock = '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----';
+const pemPrefixOnly = '-----BEGIN RSA PRIVATE KEY-----';
 
 describe('maskCredentialsInText', () => {
   it('preserves long ordinary business and PII text exactly', () => {
@@ -37,6 +48,53 @@ describe('maskCredentialsInText', () => {
     expect(masked).toContain('x-amz-signature=[REDACTED]');
     expect(masked).not.toContain('supersecrettokenvalue');
     expect(masked).not.toContain('sig123');
+  });
+
+  it('masks all GitHub token families in free text', () => {
+    for (const token of [
+      githubClassic,
+      githubFineGrained,
+      githubOauth,
+      githubUserToServer,
+      githubServerToServer,
+      githubRefresh,
+    ]) {
+      const masked = maskCredentialsInText(`deploy with ${token} please`);
+      expect(masked).toContain('[REDACTED]');
+      expect(masked).not.toContain(token);
+      expect(masked).toContain('deploy with');
+    }
+  });
+
+  it('fail-closes on malformed percent-encoding in query keys without throwing', () => {
+    // Invalid UTF-8 percent sequence (%E0%A4%A is incomplete) previously threw URIError.
+    const malformed = 'https://cdn.example.com/file?%E0%A4%A=secretvalue&name=report';
+    expect(() => maskCredentialsInText(malformed)).not.toThrow();
+    const masked = maskCredentialsInText(malformed);
+    expect(masked).toContain('[REDACTED]');
+    expect(masked).not.toContain('secretvalue');
+    expect(masked).toContain('name=report');
+  });
+});
+
+describe('write-path redactSensitive full secret catalog', () => {
+  it.each([
+    ['PEM private key block', pemBlock],
+    ['PEM private key prefix', pemPrefixOnly],
+    ['AWS access key id', awsAccessKey],
+    ['Google API key', gcpApiKey],
+    ['GitHub classic PAT', githubClassic],
+    ['GitHub fine-grained PAT', githubFineGrained],
+    ['GitHub OAuth token', githubOauth],
+    ['GitHub user-to-server', githubUserToServer],
+    ['GitHub server-to-server', githubServerToServer],
+    ['GitHub refresh', githubRefresh],
+  ] as const)('redacts free-text %s', (_label, secret) => {
+    const input = { note: `diagnostic ${secret} end`, ordinary: 'ok' };
+    const redacted = redactSensitive(input);
+    expect(redacted.ordinary).toBe('ok');
+    expect(redacted.note).toBe('[REDACTED]');
+    expect(containsSensitiveMaterial(redacted)).toBe(false);
   });
 });
 

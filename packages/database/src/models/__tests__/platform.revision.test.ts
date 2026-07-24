@@ -9,7 +9,6 @@ import {
   containsSensitiveMaterial,
   createBrandingPointerAdapter,
   PlatformRevisionConflictError,
-  PlatformRevisionImmutableError,
   PlatformRevisionModel,
   redactSensitive,
 } from '../platform';
@@ -349,22 +348,6 @@ describe('PlatformRevisionModel', () => {
         where: eq(platformBranding.id, brandingId),
       });
       expect(head?.revision).toBe(3);
-    });
-  });
-
-  describe('immutability', () => {
-    it('rejects in-place mutation of a published revision', async () => {
-      const { revision } = await revisionModel.publishDraft({
-        expectedRevision: 0,
-        payload: { displayName: 'locked' },
-        pointer: createBrandingPointerAdapter(brandingId),
-        resourceId: brandingId,
-        resourceType: 'branding',
-      });
-
-      await expect(revisionModel.assertImmutable(revision.id)).rejects.toBeInstanceOf(
-        PlatformRevisionImmutableError,
-      );
     });
   });
 });

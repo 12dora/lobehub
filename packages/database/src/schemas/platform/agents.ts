@@ -117,6 +117,10 @@ export type NewPlatformAgent = typeof platformAgents.$inferInsert;
 
 /**
  * Immutable agent version snapshots (M10). Empty shell in Migration 0.
+ *
+ * Version `id` values are opaque generated identifiers — they are NOT creation order.
+ * Admin aggregates that need "latest" must order by `createdAt` descending (id as
+ * tie-break), never by array position or lexicographic id alone.
  */
 export const platformAgentVersions = pgTable(
   'platform_agent_versions',

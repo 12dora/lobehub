@@ -326,21 +326,63 @@ export class PlatformJobModel {
 
   /**
    * Claim the next available job for a worker.
-   * Eligible: status=pending, or status=running with expired lease (crash recovery).
+   * Eligible: status=pending, or status=running with expired lease (crash recovery),
+   * and still within the soft attempt budget (`maxAttempts` null = unlimited).
+   * Expired running jobs that already exhausted `maxAttempts` are transitioned to
+   * `dead` so they are not reclaimed after an uncaught worker crash.
    */
   claimNext = async (params: ClaimJobParams): Promise<PlatformJobItem | null> => {
     const leaseMs = params.leaseMs ?? DEFAULT_LEASE_MS;
+    /** Rows still allowed another claim: unlimited, or attempt count below the cap. */
+    const withinAttemptBudget = sql<boolean>`(
+      ${platformJobs.maxAttempts} IS NULL
+      OR ${platformJobs.attempt} < ${platformJobs.maxAttempts}
+    )`;
+    const attemptBudgetExhausted = sql<boolean>`(
+      ${platformJobs.maxAttempts} IS NOT NULL
+      AND ${platformJobs.attempt} >= ${platformJobs.maxAttempts}
+    )`;
 
     return this.db.transaction(async (tx) => {
+      const typeFilter =
+        params.types && params.types.length > 0
+          ? inArray(platformJobs.type, params.types)
+          : undefined;
+
+      // Crash recovery: lease-expired work that already burned its attempt budget
+      // must not be reclaimed — dead-letter it instead of stranding as `running`.
+      await tx
+        .update(platformJobs)
+        .set({
+          finishedAt: databaseNow,
+          lastError: sql<Record<string, unknown>>`coalesce(
+            ${platformJobs.lastError},
+            '{"code":"MAX_ATTEMPTS_EXCEEDED","reason":"lease_expired_after_attempt_budget"}'::jsonb
+          )`,
+          leaseOwner: null,
+          leaseUntil: null,
+          status: 'dead',
+          updatedAt: databaseNow,
+        })
+        .where(
+          and(
+            eq(platformJobs.status, 'running'),
+            lte(platformJobs.leaseUntil, databaseNow),
+            attemptBudgetExhausted,
+            typeFilter,
+          ),
+        );
+
       const conditions = [
         or(
           eq(platformJobs.status, 'pending'),
           and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, databaseNow)),
         )!,
+        withinAttemptBudget,
       ];
 
-      if (params.types && params.types.length > 0) {
-        conditions.push(inArray(platformJobs.type, params.types));
+      if (typeFilter) {
+        conditions.push(typeFilter);
       }
 
       // Prefer oldest pending / expired work. FOR UPDATE prevents double claim.
@@ -357,6 +399,7 @@ export class PlatformJobModel {
 
       // Active non-expired leases for other workers are already excluded by the
       // WHERE clause (pending | running with lease_until <= now). No extra guard.
+      // Attempt budget is enforced above so claim cannot push past maxAttempts.
 
       const nextAttempt = candidate.attempt + 1;
       const [claimed] = await tx
@@ -377,6 +420,7 @@ export class PlatformJobModel {
               eq(platformJobs.status, 'pending'),
               and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, databaseNow)),
             ),
+            withinAttemptBudget,
           ),
         )
         .returning();

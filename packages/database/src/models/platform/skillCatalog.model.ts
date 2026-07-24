@@ -1,3 +1,5 @@
+import { and, eq } from 'drizzle-orm';
+
 import { PlatformSkillCatalogRepository } from '../../repositories/platformSkillCatalog';
 import type {
   PlatformDistribution,
@@ -5,6 +7,7 @@ import type {
   PlatformSkillResource,
   PlatformSkillValidationResult,
 } from '../../schemas/platform';
+import { platformSkillVersions } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformRevisionConflictError } from './errors';
 import {
@@ -51,6 +54,9 @@ export class PlatformSkillCatalogModel {
     const row = await repository.lockSkill(id);
     const draft = draftView(row);
     if (!draft) return undefined;
+    // Archived is terminal for draft mutations (identity / versions / validate).
+    // Recovery for previously published skills goes through rollback, not draft edits.
+    if (draft.status === 'archived') return undefined;
     if (
       draft.revision !== expectedRevision ||
       platformSkillDraftToken(draft) !== expectedDraftToken
@@ -245,5 +251,27 @@ export class PlatformSkillCatalogModel {
       });
       return new PlatformSkillCatalogModel(tx, this.options).getDetail(params.id);
     });
+  };
+
+  /**
+   * Persist a re-validated result onto an immutable version row (metadata only).
+   * Content fields are never rewritten.
+   */
+  updateVersionValidation = async (params: {
+    skillId: string;
+    validation: PlatformSkillValidationResult;
+    versionId: string;
+  }): Promise<boolean> => {
+    const [row] = await this.db
+      .update(platformSkillVersions)
+      .set({ validationResult: params.validation })
+      .where(
+        and(
+          eq(platformSkillVersions.skillId, params.skillId),
+          eq(platformSkillVersions.id, params.versionId),
+        ),
+      )
+      .returning({ id: platformSkillVersions.id });
+    return Boolean(row);
   };
 }

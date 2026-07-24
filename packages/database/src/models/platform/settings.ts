@@ -344,6 +344,58 @@ export class PlatformSettingsModel {
     return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
   };
 
+  /**
+   * Insert override rows only when absent (idempotent migration / backfill).
+   * Never overwrites an existing override. Bumps the user revision only when
+   * at least one row was inserted.
+   */
+  insertUserOverridesIfAbsent = async (params: {
+    alreadyInTransaction?: boolean;
+    ops: Array<{ path: string; value: unknown }>;
+    source?: string;
+    userId: string;
+  }): Promise<{ insertedPaths: string[]; revision: number }> => {
+    const run = async (db: LobeChatDatabase | Transaction) => {
+      const model = new PlatformSettingsModel(db);
+      if (params.ops.length === 0) {
+        return {
+          insertedPaths: [] as string[],
+          revision: await model.getUserOverrideRevision(params.userId),
+        };
+      }
+      const now = new Date();
+      const insertedPaths: string[] = [];
+      for (const op of params.ops) {
+        const rows = await db
+          .insert(userSettingOverrides)
+          .values({
+            path: op.path,
+            source: params.source ?? 'user',
+            updatedAt: now,
+            userId: params.userId,
+            value: op.value,
+          })
+          .onConflictDoNothing({
+            target: [userSettingOverrides.userId, userSettingOverrides.path],
+          })
+          .returning({ path: userSettingOverrides.path });
+        if (rows[0]?.path) insertedPaths.push(rows[0].path);
+      }
+      if (insertedPaths.length === 0) {
+        return { insertedPaths, revision: await model.getUserOverrideRevision(params.userId) };
+      }
+      return {
+        insertedPaths,
+        revision: await model.bumpUserOverrideRevision(params.userId),
+      };
+    };
+
+    if (params.alreadyInTransaction || !('transaction' in this.db)) {
+      return run(this.db);
+    }
+    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+  };
+
   /** Delete all overrides for a user + bump revision once (full reset). */
   deleteAllUserOverrides = async (
     userId: string,

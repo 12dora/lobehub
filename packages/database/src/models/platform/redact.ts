@@ -51,33 +51,6 @@ export interface RedactSensitiveOptions {
 const BEARER_VALUE_PATTERN = /\bbearer\s+([\w.~+/-]+)/giu;
 const SECRET_PLACEHOLDER_PATTERN =
   /^(?:<[^>]+>|\[redacted\]|\.{3}|available|bearer|configured|disabled|enabled|expired|failed|invalid|missing|none|null|required|reset|revoked|unknown|undefined|not[-_ ]?set)$/iu;
-/**
- * Documentation-ish free text markers (kept for detector source-contract tests).
- * Assignment values intentionally do NOT use these — `Bearer fake-token-value`
- * must still fail closed; only structural placeholders below are excused.
- */
-const DOCUMENTATION_PLACEHOLDER_MARKERS = [
-  'change me',
-  'change-me',
-  'change_me',
-  'changeme',
-  'dummy',
-  'example',
-  'fake',
-  'not real',
-  'not-real',
-  'not_real',
-  'notreal',
-  'placeholder',
-  'replace me',
-  'replace with',
-  'replace-me',
-  'replace-with',
-  'replace_me',
-  'replace_with',
-  'sample',
-] as const;
-void DOCUMENTATION_PLACEHOLDER_MARKERS;
 const YOUR_PLACEHOLDER_PREFIXES = ['your ', 'your-', 'your_'] as const;
 const SECRET_SCALAR_PATTERN = /^[\w.~+/-]+$/iu;
 
@@ -106,8 +79,18 @@ const isCredentialAssignmentValue = (value: string): boolean =>
   isKnownSecretScalar(value) ||
   (SECRET_SCALAR_PATTERN.test(value) && !isStructuralCredentialPlaceholder(value));
 
+/**
+ * Full shared secret-pattern catalog for write-path free-text redaction.
+ * Keep in sync with {@link containsEnterpriseSecretMaterial} cloud/PEM checks.
+ */
 const containsSecretValueShape = (value: string): boolean => {
-  if (PREFIXED_SECRET_PATTERN.test(value) || JWT_PATTERN.test(value)) {
+  if (
+    PREFIXED_SECRET_PATTERN.test(value) ||
+    JWT_PATTERN.test(value) ||
+    AWS_ACCESS_KEY_PATTERN.test(value) ||
+    GCP_API_KEY_PATTERN.test(value) ||
+    PEM_PRIVATE_KEY_DETECT.test(value)
+  ) {
     return true;
   }
   return [...value.matchAll(BEARER_VALUE_PATTERN)].some((match) =>

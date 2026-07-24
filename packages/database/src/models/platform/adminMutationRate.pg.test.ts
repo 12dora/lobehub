@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,6 +9,16 @@ import * as schema from '../../schemas';
 import { platformAdminMutationRateWindows } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import { PlatformAdminMutationRateModel } from './adminMutationRate';
+
+/** Expire a window deterministically via SQL (no wall-clock wait). */
+const expireWindowBySql = async (db: LobeChatDatabase, scopeDigest: string) => {
+  await db.execute(sql`
+    UPDATE platform_admin_mutation_rate_windows
+    SET window_start =
+      now() - make_interval(secs => (window_ms::double precision / 1000.0) + 1.0)
+    WHERE scope_digest = ${scopeDigest}
+  `);
+};
 
 const db: LobeChatDatabase = await getTestDB();
 /** Real multi-connection Postgres only — does not require full migrate/pg_search. */
@@ -56,12 +67,12 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
 
   it('rolls the window using the database clock after window expiry', async () => {
     const model = new PlatformAdminMutationRateModel(db);
-    const scope = { limit: 1, scopeDigest: 'e'.repeat(64), windowMs: 50 };
+    const scope = { limit: 1, scopeDigest: 'e'.repeat(64), windowMs: 60_000 };
 
     await expect(model.consume(scope)).resolves.toMatchObject({ allowed: true, count: 1 });
     await expect(model.consume(scope)).resolves.toMatchObject({ allowed: false, count: 2 });
 
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await expireWindowBySql(db, scope.scopeDigest);
 
     await expect(model.consume(scope)).resolves.toMatchObject({ allowed: true, count: 1 });
   });
@@ -92,10 +103,9 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
       longReplica.consume({ limit: 5, scopeDigest: digest, windowMs: 60_000 }),
     ).resolves.toMatchObject({ allowed: true, count: 2 });
 
-    // Short local config must not reset mid-window.
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Short local config must not reset mid-window (still inside the long window).
     await expect(
-      shortReplica.consume({ limit: 5, scopeDigest: digest, windowMs: 50 }),
+      shortReplica.consume({ limit: 5, scopeDigest: digest, windowMs: 1000 }),
     ).resolves.toMatchObject({ allowed: true, count: 3 });
 
     const rows = await db.select().from(platformAdminMutationRateWindows);
@@ -109,19 +119,19 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
     const digest = '8'.repeat(64);
 
     await expect(
-      model.consume({ limit: 2, scopeDigest: digest, windowMs: 50 }),
+      model.consume({ limit: 2, scopeDigest: digest, windowMs: 1000 }),
     ).resolves.toMatchObject({ allowed: true, count: 1 });
     await expect(
-      model.consume({ limit: 2, scopeDigest: digest, windowMs: 50 }),
+      model.consume({ limit: 2, scopeDigest: digest, windowMs: 1000 }),
     ).resolves.toMatchObject({ allowed: true, count: 2 });
 
     // Mid-window longer config must not change duration or reset count.
     await expect(
       model.consume({ limit: 2, scopeDigest: digest, windowMs: 60_000 }),
     ).resolves.toMatchObject({ allowed: false, count: 3 });
-    expect((await db.select().from(platformAdminMutationRateWindows))[0]!.windowMs).toBe(50);
+    expect((await db.select().from(platformAdminMutationRateWindows))[0]!.windowMs).toBe(1000);
 
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await expireWindowBySql(db, digest);
 
     // After expiry, new window adopts the caller's window_ms.
     await expect(
@@ -282,10 +292,15 @@ describe.skipIf(!isRealPostgres)(
           expect(locked.rowCount).toBe(1);
 
           const cleanupModel = new PlatformAdminMutationRateModel(cleanupDb);
-          const cleanupPromise = cleanupModel.cleanupExpired({ limit: 10, maxAgeMs });
+          // Row is locked with FOR UPDATE; cleanup uses SKIP LOCKED so it
+          // finishes without a wall-clock wait and must not delete the locked row.
+          const deletedWhileLocked = await cleanupModel.cleanupExpired({
+            limit: 10,
+            maxAgeMs,
+          });
+          expect(deletedWhileLocked).toBe(0);
 
-          await new Promise((resolve) => setTimeout(resolve, 50));
-
+          // Reset the row under the held lock, then commit — revalidation path.
           await holderClient.query(
             `UPDATE platform_admin_mutation_rate_windows
              SET count = 1, window_start = now(), window_ms = 60000, updated_at = now()
@@ -294,8 +309,11 @@ describe.skipIf(!isRealPostgres)(
           );
           await holderClient.query('COMMIT');
 
-          const deleted = await cleanupPromise;
-          expect(deleted).toBe(0);
+          const deletedAfterReset = await cleanupModel.cleanupExpired({
+            limit: 10,
+            maxAgeMs,
+          });
+          expect(deletedAfterReset).toBe(0);
 
           const rows = await cleanupDb.select().from(platformAdminMutationRateWindows);
           expect(rows).toHaveLength(1);
@@ -344,9 +362,8 @@ describe.skipIf(!isRealPostgres)(
           longModel.consume({ limit: 5, scopeDigest: digest, windowMs: 60_000 }),
         ).resolves.toMatchObject({ allowed: true, count: 2 });
 
-        await new Promise((resolve) => setTimeout(resolve, 1100));
-
         // Short-config replica must continue the same 60s window (count=3), not reset.
+        // No wall-clock wait: long window is still active.
         await expect(
           shortModel.consume({ limit: 5, scopeDigest: digest, windowMs: 1000 }),
         ).resolves.toMatchObject({ allowed: true, count: 3 });
@@ -392,7 +409,13 @@ describe.skipIf(!isRealPostgres)(
           1000,
         );
 
-        await new Promise((resolve) => setTimeout(resolve, 1100));
+        // Deterministic expiry (no wall-clock wait).
+        await shortPool.query(
+          `UPDATE platform_admin_mutation_rate_windows
+           SET window_start = now() - make_interval(secs => (window_ms::double precision / 1000.0) + 1.0)
+           WHERE scope_digest = $1`,
+          [digest],
+        );
 
         // New window boundary adopts the long replica's config.
         await expect(

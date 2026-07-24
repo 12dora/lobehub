@@ -61,8 +61,16 @@ export const createPlatformSkillPointerAdapter = (
         params.versionId,
       );
       if (!version) throw new Error('Published Skill version is unavailable');
+      // Archived builtin-override tombstones must remain eligible regardless of the
+      // mutable draft's `enabled` flag — otherwise archiving a disabled draft can
+      // silently resurrect the bundled skill organization-wide.
+      const snapshot = buildPublishedSnapshot(lockedDraft, version.id);
       const payload = {
-        ...buildPublishedSnapshot(lockedDraft, version.id),
+        ...snapshot,
+        skill: {
+          ...snapshot.skill,
+          ...(params.builtinOverrideTombstone ? { enabled: true } : {}),
+        },
         ...(params.builtinOverrideTombstone ? { builtinOverrideTombstone: true as const } : {}),
       };
       return {

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type {
   PlatformPublishedSkillRow,
   PlatformPublishedSkillSnapshot,
@@ -249,23 +251,45 @@ export const canonicalizePlatformSkillManifest = (
   })),
 });
 
+/**
+ * Canonicalize resource text and recompute sizeBytes/checksum from the canonical
+ * UTF-8 bytes so stored metadata cannot drift after CRLF/NFD normalization.
+ */
 export const canonicalizePlatformSkillResources = (
   resources: PlatformSkillResource[],
 ): PlatformSkillResource[] =>
   resources
-    .map((resource) => ({
-      ...resource,
-      content:
+    .map((resource) => {
+      const content =
         resource.content === undefined
           ? undefined
-          : canonicalizePlatformSkillContent(resource.content),
-      contentRef:
+          : canonicalizePlatformSkillContent(resource.content);
+      const contentRef =
         resource.contentRef === undefined
           ? undefined
-          : canonicalizePlatformSkillContent(resource.contentRef),
-      mediaType: canonicalizePlatformSkillContent(resource.mediaType),
-      path: canonicalizePlatformSkillContent(resource.path),
-    }))
+          : canonicalizePlatformSkillContent(resource.contentRef);
+      const mediaType = canonicalizePlatformSkillContent(resource.mediaType);
+      const path = canonicalizePlatformSkillContent(resource.path);
+      if (content === undefined) {
+        return {
+          ...resource,
+          content,
+          contentRef,
+          mediaType,
+          path,
+        };
+      }
+      const bytes = Buffer.from(content, 'utf8');
+      return {
+        ...resource,
+        checksum: createHash('sha256').update(bytes).digest('hex'),
+        content,
+        contentRef,
+        mediaType,
+        path,
+        sizeBytes: bytes.byteLength,
+      };
+    })
     .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
 export const platformSkillVersionChecksum = (params: {
