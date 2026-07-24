@@ -15,10 +15,12 @@ import {
   type ComfyUIKeyVault,
   type GithubCopilotKeyVault,
   type OpenAICompatibleKeyVault,
+  type SuperGrokKeyVault,
   type VertexAIKeyVault,
 } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import { ModelProvider } from 'model-bank';
+import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
 import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { AiProviderModel } from '@/database/models/aiProvider';
@@ -32,6 +34,7 @@ import {
   resolvePlatformAiExecutionConfigAtRevision,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createLLMGenerationTracingHook } from '@/server/services/llmGenerationTracing/hook';
+import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh';
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
@@ -47,6 +50,7 @@ type ProviderKeyVaults = OpenAICompatibleKeyVault &
   CloudflareKeyVault &
   ComfyUIKeyVault &
   GithubCopilotKeyVault &
+  SuperGrokKeyVault &
   VertexAIKeyVault;
 
 /**
@@ -215,6 +219,16 @@ export const buildPayloadFromKeyVaults = (
       };
     }
 
+    case ModelProvider.SuperGrok: {
+      // OAuth-only provider: the (already refreshed) access token IS the
+      // bearer credential for api.x.ai — expose it as apiKey so the runtime
+      // stays a stateless OpenAI-compatible client.
+      return {
+        apiKey: keyVaults.oauthAccessToken,
+        runtimeProvider,
+      };
+    }
+
     default: {
       return {
         apiKey: keyVaults.apiKey,
@@ -325,6 +339,11 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
         bearerTokenExpiresAt: payload.bearerTokenExpiresAt,
         oauthAccessToken: payload.oauthAccessToken,
       };
+    }
+
+    case ModelProvider.SuperGrok: {
+      // OAuth-only: never fall back to env API keys
+      return { apiKey: payload.apiKey };
     }
 
     case ModelProvider.ComfyUI: {
@@ -525,7 +544,27 @@ const initUserModelRuntimeFromDB = async (
 
   // 3. Build ClientSecretPayload from keyVaults based on runtimeProvider
   // This ensures provider-specific fields (e.g., cloudflareBaseURLOrAccountID) are included
-  const keyVaults = (providerConfig?.keyVaults || {}) as ProviderKeyVaults;
+  let keyVaults = (providerConfig?.keyVaults || {}) as ProviderKeyVaults;
+
+  // 3.5. OAuth device-flow providers with rotating refresh tokens (e.g.
+  // SuperGrok): proactively refresh + persist the token pair before building
+  // the payload. Mounted here because every server-side LLM call path (webapi
+  // chat, agent runtime transport, async image/video, lambda routers)
+  // converges on this function.
+  const oauthDeviceFlowConfig = DEFAULT_MODEL_PROVIDER_LIST.find((p) => p.id === provider)?.settings
+    ?.oauthDeviceFlow;
+  if (oauthDeviceFlowConfig?.refreshTokenGrant) {
+    const freshKeyVaults = await ensureFreshOAuthToken({
+      config: oauthDeviceFlowConfig,
+      db,
+      keyVaults,
+      providerId: provider,
+      userId,
+      workspaceId,
+    });
+    keyVaults = { ...keyVaults, ...freshKeyVaults } as ProviderKeyVaults;
+  }
+
   const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
 
   // 4. Get business hooks (billing in cloud, undefined in OSS)

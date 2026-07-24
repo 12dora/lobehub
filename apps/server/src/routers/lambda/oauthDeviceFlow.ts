@@ -9,6 +9,7 @@ import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import { parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
 import {
   getOAuthService,
   GithubCopilotOAuthService,
@@ -96,6 +97,7 @@ export const oauthDeviceFlowRouter = router({
         interval: deviceCodeResponse.interval,
         userCode: deviceCodeResponse.userCode,
         verificationUri: deviceCodeResponse.verificationUri,
+        verificationUriComplete: deviceCodeResponse.verificationUriComplete,
       };
     }),
 
@@ -161,15 +163,20 @@ export const oauthDeviceFlowRouter = router({
       const pollResult = await service.pollForToken(config, input.deviceCode);
 
       if (pollResult.status === 'success' && pollResult.tokens) {
+        // Expiry: prefer the explicit expires_in, fall back to the JWT exp
+        // claim — some providers (e.g. xAI) don't always return expires_in.
+        const expiresAt = pollResult.tokens.expiresIn
+          ? Date.now() + pollResult.tokens.expiresIn * 1000
+          : parseJwtExpiry(pollResult.tokens.accessToken);
+
         // Save tokens to keyVaults
         await ctx.aiProviderModel.updateConfig(
           input.providerId,
           {
             keyVaults: {
               oauthAccessToken: pollResult.tokens.accessToken,
-              oauthTokenExpiresAt: pollResult.tokens.expiresIn
-                ? String(Date.now() + pollResult.tokens.expiresIn * 1000)
-                : undefined,
+              oauthRefreshToken: pollResult.tokens.refreshToken,
+              oauthTokenExpiresAt: expiresAt ? String(expiresAt) : undefined,
             },
           },
           ctx.gateKeeper.encrypt,
@@ -197,6 +204,7 @@ export const oauthDeviceFlowRouter = router({
             githubAvatarUrl: undefined,
             githubUsername: undefined,
             oauthAccessToken: undefined,
+            oauthRefreshToken: undefined,
             oauthTokenExpiresAt: undefined,
           },
         },
