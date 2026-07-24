@@ -266,17 +266,25 @@ describe('IdentityProviderPage rendering rules', () => {
     expect(screen.queryByTestId('provider-table')).toBeNull();
   });
 
-  it('renders the provider table and opens the create modal from "New"', async () => {
-    mocks.providers.data = { items: [sampleProvider] };
+  it('shows the create action and opens the create modal only when no provider exists yet', () => {
+    mocks.providers.data = { items: [] };
 
     render(<IdentityProviderPage />);
-
-    expect(screen.getByTestId('provider-table')).toBeTruthy();
 
     fireEvent.click(screen.getByText('identityProviders.actions.create'));
 
     expect(openModalMock).toHaveBeenCalledTimes(1);
     expect(openModalMock.mock.calls[0][0].provider).toBeUndefined();
+  });
+
+  it('renders the table and withholds create once a provider exists (single login method)', async () => {
+    mocks.providers.data = { items: [sampleProvider] };
+
+    render(<IdentityProviderPage />);
+
+    expect(screen.getByTestId('provider-table')).toBeTruthy();
+    // Single login method: no "New" once one exists — edit the existing row instead.
+    expect(screen.queryByText('identityProviders.actions.create')).toBeNull();
     // Let history effect settle so later tests are not flaky when suites share env.
     await waitFor(() => expect(mocks.listPublishedRevisions).toHaveBeenCalled());
   });
