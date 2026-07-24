@@ -158,7 +158,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   {
     kind: 'query',
     path: 'admin.stats.rankTopics',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+    // Topic titles/ids are conversation evidence — both STATS_READ + AUDIT_CONVERSATION_READ (F4).
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.STATS_READ, PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
+    },
   },
   {
     kind: 'query',

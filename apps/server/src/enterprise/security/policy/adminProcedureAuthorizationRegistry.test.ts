@@ -62,15 +62,15 @@ describe('admin procedure authorization registry', () => {
   it('reconciles all live procedures, middleware gates, root mounts, and mutation risks', () => {
     expect(() => reconcile()).not.toThrow();
 
-    // Registry length after external access-module procedure removal.
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(191);
+    // Registry length after external access-module procedure removal + secretRotation.restart.
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(194);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(87);
+    ).toHaveLength(89);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(104);
-    expect(mutationPaths).toHaveLength(104);
+    ).toHaveLength(105);
+    expect(mutationPaths).toHaveLength(105);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -185,7 +185,7 @@ describe('admin procedure authorization registry', () => {
     }
   });
 
-  it('fails when the 103-mutation risk registry is missing or stale', () => {
+  it('fails when the mutation risk registry is missing or stale', () => {
     expect(() => reconcile({ mutationPaths: mutationPaths.slice(1) })).toThrow(
       'missing mutation risk entry',
     );
@@ -277,7 +277,7 @@ describe('admin procedure authorization registry', () => {
     expect(regularReauthGaps.map(({ procedure }) => procedure).sort()).toEqual([]);
   });
 
-  it('attaches private rate-limit middleware metadata to all 103 live mutations', () => {
+  it('attaches private rate-limit middleware metadata to all live mutations', () => {
     const missing: string[] = [];
     for (const path of mutationPaths) {
       const relative = path.slice('admin.'.length);

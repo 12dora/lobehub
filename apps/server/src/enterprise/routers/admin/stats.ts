@@ -22,7 +22,10 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withAllPlatformPermissions,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 
 dayjs.extend(customParseFormat);
 
@@ -32,9 +35,15 @@ const adminBase = authedProcedure
   .use(withAdminMutationRateLimit());
 
 const statsProcedure = adminBase.use(withPlatformPermission(PLATFORM_PERMISSIONS.STATS_READ));
-/** Topic titles/ids are conversation evidence — require conversation audit read (F4). */
-const statsTopicRankProcedure = statsProcedure.use(
-  withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ),
+/**
+ * Topic titles/ids are conversation evidence — require both STATS_READ and
+ * AUDIT_CONVERSATION_READ (F4). Single gate so authorization reconcile stays 1:1.
+ */
+const statsTopicRankProcedure = adminBase.use(
+  withAllPlatformPermissions([
+    PLATFORM_PERMISSIONS.STATS_READ,
+    PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ,
+  ]),
 );
 
 /** Safety bound for full-month usage drain (pages × USAGE_PAGE_MAX). */

@@ -251,6 +251,63 @@ export const withAnyPlatformPermission = (codes: readonly PlatformPermission[]) 
 };
 
 /**
+ * tRPC middleware: require every listed platform permission (mode: all).
+ * Prefer this over stacking `withPlatformPermission` — reconcile expects exactly one gate.
+ */
+export const withAllPlatformPermissions = (codes: readonly PlatformPermission[]) => {
+  const middleware = trpc.middleware(async ({ ctx, next, path }) => {
+    const rawUserId = ctx.userId;
+    if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
+      return throwEnterpriseError({
+        code: ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED,
+        httpCode: 'UNAUTHORIZED',
+        message: 'UNAUTHORIZED',
+      });
+    }
+
+    if (!isPlatformAdminFeatureEnabled()) {
+      return throwEnterpriseError({
+        code: ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED,
+        httpCode: 'FORBIDDEN',
+      });
+    }
+
+    const db = resolveServerDb(ctx as { serverDB?: LobeChatDatabase });
+    const platformAuth = await loadPlatformAuthContext({
+      db,
+      userId: rawUserId,
+    });
+    const missing = codes.find((code) => !platformAuth.permissions.includes(code));
+    if (missing) {
+      await auditPermissionDenied({
+        actorUserId: rawUserId,
+        db,
+        path,
+        permission: missing,
+      });
+      throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        details: { permission: missing },
+        httpCode: 'FORBIDDEN',
+        message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+      });
+    }
+
+    return next({
+      ctx: {
+        platformAuth,
+      },
+    });
+  });
+
+  attachPlatformPermissionMetadata(middleware._middlewares.at(-1), {
+    mode: 'all',
+    permissions: codes,
+  });
+  return middleware;
+};
+
+/**
  * Admin procedure base: authed + serverDB. Permission middleware is composed per-route.
  */
 export { serverDatabase };
