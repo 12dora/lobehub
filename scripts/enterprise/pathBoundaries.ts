@@ -250,6 +250,67 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     owner: 'M11',
     reason: 'E2E seed builds PublishedIdentityProviderPayload via publication contract',
   },
+  // Pre-existing enterprise consumers whose registration lagged (reconciled 2026-07-25).
+  {
+    file: 'src/features/Auth/SignIn/SignInEmailStep.tsx',
+    importSpecifier: '@/enterprise/client/providers/EnterprisePlatformProvider',
+    owner: 'M11',
+    reason: 'Sign-in reads the enterprise platform snapshot for database-OIDC provider metadata',
+  },
+  {
+    file: 'src/business/server/bot/featureAccess.ts',
+    importSpecifier: '@/enterprise/server/bot/featureAccess',
+    owner: 'M10',
+    reason: 'Business bot feature-access stub delegates wholesale to the enterprise implementation',
+  },
+  {
+    file: 'src/business/client/hooks/useHeteroAgentCloudConfig.ts',
+    importSpecifier: '@/enterprise/client/hooks/useHeteroAgentCloudConfig',
+    owner: 'M10',
+    reason: 'Business heterogeneous-agent cloud-config stub delegates to the enterprise hook',
+  },
+  {
+    file: 'src/business/client/DefaultInboxBrandingSync.tsx',
+    importSpecifier: '@/enterprise/client/features/branding/DefaultInboxBrandingSync',
+    owner: 'M12',
+    reason: 'Business default-inbox branding sync mounts the enterprise branding component',
+  },
+  {
+    file: 'src/routes/(main)/settings/memory/features/MemoryFormView.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/home/features/Recents/index.tsx',
+    importSpecifier: '@/enterprise/client/hooks/useSidebarLayoutPolicy',
+    owner: 'M06',
+    reason: 'Ordinary UI consumer of the managed sidebar-layout policy hook',
+  },
+  {
+    file: 'src/routes/(main)/home/_layout/Body/index.tsx',
+    importSpecifier: '@/enterprise/client/hooks/useSidebarLayoutPolicy',
+    owner: 'M06',
+    reason: 'Ordinary UI consumer of the managed sidebar-layout policy hook',
+  },
+  {
+    file: 'src/routes/(main)/home/_layout/Body/Agent/useDropdownMenu.tsx',
+    importSpecifier: '@/enterprise/client/hooks/useSidebarLayoutPolicy',
+    owner: 'M06',
+    reason: 'Ordinary UI consumer of the managed sidebar-layout policy hook',
+  },
+  {
+    file: 'src/routes/(main)/home/_layout/Body/Private/useDropdownMenu.tsx',
+    importSpecifier: '@/enterprise/client/hooks/useSidebarLayoutPolicy',
+    owner: 'M06',
+    reason: 'Ordinary UI consumer of the managed sidebar-layout policy hook',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/builtin.ts',
+    importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
+    owner: 'M09',
+    reason: 'Builtin tool-execution mounts the connector-governance resolve gate',
+  },
 ] as const satisfies readonly EnterpriseImportAllowance[];
 
 /**
@@ -651,6 +712,49 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/enterprise/client/features/skills',
     owner: 'M08',
     reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+  },
+  // Pre-existing enterprise test consumers whose registration lagged (reconciled 2026-07-25).
+  {
+    file: 'src/libs/better-auth/sso/platformIdentityProvider.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/groupRoleMappingRuntime',
+    owner: 'M11',
+    reason: 'Covers group→role mapping runtime at the SSO identity-provider test',
+  },
+  {
+    file: 'src/routes/(main)/agent/features/Conversation/HeterogeneousChatInput/index.test.tsx',
+    importSpecifier: '@/enterprise/client/hooks/useHeteroAgentCloudConfig',
+    owner: 'M10',
+    reason: 'Mocks the heterogeneous-agent cloud-config hook at the chat-input test',
+  },
+  {
+    file: 'apps/server/src/routers/lambda/__tests__/aiProvider.test.ts',
+    importSpecifier: '@/server/enterprise/services/platformInstance/catalogAuthority',
+    owner: 'M08',
+    reason: 'Mocks platform catalog-authority token at the aiProvider router test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgent.connectorGovernance.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
+    owner: 'M09',
+    reason: 'Covers connector-governance resolve gate at the execAgent test',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/__tests__/governanceGate.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/legacyMcpTransport',
+    owner: 'M09',
+    reason: 'Mocks connector catalog seam at the governance-gate test',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/__tests__/governanceGate.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
+    owner: 'M09',
+    reason: 'Covers connector-governance resolve gate at the governance-gate test',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/__tests__/builtin.governance.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
+    owner: 'M09',
+    reason: 'Covers connector-governance resolve gate at the builtin-governance test',
   },
 ] as const satisfies readonly EnterpriseTestImportAllowance[];
 
