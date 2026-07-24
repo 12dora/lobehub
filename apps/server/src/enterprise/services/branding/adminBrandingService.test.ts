@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -6,7 +7,6 @@ import {
   platformAuditLogs,
   platformBranding,
   platformBrandingAssets,
-  platformBrandingOperations,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
@@ -62,12 +62,19 @@ const draft = (name: string): AdminBrandingDraft => ({
 
 const request = () => ({ reason: 'operator approved', requestId: crypto.randomUUID() });
 
+/** TRUNCATE bypasses append-only audit/revision immutability triggers (migration 0145). */
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformBrandingOperations);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformBranding);
-  await db.delete(platformBrandingAssets);
+  await db.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_audit_logs,
+        platform_branding_operations,
+        platform_resource_revisions,
+        platform_branding,
+        platform_branding_assets
+      CASCADE
+    `),
+  );
 };
 
 beforeEach(async () => {
@@ -273,9 +280,13 @@ describe('AdminBrandingService', () => {
     const after = await service.getDraft();
     expect(after.draft).toEqual(initial.draft);
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
-      expect.objectContaining({ action: 'admin.branding.saveDraft', result: 'failure' }),
+      expect.objectContaining({
+        action: 'admin.branding.saveDraft',
+        afterDiff: { error: 'revision_conflict' },
+        result: 'failure',
+      }),
     );
-    await db.delete(platformAuditLogs);
+    await db.execute(sql.raw('TRUNCATE TABLE platform_audit_logs CASCADE'));
     await expect(service.saveDraft('admin-1', failedRequest)).rejects.toMatchObject({
       category: 'revision_conflict',
       name: BrandingOperationFailedReplayError.name,

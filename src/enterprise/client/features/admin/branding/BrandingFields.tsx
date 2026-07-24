@@ -248,7 +248,7 @@ export const BrandingFields = memo<BrandingFieldsProps>(
           </div>
         </section>
         <section className={styles.group}>
-          <Text as="h2">{labels.theme ?? 'Theme'}</Text>
+          <Text as="h2">{labels.theme}</Text>
           <div className={styles.grid}>
             <TextField
               disabled={disabled}

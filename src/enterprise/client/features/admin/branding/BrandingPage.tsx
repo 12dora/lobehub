@@ -167,6 +167,7 @@ const BrandingPage = memo(() => {
   );
 
   const labels = useMemo(() => {
+    // English fallbacks for keys not yet in the locale pack (i18n batch fills zh-CN / en-US).
     const defaults: Record<string, string> = {
       theme: 'Theme',
     };
@@ -212,9 +213,29 @@ const BrandingPage = memo(() => {
   const refreshAuthoritative = useCallback(async () => {
     setActionError(null);
     setActionNotice(null);
-    const refreshed = await mutate();
-    if (refreshed) hydrate(refreshed);
-  }, [hydrate, mutate]);
+    try {
+      const refreshed = await mutate();
+      if (refreshed) hydrate(refreshed);
+    } catch {
+      // Never surface an unhandled rejection from retry-refresh. Preserve mutation
+      // locks (committedRefresh / conflict); only re-show a benign refresh error.
+      if (editorState === 'committedRefresh') {
+        setActionError(
+          t('branding.refresh.committedFailed', {
+            defaultValue:
+              'Branding was published, but refreshing the editor failed. Retry refresh before making more changes.',
+          }),
+        );
+      } else {
+        setActionError(
+          t('branding.refresh.failed', {
+            defaultValue:
+              'Refreshing the branding editor failed. Retry before making more changes.',
+          }),
+        );
+      }
+    }
+  }, [editorState, hydrate, mutate, t]);
 
   const save = useCallback(() => {
     if (!draft || !canUpdate || !dirty || mutationLocked) return;
@@ -475,6 +496,7 @@ const BrandingPage = memo(() => {
       {!canUpdate ? <Alert showIcon message={t('branding.readOnly')} type="info" /> : null}
       {committedRefresh ? (
         <Alert
+          extraIsolate
           showIcon
           type="warning"
           extra={

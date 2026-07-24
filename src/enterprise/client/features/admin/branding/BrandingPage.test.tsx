@@ -87,6 +87,10 @@ vi.mock('./useAdminBranding', () => ({
   useFetchAdminBranding: () => mocks.fetch,
 }));
 
+vi.mock('../primitives/readFileBase64', () => ({
+  readFileBase64: vi.fn(async () => 'base64payload'),
+}));
+
 const draft = (name = 'Published Brand'): AdminBrandingDraft => ({
   defaultAgentDisplayName: null,
   desktop: { iconUrl: null, productName: null },
@@ -286,5 +290,128 @@ describe('BrandingPage interactions', () => {
     expect(screen.getByLabelText('branding.fields.pageTitleTemplate')).toHaveValue(
       '%s · Published Brand',
     );
+  });
+
+  it('enters conflict state on publish CAS failure without losing the local draft', async () => {
+    mocks.fetch.data = data({ draftMatchesPublished: false });
+    mocks.publish.mockRejectedValueOnce(new Error('PLATFORM_REVISION_CONFLICT'));
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'branding.actions.publish' }));
+    const modal = latestModal();
+    const payload = modal.buildPayload('stale publish');
+
+    await act(async () => {
+      await expect(modal.onSubmit(payload)).rejects.toThrow();
+    });
+
+    expect(screen.getByText('enterprise.error.PLATFORM_REVISION_CONFLICT')).toBeInTheDocument();
+    expect(screen.getByText('primitives.revision.conflict')).toBeInTheDocument();
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      draft: { name: 'Published Brand' },
+      draftToken: 'a'.repeat(64),
+      editorState: 'conflict',
+    });
+    expect(screen.getByRole('button', { name: 'branding.actions.publish' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'branding.actions.save' })).toBeDisabled();
+    expect(screen.getByLabelText('branding.fields.name')).toBeDisabled();
+  });
+
+  it('locks mutations when publish commits but the authoritative refresh fails', async () => {
+    mocks.fetch.data = data({ draftMatchesPublished: false });
+    mocks.publish.mockResolvedValue({ auditId: 'audit-1', revision: 3 });
+    mocks.fetch.mutate.mockRejectedValueOnce(new Error('refresh boom'));
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'branding.actions.publish' }));
+    const modal = latestModal();
+    await act(() => modal.onSubmit(modal.buildPayload('publish reason')));
+
+    expect(useBrandingEditorStore.getState().editorState).toBe('committedRefresh');
+    expect(useBrandingEditorStore.getState().draft?.name).toBe('Published Brand');
+    expect(screen.getByText('branding.refresh.committedTitle')).toBeInTheDocument();
+    expect(screen.getByText('branding.refresh.committedFailed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'branding.actions.publish' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'branding.actions.save' })).toBeDisabled();
+    expect(screen.getByLabelText('branding.fields.name')).toBeDisabled();
+  });
+
+  it('keeps committedRefresh and surfaces a benign error when retry refresh rejects', async () => {
+    mocks.fetch.data = data({ draftMatchesPublished: false });
+    mocks.publish.mockResolvedValue({ auditId: 'audit-1', revision: 3 });
+    mocks.fetch.mutate
+      .mockRejectedValueOnce(new Error('refresh boom'))
+      .mockRejectedValueOnce(new Error('retry boom'));
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'branding.actions.publish' }));
+    const modal = latestModal();
+    await act(() => modal.onSubmit(modal.buildPayload('publish reason')));
+    expect(useBrandingEditorStore.getState().editorState).toBe('committedRefresh');
+    expect(await screen.findByText('branding.refresh.committedTitle')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'branding.refresh.retry' }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText('branding.refresh.committedFailed').length).toBeGreaterThan(0);
+    });
+    expect(useBrandingEditorStore.getState().editorState).toBe('committedRefresh');
+    expect(useBrandingEditorStore.getState().draft?.name).toBe('Published Brand');
+    expect(screen.getByRole('button', { name: 'branding.actions.publish' })).toBeDisabled();
+  });
+
+  it('marks the editor dirty when desktop product name or primary color changes', async () => {
+    renderPage();
+    fireEvent.change(await screen.findByLabelText('branding.fields.desktopProductName'), {
+      target: { value: 'AIHub Desktop' },
+    });
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      draft: { desktop: { productName: 'AIHub Desktop' } },
+      editorState: 'dirty',
+    });
+
+    fireEvent.change(screen.getByLabelText('branding.fields.primaryColor'), {
+      target: { value: '#ff5500' },
+    });
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      draft: {
+        desktop: { productName: 'AIHub Desktop' },
+        themeDefaults: { primaryColor: '#ff5500' },
+      },
+      editorState: 'dirty',
+    });
+    expect(screen.getByRole('button', { name: 'branding.actions.save' })).not.toBeDisabled();
+  });
+
+  it('uploads a desktop icon and patches the draft with the returned URL', async () => {
+    const { readFileBase64 } = await import('../primitives/readFileBase64');
+    vi.mocked(readFileBase64).mockResolvedValueOnce('dGVzdA==');
+    mocks.uploadAsset.mockResolvedValueOnce({ url: 'https://cdn.example/desktop-icon.png' });
+    renderPage();
+    await screen.findByText('branding.fields.desktop');
+    await screen.findByLabelText('branding.fields.desktopProductName');
+
+    const fileInputs = document.querySelectorAll('input[type="file"]');
+    // logo, icon, favicon, ogImage, desktopIcon — last asset input is desktop.
+    expect(fileInputs.length).toBeGreaterThanOrEqual(5);
+    const desktopInput = fileInputs.at(-1) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], 'desktop.png', { type: 'image/png' });
+    await act(async () => {
+      fireEvent.change(desktopInput, { target: { files: [file] } });
+    });
+    await waitFor(() => expect(mocks.modalCalls.length).toBeGreaterThan(0));
+    const modal = latestModal();
+    await act(() => modal.onSubmit(modal.buildPayload('upload desktop icon')));
+
+    expect(mocks.uploadAsset).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileName: 'desktop.png',
+        kind: 'desktopIcon',
+      }),
+    );
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      draft: { desktop: { iconUrl: 'https://cdn.example/desktop-icon.png' } },
+      editorState: 'dirty',
+    });
+    expect(screen.getByText('branding.status.assetUploaded')).toBeInTheDocument();
   });
 });

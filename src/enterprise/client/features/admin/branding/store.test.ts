@@ -78,4 +78,38 @@ describe('Branding editor store', () => {
       editorState: 'idle',
     });
   });
+
+  it('keeps committedRefresh locked when patches arrive before refresh completes', () => {
+    useBrandingEditorStore.getState().hydrate({
+      baseRevision: 2,
+      draft: draft('Published'),
+      draftMatchesPublished: false,
+      draftToken: 'publish-token',
+    });
+    useBrandingEditorStore.getState().markCommittedRefresh();
+    // UI disables fields while locked; if a patch still lands, never leave committedRefresh.
+    useBrandingEditorStore.getState().patch({ name: 'Stray Edit' });
+
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      draftToken: 'publish-token',
+      editorState: 'committedRefresh',
+    });
+  });
+
+  it('keeps local form data when markConflict runs after a stale publish CAS', () => {
+    useBrandingEditorStore.getState().hydrate({
+      baseRevision: 2,
+      draft: draft('Local Draft'),
+      draftMatchesPublished: false,
+      draftToken: 'stale-token',
+    });
+    useBrandingEditorStore.getState().markConflict();
+
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      baseRevision: 2,
+      draft: { name: 'Local Draft' },
+      draftToken: 'stale-token',
+      editorState: 'conflict',
+    });
+  });
 });

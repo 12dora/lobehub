@@ -350,7 +350,11 @@ describe('AdminSettingsService', () => {
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     const conflictAudits = await serverDB.select().from(platformAuditLogs);
     expect(conflictAudits).toContainEqual(
-      expect.objectContaining({ action: 'admin.settings.publish', result: 'failure' }),
+      expect.objectContaining({
+        action: 'admin.settings.publish',
+        afterDiff: { error: 'revision_conflict' },
+        result: 'failure',
+      }),
     );
 
     // change draft and publish v2
@@ -424,6 +428,40 @@ describe('AdminSettingsService', () => {
     });
     expect(badType.ok).toBe(false);
     expect(badType.issues[0]?.code).toBe('MANAGED_SETTING_INVALID_VALUE');
+  });
+
+  it('classifies publish availability failures with a dedicated afterDiff.error category', async () => {
+    await saveCurrentDraft(service, {
+      actorUserId: 'admin-1',
+      draft: validDraft,
+      reason: 'seed draft for availability audit',
+    });
+    const failing = new AdminSettingsService(serverDB, {
+      lifecycle: {
+        afterMaterialization: async () => {
+          throw Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
+        },
+      },
+    });
+
+    await expect(
+      failing.publish({
+        actorUserId: 'admin-1',
+        expectedDraftToken: (await failing.getDraft()).draftToken,
+        expectedRevision: 0,
+        reason: 'publish while DB unavailable',
+      }),
+    ).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+
+    const audits = await serverDB.select().from(platformAuditLogs);
+    expect(audits).toContainEqual(
+      expect.objectContaining({
+        action: 'admin.settings.publish',
+        afterDiff: { error: 'availability' },
+        result: 'failure',
+      }),
+    );
+    expect(JSON.stringify(audits)).not.toContain('connection refused');
   });
 
   it('audit append failure rolls back the settings write and never emits false success', async () => {
