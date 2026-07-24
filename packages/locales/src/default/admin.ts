@@ -48,6 +48,8 @@ export default {
   'agentCatalog.assignment.title': 'Assignments',
   'agentCatalog.assignment.versionPolicy.latest_published': 'Follow latest published',
   'agentCatalog.assignment.versionPolicy.pinned': 'Pinned version',
+  'agentCatalog.assignment.warning.ASSIGNMENT_DISABLED':
+    'Assignment is disabled and will not take effect.',
   'agentCatalog.assignment.warning.MANDATORY_AGENT_CANNOT_BE_HIDDEN':
     'Mandatory Agents cannot be hidden by users.',
   'agentCatalog.conflict.description':
@@ -117,6 +119,7 @@ export default {
   'agentCatalog.dependency.stale': 'Outdated',
   'agentCatalog.errors.generic':
     'The Agent action failed. Your input is still here; check your connection and retry.',
+  'agentCatalog.editor.defaultSystemRole': 'You are a helpful organization Agent.',
   'agentCatalog.editor.description': 'Description',
   'agentCatalog.editor.displayName': 'Display name',
   'agentCatalog.editor.model': 'Published model key',
@@ -477,6 +480,7 @@ export default {
     'Platform administration requires a desktop browser or the desktop app. Tables and management workflows are not available on mobile.',
   'mobile.unsupported.title': 'Desktop required',
   'managedResources.actions.publish': 'Publish policy',
+  'managedResources.actions.retryPublish': 'Retry publish',
   'managedResources.actions.retrySave': 'Retry save',
   'managedResources.actions.save': 'Save',
   'managedResources.saveReason': 'Updated via unified management',
@@ -496,6 +500,15 @@ export default {
   'managedResources.errors.generic': 'The policy action failed. Check the form and try again.',
   'managedResources.errors.refresh':
     'The latest policy could not be loaded. Your local edits are safe; try again.',
+  'managedResources.errors.savedRefreshFailed':
+    'Saved successfully, but the latest policy could not be refreshed. Reload if the view looks stale.',
+  'managedResources.errors.publishedRefreshFailed':
+    'Published successfully, but capability refresh failed. Reload if managed flags look stale.',
+  'managedResources.errors.savedWithLocalEdits':
+    'Draft saved. Your later edits were kept — save again to persist them.',
+  'managedResources.draftPendingPublish':
+    'A saved draft differs from the published policy. Publish to apply it.',
+  'managedResources.status.draftPending': 'Draft pending publish',
   'managedResources.impact.change':
     'Before: {{beforeManaged}} · {{beforeMode}} → After: {{afterManaged}} · {{afterMode}}',
   'managedResources.impact.empty': 'The saved draft matches the published policy.',
@@ -547,6 +560,9 @@ export default {
   'managedResources.sharedOAuth.perUserDesc':
     'Each user authorizes OAuth connectors from their own settings. Takes effect only when connectors are platform-managed.',
   'managedResources.sharedOAuth.saved': 'Shared authorization updated',
+  'managedResources.sharedOAuth.savedRefreshFailed':
+    'Shared authorization updated, but the view could not refresh.',
+  'managedResources.sharedOAuth.loadError': 'Could not load shared OAuth status.',
   'managedResources.sharedOAuth.title': 'Org-shared OAuth',
   'managedResources.title': 'Managed resources',
   'generalSettings.title': 'General settings',
@@ -579,7 +595,10 @@ export default {
   'sidebarLayout.mode.platform': 'Platform-managed',
   'sidebarLayout.configure': 'Configure',
   'sidebarLayout.saved': 'Sidebar layout saved',
+  'sidebarLayout.savedRefreshFailed':
+    'Sidebar layout saved, but the view could not refresh. Reload if it looks stale.',
   'sidebarLayout.saveError': 'Failed to save the sidebar layout. Please try again.',
+  'sidebarLayout.loadError': 'Could not load sidebar layout.',
   'managedResources.unsavedLeave': 'You have unsaved managed resource changes. Leave anyway?',
   'managedResources.unsavedConfirm': 'Leave without saving',
   'managedResources.unsavedStay': 'Keep editing',
@@ -753,6 +772,10 @@ export default {
   'nav.unifiedManagement': 'Unified management',
   'stats.page.title': 'Data statistics',
   'stats.page.desc': 'Platform-wide usage across all users.',
+  'stats.banner.error': 'Could not load user totals',
+  'stats.banner.refreshFailed':
+    'Could not refresh user totals. Previously loaded values are still shown.',
+  'stats.banner.retry': 'Retry',
   'stats.banner.usersTotal': 'Total users',
   'stats.banner.usersActive': 'Active users (30d)',
   'stats.banner.scopeNote': 'All metrics cover every user and workspace.',
@@ -767,6 +790,14 @@ export default {
   'notFound.title': 'Page not found',
   'overview.desc':
     'Platform-wide snapshot: users, activity, token usage, rankings, and shortcuts into deeper admin tools.',
+  'overview.error.loadFailed': 'Could not load overview metrics',
+  'overview.error.loadFailedDescription':
+    'The request failed or was denied. Check your connection and permissions, then retry.',
+  'overview.error.refreshFailed':
+    'Could not refresh overview metrics. Previously loaded values are still shown.',
+  'overview.error.refreshFailedDescription':
+    'A background refresh failed. Stale metrics remain visible — retry when ready.',
+  'overview.error.retry': 'Retry',
   'overview.kpi.agents': 'Agents ({{scope}})',
   'overview.kpi.messages': 'Messages ({{scope}})',
   'overview.kpi.topics': 'Topics ({{scope}})',
@@ -1098,6 +1129,13 @@ export default {
   'users.audit.result.success': 'Success',
   'users.audit.result.failure': 'Failure',
   'users.audit.result.denied': 'Denied',
+  'users.audit.autoReason.create': 'User created from admin console',
+  'users.audit.autoReason.delete': 'User hard-deleted from admin console',
+  'users.audit.autoReason.revokeAll': 'All sessions revoked from admin console',
+  'users.audit.autoReason.revokeOne': 'Session revoked from admin console',
+  'users.audit.autoReason.roleRevoke': 'Global role revoked from admin console',
+  'users.audit.autoReason.roles': 'Global roles updated from admin console',
+  'users.audit.autoReason.sharedOAuth': 'Set org shared OAuth authorization from managed resources',
   'users.modals.target': 'Target:',
   'users.modals.reasonLabel': 'Reason (required)',
   'users.modals.reasonPlaceholder': 'Explain why this change is needed…',
@@ -1146,6 +1184,10 @@ export default {
   'users.modals.delete.impact':
     'This cannot be undone. Sessions, messages, agents, files, and roles are all removed.',
   'users.modals.delete.confirm': 'Delete user',
+  'users.modals.delete.typeConfirmHint':
+    'Type “{{target}}” to confirm permanent deletion. This cannot be undone.',
+  'users.modals.delete.typeConfirmLabel': 'Type the target name to confirm',
+  'users.modals.delete.typeConfirmMismatch': 'The confirmation text does not match the target.',
   'users.modals.roles.lastSuperNote':
     'Last permanent super admin protection is enforced by the server.',
   'users.modals.roles.expiryOptional': 'Optional shared expiry (not allowed for super admin)',
@@ -1156,6 +1198,8 @@ export default {
   'users.toast.revokeSuccess': 'Sessions revoked',
   'users.toast.rolesSuccess': 'Permissions updated',
   'users.toast.roleRevokeSuccess': 'Role revoked',
+  'users.toast.savedRefreshFailed':
+    'Saved, but the latest view could not be refreshed. Reload if it looks stale.',
   'users.errors.reauthRequired':
     'Recent re-authentication is required for this action. Sign out and sign in again, then retry.',
   'users.errors.lastSuperAdmin': 'This action would remove the last permanent super admin.',
@@ -1740,6 +1784,8 @@ export default {
   'branding.upload.description':
     'The server verifies the file bytes, format, dimensions, and container before storage.',
   'branding.upload.title': 'Upload controlled Branding asset',
+  'enterprise.error.MANAGED_AGENT_BATCH_LIMIT':
+    'Too many agents in one request. Select at most {{max}} agents and try again.',
   'enterprise.error.PLATFORM_ASSET_STORAGE_UNAVAILABLE':
     'Branding asset storage is unavailable. Ask an operator to configure object storage.',
   'enterprise.error.PLATFORM_IDEMPOTENCY_CONFLICT':
@@ -2150,6 +2196,7 @@ export default {
   'audit.status.export.cancelled': 'Cancelled',
   'audit.status.export.expired': 'Expired',
   'audit.status.hold.active': 'Active',
+  'audit.status.hold.expired': 'Expired',
   'audit.status.hold.released': 'Released',
   'audit.status.retention.pending': 'Pending',
   'audit.status.retention.running': 'Running',
@@ -2194,11 +2241,26 @@ export default {
   'audit.logs.action.admin.audit.events.get': 'View log entry',
   'audit.logs.action.admin.audit.events.list': 'View operation logs',
   'audit.logs.action.admin.audit.events.stats': 'View log statistics',
+  'audit.logs.action.admin.audit.exports.cancel': 'Cancel export',
+  'audit.logs.action.admin.audit.exports.create': 'Create export',
+  'audit.logs.action.admin.audit.exports.download': 'Download export',
+  'audit.logs.action.admin.audit.exports.get': 'View export',
   'audit.logs.action.admin.audit.exports.list': 'List exports',
+  'audit.logs.action.admin.audit.get': 'View audit entry',
+  'audit.logs.action.admin.audit.legalHolds.create': 'Create data hold',
+  'audit.logs.action.admin.audit.legalHolds.get': 'View data hold',
   'audit.logs.action.admin.audit.legalHolds.list': 'List data holds',
+  'audit.logs.action.admin.audit.legalHolds.release': 'Release data hold',
+  'audit.logs.action.admin.audit.list': 'List audit entries',
   'audit.logs.action.admin.audit.policy.get': 'View audit settings',
   'audit.logs.action.admin.audit.policy.update': 'Update audit settings',
+  'audit.logs.action.admin.audit.retention.cancel': 'Cancel retention run',
+  'audit.logs.action.admin.audit.retention.dryRun': 'Dry-run retention',
+  'audit.logs.action.admin.audit.retention.getRun': 'View retention run',
   'audit.logs.action.admin.audit.retention.listRuns': 'List retention runs',
+  'audit.logs.action.admin.audit.retention.run': 'Run retention',
+  'audit.logs.action.admin.audit.retention.status': 'View retention status',
+  'audit.logs.action.admin.audit.retention.worker': 'Retention worker',
   'audit.logs.action.admin.audit.users.search': 'Search users',
   'audit.logs.action.admin.audit.users.summary': 'View user summary',
   'audit.logs.action.admin.audit.users.timeline': 'View user timeline',
@@ -2221,10 +2283,13 @@ export default {
   'audit.logs.action.admin.system.prepareRestart': 'Prepare restart',
   'audit.logs.action.admin.system.requestRestart': 'Request restart',
   'audit.logs.action.admin.users.ban': 'Ban user',
+  'audit.logs.action.admin.users.create': 'Create user',
+  'audit.logs.action.admin.users.delete': 'Delete user',
   'audit.logs.action.admin.users.get': 'View user',
   'audit.logs.action.admin.users.getAuditTrail': 'View user activity',
   'audit.logs.action.admin.users.list': 'List users',
   'audit.logs.action.admin.users.replaceGlobalRoles': 'Update user roles',
+  'audit.logs.action.admin.users.revokeSessions': 'Revoke sessions',
   'audit.logs.action.admin.users.unban': 'Unban user',
   'audit.logs.action.managedResource.legacyMutation': 'Managed resource change',
   'audit.logs.action.platform.managed_policy.publish': 'Publish managed policy',
@@ -2284,6 +2349,12 @@ export default {
   'audit.conversations.columns.model': 'Model',
   'audit.conversations.columns.status': 'Status',
   'audit.conversations.columns.updatedAt': 'Updated',
+  'audit.conversations.status.active': 'Active',
+  'audit.conversations.status.archived': 'Archived',
+  'audit.conversations.status.deleted': 'Deleted',
+  'audit.conversations.timeline.kind.topic': 'Topic',
+  'audit.conversations.timeline.kind.session': 'Session',
+  'audit.conversations.timeline.kind.message': 'Message',
   'audit.conversations.untitled': '(untitled)',
   'audit.conversations.user.title': 'User history',
   'audit.conversations.user.desc': 'Topics and activity timeline for this user.',
@@ -2349,6 +2420,9 @@ export default {
   'audit.exports.cancel.submit': 'Cancel job',
   'audit.exports.detail.title': 'Export detail',
   'audit.exports.detail.error': 'Error',
+  'audit.exports.error.ENQUEUE_FAILED': 'Failed to queue the export job',
+  'audit.exports.error.AUDIT_APPEND_FAILED': 'Failed to record the export audit event',
+  'audit.exports.error.unknown': 'Export failed',
   'audit.exports.detail.filters': 'Filter snapshot',
   'audit.exports.filter.action': 'Action',
   'audit.exports.filter.actions': 'Actions',
@@ -2413,6 +2487,7 @@ export default {
   'audit.holds.create.submit': 'Create retention',
   'audit.holds.create.reasonDesc': 'Describe why this data must be preserved.',
   'audit.holds.create.scopeIdRequired': 'Scope ID is required for this scope type.',
+  'audit.holds.create.expiresAtMustBeFuture': 'Expiry must be a future date and time.',
   'audit.holds.release.title': 'Release data retention',
   'audit.holds.release.desc': 'After release, scheduled cleanup may delete matching data again.',
   'audit.holds.release.impact':
@@ -2512,6 +2587,8 @@ export default {
   'audit.live.filters.refreshed': 'Updated {{time}}',
   'audit.live.filters.refreshNow': 'Refresh now',
   'audit.live.empty.pickUser': 'Pick a user to start watching.',
+  'audit.live.empty.noConversationPermission':
+    'You do not have permission to view conversation content.',
   'audit.live.banner.contentAllowed':
     'Chat text is loaded here and this access is written to the audit log.',
   'audit.live.banner.metadataOnly': 'Policy allows metadata only — message text stays hidden.',
@@ -2523,6 +2600,10 @@ export default {
   'audit.live.messages.empty': 'No messages yet.',
   'audit.live.messages.jumpNew': 'New messages ↓',
   'audit.live.message.bodyHidden': 'Text not visible under current policy',
+  'audit.live.message.role.user': 'User',
+  'audit.live.message.role.assistant': 'Assistant',
+  'audit.live.message.role.system': 'System',
+  'audit.live.message.role.tool': 'Tool',
   'audit.live.message.expand': 'Show system / tool message',
   'audit.live.message.collapse': 'Hide',
   'audit.live.relative.justNow': 'just now',

@@ -36,11 +36,9 @@ export {
 } from './providers/RuntimeBrandingProvider';
 export {
   createEnterpriseModuleRegistry,
-  type EnterpriseMenuItem,
   type EnterpriseModuleRegistration,
   type EnterpriseModuleRegistry,
   enterpriseModuleRegistry,
-  type EnterpriseSystemCheck,
 } from './registry';
 export {
   createAdminRouteTree,

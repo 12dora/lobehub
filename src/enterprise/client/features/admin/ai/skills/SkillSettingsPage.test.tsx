@@ -32,9 +32,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/enterprise/client/services/adminSkills', () => ({
   adminSkillsService: mocks.skills,
-  clearLastAdminSkillPublishOutcome: vi.fn(),
-  getLastAdminSkillPublishOutcome: vi.fn(() => null),
-  setLastAdminSkillPublishOutcome: vi.fn(),
 }));
 
 vi.mock('@/enterprise/client/services/adminConnectors', () => ({
