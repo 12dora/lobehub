@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 
+import { parse as parseYaml } from 'yaml';
+
 import {
   ENTERPRISE_ALERT_RULES_CONTAINER_DIR,
   ENTERPRISE_ALERT_RULES_RELATIVE_PATH,
@@ -26,32 +28,42 @@ export interface ComposeWiringReport {
   rulesHostPathFragment: string;
 }
 
-const extractServiceBlock = (compose: string, serviceName: string): string => {
-  const lines = compose.split('\n');
-  const start = lines.findIndex((line) => line.match(new RegExp(`^  ${serviceName}:\\s*$`)));
-  if (start < 0) throw new Error(`compose missing service ${serviceName}`);
-  let end = lines.length;
-  for (let index = start + 1; index < lines.length; index += 1) {
-    if (/^ {2}[a-z0-9][\w-]*:\s*$/.test(lines[index]!)) {
-      end = index;
-      break;
-    }
-  }
-  return lines.slice(start, end).join('\n');
+type ComposeService = {
+  command?: string | string[];
+  image?: string;
+  volumes?: Array<string | { source?: string; target?: string; type?: string }>;
 };
 
-const extractCommandFlags = (serviceBlock: string): string[] => {
-  const flags: string[] = [];
-  for (const line of serviceBlock.split('\n')) {
-    const match = line.match(/^\s+-\s+'([^']+)'\s*$/) ?? line.match(/^\s+-\s+"([^"]+)"\s*$/);
-    if (match?.[1]?.startsWith('--')) flags.push(match[1]);
-  }
-  return flags;
+type ComposeDocument = {
+  services?: Record<string, ComposeService | undefined>;
 };
+
+const asStringArray = (command: string | string[] | undefined): string[] => {
+  if (!command) return [];
+  if (Array.isArray(command)) return command.map(String);
+  // YAML scalar form: "prometheus --config.file=..."
+  return String(command).split(/\s+/u).filter(Boolean);
+};
+
+const volumeEntries = (volumes: ComposeService['volumes']): string[] => {
+  if (!volumes) return [];
+  return volumes.map((entry) => {
+    if (typeof entry === 'string') return entry;
+    const source = entry.source ?? '';
+    const target = entry.target ?? '';
+    return `${source}:${target}`;
+  });
+};
+
+const serviceHasMount = (service: ComposeService, needle: string): boolean =>
+  volumeEntries(service.volumes).some((volume) => volume === needle || volume.includes(needle));
 
 /**
  * Assert compose + prometheus.yml + collector config wire the enterprise reference stack.
  * Fail closed on missing mounts, wrong pins, forbidden Prometheus flags, or broken metrics pipeline.
+ *
+ * Image / command / volume checks use parsed YAML service blocks — not whole-file string includes —
+ * so pins in comments or unrelated services cannot satisfy the gate.
  */
 export const assertEnterprisePrometheusComposeWiring = (
   repositoryRoot: string = resolveRepositoryRoot(),
@@ -59,36 +71,71 @@ export const assertEnterprisePrometheusComposeWiring = (
   const composePath = resolveGrafanaComposePath(repositoryRoot);
   const prometheusConfigPath = resolvePrometheusConfigPath(repositoryRoot);
   const collectorConfigPath = resolveCollectorConfigPath(repositoryRoot);
-  const compose = readFileSync(composePath, 'utf8');
+  const composeText = readFileSync(composePath, 'utf8');
   const prometheusConfig = readFileSync(prometheusConfigPath, 'utf8');
   const collectorConfig = readFileSync(collectorConfigPath, 'utf8');
 
-  if (!compose.includes(ENTERPRISE_PROMETHEUS_IMAGE)) {
+  let compose: ComposeDocument;
+  try {
+    compose = parseYaml(composeText) as ComposeDocument;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`docker-compose YAML parse failed: ${message}`, { cause: error });
+  }
+
+  const services = compose.services ?? {};
+  const prometheusService = services.prometheus;
+  const collectorService = services['otel-collector'] ?? services.otelcollector;
+  if (!prometheusService || typeof prometheusService !== 'object') {
+    throw new Error('docker-compose missing services.prometheus');
+  }
+  if (!collectorService || typeof collectorService !== 'object') {
+    throw new Error('docker-compose missing services.otel-collector');
+  }
+
+  if (prometheusService.image !== ENTERPRISE_PROMETHEUS_IMAGE) {
     throw new Error(
-      `docker-compose must pin Prometheus image ${ENTERPRISE_PROMETHEUS_IMAGE} (found compose without pin)`,
+      `services.prometheus.image must pin ${ENTERPRISE_PROMETHEUS_IMAGE} (got ${String(prometheusService.image ?? 'missing')})`,
     );
   }
-  if (!compose.includes(ENTERPRISE_OTEL_COLLECTOR_IMAGE)) {
+  if (collectorService.image !== ENTERPRISE_OTEL_COLLECTOR_IMAGE) {
     throw new Error(
-      `docker-compose must pin OTel collector image ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}`,
+      `services.otel-collector.image must pin ${ENTERPRISE_OTEL_COLLECTOR_IMAGE} (got ${String(collectorService.image ?? 'missing')})`,
     );
   }
 
   const rulesMount = `./prometheus/rules:${ENTERPRISE_ALERT_RULES_CONTAINER_DIR}:ro`;
-  if (!compose.includes(rulesMount)) {
+  if (
+    !serviceHasMount(
+      prometheusService,
+      `./prometheus/rules:${ENTERPRISE_ALERT_RULES_CONTAINER_DIR}`,
+    )
+  ) {
     throw new Error(
-      `docker-compose must mount rules read-only as ${rulesMount} so Prometheus can load ${ENTERPRISE_ALERT_RULES_RELATIVE_PATH}`,
+      `services.prometheus must mount rules read-only as ${rulesMount} so Prometheus can load ${ENTERPRISE_ALERT_RULES_RELATIVE_PATH}`,
     );
   }
 
   const configMount = `./prometheus/prometheus.yml:${ENTERPRISE_PROMETHEUS_CONFIG_CONTAINER_PATH}:ro`;
-  if (!compose.includes(configMount)) {
-    throw new Error(`docker-compose must mount prometheus.yml read-only as ${configMount}`);
+  if (
+    !serviceHasMount(
+      prometheusService,
+      `./prometheus/prometheus.yml:${ENTERPRISE_PROMETHEUS_CONFIG_CONTAINER_PATH}`,
+    )
+  ) {
+    throw new Error(`services.prometheus must mount prometheus.yml read-only as ${configMount}`);
   }
 
   const collectorMount = `./otel-collector/collector-config.yaml:${ENTERPRISE_OTEL_COLLECTOR_CONFIG_CONTAINER_PATH}:ro`;
-  if (!compose.includes(collectorMount)) {
-    throw new Error(`docker-compose must mount collector config read-only as ${collectorMount}`);
+  if (
+    !serviceHasMount(
+      collectorService,
+      `./otel-collector/collector-config.yaml:${ENTERPRISE_OTEL_COLLECTOR_CONFIG_CONTAINER_PATH}`,
+    )
+  ) {
+    throw new Error(
+      `services.otel-collector must mount collector config read-only as ${collectorMount}`,
+    );
   }
 
   if (
@@ -111,15 +158,15 @@ export const assertEnterprisePrometheusComposeWiring = (
     );
   }
 
-  const prometheusBlock = extractServiceBlock(compose, 'prometheus');
-  const prometheusCommand = extractCommandFlags(prometheusBlock);
+  const prometheusCommand = asStringArray(prometheusService.command).filter((part) =>
+    part.startsWith('--'),
+  );
   for (const flag of ENTERPRISE_PROMETHEUS_REQUIRED_FLAGS) {
     if (!prometheusCommand.includes(flag)) {
       throw new Error(`prometheus service must pass runtime flag ${flag}`);
     }
   }
   for (const flag of ENTERPRISE_PROMETHEUS_FORBIDDEN_FLAGS) {
-    // Only command entries count — comments may mention the forbidden flag by name.
     if (prometheusCommand.includes(flag)) {
       throw new Error(
         `prometheus service must not pass unsupported flag ${flag} for ${ENTERPRISE_PROMETHEUS_IMAGE}`,
@@ -164,12 +211,12 @@ export const assertEnterprisePrometheusComposeWiring = (
   }
 
   return {
-    collectorImage: ENTERPRISE_OTEL_COLLECTOR_IMAGE,
+    collectorImage: collectorService.image ?? ENTERPRISE_OTEL_COLLECTOR_IMAGE,
     composePath,
     metricsPipeline: { exporters, receivers },
     prometheusCommand,
     prometheusConfigPath,
-    prometheusImage: ENTERPRISE_PROMETHEUS_IMAGE,
+    prometheusImage: prometheusService.image ?? ENTERPRISE_PROMETHEUS_IMAGE,
     ruleFilesGlob: '/etc/prometheus/rules/enterprise-platform-alerts.yml',
     rulesHostPathFragment: './prometheus/rules',
   };

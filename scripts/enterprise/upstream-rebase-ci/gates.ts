@@ -5,7 +5,7 @@ import { filterExistingLintablePaths } from './changedFiles';
 import type { GateResult, KnownGateId } from './contract';
 import { EXPECTED_GATE_KINDS, FAIL_CLOSED_GATE_IDS, KNOWN_GATE_IDS } from './contract';
 import { runFailureDrillsGate } from './failureDrillGate';
-import { runMigrationUpgradeRollbackGate } from './migrationGate';
+import { runMigrationUpgradeRerunGate } from './migrationGate';
 import { runProcess } from './process';
 import { assertNoSecrets } from './secretScan';
 
@@ -25,7 +25,7 @@ export interface GateDefinition {
   /**
    * Built-in custom runners that need changed-file context or multi-suite logic.
    */
-  runner?: 'bun-check-changed' | 'failure-drills' | 'migration-upgrade-rollback';
+  runner?: 'bun-check-changed' | 'failure-drills' | 'migration-upgrade-rerun';
 }
 
 /**
@@ -90,10 +90,10 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
     failClosed: true,
     reason: 'Conflicts require independent manual review; dry-run cannot auto-pass.',
   },
-  'migration-upgrade-rollback': {
-    id: 'migration-upgrade-rollback',
+  'migration-upgrade-rerun': {
+    id: 'migration-upgrade-rerun',
     kind: 'command',
-    runner: 'migration-upgrade-rollback',
+    runner: 'migration-upgrade-rerun',
     reason:
       'Q03 migration compatibility synthetic foundation (owned PG upgrade/apply/rerun). Does not claim app-version rollback or production-dump overall pass; weak journal-only substitutes are rejected.',
   },
@@ -229,13 +229,22 @@ const evaluateVitestAssertions = (
 
 /**
  * After autofixing checkers, any worktree mutation is a false green.
+ * Tri-state: never treat a failed `git status` as a clean tree.
+ * - clean: inspection succeeded and porcelain is empty
+ * - mutated: inspection succeeded and porcelain is non-empty
+ * - unknown: git status exited nonzero (gate must fail closed)
  */
-export const detectAutofixMutation = async (repositoryRoot: string): Promise<boolean> => {
+export type AutofixMutationStatus = 'clean' | 'mutated' | 'unknown';
+
+export const detectAutofixMutation = async (
+  repositoryRoot: string,
+): Promise<AutofixMutationStatus> => {
   const status = await runProcess(
     ['git', '--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
     repositoryRoot,
   );
-  return status.code === 0 && status.stdout.length > 0;
+  if (status.code !== 0) return 'unknown';
+  return status.stdout.length > 0 ? 'mutated' : 'clean';
 };
 
 export const runBunCheckChangedGate = async ({
@@ -281,12 +290,21 @@ export const runBunCheckChangedGate = async ({
     };
   }
 
-  if (await detectAutofixMutation(repositoryRoot)) {
+  const mutation = await detectAutofixMutation(repositoryRoot);
+  if (mutation === 'mutated') {
     return {
       id: 'bun-check-changed',
       kind: 'command',
       outcome: 'failed',
       reason: 'Autofix mutated the integration tree after exit 0 (false green).',
+    };
+  }
+  if (mutation === 'unknown') {
+    return {
+      id: 'bun-check-changed',
+      kind: 'command',
+      outcome: 'failed',
+      reason: 'Unable to inspect worktree after exit 0 (git status failed; fail closed).',
     };
   }
 
@@ -372,8 +390,8 @@ export const runSelectedGates = async ({
       continue;
     }
 
-    if (definition.runner === 'migration-upgrade-rollback') {
-      results.push(await runMigrationUpgradeRollbackGate({ rawDirectory, repositoryRoot }));
+    if (definition.runner === 'migration-upgrade-rerun') {
+      results.push(await runMigrationUpgradeRerunGate({ rawDirectory, repositoryRoot }));
       continue;
     }
 
@@ -416,16 +434,27 @@ export const runSelectedGates = async ({
     const processResult = await runProcess(argv, cwd);
 
     if (definition.kind === 'command') {
-      let outcome: 'failed' | 'passed' = processResult.code === 0 ? 'passed' : 'failed';
-      if (outcome === 'passed' && (await detectAutofixMutation(repositoryRoot))) {
-        outcome = 'failed';
-        results.push({
-          id: gateId,
-          kind: 'command',
-          outcome,
-          reason: 'Command gate autofix mutated the integration tree after exit 0.',
-        });
-        continue;
+      const outcome: 'failed' | 'passed' = processResult.code === 0 ? 'passed' : 'failed';
+      if (outcome === 'passed') {
+        const mutation = await detectAutofixMutation(repositoryRoot);
+        if (mutation === 'mutated') {
+          results.push({
+            id: gateId,
+            kind: 'command',
+            outcome: 'failed',
+            reason: 'Command gate autofix mutated the integration tree after exit 0.',
+          });
+          continue;
+        }
+        if (mutation === 'unknown') {
+          results.push({
+            id: gateId,
+            kind: 'command',
+            outcome: 'failed',
+            reason: 'Unable to inspect worktree after exit 0 (git status failed; fail closed).',
+          });
+          continue;
+        }
       }
       results.push({
         id: gateId,

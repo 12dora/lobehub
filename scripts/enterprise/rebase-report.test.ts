@@ -577,7 +577,7 @@ describe('analyzeRebase', () => {
       expect.arrayContaining([
         'bun-check-changed',
         'failure-drills',
-        'migration-upgrade-rollback',
+        'migration-upgrade-rerun',
         'permission-matrix',
         'privacy-review',
         'spa-route-sync',

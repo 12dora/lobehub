@@ -61,6 +61,7 @@ const buildBackupPayload = (
       sourceManifestSha256: manifestSha,
       sourceSchemaTag: FIXTURE_MIGRATION_TAG,
     },
+    assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
     candidateSha: FIXTURE_CANDIDATE_SHA,
     environment: 'production' as const,
     gateId: 'backup-restore' as const,

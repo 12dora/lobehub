@@ -25,7 +25,6 @@ import {
   buildPassingFailureDrillEvidenceFixture,
   evaluateFailureDrillEvidenceDirectory,
   runFailureDrillsGate,
-  writeFailureDrillEvidenceFixture,
 } from './failureDrillGate';
 import {
   assertSourceUnchanged,
@@ -44,7 +43,7 @@ import {
 import {
   buildQ03PassingFixtureReport,
   evaluateQ03MigrationCompatEvidence,
-  runMigrationUpgradeRollbackGate,
+  runMigrationUpgradeRerunGate,
 } from './migrationGate';
 import {
   assertReportCommitsMatch,
@@ -193,12 +192,10 @@ describe('gate mapping', () => {
     expect(GATE_DEFINITIONS['failure-drills'].runner).toBe('failure-drills');
     expect(GATE_DEFINITIONS['failure-drills'].failClosed).toBeUndefined();
     expect(GATE_DEFINITIONS['bun-check-changed'].runner).toBe('bun-check-changed');
-    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].kind).toBe('command');
-    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].runner).toBe(
-      'migration-upgrade-rollback',
-    );
-    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].reason).toMatch(/Q03/);
-    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].reason).toMatch(
+    expect(GATE_DEFINITIONS['migration-upgrade-rerun'].kind).toBe('command');
+    expect(GATE_DEFINITIONS['migration-upgrade-rerun'].runner).toBe('migration-upgrade-rerun');
+    expect(GATE_DEFINITIONS['migration-upgrade-rerun'].reason).toMatch(/Q03/);
+    expect(GATE_DEFINITIONS['migration-upgrade-rerun'].reason).toMatch(
       /weak journal-only substitutes are rejected/i,
     );
     expect(resolveGateDefinition('not-a-real-gate').failClosed).toBe(true);
@@ -560,15 +557,22 @@ describe('bun-check-changed selection and autofix false green', () => {
     await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 1;\n');
     await commitAll(repositoryRoot, 'base');
     await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 2;\n');
-    expect(await detectAutofixMutation(repositoryRoot)).toBe(true);
+    expect(await detectAutofixMutation(repositoryRoot)).toBe('mutated');
+  });
+
+  it('fails closed when git status inspection exits nonzero', async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'autofix-nogit-'));
+    temporaryRoots.push(repositoryRoot);
+    // No .git directory → git status fails → unknown (not clean).
+    expect(await detectAutofixMutation(repositoryRoot)).toBe('unknown');
   });
 });
 
-describe('migration-upgrade-rollback Q03-only', () => {
+describe('migration-upgrade-rerun Q03-only', () => {
   it('fails closed when Q03 verifier is absent (no journal fallback)', async () => {
     const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'migration-absent-'));
     temporaryRoots.push(repositoryRoot);
-    const result = await runMigrationUpgradeRollbackGate({
+    const result = await runMigrationUpgradeRerunGate({
       rawDirectory: path.join(repositoryRoot, 'raw'),
       repositoryRoot,
     });
@@ -603,12 +607,13 @@ describe('migration-upgrade-rollback Q03-only', () => {
 
     const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'migration-fixture-'));
     temporaryRoots.push(repositoryRoot);
-    const result = await runMigrationUpgradeRollbackGate({
+    const result = await runMigrationUpgradeRerunGate({
       injectedReport: fixture,
       rawDirectory: path.join(repositoryRoot, 'raw'),
       repositoryRoot,
     });
     expect(result.outcome).toBe('passed');
+    expect(result.id).toBe('migration-upgrade-rerun');
     expect(result.assertions?.total).toBeGreaterThan(0);
     expect(result.assertions?.passed).toBe(result.assertions?.total);
     expect(result.reason).toMatch(/Q03|synthetic foundation/i);
@@ -631,13 +636,57 @@ describe('failure-drills structured evidence', () => {
     temporaryRoots.push(emptyDir);
     expect(await evaluateFailureDrillEvidenceDirectory(emptyDir)).toBe(false);
 
+    // Aggregate-only forged digests without raw reports must fail.
+    const forgedDir = await mkdtemp(path.join(tmpdir(), 'drill-forged-'));
+    temporaryRoots.push(forgedDir);
+    const { createFailureDrillEvidence, FAILURE_DRILL_LANE, FAILURE_DRILL_SCHEMA_VERSION } =
+      await import('../failure-drills/contract');
+    const { FAILURE_DRILL_SCENARIOS } = await import('../failure-drills/scenarios');
+    for (const scenario of FAILURE_DRILL_SCENARIOS) {
+      const expected = scenario.reports.reduce((t, r) => t + r.expectedAssertions, 0);
+      const evidence = createFailureDrillEvidence({
+        artifact: { sha256: 'b'.repeat(64) },
+        assertions: { failed: 0, passed: expected, skipped: 0, total: expected },
+        cleanupResult: 'passed',
+        dependencies: {
+          bun: '1.3.5',
+          node: '24.13.0',
+          postgres: '17.5',
+          redis: '7.4.2',
+        },
+        elapsed: { milliseconds: 25 },
+        gitSha: 'a'.repeat(40),
+        injection: scenario.injection,
+        lane: FAILURE_DRILL_LANE,
+        recovery: scenario.recovery,
+        scenarioId: scenario.scenarioId,
+        schemaVersion: FAILURE_DRILL_SCHEMA_VERSION,
+      });
+      await writeFile(
+        path.join(forgedDir, `${scenario.scenarioId}.json`),
+        `${JSON.stringify(evidence, null, 2)}\n`,
+        'utf8',
+      );
+    }
+    expect(await evaluateFailureDrillEvidenceDirectory(forgedDir)).toBe(false);
+    const forgedGate = await runFailureDrillsGate({
+      injectedEvidenceDirectory: forgedDir,
+      rawDirectory: path.join(forgedDir, 'raw'),
+      repositoryRoot: process.cwd(),
+    });
+    expect(forgedGate.outcome).toBe('failed');
+
     const fullDir = await mkdtemp(path.join(tmpdir(), 'drill-full-'));
-    temporaryRoots.push(fullDir);
-    await writeFailureDrillEvidenceFixture(fullDir, buildPassingFailureDrillEvidenceFixture());
-    expect(await evaluateFailureDrillEvidenceDirectory(fullDir)).toBe(true);
+    const reportsDir = await mkdtemp(path.join(tmpdir(), 'drill-reports-'));
+    temporaryRoots.push(fullDir, reportsDir);
+    await buildPassingFailureDrillEvidenceFixture(fullDir, reportsDir);
+    expect(await evaluateFailureDrillEvidenceDirectory(fullDir, reportsDir)).toBe(true);
+    // Missing reports directory → reject even with valid aggregates.
+    expect(await evaluateFailureDrillEvidenceDirectory(fullDir)).toBe(false);
 
     const gatePass = await runFailureDrillsGate({
       injectedEvidenceDirectory: fullDir,
+      injectedReportsDirectory: reportsDir,
       rawDirectory: path.join(fullDir, 'raw'),
       repositoryRoot: process.cwd(),
     });
@@ -865,10 +914,10 @@ describe('evidence contract', () => {
   });
 
   it('requires assertions for structured command gates on pass and fail', () => {
-    expect(STRUCTURED_COMMAND_GATE_IDS.has('migration-upgrade-rollback')).toBe(true);
+    expect(STRUCTURED_COMMAND_GATE_IDS.has('migration-upgrade-rerun')).toBe(true);
     expect(STRUCTURED_COMMAND_GATE_IDS.has('failure-drills')).toBe(true);
 
-    for (const id of ['migration-upgrade-rollback', 'failure-drills'] as const) {
+    for (const id of ['migration-upgrade-rerun', 'failure-drills'] as const) {
       expect(() =>
         createUpstreamRebaseEvidence({
           ...baseEvidenceInput(),

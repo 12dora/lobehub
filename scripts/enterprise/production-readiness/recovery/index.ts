@@ -15,7 +15,6 @@ export {
   finalizeBackupRestoreResultProvenance,
   type InputAttestationRef,
   isCorruptedDump,
-  isUnsafeBackupPath,
   rejectIdenticalSourceTarget,
   runBackupRestoreDrill,
 } from './backupRestore';

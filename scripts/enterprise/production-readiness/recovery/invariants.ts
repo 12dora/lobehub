@@ -206,10 +206,24 @@ export const digestAllRequiredTables = async (
     }
     const columns = cols.rows.map((c) => ({ dataType: c.data_type, name: c.column_name }));
     const quoted = columns.map((c) => `"${c.name}"`).join(', ');
-    const result = await client.query<Record<string, unknown>>(`SELECT ${quoted} FROM "${table}"`);
-    const rowCanonicals = result.rows
-      .map((row) => canonicalizeTableRow(columns, row))
-      .sort((a, b) => a.localeCompare(b, 'en'));
+    // Cursor-style chunked read to avoid holding unbounded driver buffers for huge tables.
+    // Canonical digest still sorts all row encodings (deterministic encoding contract).
+    const CHUNK = 500;
+    const rowCanonicals: string[] = [];
+    let offset = 0;
+    for (;;) {
+      const result = await client.query<Record<string, unknown>>(
+        `SELECT ${quoted} FROM "${table}" ORDER BY 1 OFFSET $1 LIMIT $2`,
+        [offset, CHUNK],
+      );
+      if (result.rows.length === 0) break;
+      for (const row of result.rows) {
+        rowCanonicals.push(canonicalizeTableRow(columns, row));
+      }
+      offset += result.rows.length;
+      if (result.rows.length < CHUNK) break;
+    }
+    rowCanonicals.sort((a, b) => a.localeCompare(b, 'en'));
     const payload = {
       columns: columns.map((c) => ({ name: c.name, type: c.dataType })),
       encodingVersion: TABLE_DIGEST_ENCODING_VERSION,
@@ -921,44 +935,50 @@ export const verifyPublicationPointers = async (
        WHERE "${source.pointerColumn}" IS NOT NULL
        ORDER BY "${source.holderIdColumn}"::text`,
     );
+
+    // Schema metadata once per source (not N+1).
+    const hasVersion = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'version'
+       ) AS exists`,
+      [source.versionTable],
+    );
+    const includeVersion = hasVersion.rows[0]?.exists === true;
+
+    // Batch load all referenced version rows (single query; no per-row N+1).
+    const pointers = rows.rows.map((row) => String(row.pointer ?? '')).filter(Boolean);
+    type VersionRow = {
+      checksum: string | null;
+      id: string;
+      owner_id: string;
+      version: string | null;
+    };
+    const versionsById = new Map<string, VersionRow[]>();
+    if (pointers.length > 0) {
+      const versionQuery = includeVersion
+        ? `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
+                  "${source.checksumColumn}"::text AS checksum,
+                  version::text AS version
+           FROM "${source.versionTable}"
+           WHERE id::text = ANY($1::text[])`
+        : `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
+                  "${source.checksumColumn}"::text AS checksum,
+                  NULL::text AS version
+           FROM "${source.versionTable}"
+           WHERE id::text = ANY($1::text[])`;
+      const versionRows = await client.query<VersionRow>(versionQuery, [pointers]);
+      for (const version of versionRows.rows) {
+        const list = versionsById.get(version.id) ?? [];
+        list.push(version);
+        versionsById.set(version.id, list);
+      }
+    }
+
     for (const row of rows.rows) {
       const pointer = String(row.pointer ?? '');
-      // Select stable target projection: id, owner, checksum (+ version when present).
-      const hasVersion = await client.query<{ exists: boolean }>(
-        `SELECT EXISTS (
-           SELECT 1 FROM information_schema.columns
-           WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'version'
-         ) AS exists`,
-        [source.versionTable],
-      );
-      const versionRows = hasVersion.rows[0]?.exists
-        ? await client.query<{
-            checksum: string | null;
-            id: string;
-            owner_id: string;
-            version: string | null;
-          }>(
-            `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
-                    "${source.checksumColumn}"::text AS checksum,
-                    version::text AS version
-             FROM "${source.versionTable}"
-             WHERE id::text = $1`,
-            [pointer],
-          )
-        : await client.query<{
-            checksum: string | null;
-            id: string;
-            owner_id: string;
-            version: string | null;
-          }>(
-            `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
-                    "${source.checksumColumn}"::text AS checksum,
-                    NULL::text AS version
-             FROM "${source.versionTable}"
-             WHERE id::text = $1`,
-            [pointer],
-          );
-      const versionCount = versionRows.rowCount ?? 0;
+      const matched = versionsById.get(pointer) ?? [];
+      const versionCount = matched.length;
       if (versionCount === 0) {
         return {
           match: false,
@@ -973,7 +993,7 @@ export const verifyPublicationPointers = async (
           pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
         };
       }
-      const version = versionRows.rows[0]!;
+      const version = matched[0]!;
       if (version.owner_id !== row.holder_id) {
         return {
           match: false,

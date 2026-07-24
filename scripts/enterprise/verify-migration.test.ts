@@ -123,6 +123,51 @@ describe('migration compat baseline (2.2.10 / 0000-0116)', () => {
     expect(result.match).toBe(true);
     expect(result.scannedMigrations).toBeGreaterThan(0);
   });
+
+  it('rejects destructive expand-only contract changes (negative fixtures)', async () => {
+    const { scanExpandOnlySql } = await import('./verify-migration/migrations');
+    const cases: Array<{ sql: string; reasonPrefix: string }> = [
+      { reasonPrefix: 'drop-column', sql: 'ALTER TABLE "users" DROP COLUMN "avatar";' },
+      { reasonPrefix: 'drop-column', sql: 'ALTER TABLE users DROP COLUMN IF EXISTS email;' },
+      {
+        reasonPrefix: 'drop-constraint',
+        sql: 'ALTER TABLE "sessions" DROP CONSTRAINT "sessions_user_id_fkey";',
+      },
+      { reasonPrefix: 'drop-table', sql: 'DROP TABLE IF EXISTS public.users;' },
+      { reasonPrefix: 'drop-table', sql: 'DROP TABLE "agents";' },
+      { reasonPrefix: 'rename', sql: 'ALTER TABLE topics RENAME TO topics_legacy;' },
+      {
+        reasonPrefix: 'rename',
+        sql: 'ALTER TABLE "messages" RENAME COLUMN "content" TO "body";',
+      },
+      {
+        reasonPrefix: 'narrowing-type',
+        sql: 'ALTER TABLE user_settings ALTER COLUMN "key" TYPE varchar(8);',
+      },
+      {
+        reasonPrefix: 'narrowing-nullability',
+        sql: 'ALTER TABLE api_keys ALTER COLUMN "name" SET NOT NULL;',
+      },
+      {
+        reasonPrefix: 'drop-column',
+        sql: '/* comment */ ALTER TABLE public.files DROP COLUMN "size";',
+      },
+    ];
+    for (const fixture of cases) {
+      const result = scanExpandOnlySql(fixture.sql);
+      expect(result.match, fixture.sql).toBe(false);
+      expect(
+        result.reasons.some((reason) => reason.startsWith(fixture.reasonPrefix)),
+        `${fixture.sql} → ${result.reasons.join(',')}`,
+      ).toBe(true);
+    }
+    // Expand-safe forms still pass.
+    expect(scanExpandOnlySql('ALTER TABLE users ADD COLUMN avatar text;').match).toBe(true);
+    expect(scanExpandOnlySql('CREATE INDEX ON users (email);').match).toBe(true);
+    expect(scanExpandOnlySql('ALTER TABLE users ALTER COLUMN name DROP NOT NULL;').match).toBe(
+      true,
+    );
+  });
 });
 
 describe('official drizzle migration semantics', () => {

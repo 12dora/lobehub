@@ -195,10 +195,3 @@ export const readFileSha256 = async (filePath: string): Promise<string> => {
   const buf = await readFile(filePath);
   return createHash('sha256').update(buf).digest('hex');
 };
-
-/** @deprecated Prefer createToolOwnedTempDir + cleanup with proof. */
-export const isToolOwnedTempPath = (absolutePath: string): boolean =>
-  path.basename(absolutePath).startsWith(TOOL_TEMP_PREFIX);
-
-export const buildToolTempDir = (parentDir: string): string =>
-  path.join(parentDir, buildToolTempDirName());

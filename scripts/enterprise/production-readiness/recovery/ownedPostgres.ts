@@ -191,19 +191,54 @@ export const createOwnedPostgres = async (): Promise<OwnedPostgresLifecycle> => 
       return fn(connectionString);
     },
     pgDumpCustom: async () => {
-      try {
-        const { stdout: buffer } = await execFileAsync(
+      // Stream dump chunks — no fixed maxBuffer ceiling.
+      return new Promise<Buffer>((resolve, reject) => {
+        const child = spawn(
           'docker',
           ['exec', containerId, 'pg_dump', '-Fc', '-U', 'postgres', '-d', database],
-          { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: DUMP_TIMEOUT_MS },
+          { stdio: ['ignore', 'pipe', 'pipe'] },
         );
-        if (!Buffer.isBuffer(buffer) || buffer.byteLength < 16) {
-          throw safeError('OwnedPostgresDumpEmpty');
-        }
-        return buffer;
-      } catch {
-        throw safeError('OwnedPostgresDumpFailed');
-      }
+        const chunks: Buffer[] = [];
+        let settled = false;
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          setTimeout(() => {
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              // already exited
+            }
+          }, 2_000);
+          settle(() => reject(safeError('OwnedPostgresDumpTimeout')));
+        }, DUMP_TIMEOUT_MS);
+        child.stdout.on('data', (chunk: Buffer) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        // Drain stderr to avoid pipe deadlock; discard content (privacy).
+        child.stderr.on('data', () => undefined);
+        child.on('error', (error) => {
+          clearTimeout(timer);
+          settle(() => reject(error));
+        });
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          if (code !== 0) {
+            settle(() => reject(safeError('OwnedPostgresDumpFailed')));
+            return;
+          }
+          const buffer = Buffer.concat(chunks);
+          if (buffer.byteLength < 16) {
+            settle(() => reject(safeError('OwnedPostgresDumpEmpty')));
+            return;
+          }
+          settle(() => resolve(buffer));
+        });
+      });
     },
     pgRestoreCustom: async (dump: Buffer) => {
       if (!Buffer.isBuffer(dump) || dump.byteLength < 16) {
@@ -224,23 +259,44 @@ export const createOwnedPostgres = async (): Promise<OwnedPostgresLifecycle> => 
             '--clean',
             '--if-exists',
           ],
-          { stdio: ['pipe', 'pipe', 'pipe'] },
+          // Ignore unused stdout/stderr to avoid pipe-buffer deadlock; stdin streams dump.
+          { stdio: ['pipe', 'ignore', 'ignore'] },
         );
+        let settled = false;
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
         const timer = setTimeout(() => {
           child.kill('SIGTERM');
-          reject(safeError('OwnedPostgresRestoreTimeout'));
+          setTimeout(() => {
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              // already exited
+            }
+          }, 2_000);
+          settle(() => reject(safeError('OwnedPostgresRestoreTimeout')));
         }, DUMP_TIMEOUT_MS);
         child.on('error', (error) => {
           clearTimeout(timer);
-          reject(error);
+          settle(() => reject(error));
         });
         child.on('close', (code) => {
           clearTimeout(timer);
-          if (code === 0) resolve();
-          else reject(safeError('OwnedPostgresRestoreFailed'));
+          if (code === 0) settle(() => resolve());
+          else settle(() => reject(safeError('OwnedPostgresRestoreFailed')));
         });
-        child.stdin.write(dump);
-        child.stdin.end();
+        // Write with backpressure when possible.
+        const writeOk = child.stdin.write(dump);
+        if (writeOk) {
+          child.stdin.end();
+        } else {
+          child.stdin.once('drain', () => {
+            child.stdin.end();
+          });
+        }
       });
     },
     withClient: async (fn) => {

@@ -6,7 +6,6 @@ export {
   type DispatchOptions,
   type DispatchResult,
   isAllowlistedCommandId,
-  resolveAllowlistedArgv,
 } from './commands';
 export {
   applyCommandTransition,
@@ -23,6 +22,7 @@ export {
 export {
   ALLOWLISTED_COMMAND_IDS,
   type AllowlistedCommandId,
+  APP_ROLLBACK_IMPLEMENTATION_STATUS,
   APP_ROLLBACK_LANE,
   APP_ROLLBACK_SCHEMA_VERSION,
   BACKUP_RESTORE_LANE,
@@ -63,12 +63,10 @@ export {
   isFreshEvidence,
 } from './freshness';
 export {
-  buildToolTempDir,
   type CleanupProof,
   cleanupToolOwnedPath,
   createToolOwnedTempDir,
   digestArtifactJson,
-  isToolOwnedTempPath,
   serializeArtifactJson,
   type ToolOwnedTempHandle,
   writeJsonAtomic,
