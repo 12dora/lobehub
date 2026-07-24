@@ -83,7 +83,7 @@ vi.mock('./openReasonModal', () => ({
     document.body.appendChild(root);
     createRoot(root).render(
       typeof props.extra === 'function'
-        ? props.extra({ locked: false, phase: 'idle' })
+        ? props.extra({ locked: false, phase: 'idle', reportExtraChange: () => undefined })
         : props.extra,
     );
     return { close: vi.fn(), destroy: vi.fn(), update: vi.fn() };

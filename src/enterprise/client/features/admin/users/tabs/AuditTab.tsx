@@ -6,6 +6,7 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { formatAuditReason } from '../auditReasonCodes';
 import { useFetchAdminUserAuditTrail } from '../hooks/useAdminUsers';
 import { formatAdminDateTime } from '../utils';
 
@@ -50,6 +51,19 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
     setCursorStack((s) => (s.length === 0 ? s : s.slice(0, -1)));
   }, []);
 
+  const formatAction = useCallback(
+    (action: string) => t(`audit.logs.action.${action}` as never, { defaultValue: action }),
+    [t],
+  );
+
+  const formatReason = useCallback(
+    (reason: string | null | undefined) =>
+      formatAuditReason(reason, (key, options) =>
+        String(t(key as never, { defaultValue: options?.defaultValue })),
+      ),
+    [t],
+  );
+
   if (!canReadAudit) {
     return (
       <Flexbox gap={8}>
@@ -90,10 +104,10 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
           <div className={styles.row} key={row.id}>
             <Text type="secondary">{formatAdminDateTime(row.createdAt)}</Text>
             <div>
-              <Text style={{ fontWeight: 500 }}>{row.action}</Text>
+              <Text style={{ fontWeight: 500 }}>{formatAction(row.action)}</Text>
               {row.reason ? (
                 <Text style={{ display: 'block', fontSize: 12 }} type="secondary">
-                  {row.reason}
+                  {formatReason(row.reason)}
                 </Text>
               ) : null}
             </div>

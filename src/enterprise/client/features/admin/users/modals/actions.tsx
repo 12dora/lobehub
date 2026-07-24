@@ -1,7 +1,7 @@
 'use client';
 
 import { DatePicker, Text } from '@lobehub/ui';
-import { Checkbox, toast } from '@lobehub/ui/base-ui';
+import { Checkbox, Input, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
 import i18n from 'i18next';
@@ -18,7 +18,12 @@ import type {
   AdminUsersUnbanInput,
 } from '@/enterprise/client/services/adminUsers';
 
+import { AUTO_REASON } from '../auditReasonCodes';
+import { validateHardDeleteConfirm } from './deleteConfirm';
 import { openReasonModal } from './openReasonModal';
+
+// Re-export stable codes for callers that historically imported from this module.
+export { AUTO_REASON, AUTO_REASON_LEGACY } from '../auditReasonCodes';
 
 const styles = createStaticStyles(({ css }) => ({
   field: css`
@@ -57,19 +62,6 @@ const ALL_ASSIGNABLE: PlatformSystemRoleName[] = [
 
 const t = (key: string, opts?: Record<string, unknown>) =>
   String(i18n.t(key as never, { ns: 'admin', ...opts }));
-
-/**
- * Fixed audit reasons for confirm-only actions (no free-form reason field).
- * The server still bounds these as a non-empty reason — stable, non-localized strings
- * keep the audit trail consistent across locales.
- */
-const AUTO_REASON = {
-  delete: 'User hard-deleted from admin console',
-  revokeAll: 'All sessions revoked from admin console',
-  revokeOne: 'Session revoked from admin console',
-  roleRevoke: 'Global role revoked from admin console',
-  roles: 'Global roles updated from admin console',
-} as const;
 
 export const getEligibleAssignableRoles = (
   actorRoles: readonly { name: string }[],
@@ -130,7 +122,7 @@ BanExtraFields.displayName = 'BanExtraFields';
 
 export const openBanUserModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: Omit<AdminUsersBanInput, 'userId'>) => Promise<void>;
+  onConfirm: (input: AdminUsersBanInput) => Promise<void>;
   targetLabel: string;
   userId: string;
 }) => {
@@ -140,29 +132,33 @@ export const openBanUserModal = (params: {
     mode: 'permanent' as BanMode,
   };
 
-  const ControlledBan = memo<{ locked: boolean }>(({ locked }) => {
-    const [m, setM] = useState<BanMode>('permanent');
-    const [exp, setExp] = useState<Dayjs | null>(null);
-    return (
-      <BanExtraFields
-        expiresAt={exp}
-        locked={locked}
-        mode={m}
-        onExpiresAtChange={(next) => {
-          setExp(next);
-          banState.expiresAt = next;
-        }}
-        onModeChange={(next) => {
-          setM(next);
-          banState.mode = next;
-          if (next === 'permanent') {
-            setExp(null);
-            banState.expiresAt = null;
-          }
-        }}
-      />
-    );
-  });
+  const ControlledBan = memo<{ locked: boolean; reportExtraChange: () => void }>(
+    ({ locked, reportExtraChange }) => {
+      const [m, setM] = useState<BanMode>('permanent');
+      const [exp, setExp] = useState<Dayjs | null>(null);
+      return (
+        <BanExtraFields
+          expiresAt={exp}
+          locked={locked}
+          mode={m}
+          onExpiresAtChange={(next) => {
+            setExp(next);
+            banState.expiresAt = next;
+            reportExtraChange();
+          }}
+          onModeChange={(next) => {
+            setM(next);
+            banState.mode = next;
+            if (next === 'permanent') {
+              setExp(null);
+              banState.expiresAt = null;
+            }
+            reportExtraChange();
+          }}
+        />
+      );
+    },
+  );
   ControlledBan.displayName = 'ControlledBan';
 
   openReasonModal({
@@ -173,7 +169,9 @@ export const openBanUserModal = (params: {
     submitLabel: t('users.modals.ban.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.ban.title'),
-    extra: ({ locked }) => <ControlledBan locked={locked} />,
+    extra: ({ locked, reportExtraChange }) => (
+      <ControlledBan locked={locked} reportExtraChange={reportExtraChange} />
+    ),
     validateExtra: () => {
       if (banState.mode === 'permanent') return null;
       if (!banState.expiresAt) return 'users.modals.ban.expiryRequired';
@@ -181,14 +179,14 @@ export const openBanUserModal = (params: {
       return null;
     },
     buildPayload: (reason) => {
-      const payload: Omit<AdminUsersBanInput, 'userId'> = { reason };
+      const payload: AdminUsersBanInput = { reason, userId: params.userId };
       if (banState.mode === 'temporary' && banState.expiresAt) {
         payload.expiresAt = banState.expiresAt.toDate();
       }
       return payload;
     },
     onSubmit: async (payload) => {
-      await params.onConfirm(payload as Omit<AdminUsersBanInput, 'userId'>);
+      await params.onConfirm(payload as AdminUsersBanInput);
       toast.success(t('users.toast.banSuccess'));
     },
   });
@@ -198,7 +196,7 @@ export const openBanUserModal = (params: {
 
 export const openUnbanUserModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: Omit<AdminUsersUnbanInput, 'userId'>) => Promise<void>;
+  onConfirm: (input: AdminUsersUnbanInput) => Promise<void>;
   targetLabel: string;
   userId: string;
 }) => {
@@ -209,9 +207,9 @@ export const openUnbanUserModal = (params: {
     submitLabel: t('users.modals.unban.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.unban.title'),
-    buildPayload: (reason) => ({ reason }),
+    buildPayload: (reason) => ({ reason, userId: params.userId }),
     onSubmit: async (payload) => {
-      await params.onConfirm(payload as Omit<AdminUsersUnbanInput, 'userId'>);
+      await params.onConfirm(payload as AdminUsersUnbanInput);
       toast.success(t('users.toast.unbanSuccess'));
     },
   });
@@ -248,7 +246,7 @@ RevokeSelfExtra.displayName = 'RevokeSelfExtra';
 export const openRevokeSessionsModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   isSelf: boolean;
-  onConfirm: (input: Omit<AdminUsersRevokeSessionsInput, 'userId'>) => Promise<void>;
+  onConfirm: (input: AdminUsersRevokeSessionsInput) => Promise<void>;
   targetLabel: string;
   userId: string;
 }) => {
@@ -285,9 +283,10 @@ export const openRevokeSessionsModal = (params: {
     buildPayload: (reason) => ({
       includeCurrent: params.isSelf ? revokeState.includeCurrent : true,
       reason,
+      userId: params.userId,
     }),
     onSubmit: async (payload) => {
-      await params.onConfirm(payload as Omit<AdminUsersRevokeSessionsInput, 'userId'>);
+      await params.onConfirm(payload as AdminUsersRevokeSessionsInput);
       toast.success(t('users.toast.revokeSuccess'));
     },
   });
@@ -297,7 +296,7 @@ export const openRevokeSessionsModal = (params: {
 export const openRevokeSingleSessionModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   isSelf?: boolean;
-  onConfirm: (input: Omit<AdminUsersRevokeSessionsInput, 'userId'>) => Promise<void>;
+  onConfirm: (input: AdminUsersRevokeSessionsInput) => Promise<void>;
   sessionId: string;
   targetLabel: string;
   userId: string;
@@ -313,9 +312,13 @@ export const openRevokeSingleSessionModal = (params: {
     submitLabel: t('users.modals.revoke.confirmSingle'),
     targetLabel: params.targetLabel,
     title: t('users.modals.revoke.titleSingle'),
-    buildPayload: (reason) => ({ reason, sessionIds: [params.sessionId] }),
+    buildPayload: (reason) => ({
+      reason,
+      sessionIds: [params.sessionId],
+      userId: params.userId,
+    }),
     onSubmit: async (payload) => {
-      await params.onConfirm(payload as Omit<AdminUsersRevokeSessionsInput, 'userId'>);
+      await params.onConfirm(payload as AdminUsersRevokeSessionsInput);
       toast.success(t('users.toast.revokeSuccess'));
     },
   });
@@ -374,18 +377,103 @@ const RolesExtra = memo<{
 });
 RolesExtra.displayName = 'RolesExtra';
 
+/** Current global grant snapshot for replace-roles (name + optional per-grant expiry). */
+export type AdminUserRoleGrant = {
+  expiresAt?: Date | null;
+  name: string;
+};
+
+/**
+ * Per-role reconcile for replaceGlobalRoles.
+ *
+ * Never blanket-replaces the whole grant set: protected (inaccessible) roles always
+ * remain, and unchanged remaining grants are listed in `preserveRoleNames` so the
+ * server leaves their `expiresAt` untouched instead of delete+reinsert.
+ *
+ * When a shared expiry is applied, only protected roles stay in `preserveRoleNames`
+ * (untouched); selected eligible roles are rewritten with the shared expiry.
+ */
+export const buildReplaceGlobalRolesPayload = (params: {
+  /** Role names the actor is allowed to assign/remove. */
+  eligibleRoleNames: readonly PlatformSystemRoleName[];
+  /** Full current grants on the target (name + optional expiry metadata). */
+  currentRoles: readonly AdminUserRoleGrant[] | readonly string[];
+  reason: string;
+  /** Eligible roles the actor currently has selected in the modal. */
+  selectedRoleNames: readonly string[];
+  /** Optional shared expiry applied to rewritten (non-preserved) grants. */
+  sharedExpiresAt?: Date | null;
+  userId: string;
+}): AdminUsersReplaceGlobalRolesInput => {
+  const eligibleSet = new Set<string>(params.eligibleRoleNames);
+  const currentGrants: AdminUserRoleGrant[] = params.currentRoles.map((entry) =>
+    typeof entry === 'string' ? { name: entry } : entry,
+  );
+  const currentNames = currentGrants.map((g) => g.name);
+
+  // Roles the actor cannot assign must stay on the target (e.g. super_admin when actor is user_admin).
+  const protectedRoleNames = currentNames.filter(
+    (name) => !eligibleSet.has(name),
+  ) as PlatformSystemRoleName[];
+
+  const selectedEligible = params.selectedRoleNames.filter((r) =>
+    eligibleSet.has(r),
+  ) as PlatformSystemRoleName[];
+
+  // Always retain inaccessible current grants so the server does not treat the
+  // request as a demotion the actor was never authorized to perform.
+  const roleNames = [
+    ...new Set([...selectedEligible, ...protectedRoleNames]),
+  ] as PlatformSystemRoleName[];
+
+  const sharedExpiresAt =
+    params.sharedExpiresAt && !roleNames.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)
+      ? params.sharedExpiresAt
+      : undefined;
+
+  // When no shared expiry is applied: preserve every remaining grant so
+  // delete+reinsert does not clear per-grant expiresAt (e.g. temporary auditor).
+  // When a shared expiry IS set: only re-write eligible selected roles; still
+  // preserve protected roles (server skips super_admin expiry updates).
+  const preserveRoleNames = sharedExpiresAt
+    ? protectedRoleNames
+    : ([
+        ...new Set([
+          ...protectedRoleNames,
+          ...selectedEligible.filter((name) => currentNames.includes(name)),
+        ]),
+      ] as PlatformSystemRoleName[]);
+
+  const payload: AdminUsersReplaceGlobalRolesInput = {
+    preserveRoleNames,
+    reason: params.reason,
+    roleNames,
+    userId: params.userId,
+  };
+  if (sharedExpiresAt) {
+    payload.expiresAt = sharedExpiresAt;
+  }
+  return payload;
+};
+
 export const openReplaceRolesModal = (params: {
   actorRoles: readonly { name: string }[];
   authMethod?: AdminReauthAuthMethod;
-  currentRoles: string[];
-  onConfirm: (input: Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>) => Promise<void>;
+  /** Full current grants — inaccessible roles are preserved, not dropped. */
+  currentRoles: readonly AdminUserRoleGrant[] | readonly string[];
+  onConfirm: (input: AdminUsersReplaceGlobalRolesInput) => Promise<void>;
   targetLabel: string;
   userId: string;
 }) => {
   const eligible = getEligibleAssignableRoles(params.actorRoles);
-  const initial = new Set(
-    params.currentRoles.filter((r) => (eligible as readonly string[]).includes(r)),
+  const eligibleSet = new Set<string>(eligible);
+
+  // Normalize grant objects (callers may still pass bare names for tests).
+  const currentGrants: AdminUserRoleGrant[] = params.currentRoles.map((entry) =>
+    typeof entry === 'string' ? { name: entry } : entry,
   );
+  const currentNames = currentGrants.map((g) => g.name);
+  const initial = new Set(currentNames.filter((r) => eligibleSet.has(r)));
 
   // Updated only from onChange handlers — never during render.
   const rolesState = {
@@ -393,36 +481,40 @@ export const openReplaceRolesModal = (params: {
     selected: new Set(initial),
   };
 
-  const ControlledRoles = memo<{ locked: boolean }>(({ locked }) => {
-    const [sel, setSel] = useState(() => new Set(initial));
-    const [exp, setExp] = useState<Dayjs | null>(null);
-    return (
-      <RolesExtra
-        eligible={eligible}
-        expiresAt={exp}
-        locked={locked}
-        selected={sel}
-        onExpiresAtChange={(next) => {
-          setExp(next);
-          rolesState.expiresAt = next;
-        }}
-        onToggle={(role, checked) => {
-          setSel((prev) => {
-            const next = new Set(prev);
-            if (checked) next.add(role);
-            else next.delete(role);
-            // Super admin cannot be temporary — clear expiry when selecting super.
-            if (role === PLATFORM_SYSTEM_ROLES.SUPER_ADMIN && checked) {
-              setExp(null);
-              rolesState.expiresAt = null;
-            }
-            rolesState.selected = next;
-            return next;
-          });
-        }}
-      />
-    );
-  });
+  const ControlledRoles = memo<{ locked: boolean; reportExtraChange: () => void }>(
+    ({ locked, reportExtraChange }) => {
+      const [sel, setSel] = useState(() => new Set(initial));
+      const [exp, setExp] = useState<Dayjs | null>(null);
+      return (
+        <RolesExtra
+          eligible={eligible}
+          expiresAt={exp}
+          locked={locked}
+          selected={sel}
+          onExpiresAtChange={(next) => {
+            setExp(next);
+            rolesState.expiresAt = next;
+            reportExtraChange();
+          }}
+          onToggle={(role, checked) => {
+            setSel((prev) => {
+              const next = new Set(prev);
+              if (checked) next.add(role);
+              else next.delete(role);
+              // Super admin cannot be temporary — clear expiry when selecting super.
+              if (role === PLATFORM_SYSTEM_ROLES.SUPER_ADMIN && checked) {
+                setExp(null);
+                rolesState.expiresAt = null;
+              }
+              rolesState.selected = next;
+              return next;
+            });
+            reportExtraChange();
+          }}
+        />
+      );
+    },
+  );
   ControlledRoles.displayName = 'ControlledRoles';
 
   openReasonModal({
@@ -432,7 +524,9 @@ export const openReplaceRolesModal = (params: {
     submitLabel: t('users.modals.roles.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.roles.title'),
-    extra: ({ locked }) => <ControlledRoles locked={locked} />,
+    extra: ({ locked, reportExtraChange }) => (
+      <ControlledRoles locked={locked} reportExtraChange={reportExtraChange} />
+    ),
     validateExtra: () => {
       if (
         rolesState.selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) &&
@@ -448,22 +542,17 @@ export const openReplaceRolesModal = (params: {
       }
       return null;
     },
-    buildPayload: (reason) => {
-      const roleNames = [...rolesState.selected].filter((r) =>
-        (eligible as readonly string[]).includes(r),
-      ) as PlatformSystemRoleName[];
-      const payload: Omit<AdminUsersReplaceGlobalRolesInput, 'userId'> = {
+    buildPayload: (reason) =>
+      buildReplaceGlobalRolesPayload({
+        currentRoles: currentGrants,
+        eligibleRoleNames: eligible,
         reason,
-        roleNames,
-      };
-      // Never pair super_admin with finite expiry.
-      if (rolesState.expiresAt && !roleNames.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {
-        payload.expiresAt = rolesState.expiresAt.toDate();
-      }
-      return payload;
-    },
+        selectedRoleNames: [...rolesState.selected],
+        sharedExpiresAt: rolesState.expiresAt ? rolesState.expiresAt.toDate() : null,
+        userId: params.userId,
+      }),
     onSubmit: async (payload) => {
-      await params.onConfirm(payload as Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>);
+      await params.onConfirm(payload as AdminUsersReplaceGlobalRolesInput);
       toast.success(t('users.toast.rolesSuccess'));
     },
   });
@@ -475,7 +564,7 @@ export const openReplaceRolesModal = (params: {
  */
 export const openRevokeRoleModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>) => Promise<void>;
+  onConfirm: (input: AdminUsersReplaceGlobalRolesInput) => Promise<void>;
   remainingRoleNames: PlatformSystemRoleName[];
   revokedRoleLabel: string;
   targetLabel: string;
@@ -496,21 +585,52 @@ export const openRevokeRoleModal = (params: {
       preserveRoleNames: params.remainingRoleNames,
       reason,
       roleNames: params.remainingRoleNames,
+      userId: params.userId,
     }),
     onSubmit: async (payload) => {
-      await params.onConfirm(payload as Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>);
+      await params.onConfirm(payload as AdminUsersReplaceGlobalRolesInput);
       toast.success(t('users.toast.roleRevokeSuccess'));
     },
   });
 };
 
-/** Irreversible hard delete of a user and all owned data (confirm-only). */
+/** Irreversible hard delete of a user and all owned data (confirm-only + type-to-confirm). */
 export const openDeleteUserModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: Omit<AdminUsersDeleteInput, 'userId'>) => Promise<void>;
+  onConfirm: (input: AdminUsersDeleteInput) => Promise<void>;
   targetLabel: string;
   userId: string;
 }) => {
+  // Updated only from onChange — requires exact match of the displayed target label.
+  const deleteState = { confirmText: '' };
+
+  const ControlledDeleteConfirm = memo<{ locked: boolean; reportExtraChange: () => void }>(
+    ({ locked, reportExtraChange }) => {
+      const { t: tr } = useTranslation('admin');
+      const [text, setText] = useState('');
+      return (
+        <div className={styles.field}>
+          <Text type="danger">
+            {tr('users.modals.delete.typeConfirmHint', { target: params.targetLabel })}
+          </Text>
+          <Input
+            aria-label={tr('users.modals.delete.typeConfirmLabel')}
+            disabled={locked}
+            placeholder={params.targetLabel}
+            value={text}
+            onChange={(e) => {
+              const next = e.target.value;
+              setText(next);
+              deleteState.confirmText = next;
+              reportExtraChange();
+            }}
+          />
+        </div>
+      );
+    },
+  );
+  ControlledDeleteConfirm.displayName = 'ControlledDeleteConfirm';
+
   openReasonModal({
     authMethod: params.authMethod,
     autoReason: AUTO_REASON.delete,
@@ -521,9 +641,13 @@ export const openDeleteUserModal = (params: {
     submitLabel: t('users.modals.delete.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.delete.title'),
-    buildPayload: (reason) => ({ reason }),
+    extra: ({ locked, reportExtraChange }) => (
+      <ControlledDeleteConfirm locked={locked} reportExtraChange={reportExtraChange} />
+    ),
+    validateExtra: () => validateHardDeleteConfirm(deleteState.confirmText, params.targetLabel),
+    buildPayload: (reason) => ({ reason, userId: params.userId }),
     onSubmit: async (payload) => {
-      await params.onConfirm(payload as Omit<AdminUsersDeleteInput, 'userId'>);
+      await params.onConfirm(payload as AdminUsersDeleteInput);
       toast.success(t('users.toast.deleteSuccess'));
     },
   });

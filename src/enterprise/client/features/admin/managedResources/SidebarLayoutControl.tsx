@@ -3,6 +3,7 @@
 import { Flexbox, Icon, Text } from '@lobehub/ui';
 import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import debug from 'debug';
 import { MonitorCog } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -16,6 +17,8 @@ import {
 import type { PlatformSidebarLayout, SidebarLayoutMode } from '@/types/platform/sidebarLayout';
 
 import { useFetchAdminSidebarLayout } from './hooks/useAdminSidebarLayout';
+
+const log = debug('lobe-client:admin:sidebar-layout');
 
 const MODE_VALUES = ['user', 'platform'] as const satisfies readonly SidebarLayoutMode[];
 
@@ -44,25 +47,43 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
+interface SidebarLayoutControlProps {
+  /** POLICY_UPDATE — gates mode changes and configure. */
+  canUpdate?: boolean;
+  /** Parent busy (e.g. policy save in flight). */
+  disabled?: boolean;
+}
+
 /**
  * "侧边栏排序" — a platform-vs-user policy for the home sidebar layout, direct-save.
  * When set to "平台托管", the Configure button opens the same "自定义侧边栏" dialog the
  * user sees, but writes the chosen layout to the platform policy; user clients then hide
  * their own sidebar-customization controls and apply this layout.
  */
-const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
+const SidebarLayoutControl = memo<SidebarLayoutControlProps>(({ canUpdate = false, disabled }) => {
   const { t } = useTranslation('admin');
-  const { data, isLoading, mutate } = useFetchAdminSidebarLayout();
+  const { data, error, isLoading, mutate } = useFetchAdminSidebarLayout();
   const [saving, setSaving] = useState(false);
 
-  const mode: SidebarLayoutMode = data?.mode ?? 'user';
-  const busy = disabled || saving || isLoading;
+  const busy = disabled || saving || isLoading || !data;
+  const controlsDisabled = busy || !canUpdate;
 
   const persist = async (next: PlatformSidebarLayout) => {
+    if (!canUpdate) return;
     setSaving(true);
     try {
       const saved = await adminSidebarLayoutService.update(next);
-      await mutate(saved, { revalidate: false });
+      try {
+        await mutate(saved, { revalidate: false });
+      } catch (refreshError) {
+        log('post-update refresh failed: %O', refreshError);
+        toast.success(
+          t('sidebarLayout.savedRefreshFailed', {
+            defaultValue: 'Sidebar layout saved, but the view could not refresh.',
+          }),
+        );
+        return;
+      }
       toast.success(t('sidebarLayout.saved'));
     } catch {
       toast.error(t('sidebarLayout.saveError'));
@@ -72,12 +93,12 @@ const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
   };
 
   const handleModeChange = (nextMode: SidebarLayoutMode) => {
-    if (!data || nextMode === mode) return;
+    if (!data || nextMode === data.mode || !canUpdate) return;
     void persist({ layout: data.layout, mode: nextMode });
   };
 
   const handleConfigure = () => {
-    if (!data) return;
+    if (!data || !canUpdate) return;
     const layout = data.layout ?? {
       hiddenSidebarSections: getDefaultHiddenSections(false),
       sidebarItems: DEFAULT_SIDEBAR_ITEMS,
@@ -109,24 +130,45 @@ const SidebarLayoutControl = memo<{ disabled?: boolean }>(({ disabled }) => {
         >
           {t('sidebarLayout.title')}
         </Text>
-        <Flexbox horizontal align="center" gap={8} style={{ flexShrink: 0 }}>
-          {mode === 'platform' ? (
-            <Button disabled={busy} icon={<Icon icon={MonitorCog} />} onClick={handleConfigure}>
-              {t('sidebarLayout.configure')}
+        {error && !data ? (
+          <Flexbox horizontal align="center" gap={8} role="alert" style={{ flexShrink: 0 }}>
+            <Text style={{ fontSize: 12 }} type="danger">
+              {t('sidebarLayout.loadError', {
+                defaultValue: 'Could not load sidebar layout.',
+              })}
+            </Text>
+            <Button size="small" type="default" onClick={() => void mutate()}>
+              {t('primitives.dataTable.retry')}
             </Button>
-          ) : null}
-          <Select
-            disabled={busy}
-            // Unified policy-mode select width — keep in sync with the resource + settings boxes.
-            style={{ flexShrink: 0, width: 180 }}
-            value={mode}
-            options={MODE_VALUES.map((m) => ({
-              label: t(`sidebarLayout.mode.${m}` as const),
-              value: m,
-            }))}
-            onChange={(value) => handleModeChange(value as SidebarLayoutMode)}
-          />
-        </Flexbox>
+          </Flexbox>
+        ) : (
+          <Flexbox horizontal align="center" gap={8} style={{ flexShrink: 0 }}>
+            {data?.mode === 'platform' ? (
+              <Button
+                disabled={controlsDisabled}
+                icon={<Icon icon={MonitorCog} />}
+                onClick={handleConfigure}
+              >
+                {t('sidebarLayout.configure')}
+              </Button>
+            ) : null}
+            <Select
+              disabled={controlsDisabled || !data}
+              // Unified policy-mode select width — keep in sync with the resource + settings boxes.
+              style={{ flexShrink: 0, width: 180 }}
+              // Never invent a mode from missing data — leave empty until load succeeds.
+              value={data?.mode}
+              options={MODE_VALUES.map((m) => ({
+                label: t(`sidebarLayout.mode.${m}` as const),
+                value: m,
+              }))}
+              placeholder={
+                isLoading ? t('primitives.dataTable.loading') : t('sidebarLayout.mode.user')
+              }
+              onChange={(value) => handleModeChange(value as SidebarLayoutMode)}
+            />
+          </Flexbox>
+        )}
       </div>
     </section>
   );

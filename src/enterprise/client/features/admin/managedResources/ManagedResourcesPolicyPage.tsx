@@ -3,6 +3,7 @@
 import { Alert, Flexbox, Text } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import debug from 'debug';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BlockerFunction } from 'react-router';
@@ -11,6 +12,7 @@ import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
 import type { ManagedResourceKind } from '@/const/platform/managedResources';
 import { MANAGED_RESOURCE_KINDS } from '@/const/platform/managedResources';
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
@@ -21,18 +23,25 @@ import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import { publishManagedResourcePolicy, saveManagedResourceDraft } from './actions';
 import {
+  buildManagedResourceDiff,
   deriveManagedResourcePermissions,
   fromManagedResourceUiMode,
   getUnreadyEnforcedResources,
   MANAGED_RESOURCE_NAV_LABEL_KEY,
+  type ManagedResourceFailedOperation,
   type ManagedResourceSaveState,
   type ManagedResourceUiMode,
   normalizeManagedResourcePolicyMap,
+  rebaseManagedResourceDraft,
+  resolveManagedResourcePrimaryAction,
+  shouldPreserveLocalDraftAfterSave,
   toManagedResourceUiMode,
 } from './controller';
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
 import SharedOAuthAuthorizationControl from './SharedOAuthAuthorizationControl';
 import SidebarLayoutControl from './SidebarLayoutControl';
+
+const log = debug('lobe-client:admin:managed-resources');
 
 const styles = createStaticStyles(({ css }) => ({
   card: css`
@@ -95,19 +104,37 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   const { authMethod, permissions } = useAdminAccess();
   const platform = useEnterprisePlatform();
   const { canPublish, canUpdate, canView } = deriveManagedResourcePermissions(permissions);
+  const permissionSet = useMemo(() => new Set(permissions), [permissions]);
+  // Nested controls have independent procedure gates — do not inherit canSave.
+  const canUpdateSidebarLayout = permissionSet.has(PLATFORM_PERMISSIONS.POLICY_UPDATE);
+  const canReadConnectorGovernance = permissionSet.has(PLATFORM_PERMISSIONS.CONNECTOR_READ);
+  const canUpdateConnectorGovernance = permissionSet.has(PLATFORM_PERMISSIONS.CONNECTOR_UPDATE);
+  // Parent surface is reachable for policy OR connector governance (not POLICY_READ only).
+  const canAccessSurface = canView || canReadConnectorGovernance;
+
   const { data, error, isLoading, mutate } = useFetchAdminManagedResources(canView);
 
   const [draft, setDraft] = useState<ManagedResourcePolicyMap | null>(null);
+  const [published, setPublished] = useState<ManagedResourcePolicyMap | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<ManagedResourceSaveState>('idle');
+  const [failedOperation, setFailedOperation] = useState<ManagedResourceFailedOperation | null>(
+    null,
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [activeDraftToken, setActiveDraftToken] = useState('');
+  const [baseRevision, setBaseRevision] = useState(0);
   const hydratedRef = useRef(false);
+  /** Last clean server draft used as the three-way-merge base for conflict rebase. */
+  const baseDraftRef = useRef<ManagedResourcePolicyMap | null>(null);
+  /**
+   * Monotonic local-edit epoch. Bumped on every user draft change; captured at save
+   * submit so a successful response never overwrites newer in-flight local edits
+   * (even if a race slips past the saving lock before re-render).
+   */
+  const draftEpochRef = useRef(0);
 
-  // Direct-save UX: editing applies immediately; there is no local draft cache, so entering
-  // the tab is never spuriously "dirty" and leaving only prompts when there are real edits.
-  // Only guard real page exits — a same-path `?tab=` switch inside the unified page must not prompt.
   const shouldBlockPageExit = useCallback<BlockerFunction>(
     ({ currentLocation, nextLocation }) =>
       dirty && currentLocation.pathname !== nextLocation.pathname,
@@ -132,33 +159,63 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     if (!data || hydratedRef.current) return;
     hydratedRef.current = true;
     setDraft(data.draft);
+    setPublished(data.published);
     setActiveDraftToken(data.draftToken);
+    setBaseRevision(data.baseRevision);
+    baseDraftRef.current = data.draft;
     setDirty(false);
     setSaveState('idle');
+    setFailedOperation(null);
     setConflict(false);
   }, [data]);
 
+  const editorsLocked = saveState === 'saving' || conflict;
+  const canEditPolicy = canUpdate && !editorsLocked;
+
   const updateUiMode = useCallback(
     (resource: ManagedResourceKind, mode: ManagedResourceUiMode) => {
-      if (!canUpdate || conflict) return;
+      if (!canUpdate || editorsLocked) return;
       const next = fromManagedResourceUiMode(mode);
+      draftEpochRef.current += 1;
       setDraft((current) => (current ? { ...current, [resource]: next } : current));
       setDirty(true);
       setSaveState('dirty');
+      setFailedOperation(null);
       setActionError(null);
     },
-    [canUpdate, conflict],
+    [canUpdate, editorsLocked],
   );
 
   const unready = useMemo(
     () =>
       data && draft
         ? // Evaluate readiness against the canonical platform-managed form so historical
-          // true+ui-only (shown as platform) still requires catalog readiness before save.
+          // true+ui-only (shown as platform) still requires catalog readiness before publish.
           getUnreadyEnforcedResources(normalizeManagedResourcePolicyMap(draft), data.readiness)
         : [],
     [data, draft],
   );
+
+  const hasChanges = useMemo(() => {
+    if (!draft || !published) return false;
+    return (
+      buildManagedResourceDiff(
+        normalizeManagedResourcePolicyMap(published),
+        normalizeManagedResourcePolicyMap(draft),
+      ).length > 0
+    );
+  }, [draft, published]);
+
+  const primaryAction = resolveManagedResourcePrimaryAction({
+    canPublish,
+    canUpdate,
+    conflict,
+    dirty,
+    failedOperation,
+    hasChanges,
+    publishReady: unready.length === 0,
+    saveState,
+  });
 
   const enterConflict = useCallback(() => {
     setConflict(true);
@@ -172,22 +229,97 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     try {
       const latest = await mutate();
       if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
+      draftEpochRef.current += 1;
       setDraft(latest.draft);
+      setPublished(latest.published);
       setActiveDraftToken(latest.draftToken);
+      setBaseRevision(latest.baseRevision);
+      baseDraftRef.current = latest.draft;
       setDirty(false);
       setSaveState('idle');
+      setFailedOperation(null);
       setConflict(false);
     } catch {
       setActionError(t('managedResources.errors.refresh'));
     }
   }, [mutate, t]);
 
-  // Direct save: persist the draft and publish it in one action (reason is auto-supplied).
+  /**
+   * Acknowledge local-wins values after a conflict (or post-rebase field conflict)
+   * and unlock the editor so the admin can review and save.
+   */
+  const handleKeepLocal = useCallback(() => {
+    setConflict(false);
+    setActionError(null);
+    setFailedOperation(null);
+    // Local draft remains; mark dirty so save is available after unlock.
+    setDirty(true);
+    setSaveState('dirty');
+  }, []);
+
+  /** Three-way merge local edits onto the latest server draft after a revision conflict. */
+  const handleRebase = useCallback(async () => {
+    if (!draft) return;
+    setActionError(null);
+    try {
+      const latest = await mutate();
+      if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
+      const original = baseDraftRef.current ?? latest.draft;
+      const rebased = rebaseManagedResourceDraft({
+        latest: latest.draft,
+        local: draft,
+        original,
+      });
+      draftEpochRef.current += 1;
+      setDraft(rebased.draft);
+      setPublished(latest.published);
+      setActiveDraftToken(latest.draftToken);
+      setBaseRevision(latest.baseRevision);
+      baseDraftRef.current = latest.draft;
+      setDirty(true);
+      setSaveState('dirty');
+      setFailedOperation(null);
+      if (rebased.conflicts.length > 0) {
+        // Local values already win for divergent fields; stay in conflict mode until
+        // the admin explicitly keeps them (unlocks) or discards.
+        setActionError(t('managedResources.conflict.fields'));
+        return;
+      }
+      setConflict(false);
+    } catch {
+      setActionError(t('managedResources.errors.refresh'));
+    }
+  }, [draft, mutate, t]);
+
+  const mapActionError = useCallback(
+    (cause: unknown, operation: ManagedResourceFailedOperation) => {
+      const mapped = mapEnterpriseError(cause);
+      if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
+        setFailedOperation(operation);
+        enterConflict();
+        return true;
+      }
+      setSaveState('failed');
+      setFailedOperation(operation);
+      setActionError(
+        mapped
+          ? t(mapped.i18nKey as never, { defaultValue: mapped.code })
+          : t('managedResources.errors.generic'),
+      );
+      return false;
+    },
+    [enterConflict, t],
+  );
+
+  /** Persist the local draft only (does not publish). Readiness gates publish, not draft save. */
   const handleSave = useCallback(async () => {
-    if (!data || !draft || !canUpdate || !canPublish || conflict || unready.length > 0) return;
+    if (!data || !draft || !canUpdate || conflict || saveState === 'saving') {
+      return;
+    }
     const reason = t('managedResources.saveReason');
-    // Collapse legacy true+ui-only / true+observe combinations into the two canonical pairs.
     const normalizedDraft = normalizeManagedResourcePolicyMap(draft);
+    // Epoch at submit: any later user edit bumps draftEpochRef and must not be clobbered.
+    const submittedEpoch = draftEpochRef.current;
     setSaveState('saving');
     setActionError(null);
     try {
@@ -195,17 +327,69 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
         input: { draft: normalizedDraft, expectedDraftToken: activeDraftToken, reason },
         saveDraft: adminManagedResourcesService.saveDraft,
       });
-      setDraft(normalizedDraft);
-      // Persist the advanced CAS token immediately: if the publish step below fails
-      // (e.g. cancelled reauth, catalog-not-ready), a Save retry must use the just-saved token,
-      // not the stale pre-save one — otherwise it would raise a spurious revision conflict.
-      // Publish uses `saved.baseRevision` from this response (not local revision state).
       setActiveDraftToken(saved.draftToken);
-      await publishManagedResourcePolicy({
+      setBaseRevision(saved.baseRevision);
+      // Server now holds the submitted snapshot as the clean draft base.
+      baseDraftRef.current = normalizedDraft;
+      setFailedOperation(null);
+
+      // Concurrent local edits made after submit (or that raced the saving lock): keep them.
+      if (shouldPreserveLocalDraftAfterSave(submittedEpoch, draftEpochRef.current)) {
+        setDirty(true);
+        setSaveState('dirty');
+        setActionError(t('managedResources.errors.savedWithLocalEdits'));
+        return;
+      }
+
+      setDraft(normalizedDraft);
+      setDirty(false);
+      setSaveState('saved');
+      // Soft-refresh SWR cache without overwriting a still-dirty editor (already handled).
+      try {
+        const latest = await mutate();
+        // Abort if the admin edited while refresh was in flight.
+        if (shouldPreserveLocalDraftAfterSave(submittedEpoch, draftEpochRef.current)) {
+          setDirty(true);
+          setSaveState('dirty');
+          setActionError(t('managedResources.errors.savedWithLocalEdits'));
+          return;
+        }
+        if (latest) {
+          setPublished(latest.published);
+          setActiveDraftToken(latest.draftToken);
+          setBaseRevision(latest.baseRevision);
+          baseDraftRef.current = latest.draft;
+        }
+      } catch (refreshError) {
+        log('post-save refresh failed: %O', refreshError);
+        setActionError(t('managedResources.errors.savedRefreshFailed'));
+      }
+    } catch (cause) {
+      mapActionError(cause, 'save');
+    }
+  }, [activeDraftToken, canUpdate, conflict, data, draft, mapActionError, mutate, saveState, t]);
+
+  /** Publish the already-persisted draft (stranded draft recovery / explicit publish). */
+  const handlePublish = useCallback(async () => {
+    if (
+      !draft ||
+      !canPublish ||
+      dirty ||
+      conflict ||
+      unready.length > 0 ||
+      saveState === 'saving'
+    ) {
+      return;
+    }
+    const reason = t('managedResources.saveReason');
+    setSaveState('saving');
+    setActionError(null);
+    try {
+      const { capabilityRefreshFailed } = await publishManagedResourcePolicy({
         authMethod: authMethod ?? null,
         input: {
-          expectedDraftToken: saved.draftToken,
-          expectedRevision: saved.baseRevision,
+          expectedDraftToken: activeDraftToken,
+          expectedRevision: baseRevision,
           reason,
         },
         publish: adminManagedResourcesService.publish,
@@ -213,63 +397,87 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       });
       setDirty(false);
       setSaveState('saved');
-      hydratedRef.current = false;
-      await mutate();
-    } catch (cause) {
-      const mapped = mapEnterpriseError(cause);
-      if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
-        enterConflict();
-        return;
+      setFailedOperation(null);
+      setPublished(normalizeManagedResourcePolicyMap(draft));
+      if (capabilityRefreshFailed) {
+        setActionError(t('managedResources.errors.publishedRefreshFailed'));
       }
-      setSaveState('failed');
-      setActionError(
-        mapped
-          ? t(mapped.i18nKey as never, { defaultValue: mapped.code })
-          : t('managedResources.errors.generic'),
-      );
+      try {
+        const latest = await mutate();
+        if (latest) {
+          setDraft(latest.draft);
+          setPublished(latest.published);
+          setActiveDraftToken(latest.draftToken);
+          setBaseRevision(latest.baseRevision);
+          baseDraftRef.current = latest.draft;
+        }
+      } catch (refreshError) {
+        log('post-publish SWR refresh failed: %O', refreshError);
+        // Prefer capability-refresh messaging if both failed; otherwise surface SWR failure.
+        if (!capabilityRefreshFailed) {
+          setActionError(t('managedResources.errors.publishedRefreshFailed'));
+        }
+      }
+    } catch (cause) {
+      mapActionError(cause, 'publish');
     }
   }, [
     activeDraftToken,
     authMethod,
+    baseRevision,
     canPublish,
-    canUpdate,
     conflict,
-    data,
+    dirty,
     draft,
-    enterConflict,
+    mapActionError,
     mutate,
     platform,
+    saveState,
     t,
     unready.length,
   ]);
 
-  const renderLoaded = () => {
+  const handlePrimaryAction = useCallback(() => {
+    if (primaryAction === 'save' || primaryAction === 'retrySave') {
+      void handleSave();
+      return;
+    }
+    if (primaryAction === 'publish' || primaryAction === 'retryPublish') {
+      void handlePublish();
+    }
+  }, [handlePublish, handleSave, primaryAction]);
+
+  const primaryLabel =
+    primaryAction === 'publish' || primaryAction === 'retryPublish'
+      ? primaryAction === 'retryPublish'
+        ? t('managedResources.actions.retryPublish')
+        : t('managedResources.actions.publish')
+      : primaryAction === 'retrySave'
+        ? t('managedResources.actions.retrySave')
+        : t('managedResources.actions.save');
+
+  const renderPolicySection = () => {
+    if (!canView) return null;
     if (!draft) return <Loading debugId="AdminManagedResources > Hydrate" />;
 
-    const canSave = canUpdate && canPublish;
+    const canEditResources = canUpdate;
+    const draftPendingPublish = !dirty && hasChanges;
 
     return (
-      <AdminPageTemplate
-        description={t('managedResources.desc')}
-        hideTitle={embedded}
-        title={t('managedResources.title')}
-        banner={
-          conflict ? (
-            <Alert
-              showIcon
-              description={t('managedResources.conflict.desc')}
-              message={t('managedResources.conflict.title')}
-              type="warning"
-              extra={
-                <Button type="primary" onClick={() => void handleRefresh()}>
-                  {t('managedResources.conflict.discard')}
-                </Button>
-              }
-            />
-          ) : null
-        }
-      >
-        {!canSave ? <Alert showIcon message={t('managedResources.readOnly')} type="info" /> : null}
+      <>
+        {!canEditResources && !canPublish ? (
+          <Alert showIcon message={t('managedResources.readOnly')} type="info" />
+        ) : null}
+
+        {draftPendingPublish ? (
+          <Alert
+            showIcon
+            type="info"
+            message={t('managedResources.draftPendingPublish', {
+              defaultValue: 'A saved draft differs from the published policy. Publish to apply it.',
+            })}
+          />
+        ) : null}
 
         <div className={styles.grid}>
           {MANAGED_RESOURCE_KINDS.map((resource) => {
@@ -287,7 +495,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
                   </Text>
                   <Select
                     aria-label={`${t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)} ${t('managedResources.uiMode.label')}`}
-                    disabled={!canSave || conflict}
+                    disabled={!canEditPolicy}
                     // Unified policy-mode select width — keep in sync with the sidebar + settings boxes.
                     style={{ flexShrink: 0, width: 180 }}
                     value={uiMode}
@@ -299,13 +507,17 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
                   />
                 </div>
                 {resource === 'connectors' ? (
-                  <SharedOAuthAuthorizationControl disabled={!canSave || conflict} />
+                  <SharedOAuthAuthorizationControl
+                    canRead={canReadConnectorGovernance}
+                    canUpdate={canUpdateConnectorGovernance}
+                    disabled={editorsLocked}
+                  />
                 ) : null}
               </section>
             );
           })}
 
-          <SidebarLayoutControl disabled={!canSave || conflict} />
+          <SidebarLayoutControl canUpdate={canUpdateSidebarLayout} disabled={editorsLocked} />
         </div>
 
         {unready.length > 0 ? (
@@ -324,23 +536,99 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
           <Flexbox gap={4}>
             <span className={styles.status}>
               {t(`managedResources.saveState.${saveState}` as never)}
+              {draftPendingPublish
+                ? ` · ${t('managedResources.status.draftPending', {
+                    defaultValue: 'Draft pending publish',
+                  })}`
+                : null}
             </span>
             {actionError ? <Text type="danger">{actionError}</Text> : null}
           </Flexbox>
-          {canSave ? (
+          {primaryAction !== 'none' ? (
             <Button
-              disabled={!dirty || conflict || unready.length > 0}
               loading={saveState === 'saving'}
               type="primary"
-              onClick={() => void handleSave()}
+              disabled={
+                conflict ||
+                ((primaryAction === 'publish' || primaryAction === 'retryPublish') &&
+                  unready.length > 0)
+              }
+              onClick={handlePrimaryAction}
             >
-              {t('managedResources.actions.save')}
+              {primaryLabel}
             </Button>
           ) : null}
         </div>
-      </AdminPageTemplate>
+      </>
     );
   };
+
+  /** Connector-only admins still reach the shared-OAuth control without POLICY_READ. */
+  const renderConnectorOnlySection = () => {
+    if (canView || !canReadConnectorGovernance) return null;
+    return (
+      <div className={styles.grid}>
+        <section className={styles.card}>
+          <div className={styles.row}>
+            <Text strong style={{ flex: 1, minWidth: 0 }}>
+              {t(MANAGED_RESOURCE_NAV_LABEL_KEY.connectors as never)}
+            </Text>
+          </div>
+          <SharedOAuthAuthorizationControl
+            canRead={canReadConnectorGovernance}
+            canUpdate={canUpdateConnectorGovernance}
+          />
+        </section>
+      </div>
+    );
+  };
+
+  const body = (
+    <AdminPageTemplate
+      description={t('managedResources.desc')}
+      hideTitle={embedded}
+      title={t('managedResources.title')}
+      banner={
+        conflict ? (
+          <Alert
+            showIcon
+            description={t('managedResources.conflict.desc')}
+            message={t('managedResources.conflict.title')}
+            type="warning"
+            extra={
+              <Flexbox horizontal gap={8} wrap="wrap">
+                <Button type="default" onClick={handleKeepLocal}>
+                  {t('managedResources.conflict.keepLocal')}
+                </Button>
+                <Button type="default" onClick={() => void handleRebase()}>
+                  {t('managedResources.conflict.rebase')}
+                </Button>
+                <Button type="primary" onClick={() => void handleRefresh()}>
+                  {t('managedResources.conflict.discard')}
+                </Button>
+              </Flexbox>
+            }
+          />
+        ) : null
+      }
+    >
+      {renderPolicySection()}
+      {renderConnectorOnlySection()}
+    </AdminPageTemplate>
+  );
+
+  if (!canAccessSurface) {
+    return (
+      <AdminPageTemplate hideTitle={embedded} title={t('managedResources.title')}>
+        <Alert showIcon message={t('page.forbidden.desc')} type="warning" />
+      </AdminPageTemplate>
+    );
+  }
+
+  // Connector-only: no policy fetch — render governance control directly.
+  if (!canView) {
+    return body;
+  }
 
   return (
     <AsyncBoundary
@@ -351,7 +639,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       loading={<Loading debugId="AdminManagedResources" />}
       onRetry={() => void mutate()}
     >
-      {data ? renderLoaded() : null}
+      {data ? body : null}
     </AsyncBoundary>
   );
 });

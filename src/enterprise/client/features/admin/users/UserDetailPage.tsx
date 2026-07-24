@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import type { PlatformSystemRoleName } from '@/const/platform/roles';
+import { type PlatformSystemRoleName, resolvePlatformRoleLabel } from '@/const/platform/roles';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
@@ -91,6 +91,9 @@ const UserDetailPage = memo(() => {
   const { banUser, unbanUser, deleteUser, revokeSessions, replaceGlobalRoles } =
     useAdminUserMutations();
 
+  // Post-commit SWR refresh lives inside useAdminUserMutations (soft — never fails the mutation).
+  // Do not await a second mutate() here: a refresh rejection would surface as a mutation failure.
+
   const openBan = useCallback(() => {
     if (!data || !userId || data.isSelf) return;
     openBanUserModal({
@@ -98,11 +101,10 @@ const UserDetailPage = memo(() => {
       targetLabel: displayUserName(data),
       userId,
       onConfirm: async (input) => {
-        await banUser({ ...input, userId });
-        await mutate();
+        await banUser(input);
       },
     });
-  }, [authMethod, banUser, data, mutate, userId]);
+  }, [authMethod, banUser, data, userId]);
 
   const openUnban = useCallback(() => {
     if (!data || !userId || data.isSelf) return;
@@ -111,11 +113,10 @@ const UserDetailPage = memo(() => {
       targetLabel: displayUserName(data),
       userId,
       onConfirm: async (input) => {
-        await unbanUser({ ...input, userId });
-        await mutate();
+        await unbanUser(input);
       },
     });
-  }, [authMethod, data, mutate, unbanUser, userId]);
+  }, [authMethod, data, unbanUser, userId]);
 
   const openDelete = useCallback(() => {
     if (!data || !userId || data.isSelf) return;
@@ -124,7 +125,7 @@ const UserDetailPage = memo(() => {
       targetLabel: displayUserName(data),
       userId,
       onConfirm: async (input) => {
-        await deleteUser({ ...input, userId });
+        await deleteUser(input);
         // The user is gone — return to the list.
         navigate('/admin/users');
       },
@@ -139,11 +140,10 @@ const UserDetailPage = memo(() => {
       targetLabel: displayUserName(data),
       userId,
       onConfirm: async (input) => {
-        await revokeSessions({ ...input, userId });
-        await mutate();
+        await revokeSessions(input);
       },
     });
-  }, [authMethod, data, mutate, revokeSessions, userId]);
+  }, [authMethod, data, revokeSessions, userId]);
 
   const openRevokeSingle = useCallback(
     (sessionId: string) => {
@@ -155,12 +155,11 @@ const UserDetailPage = memo(() => {
         targetLabel: displayUserName(data),
         userId,
         onConfirm: async (input) => {
-          await revokeSessions({ ...input, userId });
-          await mutate();
+          await revokeSessions(input);
         },
       });
     },
-    [authMethod, data, mutate, revokeSessions, userId],
+    [authMethod, data, revokeSessions, userId],
   );
 
   const openUpdatePermissions = useCallback(() => {
@@ -168,15 +167,15 @@ const UserDetailPage = memo(() => {
     openReplaceRolesModal({
       actorRoles,
       authMethod,
-      currentRoles: data.roles.map((r) => r.name),
+      // Pass full grants so the modal can preserve per-role expiry and protected roles.
+      currentRoles: data.roles.map((r) => ({ expiresAt: r.expiresAt ?? null, name: r.name })),
       targetLabel: displayUserName(data),
       userId,
       onConfirm: async (input) => {
-        await replaceGlobalRoles({ ...input, userId });
-        await mutate();
+        await replaceGlobalRoles(input);
       },
     });
-  }, [actorRoles, authMethod, data, mutate, replaceGlobalRoles, userId]);
+  }, [actorRoles, authMethod, data, replaceGlobalRoles, userId]);
 
   const openRevokeRole = useCallback(
     (roleName: string) => {
@@ -185,8 +184,10 @@ const UserDetailPage = memo(() => {
         .map((r) => r.name)
         .filter((name) => name !== roleName) as PlatformSystemRoleName[];
       const revoked = data.roles.find((r) => r.name === roleName);
-      const revokedRoleLabel =
-        revoked?.displayName || t(`users.roles.${roleName}` as never, { defaultValue: roleName });
+      const revokedRoleLabel = resolvePlatformRoleLabel(
+        { displayName: revoked?.displayName, name: roleName },
+        (key, options) => String(t(key as never, { defaultValue: options?.defaultValue })),
+      );
       openRevokeRoleModal({
         authMethod,
         remainingRoleNames: remaining,
@@ -194,12 +195,11 @@ const UserDetailPage = memo(() => {
         targetLabel: displayUserName(data),
         userId,
         onConfirm: async (input) => {
-          await replaceGlobalRoles({ ...input, userId });
-          await mutate();
+          await replaceGlobalRoles(input);
         },
       });
     },
-    [authMethod, data, mutate, replaceGlobalRoles, t, userId],
+    [authMethod, data, replaceGlobalRoles, t, userId],
   );
 
   // ── State ordering (UI-R1-03) ────────────────────────────────────────────

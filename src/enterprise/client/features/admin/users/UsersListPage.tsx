@@ -2,6 +2,10 @@
 
 import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
+// INTENTIONAL: @lobehub/ui DatePicker is single-date only (no RangePicker export in the
+// installed wrapper). Keep antd RangePicker here until the shared wrapper adds range support.
+// This is not a bypass of an available lobehub RangePicker — the audit finding is invalid
+// for the current UI package version.
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import dayjs from 'dayjs';

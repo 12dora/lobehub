@@ -104,7 +104,20 @@ export const getUnreadyEnforcedResources = (
       !readiness[resource],
   );
 
-export type ManagedResourcePrimaryAction = 'none' | 'publish' | 'retry' | 'save';
+export type ManagedResourceFailedOperation = 'publish' | 'save';
+
+/**
+ * After a successful draft save, keep the in-memory draft when the local edit
+ * epoch advanced during the request (concurrent edits). Callers must not apply
+ * the submitted snapshot when this returns true.
+ */
+export const shouldPreserveLocalDraftAfterSave = (
+  submittedEpoch: number,
+  currentEpoch: number,
+): boolean => currentEpoch !== submittedEpoch;
+
+export type ManagedResourcePrimaryAction =
+  'none' | 'publish' | 'retryPublish' | 'retrySave' | 'save';
 
 /** Exactly one primary action for the current editor state. */
 export const resolveManagedResourcePrimaryAction = (params: {
@@ -112,12 +125,26 @@ export const resolveManagedResourcePrimaryAction = (params: {
   canUpdate: boolean;
   conflict: boolean;
   dirty: boolean;
+  /** Which operation last failed — drives retry save vs retry publish. */
+  failedOperation?: ManagedResourceFailedOperation | null;
   hasChanges: boolean;
   publishReady: boolean;
   saveState: ManagedResourceSaveState;
 }): ManagedResourcePrimaryAction => {
   if (params.conflict) return 'none';
-  if (params.saveState === 'failed' && params.canUpdate) return 'retry';
+  if (params.saveState === 'failed') {
+    // A failed publish must never become retrySave — that would re-save an already
+    // committed draft and hide the publish path. Preserve retryPublish even when
+    // readiness is false (UI disables the button until ready).
+    if (params.failedOperation === 'publish') {
+      return params.canPublish ? 'retryPublish' : 'none';
+    }
+    if (params.failedOperation === 'save' && params.canUpdate) return 'retrySave';
+    // Unknown/missing failedOperation: prefer save retry when the actor can update.
+    if (params.canUpdate) return 'retrySave';
+    if (params.canPublish) return 'retryPublish';
+    return 'none';
+  }
   if (params.dirty && params.canUpdate) return 'save';
   if (!params.dirty && params.hasChanges && params.publishReady && params.canPublish) {
     return 'publish';
