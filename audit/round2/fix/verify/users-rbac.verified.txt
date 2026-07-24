@@ -1,2 +1,0 @@
-  F1 (codex said HIGH; VERIFIED MEDIUM): Caller-controlled GUCs bypass immutable-version and append-only-audit protections
-     scope-correction: Finding is technically accurate about the current_setting scope-blindness, but severity is overstated: it is a post-compromise defense-in-depth gap, and in the default single-role (owner) deployment DISABLE TRIGGER is an equal/easier bypass, so the GUC is not the specific weakest link the finding frames it as. Reachability requires an already-compromised app connection; no active exploit path exists. Corrected to MEDIUM.
