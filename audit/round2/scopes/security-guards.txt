@@ -1,0 +1,8 @@
+=== YOUR PARTITION: security-guards ===
+Horizontal pass: SECURITY primitives + GUARDS + SECRET REWRAP.
+Report issues only in these paths:
+- apps/server/src/enterprise/security/**   (redaction, secret, rateLimit, outboundHttp/SSRF, policy, betterAuthAdminBlock)
+- apps/server/src/enterprise/guards/**
+- apps/server/src/enterprise/services/secretRewrap/**
+- packages/database/src/models/platform/secretPatterns.ts, redact.ts, adminMutationRate.ts (+ adminMutationRate.pg.test.ts), auditCredentialMask.ts (+ auditCredentialMask.test.ts) — the secret/redaction-related models
+Focus dimension 5 HARD: redaction completeness (canary-secret leakage, patterns that miss real secrets or over-redact), SSRF / outbound-HTTP allowlist correctness and bypass (DNS rebinding, IP-literal, redirect following), rate-limit window correctness under concurrency, policy-guard fail-open, secret encryption/rewrap correctness (key rotation, single-active job enforcement, envelope integrity), and admin-block / break-glass logic actually being usable. Also cover dimensions 1-3 for these files (over-long functions, duplicated redaction logic, dead patterns, test rot in the security tests). Dimension 4 is unlikely (non-user-facing) — note if clean.
