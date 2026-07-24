@@ -703,9 +703,10 @@ export class PlatformAgentRolloutService {
         scopes: ['agent-catalog', 'agent-runtime'],
       });
     } catch (error) {
-      console.error('[platform-agent-rollout:rollback] invalidation failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
+      log(
+        'rollback invalidation failed errorClass=%s',
+        error instanceof Error ? error.name : 'UnknownError',
+      );
     }
     return projectPlatformAgentRollout(result.job);
   };

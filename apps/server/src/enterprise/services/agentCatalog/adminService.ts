@@ -334,9 +334,15 @@ export class PlatformAgentAdminService {
       );
       if (!version) throw new PlatformAgentNotFoundError();
     }
+    // Mutable warning list matching the wire schema (not a readonly tuple from `as const`).
+    const warnings: Array<'ASSIGNMENT_DISABLED' | 'MANDATORY_AGENT_CANNOT_BE_HIDDEN'> = input
+      .assignment.enabled
+      ? []
+      : ['ASSIGNMENT_DISABLED'];
     return {
       estimatedUsers: await repository.countAssignmentTargets(input.assignment),
-      warnings: input.assignment.enabled ? [] : ['Assignment is disabled and will not take effect'],
+      // Stable i18n codes only — the admin UI maps `agentCatalog.assignment.warning.${code}`.
+      warnings,
     };
   };
 
@@ -559,8 +565,8 @@ export class PlatformAgentAdminService {
   /**
    * Irreversibly hard-delete a platform agent and every row it owns (versions, assignments,
    * materializations). Default / system agents are refused — their pointer must be reassigned via
-   * setDefaultInbox first, since a hard delete has no replacement path. The user's local `agents`
-   * rows are preserved (materialization FK points the other way).
+   * setDefaultInbox first, since a hard delete has no replacement path. Local `agents` rows are
+   * preserved, but materialization provenance is tombstoned so survivors stay excluded/guarded.
    */
   delete = async (actorUserId: string, input: AdminPlatformAgentDeleteInput) =>
     this.atomicMutation({
@@ -576,12 +582,12 @@ export class PlatformAgentAdminService {
         await acquirePlatformAgentReferenceLock(tx, input.agentId);
         const locked = await repository.lockIdentity(input.agentId);
         if (!locked || locked.migrationRequired) throw new PlatformAgentNotFoundError();
-        if (
-          typeof input.expectedRevision === 'number' &&
-          locked.revision !== input.expectedRevision
-        ) {
-          throw new PlatformAgentRevisionConflictError();
-        }
+        // Full identity CAS: revision alone misses draftSequence / assignment / draft mutations.
+        assertExpectedPlatformAgentIdentity(
+          locked,
+          input.expectedDraftToken,
+          input.expectedRevision,
+        );
         // A hard delete cannot reassign the default pointer, so refuse the default / any system
         // agent (the default-inbox row also auto-rebuilds only through setDefaultInbox).
         if (locked.isDefault || locked.systemKey !== null) {

@@ -8,6 +8,9 @@ import {
   platformAiProviderSecrets,
   platformConnectors,
   platformConnectorSecrets,
+  platformGlobalCredentials,
+  platformGlobalCredentialSecrets,
+  platformGlobalCredentialUploads,
   platformIdentityProviders,
   platformIdentityProviderSecrets,
   platformIdentityProviderTestAttempts,
@@ -29,6 +32,9 @@ const cleanup = async () => {
   await db.delete(platformIdentityProviders);
   await db.delete(platformConnectorSecrets);
   await db.delete(platformConnectors);
+  await db.delete(platformGlobalCredentialSecrets);
+  await db.delete(platformGlobalCredentialUploads);
+  await db.delete(platformGlobalCredentials);
   await db.delete(platformAiProviderSecrets);
   await db.delete(platformAiProviders);
 };
@@ -129,10 +135,66 @@ const seedFiveDomains = async () => {
     stateHash: 'e'.repeat(64),
     userId: 'user-a',
   });
+
+  const [credential] = await db
+    .insert(platformGlobalCredentials)
+    .values({
+      key: 'global-a',
+      name: 'Global A',
+      type: 'kv-env',
+    })
+    .returning();
+  // Revoked historical envelope must not appear in active inventory.
+  await db.insert(platformGlobalCredentialSecrets).values({
+    ciphertext: opaque('global-secret-revoked'),
+    credentialId: credential!.id,
+    fingerprint: fingerprintB,
+    id: 'global-secret-revoked',
+    keyId: oldKeyId,
+    ref: 'kms://platform-global-credentials/1/revoked',
+    revision: 1,
+    revokedAt: new Date(),
+  });
+  await db.insert(platformGlobalCredentialSecrets).values({
+    ciphertext: opaque('global-secret-old'),
+    credentialId: credential!.id,
+    fingerprint: fingerprintA,
+    id: 'global-secret-a',
+    keyId: oldKeyId,
+    ref: 'kms://platform-global-credentials/1/a',
+    revision: 2,
+  });
+  await db.insert(platformGlobalCredentialUploads).values({
+    ciphertext: opaque('global-upload-old'),
+    createdBy: 'admin-a',
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    fileHashId: 'f'.repeat(64),
+    fileName: 'secret.bin',
+    fileSize: 12,
+    fileType: 'application/octet-stream',
+    fingerprint: fingerprintA,
+    id: 'global-upload-a',
+    keyId: oldKeyId,
+    ref: 'kms://platform-global-credentials/upload/a',
+  });
+  // Expired staging must not appear in inventory.
+  await db.insert(platformGlobalCredentialUploads).values({
+    ciphertext: opaque('global-upload-expired'),
+    createdBy: 'admin-b',
+    expiresAt: new Date(Date.now() - 60_000),
+    fileHashId: '0'.repeat(64),
+    fileName: 'expired.bin',
+    fileSize: 4,
+    fileType: 'application/octet-stream',
+    fingerprint: fingerprintB,
+    id: 'global-upload-expired',
+    keyId: oldKeyId,
+    ref: 'kms://platform-global-credentials/upload/expired',
+  });
 };
 
 describe('PlatformSecretRotationRepository', () => {
-  it('lists all five domains in fixed keyset order, including legacy/revoked/expired rows', async () => {
+  it('lists all rotation domains in fixed keyset order, including legacy/revoked/expired rows', async () => {
     await seedFiveDomains();
     const seen: string[] = [];
     let cursor = undefined;
@@ -154,11 +216,15 @@ describe('PlatformSecretRotationRepository', () => {
       'connector:connector-secret-a',
       'identityProvider:identity-secret-a',
       'identityProviderTestPkce:identity-test-a',
+      'globalCredentialSecret:global-secret-a',
+      'globalCredentialUpload:global-upload-a',
     ]);
     expect(seen.some((ref) => ref.includes('ai-target'))).toBe(false);
+    expect(seen.some((ref) => ref.includes('revoked'))).toBe(false);
+    expect(seen.some((ref) => ref.includes('expired'))).toBe(false);
   });
 
-  it('applies exact CAS across all five domains and synchronizes matching AI dual copies', async () => {
+  it('applies exact CAS across all domains and synchronizes matching AI dual copies', async () => {
     await seedFiveDomains();
     const { items } = await repository.listCandidates({ limit: 50, targetKeyId });
     const immutable = items.find(({ domain }) => domain === 'aiImmutable')!;

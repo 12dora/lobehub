@@ -2,7 +2,12 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useAdminConnectorDetails } from './useDependencyCatalog';
+import {
+  ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT,
+  useAdminConnectorDetails,
+  useAdminPublishedConnectors,
+  useAdminPublishedProviders,
+} from './useDependencyCatalog';
 
 const swr = vi.hoisted(() => ({
   fetcher: undefined as undefined | (() => Promise<unknown>),
@@ -87,5 +92,50 @@ describe('useAdminConnectorDetails uses a bounded batch read (no N+1)', () => {
     renderHook(() => useAdminConnectorDetails([], service as never));
     expect(swr.key).toBeNull();
     expect(swr.fetcher).toBeUndefined();
+  });
+});
+
+describe('dependency catalog preflights are page-bounded', () => {
+  beforeEach(() => {
+    swr.fetcher = undefined;
+    swr.key = undefined;
+  });
+
+  it('stops provider preflight on a repeating cursor without draining forever', async () => {
+    const listProviders = vi.fn().mockResolvedValue({
+      items: [{ displayName: 'P', id: 'p1', providerKey: 'p', status: 'published' }],
+      nextCursor: 'stuck',
+    });
+    renderHook(() =>
+      useAdminPublishedProviders(true, {
+        getProvider: vi.fn(),
+        listProviderRevisions: vi.fn(),
+        listProviders,
+      } as never),
+    );
+
+    const items = await swr.fetcher!();
+    expect(listProviders.mock.calls.length).toBeLessThanOrEqual(
+      ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT,
+    );
+    expect((items as unknown[]).length).toBeLessThanOrEqual(ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
+  });
+
+  it('stops connector preflight at the hard page ceiling', async () => {
+    const list = vi.fn().mockResolvedValue({
+      items: [{ displayName: 'C', id: 'c1', key: 'c', status: 'published' }],
+      nextCursor: 'stuck',
+    });
+    renderHook(() =>
+      useAdminPublishedConnectors(true, {
+        get: vi.fn(),
+        getPublishedBatch: vi.fn(),
+        list,
+      } as never),
+    );
+
+    const items = await swr.fetcher!();
+    expect(list.mock.calls.length).toBeLessThanOrEqual(ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
+    expect((items as unknown[]).length).toBeLessThanOrEqual(ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
   });
 });

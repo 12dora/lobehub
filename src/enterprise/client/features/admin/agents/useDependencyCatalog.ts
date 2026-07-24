@@ -38,6 +38,34 @@ const DEP_CONNECTORS_KEY = 'enterprise.admin.agents.dep.connectors';
 const DEP_CONNECTOR_DETAIL_KEY = 'enterprise.admin.agents.dep.connectorDetail';
 const DEP_CONNECTOR_DETAILS_KEY = 'enterprise.admin.agents.dep.connectorDetails';
 
+/**
+ * Hard cap on cursor-followed dependency-catalog preflight drains (providers / connectors /
+ * provider revisions). 20 pages × 100 items = 2,000 rows — enough for the editor without
+ * unbounded memory growth or a stuck cursor cycle.
+ */
+export const ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT = 20;
+
+/** Cursor-safe page walk: stops on cycle or at {@link ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT}. */
+const collectCursorPages = async <T>(
+  fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor: string | null }>,
+): Promise<T[]> => {
+  const items: T[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    if (cursor) {
+      if (seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+    }
+    const page = await fetchPage(cursor);
+    items.push(...page.items);
+    cursor = page.nextCursor ?? undefined;
+    pages += 1;
+  } while (cursor && pages < ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
+  return items;
+};
+
 const toConnectorDetail = (
   published: NonNullable<Awaited<ReturnType<PublishedConnectorService['get']>>['published']>,
 ): PublishedConnectorDetail => ({
@@ -58,20 +86,18 @@ export const useAdminPublishedProviders = (
   useClientDataSWR<PublishedProviderSummary[]>(
     enabled ? [DEP_PROVIDERS_KEY] : null,
     async () => {
+      const pages = await collectCursorPages((cursor) =>
+        service.listProviders({ cursor, limit: 100, status: 'published' }),
+      );
       const items: PublishedProviderSummary[] = [];
-      let cursor: string | undefined;
-      do {
-        const page = await service.listProviders({ cursor, limit: 100, status: 'published' });
-        for (const provider of page.items) {
-          if (provider.status !== 'published') continue;
-          items.push({
-            displayName: provider.displayName,
-            id: provider.id,
-            providerKey: provider.providerKey,
-          });
-        }
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor);
+      for (const provider of pages) {
+        if (provider.status !== 'published') continue;
+        items.push({
+          displayName: provider.displayName,
+          id: provider.id,
+          providerKey: provider.providerKey,
+        });
+      }
       return items;
     },
     { revalidateOnFocus: false },
@@ -95,13 +121,20 @@ export const useAdminProviderModelSource = (
       const targetRevision = detail.published.revision;
 
       const revisions: ProviderRevisionRef[] = [];
+      const seenCursors = new Set<number>();
       let beforeRevision: number | undefined;
+      let pages = 0;
       do {
+        if (beforeRevision !== undefined) {
+          if (seenCursors.has(beforeRevision)) break;
+          seenCursors.add(beforeRevision);
+        }
         const page = await service.listProviderRevisions({ beforeRevision, id, limit: 100 });
         revisions.push(...page.items);
         if (page.items.some((item) => item.revision === targetRevision)) break;
         beforeRevision = page.nextCursor ?? undefined;
-      } while (beforeRevision);
+        pages += 1;
+      } while (beforeRevision !== undefined && pages < ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
 
       return resolveProviderModelSource(detail.published, revisions);
     },
@@ -134,20 +167,18 @@ export const useAdminPublishedConnectors = (
   useClientDataSWR<PublishedConnectorSummary[]>(
     enabled ? [DEP_CONNECTORS_KEY] : null,
     async () => {
+      const pages = await collectCursorPages((cursor) =>
+        service.list({ cursor, limit: 100, status: 'published' }),
+      );
       const items: PublishedConnectorSummary[] = [];
-      let cursor: string | undefined;
-      do {
-        const page = await service.list({ cursor, limit: 100, status: 'published' });
-        for (const connector of page.items) {
-          if (connector.status !== 'published') continue;
-          items.push({
-            displayName: connector.displayName,
-            id: connector.id,
-            key: connector.key,
-          });
-        }
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor);
+      for (const connector of pages) {
+        if (connector.status !== 'published') continue;
+        items.push({
+          displayName: connector.displayName,
+          id: connector.id,
+          key: connector.key,
+        });
+      }
       return items;
     },
     { revalidateOnFocus: false },

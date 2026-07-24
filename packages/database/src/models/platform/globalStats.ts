@@ -191,6 +191,69 @@ export class PlatformGlobalStatsModel {
     };
   };
 
+  /**
+   * User totals only — avoids the three lifetime table scans in {@link totals}
+   * when the caller only needs usersActive / usersTotal (admin overview KPIs).
+   */
+  userTotals = async (params?: {
+    activeDays?: number;
+  }): Promise<Pick<GlobalStatsTotals, 'usersActive' | 'usersTotal'>> => {
+    const usersCount = await this.countUsers(params);
+    return {
+      usersActive: usersCount.active,
+      usersTotal: usersCount.total,
+    };
+  };
+
+  /**
+   * Bounded daily token series for the admin overview chart.
+   * SQL `GROUP BY day` only — never materializes per-message or per-user rows.
+   */
+  findDailyTokenTotals = async (
+    mo?: string,
+  ): Promise<Array<{ day: string; totalTokens: number }>> => {
+    const { endAt, startAt } = this.resolveMonthRange(mo);
+    const inputTokensExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'totalInputTokens')::double precision,
+      (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
+      (${messages.metadata}->>'totalInputTokens')::double precision,
+      0
+    )`;
+    const outputTokensExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'totalOutputTokens')::double precision,
+      (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
+      (${messages.metadata}->>'totalOutputTokens')::double precision,
+      0
+    )`;
+    const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt}), 'YYYY-MM-DD')`;
+
+    const rangeWhere = genWhere([
+      eq(messages.role, 'assistant'),
+      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+    ]);
+
+    const dayTotals = await this.db
+      .select({
+        day: dayExpr.as('day'),
+        totalTokens:
+          sql<number>`COALESCE(SUM(${inputTokensExpr} + ${outputTokensExpr}), 0)`.mapWith(Number),
+      })
+      .from(messages)
+      .where(rangeWhere)
+      .groupBy(dayExpr)
+      .orderBy(asc(dayExpr));
+
+    const byDay = new Map(dayTotals.map((row) => [row.day, row.totalTokens]));
+    const startDate = dayjs(startAt).startOf('day');
+    const endDate = dayjs(endAt).startOf('day');
+    const padded: Array<{ day: string; totalTokens: number }> = [];
+    for (let date = startDate; !date.isAfter(endDate, 'day'); date = date.add(1, 'day')) {
+      const key = date.format('YYYY-MM-DD');
+      padded.push({ day: key, totalTokens: byDay.get(key) ?? 0 });
+    }
+    return padded;
+  };
+
   rankModels = async (limit: number = 10): Promise<ModelRankItem[]> => {
     return this.db
       .select({

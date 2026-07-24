@@ -4,6 +4,8 @@ export const PLATFORM_SECRET_ROTATION_DOMAINS = [
   'connector',
   'identityProvider',
   'identityProviderTestPkce',
+  'globalCredentialSecret',
+  'globalCredentialUpload',
 ] as const;
 
 export type PlatformSecretRotationDomain = (typeof PLATFORM_SECRET_ROTATION_DOMAINS)[number];

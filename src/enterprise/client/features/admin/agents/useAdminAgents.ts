@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect } from 'react';
-import { mutate } from 'swr';
 import useSWRInfinite from 'swr/infinite';
 
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
@@ -9,10 +8,8 @@ import { useClientDataSWR, useClientPollingSWR } from '@/libs/swr';
 import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
 import {
-  ADMIN_AGENT_GET_KEY,
   ADMIN_AGENT_LIST_KEY,
   buildAdminAgentGetKey,
-  buildAdminAgentListKey,
   buildAdminAgentRolloutPollKey,
 } from './swrKeys';
 import type {
@@ -28,21 +25,60 @@ interface CursorPage<T> {
   nextCursor: string | null;
 }
 
+/**
+ * Hard cap on cursor-followed collection drains (detail aggregate + catalog preflights).
+ * 20 pages × 100 items = 2,000 rows max per collection — enough for admin surfaces without
+ * unbounded memory growth or a stuck cursor cycle.
+ */
+export const ADMIN_AGENT_COLLECTION_PAGE_LIMIT = 20;
+
 const collectPages = async <T>(fetchPage: (cursor?: string) => Promise<CursorPage<T>>) => {
   const items: T[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
+  let pages = 0;
   do {
+    if (cursor) {
+      // Cycle-safe: a repeating opaque cursor must not spin forever.
+      if (seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+    }
     const page = await fetchPage(cursor);
     items.push(...page.items);
     cursor = page.nextCursor ?? undefined;
-  } while (cursor);
+    pages += 1;
+  } while (cursor && pages < ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
   return items;
 };
 
-export const fetchAllAdminAgents = async (
-  input: Omit<AdminAgentListInput, 'cursor' | 'limit'>,
+/**
+ * Dedicated default-inbox pointer read — single list request with `isDefault: true`.
+ * Never page-walks the catalog; a miss means there is no default, not "past page 20".
+ */
+export const findDefaultAdminAgent = async (
   client: AdminAgentsClient,
-) => collectPages((cursor) => client.list({ ...input, cursor, limit: 100 }));
+): Promise<AdminAgentListItem | undefined> => {
+  const page = await client.list({ isDefault: true, limit: 1 });
+  return page.items.find(({ identity }) => identity.isDefault) ?? page.items[0];
+};
+
+/**
+ * One page of published replacement candidates for archive-default, optionally filtered by
+ * server-side `query`. Callers that need more results re-query (search / load-more) — never
+ * silently drain the catalog and drop candidates past a page ceiling.
+ */
+export const fetchPublishedAdminAgentReplacements = async (
+  excludeAgentId: string,
+  client: AdminAgentsClient,
+  options: { limit?: number; query?: string } = {},
+): Promise<AdminAgentListItem[]> => {
+  const page = await client.list({
+    limit: options.limit ?? 50,
+    query: options.query,
+    status: 'published',
+  });
+  return page.items.filter(({ identity }) => identity.id !== excludeAgentId);
+};
 
 export const fetchAdminAgentDetail = async (
   id: string,
@@ -97,15 +133,6 @@ export const mergePolledRollouts = (
   };
 };
 
-export const useFetchAdminAgents = (
-  input: AdminAgentListInput,
-  enabled: boolean,
-  client: AdminAgentsClient = adminAgentsService,
-) =>
-  useClientDataSWR(buildAdminAgentListKey(input, enabled), () => client.list(input), {
-    revalidateOnFocus: false,
-  });
-
 export interface AdminAgentListPagination {
   /**
    * The AsyncBoundary "settled" signal: `undefined` until the first page resolves (so the real
@@ -123,10 +150,15 @@ export interface AdminAgentListPagination {
   loadMoreError: boolean;
   /**
    * Revalidate every loaded infinite page via the bound `useSWRInfinite` mutate.
-   * Prefer this over the global key-predicate `refreshAdminAgentLists` after create/delete —
-   * global `mutate(filter)` does not reliably refresh infinite caches.
+   * Prefer this over global key-predicate mutates after create/delete — global `mutate(filter)`
+   * does not reliably refresh infinite caches.
    */
-  refresh: () => Promise<unknown>;
+  refresh: () => Promise<void>;
+  /**
+   * Optimistically drop a deleted agent from every loaded page, then revalidate. Delete is already
+   * committed server-side, so a failed revalidate must not resurrect a still-actionable row.
+   */
+  removeItem: (agentId: string) => Promise<void>;
   retry: () => void;
 }
 
@@ -188,8 +220,19 @@ export const useAdminAgentListPagination = (
     items,
     loadMore: () => void swr.setSize((size) => size + 1),
     // Bound infinite mutate — revalidates the active cursor pages, not a global key filter.
-    // Pass the stable SWR mutator directly so list consumers can put it in React deps.
-    refresh: swr.mutate,
+    refresh: async () => {
+      await swr.mutate();
+    },
+    removeItem: async (agentId: string) => {
+      await swr.mutate(
+        (pages) =>
+          pages?.map((page) => ({
+            ...page,
+            items: page.items.filter((item) => item.identity.id !== agentId),
+          })),
+        { revalidate: true },
+      );
+    },
     retry: () => void swr.mutate(),
   };
 };
@@ -204,7 +247,9 @@ export const useFetchAdminAgent = (
     buildAdminAgentGetKey(id, enabled, rolloutsEnabled),
     () => fetchAdminAgentDetail(id!, client, rolloutsEnabled),
     {
-      keepPreviousData: true,
+      // Identity-changing keys must not retain agent A while agent B loads — the detail page
+      // would render/mutate A under B's URL (including when B fails and A sticks indefinitely).
+      keepPreviousData: false,
       revalidateOnFocus: false,
     },
   );
@@ -233,25 +278,4 @@ export const useFetchAdminAgent = (
     retryRolloutPoll: rolloutPoll.mutate,
     rolloutPollError: rolloutPoll.error,
   };
-};
-
-export const refreshAdminAgentLists = async () => {
-  await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AGENT_LIST_KEY);
-};
-
-export const refreshAdminAgent = async (id: string) => {
-  const [detail] = await Promise.all([
-    mutate((key) => Array.isArray(key) && key[0] === ADMIN_AGENT_GET_KEY && key[1] === id),
-    mutate((key) => Array.isArray(key) && key[0] === ADMIN_AGENT_LIST_KEY),
-  ]);
-  return detail;
-};
-
-export const clearAdminAgentCache = async () => {
-  await mutate(
-    (key) =>
-      Array.isArray(key) && (key[0] === ADMIN_AGENT_GET_KEY || key[0] === ADMIN_AGENT_LIST_KEY),
-    undefined,
-    { revalidate: false },
-  );
 };

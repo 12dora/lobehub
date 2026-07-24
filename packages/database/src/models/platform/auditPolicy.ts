@@ -140,8 +140,11 @@ export class PlatformAuditPolicyModel {
       return row;
     };
 
-    if ('transaction' in this.db) {
-      return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+    // Prefer typeof check: drizzle Transaction objects may still list `transaction`
+    // as an own key without being a nestable database handle.
+    const database = this.db as LobeChatDatabase;
+    if (typeof database.transaction === 'function') {
+      return database.transaction(async (tx) => run(tx));
     }
     return run(this.db);
   };

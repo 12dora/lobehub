@@ -1022,6 +1022,13 @@
       "when": 1784832040377,
       "tag": "0145_platform_db_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1784847045471,
+      "tag": "0146_platform_agent_materialization_tombstones",
+      "breakpoints": true
     }
   ],
   "version": "6"

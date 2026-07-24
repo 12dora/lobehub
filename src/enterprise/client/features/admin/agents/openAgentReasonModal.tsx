@@ -5,6 +5,8 @@ import { Button, createModal, useModalContext } from '@lobehub/ui/base-ui';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { getAdminAgentErrorMessage } from './errorPresentation';
+
 interface ReasonContentProps {
   danger?: boolean;
   description: string;
@@ -26,7 +28,8 @@ const ReasonContent = ({ danger, description, onConfirm, submitLabel }: ReasonCo
       await onConfirm(reason.trim());
       close();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      // Never surface raw backend / SQL text — always localized safe copy.
+      setError(getAdminAgentErrorMessage(cause, t));
     } finally {
       setBusy(false);
     }

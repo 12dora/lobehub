@@ -8,10 +8,16 @@ import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import type { deriveAdminAgentPermissions } from './controller';
 import { openAgentReasonModal } from './openAgentReasonModal';
 import type { AdminAgentDetailOutput } from './types';
+import type { RefreshLock, WriteToken } from './useRefreshLock';
 
 interface RolloutPanelProps {
   /** Whether the adapter exposes a real Rollout backend (PR-052). Off ⇒ full-surface defer gate. */
   enabled: boolean;
+  /**
+   * Shared detail refresh gate. Identity-changing rollback must run through begin/commit so a
+   * failed post-commit refresh locks publish/assignment writes on the stale snapshot.
+   */
+  lock: RefreshLock;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   pollError?: unknown;
   refresh: () => Promise<AdminAgentDetailOutput | undefined>;
@@ -21,6 +27,7 @@ interface RolloutPanelProps {
 
 export const RolloutPanel = ({
   enabled,
+  lock,
   permissions,
   pollError,
   refresh,
@@ -30,14 +37,15 @@ export const RolloutPanel = ({
   const { t } = useTranslation('admin');
   const busyJobRef = useRef<string | null>(null);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
-  const [refreshFailed, setRefreshFailed] = useState(false);
-  const retryRefresh = async () => {
-    setRefreshFailed(false);
+  // Local refresh failure for cancel/retry (job-only CAS). Rollback uses the shared lock instead.
+  const [localRefreshFailed, setLocalRefreshFailed] = useState(false);
+  const retryLocalRefresh = async () => {
+    setLocalRefreshFailed(false);
     try {
       const refreshed = await refresh();
-      if (!refreshed) setRefreshFailed(true);
+      if (!refreshed) setLocalRefreshFailed(true);
     } catch {
-      setRefreshFailed(true);
+      setLocalRefreshFailed(true);
     }
   };
   const mutateRollout = (
@@ -45,13 +53,21 @@ export const RolloutPanel = ({
     action: 'cancel' | 'retry' | 'rollback',
   ) =>
     openAgentReasonModal({
-      danger: action === 'cancel',
+      danger: action === 'cancel' || action === 'rollback',
       description: t(`agentCatalog.rollout.${action}Description` as never),
       onConfirm: async (reason) => {
-        if (busyJobRef.current) return;
+        if (busyJobRef.current || lock.isLocked()) return;
         busyJobRef.current = rollout.jobId;
         setBusyJobId(rollout.jobId);
-        setRefreshFailed(false);
+        setLocalRefreshFailed(false);
+
+        const writeToken: WriteToken | null = action === 'rollback' ? {} : null;
+        if (writeToken && !lock.beginWrite(writeToken)) {
+          busyJobRef.current = null;
+          setBusyJobId(null);
+          throw new Error(t('agentCatalog.recovery.refreshFailed'));
+        }
+
         const input = {
           agentId: snapshot.identity.id,
           expectedJobRevision: rollout.revision,
@@ -60,15 +76,33 @@ export const RolloutPanel = ({
           reason,
         };
         try {
-          if (action === 'cancel') await adminAgentsService.cancelRollout(input);
-          else if (action === 'retry') await adminAgentsService.retryRollout(input);
-          else {
+          if (action === 'cancel') {
+            await adminAgentsService.cancelRollout({
+              ...input,
+              expectedStatus: input.expectedStatus as 'pending' | 'running',
+            });
+          } else if (action === 'retry') {
+            await adminAgentsService.retryRollout({
+              ...input,
+              expectedStatus: input.expectedStatus as 'cancelled' | 'dead' | 'failed',
+            });
+          } else {
             if (!rollout.previousVersionId) return;
             await adminAgentsService.rollbackRollout({
               ...input,
+              expectedStatus: 'completed',
               targetVersionId: rollout.previousVersionId,
             });
+            // Identity CAS advanced server-side — commit through the shared freshness lock.
+            if (writeToken) {
+              lock.markCommitted(writeToken);
+              await lock.commitWrite(writeToken);
+              if (lock.isLocked()) return; // refreshFailed banner lives on the shared lock surface
+            }
+            toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
+            return;
           }
+
           let refreshed = false;
           try {
             refreshed = Boolean(await refresh());
@@ -76,10 +110,13 @@ export const RolloutPanel = ({
             // The mutation has committed; keep the loaded projection visible and offer an explicit retry.
           }
           if (!refreshed) {
-            setRefreshFailed(true);
+            setLocalRefreshFailed(true);
             return;
           }
           toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
+        } catch (cause) {
+          if (writeToken) lock.abortWrite(writeToken);
+          throw cause;
         } finally {
           busyJobRef.current = null;
           setBusyJobId(null);
@@ -104,6 +141,8 @@ export const RolloutPanel = ({
       </Flexbox>
     );
 
+  const writesLocked = lock.locked || busyJobId !== null;
+
   return (
     <Flexbox gap={12}>
       <Text as="h3" fontSize={16} weight={600}>
@@ -121,13 +160,13 @@ export const RolloutPanel = ({
           }
         />
       ) : null}
-      {refreshFailed ? (
+      {localRefreshFailed ? (
         <Alert
           showIcon
           message={t('agentCatalog.rollout.refreshFailed')}
           type="warning"
           action={
-            <Button size="small" onClick={() => void retryRefresh()}>
+            <Button size="small" onClick={() => void retryLocalRefresh()}>
               {t('agentCatalog.rollout.refreshRetry')}
             </Button>
           }
@@ -161,17 +200,14 @@ export const RolloutPanel = ({
               {permissions.canAssign && ['pending', 'running'].includes(rollout.status) ? (
                 <Button
                   danger
-                  disabled={busyJobId !== null}
+                  disabled={writesLocked}
                   onClick={() => mutateRollout(rollout, 'cancel')}
                 >
                   {t('agentCatalog.rollout.cancel')}
                 </Button>
               ) : null}
               {permissions.canAssign && ['cancelled', 'dead', 'failed'].includes(rollout.status) ? (
-                <Button
-                  disabled={busyJobId !== null}
-                  onClick={() => mutateRollout(rollout, 'retry')}
-                >
+                <Button disabled={writesLocked} onClick={() => mutateRollout(rollout, 'retry')}>
                   {t('agentCatalog.rollout.retry')}
                 </Button>
               ) : null}
@@ -180,7 +216,7 @@ export const RolloutPanel = ({
               rollout.previousVersionId ? (
                 <Button
                   danger
-                  disabled={busyJobId !== null}
+                  disabled={writesLocked}
                   onClick={() => mutateRollout(rollout, 'rollback')}
                 >
                   {t('agentCatalog.rollout.rollback')}

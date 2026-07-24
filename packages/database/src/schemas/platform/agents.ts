@@ -330,3 +330,38 @@ export type PlatformUserAgentMaterializationItem =
   typeof platformUserAgentMaterializations.$inferSelect;
 export type NewPlatformUserAgentMaterialization =
   typeof platformUserAgentMaterializations.$inferInsert;
+
+/**
+ * Durable provenance for local Agents that were materializations of a platform Agent that was
+ * hard-deleted. Live materialization rows cannot outlive their platform Agent (RESTRICT FKs),
+ * but surviving local `agents` rows must stay excluded from ordinary lists and mutation paths.
+ * `formerPlatformAgentId` is intentionally not an FK — the identity is already gone.
+ */
+export const platformUserAgentMaterializationTombstones = pgTable(
+  'platform_user_agent_materialization_tombstones',
+  {
+    id: text('id')
+      .$defaultFn(() => idGenerator('platformUserAgentMaterializationTombstones', 16))
+      .primaryKey()
+      .notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Surviving local Agent id that must remain managed/tombstoned. */
+    materializedAgentId: text('materialized_agent_id')
+      .notNull()
+      .references((): AnyPgColumn => agents.id, { onDelete: 'cascade' }),
+    /** Former catalog identity (no live FK; retained for audit / reverse lookup). */
+    formerPlatformAgentId: text('former_platform_agent_id').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('platform_user_agent_mat_tombstones_local_agent_unique').on(t.materializedAgentId),
+    index('platform_user_agent_mat_tombstones_user_id_idx').on(t.userId),
+  ],
+);
+
+export type PlatformUserAgentMaterializationTombstoneItem =
+  typeof platformUserAgentMaterializationTombstones.$inferSelect;
+export type NewPlatformUserAgentMaterializationTombstone =
+  typeof platformUserAgentMaterializationTombstones.$inferInsert;

@@ -22,6 +22,16 @@ type EffectiveList = z.infer<typeof platformAgentEffectiveListOutputSchema>;
 type EffectiveAgent = EffectiveList['agents'][number];
 type Distribution = EffectiveAgent['distribution'];
 
+/** Matches `platformAgentEffectiveListOutputSchema.agents.max(1000)` — never exceed the wire contract. */
+export const PLATFORM_AGENT_EFFECTIVE_LIST_MAX = 1000;
+
+/**
+ * Assignment-row overscan for full-list resolution. Multi-target assignments de-dupe to one
+ * Agent; fetching more rows than the wire max keeps de-dupe + hidden filtering from starving
+ * the visible set while still bounding repository memory.
+ */
+export const PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN = PLATFORM_AGENT_EFFECTIVE_LIST_MAX * 5;
+
 /**
  * Immutable, copy-safe exact-version snapshot captured at the start of one operation (R2).
  * A caller pins this value for the whole operation and never re-resolves the current pointer,
@@ -68,6 +78,12 @@ interface PlatformAgentEffectiveResolverOptions {
   policyModel?: Pick<PlatformManagedResourcePolicyModel, 'getSnapshot'>;
   repository?: ResolverRepository;
 }
+
+type EffectiveInputFilter = {
+  limit?: number;
+  platformAgentId?: string;
+  systemKey?: string;
+};
 
 const isAgentRuntimeManaged = (snapshot: ManagedResourcePolicySnapshot): boolean =>
   snapshot.status === 'published' &&
@@ -116,8 +132,16 @@ export class PlatformAgentEffectiveResolver {
    * entitled to (server-authoritative role/scope/expiry filtering lives in the repository
    * query). Does NOT apply per-user hidden filtering — that is a list-view concern applied
    * by `getEffectiveList`, not an authorization boundary.
+   *
+   * Pass `filter` for single-agent / system-key lookups so the repository never scans the full
+   * assignment catalog. Full-list callers MUST pass a SQL `limit` (overscan) so the repository
+   * never loads an unbounded assignment set; de-dupe then returns the winner set for further
+   * hidden filtering / wire-cap in `getEffectiveList`.
    */
-  private resolveAuthorized = async (userId: string): Promise<AuthorizedAgent[]> => {
+  private resolveAuthorized = async (
+    userId: string,
+    filter?: EffectiveInputFilter,
+  ): Promise<AuthorizedAgent[]> => {
     const flags = this.options.flags ?? parseEnterpriseFeatureFlags(process.env);
     if (!flags.ENABLE_PLATFORM_MANAGED_AGENTS) return [];
 
@@ -126,7 +150,7 @@ export class PlatformAgentEffectiveResolver {
     ).getSnapshot();
     if (!isAgentRuntimeManaged(policy)) return [];
 
-    const rows = await this.repository().listEffectiveInputs(userId);
+    const rows = await this.repository().listEffectiveInputs(userId, filter);
     rows.sort(
       (left, right) =>
         right.targetPriority - left.targetPriority ||
@@ -136,6 +160,12 @@ export class PlatformAgentEffectiveResolver {
     const seenAgents = new Set<string>();
     const seenSystemKeys = new Set<string>();
     const authorized: AuthorizedAgent[] = [];
+    // Full-list path overscans authorized winners so hidden filtering can still fill the wire
+    // max; the wire cap is applied AFTER hidden filter in `getEffectiveList`.
+    const maxAgents =
+      filter?.platformAgentId || filter?.systemKey
+        ? Number.POSITIVE_INFINITY
+        : PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN;
     for (const row of rows) {
       if (seenAgents.has(row.agent.id)) continue;
       if (row.agent.systemKey && seenSystemKeys.has(row.agent.systemKey)) continue;
@@ -151,20 +181,27 @@ export class PlatformAgentEffectiveResolver {
         version: row.version.version,
         versionId: row.version.id,
       });
+      if (authorized.length >= maxAgents) break;
     }
     return authorized;
   };
 
   getEffectiveList = async (userId: string): Promise<EffectiveList> => {
     try {
-      const authorized = await this.resolveAuthorized(userId);
+      // Bound the repository scan (SQL LIMIT) with overscan for de-dupe; never full-catalog load.
+      const authorized = await this.resolveAuthorized(userId, {
+        limit: PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN,
+      });
       if (authorized.length === 0) return emptyEffectiveList();
 
       // Owner-scoped hidden read: mandatory Agents ignore hidden (always visible); default /
       // optional Agents respect the requesting user's own hidden choices (R1).
+      // IMPORTANT: filter hidden BEFORE the wire-cap slice so hidden tiles near the front of
+      // priority order cannot starve visible Agents that would still fit under the 1000 max.
       const hidden = await this.repository().listHiddenPlatformAgentIds(userId);
       const agents = authorized
         .filter((agent) => agent.distribution === 'mandatory' || !hidden.has(agent.platformAgentId))
+        .slice(0, PLATFORM_AGENT_EFFECTIVE_LIST_MAX)
         .map(projectEffective);
       return { agents, revision: checksumPayload({ agents }) };
     } catch (error) {
@@ -174,8 +211,20 @@ export class PlatformAgentEffectiveResolver {
   };
 
   getEffectiveAgent = async (userId: string, platformAgentId: string) => {
-    const { agents } = await this.getEffectiveList(userId);
-    return agents.find((agent) => agent.platformAgentId === platformAgentId) ?? null;
+    try {
+      // Targeted repository path — never pay for full-catalog resolution for one agent.
+      const authorized = await this.resolveAuthorized(userId, { platformAgentId });
+      const target = authorized[0];
+      if (!target) return null;
+      if (target.distribution !== 'mandatory') {
+        const hidden = await this.repository().listHiddenPlatformAgentIds(userId);
+        if (hidden.has(platformAgentId)) return null;
+      }
+      return projectEffective(target);
+    } catch (error) {
+      // Same redaction boundary as list/beginOperation — raw SQL must never escape the router.
+      throw redactPlatformReadError(error);
+    }
   };
 
   /**
@@ -188,8 +237,8 @@ export class PlatformAgentEffectiveResolver {
     userId: string,
     platformAgentId: string,
   ): Promise<PlatformAgentOperationSnapshot | null> => {
-    const authorized = await this.resolveAuthorized(userId);
-    const target = authorized.find((agent) => agent.platformAgentId === platformAgentId);
+    const authorized = await this.resolveAuthorized(userId, { platformAgentId });
+    const target = authorized[0];
     if (!target) return null;
     return deepFreeze<PlatformAgentOperationSnapshot>(
       structuredClone({
@@ -244,8 +293,8 @@ export class PlatformAgentEffectiveResolver {
     systemKey: NonNullable<AuthorizedAgent['systemKey']>,
   ): Promise<PlatformAgentOperationHandle | null> => {
     try {
-      const authorized = await this.resolveAuthorized(userId);
-      const target = authorized.find((agent) => agent.systemKey === systemKey);
+      const authorized = await this.resolveAuthorized(userId, { systemKey });
+      const target = authorized[0];
       if (!target) return null;
       const snapshot = deepFreeze<PlatformAgentOperationSnapshot>(
         structuredClone({
@@ -272,8 +321,8 @@ export class PlatformAgentEffectiveResolver {
    */
   isEntitled = async (userId: string, platformAgentId: string): Promise<boolean> => {
     try {
-      const authorized = await this.resolveAuthorized(userId);
-      return authorized.some((agent) => agent.platformAgentId === platformAgentId);
+      const authorized = await this.resolveAuthorized(userId, { platformAgentId });
+      return authorized.length > 0;
     } catch (error) {
       throw redactPlatformReadError(error);
     }
@@ -294,8 +343,8 @@ export class PlatformAgentEffectiveResolver {
     hidden: boolean,
   ): Promise<void> => {
     try {
-      const authorized = await this.resolveAuthorized(userId);
-      const target = authorized.find((agent) => agent.platformAgentId === platformAgentId);
+      const authorized = await this.resolveAuthorized(userId, { platformAgentId });
+      const target = authorized[0];
       if (!target) throw new PlatformAgentNotFoundError();
       // A mandatory Agent can never be hidden by an ordinary user (ROOT-01). Reject the write
       // instead of silently accepting a no-op, so the boundary is explicit. Un-hiding (hidden=false)

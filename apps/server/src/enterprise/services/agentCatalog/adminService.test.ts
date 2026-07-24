@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   archiveIdentityCas: vi.fn(),
   assertDependencies: vi.fn(),
   countAgentReferences: vi.fn(),
+  countAssignmentTargets: vi.fn(),
   countAssignments: vi.fn(),
   countAssignmentsByAgentIds: vi.fn(),
   createAssignment: vi.fn(),
@@ -29,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   getExactVersion: vi.fn(),
   getExactVersionsByIds: vi.fn(),
   getIdentity: vi.fn(),
+  hardDeleteAgentCascade: vi.fn(),
   listAssignments: vi.fn(),
   listDependentMaterializations: vi.fn(),
   listIdentities: vi.fn(),
@@ -43,6 +45,7 @@ vi.mock('@/database/repositories/platformAgentCatalog', () => ({
     appendVersionCas = mocks.appendVersionCas;
     archiveIdentityCas = mocks.archiveIdentityCas;
     countAgentReferences = mocks.countAgentReferences;
+    countAssignmentTargets = mocks.countAssignmentTargets;
     countAssignments = mocks.countAssignments;
     countAssignmentsByAgentIds = mocks.countAssignmentsByAgentIds;
     createAssignment = mocks.createAssignment;
@@ -51,6 +54,7 @@ vi.mock('@/database/repositories/platformAgentCatalog', () => ({
     getExactVersion = mocks.getExactVersion;
     getExactVersionsByIds = mocks.getExactVersionsByIds;
     getIdentity = mocks.getIdentity;
+    hardDeleteAgentCascade = mocks.hardDeleteAgentCascade;
     listAssignments = mocks.listAssignments;
     listDependentMaterializations = mocks.listDependentMaterializations;
     listIdentities = mocks.listIdentities;
@@ -567,6 +571,64 @@ describe('PlatformAgentAdminService', () => {
       expect(mocks.getExactVersion).not.toHaveBeenCalled();
       // Assignment page still has a next cursor, so materializations are not fetched.
       expect(mocks.listDependentMaterializations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delete CAS', () => {
+    it('rejects delete after draftSequence changes (full identity CAS)', async () => {
+      const locked = identity({ draftSequence: 5, revision: 2 });
+      mocks.lockIdentity.mockResolvedValue(locked);
+
+      await expect(
+        new PlatformAgentAdminService(db).delete('admin-id', {
+          agentId: locked.id,
+          // Stale token from draftSequence 4 — revision alone would still match.
+          expectedDraftToken: platformAgentDraftToken(identity({ draftSequence: 4, revision: 2 })),
+          expectedRevision: 2,
+          reason: 'stale delete after assignment',
+        }),
+      ).rejects.toBeInstanceOf(PlatformAgentRevisionConflictError);
+      expect(mocks.hardDeleteAgentCascade).not.toHaveBeenCalled();
+    });
+
+    it('hard-deletes when full identity CAS matches', async () => {
+      const locked = identity();
+      mocks.lockIdentity.mockResolvedValue(locked);
+      mocks.hardDeleteAgentCascade.mockResolvedValue(undefined);
+
+      await expect(
+        new PlatformAgentAdminService(db).delete('admin-id', {
+          agentId: locked.id,
+          expectedDraftToken: platformAgentDraftToken(locked),
+          expectedRevision: locked.revision,
+          reason: 'retire assistant',
+        }),
+      ).resolves.toEqual({ deleted: true });
+      expect(mocks.hardDeleteAgentCascade).toHaveBeenCalledWith(locked.id);
+      expect(mocks.acquireDefaultLock).toHaveBeenCalled();
+      expect(mocks.acquireReferenceLock).toHaveBeenCalledWith(expect.anything(), locked.id);
+    });
+  });
+
+  it('returns ASSIGNMENT_DISABLED warning code for disabled assignment preview', async () => {
+    mocks.getIdentity.mockResolvedValue(identity());
+    mocks.countAssignmentTargets.mockResolvedValue(12);
+
+    await expect(
+      new PlatformAgentAdminService(db).previewAssignment({
+        agentId: 'agent-id',
+        assignment: {
+          enabled: false,
+          mode: 'optional',
+          pinnedVersionId: null,
+          targetId: '__global__',
+          targetType: 'global',
+          versionPolicy: 'latest_published',
+        },
+      }),
+    ).resolves.toEqual({
+      estimatedUsers: 12,
+      warnings: ['ASSIGNMENT_DISABLED'],
     });
   });
 });

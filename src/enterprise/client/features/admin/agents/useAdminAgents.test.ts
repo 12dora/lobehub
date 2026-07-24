@@ -4,25 +4,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
 import {
-  clearAdminAgentCache,
+  ADMIN_AGENT_COLLECTION_PAGE_LIMIT,
   fetchActiveAdminAgentRollouts,
   fetchAdminAgentDetail,
+  fetchPublishedAdminAgentReplacements,
+  findDefaultAdminAgent,
   mergePolledRollouts,
-  refreshAdminAgent,
-  refreshAdminAgentLists,
   selectActiveRolloutJobIds,
   useFetchAdminAgent,
-  useFetchAdminAgents,
 } from './useAdminAgents';
 
 const mocks = vi.hoisted(() => ({
   configs: [] as Record<string, unknown>[],
   fetchers: [] as (() => Promise<unknown>)[],
   keys: [] as unknown[],
-  mutate: vi.fn(),
 }));
 
-vi.mock('swr', () => ({ mutate: mocks.mutate }));
 vi.mock('@/libs/swr', () => ({
   useClientDataSWR: (key: unknown, fetcher: () => Promise<unknown>, config = {}) => {
     mocks.keys.push(key);
@@ -43,32 +40,24 @@ describe('Admin Agent hook adapter injection', () => {
     mocks.configs.length = 0;
     mocks.fetchers.length = 0;
     mocks.keys.length = 0;
-    mocks.mutate.mockReset().mockResolvedValue(undefined);
   });
 
-  it('keeps disabled reads null and never invokes the injected client', () => {
+  it('keeps disabled detail reads null and never invokes the injected client', () => {
     const client = createMockAdminAgentsClient();
     const get = vi.spyOn(client, 'get');
-    const list = vi.spyOn(client, 'list');
-    renderHook(() => useFetchAdminAgents({}, false, client));
     renderHook(() => useFetchAdminAgent('agent-1', false, client));
-    expect(mocks.keys).toEqual([null, null, null]);
-    expect(list).not.toHaveBeenCalled();
+    expect(mocks.keys).toEqual([null, null]);
     expect(get).not.toHaveBeenCalled();
   });
 
-  it('runs reads and the detail aggregate through the injected client boundary', async () => {
+  it('runs the detail aggregate through the injected client boundary', async () => {
     const client = createMockAdminAgentsClient();
     const get = vi.spyOn(client, 'get');
-    const list = vi.spyOn(client, 'list');
     const assignments = vi.spyOn(client, 'listAssignments');
     const rollouts = vi.spyOn(client, 'listRollouts');
     const versions = vi.spyOn(client, 'listVersions');
-    renderHook(() => useFetchAdminAgents({ status: 'draft' }, true, client));
     renderHook(() => useFetchAdminAgent('agent-inbox', true, client));
-    await mocks.fetchers[0]!();
-    const detail = await mocks.fetchers[1]!();
-    expect(list).toHaveBeenCalledWith({ status: 'draft' });
+    const detail = await mocks.fetchers[0]!();
     expect(get).toHaveBeenCalledWith({ id: 'agent-inbox' });
     expect(assignments).toHaveBeenCalledWith({
       agentId: 'agent-inbox',
@@ -86,8 +75,9 @@ describe('Admin Agent hook adapter injection', () => {
       limit: 100,
     });
     expect((detail as { versions: unknown[] }).versions).toHaveLength(1);
-    expect(mocks.configs[1]!.refreshInterval).toBeUndefined();
-    expect(mocks.keys[2]).toBeNull();
+    expect(mocks.configs[0]!.keepPreviousData).toBe(false);
+    expect(mocks.configs[0]!.refreshInterval).toBeUndefined();
+    expect(mocks.keys[1]).toBeNull();
   });
 
   it('dedupes active jobs and merges lightweight getRollout projections', async () => {
@@ -118,7 +108,7 @@ describe('Admin Agent hook adapter injection', () => {
     expect(detail.versions.length).toBeGreaterThan(0);
   });
 
-  it('follows opaque cursors so detail collections are never silently truncated', async () => {
+  it('follows opaque cursors up to the page ceiling and stops on repeated cursors', async () => {
     const client = createMockAdminAgentsClient();
     const version = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
     const listVersions = vi
@@ -142,33 +132,44 @@ describe('Admin Agent hook adapter injection', () => {
       cursor: 'next-page',
       limit: 100,
     });
+
+    // Cycle guard: a stuck cursor must not spin past the hard page ceiling.
+    listVersions.mockReset();
+    for (let i = 0; i < ADMIN_AGENT_COLLECTION_PAGE_LIMIT + 5; i += 1) {
+      listVersions.mockResolvedValueOnce({
+        items: [{ ...version, id: `version-cycle-${i}` }],
+        nextCursor: 'same-cursor',
+      });
+    }
+    const cycled = await fetchAdminAgentDetail('agent-inbox', client);
+    expect(listVersions.mock.calls.length).toBeLessThanOrEqual(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
+    expect(cycled.versions.length).toBeLessThanOrEqual(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
   });
 
-  it('invalidates list and detail caches after writes', async () => {
-    await refreshAdminAgentLists();
-    const listPredicate = mocks.mutate.mock.calls[0]![0] as (key: unknown) => boolean;
-    expect(listPredicate(['enterprise.admin.agents.list', {}])).toBe(true);
-    expect(listPredicate(['enterprise.admin.agents.get', 'agent-1'])).toBe(false);
+  it('resolves the default inbox via a dedicated isDefault list filter (no catalog drain)', async () => {
+    const client = createMockAdminAgentsClient();
+    const list = vi.spyOn(client, 'list');
 
-    mocks.mutate.mockClear();
-    await refreshAdminAgent('agent-1');
-    const detailPredicate = mocks.mutate.mock.calls[0]![0] as (key: unknown) => boolean;
-    expect(detailPredicate(['enterprise.admin.agents.get', 'agent-1', true])).toBe(true);
-    expect(detailPredicate(['enterprise.admin.agents.get', 'agent-2', true])).toBe(false);
-    const refreshPredicate = mocks.mutate.mock.calls[1]![0] as (key: unknown) => boolean;
-    expect(refreshPredicate(['enterprise.admin.agents.list', {}])).toBe(true);
+    const found = await findDefaultAdminAgent(client);
+    expect(found?.identity.isDefault).toBe(true);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith({ isDefault: true, limit: 1 });
   });
 
-  it('clears only Agent list/detail cache families without revalidation', async () => {
-    await clearAdminAgentCache();
-    const [predicate, value, options] = mocks.mutate.mock.calls[0]!;
-    expect((predicate as (key: unknown) => boolean)(['enterprise.admin.agents.list', {}])).toBe(
-      true,
-    );
-    expect((predicate as (key: unknown) => boolean)(['enterprise.admin.connectors.list', {}])).toBe(
-      false,
-    );
-    expect(value).toBeUndefined();
-    expect(options).toEqual({ revalidate: false });
+  it('loads one published replacement page without multi-page drain', async () => {
+    const client = createMockAdminAgentsClient();
+    const list = vi.spyOn(client, 'list');
+
+    const items = await fetchPublishedAdminAgentReplacements('agent-inbox', client, {
+      limit: 50,
+      query: 'research',
+    });
+    expect(items.every(({ identity }) => identity.id !== 'agent-inbox')).toBe(true);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith({
+      limit: 50,
+      query: 'research',
+      status: 'published',
+    });
   });
 });

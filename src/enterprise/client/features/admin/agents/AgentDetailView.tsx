@@ -283,13 +283,14 @@ export const AgentDetailView = memo(
           <AssignmentPanel
             authMethod={authMethod}
             lock={lock}
-            mutate={mutate}
             permissions={permissions}
+            refresh={mutate}
             rolloutsEnabled={rolloutsEnabled}
             snapshot={snapshot}
           />
           <RolloutPanel
             enabled={rolloutsEnabled}
+            lock={lock}
             permissions={permissions}
             pollError={pollError}
             refresh={mutate}

@@ -32,7 +32,10 @@ vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () =>
   openReasonModal: mocks.openReasonModal,
 }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({ adminAgentsService: mocks.service }));
-vi.mock('./useAdminAgents', () => ({ fetchAllAdminAgents: vi.fn().mockResolvedValue([]) }));
+vi.mock('./useAdminAgents', () => ({
+  fetchPublishedAdminAgentReplacements: vi.fn().mockResolvedValue([]),
+  findDefaultAdminAgent: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('@lobehub/ui', () => ({ Flexbox: () => null, Text: () => null }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Select: () => null,

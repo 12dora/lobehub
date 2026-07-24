@@ -222,9 +222,14 @@ export class PlatformAuditRetentionRepository {
   deleteOperationLogsRechecked = async (params: {
     cutoffAt: Date;
     ids: string[];
+    /**
+     * Optional open transaction (e.g. atomic delete + retention checkpoint).
+     * When set, the caller owns commit/rollback; the shared hold lock is still acquired.
+     */
+    tx?: Transaction;
   }): Promise<number> => {
     if (params.ids.length === 0) return 0;
-    return this.inTransaction(async (tx) => {
+    const run = async (tx: Transaction) => {
       await acquirePlatformAuditRetentionHoldLock(tx);
       // Opt-in escape hatch for the append-only audit-log trigger (migration 0145).
       await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
@@ -239,7 +244,9 @@ export class PlatformAuditRetentionRepository {
         )
         .returning({ id: platformAuditLogs.id });
       return deleted.length;
-    });
+    };
+    if (params.tx) return run(params.tx);
+    return this.inTransaction(run);
   };
 
   // ── conversations (topics) ────────────────────────────────────────────────
@@ -319,8 +326,13 @@ export class PlatformAuditRetentionRepository {
    * Cascade removes messages/threads/children. Never touches sessions/users/agents.
    * Returns true when the topic row was deleted.
    */
-  deleteTopicRechecked = async (params: { cutoffAt: Date; topicId: string }): Promise<boolean> => {
-    return this.inTransaction(async (tx) => {
+  deleteTopicRechecked = async (params: {
+    cutoffAt: Date;
+    topicId: string;
+    /** Optional open transaction for atomic delete + retention checkpoint. */
+    tx?: Transaction;
+  }): Promise<boolean> => {
+    const run = async (tx: Transaction) => {
       await acquirePlatformAuditRetentionHoldLock(tx);
       const deleted = await tx
         .delete(topics)
@@ -337,7 +349,9 @@ export class PlatformAuditRetentionRepository {
         )
         .returning({ id: topics.id });
       return deleted.length > 0;
-    });
+    };
+    if (params.tx) return run(params.tx);
+    return this.inTransaction(run);
   };
 
   // ── export artifacts ──────────────────────────────────────────────────────
@@ -442,6 +456,31 @@ export class PlatformAuditRetentionRepository {
   };
 
   /**
+   * Authorize (hold recheck) + external object delete + complete outbox under one
+   * advisory lock TX. Preferred over authorize → delete → complete split, which
+   * leaves a hold race after the authorize transaction commits.
+   */
+  purgeExportArtifactObjectsUnderHoldLock = async (params: {
+    deleteObject: (storageKey: string) => Promise<void>;
+    ids: string[];
+    resolveHeldIds: (
+      tx: Transaction,
+      rows: Array<{
+        filterSnapshot: PlatformAuditExportItem['filterSnapshot'];
+        id: string;
+        kind: PlatformAuditExportItem['kind'];
+      }>,
+    ) => Promise<Set<string>>;
+  }): Promise<{ deleted: number; skippedHold: number }> => {
+    const exportsModel = new PlatformAuditExportModel(this.db);
+    return exportsModel.purgeArtifactObjectsUnderHoldLock(params.ids, {
+      db: this.db as LobeChatDatabase,
+      deleteObject: params.deleteObject,
+      resolveHeldIds: params.resolveHeldIds,
+    });
+  };
+
+  /**
    * Mark purge outboxes complete only after successful external object deletes.
    * Returns the number of outbox rows cleared.
    */
@@ -453,6 +492,17 @@ export class PlatformAuditRetentionRepository {
       if (await exportsModel.completeArtifactObjectDelete(id)) n += 1;
     }
     return n;
+  };
+
+  /**
+   * Crash-recovery scan: purge outboxes with storageKey already cleared that
+   * never completed external object delete.
+   */
+  listPendingExportArtifactPurges = async (params?: {
+    limit?: number;
+  }): Promise<Array<{ id: string; storageKey: string }>> => {
+    const exportsModel = new PlatformAuditExportModel(this.db);
+    return exportsModel.listPendingArtifactPurges(params);
   };
 
   /**
