@@ -23,7 +23,6 @@ export const IDENTITY_PROVIDER_STEPS = [
   'client',
   'claims',
   'policy',
-  'test',
   'publish',
 ] as const;
 
@@ -48,9 +47,9 @@ export const IdentityProviderWizardNavigation = memo<IdentityProviderWizardNavig
           return (
             <Button
               aria-current={item === value ? 'step' : undefined}
+              icon={state === 'complete' ? Check : state === 'error' ? AlertCircle : undefined}
               key={item}
               type={state === 'current' ? 'primary' : 'default'}
-              icon={state === 'complete' ? Check : state === 'error' ? AlertCircle : undefined}
               onClick={() => onChange(item)}
             >
               {index + 1}. {t(`identityProviders.steps.${item}` as never)}

@@ -1126,6 +1126,26 @@ describe('IdentityProviderPublicationService', () => {
     );
   });
 
+  it('requires an explicit draft fork before republishing an active revision', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish first version',
+      requestId: requestId(25),
+    });
+
+    await expect(
+      publication.publish('admin-1', {
+        expectedRevision: published.revision,
+        id: published.id,
+        reason: 'must fork a draft first',
+        requestId: requestId(26),
+      }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_DRAFT_REQUIRED');
+  });
+
   it.each([
     ['an invalid preview', { result: { claims: {}, issues: [], valid: false } }],
     [

@@ -353,7 +353,10 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     return <Alert showIcon description={t('identityProviders.errors.forbidden')} type="warning" />;
   }
 
-  const showCreateAction = canCreate && !setupGuidance;
+  // Single login method: once a provider exists, editing the existing row is the only
+  // path — creating a second one is intentionally withheld (one mutable draft head).
+  const hasAnyProvider = (providers.data?.items.length ?? 0) > 0;
+  const showCreateAction = canCreate && !setupGuidance && !hasAnyProvider;
   const showRuntime = canRestart && !setupGuidance;
 
   return (

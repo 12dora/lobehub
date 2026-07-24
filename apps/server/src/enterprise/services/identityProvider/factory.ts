@@ -5,6 +5,7 @@ import type { SafeOutboundHttpClientOptions } from '../../security/outboundHttp'
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { resolveIdentityProviderOutboundMode } from './outboundMode';
 import { IdentityProviderSecretStore } from './secretStore';
 
 export interface IdentityProviderSecurityFoundation {
@@ -24,7 +25,10 @@ export const createIdentityProviderSecurityFoundation = (
   if (!secretService) throw new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_REQUIRED');
   return {
     discovery: new IdentityProviderDiscoveryValidator(
-      new SafeOutboundHttpClient({ ...outboundOptions, mode: 'public-only' }),
+      new SafeOutboundHttpClient({
+        ...outboundOptions,
+        mode: resolveIdentityProviderOutboundMode(env),
+      }),
     ),
     secrets: new IdentityProviderSecretStore(db, secretService),
   };

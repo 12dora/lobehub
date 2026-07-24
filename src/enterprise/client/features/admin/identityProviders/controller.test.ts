@@ -5,11 +5,13 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import {
   acceptIdentityProviderRestart,
   AUTHENTIK_ISSUER_PLACEHOLDER,
+  classifyIdentityProviderWorkflowError,
   createIdentityProviderDraftFromTemplate,
   IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
   IdentityProviderTestPopupBlockedError,
   isIdentityProviderDeletable,
   isIdentityProviderDisableable,
+  isIdentityProviderDraftWorkflowReady,
   isIdentityProviderSetupGuidanceError,
   isIdentityProviderTestTerminal,
   openIdentityProviderTestPopup,
@@ -21,6 +23,33 @@ import {
 } from './controller';
 
 describe('identity provider editor controller', () => {
+  it('allows the test and publish workflow only for server-side drafts', () => {
+    expect(isIdentityProviderDraftWorkflowReady({ status: 'draft' })).toBe(true);
+    for (const status of ['active', 'pending_restart', 'published', 'error'] as const) {
+      expect(isIdentityProviderDraftWorkflowReady({ status })).toBe(false);
+    }
+    expect(isIdentityProviderDraftWorkflowReady(undefined)).toBe(false);
+  });
+
+  it('maps structured workflow preconditions to actionable editor errors', () => {
+    const error = (reason: string) => ({
+      data: {
+        errorData: {
+          code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+          details: { reason },
+        },
+      },
+    });
+
+    expect(classifyIdentityProviderWorkflowError(error('identity_provider_draft_required'))).toBe(
+      'draft-required',
+    );
+    expect(classifyIdentityProviderWorkflowError(error('identity_provider_test_required'))).toBe(
+      'test-required',
+    );
+    expect(classifyIdentityProviderWorkflowError(new Error('network failed'))).toBe('generic');
+  });
+
   it('stops polling only for terminal test states', () => {
     expect(isIdentityProviderTestTerminal('pending')).toBe(false);
     expect(isIdentityProviderTestTerminal('processing')).toBe(false);
