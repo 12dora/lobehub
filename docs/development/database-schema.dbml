@@ -1236,6 +1236,8 @@ table messages {
     agent_id [name: 'messages_agent_id_idx']
     group_id [name: 'messages_group_id_idx']
     message_group_id [name: 'messages_message_group_id_idx']
+    (user_id, topic_id, created_at, id) [name: 'messages_user_id_topic_id_created_at_id_idx']
+    (role, created_at) [name: 'messages_role_created_at_idx']
     () [name: 'messages_usage_cost_idx']
     () [name: 'messages_usage_total_tokens_idx']
     workspace_id [name: 'messages_workspace_id_idx']
@@ -1658,6 +1660,19 @@ table platform_agents {
   }
 }
 
+table platform_user_agent_materialization_tombstones {
+  id text [pk, not null]
+  user_id text [not null]
+  materialized_agent_id text [not null]
+  former_platform_agent_id text [not null]
+  created_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    materialized_agent_id [name: 'platform_user_agent_mat_tombstones_local_agent_unique', unique]
+    user_id [name: 'platform_user_agent_mat_tombstones_user_id_idx']
+  }
+}
+
 table platform_user_agent_materializations {
   id text [pk, not null]
   user_id text [not null]
@@ -1799,11 +1814,11 @@ table platform_audit_exports {
     requested_by [name: 'platform_audit_exports_requested_by_idx']
     expires_at [name: 'platform_audit_exports_expires_at_idx']
     job_id [name: 'platform_audit_exports_job_id_unique', unique]
-
-
-
-
-
+    
+    
+    
+    
+    
   }
 }
 
@@ -1828,10 +1843,10 @@ table platform_audit_legal_holds {
     expires_at [name: 'platform_audit_legal_holds_expires_at_idx']
     scope_type [name: 'platform_audit_legal_holds_active_global_unique', unique]
     (scope_type, scope_id) [name: 'platform_audit_legal_holds_active_scope_unique', unique]
-
-
-
-
+    
+    
+    
+    
   }
 }
 
@@ -1874,12 +1889,12 @@ table platform_audit_retention_runs {
     (scope, created_at) [name: 'platform_audit_retention_runs_scope_created_at_idx']
     requested_by [name: 'platform_audit_retention_runs_requested_by_idx']
     job_id [name: 'platform_audit_retention_runs_job_id_unique', unique]
-
-
-
-
-
-
+    
+    
+    
+    
+    
+    
   }
 }
 
@@ -1910,6 +1925,16 @@ table platform_audit_logs {
     (result, created_at, id) [name: 'platform_audit_logs_result_created_at_id_idx']
     (created_at, id) [name: 'platform_audit_logs_created_at_id_idx']
   }
+}
+
+table platform_auth_settings {
+  id text [pk, not null]
+  email_domain_allowlist jsonb [not null, default: `[]`]
+  email_domain_allowlist_enabled boolean [not null, default: false]
+  open_registration boolean [not null, default: true]
+  updated_by text
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
 }
 
 table platform_branding {
@@ -2225,7 +2250,8 @@ table platform_global_credential_secrets {
 }
 
 table platform_global_credential_uploads {
-  file_hash_id varchar(64) [pk, not null]
+  id text [pk, not null]
+  file_hash_id varchar(64) [not null]
   file_name varchar(255) [not null]
   file_type varchar(128) [not null]
   file_size integer [not null]
@@ -2233,12 +2259,15 @@ table platform_global_credential_uploads {
   ref text [not null]
   ciphertext text [not null]
   key_id varchar(256) [not null]
-  created_by text
+  created_by text [not null]
   expires_at "timestamp with time zone" [not null]
   created_at "timestamp with time zone" [not null, default: `now()`]
 
   indexes {
     expires_at [name: 'platform_global_credential_uploads_expires_at_idx']
+    (created_by, file_hash_id) [name: 'platform_global_credential_uploads_owner_hash_unique', unique]
+    created_by [name: 'platform_global_credential_uploads_created_by_idx']
+    
     
     
     
@@ -2263,31 +2292,6 @@ table platform_global_credentials {
     enabled [name: 'platform_global_credentials_enabled_idx']
     
     
-  }
-}
-
-table platform_easyauth_grant_snapshots {
-  id text [pk, not null]
-  user_id text [not null]
-  external_user_id text [not null]
-  app_key varchar(64) [not null, default: 'aihub']
-  groups jsonb [not null, default: `[]`]
-  grants jsonb [not null, default: `[]`]
-  grant_version integer [not null, default: 0]
-  catalog_version integer [not null, default: 0]
-  snapshot_version text [not null, default: '0']
-  expires_at "timestamp with time zone"
-  fetched_at "timestamp with time zone" [not null, default: `now()`]
-  degraded boolean [not null, default: false]
-  last_error text
-  access_granted boolean [not null, default: false]
-  created_at "timestamp with time zone" [not null, default: `now()`]
-  updated_at "timestamp with time zone" [not null, default: `now()`]
-
-  indexes {
-    (user_id, app_key) [name: 'platform_easyauth_grant_snapshots_user_app_unique', unique]
-    (external_user_id, app_key) [name: 'platform_easyauth_grant_snapshots_external_idx']
-    access_granted [name: 'platform_easyauth_grant_snapshots_access_idx']
   }
 }
 
@@ -2612,6 +2616,15 @@ table user_setting_overrides {
     user_id [name: 'user_setting_overrides_user_id_idx']
     path [name: 'user_setting_overrides_path_idx']
   }
+}
+
+table platform_sidebar_layout {
+  id text [pk, not null]
+  layout jsonb
+  mode text [not null, default: 'user']
+  updated_by text
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
 }
 
 table platform_skill_versions {
@@ -3311,6 +3324,7 @@ table topics {
     (client_id, user_id) [name: 'topics_client_id_user_id_unique', unique]
     user_id [name: 'topics_user_id_idx']
     (id, user_id) [name: 'topics_id_user_id_idx']
+    (user_id, created_at, id) [name: 'topics_user_id_created_at_id_idx']
     session_id [name: 'topics_session_id_idx']
     group_id [name: 'topics_group_id_idx']
     agent_id [name: 'topics_agent_id_idx']
