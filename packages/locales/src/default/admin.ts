@@ -604,6 +604,11 @@ export default {
     'Sidebar layout saved, but the view could not refresh. Reload if it looks stale.',
   'sidebarLayout.saveError': 'Failed to save the sidebar layout. Please try again.',
   'sidebarLayout.loadError': 'Could not load sidebar layout.',
+  'sidebarLayout.conflict':
+    'Sidebar layout was changed elsewhere. Reloading the latest version before you can save again.',
+  'sidebarLayout.reloadNeeded':
+    'Could not load the latest sidebar layout. Reload to continue editing.',
+  'sidebarLayout.reload': 'Reload',
   'managedResources.unsavedLeave': 'You have unsaved managed resource changes. Leave anyway?',
   'managedResources.unsavedConfirm': 'Leave without saving',
   'managedResources.unsavedStay': 'Keep editing',
@@ -1765,6 +1770,7 @@ export default {
   'branding.fields.shortName': 'Short name',
   'branding.fields.supportUrl': 'Support URL',
   'branding.fields.termsUrl': 'Terms URL',
+  'branding.fields.theme': 'Theme',
   'branding.fields.upload': 'Choose file',
   'branding.history.empty': 'No published revisions yet.',
   'branding.history.noReason': 'No reason recorded',
@@ -1787,6 +1793,8 @@ export default {
   'branding.refresh.committedFailed':
     'Branding was published, but refreshing the editor failed. Retry refresh before making more changes.',
   'branding.refresh.committedTitle': 'Published — refresh required',
+  'branding.refresh.failed':
+    'Refreshing the branding editor failed. Retry before making more changes.',
   'branding.refresh.retry': 'Retry refresh',
   'branding.rollback.description': 'Restore revision #{{revision}} into the editable draft.',
   'branding.rollback.impact':
