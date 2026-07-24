@@ -87,13 +87,14 @@ const runPathBoundaryCheck = (
     child.on('close', (code) => {
       const combined = `${stdout}\n${stderr}`;
       const filesMatch = combined.match(/(\d+)\s+files scanned/iu);
+      // Never synthesize a positive scan count — missing parse or zero is zero.
       const filesScanned = filesMatch ? Number(filesMatch[1]) : 0;
       // Count violation lines: "- path" pattern from CLI
       const violationCount =
         code === 0 ? 0 : (combined.match(/^- \S+/gmu) ?? []).length || (code === 0 ? 0 : 1);
       resolve({
         exitCode: code ?? 1,
-        filesScanned: filesScanned > 0 ? filesScanned : code === 0 ? 1 : 0,
+        filesScanned: Number.isFinite(filesScanned) ? filesScanned : 0,
         violationCount,
       });
     });

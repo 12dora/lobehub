@@ -7,7 +7,9 @@ const usage = () => {
   console.error(
     'Usage: bun scripts/enterprise/failure-drills/index.ts collect --git-sha <sha> --reports-dir <dir> --output-dir <dir> --cleanup-result <passed|failed> --bun-version <version> --node-version <version> --postgres-version <version> --redis-version <version>',
   );
-  console.error('   or: bun scripts/enterprise/failure-drills/index.ts verify --output-dir <dir>');
+  console.error(
+    '   or: bun scripts/enterprise/failure-drills/index.ts verify --output-dir <dir> --reports-dir <dir>',
+  );
 };
 
 const requireOption = (value: string | undefined, option: string): string => {
@@ -34,7 +36,10 @@ const main = async () => {
   const outputDirectory = requireOption(values['output-dir'], '--output-dir');
 
   if (command === 'verify') {
-    if (!(await verifyFailureDrillEvidence(outputDirectory))) process.exitCode = 1;
+    const reportsDirectory = requireOption(values['reports-dir'], '--reports-dir');
+    if (!(await verifyFailureDrillEvidence(outputDirectory, { reportsDirectory }))) {
+      process.exitCode = 1;
+    }
     return;
   }
 

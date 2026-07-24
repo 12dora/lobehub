@@ -108,6 +108,19 @@ const writeEvidence = async (outputDirectory: string, evidence: FailureDrillEvid
   await writeFile(outputPath, `${JSON.stringify(evidence, null, 2)}\n`, { encoding: 'utf8' });
 };
 
+/** Deterministic aggregate digest of ordered raw Vitest report files (null-separated). */
+export const digestFailureDrillRawReports = async (
+  reportsDirectory: string,
+  reportFiles: readonly string[],
+): Promise<string> => {
+  const artifactHash = createHash('sha256');
+  for (const reportFile of reportFiles) {
+    const reportBuffer = await readFile(path.join(reportsDirectory, reportFile));
+    artifactHash.update(reportBuffer).update('\0');
+  }
+  return artifactHash.digest('hex');
+};
+
 export const collectFailureDrillEvidence = async ({
   cleanupResult,
   dependencies,
@@ -119,17 +132,21 @@ export const collectFailureDrillEvidence = async ({
 
   const records: FailureDrillEvidence[] = [];
   let passed = cleanupResult === 'passed';
+  const manifestReports: Array<{ reportFile: string; sha256: string }> = [];
 
   for (const scenario of FAILURE_DRILL_SCENARIOS) {
-    const artifactHash = createHash('sha256');
     const reportResults = [];
+    const reportFiles = scenario.reports.map((report) => report.reportFile);
 
     for (const reportDefinition of scenario.reports) {
       const reportPath = path.join(reportsDirectory, reportDefinition.reportFile);
       const reportBuffer = await readFile(reportPath);
-      artifactHash.update(reportBuffer).update('\0');
+      const reportSha = createHash('sha256').update(reportBuffer).digest('hex');
+      manifestReports.push({ reportFile: reportDefinition.reportFile, sha256: reportSha });
       reportResults.push(parseReport(reportBuffer.toString('utf8'), scenario, reportDefinition));
     }
+
+    const artifactSha256 = await digestFailureDrillRawReports(reportsDirectory, reportFiles);
 
     const assertions = reportResults.reduce(
       (summary, report) => ({
@@ -141,7 +158,7 @@ export const collectFailureDrillEvidence = async ({
       { failed: 0, passed: 0, skipped: 0, total: 0 },
     );
     const evidence = createFailureDrillEvidence({
-      artifact: { sha256: artifactHash.digest('hex') },
+      artifact: { sha256: artifactSha256 },
       assertions,
       cleanupResult,
       dependencies,
@@ -167,16 +184,62 @@ export const collectFailureDrillEvidence = async ({
       isPassingFailureDrillEvidence(evidence);
   }
 
+  // Bind candidate SHA + exact per-file raw-report digests for later re-verification.
+  const manifest = {
+    gitSha,
+    reports: manifestReports,
+    schemaVersion: 1 as const,
+  };
+  await writeFile(
+    path.join(outputDirectory, 'raw-report-manifest.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    'utf8',
+  );
+
   return { passed, records };
 };
 
-export const verifyFailureDrillEvidence = async (outputDirectory: string): Promise<boolean> => {
+export interface VerifyFailureDrillEvidenceOptions {
+  /**
+   * Directory of raw Vitest JSON reports. Required to recompute artifact digests.
+   * When omitted, verification fails closed (forged aggregate-only evidence rejected).
+   */
+  reportsDirectory?: string;
+}
+
+/**
+ * Verify multi-scenario evidence and re-bind each artifact.sha256 to raw report bytes.
+ * Aggregate JSON alone (forged hashes) is never accepted without matching raw reports.
+ */
+export const verifyFailureDrillEvidence = async (
+  outputDirectory: string,
+  options: VerifyFailureDrillEvidenceOptions = {},
+): Promise<boolean> => {
+  const reportsDirectory = options.reportsDirectory;
+  if (!reportsDirectory) {
+    // Without raw reports, digests cannot be recomputed — reject aggregate-only evidence.
+    return false;
+  }
+
   const records = await Promise.all(
-    FAILURE_DRILL_SCENARIOS.map(async ({ scenarioId }) => {
-      const source = await readFile(path.join(outputDirectory, `${scenarioId}.json`), 'utf8');
-      return failureDrillEvidenceSchema.parse(JSON.parse(source));
+    FAILURE_DRILL_SCENARIOS.map(async (scenario) => {
+      const source = await readFile(
+        path.join(outputDirectory, `${scenario.scenarioId}.json`),
+        'utf8',
+      );
+      const evidence = failureDrillEvidenceSchema.parse(JSON.parse(source));
+      const reportFiles = scenario.reports.map((report) => report.reportFile);
+      let recomputed: string;
+      try {
+        recomputed = await digestFailureDrillRawReports(reportsDirectory, reportFiles);
+      } catch {
+        return null;
+      }
+      if (recomputed !== evidence.artifact.sha256) return null;
+      return evidence;
     }),
   );
 
-  return records.every(isPassingFailureDrillEvidence);
+  if (records.includes(null)) return false;
+  return records.every((record) => record !== null && isPassingFailureDrillEvidence(record));
 };

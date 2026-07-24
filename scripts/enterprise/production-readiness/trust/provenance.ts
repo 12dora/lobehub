@@ -130,6 +130,28 @@ export const signedProvenancePayloadSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    // Passed payloads must bind a positive all-pass assertion summary.
+    if (value.status === 'passed') {
+      if (!value.assertions) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'passed provenance requires assertions',
+          path: ['assertions'],
+        });
+      } else if (
+        value.assertions.total < 1 ||
+        value.assertions.passed !== value.assertions.total ||
+        value.assertions.failed !== 0 ||
+        value.assertions.skipped !== 0
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'passed provenance requires positive all-pass assertions',
+          path: ['assertions'],
+        });
+      }
+    }
+
     if (value.gateId !== 'backup-restore') {
       if (value.attestationRole === 'source-backup') {
         context.addIssue({

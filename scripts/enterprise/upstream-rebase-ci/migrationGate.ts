@@ -176,14 +176,14 @@ export interface MigrationGateOptions {
 }
 
 /**
- * migration-upgrade-rollback gate for dry-run CI.
+ * migration-upgrade-rerun gate for dry-run CI.
  *
  * Requires reviewed Q03 migration compatibility verifier evidence for the synthetic
- * owned-PostgreSQL upgrade/apply + official rerun foundation.
+ * owned-PostgreSQL upgrade/apply + official migrator rerun foundation.
  * Does NOT claim application-version rollback or production-dump overall pass.
  * Journal / Migration-0 unit substitutes are never accepted.
  */
-export const runMigrationUpgradeRollbackGate = async ({
+export const runMigrationUpgradeRerunGate = async ({
   injectedReport,
   repositoryRoot,
 }: MigrationGateOptions): Promise<GateResult> => {
@@ -198,11 +198,11 @@ export const runMigrationUpgradeRollbackGate = async ({
   if (!present && injectedReport === undefined) {
     return {
       assertions: { ...failedAssertions },
-      id: 'migration-upgrade-rollback',
+      id: 'migration-upgrade-rerun',
       kind: 'command',
       outcome: 'failed',
       reason:
-        'Q03 verify-migration is absent; migration-upgrade-rollback fails closed without a weak substitute.',
+        'Q03 verify-migration is absent; migration-upgrade-rerun fails closed without a weak substitute.',
     };
   }
 
@@ -217,7 +217,7 @@ export const runMigrationUpgradeRollbackGate = async ({
       // exit 0 = synthetic foundation ok; 1 = synthetic failed; 2 = privacy
       return {
         assertions: { ...failedAssertions },
-        id: 'migration-upgrade-rollback',
+        id: 'migration-upgrade-rerun',
         kind: 'command',
         outcome: 'failed',
         reason: `Q03 verify-migration exited ${processResult.code}.`,
@@ -228,7 +228,7 @@ export const runMigrationUpgradeRollbackGate = async ({
     } catch {
       return {
         assertions: { ...failedAssertions },
-        id: 'migration-upgrade-rollback',
+        id: 'migration-upgrade-rerun',
         kind: 'command',
         outcome: 'failed',
         reason: 'Q03 verify-migration did not emit a parseable JSON report.',
@@ -250,7 +250,7 @@ export const runMigrationUpgradeRollbackGate = async ({
         : 'unknown';
     return {
       assertions: { ...failedAssertions },
-      id: 'migration-upgrade-rollback',
+      id: 'migration-upgrade-rerun',
       kind: 'command',
       outcome: 'failed',
       reason: `Q03 migration evidence rejected (overall=${overall}, synthetic=${synthetic}); no weak fallback.`,
@@ -267,7 +267,7 @@ export const runMigrationUpgradeRollbackGate = async ({
       skipped: 0,
       total: requiredPassing,
     },
-    id: 'migration-upgrade-rollback',
+    id: 'migration-upgrade-rerun',
     kind: 'command',
     outcome: 'passed',
     reason:

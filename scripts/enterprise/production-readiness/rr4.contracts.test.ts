@@ -75,6 +75,7 @@ describe('RR4: dual provenance roles (source-backup vs recovery-result)', () => 
         sourceManifestSha256: manifestSha,
         sourceSchemaTag: FIXTURE_MIGRATION_TAG,
       },
+      assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
       candidateSha: FIXTURE_CANDIDATE_SHA,
       environment: 'production' as const,
       gateId: 'backup-restore' as const,
@@ -185,6 +186,7 @@ describe('RR4: dual provenance roles (source-backup vs recovery-result)', () => 
     const inputEnv = createSignedProvenance({
       payload: {
         artifactSha256: dumpSha,
+        assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
         attestationRole: 'source-backup',
         backupBinding: {
           inventoryVersion: 1,

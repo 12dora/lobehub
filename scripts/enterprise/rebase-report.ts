@@ -490,7 +490,7 @@ const gateDefinitions = {
   'desktop-release': 'Desktop packaging hotspot changed; run branded release preflight gates.',
   'failure-drills': 'Runtime, Redis, observability, or instrumentation hotspot changed.',
   'manual-conflict-review': 'Resolve and independently review every reported merge conflict.',
-  'migration-upgrade-rollback': 'Database schema or migration metadata changed.',
+  'migration-upgrade-rerun': 'Database schema or migration metadata changed.',
   'patch-ledger-update': 'Register every upstream direct edit in both patch ledgers.',
   'permission-matrix': 'Router, permission, or RBAC hotspot changed.',
   'privacy-review': 'Verify generated reports and conflict handling remain secret-free.',
@@ -511,7 +511,7 @@ const buildRequiredGates = (paths: string[], conflicts: string[], hasDrift: bool
   if (hasDrift) gateIds.add('patch-ledger-update');
   if (includesAny('/auth/', 'better-auth', 'oidc')) gateIds.add('auth-e2e');
   if (includesAny('migrations', 'database-schema', 'schemas/', '_journal.json'))
-    gateIds.add('migration-upgrade-rollback');
+    gateIds.add('migration-upgrade-rerun');
   if (includesAny('router/', 'routers/', 'rbac', 'Permission', 'permission'))
     gateIds.add('permission-matrix');
   if (includesAny('redis', 'observability', 'instrumentation', 'runtimeConfig', 'platformInstance'))

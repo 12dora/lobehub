@@ -207,7 +207,9 @@ describe('failure-drill evidence runner', () => {
       dependencies: DEPENDENCIES,
       redactionScan: { result: 'passed', violations: 0 },
     });
-    expect(await verifyFailureDrillEvidence(outputDirectory)).toBe(true);
+    expect(await verifyFailureDrillEvidence(outputDirectory, { reportsDirectory })).toBe(true);
+    // Aggregate-only without raw reports fails closed.
+    expect(await verifyFailureDrillEvidence(outputDirectory)).toBe(false);
 
     const persisted = await readFile(
       path.join(outputDirectory, 'postgres-multiconnection.json'),

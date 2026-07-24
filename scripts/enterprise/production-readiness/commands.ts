@@ -2,7 +2,6 @@
  * Allowlisted operator commands with real postcondition verification.
  * No recursive self-dispatch dry-run can report executed success.
  */
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 import {
@@ -432,61 +431,4 @@ export const dispatchAllowlistedCommand = async (
   };
 };
 
-/** @deprecated No fixed argv recursion — kept for tests that assert injection rejection of ids. */
-export const resolveAllowlistedArgv = (commandId: string): readonly string[] => {
-  if (!isAllowlistedCommandId(commandId)) {
-    throw new Error(`Command id is not allowlisted: ${sanitizeId(commandId)}`);
-  }
-  if (/[;&|`$(){}]/u.test(commandId)) {
-    throw new Error('Command id contains forbidden shell metacharacters');
-  }
-  // Fixed package-script templates only for drill/preflight kinds; others return empty.
-  const definition = ALLOWLISTED_COMMANDS[commandId];
-  if (definition.kind === 'preflight-cli' && commandId === 'preflight-validate') {
-    return ['bun', 'run', 'enterprise:preflight', 'validate-harness'] as const;
-  }
-  if (definition.kind === 'drill-cli' && commandId === 'backup-restore-drill-local') {
-    return [
-      'bun',
-      'run',
-      'enterprise:recovery-drill',
-      'backup-restore',
-      '--scope',
-      'local-harness',
-    ] as const;
-  }
-  throw new Error(`No fixed argv template for command ${commandId}`);
-};
-
 export const buildDefaultReleasePlan = buildPlanInternal;
-
-/** Bound process runner used only when executing real package scripts from tests. */
-export const runArgv = (
-  argv: readonly string[],
-  options: { cwd?: string; timeoutMs: number },
-): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const [file, ...args] = argv;
-    if (!file) {
-      reject(new Error('Empty argv'));
-      return;
-    }
-    const child = spawn(file, args, {
-      cwd: options.cwd,
-      env: { ...process.env },
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      reject(new Error('Command timed out'));
-    }, options.timeoutMs);
-    child.once('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once('close', (code) => {
-      clearTimeout(timer);
-      resolve(code ?? 1);
-    });
-  });

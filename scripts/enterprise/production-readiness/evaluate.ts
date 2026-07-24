@@ -225,18 +225,49 @@ const evaluateOneGate = (
     if (verdict.payload.status !== input.status) {
       return { result: 'failed', scope, reason: 'provenance-status-mismatch' };
     }
+
+    // Signed vs submitted assertion summaries must match when either side carries them.
+    const signedAssertions = verdict.payload.assertions;
+    if (input.status === 'passed') {
+      if (!signedAssertions) {
+        return { result: 'failed', scope, reason: 'provenance-assertions-missing' };
+      }
+      if (!input.assertions) {
+        return { result: 'failed', scope, reason: 'assertions-missing' };
+      }
+      if (
+        signedAssertions.failed !== input.assertions.failed ||
+        signedAssertions.passed !== input.assertions.passed ||
+        signedAssertions.skipped !== input.assertions.skipped ||
+        signedAssertions.total !== input.assertions.total
+      ) {
+        return { result: 'failed', scope, reason: 'provenance-assertions-mismatch' };
+      }
+    } else if (
+      signedAssertions &&
+      input.assertions &&
+      (signedAssertions.failed !== input.assertions.failed ||
+        signedAssertions.passed !== input.assertions.passed ||
+        signedAssertions.skipped !== input.assertions.skipped ||
+        signedAssertions.total !== input.assertions.total)
+    ) {
+      return { result: 'failed', scope, reason: 'provenance-assertions-mismatch' };
+    }
   }
 
-  // Zero-assertion pass is never allowed.
-  if (
-    input.status === 'passed' &&
-    input.assertions &&
-    (input.assertions.total < 1 ||
+  // Passed gates require a positive all-pass assertion summary (field must be present).
+  if (input.status === 'passed') {
+    if (!input.assertions) {
+      return { result: 'failed', scope, reason: 'assertions-missing' };
+    }
+    if (
+      input.assertions.total < 1 ||
       input.assertions.passed !== input.assertions.total ||
       input.assertions.failed !== 0 ||
-      input.assertions.skipped !== 0)
-  ) {
-    return { result: 'failed', scope, reason: 'assertions-not-all-pass' };
+      input.assertions.skipped !== 0
+    ) {
+      return { result: 'failed', scope, reason: 'assertions-not-all-pass' };
+    }
   }
 
   if (input.status === 'passed') return { result: 'passed', scope, reason: 'ok' };

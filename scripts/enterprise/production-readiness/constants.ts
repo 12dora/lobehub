@@ -28,7 +28,15 @@ export const OWNED_CONTAINER_LABEL_EPHEMERAL =
   'com.lobehub.production-readiness-ephemeral' as const;
 export const OWNED_POSTGRES_IMAGE = 'paradedb/paradedb:latest-pg17' as const;
 
-/** Evidence gate ids required for a complete production preflight. */
+/**
+ * Evidence gate ids required for a complete production preflight.
+ *
+ * NOTE: `app-rollback` remains in the required set but is currently
+ * **implementation-unavailable** (baseline ORM runtime cannot execute honestly).
+ * The gate is fail-safe only: it never reports `passed`; production authorization
+ * stays blocked until a real baseline install path is implemented.
+ * See APP_ROLLBACK_IMPLEMENTATION_STATUS.
+ */
 export const REQUIRED_EVIDENCE_GATES = [
   'path-boundaries',
   'migration-compat',
@@ -40,6 +48,17 @@ export const REQUIRED_EVIDENCE_GATES = [
 ] as const;
 
 export type EvidenceGateId = (typeof REQUIRED_EVIDENCE_GATES)[number];
+
+/**
+ * Explicit capability marker for the required app-rollback gate.
+ * Not a silent stub: callers and tests must treat this as known-unavailable.
+ */
+export const APP_ROLLBACK_IMPLEMENTATION_STATUS = {
+  gate: 'app-rollback' as const,
+  reasonCode: 'baseline-orm-runtime-unavailable' as const,
+  required: true,
+  status: 'unavailable' as const,
+} as const;
 
 /** Milestone A–F release windows (stable ids). */
 export const MILESTONE_WINDOW_IDS = [

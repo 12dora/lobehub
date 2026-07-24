@@ -8,8 +8,10 @@
  * Never attach input provenance as gate envelope provenance.
  */
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 
 import type { EvidenceScope } from '../constants';
 import {
@@ -381,8 +383,28 @@ const runProductionBackupRestore = async (
     return writeResult(options, evidence, 1);
   }
 
-  const dump = await readFile(backupAbs);
-  const sourceBackupDigest = createHash('sha256').update(dump).digest('hex');
+  /** Stream dump through SHA-256 (no full-file buffer for hashing). */
+  const hashFileSha256 = async (filePath: string): Promise<string> => {
+    const hash = createHash('sha256');
+    await pipeline(createReadStream(filePath), hash);
+    return hash.digest('hex');
+  };
+
+  /** Stream dump into a Buffer for pg_restore (chunked read; no double full-file materialization for digest). */
+  const readFileChunked = async (filePath: string): Promise<Buffer> => {
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const stream = createReadStream(filePath);
+      stream.on('data', (chunk: string | Buffer) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      stream.on('error', reject);
+      stream.on('end', () => resolve());
+    });
+    return Buffer.concat(chunks);
+  };
+
+  const sourceBackupDigest = await hashFileSha256(backupAbs);
 
   // Manifest must be a regular file (reject symlink/path swaps as far as ownership allows).
   let manifestAbs: string;
@@ -441,9 +463,8 @@ const runProductionBackupRestore = async (
     return writeResult(options, evidence, 1);
   }
 
-  // Re-read dump after manifest to reduce TOCTOU window; digests must still match.
-  const dumpAgain = await readFile(backupAbs);
-  const dumpDigestAgain = createHash('sha256').update(dumpAgain).digest('hex');
+  // Re-hash dump after manifest to reduce TOCTOU window; digests must still match.
+  const dumpDigestAgain = await hashFileSha256(backupAbs);
   if (dumpDigestAgain !== sourceBackupDigest) {
     const evidence = buildEvidence({
       assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
@@ -458,6 +479,9 @@ const runProductionBackupRestore = async (
     });
     return writeResult(options, evidence, 1);
   }
+
+  // Load dump bytes once (chunked) for restore after digest checks.
+  const dump = await readFileChunked(backupAbs);
 
   const inputVerdict = verifySignedProvenance(options.backupProvenance, {
     expectedArtifactSha256: sourceBackupDigest,
@@ -602,15 +626,6 @@ export const rejectIdenticalSourceTarget = (a: string, b: string): void => {
 
 export const isCorruptedDump = (buffer: Buffer): boolean =>
   !Buffer.isBuffer(buffer) || buffer.byteLength < 16;
-
-export const isUnsafeBackupPath = async (filePath: string): Promise<boolean> => {
-  try {
-    const st = await lstat(filePath);
-    return st.isSymbolicLink() || !st.isFile();
-  } catch {
-    return true;
-  }
-};
 
 export {
   buildSourceManifestCore,

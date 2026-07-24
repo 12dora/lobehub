@@ -208,7 +208,8 @@ jobs:
           test '${{ steps.redis_rebuild.outcome }}' = success
 
           bun scripts/enterprise/failure-drills/index.ts verify \
-            --output-dir "$FAILURE_DRILL_RECORD_DIR"
+            --output-dir "$FAILURE_DRILL_RECORD_DIR" \
+            --reports-dir "$FAILURE_DRILL_RAW_DIR"
 
           if rg -n -i \
             'https?://|postgres(?:ql)?://|rediss?://|hostname|instanceId|payload|ciphertext|secret' \

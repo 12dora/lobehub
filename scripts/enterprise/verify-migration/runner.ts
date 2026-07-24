@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 
 import { allJournalEntries, verifyBaseline, verifyJournalSnapshotAlignment } from './baseline';
 import {
@@ -397,6 +396,3 @@ export const runMigrationCompatVerification = async (
 
   return { report };
 };
-
-/** Deterministic token for unit tests of resource naming only. */
-export const peekResourceTokenShape = (): string => `m15q03_${randomBytes(8).toString('hex')}`;

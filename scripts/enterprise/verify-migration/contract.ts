@@ -384,10 +384,6 @@ export const gatePassed = (report: MigrationCompatReport): boolean => {
   return true;
 };
 
-/** @deprecated Prefer gatePassed — same synthetic foundation gate. */
-export const isPassingSyntheticReport = (report: MigrationCompatReport): boolean =>
-  gatePassed(report);
-
 /**
  * Overall "passed" is reserved for a future dump-restore + upgrade path.
  * This Wave2-A foundation never claims production-dump success.

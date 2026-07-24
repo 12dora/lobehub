@@ -149,9 +149,6 @@ export const reconcileSelectorsWithMetricDimensions = (selectors: RuleMetricSele
   }
 };
 
-/** @deprecated use reconcileSelectorsWithMetricDimensions */
-export const reconcileSelectorsWithClosedVocab = reconcileSelectorsWithMetricDimensions;
-
 /**
  * Build unaltered OTel attributes for a rule selector via the real metric builder.
  * Chooses a representative input so the builder output satisfies equality matchers.

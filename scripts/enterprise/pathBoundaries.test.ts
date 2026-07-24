@@ -1,3 +1,8 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -339,5 +344,31 @@ describe('enterprise path boundaries', () => {
       ]);
       expect(violations).toEqual([]);
     });
+  });
+});
+
+describe('enterprise path-boundary CLI fail-closed coverage', () => {
+  const script = path.join(process.cwd(), 'scripts/enterprise/check-path-boundaries.ts');
+
+  it('fails when CWD is not the monorepo root (zero coverage)', () => {
+    const empty = mkdtempSync(path.join(tmpdir(), 'path-boundary-cwd-'));
+    try {
+      const result = spawnSync('bun', ['run', script], {
+        cwd: empty,
+        encoding: 'utf8',
+        env: { ...process.env },
+      });
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toMatch(
+        /not a repository root|zero files scanned|missing or unreadable/i,
+      );
+    } finally {
+      rmSync(empty, { force: true, recursive: true });
+    }
+  });
+
+  it('lists mandatory scan roots for coverage contracts', () => {
+    expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS.length).toBeGreaterThan(0);
+    expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('scripts/enterprise');
   });
 });

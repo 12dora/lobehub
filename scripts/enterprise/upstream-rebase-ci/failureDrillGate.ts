@@ -7,7 +7,7 @@ import {
   FAILURE_DRILL_SCHEMA_VERSION,
   type FailureDrillEvidence,
 } from '../failure-drills/contract';
-import { verifyFailureDrillEvidence } from '../failure-drills/runner';
+import { digestFailureDrillRawReports, verifyFailureDrillEvidence } from '../failure-drills/runner';
 import { FAILURE_DRILL_SCENARIOS } from '../failure-drills/scenarios';
 import type { GateResult } from './contract';
 import { runProcess } from './process';
@@ -57,16 +57,53 @@ export const assessFailureDrillReadiness = (
   return { ok: true, reason: 'owned PostgreSQL and Redis endpoints configured' };
 };
 
-export const buildPassingFailureDrillEvidenceFixture = (
+/** Minimal Vitest JSON report body used only for digest-bound fixtures. */
+const buildMinimalVitestReport = (assertionCount: number, titles?: readonly string[]): string => {
+  const assertionResults = Array.from({ length: assertionCount }, (_, index) => ({
+    status: 'passed' as const,
+    title: titles?.[index] ?? `assertion-${index + 1}`,
+  }));
+  return `${JSON.stringify({
+    numFailedTests: 0,
+    numPassedTests: assertionCount,
+    numPendingTests: 0,
+    numTodoTests: 0,
+    numTotalTests: assertionCount,
+    startTime: 1,
+    success: true,
+    testResults: [{ assertionResults, endTime: 2 }],
+  })}\n`;
+};
+
+/**
+ * Build digest-bound multi-scenario evidence: writes real raw report bytes and
+ * aggregates whose artifact.sha256 matches recomputed digests.
+ */
+export const buildPassingFailureDrillEvidenceFixture = async (
+  evidenceDirectory: string,
+  reportsDirectory: string,
   gitSha = 'a'.repeat(40),
-): FailureDrillEvidence[] =>
-  FAILURE_DRILL_SCENARIOS.map((scenario) => {
+): Promise<FailureDrillEvidence[]> => {
+  await mkdir(evidenceDirectory, { recursive: true });
+  await mkdir(reportsDirectory, { recursive: true });
+
+  const records: FailureDrillEvidence[] = [];
+  for (const scenario of FAILURE_DRILL_SCENARIOS) {
+    const reportFiles: string[] = [];
+    for (const report of scenario.reports) {
+      // `as const` scenario reports omit optional assertionTitles on most entries.
+      const assertionTitles = 'assertionTitles' in report ? report.assertionTitles : undefined;
+      const body = buildMinimalVitestReport(report.expectedAssertions, assertionTitles);
+      await writeFile(path.join(reportsDirectory, report.reportFile), body, 'utf8');
+      reportFiles.push(report.reportFile);
+    }
+    const artifactSha256 = await digestFailureDrillRawReports(reportsDirectory, reportFiles);
     const expected = scenario.reports.reduce(
       (total, report) => total + report.expectedAssertions,
       0,
     );
-    return createFailureDrillEvidence({
-      artifact: { sha256: 'b'.repeat(64) },
+    const evidence = createFailureDrillEvidence({
+      artifact: { sha256: artifactSha256 },
       assertions: { failed: 0, passed: expected, skipped: 0, total: expected },
       cleanupResult: 'passed',
       dependencies: {
@@ -83,31 +120,26 @@ export const buildPassingFailureDrillEvidenceFixture = (
       scenarioId: scenario.scenarioId,
       schemaVersion: FAILURE_DRILL_SCHEMA_VERSION,
     });
-  });
-
-export const writeFailureDrillEvidenceFixture = async (
-  outputDirectory: string,
-  records: FailureDrillEvidence[],
-) => {
-  await mkdir(outputDirectory, { recursive: true });
-  for (const evidence of records) {
     await writeFile(
-      path.join(outputDirectory, `${evidence.scenarioId}.json`),
+      path.join(evidenceDirectory, `${evidence.scenarioId}.json`),
       `${JSON.stringify(evidence, null, 2)}\n`,
       'utf8',
     );
+    records.push(evidence);
   }
+  return records;
 };
 
 /**
- * Accept only full multi-scenario redacted evidence that passes the reviewed verifier.
- * Unit/contract test outputs alone cannot satisfy this.
+ * Accept only full multi-scenario redacted evidence whose artifact digests match raw reports.
+ * Unit/contract aggregate-only fakes without raw reports cannot satisfy this.
  */
 export const evaluateFailureDrillEvidenceDirectory = async (
   outputDirectory: string,
+  reportsDirectory?: string,
 ): Promise<boolean> => {
   try {
-    return await verifyFailureDrillEvidence(outputDirectory);
+    return await verifyFailureDrillEvidence(outputDirectory, { reportsDirectory });
   } catch {
     return false;
   }
@@ -284,8 +316,11 @@ const DRILL_COMMANDS: Array<{ cwd?: string; output: string; args: string[] }> = 
 export interface FailureDrillGateOptions {
   /**
    * Test seam: skip process execution and only verify an evidence directory.
+   * Must be paired with injectedReportsDirectory so digests can be recomputed.
    */
   injectedEvidenceDirectory?: string;
+  /** Raw Vitest report directory bound to injectedEvidenceDirectory digests. */
+  injectedReportsDirectory?: string;
   rawDirectory: string;
   repositoryRoot: string;
 }
@@ -298,6 +333,7 @@ export interface FailureDrillGateOptions {
  */
 export const runFailureDrillsGate = async ({
   injectedEvidenceDirectory,
+  injectedReportsDirectory,
   rawDirectory,
   repositoryRoot,
 }: FailureDrillGateOptions): Promise<GateResult> => {
@@ -320,7 +356,10 @@ export const runFailureDrillsGate = async ({
   }
 
   if (injectedEvidenceDirectory) {
-    const verified = await evaluateFailureDrillEvidenceDirectory(injectedEvidenceDirectory);
+    const verified = await evaluateFailureDrillEvidenceDirectory(
+      injectedEvidenceDirectory,
+      injectedReportsDirectory,
+    );
     if (!verified) {
       return {
         assertions: { ...failedAssertions },
@@ -328,7 +367,7 @@ export const runFailureDrillsGate = async ({
         kind: 'command',
         outcome: 'failed',
         reason:
-          'Injected failure-drill evidence failed strict multi-scenario verify (unit-only fakes rejected).',
+          'Injected failure-drill evidence failed strict multi-scenario verify (forged/missing raw evidence rejected).',
       };
     }
     return {
@@ -341,7 +380,8 @@ export const runFailureDrillsGate = async ({
       id: 'failure-drills',
       kind: 'command',
       outcome: 'passed',
-      reason: 'Structured multi-scenario failure-drill evidence verified.',
+      reason:
+        'Structured multi-scenario failure-drill evidence verified against raw report digests.',
     };
   }
 
@@ -401,7 +441,7 @@ export const runFailureDrillsGate = async ({
     repositoryRoot,
   );
 
-  const verified = await evaluateFailureDrillEvidenceDirectory(evidenceDirectory);
+  const verified = await evaluateFailureDrillEvidenceDirectory(evidenceDirectory, reportsDirectory);
   if (collect.code !== 0 || suiteFailed || !verified) {
     return {
       assertions: { ...failedAssertions },

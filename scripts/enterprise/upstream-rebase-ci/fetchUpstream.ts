@@ -4,7 +4,6 @@ import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { listChangedPathsForGates } from './changedFiles';
-import { removePathExact } from './cleanup';
 import type { ValidatedUpstreamInput } from './contract';
 
 const HASH_PATTERN = /^(?:[a-f\d]{40}|[a-f\d]{64})$/u;
@@ -480,5 +479,3 @@ export const prepareIsolatedAnalysisRepository = async ({
     upstreamFreshness: 'verified-by-ci-fetch',
   };
 };
-
-export const removeDirectoryExact = (target: string) => removePathExact(target);

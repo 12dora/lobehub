@@ -15,7 +15,7 @@ export const KNOWN_GATE_IDS = [
   'desktop-release',
   'failure-drills',
   'manual-conflict-review',
-  'migration-upgrade-rollback',
+  'migration-upgrade-rerun',
   'patch-ledger-update',
   'permission-matrix',
   'privacy-review',
@@ -32,7 +32,7 @@ export const EXPECTED_GATE_KINDS = {
   'desktop-release': 'vitest',
   'failure-drills': 'command',
   'manual-conflict-review': 'fail-closed',
-  'migration-upgrade-rollback': 'command',
+  'migration-upgrade-rerun': 'command',
   'patch-ledger-update': 'fail-closed',
   'permission-matrix': 'vitest',
   'privacy-review': 'privacy-scan',
@@ -51,7 +51,7 @@ export const FAIL_CLOSED_GATE_IDS = new Set<KnownGateId>([
  */
 export const STRUCTURED_COMMAND_GATE_IDS = new Set<KnownGateId>([
   'failure-drills',
-  'migration-upgrade-rollback',
+  'migration-upgrade-rerun',
 ]);
 
 const shortShaSchema = z.string().regex(/^[a-f\d]{12}$/u, 'must be a 12-char lowercase git sha');

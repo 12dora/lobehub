@@ -20,7 +20,8 @@ export const FAILURE_DRILL_SCENARIOS = [
     reports: [
       { expectedAssertions: 7, reportFile: 'postgres-agent-materialization.json' },
       { expectedAssertions: 3, reportFile: 'postgres-agent-rollout.json' },
-      { expectedAssertions: 3, reportFile: 'postgres-identity-attempt.json' },
+      // Includes secret CAS concurrency (merged from secretStore.pgConcurrency.test.ts / F11).
+      { expectedAssertions: 4, reportFile: 'postgres-identity-attempt.json' },
       { expectedAssertions: 5, reportFile: 'postgres-secret-rewrap.json' },
       { expectedAssertions: 1, reportFile: 'postgres-platform-instance.json' },
     ],

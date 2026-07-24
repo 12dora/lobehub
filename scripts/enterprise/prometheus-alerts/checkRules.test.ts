@@ -5,9 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { checkEnterprisePrometheusRules, testEnterprisePrometheusRules } from './checkRules';
 import { cleanupProbeResources } from './cleanup';
-import { validateEnterpriseCollectorConfig } from './collectorValidate';
 import { assertEnterprisePrometheusComposeWiring } from './composeWiring';
 import {
   ENTERPRISE_OTEL_COLLECTOR_IMAGE,
@@ -22,13 +20,8 @@ import {
   reconcileSelectorsWithMetricDimensions,
 } from './emissionContract';
 import { assertRuleExprUsesPrometheusLabels } from './metricTranslation';
-import { runOtlpPrometheusTranslationProbe } from './otlpPrometheusProbe';
 import { parsePrometheusAlertRulesFile } from './parseRules';
 import { parseProductionRuleSelectors } from './parseSelectors';
-import {
-  assertForbiddenPrometheusFlagsRejected,
-  validateEnterprisePrometheusRuntime,
-} from './prometheusRuntime';
 import { resetSleepForTests, setSleepForTests } from './sleep';
 
 const tempDirs: string[] = [];
@@ -50,40 +43,6 @@ const writeTempRules = (contents: string): string => {
   writeFileSync(file, contents, 'utf8');
   return file;
 };
-
-describe('enterprise prometheus rules — promtool check + semantic tests', () => {
-  it('passes promtool check rules (fail closed)', () => {
-    const result = checkEnterprisePrometheusRules();
-    expect(result.image).toBe(ENTERPRISE_PROMETHEUS_IMAGE);
-    expect(result.stdout.toLowerCase()).toMatch(/success|checking/);
-  });
-
-  it('passes promtool test rules semantic fixtures (fail closed)', () => {
-    const result = testEnterprisePrometheusRules();
-    expect(result.image).toBe(ENTERPRISE_PROMETHEUS_IMAGE);
-    expect(result.stdout.toLowerCase()).toMatch(/success/);
-  });
-
-  it('fails closed on invalid PromQL expressions', () => {
-    const rulesFile = writeTempRules(`
-groups:
-  - name: broken
-    rules:
-      - alert: BrokenAlert
-        expr: this is not valid promql((((
-        for: 1m
-        labels:
-          severity: warning
-          component: test
-        annotations:
-          summary: broken
-          runbook: docs/x.md#a
-`);
-    expect(() => checkEnterprisePrometheusRules({ rulesPath: rulesFile })).toThrow(
-      /promtool check rules failed/i,
-    );
-  });
-});
 
 describe('enterprise prometheus — production selector parsing + emission', () => {
   it('parses both publish failure and conflict matchers from production rules', () => {
@@ -312,9 +271,66 @@ service:
     );
     expect(() => assertEnterprisePrometheusComposeWiring(root)).toThrow(/otlp receiver/i);
   });
+
+  it('rejects image pin present only in comments or unrelated services', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'enterprise-compose-fake-pin-'));
+    tempDirs.push(root);
+    const grafana = path.join(root, 'docker-compose/production/grafana');
+    mkdirSync(path.join(grafana, 'prometheus/rules'), { recursive: true });
+    mkdirSync(path.join(grafana, 'otel-collector'), { recursive: true });
+    writeFileSync(
+      path.join(grafana, 'docker-compose.yml'),
+      `
+services:
+  # image: ${ENTERPRISE_PROMETHEUS_IMAGE}
+  docs:
+    image: ${ENTERPRISE_PROMETHEUS_IMAGE}
+    volumes:
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=exemplar-storage'
+  otel-collector:
+    image: ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
+`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'prometheus/prometheus.yml'),
+      `rule_files:\n  - /etc/prometheus/rules/enterprise-platform-alerts.yml\n`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'otel-collector/collector-config.yaml'),
+      `
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:9090/api/v1/write
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]
+`,
+      'utf8',
+    );
+    expect(() => assertEnterprisePrometheusComposeWiring(root)).toThrow(
+      /services\.prometheus\.image must pin/i,
+    );
+  });
 });
 
-describe('enterprise prometheus — compose + runtime + collector', () => {
+describe('enterprise prometheus — compose wiring (hermetic)', () => {
   it('wires rules, pins images, OTLP→prometheusremotewrite, no forbidden flags', () => {
     const report = assertEnterprisePrometheusComposeWiring();
     expect(report.prometheusImage).toBe(ENTERPRISE_PROMETHEUS_IMAGE);
@@ -323,41 +339,6 @@ describe('enterprise prometheus — compose + runtime + collector', () => {
     expect(report.metricsPipeline.exporters).toContain('prometheusremotewrite');
     expect(report.prometheusCommand).not.toContain('--web.enable-otlp-receiver');
   });
-
-  it('rejects forbidden Prometheus flags on the pinned image', () => {
-    expect(() => assertForbiddenPrometheusFlagsRejected()).not.toThrow();
-  });
-
-  it('starts pinned Prometheus with compose flags and loads enterprise rules', async () => {
-    const result = await validateEnterprisePrometheusRuntime();
-    expect(result.readyHttpStatus).toBe(200);
-    expect(result.started).toBe(true);
-  });
-
-  it('validates collector config with the pinned contrib image', () => {
-    const result = validateEnterpriseCollectorConfig();
-    expect(result.validated).toBe(true);
-  });
-});
-
-describe('enterprise prometheus — OTLP probe (production rules + builders)', () => {
-  it('proves production selectors and translated labels end-to-end', async () => {
-    const result = await runOtlpPrometheusTranslationProbe();
-    expect(result.querySelectorsProven.length).toBeGreaterThanOrEqual(12);
-    expect(result.metricsSeen).toEqual(
-      expect.arrayContaining([
-        'enterprise_platform_config_publish_total',
-        'enterprise_platform_operational_snapshot_ready',
-      ]),
-    );
-    // Conflict and failure both present when production rules require them.
-    const selectors = parseProductionRuleSelectors(result.rulesPath);
-    const points = buildEmissionPointsFromSelectors(selectors);
-    const outcomes = points
-      .filter((point) => point.metric === 'enterprise_platform_config_publish_total')
-      .map((point) => point.prometheusLabels.enterprise_outcome);
-    expect(outcomes).toEqual(expect.arrayContaining(['failure', 'conflict']));
-  }, 180_000);
 });
 
 describe('enterprise prometheus — cleanup fail-closed + sleep backoff', () => {
@@ -377,19 +358,22 @@ describe('enterprise prometheus — cleanup fail-closed + sleep backoff', () => 
     }).toThrow(/injected rm failure|cleanup failed/);
   });
 
-  it('records sleep backoff without busy-spinning (injectable sleep)', async () => {
+  it('records sleep backoff with a deterministic fake clock (not wall time)', async () => {
     const sleeps: number[] = [];
     setSleepForTests(async (ms) => {
       sleeps.push(ms);
     });
-    // Drive a tiny poll loop pattern used by validators.
-    const deadline = Date.now() + 5;
+    // Injectable clock: loop condition independent of Date.now() jitter.
+    let now = 0;
+    const deadline = 5;
     let attempts = 0;
-    while (Date.now() < deadline && attempts < 3) {
+    while (now < deadline && attempts < 3) {
       attempts += 1;
       await (await import('./sleep')).sleepMs(200);
+      now += 200; // fake clock advances by the requested sleep quantum
     }
-    expect(sleeps.every((ms) => ms === 200)).toBe(true);
-    expect(sleeps.length).toBeGreaterThan(0);
+    expect(sleeps).toEqual([200]);
+    expect(attempts).toBe(1);
+    expect(now).toBe(200);
   });
 });

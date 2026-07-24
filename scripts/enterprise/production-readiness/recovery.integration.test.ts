@@ -71,7 +71,13 @@ describe.runIf(hasDocker)('recovery integration (owned PostgreSQL)', () => {
     });
   }, 180_000);
 
-  it('app-rollback is honest unverified without full baseline ORM runtime (never planted-probe pass)', async () => {
+  it('app-rollback is required-but-unavailable: fail-safe unverified (never planted-probe pass)', async () => {
+    const { APP_ROLLBACK_IMPLEMENTATION_STATUS } = await import('./constants');
+    // Contract: gate stays required but capability is explicitly unavailable.
+    expect(APP_ROLLBACK_IMPLEMENTATION_STATUS.status).toBe('unavailable');
+    expect(APP_ROLLBACK_IMPLEMENTATION_STATUS.required).toBe(true);
+    expect(APP_ROLLBACK_IMPLEMENTATION_STATUS.reasonCode).toBe('baseline-orm-runtime-unavailable');
+
     const dir = await mkdtemp(path.join(tmpdir(), 'm15q06-int-'));
     tempDirs.push(dir);
     const result = await runAppRollbackDrill({
@@ -80,13 +86,16 @@ describe.runIf(hasDocker)('recovery integration (owned PostgreSQL)', () => {
       repoRoot: process.cwd(),
       scope: 'local-harness',
     });
-    // Planted probes removed: without full baseline monorepo install, must not pass
+    // Fail-safe path: without full baseline monorepo install, must not pass.
     expect(result.evidence.baselineExecutable).toBe(false);
     expect(result.evidence.status).toBe('unverified');
     expect(result.exitCode).toBe(1);
+    expect(result.baselineDetail).toMatch(
+      /baseline-orm-runtime-unavailable|import-failed|materialize/i,
+    );
     expect(result.evidence.destructiveCommandsRejected).toBe(true);
     expect(result.evidence.newTablesRetained).toBe(true);
-    // Envelope still consumable
+    // Envelope still consumable as unverified evidence (never false passed).
     const envPath = path.join(dir, 'envelopes', 'app-rollback.envelope.json');
     const loaded = await loadGateEvidenceFile(envPath);
     expect(loaded.gate).toBe('app-rollback');

@@ -26,7 +26,6 @@ export {
   createMigrationCompatReport,
   deriveOverallResult,
   gatePassed,
-  isPassingSyntheticReport,
   migrationCompatReportSchema,
   REQUIRED_GATE_CATEGORIES,
   REQUIRED_PASSING_CATEGORIES,
@@ -51,6 +50,7 @@ export {
   isLegacyTagIdxJournalStyle,
   loadOfficialMigrations,
   postBaselineEntries,
+  scanExpandOnlySql,
   verifyExpandOnlyPostBaselineSql,
 } from './migrations';
 export { isOwnedResourceToken } from './ownedPostgres';

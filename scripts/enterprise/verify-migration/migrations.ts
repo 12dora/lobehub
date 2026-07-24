@@ -229,27 +229,131 @@ export const postBaselineEntries = (repoRoot: string): JournalEntry[] =>
 export const readMigrationSql = (repoRoot: string, tag: string): string =>
   readFileSync(path.join(repoRoot, MIGRATIONS_DIR, `${tag}.sql`), 'utf8');
 
+/** Strip SQL line/block comments before expand-only scanning. */
+const stripSqlComments = (sql: string): string =>
+  sql.replaceAll(/\/\*[\s\S]*?\*\//gu, ' ').replaceAll(/--[^\n]*/gu, ' ');
+
+/**
+ * Conservative expand-only tokenizer over SQL text.
+ * Rejects destructive contract changes on protected tables (and any DROP TABLE/COLUMN/CONSTRAINT/RENAME
+ * that can break previous-app compatibility), including schema-qualified forms.
+ */
+export const scanExpandOnlySql = (sql: string): { match: boolean; reasons: string[] } => {
+  const reasons: string[] = [];
+  const body = stripSqlComments(sql);
+  // Split on statement terminators while keeping enough context for multi-line DDL.
+  const statements = body
+    .split(';')
+    .map((part) => part.replaceAll(/\s+/gu, ' ').trim())
+    .filter(Boolean);
+
+  const protectedTable = (name: string): boolean => {
+    const bare = name
+      .replace(/^(?:public\.)?/iu, '')
+      .replaceAll('"', '')
+      .replaceAll("'", '');
+    return (EXPAND_ONLY_PROTECTED_TABLES as readonly string[]).includes(bare.toLowerCase());
+  };
+
+  const ident = (raw: string): string => raw.replaceAll('"', '').replaceAll("'", '').toLowerCase();
+
+  for (const statement of statements) {
+    // DROP TABLE [IF EXISTS] [schema.]table
+    const dropTable = statement.match(
+      /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?((?:"[^"]+"|'[^']+'|[a-z_]\w*)(?:\s*\.\s*(?:"[^"]+"|'[^']+'|[a-z_]\w*))?)/iu,
+    );
+    if (dropTable?.[1] && protectedTable(dropTable[1])) {
+      reasons.push(`drop-table:${ident(dropTable[1])}`);
+    }
+
+    // ALTER TABLE … DROP COLUMN / DROP CONSTRAINT / RENAME / TYPE / SET NOT NULL / DROP NOT NULL
+    // Use `\S.*` (not `.+`) after `\s+` so whitespace cannot trade with the tail capture (no super-linear backtracking).
+    const alterMatch = statement.match(
+      /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?((?:"[^"]+"|'[^']+'|[a-z_]\w*)(?:\s*\.\s*(?:"[^"]+"|'[^']+'|[a-z_]\w*))?)\s+(\S.*)$/iu,
+    );
+    if (alterMatch?.[1] && protectedTable(alterMatch[1])) {
+      const table = ident(alterMatch[1]);
+      const tail = alterMatch[2] ?? '';
+      const tailUpper = tail.toUpperCase();
+
+      if (/\bDROP\s+COLUMN\b/iu.test(tail)) {
+        reasons.push(`drop-column:${table}`);
+      }
+      if (/\bDROP\s+CONSTRAINT\b/iu.test(tail)) {
+        reasons.push(`drop-constraint:${table}`);
+      }
+      if (/\bRENAME\s+(?:TO|COLUMN)\b/iu.test(tail) || /\bRENAME\s+CONSTRAINT\b/iu.test(tail)) {
+        reasons.push(`rename:${table}`);
+      }
+      // Narrowing type change: ALTER COLUMN … TYPE …
+      // `+?` (min 1) between COLUMN and TYPE avoids empty-match contradiction with `\b`.
+      if (
+        (/\bALTER\s+COLUMN\b[\s\S]+?\bTYPE\b/iu.test(tail) || /\bTYPE\b/iu.test(tailUpper)) && // Only flag TYPE when it is an ALTER COLUMN type change, not CREATE TYPE elsewhere.
+        /\b(?:ALTER\s+COLUMN|COLUMN)\b[\s\S]+?\bTYPE\b/iu.test(tail)
+      ) {
+        reasons.push(`narrowing-type:${table}`);
+      }
+      // Nullability narrowing: SET NOT NULL (DROP NOT NULL is expand-safe)
+      if (/\bSET\s+NOT\s+NULL\b/iu.test(tail)) {
+        reasons.push(`narrowing-nullability:${table}`);
+      }
+    }
+
+    // Standalone RENAME TABLE forms (less common)
+    const renameTable = statement.match(
+      /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?((?:"[^"]+"|'[^']+'|[a-z_]\w*)(?:\s*\.\s*(?:"[^"]+"|'[^']+'|[a-z_]\w*))?)\s+RENAME\s+TO\b/iu,
+    );
+    if (
+      renameTable?.[1] &&
+      protectedTable(renameTable[1]) &&
+      !reasons.includes(`rename:${ident(renameTable[1])}`)
+    ) {
+      reasons.push(`rename:${ident(renameTable[1])}`);
+    }
+  }
+
+  // Extra conservative whole-body checks for multi-clause ALTER (comma-separated) missed by split.
+  for (const table of EXPAND_ONLY_PROTECTED_TABLES) {
+    const t = table.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const schemaTable = `(?:(?:public)\\s*\\.\\s*)?(?:"${t}"|'${t}'|${t})`;
+    if (
+      new RegExp(`\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${schemaTable}\\b`, 'iu').test(body) &&
+      !reasons.some((r) => r.startsWith('drop-table:') && r.includes(table))
+    ) {
+      reasons.push(`drop-table:${table}`);
+    }
+    if (
+      new RegExp(
+        `\\bALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${schemaTable}\\s+[\\s\\S]*?\\bDROP\\s+COLUMN\\b`,
+        'iu',
+      ).test(body) &&
+      !reasons.includes(`drop-column:${table}`)
+    ) {
+      reasons.push(`drop-column:${table}`);
+    }
+  }
+
+  return { match: reasons.length === 0, reasons };
+};
+
 /**
  * Expand-only invariant over post-baseline SQL text:
- * must not DROP protected core application tables.
+ * reject destructive contract changes (DROP TABLE/COLUMN/CONSTRAINT, renames, narrowing).
  */
 export const verifyExpandOnlyPostBaselineSql = (
   repoRoot: string,
-): { match: boolean; scannedMigrations: number } => {
+): { match: boolean; scannedMigrations: number; reasons?: string[] } => {
   const entries = postBaselineEntries(repoRoot);
+  const allReasons: string[] = [];
   for (const entry of entries) {
     const sql = readMigrationSql(repoRoot, entry.tag);
-    const normalized = sql.replaceAll(/\s+/g, ' ');
-    for (const table of EXPAND_ONLY_PROTECTED_TABLES) {
-      const dropTable = new RegExp(`DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?["']?${table}["']?`, 'i');
-      if (dropTable.test(normalized)) {
-        return { match: false, scannedMigrations: entries.length };
-      }
-      const renameTable = new RegExp(`ALTER\\s+TABLE\\s+["']?${table}["']?\\s+RENAME\\s+TO`, 'i');
-      if (renameTable.test(normalized)) {
-        return { match: false, scannedMigrations: entries.length };
-      }
+    const result = scanExpandOnlySql(sql);
+    if (!result.match) {
+      allReasons.push(...result.reasons.map((reason) => `${entry.tag}:${reason}`));
     }
+  }
+  if (allReasons.length > 0) {
+    return { match: false, reasons: allReasons, scannedMigrations: entries.length };
   }
   return { match: true, scannedMigrations: entries.length };
 };
