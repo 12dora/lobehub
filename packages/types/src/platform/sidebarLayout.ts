@@ -15,11 +15,16 @@ export const sidebarLayoutConfigSchema = z.object({
 });
 export type SidebarLayoutConfig = z.infer<typeof sidebarLayoutConfigSchema>;
 
-/** Admin-facing document: the mode plus the platform layout (null until configured). */
+/**
+ * Admin-facing document: the mode plus the platform layout (null until configured),
+ * plus the CAS revision token from the last accepted server snapshot.
+ */
 export const platformSidebarLayoutSchema = z
   .object({
     layout: sidebarLayoutConfigSchema.nullable(),
     mode: z.enum(['platform', 'user']),
+    /** Optimistic concurrency token; writers supply expectedRevision on update. */
+    revision: z.number().int().nonnegative().default(0),
   })
   .strict();
 export type PlatformSidebarLayout = z.infer<typeof platformSidebarLayoutSchema>;
@@ -27,6 +32,7 @@ export type PlatformSidebarLayout = z.infer<typeof platformSidebarLayoutSchema>;
 export const DEFAULT_PLATFORM_SIDEBAR_LAYOUT: PlatformSidebarLayout = {
   layout: null,
   mode: 'user',
+  revision: 0,
 };
 
 /**
