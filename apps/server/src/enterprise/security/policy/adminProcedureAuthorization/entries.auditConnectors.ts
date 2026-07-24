@@ -147,7 +147,8 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_AUDIT_CONNECTORS = [
   {
     kind: 'query',
     path: 'admin.audit.users.timeline',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_READ] },
+    // Conversation evidence — same gate as admin.audit.conversations.* (F2).
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ] },
   },
   {
     kind: 'mutation',

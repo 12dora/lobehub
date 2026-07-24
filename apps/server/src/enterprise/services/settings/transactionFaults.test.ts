@@ -370,8 +370,12 @@ describe('M05 transaction fault injection', () => {
     expect(result.deleted).toBe(true);
     expect(target).toBeUndefined();
     expect(unrelated?.value).toBe(true);
+    // F1: registered leaves are stripped from durable legacy on reset so the next
+    // getEffective backfill cannot re-materialize the same preference. When
+    // general only held fontSize, the top-level column is null (not a partial
+    // shell). Unregistered blobs (hotkey) and secrets (keyVaults) are preserved.
     expect(settings).toMatchObject({
-      general: { fontSize: 13 },
+      general: null,
       hotkey: { search: 'keep' },
       keyVaults: 'encrypted-keep',
     });
