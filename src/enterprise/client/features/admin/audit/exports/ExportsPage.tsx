@@ -87,7 +87,17 @@ const ExportsPage = memo(() => {
     reset: resetCursor,
   } = useCursorPagination();
   const [createOpen, setCreateOpen] = useState(searchParams.get('create') === '1');
+  // URL handoff filters apply only to the first modal session; reopen must not
+  // silently reapply stale searchParams after success/cancel.
+  const [createHandoffParams, setCreateHandoffParams] = useState<URLSearchParams | null>(() =>
+    searchParams.get('create') === '1' ? searchParams : null,
+  );
   const [detail, setDetail] = useState<AdminAuditExportItem | null>(null);
+
+  const closeCreateModal = useCallback(() => {
+    setCreateOpen(false);
+    setCreateHandoffParams(null);
+  }, []);
 
   const list = useFetchAuditExportsList({ cursor: currentCursor, limit, mine }, canExport, {
     // Single SWR key: poll only while any row is still in flight.
@@ -276,11 +286,11 @@ const ExportsPage = memo(() => {
       <CreateExportModal
         authMethod={authMethod}
         open={createOpen}
-        searchParams={searchParams}
-        onClose={() => setCreateOpen(false)}
+        searchParams={createHandoffParams ?? undefined}
+        onClose={closeCreateModal}
         onSubmit={createExport}
         onCreated={() => {
-          setCreateOpen(false);
+          closeCreateModal();
           void mutate();
         }}
       />
@@ -306,8 +316,11 @@ const ExportsPage = memo(() => {
               <div className={styles.row}>
                 <Text type="secondary">{t('audit.exports.detail.error')}</Text>
                 <span className={styles.mono}>
-                  {detail.error.code ? `${detail.error.code}: ` : ''}
-                  {detail.error.message ?? '—'}
+                  {detail.error.code
+                    ? t(`audit.exports.error.${detail.error.code}` as never, {
+                        defaultValue: detail.error.code,
+                      })
+                    : t('audit.exports.error.unknown')}
                 </span>
               </div>
             ) : null}

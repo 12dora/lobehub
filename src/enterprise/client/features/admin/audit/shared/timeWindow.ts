@@ -6,9 +6,13 @@ export interface AuditTimeWindow {
   to: Date;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 /**
  * Build a half-open window [from, to) ending at "now" (or `end`).
- * `from` is start-of-day aligned for nicer pickers when `alignStartOfDay` is true.
+ * Prefer start-of-day alignment for nicer pickers, but never exceed the exact
+ * backend max span (`days * 24h`) — midnight alignment that would lengthen the
+ * window is skipped so default filters stay within `maxListWindowDays`.
  */
 export const getDefaultAuditTimeWindow = (
   days: number = DEFAULT_AUDIT_WINDOW_DAYS,
@@ -16,12 +20,19 @@ export const getDefaultAuditTimeWindow = (
   options?: { alignStartOfDay?: boolean },
 ): AuditTimeWindow => {
   const to = new Date(end.getTime());
-  const from = new Date(to.getTime());
-  from.setDate(from.getDate() - days);
+  const maxMs = Math.max(1, days) * MS_PER_DAY;
+  const exactFrom = new Date(to.getTime() - maxMs);
+
   if (options?.alignStartOfDay !== false) {
-    from.setHours(0, 0, 0, 0);
+    const aligned = new Date(exactFrom.getTime());
+    aligned.setHours(0, 0, 0, 0);
+    // Only keep midnight alignment when it does not push earlier than the cap.
+    if (to.getTime() - aligned.getTime() <= maxMs) {
+      return { from: aligned, to };
+    }
   }
-  return { from, to };
+
+  return { from: exactFrom, to };
 };
 
 /** Serialize a Date for query params / filter snapshots. */

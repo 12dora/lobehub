@@ -1,6 +1,8 @@
 /** Near-bottom threshold (px) for auto-scroll while live updates arrive. */
 export const LIVE_SCROLL_BOTTOM_THRESHOLD_PX = 80;
 
+export type AuditContentAccessMode = 'content_allowed' | 'metadata_only' | 'disabled';
+
 export interface TimedMessage {
   createdAt: Date | string | number;
   id: string;
@@ -28,6 +30,68 @@ export const sortMessagesChronological = <T extends TimedMessage>(messages: T[])
  */
 export const mergeMessagePages = <T extends TimedMessage>(existing: T[], incoming: T[]): T[] =>
   sortMessagesChronological([...existing, ...incoming]);
+
+type WithOptionalContent = TimedMessage & { content?: string | null };
+
+/**
+ * Drop retained message bodies when policy/permission no longer allows them.
+ * Used by live view so cached pages cannot outlive authorization.
+ */
+export const stripMessageBodies = <T extends WithOptionalContent>(messages: T[]): T[] =>
+  messages.map((m) => (m.content == null ? m : { ...m, content: null }));
+
+export interface LiveBodyAccess {
+  /** Conceal bodies in the UI (policy or permission denied). */
+  bodyHidden: boolean;
+  /** Whether the client may request message bodies on the next poll. */
+  includeBody: boolean;
+  /** Drop SWR head + older pages so revoked content cannot linger. */
+  mustPurgeCachedBodies: boolean;
+  /** Permission fully gone or content access disabled — stop the stream UI. */
+  stopServing: boolean;
+}
+
+/**
+ * Re-evaluate body access on every live poll/stream tick.
+ * Both conversation permission and contentAccessMode are authoritative.
+ */
+export const resolveLiveBodyAccess = (params: {
+  canConversationRead: boolean;
+  contentAccessMode: AuditContentAccessMode | null | undefined;
+}): LiveBodyAccess => {
+  const mode = params.contentAccessMode ?? null;
+  const canRead = params.canConversationRead;
+  const allowed = canRead && mode === 'content_allowed';
+  return {
+    // Unknown mode → hide bodies until a poll authoritatively allows them.
+    bodyHidden: !allowed,
+    includeBody: allowed,
+    // Only purge when we know access was lost — not while mode is still loading.
+    mustPurgeCachedBodies: !canRead || mode === 'metadata_only' || mode === 'disabled',
+    stopServing: !canRead || mode === 'disabled',
+  };
+};
+
+/**
+ * Mid-stream access transition: when permission/policy is revoked, purge retained
+ * bodies and stop treating the prior authorized snapshot as still valid.
+ */
+export const applyLiveAccessRevocation = <T extends WithOptionalContent>(params: {
+  messages: T[];
+  next: LiveBodyAccess;
+  previous: LiveBodyAccess;
+}): { access: LiveBodyAccess; messages: T[]; purged: boolean } => {
+  const revokedWhileStreaming =
+    (params.previous.includeBody && !params.next.includeBody) || params.next.mustPurgeCachedBodies;
+  if (revokedWhileStreaming || params.next.bodyHidden) {
+    return {
+      access: params.next,
+      messages: stripMessageBodies(params.messages),
+      purged: true,
+    };
+  }
+  return { access: params.next, messages: params.messages, purged: false };
+};
 
 /**
  * True when the scroll container is near the bottom (within threshold).

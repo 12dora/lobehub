@@ -49,6 +49,11 @@ export interface AppendAuditAccessLogParams {
   /** Stable filter summary only — no free text. */
   filterSummary?: AdminAuditAccessFilterSummary | null;
   reason?: string | null;
+  /**
+   * When true, append failures propagate (fail closed). Use for sensitive
+   * mutations and evidence downloads. Default false keeps best-effort reads.
+   */
+  required?: boolean;
   result: PlatformAuditResult;
   targetId?: string | null;
   targetType: string;
@@ -109,8 +114,10 @@ export const buildAuditFilterSummary = (params: {
 };
 
 /**
- * Best-effort append of an audit-the-auditor row.
- * Failures are logged and swallowed so the original business error remains authoritative.
+ * Append an audit-the-auditor row.
+ * Default is best-effort (failures logged and swallowed) for low-risk reads.
+ * Pass `required: true` for sensitive mutations / downloads so append failure
+ * fails the caller's operation (fail closed).
  */
 export const appendAuditAccessLog = async (
   db: LobeChatDatabase | Transaction,
@@ -135,7 +142,9 @@ export const appendAuditAccessLog = async (
     console.error('[admin.audit] access log append failed', {
       action: params.action,
       errorClass: error instanceof Error ? error.name : 'UnknownError',
+      required: Boolean(params.required),
       result: params.result,
     });
+    if (params.required) throw error;
   }
 };

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -12,7 +12,12 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { AdminAuditExportService, InMemoryAuditExportArtifactStorage } from './index';
+import {
+  AdminAuditExportService,
+  formatArtifactChecksum,
+  InMemoryAuditExportArtifactStorage,
+  sha256Hex,
+} from './index';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const storage = new InMemoryAuditExportArtifactStorage();
@@ -30,9 +35,17 @@ const window = {
   to: new Date('2026-03-10T00:00:00.000Z'),
 };
 
+/** Test cleanup: bypass append-only trigger on platform_audit_logs. */
+const clearAuditLogs = async () => {
+  await serverDB.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
+};
+
 beforeEach(async () => {
   storage.objects.clear();
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditExports);
   await serverDB.delete(platformJobs);
   await serverDB.delete(platformAuditPolicies);
@@ -42,7 +55,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditExports);
   await serverDB.delete(platformJobs);
   await serverDB.delete(platformAuditPolicies);
@@ -101,11 +114,12 @@ describe('AdminAuditExportService', () => {
     const storageKey = `platform-audit-exports/${created.id}/evidence.ndjson`;
     const body = Buffer.from('{"type":"manifest"}\n');
     storage.objects.set(storageKey, body);
+    const checksum = formatArtifactChecksum(sha256Hex(body));
     await serverDB
       .update(platformAuditExports)
       .set({
         artifactBytes: body.byteLength,
-        artifactChecksum: 'sha256:abc',
+        artifactChecksum: checksum,
         expiresAt: new Date('2026-12-01T00:00:00.000Z'),
         status: 'completed',
         storageKey,
@@ -118,6 +132,120 @@ describe('AdminAuditExportService', () => {
       input: { id: created.id, reason: 'use injected storage' },
     });
     expect(dl.downloadUrl).toContain('https://audit-export.test/signed/');
+    expect(dl.artifactChecksum).toBe(checksum);
+  });
+
+  it('marks export terminal and cancels job when enqueue fails after create', async () => {
+    const service = new AdminAuditExportService(serverDB, {
+      afterCreateExport: async () => {
+        throw new Error('INJECTED_ENQUEUE_PATH_FAILURE');
+      },
+      storage,
+    });
+
+    await expect(
+      service.create({
+        actorPermissions: EXPORT_ONLY,
+        actorUserId: actor,
+        input: {
+          from: window.from,
+          includeMessageBodies: false,
+          kind: 'operation_logs',
+          reason: 'enqueue fail orphan guard',
+          to: window.to,
+        },
+      }),
+    ).rejects.toBeTruthy();
+
+    const rows = await serverDB.select().from(platformAuditExports);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('failed');
+    expect(rows[0]?.error?.code).toBe('ENQUEUE_FAILED');
+    expect(rows[0]?.jobId).toBeNull();
+
+    const jobs = await serverDB.select().from(platformJobs);
+    // No job should remain runnable for the failed export.
+    expect(jobs.every((j) => j.status === 'cancelled' || j.status === 'dead')).toBe(true);
+  });
+
+  it('marks export terminal and cancels job when setJobId link fails after enqueue', async () => {
+    const service = new AdminAuditExportService(serverDB, {
+      afterEnqueue: async () => {
+        throw new Error('INJECTED_LINK_FAILURE');
+      },
+      storage,
+    });
+
+    await expect(
+      service.create({
+        actorPermissions: EXPORT_ONLY,
+        actorUserId: actor,
+        input: {
+          from: window.from,
+          includeMessageBodies: false,
+          kind: 'operation_logs',
+          reason: 'link fail orphan guard',
+          to: window.to,
+        },
+      }),
+    ).rejects.toBeTruthy();
+
+    const rows = await serverDB.select().from(platformAuditExports);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('failed');
+    expect(rows[0]?.error?.code).toBe('ENQUEUE_FAILED');
+
+    const jobs = await serverDB.select().from(platformJobs);
+    expect(jobs.length).toBeGreaterThanOrEqual(1);
+    expect(jobs.every((j) => j.status === 'cancelled' || j.status === 'dead')).toBe(true);
+  });
+
+  it('rejects download when object is same-length but checksum-corrupted', async () => {
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: EXPORT_ONLY,
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'checksum integrity',
+        to: window.to,
+      },
+    });
+
+    const storageKey = `platform-audit-exports/${created.id}/evidence.ndjson`;
+    const original = Buffer.from('{"type":"manifest"}\n');
+    const corrupted = Buffer.from('{"type":"MANIFEST"}\n'); // same length, different content
+    expect(corrupted.byteLength).toBe(original.byteLength);
+    storage.objects.set(storageKey, corrupted);
+
+    await serverDB
+      .update(platformAuditExports)
+      .set({
+        artifactBytes: original.byteLength,
+        artifactChecksum: formatArtifactChecksum(sha256Hex(original)),
+        expiresAt: new Date('2026-12-01T00:00:00.000Z'),
+        status: 'completed',
+        storageKey,
+      })
+      .where(eq(platformAuditExports.id, created.id));
+
+    await expect(
+      service.download({
+        actorPermissions: EXPORT_ONLY,
+        actorUserId: actor,
+        input: { id: created.id, reason: 'corrupted download' },
+      }),
+    ).rejects.toBeTruthy();
+
+    const logs = await serverDB
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.action, 'admin.audit.exports.download'));
+    expect(logs.some((l) => l.result === 'failure')).toBe(true);
+    // No success audit for corrupted artifact
+    expect(logs.some((l) => l.result === 'success')).toBe(false);
   });
 
   it('requires conversation read for conversations/user_timeline and userId', async () => {
@@ -285,7 +413,7 @@ describe('AdminAuditExportService', () => {
       .update(platformAuditExports)
       .set({
         artifactBytes: body.byteLength,
-        artifactChecksum: 'sha256:abc',
+        artifactChecksum: formatArtifactChecksum(sha256Hex(body)),
         expiresAt: new Date('2026-12-01T00:00:00.000Z'),
         status: 'completed',
         storageKey,

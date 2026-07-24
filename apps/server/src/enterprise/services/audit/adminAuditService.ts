@@ -76,7 +76,21 @@ const toEventDetail = (row: PlatformAuditLogItem) => ({
   beforeDiff: row.beforeDiff,
 });
 
-const toLegalHoldPublic = (row: PlatformAuditLegalHoldItem) => ({
+/**
+ * Project elapsed holds as `expired` even while the stored row is still `active`.
+ * Retention's listActive() already excludes past-expiry holds; the admin API must
+ * not present them as actionable/active.
+ */
+const effectiveLegalHoldStatus = (
+  row: PlatformAuditLegalHoldItem,
+  now: Date = new Date(),
+): 'active' | 'released' | 'expired' => {
+  if (row.status === 'released') return 'released';
+  if (row.expiresAt != null && row.expiresAt.getTime() <= now.getTime()) return 'expired';
+  return 'active';
+};
+
+const toLegalHoldPublic = (row: PlatformAuditLegalHoldItem, now: Date = new Date()) => ({
   createdAt: row.createdAt,
   createdBy: row.createdBy,
   expiresAt: row.expiresAt,
@@ -87,7 +101,7 @@ const toLegalHoldPublic = (row: PlatformAuditLegalHoldItem) => ({
   releasedBy: row.releasedBy,
   scopeId: row.scopeId,
   scopeType: row.scopeType,
-  status: row.status,
+  status: effectiveLegalHoldStatus(row, now),
   updatedAt: row.updatedAt,
 });
 
@@ -160,37 +174,45 @@ export class AdminAuditService {
     const filterSummary = buildAuditFilterSummary({});
     const before = await this.policyModel.getOrCreate();
     try {
-      const updated = await this.policyModel.updateCAS({
-        contentAccessMode: params.input.contentAccessMode,
-        conversationRetentionDays: params.input.conversationRetentionDays,
-        expectedRevision: params.input.expectedRevision,
-        exportArtifactRetentionDays: params.input.exportArtifactRetentionDays,
-        maxExportRows: params.input.maxExportRows,
-        maxListWindowDays: params.input.maxListWindowDays,
-        messageBodyInExport: params.input.messageBodyInExport,
-        operationLogRetentionDays: params.input.operationLogRetentionDays,
-        redactionProfile: params.input.redactionProfile,
-        updatedBy: params.actorUserId,
-      });
+      // Mutation + required audit append in one transaction so we never commit
+      // an unaudited policy change (and never report failure after a committed mutation).
+      const db = this.db as LobeChatDatabase;
+      const updated = await db.transaction(async (tx) => {
+        const policyModel = new PlatformAuditPolicyModel(tx);
+        const next = await policyModel.updateCAS({
+          contentAccessMode: params.input.contentAccessMode,
+          conversationRetentionDays: params.input.conversationRetentionDays,
+          expectedRevision: params.input.expectedRevision,
+          exportArtifactRetentionDays: params.input.exportArtifactRetentionDays,
+          maxExportRows: params.input.maxExportRows,
+          maxListWindowDays: params.input.maxListWindowDays,
+          messageBodyInExport: params.input.messageBodyInExport,
+          operationLogRetentionDays: params.input.operationLogRetentionDays,
+          redactionProfile: params.input.redactionProfile,
+          updatedBy: params.actorUserId,
+        });
 
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.policy.update',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          contentAccessMode: updated.contentAccessMode,
-          maxListWindowDays: updated.maxListWindowDays,
-          revision: updated.revision,
-        },
-        beforeDiff: {
-          contentAccessMode: before.contentAccessMode,
-          maxListWindowDays: before.maxListWindowDays,
-          revision: before.revision,
-        },
-        filterSummary,
-        reason: params.input.reason,
-        result: 'success',
-        targetId: updated.id,
-        targetType: 'audit_policy',
+        await appendAuditAccessLog(tx, {
+          action: 'admin.audit.policy.update',
+          actorUserId: params.actorUserId,
+          afterDiff: {
+            contentAccessMode: next.contentAccessMode,
+            maxListWindowDays: next.maxListWindowDays,
+            revision: next.revision,
+          },
+          beforeDiff: {
+            contentAccessMode: before.contentAccessMode,
+            maxListWindowDays: before.maxListWindowDays,
+            revision: before.revision,
+          },
+          filterSummary,
+          reason: params.input.reason,
+          required: true,
+          result: 'success',
+          targetId: next.id,
+          targetType: 'audit_policy',
+        });
+        return next;
       });
       return toPolicyPublic(updated);
     } catch (error) {
@@ -324,10 +346,12 @@ export class AdminAuditService {
         });
       }
 
+      // Event detail exposes before/after diffs — fail closed if audit cannot be recorded.
       await appendAuditAccessLog(this.db, {
         action: accessAction,
         actorUserId: params.actorUserId,
         filterSummary,
+        required: true,
         result: 'success',
         targetId: params.id,
         targetType: 'audit_event',
@@ -548,10 +572,12 @@ export class AdminAuditService {
           }
         : base;
 
+      // Body-bearing conversation reads are sensitive — fail closed on audit failure.
       await appendAuditAccessLog(this.db, {
         action: 'admin.audit.conversations.get',
         actorUserId: params.actorUserId,
         filterSummary,
+        required: access.allowBody,
         result: 'success',
         targetId: params.input.topicId,
         targetType: 'topic',
@@ -609,10 +635,12 @@ export class AdminAuditService {
           userId: params.input.userId,
         });
 
+        // Message bodies are sensitive evidence — never return them unaudited.
         await appendAuditAccessLog(this.db, {
           action: 'admin.audit.conversations.messages',
           actorUserId: params.actorUserId,
           filterSummary,
+          required: true,
           result: 'success',
           targetId: params.input.topicId,
           targetType: 'topic',
@@ -845,7 +873,8 @@ export class AdminAuditService {
         targetType: 'legal_hold',
       });
       return {
-        items: page.items.map(toLegalHoldPublic),
+        // Explicit row callback — map would pass index as the second arg (`now`).
+        items: page.items.map((row) => toLegalHoldPublic(row)),
         nextCursor: page.nextCursor,
       };
     } catch (error) {
@@ -912,26 +941,47 @@ export class AdminAuditService {
       scopeType: params.input.scopeType,
     });
     try {
-      const row = await this.legalHoldModel.create({
-        createdBy: params.actorUserId,
-        expiresAt: params.input.expiresAt,
-        reason: params.input.reason,
-        scopeId: params.input.scopeId,
-        scopeType: params.input.scopeType,
-      });
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.create',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          scopeIdPresent: params.input.scopeId != null,
-          scopeType: row.scopeType,
-          status: row.status,
-        },
-        filterSummary,
-        reason: params.input.reason,
-        result: 'success',
-        targetId: row.id,
-        targetType: 'legal_hold',
+      // Reject non-future expiry so the UI cannot show "active" holds that
+      // retention's listActive() already treats as expired.
+      if (params.input.expiresAt != null) {
+        const expiresMs = params.input.expiresAt.getTime();
+        if (Number.isNaN(expiresMs) || expiresMs <= Date.now()) {
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+            details: { reason: 'expires_at_must_be_future' },
+            httpCode: 'BAD_REQUEST',
+            // Stable code as message — clients localize via details.reason / code.
+            message: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+          });
+        }
+      }
+
+      const db = this.db as LobeChatDatabase;
+      const row = await db.transaction(async (tx) => {
+        const legalHoldModel = new PlatformAuditLegalHoldModel(tx);
+        const created = await legalHoldModel.create({
+          createdBy: params.actorUserId,
+          expiresAt: params.input.expiresAt,
+          reason: params.input.reason,
+          scopeId: params.input.scopeId,
+          scopeType: params.input.scopeType,
+        });
+        await appendAuditAccessLog(tx, {
+          action: 'admin.audit.legalHolds.create',
+          actorUserId: params.actorUserId,
+          afterDiff: {
+            scopeIdPresent: params.input.scopeId != null,
+            scopeType: created.scopeType,
+            status: created.status,
+          },
+          filterSummary,
+          reason: params.input.reason,
+          required: true,
+          result: 'success',
+          targetId: created.id,
+          targetType: 'legal_hold',
+        });
+        return created;
       });
       return toLegalHoldPublic(row);
     } catch (error) {
@@ -954,9 +1004,26 @@ export class AdminAuditService {
   }) => {
     const filterSummary = buildAuditFilterSummary({});
     try {
-      const row = await this.legalHoldModel.release(params.input.id, {
-        releasedBy: params.actorUserId,
-        releaseReason: params.input.releaseReason,
+      const db = this.db as LobeChatDatabase;
+      const row = await db.transaction(async (tx) => {
+        const legalHoldModel = new PlatformAuditLegalHoldModel(tx);
+        const released = await legalHoldModel.release(params.input.id, {
+          releasedBy: params.actorUserId,
+          releaseReason: params.input.releaseReason,
+        });
+        if (!released) return null;
+        await appendAuditAccessLog(tx, {
+          action: 'admin.audit.legalHolds.release',
+          actorUserId: params.actorUserId,
+          afterDiff: { status: released.status },
+          filterSummary,
+          reason: params.input.releaseReason,
+          required: true,
+          result: 'success',
+          targetId: released.id,
+          targetType: 'legal_hold',
+        });
+        return released;
       });
       if (!row) {
         await appendAuditAccessLog(this.db, {
@@ -974,16 +1041,6 @@ export class AdminAuditService {
           httpCode: 'NOT_FOUND',
         });
       }
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.release',
-        actorUserId: params.actorUserId,
-        afterDiff: { status: row.status },
-        filterSummary,
-        reason: params.input.releaseReason,
-        result: 'success',
-        targetId: row.id,
-        targetType: 'legal_hold',
-      });
       return toLegalHoldPublic(row);
     } catch (error) {
       if (isNotFoundError(error)) throw error;

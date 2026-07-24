@@ -6,9 +6,21 @@ import {
   buildPrivateAuditExportS3Options,
   formatArtifactChecksum,
   sha256Hex,
+  verifyArtifactChecksum,
 } from './exportStorage';
 
 describe('audit export private storage', () => {
+  it('verifyArtifactChecksum accepts matching SHA-256 and rejects mismatch/missing', () => {
+    const body = Buffer.from('{"type":"manifest"}\n');
+    const good = formatArtifactChecksum(sha256Hex(body));
+    expect(verifyArtifactChecksum(body, good)).toBe(true);
+    expect(verifyArtifactChecksum(body, sha256Hex(body))).toBe(true); // bare hex form
+    expect(verifyArtifactChecksum(body, formatArtifactChecksum(sha256Hex('other')))).toBe(false);
+    expect(verifyArtifactChecksum(body, null)).toBe(false);
+    expect(verifyArtifactChecksum(body, undefined)).toBe(false);
+    expect(verifyArtifactChecksum(body, '')).toBe(false);
+  });
+
   it('buildPrivateAuditExportS3Options always forces setAcl:false (never public-read)', () => {
     const options = buildPrivateAuditExportS3Options();
     expect(options.setAcl).toBe(false);
@@ -23,12 +35,14 @@ describe('audit export private storage', () => {
       contentLength: 4,
       contentType: 'application/x-ndjson',
     }));
+    const getFileByteArray = vi.fn(async () => new Uint8Array(Buffer.from('test')));
     const createPreSignedUrlForPreview = vi.fn(async () => 'https://signed.example/obj');
     const deleteFile = vi.fn(async () => undefined);
 
     const storage = new AuditExportPrivateS3Storage({
       createPreSignedUrlForPreview,
       deleteFile,
+      getFileByteArray,
       getFileMetadata,
       uploadBuffer,
     } as never);

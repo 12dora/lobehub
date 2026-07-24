@@ -25,7 +25,12 @@ import {
 } from '../hooks/useAdminAudit';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
 import { formatAdminDateTime, hasPermission } from '../shared/format';
-import { mergeMessagePages } from '../shared/liveMessageUtils';
+import {
+  type AuditContentAccessMode,
+  mergeMessagePages,
+  resolveLiveBodyAccess,
+  stripMessageBodies,
+} from '../shared/liveMessageUtils';
 import { idSetsDisjoint, mergeTopicPages } from '../shared/topicListUtils';
 import { AUDIT_LIST_POLL_MS } from '../shared/useCursorPagination';
 import MessagePane from './MessagePane';
@@ -217,11 +222,10 @@ const LivePage = memo(() => {
   }, []);
 
   // policy.get requires AUDIT_READ — do not gate on conversation-only permission.
+  // Prefer authoritative contentAccessMode from the polled messages response so a
+  // remote policy transition (e.g. content_allowed → metadata_only) is observed
+  // even when the non-polling policy hook is stale.
   const policy = useFetchAuditPolicy(canAuditRead);
-  const contentAccessMode = policy.data?.contentAccessMode;
-  // Without policy read, render conservatively as metadata-only (no body).
-  const includeBody = contentAccessMode === 'content_allowed';
-  const bodyHidden = contentAccessMode !== 'content_allowed';
 
   const topics = useFetchAuditConversationsList(
     {
@@ -238,9 +242,15 @@ const LivePage = memo(() => {
     canConversationRead && !!userId && !!topicId,
   );
 
+  // Sticky polled mode: after SWR head purge we must not fall back to a stale
+  // policy.get snapshot and re-enable body serving until the next authorized poll.
+  const lastPolledModeRef = useRef<AuditContentAccessMode | undefined>(undefined);
+
+  // Request bodies when conversation read is allowed; server + polled contentAccessMode
+  // are authoritative if policy was revoked to metadata_only mid-session.
   const messagesLive = useFetchAuditConversationMessages(
     {
-      includeBody,
+      includeBody: canConversationRead,
       limit: MSG_LIMIT,
       topicId: topicId!,
       userId: userId!,
@@ -248,6 +258,56 @@ const LivePage = memo(() => {
     canConversationRead && !!userId && !!topicId,
     { refreshInterval: poll && !!topicId ? AUDIT_LIST_POLL_MS : 0 },
   );
+
+  useEffect(() => {
+    const polled = messagesLive.data?.contentAccessMode as AuditContentAccessMode | undefined;
+    if (polled) lastPolledModeRef.current = polled;
+  }, [messagesLive.data?.contentAccessMode]);
+
+  // Reset sticky mode when the operator switches topic/user so we re-resolve fresh.
+  useEffect(() => {
+    lastPolledModeRef.current = undefined;
+  }, [userId, topicId]);
+
+  const contentAccessMode =
+    (messagesLive.data?.contentAccessMode as AuditContentAccessMode | undefined) ??
+    lastPolledModeRef.current ??
+    (topicDetail.data?.contentAccessMode as AuditContentAccessMode | undefined) ??
+    (policy.data?.contentAccessMode as AuditContentAccessMode | undefined);
+
+  // Re-check authorization on every render/poll: permission + contentAccessMode.
+  const liveAccess = resolveLiveBodyAccess({
+    canConversationRead,
+    contentAccessMode,
+  });
+  const { bodyHidden, includeBody } = liveAccess;
+  const messagesAccessDenied = !canConversationRead;
+
+  // Request epoch: discard in-flight pagination that started under a prior access mode.
+  const accessEpochRef = useRef(0);
+  useEffect(() => {
+    accessEpochRef.current += 1;
+  }, [canConversationRead, contentAccessMode, includeBody]);
+
+  // Drop cached body-bearing pages + SWR head when policy or conversation
+  // permission is lost so previously loaded content cannot outlive authorization.
+  useEffect(() => {
+    if (liveAccess.mustPurgeCachedBodies || !includeBody) {
+      resetMessagePagination();
+    }
+    if (liveAccess.mustPurgeCachedBodies) {
+      // Clear SWR head so revoked permission/policy cannot keep serving prior bodies.
+      void messagesLive.mutate(undefined, { revalidate: false });
+    }
+    // messagesLive.mutate identity is stable enough for access-edge effects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run on access edges
+  }, [
+    canConversationRead,
+    contentAccessMode,
+    includeBody,
+    liveAccess.mustPurgeCachedBodies,
+    resetMessagePagination,
+  ]);
 
   // Update last-refreshed on every poll completion (validating edge), not only data ref change.
   useEffect(() => {
@@ -326,7 +386,9 @@ const LivePage = memo(() => {
 
   const loadOlderMessages = useCallback(async () => {
     const next = olderNextCursor;
-    if (!next || !userId || !topicId || loadingOlder) return;
+    // Discard pagination once access is revoked (stale in-flight results ignored).
+    if (!next || !userId || !topicId || loadingOlder || !canConversationRead || bodyHidden) return;
+    const epoch = accessEpochRef.current;
     setLoadingOlder(true);
     try {
       const page = await adminAuditService.listConversationMessages({
@@ -336,17 +398,38 @@ const LivePage = memo(() => {
         topicId,
         userId,
       });
+      // Re-check after await — permission/policy may have been revoked mid-flight.
+      if (
+        epoch !== accessEpochRef.current ||
+        !canConversationRead ||
+        bodyHidden ||
+        page.contentAccessMode === 'metadata_only' ||
+        page.contentAccessMode === 'disabled'
+      ) {
+        return;
+      }
       setOlderPages((p) => [...p, page.items]);
       setOlderNextCursor(page.nextCursor);
     } finally {
       setLoadingOlder(false);
     }
-  }, [includeBody, loadingOlder, olderNextCursor, topicId, userId]);
+  }, [
+    bodyHidden,
+    canConversationRead,
+    includeBody,
+    loadingOlder,
+    olderNextCursor,
+    topicId,
+    userId,
+  ]);
 
   const allMessages = useMemo(() => {
+    if (messagesAccessDenied) return [];
     const latest = messagesLive.data?.items ?? [];
-    return mergeMessagePages(olderPages.flat(), latest);
-  }, [messagesLive.data?.items, olderPages]);
+    const merged = mergeMessagePages(olderPages.flat(), latest);
+    // Strip bodies if policy/permission revoked while pages still hold cached content.
+    return bodyHidden ? stripMessageBodies(merged) : merged;
+  }, [bodyHidden, messagesAccessDenied, messagesLive.data?.items, olderPages]);
 
   const orderedTopics = useMemo(() => {
     const head = topics.data?.items ?? [];
@@ -359,6 +442,11 @@ const LivePage = memo(() => {
 
   // Hide policy-dependent banners when AUDIT_READ is missing (mode unknown → conservative UI only).
   const showPolicyBanner = canAuditRead && Boolean(contentAccessMode);
+
+  if (messagesAccessDenied && !canAuditRead) {
+    // No conversation read and no audit read — nothing useful to show.
+    return <ContentAccessDisabledState />;
+  }
 
   return (
     <AdminPageTemplate
@@ -414,7 +502,11 @@ const LivePage = memo(() => {
         </div>
       }
     >
-      {!userId ? (
+      {messagesAccessDenied ? (
+        <div className={styles.emptyGuide} role="status">
+          <Text type="secondary">{t('audit.live.empty.noConversationPermission')}</Text>
+        </div>
+      ) : !userId ? (
         <div className={styles.emptyGuide}>
           <Text type="secondary">{t('audit.live.empty.pickUser')}</Text>
         </div>
@@ -441,7 +533,7 @@ const LivePage = memo(() => {
             ) : null}
             <MessagePane
               bodyHidden={bodyHidden}
-              hasOlder={Boolean(olderNextCursor)}
+              hasOlder={Boolean(olderNextCursor) && canConversationRead}
               loading={messagesLive.isLoading && !messagesLive.data}
               loadingOlder={loadingOlder}
               messages={allMessages}

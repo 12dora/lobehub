@@ -34,6 +34,11 @@ export interface AuditExportObjectMetadata {
 export interface AuditExportArtifactStorage {
   /** Best-effort delete (cancel / fail cleanup). */
   deleteObject: (storageKey: string) => Promise<void>;
+  /**
+   * Read full object bytes for integrity verification (SHA-256) before download
+   * or post-upload checks. Same-length corruption must be detected.
+   */
+  getObjectBytes: (storageKey: string) => Promise<Buffer>;
   /** Head object for post-upload integrity check. */
   getObjectMetadata: (storageKey: string) => Promise<AuditExportObjectMetadata>;
   /**
@@ -51,6 +56,16 @@ export interface AuditExportArtifactStorage {
     storageKey: string;
   }) => Promise<AuditExportUploadResult>;
 }
+
+/** Verify object bytes match the trusted `sha256:…` checksum stored on the export row. */
+export const verifyArtifactChecksum = (
+  body: Buffer,
+  expectedChecksum: string | null | undefined,
+): boolean => {
+  if (!expectedChecksum) return false;
+  const actual = formatArtifactChecksum(sha256Hex(body));
+  return actual === formatArtifactChecksum(expectedChecksum);
+};
 
 export const sha256Hex = (body: Buffer | string): string =>
   createHash('sha256').update(body).digest('hex');
@@ -121,6 +136,11 @@ export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
     };
   };
 
+  getObjectBytes = async (storageKey: string): Promise<Buffer> => {
+    const bytes = await this.s3.getFileByteArray(storageKey);
+    return Buffer.from(bytes);
+  };
+
   getSignedDownloadUrl = async (storageKey: string, expiresInSeconds: number): Promise<string> => {
     return this.s3.createPreSignedUrlForPreview(storageKey, expiresInSeconds);
   };
@@ -151,6 +171,12 @@ export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactSt
     const body = this.objects.get(storageKey);
     if (!body) throw new Error(`Object not found: ${storageKey}`);
     return { contentLength: body.byteLength, contentType: AUDIT_EXPORT_CONTENT_TYPE };
+  };
+
+  getObjectBytes = async (storageKey: string): Promise<Buffer> => {
+    const body = this.objects.get(storageKey);
+    if (!body) throw new Error(`Object not found: ${storageKey}`);
+    return Buffer.from(body);
   };
 
   getSignedDownloadUrl = async (storageKey: string, expiresInSeconds: number): Promise<string> => {

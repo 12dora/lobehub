@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { eq, sql } from 'drizzle-orm';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { messages, topics, users } from '@/database/schemas';
@@ -11,6 +11,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import * as accessLog from './accessLog';
 import { AdminAuditService } from './adminAuditService';
 import { resolveAuditTimeWindow } from './timeWindow';
 
@@ -21,8 +22,15 @@ const actor = 'audit-svc-actor';
 const userA = 'audit-svc-user-a';
 const userB = 'audit-svc-user-b';
 
+const clearAuditLogs = async () => {
+  await serverDB.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
+};
+
 beforeEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditLegalHolds);
   await serverDB.delete(platformAuditPolicies);
   await serverDB.delete(messages);
@@ -34,7 +42,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditLegalHolds);
   await serverDB.delete(platformAuditPolicies);
   await serverDB.delete(messages);
@@ -216,6 +224,64 @@ describe('AdminAuditService', () => {
     expect(item.hasContent).toBe(true);
   });
 
+  it('revocation mid-stream: subsequent poll re-checks policy and stops serving bodies', async () => {
+    const current = await service.getPolicy({ actorUserId: actor });
+    if (current.contentAccessMode !== 'content_allowed') {
+      await service.updatePolicy({
+        actorUserId: actor,
+        input: {
+          contentAccessMode: 'content_allowed',
+          expectedRevision: current.revision,
+          reason: 'enable for mid-stream',
+        },
+      });
+    }
+
+    await serverDB.insert(topics).values({ id: 't-live', title: 'Live', userId: userA });
+    await serverDB.insert(messages).values({
+      content: 'body-while-authorized',
+      id: 'm-live',
+      role: 'user',
+      topicId: 't-live',
+      userId: userA,
+    });
+
+    const authorized = await service.listConversationMessages({
+      actorUserId: actor,
+      input: { includeBody: true, limit: 5, topicId: 't-live', userId: userA },
+    });
+    expect(authorized.contentAccessMode).toBe('content_allowed');
+    const authorizedItem = authorized.items[0];
+    if (!authorizedItem || !('content' in authorizedItem)) {
+      throw new Error('expected body while authorized');
+    }
+    expect(authorizedItem.content).toBe('body-while-authorized');
+
+    // Policy revoked mid-stream (between live polls).
+    const mid = await service.getPolicy({ actorUserId: actor });
+    await service.updatePolicy({
+      actorUserId: actor,
+      input: {
+        contentAccessMode: 'metadata_only',
+        expectedRevision: mid.revision,
+        reason: 'revoke mid-stream',
+      },
+    });
+
+    const afterRevoke = await service.listConversationMessages({
+      actorUserId: actor,
+      input: { includeBody: true, limit: 5, topicId: 't-live', userId: userA },
+    });
+    expect(afterRevoke.contentAccessMode).toBe('metadata_only');
+    const revokedItem = afterRevoke.items[0];
+    expect(revokedItem).toBeDefined();
+    expect(revokedItem).not.toHaveProperty('content');
+    if (!revokedItem || !('hasContent' in revokedItem)) {
+      throw new Error('expected metadata-only item after revocation');
+    }
+    expect(revokedItem.hasContent).toBe(true);
+  });
+
   it('writes self-audit without free-text q or message body', async () => {
     await service.searchUsers({
       actorUserId: actor,
@@ -245,5 +311,141 @@ describe('AdminAuditService', () => {
       to: new Date('2020-02-01T00:00:00.000Z'),
     });
     expect(ok.from.toISOString()).toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  it('rejects non-future legal hold expiresAt and projects elapsed holds as expired', async () => {
+    await expect(
+      service.createLegalHold({
+        actorUserId: actor,
+        input: {
+          expiresAt: new Date(Date.now() - 60_000),
+          reason: 'past expiry must fail',
+          scopeId: userA,
+          scopeType: 'user',
+        },
+      }),
+    ).rejects.toBeTruthy();
+
+    // Seed an already-elapsed hold at the model layer (service create rejects past dates).
+    const past = new Date('2020-01-01T00:00:00.000Z');
+    await serverDB.insert(platformAuditLegalHolds).values({
+      createdBy: actor,
+      expiresAt: past,
+      id: 'hold-elapsed-1',
+      reason: 'legacy elapsed',
+      scopeId: userA,
+      scopeType: 'user',
+      status: 'active',
+    });
+
+    const got = await service.getLegalHold({ actorUserId: actor, id: 'hold-elapsed-1' });
+    expect(got.status).toBe('expired');
+
+    const listedActive = await service.listLegalHolds({
+      actorUserId: actor,
+      input: { limit: 50, status: 'active' },
+    });
+    expect(listedActive.items.every((h) => h.status === 'active')).toBe(true);
+    expect(listedActive.items.some((h) => h.id === 'hold-elapsed-1')).toBe(false);
+
+    const listedAll = await service.listLegalHolds({
+      actorUserId: actor,
+      input: { limit: 50 },
+    });
+    const elapsed = listedAll.items.find((h) => h.id === 'hold-elapsed-1');
+    expect(elapsed?.status).toBe('expired');
+  });
+});
+
+describe('AdminAuditService fail-closed audit writes', () => {
+  beforeEach(async () => {
+    await clearAuditLogs();
+    await serverDB.delete(platformAuditLegalHolds);
+    await serverDB.delete(platformAuditPolicies);
+    await serverDB.delete(messages);
+    await serverDB.delete(topics);
+    await serverDB.delete(users).where(eq(users.id, actor));
+    await serverDB.delete(users).where(eq(users.id, userA));
+    await serverDB.insert(users).values([{ id: actor }, { id: userA }]);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await clearAuditLogs();
+    await serverDB.delete(platformAuditLegalHolds);
+    await serverDB.delete(platformAuditPolicies);
+    await serverDB.delete(messages);
+    await serverDB.delete(topics);
+  });
+
+  it('rejects sensitive body read when required audit write fails (not silently allowed)', async () => {
+    const current = await service.getPolicy({ actorUserId: actor });
+    if (current.contentAccessMode !== 'content_allowed') {
+      await service.updatePolicy({
+        actorUserId: actor,
+        input: {
+          contentAccessMode: 'content_allowed',
+          expectedRevision: current.revision,
+          reason: 'enable for fail-closed',
+        },
+      });
+    }
+
+    await serverDB.insert(topics).values({ id: 't-fc', title: 'FC', userId: userA });
+    await serverDB.insert(messages).values({
+      content: 'must-not-leak-without-audit',
+      id: 'm-fc',
+      role: 'user',
+      topicId: 't-fc',
+      userId: userA,
+    });
+
+    const spy = vi
+      .spyOn(accessLog, 'appendAuditAccessLog')
+      .mockImplementation(async (_db, params) => {
+        if (params.required) {
+          throw new Error('INJECTED_AUDIT_WRITE_FAILURE');
+        }
+      });
+
+    await expect(
+      service.listConversationMessages({
+        actorUserId: actor,
+        input: { includeBody: true, limit: 5, topicId: 't-fc', userId: userA },
+      }),
+    ).rejects.toThrow(/INJECTED_AUDIT_WRITE_FAILURE|failure/i);
+
+    // Sensitive op must not complete successfully when audit cannot be recorded.
+    expect(spy).toHaveBeenCalled();
+    const requiredCalls = spy.mock.calls.filter(([, p]) => p.required === true);
+    expect(requiredCalls.length).toBeGreaterThan(0);
+  });
+
+  it('rolls back policy mutation when required audit write fails', async () => {
+    const before = await service.getPolicy({ actorUserId: actor });
+    const beforeMode = before.contentAccessMode;
+    const beforeRevision = before.revision;
+
+    vi.spyOn(accessLog, 'appendAuditAccessLog').mockImplementation(async (_db, params) => {
+      if (params.required && params.action === 'admin.audit.policy.update') {
+        throw new Error('INJECTED_AUDIT_WRITE_FAILURE');
+      }
+    });
+
+    await expect(
+      service.updatePolicy({
+        actorUserId: actor,
+        input: {
+          contentAccessMode: beforeMode === 'disabled' ? 'metadata_only' : 'disabled',
+          expectedRevision: beforeRevision,
+          reason: 'must roll back without audit',
+        },
+      }),
+    ).rejects.toThrow(/INJECTED_AUDIT_WRITE_FAILURE|failure/i);
+
+    // Mutation must not stick — fail closed / transactional audit.
+    const after = await service.getPolicy({ actorUserId: actor });
+    expect(after.contentAccessMode).toBe(beforeMode);
+    expect(after.revision).toBe(beforeRevision);
   });
 });
