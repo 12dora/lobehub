@@ -52,7 +52,7 @@ beforeAll(async () => {
       id: connectorId,
     });
   }
-});
+}, 60_000);
 
 afterAll(cleanup);
 

@@ -16,6 +16,7 @@ import {
   createHarness,
   db,
   publishOAuthConnector,
+  publishWithConnectionTest,
   start,
   userA,
   userB,
@@ -222,7 +223,7 @@ describe('per-user connector OAuth refresh/concurrency', () => {
       },
       reason: 'prepare OAuth connector v2',
     });
-    await harness.publication.publish('admin-user', {
+    await publishWithConnectionTest(harness, {
       expectedDraftToken: second.draftToken,
       expectedRevision: 2,
       id: first.draft.id,

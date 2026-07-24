@@ -123,11 +123,14 @@ describe('ConnectorOutboundClient', () => {
     }
   });
 
-  it('allows private endpoints by G-07 default and permanently blocks metadata', async () => {
+  it('rejects private endpoints by G-07 default and permanently blocks metadata', async () => {
     const safeClient = new SafeOutboundHttpClient();
     const client = new ConnectorOutboundClient(safeClient);
 
-    await expect(client.assertAllowed('http://127.0.0.1:8080/mcp')).resolves.toBeUndefined();
+    // G-07 default is public-only; private/loopback requires explicit opt-in.
+    await expect(client.assertAllowed('http://127.0.0.1:8080/mcp')).rejects.toMatchObject({
+      code: 'PLATFORM_CONNECTOR_SSRF_BLOCKED',
+    });
     await expect(
       client.assertAllowed('http://169.254.169.254/latest/meta-data'),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_SSRF_BLOCKED' });
