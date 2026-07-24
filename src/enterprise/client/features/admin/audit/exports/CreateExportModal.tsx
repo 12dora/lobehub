@@ -82,23 +82,51 @@ const CreateExportModal = memo<CreateExportModalProps>(
     const [includeBodies, setIncludeBodies] = useState(false);
     const [action, setAction] = useState('');
 
-    // Prefill from URL (operation logs → export handoff)
+    // Reset every field when a new modal session starts, then apply URL prefill
+    // as a complete replacement so reopen never reuses stale filters.
     useEffect(() => {
-      if (!open || !searchParams) return;
-      const k = searchParams.get('kind');
-      if (k === 'operation_logs' || k === 'conversations' || k === 'user_timeline') {
-        setKind(k);
+      if (!open) return;
+      const fresh = getDefaultAuditTimeWindow();
+      let nextKind: ExportKind = 'operation_logs';
+      let nextRange: [Dayjs, Dayjs] = [dayjs(fresh.from), dayjs(fresh.to)];
+      let nextUserId: string | undefined;
+      let nextActorUserId: string | undefined;
+      let nextTopicId = '';
+      let nextQ = '';
+      const nextIncludeBodies = false;
+      let nextAction = '';
+      let nextStep = 0;
+
+      if (searchParams) {
+        const k = searchParams.get('kind');
+        if (k === 'operation_logs' || k === 'conversations' || k === 'user_timeline') {
+          nextKind = k;
+          nextStep = 1;
+        }
+        const from = parseAuditDate(searchParams.get('from'));
+        const to = parseAuditDate(searchParams.get('to'));
+        if (from && to) nextRange = [dayjs(from), dayjs(to)];
+        const act = searchParams.get('action');
+        if (act) nextAction = act;
+        const uid = searchParams.get('userId');
+        if (uid) nextUserId = uid;
+        const actor = searchParams.get('actorUserId');
+        if (actor) nextActorUserId = actor;
+        const tid = searchParams.get('topicId');
+        if (tid) nextTopicId = tid;
+        const query = searchParams.get('q');
+        if (query) nextQ = query;
       }
-      const from = parseAuditDate(searchParams.get('from'));
-      const to = parseAuditDate(searchParams.get('to'));
-      if (from && to) setRange([dayjs(from), dayjs(to)]);
-      const act = searchParams.get('action');
-      if (act) setAction(act);
-      const uid = searchParams.get('userId');
-      if (uid) setUserId(uid);
-      const actor = searchParams.get('actorUserId');
-      if (actor) setActorUserId(actor);
-      setStep(k ? 1 : 0);
+
+      setKind(nextKind);
+      setRange(nextRange);
+      setUserId(nextUserId);
+      setActorUserId(nextActorUserId);
+      setTopicId(nextTopicId);
+      setQ(nextQ);
+      setIncludeBodies(nextIncludeBodies);
+      setAction(nextAction);
+      setStep(nextStep);
     }, [open, searchParams]);
 
     // Conservative: without policy read, never enable includeMessageBodies.
@@ -158,7 +186,7 @@ const CreateExportModal = memo<CreateExportModalProps>(
         onSubmit: async (payload) => {
           await onSubmit(payload as AdminAuditExportsCreateInput);
           onCreated();
-          setStep(0);
+          onClose();
         },
         submitLabel: t('audit.exports.create.submit'),
         targetLabel: kindLabel(kind),

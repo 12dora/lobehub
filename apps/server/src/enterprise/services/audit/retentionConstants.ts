@@ -12,8 +12,6 @@ export const AUDIT_RETENTION_STORED_SCOPES = [
   'export_artifacts',
 ] as const;
 
-export type AuditRetentionStoredScope = (typeof AUDIT_RETENTION_STORED_SCOPES)[number];
-
 export type AuditRetentionJobInput = {
   runId: string;
 };

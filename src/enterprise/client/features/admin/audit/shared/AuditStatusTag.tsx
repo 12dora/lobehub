@@ -23,6 +23,7 @@ const EXPORT_COLOR: Record<string, TagColor> = {
 
 const HOLD_COLOR: Record<string, TagColor> = {
   active: 'success',
+  expired: 'warning',
   released: 'default',
 };
 

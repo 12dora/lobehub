@@ -13,7 +13,6 @@ import {
   encodeRetentionCursor,
   type PlatformAuditExportFilterSnapshot,
   type PlatformAuditExportKind,
-  PlatformAuditExportModel,
   type PlatformAuditLegalHoldItem,
   PlatformAuditLegalHoldModel,
   type PlatformAuditRetentionCounts,
@@ -23,7 +22,7 @@ import {
   PlatformJobModel,
   RETENTION_OP_LOG_HOLD_TARGET_TYPES,
 } from '@/database/models/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { PlatformAuditService } from '../platformAudit';
 import { type AuditExportArtifactStorage, AuditExportPrivateS3Storage } from './exportStorage';
@@ -37,6 +36,22 @@ import {
 } from './retentionConstants';
 
 export interface ProcessNextAuditRetentionOptions {
+  /**
+   * Test seam: after preliminary authorize returns free and immediately before
+   * lock-held purge (final recheck + object delete under the advisory lock).
+   * Insert a legal hold here to exercise the authorize→delete race.
+   */
+  afterArtifactAuthorize?: (info: {
+    authorized: Array<{ id: string; storageKey: string }>;
+  }) => Promise<void> | void;
+  /**
+   * Test seam: after export-artifact purge claim (outbox written, storageKey
+   * cleared) and before authorize + object delete. Insert a legal hold here to
+   * exercise the claim→authorize race.
+   */
+  afterArtifactClaim?: (info: {
+    claimed: Array<{ id: string; storageKey: string }>;
+  }) => Promise<void> | void;
   /**
    * Test seam: invoked after each successful atomic batch checkpoint.
    * Throw to simulate transient failure after progress/cursor are durable.
@@ -341,6 +356,8 @@ const appendWorkerOutcome = async (
     runId: string;
     scope: string;
     errorCode?: string;
+    /** Terminal outcomes require a durable audit record (fail closed). */
+    required?: boolean;
   },
 ): Promise<void> => {
   try {
@@ -370,8 +387,15 @@ const appendWorkerOutcome = async (
       targetId: params.runId,
       targetType: 'audit_retention_run',
     });
-  } catch {
-    // best-effort — never block worker terminal path
+  } catch (error) {
+    console.error('[admin.audit] retention worker outcome audit failed', {
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+      outcome: params.outcome,
+      required: Boolean(params.required),
+      runId: params.runId,
+    });
+    // Terminal outcomes must not complete silently without a durable audit trail.
+    if (params.required) throw error;
   }
 };
 
@@ -490,23 +514,32 @@ export const processNextAuditRetentionJob = async (
     };
 
     /**
-     * Atomic DB checkpoint: retention run counts/progress + platform job cursor/lease.
-     * Either both commit or both roll back. Null job checkpoint → LeaseLost (not cancel).
+     * Atomic DB checkpoint: optional destructive work + retention run counts/progress
+     * + platform job cursor/lease in one transaction.
+     * Either all commit or all roll back. Null job checkpoint → LeaseLost (not cancel).
      * Always writes cursor for the last processed item, including final page.
      */
     const checkpointBatch = async (
       nextCounts: PlatformAuditRetentionCounts,
       nextKeyset: string,
-    ) => {
+      destructiveWork?: (tx: Transaction) => Promise<PlatformAuditRetentionCounts | void>,
+    ): Promise<PlatformAuditRetentionCounts> => {
       await assertNotCancelled();
 
+      let committedCounts = nextCounts;
+
       await db.transaction(async (tx) => {
+        if (destructiveWork) {
+          const adjusted = await destructiveWork(tx);
+          if (adjusted) committedCounts = adjusted;
+        }
+
         const runsTx = new PlatformAuditRetentionRunModel(tx);
         const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
 
         const updated = await runsTx.updateProgress(runId, {
-          counts: nextCounts,
-          progressDone: progressFromCounts(nextCounts),
+          counts: committedCounts,
+          progressDone: progressFromCounts(committedCounts),
         });
         if (!updated) {
           // Domain became terminal mid-batch (explicit cancel race).
@@ -518,7 +551,7 @@ export const processNextAuditRetentionJob = async (
           cursor: cursorPayload,
           jobId: claimed.id,
           leaseMs,
-          progressDone: progressFromCounts(nextCounts),
+          progressDone: progressFromCounts(committedCounts),
           workerId: options.workerId,
         });
         if (!cp) {
@@ -528,16 +561,18 @@ export const processNextAuditRetentionJob = async (
       });
 
       keyset = nextKeyset;
-      counts = nextCounts;
+      counts = committedCounts;
       batchIndex += 1;
 
       if (options.afterBatchCheckpoint) {
         await options.afterBatchCheckpoint({
           batchIndex,
-          counts: nextCounts,
+          counts: committedCounts,
           keyset: nextKeyset,
         });
       }
+
+      return committedCounts;
     };
 
     /** Heartbeat lease without advancing counts (pre-scan / between scopes). */
@@ -591,6 +626,8 @@ export const processNextAuditRetentionJob = async (
         storage = new AuditExportPrivateS3Storage();
       }
       counts = await processExportArtifacts({
+        afterArtifactAuthorize: options.afterArtifactAuthorize,
+        afterArtifactClaim: options.afterArtifactClaim,
         checkpointBatch,
         counts,
         cutoffAt: run.cutoffAt,
@@ -646,6 +683,7 @@ export const processNextAuditRetentionJob = async (
       mode: run.mode,
       outcome: 'completed',
       requestedBy: run.requestedBy,
+      required: true,
       result: 'success',
       runId,
       scope: run.scope,
@@ -668,6 +706,7 @@ export const processNextAuditRetentionJob = async (
           mode: run.mode,
           outcome: 'cancelled',
           requestedBy: run.requestedBy,
+          required: true,
           result: 'success',
           runId,
           scope: run.scope,
@@ -699,6 +738,7 @@ export const processNextAuditRetentionJob = async (
           mode: run.mode,
           outcome: 'failed',
           requestedBy: run.requestedBy,
+          required: true,
           result: 'failure',
           runId,
           scope: run.scope,
@@ -723,6 +763,7 @@ export const processNextAuditRetentionJob = async (
           mode: run.mode,
           outcome: 'failed',
           requestedBy: run.requestedBy,
+          required: true,
           result: 'failure',
           runId,
           scope: run.scope,
@@ -736,7 +777,11 @@ export const processNextAuditRetentionJob = async (
 };
 
 type ScopeProcessorParams = {
-  checkpointBatch: (counts: PlatformAuditRetentionCounts, keyset: string) => Promise<void>;
+  checkpointBatch: (
+    counts: PlatformAuditRetentionCounts,
+    keyset: string,
+    destructiveWork?: (tx: Transaction) => Promise<PlatformAuditRetentionCounts | void>,
+  ) => Promise<PlatformAuditRetentionCounts>;
   counts: PlatformAuditRetentionCounts;
   cutoffAt: Date;
   db: LobeChatDatabase;
@@ -775,7 +820,7 @@ const processOperationLogs = async (
 
     if (page.items.length === 0) break;
 
-    const delta: PlatformAuditRetentionCounts = {
+    const baseDelta: PlatformAuditRetentionCounts = {
       operationLogsScanned: page.items.length,
       skippedLegalHold: 0,
       operationLogsDeleted: 0,
@@ -784,35 +829,32 @@ const processOperationLogs = async (
     const toDelete: string[] = [];
     for (const row of page.items) {
       if (operationLogHeld(holds, row)) {
-        delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
+        baseDelta.skippedLegalHold = (baseDelta.skippedLegalHold ?? 0) + 1;
         continue;
       }
       if (params.execute) toDelete.push(row.id);
     }
 
-    if (params.execute && toDelete.length > 0) {
-      // Recheck holds immediately before delete (over-skip).
-      const holdsNow = await loadHoldIndex(params.db);
-      const stillOk = toDelete.filter((id) => {
-        const row = page.items.find((r) => r.id === id);
-        return row && !operationLogHeld(holdsNow, row);
-      });
-      if (stillOk.length > 0) {
-        const deleted = await params.repo.deleteOperationLogsRechecked({
-          cutoffAt: params.cutoffAt,
-          ids: stillOk,
-        });
-        delta.operationLogsDeleted = deleted;
-      }
-    }
-
-    const nextCounts = mergeCounts(counts, delta);
     const nextKeyset = keysetAfterPage(page, (row) => row.createdAt);
     if (!nextKeyset) break;
 
-    // Atomic: counts + cursor (incl. final page) before continuing / completing.
-    await params.checkpointBatch(nextCounts, nextKeyset);
-    counts = nextCounts;
+    // Atomic: domain delete + counts + cursor in one TX (destruction never precedes checkpoint).
+    counts = await params.checkpointBatch(
+      mergeCounts(counts, baseDelta),
+      nextKeyset,
+      async (tx) => {
+        const delta: PlatformAuditRetentionCounts = { ...baseDelta };
+        if (params.execute && toDelete.length > 0) {
+          const deleted = await params.repo.deleteOperationLogsRechecked({
+            cutoffAt: params.cutoffAt,
+            ids: toDelete,
+            tx,
+          });
+          delta.operationLogsDeleted = deleted;
+        }
+        return mergeCounts(counts, delta);
+      },
+    );
     params.setKeyset(nextKeyset);
 
     if (!page.nextCursor) break;
@@ -840,7 +882,7 @@ const processConversations = async (
 
     const msgCounts = await params.repo.countMessagesForTopics(page.items.map((t) => t.id));
 
-    const delta: PlatformAuditRetentionCounts = {
+    const baseDelta: PlatformAuditRetentionCounts = {
       topicsScanned: page.items.length,
       messagesScanned: 0,
       skippedLegalHold: 0,
@@ -851,41 +893,45 @@ const processConversations = async (
       conversationsDeleted: 0,
     };
 
+    const freeTopics: Array<{ id: string; msgN: number }> = [];
     for (const topic of page.items) {
       const msgN = msgCounts.get(topic.id) ?? 0;
-      delta.messagesScanned = (delta.messagesScanned ?? 0) + msgN;
+      baseDelta.messagesScanned = (baseDelta.messagesScanned ?? 0) + msgN;
 
       if (topicHeld(holds, topic)) {
-        delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
+        baseDelta.skippedLegalHold = (baseDelta.skippedLegalHold ?? 0) + 1;
         continue;
       }
 
-      if (!params.execute) continue;
-
-      // Recheck hold immediately before delete.
-      const holdsNow = await loadHoldIndex(params.db);
-      if (topicHeld(holdsNow, topic)) {
-        delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
-        continue;
-      }
-
-      const deleted = await params.repo.deleteTopicRechecked({
-        cutoffAt: params.cutoffAt,
-        topicId: topic.id,
-      });
-      if (deleted) {
-        delta.topicsDeleted = (delta.topicsDeleted ?? 0) + 1;
-        delta.conversationsDeleted = (delta.conversationsDeleted ?? 0) + 1;
-        delta.messagesDeleted = (delta.messagesDeleted ?? 0) + msgN;
-      }
+      if (params.execute) freeTopics.push({ id: topic.id, msgN });
     }
 
-    const nextCounts = mergeCounts(counts, delta);
     const nextKeyset = keysetAfterPage(page, (row) => row.updatedAt);
     if (!nextKeyset) break;
 
-    await params.checkpointBatch(nextCounts, nextKeyset);
-    counts = nextCounts;
+    // Atomic: topic deletes + counts + cursor (hold recheck inside delete under lock).
+    counts = await params.checkpointBatch(
+      mergeCounts(counts, baseDelta),
+      nextKeyset,
+      async (tx) => {
+        const delta: PlatformAuditRetentionCounts = { ...baseDelta };
+        if (params.execute) {
+          for (const topic of freeTopics) {
+            const deleted = await params.repo.deleteTopicRechecked({
+              cutoffAt: params.cutoffAt,
+              topicId: topic.id,
+              tx,
+            });
+            if (deleted) {
+              delta.topicsDeleted = (delta.topicsDeleted ?? 0) + 1;
+              delta.conversationsDeleted = (delta.conversationsDeleted ?? 0) + 1;
+              delta.messagesDeleted = (delta.messagesDeleted ?? 0) + topic.msgN;
+            }
+          }
+        }
+        return mergeCounts(counts, delta);
+      },
+    );
     params.setKeyset(nextKeyset);
 
     if (!page.nextCursor) break;
@@ -894,11 +940,109 @@ const processConversations = async (
   return { ...counts, sessionsDeleted: 0 };
 };
 
+/**
+ * Resolve held export ids under the retention/hold advisory lock TX.
+ * Always re-query holds on the locked connection so claim and authorize see
+ * holds activated after the pre-filter scan.
+ */
+const resolveExportArtifactHeldIds = async (
+  tx: ConstructorParameters<typeof PlatformAuditLegalHoldModel>[0],
+  rows: Array<{
+    filterSnapshot: PlatformAuditExportFilterSnapshot | null | undefined;
+    id: string;
+    kind: PlatformAuditExportKind;
+  }>,
+): Promise<Set<string>> => {
+  const holds = await new PlatformAuditLegalHoldModel(tx).listActive();
+  const index = buildHoldIndex(holds);
+  const held = new Set<string>();
+  for (const row of rows) {
+    if (exportArtifactHeld(index, row.kind, row.filterSnapshot)) {
+      held.add(row.id);
+    }
+  }
+  return held;
+};
+
+/**
+ * Optional authorize seam (for race tests) then lock-held purge:
+ * hold recheck + external object delete + complete outbox under one advisory lock.
+ * Hold creates serialize behind that TX — no authorize→delete race window.
+ */
+const deleteAuthorizedExportArtifacts = async (params: {
+  afterArtifactAuthorize?: ProcessNextAuditRetentionOptions['afterArtifactAuthorize'];
+  ids: string[];
+  repo: ScopeProcessorParams['repo'];
+  storage: AuditExportArtifactStorage;
+}): Promise<{ deleted: number; skippedHold: number }> => {
+  if (params.ids.length === 0) return { deleted: 0, skippedHold: 0 };
+
+  // Preliminary authorize for the test seam only (does not destroy).
+  if (params.afterArtifactAuthorize) {
+    const authorized = await params.repo.authorizeExportArtifactObjectDeletes({
+      ids: params.ids,
+      resolveHeldIds: resolveExportArtifactHeldIds,
+    });
+    if (authorized.length > 0) {
+      await params.afterArtifactAuthorize({ authorized: [...authorized] });
+    }
+  }
+
+  try {
+    return await params.repo.purgeExportArtifactObjectsUnderHoldLock({
+      deleteObject: async (storageKey) => {
+        await params.storage.deleteObject(storageKey);
+      },
+      ids: params.ids,
+      resolveHeldIds: resolveExportArtifactHeldIds,
+    });
+  } catch {
+    // Leave purge outbox pending for retry — never complete without delete.
+    throw new Error('AUDIT_RETENTION_ARTIFACT_DELETE_FAILED');
+  }
+};
+
+/**
+ * Export-artifact retention: claim (durable purge outbox) → authorize
+ * (hold recheck) → external object delete → complete outbox.
+ * Never delete from pre-filter/claim return values alone.
+ * Also drains stranded purge outboxes left by prior crashes (storageKey null).
+ */
 const processExportArtifacts = async (
-  params: ScopeProcessorParams & { storage?: AuditExportArtifactStorage },
+  params: ScopeProcessorParams & {
+    afterArtifactAuthorize?: ProcessNextAuditRetentionOptions['afterArtifactAuthorize'];
+    afterArtifactClaim?: ProcessNextAuditRetentionOptions['afterArtifactClaim'];
+    storage?: AuditExportArtifactStorage;
+  },
 ): Promise<PlatformAuditRetentionCounts> => {
   let counts = params.counts;
-  const exportsModel = new PlatformAuditExportModel(params.db);
+
+  // Crash recovery: claim clears storageKey, so candidates never re-scan pending
+  // outboxes. Drain them under the same lock-held purge protocol.
+  // Do NOT attribute recovered deletions to this run's counts — the outbox has no
+  // originating run id (would mis-credit another run's destruction).
+  if (params.execute) {
+    if (!params.storage) {
+      throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
+    }
+    for (;;) {
+      await params.renewLease();
+      const pending = await params.repo.listPendingExportArtifactPurges({
+        limit: AUDIT_RETENTION_BATCH_LIMIT,
+      });
+      if (pending.length === 0) break;
+
+      const drained = await deleteAuthorizedExportArtifacts({
+        afterArtifactAuthorize: params.afterArtifactAuthorize,
+        ids: pending.map((p) => p.id),
+        repo: params.repo,
+        storage: params.storage,
+      });
+      // Integrity recovery only — skip count merge for foreign outboxes.
+      if (drained.deleted === 0 && drained.skippedHold === pending.length) break;
+      if (pending.length < AUDIT_RETENTION_BATCH_LIMIT) break;
+    }
+  }
 
   for (;;) {
     await params.renewLease();
@@ -917,43 +1061,81 @@ const processExportArtifacts = async (
       exportArtifactsDeleted: 0,
     };
 
+    const freeIds: string[] = [];
     for (const art of page.items) {
       if (exportArtifactHeld(holds, art.kind, art.filterSnapshot)) {
         delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
         continue;
       }
-
-      if (!params.execute) continue;
-
-      const holdsNow = await loadHoldIndex(params.db);
-      if (exportArtifactHeld(holdsNow, art.kind, art.filterSnapshot)) {
-        delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
-        continue;
-      }
-
-      // Delete private object first (when present), then clear storageKey (preserve finishedAt).
-      if (art.storageKey && params.storage) {
-        try {
-          await params.storage.deleteObject(art.storageKey);
-        } catch {
-          // best-effort object delete; rethrow so transient retry can reclaim
-          throw new Error('AUDIT_RETENTION_ARTIFACT_DELETE_FAILED');
-        }
-      }
-
-      const cleared = await exportsModel.clearArtifactStorage(art.id);
-      if (cleared) {
-        delta.exportArtifactsDeleted = (delta.exportArtifactsDeleted ?? 0) + 1;
-      }
+      if (params.execute) freeIds.push(art.id);
     }
 
-    const nextCounts = mergeCounts(counts, delta);
     const nextKeyset = keysetAfterPage(page, (row) => row.sortAt);
     if (!nextKeyset) break;
 
-    await params.checkpointBatch(nextCounts, nextKeyset);
-    counts = nextCounts;
+    let claimedIds: string[] = [];
+
+    if (params.execute && freeIds.length > 0) {
+      // Phase 1: under lock, recheck holds + durable tombstone claim (outbox).
+      // Outbox is the pre-destruction journal; never delete objects before the
+      // durable run/job checkpoint for this page.
+      const claimed = await params.repo.claimExportArtifactsRechecked({
+        cutoffAt: params.cutoffAt,
+        ids: freeIds,
+        resolveHeldIds: resolveExportArtifactHeldIds,
+      });
+      claimedIds = claimed.map((c) => c.id);
+
+      if (claimed.length < freeIds.length) {
+        // Pre-filter free → claim skipped: count only those still held (not
+        // concurrent eligibility races).
+        const claimedSet = new Set(claimedIds);
+        const holdsNow = await loadHoldIndex(params.db);
+        for (const id of freeIds) {
+          if (claimedSet.has(id)) continue;
+          const art = page.items.find((r) => r.id === id);
+          if (art && exportArtifactHeld(holdsNow, art.kind, art.filterSnapshot)) {
+            delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
+          }
+        }
+      }
+
+      if (params.afterArtifactClaim) {
+        await params.afterArtifactClaim({
+          claimed: claimed.map((c) => ({ id: c.id, storageKey: c.storageKey })),
+        });
+      }
+    }
+
+    // Durable checkpoint BEFORE object destruction (counts + keyset cursor).
+    // Claimed rows already have a purge outbox; object delete follows.
+    counts = await params.checkpointBatch(mergeCounts(counts, delta), nextKeyset);
     params.setKeyset(nextKeyset);
+
+    if (params.execute && claimedIds.length > 0) {
+      if (!params.storage) {
+        throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
+      }
+
+      // Phase 2–3: hold recheck + object delete + complete outbox under one lock.
+      const result = await deleteAuthorizedExportArtifacts({
+        afterArtifactAuthorize: params.afterArtifactAuthorize,
+        ids: claimedIds,
+        repo: params.repo,
+        storage: params.storage,
+      });
+
+      // Persist deletion accounting after successful object work (cursor already advanced).
+      if (result.deleted > 0 || result.skippedHold > 0) {
+        counts = await params.checkpointBatch(
+          mergeCounts(counts, {
+            exportArtifactsDeleted: result.deleted,
+            skippedLegalHold: result.skippedHold,
+          }),
+          nextKeyset,
+        );
+      }
+    }
 
     if (!page.nextCursor) break;
   }

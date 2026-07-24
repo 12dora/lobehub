@@ -51,7 +51,8 @@ const LegalHoldsPage = memo(() => {
   const canManage = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE);
   const { createLegalHold, releaseLegalHold } = useAdminAuditMutations();
 
-  const [status, setStatus] = useState<AdminAuditLegalHoldItem['status'] | undefined>();
+  /** List filter uses stored status only (not projected `expired`). */
+  const [status, setStatus] = useState<'active' | 'released' | undefined>();
   const [scopeType, setScopeType] = useState<AdminAuditLegalHoldItem['scopeType'] | undefined>();
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
@@ -98,10 +99,13 @@ const LegalHoldsPage = memo(() => {
       {
         key: 'scope',
         title: t('audit.holds.columns.scope'),
-        render: (_, row) =>
-          row.scopeType === 'global'
-            ? t('audit.holds.scope.global')
-            : `${row.scopeType}${row.scopeId ? ` / ${row.scopeId}` : ''}`,
+        render: (_, row) => {
+          const scopeLabel = t(`audit.holds.scopeType.${row.scopeType}` as never, {
+            defaultValue: row.scopeType,
+          });
+          if (row.scopeType === 'global') return scopeLabel;
+          return row.scopeId ? `${scopeLabel} / ${row.scopeId}` : scopeLabel;
+        },
       },
       {
         dataIndex: 'status',
@@ -162,18 +166,23 @@ const LegalHoldsPage = memo(() => {
   const submitCreate = () => {
     openAuditReasonModal({
       authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => {
-        const input: AdminAuditLegalHoldsCreateInput = {
-          reason,
-          scopeType: newScopeType,
-        };
-        if (newScopeType !== 'global') {
-          input.scopeId = newScopeId.trim() || null;
-        } else {
-          input.scopeId = null;
+      buildPayload: (reason): AdminAuditLegalHoldsCreateInput => {
+        // Discriminated union: keep scopeType as a literal so TS narrows correctly
+        // (avoid assigning a wide scopeType union then patching scopeId).
+        const expiresAt = newExpires ? newExpires.toDate() : undefined;
+        if (newScopeType === 'global') {
+          return { expiresAt, reason, scopeId: null, scopeType: 'global' };
         }
-        if (newExpires) input.expiresAt = newExpires.toDate();
-        return input;
+        if (newScopeType === 'user') {
+          return { expiresAt, reason, scopeId: newScopeId.trim(), scopeType: 'user' };
+        }
+        if (newScopeType === 'session') {
+          return { expiresAt, reason, scopeId: newScopeId.trim(), scopeType: 'session' };
+        }
+        if (newScopeType === 'topic') {
+          return { expiresAt, reason, scopeId: newScopeId.trim(), scopeType: 'topic' };
+        }
+        return { expiresAt, reason, scopeId: newScopeId.trim(), scopeType: 'workspace' };
       },
       description: t('audit.holds.create.reasonDesc'),
       onSubmit: async (payload) => {
@@ -189,6 +198,9 @@ const LegalHoldsPage = memo(() => {
       validateExtra: () => {
         if (newScopeType !== 'global' && !newScopeId.trim()) {
           return 'audit.holds.create.scopeIdRequired';
+        }
+        if (newExpires && newExpires.valueOf() <= Date.now()) {
+          return 'audit.holds.create.expiresAtMustBeFuture';
         }
         return null;
       },
@@ -218,7 +230,7 @@ const LegalHoldsPage = memo(() => {
               { label: t('audit.status.hold.released'), value: 'released' },
             ]}
             onChange={(v) => {
-              setStatus((v as AdminAuditLegalHoldItem['status'] | undefined) || undefined);
+              setStatus((v as 'active' | 'released' | undefined) || undefined);
               setCursorStack([]);
             }}
           />
@@ -305,6 +317,11 @@ const LegalHoldsPage = memo(() => {
             showTime
             style={{ width: '100%' }}
             value={newExpires}
+            disabledDate={(current) => {
+              // Disallow past calendar days; submit still requires a future instant.
+              if (!current) return false;
+              return current.endOf('day').valueOf() < Date.now();
+            }}
             onChange={(v) => setNewExpires(v)}
           />
         </div>

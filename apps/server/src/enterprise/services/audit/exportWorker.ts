@@ -4,11 +4,27 @@
  * Builds NDJSON (manifest + evidence). Hard-fails if maxExportRows+1 would be written.
  * No generic redaction / summarization / body truncation; credential-only masking for messages.
  *
+ * Evidence inventory is frozen under a PostgreSQL REPEATABLE READ snapshot (plus an
+ * export-start watermark on `to`) so concurrent inserts/updates/deletes cannot reshape
+ * the eligible ID set mid-export. Full rows are then streamed by frozen ID batches with
+ * heartbeats outside the snapshot TX (avoids single-connection deadlocks). NDJSON lines
+ * stream to a temp file with incremental SHA-256 — O(batch) memory during write, not a
+ * million-element in-memory line buffer.
+ *
  * Reliability: unknown/transient storage/DB errors requeue via platform_jobs (maxAttempts);
  * domain stays `running` and the deterministic object is cleaned. Domain is marked failed
  * only when the job becomes `dead`. Contract/data errors (max rows, invalid frozen filter)
  * are terminal immediately.
  */
+
+import { createHash } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { finished } from 'node:stream/promises';
+
+import { sql } from 'drizzle-orm';
 
 import {
   maskAuditConversationEvidence,
@@ -34,6 +50,8 @@ import {
   type AuditExportArtifactStorage,
   AuditExportPrivateS3Storage,
   buildAuditExportStorageKey,
+  formatArtifactChecksum,
+  sha256Hex,
 } from './exportStorage';
 
 export interface ProcessNextAuditExportOptions {
@@ -246,7 +264,34 @@ export const processNextAuditExportJob = async (
         max: FROZEN_EXPORT_ARTIFACT_RETENTION_DAYS_BOUND,
       },
     );
-    const lines: string[] = [];
+    // Point-in-time watermark: never include rows created after export execution starts.
+    const snapshotAt = new Date();
+    const snapshotWindow: ExportTimeWindow = {
+      from: timeWindow.from,
+      to: timeWindow.to.getTime() < snapshotAt.getTime() ? timeWindow.to : snapshotAt,
+    };
+
+    // Stream NDJSON to a temp file (bounded memory: one line / batch, not 1M rows).
+    const tmpDir = await mkdtemp(path.join(tmpdir(), 'audit-export-'));
+    const tmpPath = path.join(tmpDir, 'evidence.ndjson');
+    let lineCount = 0;
+    let totalBytes = 0;
+    let evidenceCount = 0;
+    const hasher = createHash('sha256');
+    const fileStream = createWriteStream(tmpPath, { flags: 'w' });
+
+    const writeLine = async (line: string) => {
+      const buf = Buffer.from(line, 'utf8');
+      hasher.update(buf);
+      totalBytes += buf.byteLength;
+      lineCount += 1;
+      if (!fileStream.write(buf)) {
+        await new Promise<void>((resolve, reject) => {
+          fileStream.once('drain', () => resolve());
+          fileStream.once('error', reject);
+        });
+      }
+    };
 
     const assertNotCancelled = async () => {
       const current = await exportsModel.get(exportId);
@@ -261,7 +306,7 @@ export const processNextAuditExportJob = async (
       const cp = await jobs.checkpoint({
         jobId: claimed.id,
         leaseMs,
-        progressDone: lines.length > 0 ? lines.length - 1 : 0,
+        progressDone: Math.max(0, lineCount - 1),
         workerId: options.workerId,
       });
       if (!cp) {
@@ -269,76 +314,114 @@ export const processNextAuditExportJob = async (
       }
     };
 
-    await assertNotCancelled();
+    let completedRow: Awaited<ReturnType<PlatformAuditExportModel['complete']>> | null = null;
+    let uploadedBytes = 0;
 
-    lines.push(
-      jsonlLine({
-        createdAt: toIso(exportRow.createdAt),
-        exportArtifactRetentionDays,
-        exportId,
-        filterSnapshot: filter,
-        includesMessageBodies: exportRow.includesMessageBodies,
+    try {
+      await assertNotCancelled();
+
+      await writeLine(
+        jsonlLine({
+          createdAt: toIso(exportRow.createdAt),
+          exportArtifactRetentionDays,
+          exportId,
+          filterSnapshot: filter,
+          includesMessageBodies: exportRow.includesMessageBodies,
+          kind: exportRow.kind,
+          maxExportRows,
+          policyRevision: filter.policyRevision ?? livePolicy.revision,
+          snapshotAt: toIso(snapshotAt),
+          type: 'manifest',
+          version: AUDIT_EXPORT_ARTIFACT_VERSION,
+        }),
+      );
+
+      const pushEvidence = async (row: Record<string, unknown>) => {
+        evidenceCount += 1;
+        if (evidenceCount > maxExportRows) {
+          throw new AuditExportMaxRowsError(maxExportRows);
+        }
+        await writeLine(jsonlLine(row));
+      };
+
+      // Phase 1: freeze eligible IDs under one RR snapshot (no outer-db heartbeats —
+      // single-connection test DBs deadlock if lease checks run while the TX holds
+      // the only connection). Phase 2 streams full rows by frozen ID with heartbeats.
+      const inventory = await freezeExportInventory(db, {
+        filter,
+        includeBodies: exportRow.includesMessageBodies,
         kind: exportRow.kind,
         maxExportRows,
-        policyRevision: filter.policyRevision ?? livePolicy.revision,
-        type: 'manifest',
-        version: AUDIT_EXPORT_ARTIFACT_VERSION,
-      }),
-    );
+        window: snapshotWindow,
+      });
 
-    let evidenceCount = 0;
-    const pushEvidence = (row: Record<string, unknown>) => {
-      evidenceCount += 1;
-      if (evidenceCount > maxExportRows) {
-        throw new AuditExportMaxRowsError(maxExportRows);
+      await assertNotCancelled();
+
+      if (inventory.kind === 'operation_logs') {
+        await streamOperationLogsByIds(db, inventory.ids, pushEvidence, assertNotCancelled);
+      } else if (inventory.kind === 'conversations') {
+        await streamConversationsByInventory(db, inventory, pushEvidence, assertNotCancelled);
+      } else {
+        await streamUserTimelineByIds(
+          db,
+          inventory.userId,
+          inventory.ids,
+          pushEvidence,
+          assertNotCancelled,
+        );
       }
-      lines.push(jsonlLine(row));
-    };
 
-    if (exportRow.kind === 'operation_logs') {
-      await collectOperationLogs(db, filter, timeWindow, pushEvidence, assertNotCancelled);
-    } else if (exportRow.kind === 'conversations') {
-      await collectConversations(
-        db,
-        filter,
-        timeWindow,
-        exportRow.includesMessageBodies,
-        pushEvidence,
-        assertNotCancelled,
+      await assertNotCancelled();
+      fileStream.end();
+      await finished(fileStream);
+
+      // Single final read for upload (collection itself never held all rows in RAM).
+      const body = await readFile(tmpPath);
+      const localChecksum = formatArtifactChecksum(hasher.digest('hex'));
+      if (body.byteLength !== totalBytes) {
+        throw new Error('AUDIT_EXPORT_TEMP_SIZE_MISMATCH');
+      }
+
+      const uploaded = await storage.uploadArtifact({
+        body,
+        contentType: AUDIT_EXPORT_CONTENT_TYPE,
+        storageKey,
+      });
+      uploadedBytes = uploaded.artifactBytes;
+
+      // Integrity: size + SHA-256 — same-length corruption must fail closed (clean + retry).
+      if (uploaded.artifactChecksum !== localChecksum) {
+        await safeDelete(storage, storageKey);
+        throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
+      }
+      const meta = await storage.getObjectMetadata(storageKey);
+      if (meta.contentLength !== uploaded.artifactBytes || meta.contentLength !== totalBytes) {
+        await safeDelete(storage, storageKey);
+        throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
+      }
+      const storedBytes = await storage.getObjectBytes(storageKey);
+      if (formatArtifactChecksum(sha256Hex(storedBytes)) !== uploaded.artifactChecksum) {
+        await safeDelete(storage, storageKey);
+        throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
+      }
+
+      const expiresAt = new Date(
+        Date.now() + Math.max(1, exportArtifactRetentionDays) * 24 * 60 * 60 * 1000,
       );
-    } else if (exportRow.kind === 'user_timeline') {
-      await collectUserTimeline(db, filter, timeWindow, pushEvidence, assertNotCancelled);
+
+      completedRow = await exportsModel.complete(exportId, {
+        artifactBytes: uploaded.artifactBytes,
+        artifactChecksum: uploaded.artifactChecksum,
+        expiresAt,
+        rowCount: evidenceCount,
+        storageKey: uploaded.storageKey,
+      });
+    } finally {
+      fileStream.destroy();
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     }
 
-    await assertNotCancelled();
-
-    const body = Buffer.from(lines.join(''), 'utf8');
-    const uploaded = await storage.uploadArtifact({
-      body,
-      contentType: AUDIT_EXPORT_CONTENT_TYPE,
-      storageKey,
-    });
-
-    // Object metadata check (size) — mismatch treated as transient (clean + retry)
-    const meta = await storage.getObjectMetadata(storageKey);
-    if (meta.contentLength !== uploaded.artifactBytes) {
-      await safeDelete(storage, storageKey);
-      throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
-    }
-
-    const expiresAt = new Date(
-      Date.now() + Math.max(1, exportArtifactRetentionDays) * 24 * 60 * 60 * 1000,
-    );
-
-    const completed = await exportsModel.complete(exportId, {
-      artifactBytes: uploaded.artifactBytes,
-      artifactChecksum: uploaded.artifactChecksum,
-      expiresAt,
-      rowCount: evidenceCount,
-      storageKey: uploaded.storageKey,
-    });
-
-    if (!completed) {
+    if (!completedRow) {
       // Race with cancel — clean object
       await safeDelete(storage, storageKey);
       await jobs.cancel(claimed.id);
@@ -352,7 +435,7 @@ export const processNextAuditExportJob = async (
     const jobDone = await jobs.complete({
       jobId: claimed.id,
       resultSummary: {
-        artifactBytes: uploaded.artifactBytes,
+        artifactBytes: uploadedBytes,
         exportId,
         rowCount: evidenceCount,
       },
@@ -436,35 +519,178 @@ const safeDelete = async (
   }
 };
 
-const collectOperationLogs = async (
+type EvidencePush = (row: Record<string, unknown>) => void | Promise<void>;
+
+type FrozenOpLogInventory = { kind: 'operation_logs'; ids: string[] };
+type FrozenConversationInventory = {
+  includeBodies: boolean;
+  kind: 'conversations';
+  topics: Array<{ id: string; messageIds: string[] }>;
+  userId: string;
+};
+type FrozenTimelineInventory = { kind: 'user_timeline'; ids: string[]; userId: string };
+type FrozenExportInventory =
+  FrozenOpLogInventory | FrozenConversationInventory | FrozenTimelineInventory;
+
+/**
+ * Materialize eligible evidence IDs under one REPEATABLE READ snapshot.
+ * Heartbeats must NOT run against the outer connection while this TX is open
+ * (single-connection engines like PGlite would deadlock).
+ */
+const freezeExportInventory = async (
   db: LobeChatDatabase,
-  filter: PlatformAuditExportFilterSnapshot,
-  window: ExportTimeWindow,
-  push: (row: Record<string, unknown>) => void,
+  params: {
+    filter: PlatformAuditExportFilterSnapshot;
+    includeBodies: boolean;
+    kind: PlatformAuditExportItem['kind'];
+    maxExportRows: number;
+    window: ExportTimeWindow;
+  },
+): Promise<FrozenExportInventory> => {
+  return db.transaction(async (tx) => {
+    // First statement after BEGIN — required for SET TRANSACTION.
+    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+    const snap = tx as unknown as LobeChatDatabase;
+
+    if (params.kind === 'operation_logs') {
+      const model = new PlatformAuditLogModel(snap);
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await model.list({
+          action: params.filter.action,
+          actions: params.filter.actions,
+          actorUserId: params.filter.actorUserId,
+          cursor,
+          from: params.window.from,
+          limit: AUDIT_EXPORT_BATCH_LIMIT,
+          requestId: params.filter.requestId,
+          result: params.filter.result,
+          results: params.filter.results,
+          targetId: params.filter.targetId,
+          targetType: params.filter.targetType,
+          to: params.window.to,
+        });
+        for (const row of page.items) {
+          ids.push(row.id);
+          if (ids.length > params.maxExportRows) {
+            throw new AuditExportMaxRowsError(params.maxExportRows);
+          }
+        }
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+      return { kind: 'operation_logs', ids };
+    }
+
+    if (params.kind === 'conversations') {
+      const userId = params.filter.userId;
+      if (!userId) {
+        throw new AuditExportInvalidFilterError(
+          'userId required in frozen filter for conversations export',
+        );
+      }
+      const model = new PlatformAuditConversationModel(snap);
+      const topics: FrozenConversationInventory['topics'] = [];
+      let evidenceRows = 0;
+      let topicCursor: string | undefined;
+
+      for (;;) {
+        const topicPage = await model.listTopics({
+          cursor: topicCursor,
+          from: params.window.from,
+          limit: AUDIT_EXPORT_BATCH_LIMIT,
+          q: params.filter.q,
+          to: params.window.to,
+          userId,
+        });
+
+        for (const topic of topicPage.items) {
+          if (params.filter.topicId && topic.id !== params.filter.topicId) continue;
+          evidenceRows += 1;
+          if (evidenceRows > params.maxExportRows) {
+            throw new AuditExportMaxRowsError(params.maxExportRows);
+          }
+
+          const messageIds: string[] = [];
+          if (params.includeBodies) {
+            let msgCursor: string | undefined;
+            for (;;) {
+              // Metadata list only — freeze IDs, not bodies, under the snapshot.
+              const msgPage = await model.listMessages({
+                cursor: msgCursor,
+                from: params.window.from,
+                limit: AUDIT_EXPORT_BATCH_LIMIT,
+                to: params.window.to,
+                topicId: topic.id,
+                userId,
+              });
+              for (const msg of msgPage.items) {
+                messageIds.push(msg.id);
+                evidenceRows += 1;
+                if (evidenceRows > params.maxExportRows) {
+                  throw new AuditExportMaxRowsError(params.maxExportRows);
+                }
+              }
+              if (!msgPage.nextCursor) break;
+              msgCursor = msgPage.nextCursor;
+            }
+          }
+          topics.push({ id: topic.id, messageIds });
+        }
+
+        if (!topicPage.nextCursor) break;
+        topicCursor = topicPage.nextCursor;
+      }
+
+      return { includeBodies: params.includeBodies, kind: 'conversations', topics, userId };
+    }
+
+    // user_timeline
+    const userId = params.filter.userId;
+    if (!userId) {
+      throw new AuditExportInvalidFilterError(
+        'userId required in frozen filter for user_timeline export',
+      );
+    }
+    const model = new PlatformAuditConversationModel(snap);
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await model.listUserTimeline({
+        cursor,
+        from: params.window.from,
+        limit: AUDIT_EXPORT_BATCH_LIMIT,
+        to: params.window.to,
+        userId,
+      });
+      for (const item of page.items) {
+        ids.push(item.id);
+        if (ids.length > params.maxExportRows) {
+          throw new AuditExportMaxRowsError(params.maxExportRows);
+        }
+      }
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    return { kind: 'user_timeline', ids, userId };
+  });
+};
+
+const streamOperationLogsByIds = async (
+  db: LobeChatDatabase,
+  ids: string[],
+  push: EvidencePush,
   heartbeat: () => Promise<void>,
 ): Promise<void> => {
   const model = new PlatformAuditLogModel(db);
-  let cursor: string | undefined;
-  for (;;) {
+  for (let i = 0; i < ids.length; i += AUDIT_EXPORT_BATCH_LIMIT) {
     await heartbeat();
-    const page = await model.list({
-      action: filter.action,
-      actions: filter.actions,
-      actorUserId: filter.actorUserId,
-      cursor,
-      from: window.from,
-      limit: AUDIT_EXPORT_BATCH_LIMIT,
-      requestId: filter.requestId,
-      result: filter.result,
-      results: filter.results,
-      targetId: filter.targetId,
-      targetType: filter.targetType,
-      to: window.to,
-    });
-
-    for (const row of page.items) {
-      // Preserve stored before/after diffs exactly (write-time redaction only).
-      push({
+    const batch = ids.slice(i, i + AUDIT_EXPORT_BATCH_LIMIT);
+    for (const id of batch) {
+      const row = await model.findById(id);
+      if (!row) continue; // deleted after snapshot — omit rather than fail the package
+      await push({
         action: row.action,
         actorUserId: row.actorUserId,
         afterDiff: row.afterDiff,
@@ -482,135 +708,115 @@ const collectOperationLogs = async (
         userAgent: row.userAgent,
       });
     }
-
-    if (!page.nextCursor) break;
-    cursor = page.nextCursor;
   }
 };
 
-const collectConversations = async (
+const streamConversationsByInventory = async (
   db: LobeChatDatabase,
-  filter: PlatformAuditExportFilterSnapshot,
-  window: ExportTimeWindow,
-  includeBodies: boolean,
-  push: (row: Record<string, unknown>) => void,
+  inventory: FrozenConversationInventory,
+  push: EvidencePush,
   heartbeat: () => Promise<void>,
 ): Promise<void> => {
-  const userId = filter.userId;
-  if (!userId) {
-    throw new AuditExportInvalidFilterError(
-      'userId required in frozen filter for conversations export',
-    );
-  }
-
   const model = new PlatformAuditConversationModel(db);
-  let topicCursor: string | undefined;
-
-  for (;;) {
+  for (const topicRef of inventory.topics) {
     await heartbeat();
-    const topics = await model.listTopics({
-      cursor: topicCursor,
-      from: window.from,
-      limit: AUDIT_EXPORT_BATCH_LIMIT,
-      q: filter.q,
-      to: window.to,
-      userId,
+    const topic = await model.getTopic({ topicId: topicRef.id, userId: inventory.userId });
+    if (!topic) continue;
+
+    await push({
+      agentId: topic.agentId,
+      createdAt: toIso(topic.createdAt),
+      description:
+        topic.description == null ? null : maskAuditConversationEvidence(topic.description),
+      id: topic.id,
+      model: topic.model,
+      provider: topic.provider,
+      sessionId: topic.sessionId,
+      status: topic.status,
+      title: topic.title == null ? null : maskAuditConversationEvidence(topic.title),
+      type: 'conversation_topic',
+      updatedAt: toIso(topic.updatedAt),
+      userId: topic.userId,
     });
 
-    for (const topic of topics.items) {
-      if (filter.topicId && topic.id !== filter.topicId) continue;
+    if (!inventory.includeBodies) continue;
 
-      push({
-        agentId: topic.agentId,
-        createdAt: toIso(topic.createdAt),
-        description:
-          topic.description == null ? null : maskAuditConversationEvidence(topic.description),
-        id: topic.id,
-        model: topic.model,
-        provider: topic.provider,
-        sessionId: topic.sessionId,
-        status: topic.status,
-        title: topic.title == null ? null : maskAuditConversationEvidence(topic.title),
-        type: 'conversation_topic',
-        updatedAt: toIso(topic.updatedAt),
-        userId: topic.userId,
-      });
-
-      if (!includeBodies) continue;
-
-      let msgCursor: string | undefined;
-      for (;;) {
-        await heartbeat();
-        const messages = await model.listMessageDetails({
-          cursor: msgCursor,
-          from: window.from,
-          limit: AUDIT_EXPORT_BATCH_LIMIT,
-          to: window.to,
-          topicId: topic.id,
-          userId,
+    for (let i = 0; i < topicRef.messageIds.length; i += AUDIT_EXPORT_BATCH_LIMIT) {
+      await heartbeat();
+      const batch = topicRef.messageIds.slice(i, i + AUDIT_EXPORT_BATCH_LIMIT);
+      for (const messageId of batch) {
+        const msg = await model.getMessage({ messageId, userId: inventory.userId });
+        if (!msg) continue;
+        await push({
+          agentId: msg.agentId,
+          content: msg.content == null ? null : maskAuditConversationEvidence(msg.content),
+          createdAt: toIso(msg.createdAt),
+          editorData: msg.editorData == null ? null : maskAuditConversationEvidence(msg.editorData),
+          error: msg.error == null ? null : maskAuditConversationEvidence(msg.error),
+          id: msg.id,
+          model: msg.model,
+          parentId: msg.parentId,
+          provider: msg.provider,
+          role: msg.role,
+          sessionId: msg.sessionId,
+          topicId: msg.topicId,
+          type: 'conversation_message',
+          updatedAt: toIso(msg.updatedAt),
+          userId: msg.userId,
         });
-
-        for (const msg of messages.items) {
-          push({
-            agentId: msg.agentId,
-            // Full body with credential-only masking — no truncation / summarization.
-            content: msg.content == null ? null : maskAuditConversationEvidence(msg.content),
-            createdAt: toIso(msg.createdAt),
-            editorData:
-              msg.editorData == null ? null : maskAuditConversationEvidence(msg.editorData),
-            error: msg.error == null ? null : maskAuditConversationEvidence(msg.error),
-            id: msg.id,
-            model: msg.model,
-            parentId: msg.parentId,
-            provider: msg.provider,
-            role: msg.role,
-            sessionId: msg.sessionId,
-            topicId: msg.topicId,
-            type: 'conversation_message',
-            updatedAt: toIso(msg.updatedAt),
-            userId: msg.userId,
-          });
-        }
-
-        if (!messages.nextCursor) break;
-        msgCursor = messages.nextCursor;
       }
     }
-
-    if (!topics.nextCursor) break;
-    topicCursor = topics.nextCursor;
   }
 };
 
-const collectUserTimeline = async (
+const streamUserTimelineByIds = async (
   db: LobeChatDatabase,
-  filter: PlatformAuditExportFilterSnapshot,
-  window: ExportTimeWindow,
-  push: (row: Record<string, unknown>) => void,
+  userId: string,
+  ids: string[],
+  push: EvidencePush,
   heartbeat: () => Promise<void>,
 ): Promise<void> => {
-  const userId = filter.userId;
-  if (!userId) {
-    throw new AuditExportInvalidFilterError(
-      'userId required in frozen filter for user_timeline export',
-    );
+  // Timeline rows are projected from topics/sessions; re-scan and emit only frozen IDs.
+  const model = new PlatformAuditConversationModel(db);
+  const wanted = new Set(ids);
+  let cursor: string | undefined;
+  let emitted = 0;
+
+  // Prefer topic get for topic-kind items; fall back to ordered re-scan filter.
+  for (const id of ids) {
+    await heartbeat();
+    const topic = await model.getTopic({ topicId: id, userId });
+    if (topic) {
+      await push({
+        createdAt: toIso(topic.createdAt),
+        id: topic.id,
+        kind: 'topic',
+        sessionId: topic.sessionId,
+        title: topic.title == null ? null : maskAuditConversationEvidence(topic.title),
+        topicId: topic.id,
+        type: 'user_timeline_item',
+        updatedAt: toIso(topic.updatedAt),
+        userId,
+      });
+      emitted += 1;
+      wanted.delete(id);
+    }
   }
 
-  const model = new PlatformAuditConversationModel(db);
-  let cursor: string | undefined;
+  // Remaining IDs (sessions / other kinds) via listUserTimeline filter.
+  if (wanted.size === 0) return;
 
+  cursor = undefined;
   for (;;) {
     await heartbeat();
     const page = await model.listUserTimeline({
       cursor,
-      from: window.from,
       limit: AUDIT_EXPORT_BATCH_LIMIT,
-      to: window.to,
       userId,
     });
-
     for (const item of page.items) {
-      push({
+      if (!wanted.has(item.id)) continue;
+      await push({
         createdAt: toIso(item.createdAt),
         id: item.id,
         kind: item.kind,
@@ -621,11 +827,14 @@ const collectUserTimeline = async (
         updatedAt: toIso(item.updatedAt),
         userId,
       });
+      emitted += 1;
+      wanted.delete(item.id);
     }
-
-    if (!page.nextCursor) break;
+    if (!page.nextCursor || wanted.size === 0) break;
     cursor = page.nextCursor;
   }
+
+  void emitted;
 };
 
 /** Process up to `batchLimit` jobs (for poller / tests). */

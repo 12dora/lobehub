@@ -37,6 +37,7 @@ import {
   type AuditExportArtifactStorage,
   AuditExportPrivateS3Storage,
   buildAuditExportStorageKey,
+  verifyArtifactChecksum,
 } from './exportStorage';
 import { resolveAuditTimeWindow } from './timeWindow';
 
@@ -122,17 +123,33 @@ type ActorAuthParams = {
   actorUserId: string;
 };
 
+export type AdminAuditExportServiceOptions = {
+  /**
+   * Test seam: after export row create, before job enqueue.
+   * Throw to exercise orphan-pending compensation.
+   */
+  afterCreateExport?: (info: { exportId: string }) => Promise<void> | void;
+  /**
+   * Test seam: after successful enqueue, before setJobId.
+   * Throw to exercise link-failure compensation (job cancelled, export failed).
+   */
+  afterEnqueue?: (info: { exportId: string; jobId: string }) => Promise<void> | void;
+  storage?: AuditExportArtifactStorage;
+};
+
 export class AdminAuditExportService {
   private readonly exportsModel: PlatformAuditExportModel;
   private readonly jobsModel: PlatformJobModel;
   private readonly policyModel: PlatformAuditPolicyModel;
   /** Injected storage is preserved as-is; production S3 is created lazily. */
   private readonly injectedStorage?: AuditExportArtifactStorage;
+  private readonly afterCreateExport?: AdminAuditExportServiceOptions['afterCreateExport'];
+  private readonly afterEnqueue?: AdminAuditExportServiceOptions['afterEnqueue'];
   private lazyProductionStorage?: AuditExportArtifactStorage;
 
   constructor(
     private readonly db: LobeChatDatabase | Transaction,
-    options?: { storage?: AuditExportArtifactStorage },
+    options?: AdminAuditExportServiceOptions,
   ) {
     this.exportsModel = new PlatformAuditExportModel(db);
     // PlatformJobModel requires LobeChatDatabase (not Transaction) for claim/enqueue paths.
@@ -141,6 +158,8 @@ export class AdminAuditExportService {
     // Do not eagerly construct private S3: create/list/get never touch storage.
     // Download/cancel resolve production storage only when needed (worker has its own).
     this.injectedStorage = options?.storage;
+    this.afterCreateExport = options?.afterCreateExport;
+    this.afterEnqueue = options?.afterEnqueue;
   }
 
   /**
@@ -255,36 +274,75 @@ export class AdminAuditExportService {
         requestedBy: params.actorUserId,
       });
 
-      const { job } = await this.jobsModel.enqueue({
-        idempotencyKey: buildAuditExportJobIdempotencyKey(created.id),
-        input: { exportId: created.id },
-        maxAttempts: 3,
-        requestedBy: params.actorUserId,
-        type: PLATFORM_AUDIT_EXPORT_JOB_TYPE,
-      });
+      let linkedRow: PlatformAuditExportItem | null = null;
+      let enqueuedJobId: string | null = null;
+      try {
+        if (this.afterCreateExport) {
+          await this.afterCreateExport({ exportId: created.id });
+        }
 
-      const linked =
-        (await this.exportsModel.setJobId(created.id, job.id)) ??
-        (await this.exportsModel.get(created.id));
+        const { job } = await this.jobsModel.enqueue({
+          idempotencyKey: buildAuditExportJobIdempotencyKey(created.id),
+          input: { exportId: created.id },
+          maxAttempts: 3,
+          requestedBy: params.actorUserId,
+          type: PLATFORM_AUDIT_EXPORT_JOB_TYPE,
+        });
+        enqueuedJobId = job.id;
 
-      const row = linked ?? created;
+        if (this.afterEnqueue) {
+          await this.afterEnqueue({ exportId: created.id, jobId: job.id });
+        }
 
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.create',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          includesMessageBodies,
-          kind: row.kind,
-          status: row.status,
-        },
-        filterSummary,
-        reason: params.input.reason,
-        result: 'success',
-        targetId: row.id,
-        targetType: 'audit_export',
-      });
+        const linked = await this.exportsModel.setJobId(created.id, job.id);
+        // Unsuccessful link (null / wrong jobId) is failure — never treat a
+        // pending row with jobId=null as success via get() fallback.
+        if (!linked || linked.jobId !== job.id) {
+          throw new Error('EXPORT_JOB_LINK_FAILED');
+        }
+        linkedRow = linked;
+      } catch (enqueueOrLinkError) {
+        // Never leave a permanently pending orphan with jobId = null.
+        // Safe public message only — never persist raw exception text.
+        await this.exportsModel.fail(created.id, {
+          code: 'ENQUEUE_FAILED',
+          message: 'export job enqueue or link failed',
+        });
+        if (enqueuedJobId) {
+          await this.jobsModel.cancel(enqueuedJobId).catch(() => undefined);
+        }
+        throw enqueueOrLinkError;
+      }
 
-      return toExportPublic(row);
+      try {
+        await appendAuditAccessLog(this.db, {
+          action: 'admin.audit.exports.create',
+          actorUserId: params.actorUserId,
+          afterDiff: {
+            includesMessageBodies,
+            kind: linkedRow.kind,
+            status: linkedRow.status,
+          },
+          filterSummary,
+          reason: params.input.reason,
+          required: true,
+          result: 'success',
+          targetId: linkedRow.id,
+          targetType: 'audit_export',
+        });
+      } catch (auditError) {
+        // Enqueue/link succeeded; do not mislabel as ENQUEUE_FAILED.
+        await this.exportsModel.fail(created.id, {
+          code: 'AUDIT_APPEND_FAILED',
+          message: 'required audit access log append failed',
+        });
+        if (enqueuedJobId) {
+          await this.jobsModel.cancel(enqueuedJobId).catch(() => undefined);
+        }
+        throw auditError;
+      }
+
+      return toExportPublic(linkedRow);
     } catch (error) {
       await appendAuditAccessLog(this.db, {
         action: 'admin.audit.exports.create',
@@ -491,13 +549,54 @@ export class AdminAuditExportService {
         });
       }
 
-      // Metadata check before issuing URL
-      await this.storage.getObjectMetadata(row.storageKey);
+      // Integrity before issuing URL: length + trusted SHA-256 (detect same-length corruption).
+      const failIntegrity = async (error: string) => {
+        await appendAuditAccessLog(this.db, {
+          action: 'admin.audit.exports.download',
+          actorUserId: params.actorUserId,
+          afterDiff: { error },
+          filterSummary,
+          reason: params.input.reason,
+          result: 'failure',
+          targetId: row.id,
+          targetType: 'audit_export',
+        });
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+          details: { reason: 'export_integrity_failed' },
+          httpCode: 'BAD_REQUEST',
+          message: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+        });
+      };
+
+      const meta = await this.storage.getObjectMetadata(row.storageKey);
+      if (row.artifactBytes != null && meta.contentLength !== row.artifactBytes) {
+        return failIntegrity('size_mismatch');
+      }
+
+      const objectBytes = await this.storage.getObjectBytes(row.storageKey);
+      if (row.artifactBytes != null && objectBytes.byteLength !== row.artifactBytes) {
+        return failIntegrity('size_mismatch');
+      }
+      if (!verifyArtifactChecksum(objectBytes, row.artifactChecksum)) {
+        return failIntegrity('checksum_mismatch');
+      }
+
+      // Shrink the replace-after-verify window: re-check size immediately before sign.
+      // Full TOCTOU elimination requires immutable/versioned object keys (see OOS).
+      const metaAfter = await this.storage.getObjectMetadata(row.storageKey);
+      if (metaAfter.contentLength !== objectBytes.byteLength) {
+        return failIntegrity('size_mismatch_after_verify');
+      }
 
       const ttl = ADMIN_AUDIT_EXPORT_DOWNLOAD_URL_TTL_SECONDS;
+
+      // Sign first, then audit success — never record a successful download if
+      // signing fails (which previously left a false success + catch failure pair).
       const downloadUrl = await this.storage.getSignedDownloadUrl(row.storageKey, ttl);
       const expiresAt = new Date(Date.now() + ttl * 1000);
 
+      // Fail closed: never return a signed URL without a durable access record.
       await appendAuditAccessLog(this.db, {
         action: 'admin.audit.exports.download',
         actorUserId: params.actorUserId,
@@ -508,6 +607,7 @@ export class AdminAuditExportService {
         },
         filterSummary,
         reason: params.input.reason,
+        required: true,
         result: 'success',
         targetId: row.id,
         targetType: 'audit_export',
@@ -602,12 +702,14 @@ export class AdminAuditExportService {
 
       const row = cancelled ?? (await this.exportsModel.get(existing.id)) ?? existing;
 
+      // Fail closed: never report a successful cancel without a durable audit record.
       await appendAuditAccessLog(this.db, {
         action: 'admin.audit.exports.cancel',
         actorUserId: params.actorUserId,
         afterDiff: { status: row.status },
         filterSummary,
         reason: params.input.reason,
+        required: true,
         result: 'success',
         targetId: row.id,
         targetType: 'audit_export',

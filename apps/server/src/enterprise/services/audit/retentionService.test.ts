@@ -3,7 +3,7 @@
  * Retention service contracts: create/list/cancel, fan-out, self-audit, lazy storage.
  * Sequential — shared real DB.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -21,8 +21,15 @@ import { AdminAuditRetentionService, PLATFORM_AUDIT_RETENTION_JOB_TYPE } from '.
 const serverDB: LobeChatDatabase = await getTestDB();
 const actor = 'audit-retention-svc-actor';
 
+const clearAuditLogs = async () => {
+  await serverDB.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
+};
+
 beforeEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditRetentionRuns);
   await serverDB.delete(platformJobs);
   await serverDB.delete(platformAuditPolicies);
@@ -31,7 +38,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditRetentionRuns);
   await serverDB.delete(platformJobs);
   await serverDB.delete(platformAuditPolicies);

@@ -113,7 +113,11 @@ const MessageBubble = memo<MessageBubbleProps>(({ message, bodyHidden }) => {
     <div className={rowClass}>
       <div className={bubbleClass}>
         <div className={styles.meta}>
-          <Tag size="small">{message.role}</Tag>
+          <Tag size="small">
+            {t(`audit.live.message.role.${message.role}` as never, {
+              defaultValue: message.role,
+            })}
+          </Tag>
           <Text style={{ fontSize: 11, margin: 0 }} type="secondary">
             {formatAdminDateTime(message.createdAt)}
           </Text>

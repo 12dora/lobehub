@@ -132,7 +132,8 @@ const ConversationUserPage = memo(() => {
         key: 'status',
         title: t('audit.conversations.columns.status'),
         width: 100,
-        render: (v: string | null) => v ?? '—',
+        render: (v: string | null) =>
+          v ? t(`audit.conversations.status.${v}` as never, { defaultValue: v }) : '—',
       },
       {
         dataIndex: 'updatedAt',
@@ -256,7 +257,11 @@ const ConversationUserPage = memo(() => {
                 }}
               >
                 <Flexbox horizontal gap={6}>
-                  <Tag size="small">{item.kind}</Tag>
+                  <Tag size="small">
+                    {t(`audit.conversations.timeline.kind.${item.kind}` as never, {
+                      defaultValue: item.kind,
+                    })}
+                  </Tag>
                   <Text ellipsis style={{ margin: 0 }}>
                     {item.title || item.id}
                   </Text>

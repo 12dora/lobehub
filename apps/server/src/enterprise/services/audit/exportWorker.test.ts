@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -15,8 +15,10 @@ import type { LobeChatDatabase } from '@/database/type';
 import {
   AdminAuditExportService,
   buildAuditExportStorageKey,
+  formatArtifactChecksum,
   InMemoryAuditExportArtifactStorage,
   processNextAuditExportJob,
+  sha256Hex,
 } from './index';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -30,9 +32,16 @@ const window = {
   to: new Date('2026-01-15T00:00:00.000Z'),
 };
 
+const clearAuditLogs = async () => {
+  await serverDB.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
+};
+
 beforeEach(async () => {
   storage.objects.clear();
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditExports);
   await serverDB.delete(platformJobs);
   await serverDB.delete(platformAuditPolicies);
@@ -44,7 +53,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditExports);
   await serverDB.delete(platformJobs);
   await serverDB.delete(platformAuditPolicies);
@@ -105,6 +114,9 @@ describe('audit export worker', () => {
       kind: 'operation_logs',
       exportId: created.id,
     });
+    // Point-in-time snapshot watermark recorded on the immutable artifact.
+    expect(typeof lines[0]!.snapshotAt).toBe('string');
+    expect(Number.isNaN(Date.parse(String(lines[0]!.snapshotAt)))).toBe(false);
     expect(lines[1]).toMatchObject({
       type: 'operation_log',
       id: 'op-export-1',
@@ -123,6 +135,51 @@ describe('audit export worker', () => {
     // Signed URL may embed the key path after /signed/ — never treat raw storageKey as the API surface.
     expect(dl).not.toHaveProperty('storageKey');
     expect(JSON.stringify(dl)).not.toMatch(/"storageKey"/);
+  });
+
+  it('exports a multi-page operation_log set under a frozen snapshot (streamed NDJSON)', async () => {
+    // More rows than AUDIT_EXPORT_BATCH_LIMIT (100) would require; use a small
+    // set that still exercises cursor pages via sequential ids.
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      action: `admin.test.page.${i}`,
+      createdAt: new Date(`2026-01-05T1${i}:00:00.000Z`),
+      id: `op-page-${i}`,
+      result: 'success' as const,
+      targetType: 'settings',
+    }));
+    await serverDB.insert(platformAuditLogs).values(rows);
+
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'multi-page snapshot export',
+        to: window.to,
+      },
+    });
+
+    const result = await processNextAuditExportJob(serverDB, {
+      storage,
+      workerId: 'test-worker-snapshot-pages',
+    });
+    expect(result.outcome).toBe('completed');
+
+    const body =
+      storage.objects.get(buildAuditExportStorageKey(created.id))?.toString('utf8') ?? '';
+    const lines = body
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines[0]).toMatchObject({ type: 'manifest', snapshotAt: expect.any(String) });
+    const evidenceIds = lines
+      .filter((l) => l.type === 'operation_log')
+      .map((l) => l.id)
+      .sort();
+    expect(evidenceIds).toEqual(['op-page-0', 'op-page-1', 'op-page-2']);
   });
 
   it('hard-fails without partial artifact when maxExportRows is exceeded', async () => {
@@ -478,6 +535,11 @@ describe('audit export worker', () => {
       deleteObject: async (key: string) => {
         storage.objects.delete(key);
       },
+      getObjectBytes: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return Buffer.from(body);
+      },
       getObjectMetadata: async (key: string) => {
         const body = storage.objects.get(key);
         if (!body) throw new Error(`Object not found: ${key}`);
@@ -496,7 +558,7 @@ describe('audit export worker', () => {
         storage.objects.set(params.storageKey, Buffer.from(params.body));
         return {
           artifactBytes: params.body.byteLength,
-          artifactChecksum: `sha256:${'ab'.repeat(32)}`,
+          artifactChecksum: formatArtifactChecksum(sha256Hex(params.body)),
           storageKey: params.storageKey,
         };
       },

@@ -216,7 +216,8 @@ export const useFetchAuditHoldsList = (
     cursor?: string | null;
     limit?: number;
     scopeType?: AdminAuditLegalHoldItem['scopeType'];
-    status?: AdminAuditLegalHoldItem['status'];
+    /** Stored filter only — projected `expired` is not listable. */
+    status?: 'active' | 'released';
   },
   enabled = true,
 ) => {

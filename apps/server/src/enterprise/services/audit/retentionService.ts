@@ -161,6 +161,30 @@ export class AdminAuditRetentionService {
       const tracked: { jobId: string | null; runId: string }[] = [];
       const created: PlatformAuditRetentionRunItem[] = [];
 
+      const compensateTracked = async () => {
+        // Deterministic cleanup: every tracked run/job is failed or cancelled so
+        // unaudited / partial fan-out work cannot execute.
+        for (const entry of tracked) {
+          const current = await this.runsModel.get(entry.runId);
+          const jobId = entry.jobId ?? current?.jobId ?? null;
+
+          if (current && !PlatformAuditRetentionRunModel.isTerminal(current.status)) {
+            if (!jobId) {
+              await this.runsModel.fail(entry.runId, {
+                code: 'PARTIAL_FANOUT',
+                message: 'retention fan-out failed before job link',
+              });
+            } else {
+              await this.runsModel.cancel(entry.runId);
+            }
+          }
+
+          if (jobId) {
+            await this.jobsModel.cancel(jobId).catch(() => undefined);
+          }
+        }
+      };
+
       try {
         for (let index = 0; index < scopes.length; index++) {
           const scope = scopes[index]!;
@@ -192,44 +216,27 @@ export class AdminAuditRetentionService {
           const row = linked ?? { ...run, jobId: job.id };
           created.push(row);
         }
-      } catch (fanoutError) {
-        // Deterministic partial cleanup: every tracked run/job is failed or cancelled.
-        for (const entry of tracked) {
-          const current = await this.runsModel.get(entry.runId);
-          const jobId = entry.jobId ?? current?.jobId ?? null;
 
-          if (current && !PlatformAuditRetentionRunModel.isTerminal(current.status)) {
-            if (!jobId) {
-              await this.runsModel.fail(entry.runId, {
-                code: 'PARTIAL_FANOUT',
-                message: 'retention fan-out failed before job link',
-              });
-            } else {
-              await this.runsModel.cancel(entry.runId);
-            }
-          }
-
-          if (jobId) {
-            await this.jobsModel.cancel(jobId).catch(() => undefined);
-          }
-        }
-        throw fanoutError;
+        // Required audit must succeed or all fan-out work is compensated (fail closed).
+        await appendAuditAccessLog(this.db, {
+          action,
+          actorUserId: params.actorUserId,
+          afterDiff: {
+            itemCount: created.length,
+            mode: params.mode,
+            scope: params.input.scope,
+            statuses: created.map((r) => r.status),
+          },
+          filterSummary,
+          reason: params.input.reason,
+          required: true,
+          result: 'success',
+          targetType: 'audit_retention_run',
+        });
+      } catch (fanoutOrAuditError) {
+        await compensateTracked();
+        throw fanoutOrAuditError;
       }
-
-      await appendAuditAccessLog(this.db, {
-        action,
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          itemCount: created.length,
-          mode: params.mode,
-          scope: params.input.scope,
-          statuses: created.map((r) => r.status),
-        },
-        filterSummary,
-        reason: params.input.reason,
-        result: 'success',
-        targetType: 'audit_retention_run',
-      });
 
       return { items: created.map(toRetentionPublic) };
     } catch (error) {
@@ -402,6 +409,8 @@ export class AdminAuditRetentionService {
         });
       }
 
+      // Cancel + required audit: if audit cannot be recorded, surface failure
+      // (domain cancel already applied — status is terminal and safe).
       const cancelled = await this.runsModel.cancel(existing.id);
       if (existing.jobId) {
         await this.jobsModel.cancel(existing.jobId);
@@ -415,6 +424,7 @@ export class AdminAuditRetentionService {
         afterDiff: { mode: row.mode, scope: row.scope, status: row.status },
         filterSummary,
         reason: params.input.reason,
+        required: true,
         result: 'success',
         targetId: row.id,
         targetType: 'audit_retention_run',

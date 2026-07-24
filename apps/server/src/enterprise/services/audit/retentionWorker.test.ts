@@ -3,7 +3,7 @@
  * Retention worker: dry-run no delete, execute scopes, holds, cancel, retry, cascade.
  * Sequential — shared real DB.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -33,9 +33,17 @@ const sessionA = 'audit-retention-session-a';
 const oldDate = new Date('2020-01-01T00:00:00.000Z');
 const recentDate = new Date(Date.now() - 60_000);
 
+/** Test cleanup: bypass append-only trigger on platform_audit_logs. */
+const clearAuditLogs = async () => {
+  await serverDB.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
+};
+
 beforeEach(async () => {
   storage.objects.clear();
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditLegalHolds);
   await serverDB.delete(platformAuditExports);
   await serverDB.delete(platformAuditRetentionRuns);
@@ -58,7 +66,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  await clearAuditLogs();
   await serverDB.delete(platformAuditLegalHolds);
   await serverDB.delete(platformAuditExports);
   await serverDB.delete(platformAuditRetentionRuns);
@@ -666,6 +674,141 @@ describe('audit retention worker', () => {
     expect(row[0]?.storageKey).toBeNull();
   });
 
+  it('export artifacts: aborts object delete when hold is inserted between claim and authorize', async () => {
+    // Worker-level C1 race: claim writes purge outbox, then a hold appears before
+    // authorize — object must remain and storageKey must be restored.
+    const exportId = 'export-race-hold-midflight';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"conversation_topic"}\n'));
+
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 15,
+      artifactChecksum: 'sha256:race-hold',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {
+        from: oldDate.toISOString(),
+        to: oldDate.toISOString(),
+        userId: userA,
+      },
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'conversations',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'race hold midflight', scope: 'export_artifacts' },
+    });
+
+    const result = await processNextAuditRetentionJob(serverDB, {
+      afterArtifactClaim: async ({ claimed }) => {
+        expect(claimed).toEqual([{ id: exportId, storageKey }]);
+        // Interleave: hold covering the export filter after claim-commit.
+        await serverDB.insert(platformAuditLegalHolds).values({
+          createdBy: actor,
+          id: 'hold-midflight-user',
+          reason: 'litigation after claim',
+          scopeId: userA,
+          scopeType: 'user',
+          status: 'active',
+        });
+      },
+      storage,
+      workerId: 'race-hold-worker',
+    });
+
+    expect(result.claimed).toBe(true);
+    expect(result.outcome).toBe('completed');
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    expect(run.status).toBe('completed');
+    expect(run.counts.exportArtifactsScanned).toBe(1);
+    expect(run.counts.exportArtifactsDeleted ?? 0).toBe(0);
+    expect(run.counts.skippedLegalHold).toBeGreaterThanOrEqual(1);
+
+    // Object must still exist; storageKey restored for addressability.
+    expect(storage.objects.has(storageKey)).toBe(true);
+    const row = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row[0]?.storageKey).toBe(storageKey);
+    expect(row[0]?.error?.code).toBe('ARTIFACT_PURGE_DEFERRED_HOLD');
+  });
+
+  it('export artifacts: aborts object delete when hold is inserted between authorize and delete', async () => {
+    // authorize→delete race: first authorize succeeds, then a hold appears before
+    // the final pre-delete re-authorize — object must remain.
+    const exportId = 'export-race-hold-post-auth';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"conversation_topic"}\n'));
+
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 15,
+      artifactChecksum: 'sha256:race-post-auth',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {
+        from: oldDate.toISOString(),
+        to: oldDate.toISOString(),
+        userId: userA,
+      },
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'conversations',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'race hold post authorize', scope: 'export_artifacts' },
+    });
+
+    const result = await processNextAuditRetentionJob(serverDB, {
+      afterArtifactAuthorize: async ({ authorized }) => {
+        expect(authorized).toEqual([{ id: exportId, storageKey }]);
+        await serverDB.insert(platformAuditLegalHolds).values({
+          createdBy: actor,
+          id: 'hold-post-auth-user',
+          reason: 'litigation after authorize',
+          scopeId: userA,
+          scopeType: 'user',
+          status: 'active',
+        });
+      },
+      storage,
+      workerId: 'race-hold-post-auth-worker',
+    });
+
+    expect(result.claimed).toBe(true);
+    expect(result.outcome).toBe('completed');
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    expect(run.status).toBe('completed');
+    expect(run.counts.exportArtifactsDeleted ?? 0).toBe(0);
+    expect(run.counts.skippedLegalHold).toBeGreaterThanOrEqual(1);
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    const row = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row[0]?.storageKey).toBe(storageKey);
+    expect(row[0]?.error?.code).toBe('ARTIFACT_PURGE_DEFERRED_HOLD');
+  });
+
   it('cancel mid-flight stops the domain run and job', async () => {
     const service = new AdminAuditRetentionService(serverDB, { storage });
     const created = await service.run({
@@ -688,8 +831,9 @@ describe('audit retention worker', () => {
     }
   });
 
-  it('retries preserve counts via job cursor without double counting', async () => {
-    // Seed many old logs so batches > 1
+  it('completed run does not re-delete when a second worker claims nothing', async () => {
+    // Idempotency after a full successful claim (not a mid-flight retry).
+    // Post-checkpoint retry coverage lives in the afterBatchCheckpoint seam tests.
     const rows = Array.from({ length: 5 }, (_, i) => ({
       action: 'admin.test.action',
       createdAt: oldDate,

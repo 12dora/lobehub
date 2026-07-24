@@ -197,7 +197,7 @@ const MessagePane = memo<MessagePaneProps>(
             <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
           ) : null}
           {ordered.map((msg) => (
-            <MessageBubble bodyHidden={bodyHidden && !msg.content} key={msg.id} message={msg} />
+            <MessageBubble bodyHidden={bodyHidden} key={msg.id} message={msg} />
           ))}
           {!ordered.length && !loading ? (
             <Text type="secondary">{t('audit.live.messages.empty')}</Text>
