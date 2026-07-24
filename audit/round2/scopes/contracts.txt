@@ -1,0 +1,7 @@
+=== YOUR PARTITION: contracts ===
+Horizontal pass: SHARED CONTRACTS / DTOs / TYPES / CONSTS between client and server.
+Report issues only in these paths:
+- apps/server/src/enterprise/contracts/**
+- packages/types/src/platform/**
+- packages/const/src/platform/**
+Focus: zod schema correctness — over-permissive schemas (loose pass-through, any/unknown escapes, missing refinements, wrong optionality); mappers between DB rows and DTOs that leak secret or PII fields; error-code and capability constant consistency; drift between a TypeScript type and its runtime zod schema; feature-flag default values. Dimension 5: contract shapes that permit fields the UI does not expect, or that expose sensitive fields to the client. Also dimensions 1-3 (dead/unused types & exports, duplicated shapes, stale TODOs) and dimension 4 where user-facing labels or messages live in these consts.
