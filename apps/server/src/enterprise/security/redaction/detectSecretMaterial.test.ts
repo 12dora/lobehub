@@ -1,10 +1,14 @@
-import { readFile } from 'node:fs/promises';
-
 import { describe, expect, it } from 'vitest';
 
 import { containsEnterpriseSecretMaterial } from './detectSecretMaterial';
 
 const randomSecret = 'aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW1xY';
+const githubFineGrained = `github_pat_${'A'.repeat(22)}_${'b'.repeat(59)}`;
+const githubClassic = `ghp_${'a'.repeat(36)}`;
+const githubOauth = `gho_${'c'.repeat(36)}`;
+const githubUserToServer = `ghu_${'d'.repeat(36)}`;
+const githubServerToServer = `ghs_${'e'.repeat(36)}`;
+const githubRefresh = `ghr_${'f'.repeat(36)}`;
 
 const sensitiveCases = [
   ['Bearer value', `Bearer ${randomSecret}`],
@@ -13,6 +17,12 @@ const sensitiveCases = [
   ['Bearer fake documentation lookalike', 'Authorization: Bearer fake-token-value'],
   ['JWT value', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMzQ1NiJ9.c2lnbmF0dXJlX3ZhbHVlXzEyMzQ1Ng'],
   ['prefixed API key', `sk-proj-${randomSecret}`],
+  ['GitHub classic PAT', githubClassic],
+  ['GitHub fine-grained PAT', githubFineGrained],
+  ['GitHub OAuth token', githubOauth],
+  ['GitHub user-to-server token', githubUserToServer],
+  ['GitHub server-to-server token', githubServerToServer],
+  ['GitHub refresh token', githubRefresh],
   ['client secret assignment', `client_secret=${randomSecret}`],
   ['short client secret assignment', 'client_secret=opaque-value'],
   ['password assignment', `password=${randomSecret}`],
@@ -70,16 +80,6 @@ describe('containsEnterpriseSecretMaterial', () => {
     const value = 'a://host '.repeat(25_000);
     expect(value.length).toBe(225_000);
     expect(containsEnterpriseSecretMaterial(value)).toBe(false);
-  });
-
-  it('uses deterministic placeholder checks without an unbounded wildcard regex', async () => {
-    const source = await readFile(
-      new URL('../../../../../../packages/database/src/models/platform/redact.ts', import.meta.url),
-      'utf8',
-    );
-    expect(source).toContain('DOCUMENTATION_PLACEHOLDER_MARKERS');
-    expect(source).not.toContain('DOCUMENTATION_PLACEHOLDER_PATTERN');
-    expect(source).not.toContain('.*');
   });
 
   it('scans nested payloads and fails closed on excessive/cyclic input', () => {

@@ -97,4 +97,74 @@ describe('defaultPinnedTransport body / deadline bounds (MAJOR-1)', () => {
       });
     }
   });
+
+  it('does not mark truncated when body length equals maxResponseBytes exactly', async () => {
+    const http = await import('node:http');
+    const { defaultPinnedTransport } = await import('./transport');
+
+    const exact = 64;
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.alloc(exact, 0x61));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected TCP address');
+    const port = addr.port;
+
+    try {
+      const result = await defaultPinnedTransport({
+        family: 4,
+        headers: {},
+        maxResponseBytes: exact,
+        method: 'GET',
+        pinnedAddress: '127.0.0.1',
+        timeoutMs: 5_000,
+        url: new URL(`http://127.0.0.1:${port}/exact`),
+      });
+      expect(result.body.length).toBe(exact);
+      expect(result.truncated).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it('marks truncated when body is one byte over maxResponseBytes', async () => {
+    const http = await import('node:http');
+    const { defaultPinnedTransport } = await import('./transport');
+
+    const limit = 64;
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.alloc(limit + 1, 0x62));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected TCP address');
+    const port = addr.port;
+
+    try {
+      const result = await defaultPinnedTransport({
+        family: 4,
+        headers: {},
+        maxResponseBytes: limit,
+        method: 'GET',
+        pinnedAddress: '127.0.0.1',
+        timeoutMs: 5_000,
+        url: new URL(`http://127.0.0.1:${port}/over`),
+      });
+      expect(result.body.length).toBe(limit);
+      expect(result.truncated).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
 });

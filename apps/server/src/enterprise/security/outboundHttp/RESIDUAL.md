@@ -11,8 +11,8 @@ covered by the current primitive; do not assume they are hardened.
 
 Enforced today (non-residual):
 
-- Cloud Metadata hostnames + known IMDS IPv4/IPv6 (incl. IPv4-mapped and RFC 6052 NAT64/SIIT) permanent deny
-- G-07 default allow-private; optional allowlist mode
+- Cloud Metadata hostnames + known IMDS IPv4/IPv6 (incl. Alibaba `100.100.100.200`, Tencent `169.254.0.23`, IPv4-mapped and RFC 6052 NAT64/SIIT) permanent deny in every mode
+- G-07 default **public-only**; `allow-private` and `allowlist` are explicit opt-in (metadata still permanently denied)
 - DNS pin + dynamic versioned policy re-read for every redirect hop
 - Secret-bearing cross-origin redirects fail closed; custom credential headers are stripped
 - http/https only

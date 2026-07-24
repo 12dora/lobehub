@@ -64,17 +64,24 @@ const METADATA_HOSTNAMES = new Set([
   'metadata.goog',
   // AWS / common aliases sometimes used in payloads
   'instance-data',
+  // Tencent Cloud CVM metadata DNS name
+  'metadata.tencentyun.com',
 ]);
 
 /**
  * Cloud Metadata IPs permanently blocked in every mode (G-07).
  * Exact / known endpoints — not the entire link-local range (private MCP
  * on link-local is rare; expand only if threat model requires).
+ *
+ * Includes non-link-local IMDS (Alibaba 100.100.100.200) so allow-private
+ * mode cannot reach cloud credential endpoints.
  */
 const METADATA_IPV4 = new Set([
-  '169.254.169.254', // AWS / Azure / DigitalOcean / GCP IMDS
+  '169.254.169.254', // AWS / Azure / DigitalOcean / GCP / Oracle IMDS
   '169.254.170.2', // AWS ECS task metadata
   '169.254.169.253', // some cloud agent endpoints
+  '169.254.0.23', // Tencent Cloud CVM IMDS
+  '100.100.100.200', // Alibaba Cloud ECS IMDS (not in 169.254/16)
 ]);
 
 const METADATA_IPV6 = new Set([

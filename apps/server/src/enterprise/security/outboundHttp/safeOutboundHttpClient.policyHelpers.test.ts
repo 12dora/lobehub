@@ -23,10 +23,31 @@ describe('policy helpers', () => {
     expect(isMetadataIp('169.254.169.254')).toBe(true);
     expect(isMetadataIp('169.254.170.2')).toBe(true);
     expect(isMetadataIp('fd00:ec2::254')).toBe(true);
+    // Non-link-local IMDS endpoints (permanent deny in every policy mode)
+    expect(isMetadataIp('100.100.100.200')).toBe(true); // Alibaba ECS
+    expect(isMetadataIp('169.254.0.23')).toBe(true); // Tencent CVM
     expect(isMetadataIp('10.0.0.1')).toBe(false);
     expect(isMetadataHostname('metadata.google.internal')).toBe(true);
     expect(isMetadataHostname('METADATA.GOOGLE.INTERNAL')).toBe(true);
+    expect(isMetadataHostname('metadata.tencentyun.com')).toBe(true);
     expect(isMetadataHostname('api.example.com')).toBe(false);
+  });
+
+  it('denies Alibaba IMDS under allow-private and allowlist (permanent metadata deny)', async () => {
+    const { assertResolvedIpAllowed, assertHostnamePolicy } = await import('./policy');
+    const allowPrivate = { allowlist: [] as string[], mode: 'allow-private' as const };
+    const allowlist = {
+      allowlist: ['100.100.100.200', 'metadata.tencentyun.com'],
+      mode: 'allowlist' as const,
+    };
+    const publicOnly = { allowlist: [] as string[], mode: 'public-only' as const };
+
+    for (const policy of [allowPrivate, allowlist, publicOnly]) {
+      expect(() => assertResolvedIpAllowed('100.100.100.200', policy, false)).toThrow(/metadata/i);
+      expect(() => assertResolvedIpAllowed('169.254.0.23', policy, false)).toThrow(/metadata/i);
+      expect(() => assertHostnamePolicy('100.100.100.200', policy)).toThrow(/metadata/i);
+    }
+    expect(() => assertHostnamePolicy('metadata.tencentyun.com', allowlist)).toThrow(/metadata/i);
   });
 
   it('classifies only globally routable addresses for public-only callers', () => {
@@ -52,6 +73,7 @@ describe('policy helpers', () => {
     expect(isMetadataIp('::ffff:169.254.169.254')).toBe(true);
     expect(isMetadataIp('::ffff:a9fe:a9fe')).toBe(true); // 169.254.169.254
     expect(isMetadataIp('0:0:0:0:0:ffff:169.254.170.2')).toBe(true);
+    expect(isMetadataIp('::ffff:100.100.100.200')).toBe(true); // Alibaba via mapped v6
     expect(isMetadataIp('::ffff:8.8.8.8')).toBe(false);
   });
 
