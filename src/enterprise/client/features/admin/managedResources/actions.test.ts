@@ -43,7 +43,7 @@ describe('managed resource policy actions', () => {
       reason: 'publish policy',
     };
 
-    await publishManagedResourcePolicy({
+    const result = await publishManagedResourcePolicy({
       authMethod: 'better-auth',
       input,
       publish,
@@ -56,6 +56,7 @@ describe('managed resource policy actions', () => {
     expect(publish.mock.calls[0][0]).toBe(publish.mock.calls[1][0]);
     expect(Object.isFrozen(publish.mock.calls[0][0])).toBe(true);
     expect(refreshCapabilities).toHaveBeenCalledTimes(1);
+    expect(result.capabilityRefreshFailed).toBe(false);
   });
 
   it.each(['reauth cancelled', 'reauth failed'])(
@@ -83,4 +84,54 @@ describe('managed resource policy actions', () => {
       expect(refreshCapabilities).not.toHaveBeenCalled();
     },
   );
+
+  it('returns publish success even when capability refresh rejects', async () => {
+    const publish = vi.fn().mockResolvedValue({
+      auditId: 'a1',
+      revision: 4,
+    });
+    const refreshCapabilities = vi.fn().mockRejectedValue(new Error('refresh blew up'));
+    const withReauthRetry = vi.fn(async (fn: () => ReturnType<typeof publish>) => fn());
+
+    const result = await publishManagedResourcePolicy({
+      authMethod: 'better-auth',
+      input: {
+        expectedDraftToken: 'draft-3',
+        expectedRevision: 3,
+        reason: 'publish policy',
+      },
+      publish,
+      refreshCapabilities,
+      withReauthRetry,
+    });
+
+    expect(result).toEqual({
+      capabilityRefreshFailed: true,
+      output: { auditId: 'a1', revision: 4 },
+    });
+    expect(refreshCapabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns capabilityRefreshFailed false when refresh succeeds', async () => {
+    const publish = vi.fn().mockResolvedValue({ auditId: 'a2', revision: 5 });
+    const refreshCapabilities = vi.fn().mockResolvedValue(undefined);
+    const withReauthRetry = vi.fn(async (fn: () => ReturnType<typeof publish>) => fn());
+
+    const result = await publishManagedResourcePolicy({
+      authMethod: 'better-auth',
+      input: {
+        expectedDraftToken: 'draft-4',
+        expectedRevision: 4,
+        reason: 'publish policy',
+      },
+      publish,
+      refreshCapabilities,
+      withReauthRetry,
+    });
+
+    expect(result).toEqual({
+      capabilityRefreshFailed: false,
+      output: { auditId: 'a2', revision: 5 },
+    });
+  });
 });

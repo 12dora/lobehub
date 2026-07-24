@@ -1,5 +1,8 @@
 'use client';
 
+import { toast } from '@lobehub/ui/base-ui';
+import debug from 'debug';
+import i18n from 'i18next';
 import { useCallback } from 'react';
 import { mutate } from 'swr';
 
@@ -23,6 +26,8 @@ import {
   buildAdminUsersDetailKey,
   buildAdminUsersListKey,
 } from '../swrKeys';
+
+const log = debug('lobe-client:admin:users');
 
 export type AdminUsersListFilters = AdminUsersListInput & {
   cursor?: string | null;
@@ -85,45 +90,74 @@ export const refreshAdminUserDetail = async (userId: string) => {
   );
 };
 
+/**
+ * Best-effort cache invalidation after a successful mutation.
+ * Never rethrows — a refresh failure must not surface as a mutation failure
+ * (would invite unsafe retries of irreversible commits). Surfaces a toast instead.
+ */
+const softRefresh = async (task: () => Promise<unknown>) => {
+  try {
+    await task();
+  } catch (error) {
+    log('post-commit refresh failed: %O', error);
+    toast.warning(
+      String(
+        i18n.t('users.toast.savedRefreshFailed' as never, {
+          defaultValue: 'Saved, but the latest view could not be refreshed.',
+          ns: 'admin',
+        }),
+      ),
+    );
+  }
+};
+
 export const useAdminUserMutations = () => {
   const createUser = useCallback(async (input: AdminUsersCreateInput) => {
     const result = await adminUsersService.create(input);
-    await refreshAdminUsersList();
+    await softRefresh(() => refreshAdminUsersList());
     return result;
   }, []);
 
   const banUser = useCallback(async (input: AdminUsersBanInput) => {
     const result = await adminUsersService.ban(input);
-    await refreshAdminUsersList();
-    await refreshAdminUserDetail(input.userId);
+    await softRefresh(async () => {
+      await refreshAdminUsersList();
+      await refreshAdminUserDetail(input.userId);
+    });
     return result;
   }, []);
 
   const unbanUser = useCallback(async (input: AdminUsersUnbanInput) => {
     const result = await adminUsersService.unban(input);
-    await refreshAdminUsersList();
-    await refreshAdminUserDetail(input.userId);
+    await softRefresh(async () => {
+      await refreshAdminUsersList();
+      await refreshAdminUserDetail(input.userId);
+    });
     return result;
   }, []);
 
   const deleteUser = useCallback(async (input: AdminUsersDeleteInput) => {
     const result = await adminUsersService.deleteUser(input);
     // User row is gone — refresh the list; the detail key resolves to not-found.
-    await refreshAdminUsersList();
+    await softRefresh(() => refreshAdminUsersList());
     return result;
   }, []);
 
   const revokeSessions = useCallback(async (input: AdminUsersRevokeSessionsInput) => {
     const result = await adminUsersService.revokeSessions(input);
-    await refreshAdminUsersList();
-    await refreshAdminUserDetail(input.userId);
+    await softRefresh(async () => {
+      await refreshAdminUsersList();
+      await refreshAdminUserDetail(input.userId);
+    });
     return result;
   }, []);
 
   const replaceGlobalRoles = useCallback(async (input: AdminUsersReplaceGlobalRolesInput) => {
     const result = await adminUsersService.replaceGlobalRoles(input);
-    await refreshAdminUsersList();
-    await refreshAdminUserDetail(input.userId);
+    await softRefresh(async () => {
+      await refreshAdminUsersList();
+      await refreshAdminUserDetail(input.userId);
+    });
     return result;
   }, []);
 

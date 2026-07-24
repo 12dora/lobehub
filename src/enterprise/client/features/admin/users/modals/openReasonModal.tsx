@@ -3,7 +3,7 @@
 import { Text, TextArea } from '@lobehub/ui';
 import { Button, createModal, type ModalInstance, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, type ReactNode, useCallback, useState } from 'react';
+import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -44,6 +44,12 @@ const styles = createStaticStyles(({ css }) => ({
 /** idle | waiting on reauth popup | server mutation in flight */
 export type ReasonModalPhase = 'idle' | 'reauthing' | 'mutating';
 
+/** Live phase + explicit-close flag shared with openReasonModal's onOpenChange. */
+export type ReasonModalDismissGuard = {
+  closedExplicitly: boolean;
+  phase: ReasonModalPhase;
+};
+
 export interface ReasonModalContentProps {
   /**
    * Shared abort controller for this modal instance.
@@ -59,7 +65,16 @@ export interface ReasonModalContentProps {
   buildPayload: (reason: string) => unknown;
   danger?: boolean;
   description?: string;
-  extra?: ReactNode | ((api: { locked: boolean; phase: ReasonModalPhase }) => ReactNode);
+  /** Live phase for Escape/dismiss veto while a mutation is in flight. */
+  dismissGuardRef?: React.MutableRefObject<ReasonModalDismissGuard>;
+  extra?:
+    | ReactNode
+    | ((api: {
+        locked: boolean;
+        phase: ReasonModalPhase;
+        /** Call when extra fields change so submit eligibility re-evaluates. */
+        reportExtraChange: () => void;
+      }) => ReactNode);
   /** Confirm-only mode: hide the reason textarea and submit `autoReason` instead. */
   hideReason?: boolean;
   impact?: string;
@@ -88,16 +103,51 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     title,
     validateExtra,
     abortControllerRef,
+    dismissGuardRef,
     onPhaseChange,
   }) => {
     const { t } = useTranslation('admin');
     const { close } = useModalContext();
     const [reason, setReason] = useState('');
     const [phase, setPhase] = useState<ReasonModalPhase>('idle');
+    const phaseRef = useRef<ReasonModalPhase>('idle');
+    // Bumps when extra fields change so validateExtra is re-read for button eligibility.
+    const [extraEpoch, setExtraEpoch] = useState(0);
+    const reportExtraChange = useCallback(() => {
+      setExtraEpoch((n) => n + 1);
+    }, []);
+
+    const syncPhase = useCallback(
+      (next: ReasonModalPhase) => {
+        phaseRef.current = next;
+        if (dismissGuardRef) dismissGuardRef.current.phase = next;
+        setPhase(next);
+        onPhaseChange?.(next);
+      },
+      [dismissGuardRef, onPhaseChange],
+    );
+
+    useEffect(() => {
+      phaseRef.current = phase;
+      if (dismissGuardRef) dismissGuardRef.current.phase = phase;
+    }, [dismissGuardRef, phase]);
+
+    // base-ui still dismisses on Escape despite maskClosable: false — block capture
+    // while the server mutation is in flight so progress/error state is not lost.
+    useEffect(() => {
+      const blockEscape = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape') return;
+        if (phaseRef.current !== 'mutating') return;
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+      };
+      document.addEventListener('keydown', blockEscape, true);
+      return () => document.removeEventListener('keydown', blockEscape, true);
+    }, []);
 
     const resetBusyPhase = useCallback(() => {
-      setPhase((p) => (p === 'mutating' || p === 'reauthing' ? 'idle' : p));
-    }, []);
+      syncPhase('idle');
+    }, [syncPhase]);
 
     const {
       abortActive,
@@ -110,20 +160,25 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
       abortControllerRef,
       resetBusyPhase,
       setPhase: (next: AdminReauthBusyPhase) => {
-        setPhase(next);
-        onPhaseChange?.(next);
+        syncPhase(next);
       },
     });
 
     const locked = phase !== 'idle';
-    const canSubmit = (hideReason || reason.trim().length > 0) && phase === 'idle';
+    // Include validateExtra in eligibility so type-to-confirm / expiry stay gated until valid.
+    // extraEpoch forces re-evaluation when nested extra fields notify of changes.
+    void extraEpoch;
+    const extraValid = !validateExtra || validateExtra() === null;
+    const canSubmit = (hideReason || reason.trim().length > 0) && phase === 'idle' && extraValid;
 
     const handleClose = useCallback(() => {
+      // Explicit close — mark so onOpenChange does not re-open during exit animation.
+      if (dismissGuardRef) dismissGuardRef.current.closedExplicitly = true;
       // Immediate abort — Escape/close must not wait for unmount cleanup.
       abortActive();
       clearCanonical();
       close();
-    }, [abortActive, clearCanonical, close]);
+    }, [abortActive, clearCanonical, close, dismissGuardRef]);
 
     const handleCancelReauth = useCallback(() => {
       cancelReauth(phase);
@@ -161,6 +216,9 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
           await onSubmit(attemptPayload);
         },
         onSuccess: () => {
+          // Explicit success close — do not treat as Escape (would re-open while phase
+          // is still mutating until finally demotes it).
+          if (dismissGuardRef) dismissGuardRef.current.closedExplicitly = true;
           close();
         },
       });
@@ -169,6 +227,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
       autoReason,
       buildPayload,
       close,
+      dismissGuardRef,
       hideReason,
       mapReasonModalError,
       onSubmit,
@@ -179,7 +238,8 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
       validateExtra,
     ]);
 
-    const extraNode = typeof extra === 'function' ? extra({ locked, phase }) : extra;
+    const extraNode =
+      typeof extra === 'function' ? extra({ locked, phase, reportExtraChange }) : extra;
 
     return (
       <div className={styles.body}>
@@ -245,19 +305,37 @@ ReasonModalContent.displayName = 'AdminUsersReasonModalContent';
 export const openReasonModal = (props: ReasonModalContentProps): ModalInstance => {
   // Shared abort ref: onOpenChange(false) aborts before unmount/animation.
   const abortControllerRef: { current: AbortController | null } = { current: null };
+  const dismissGuardRef: { current: ReasonModalDismissGuard } = {
+    current: { closedExplicitly: false, phase: 'idle' },
+  };
 
-  return createModal({
-    content: <ReasonModalContent {...props} abortControllerRef={abortControllerRef} />,
+  const instance = createModal({
+    content: (
+      <ReasonModalContent
+        {...props}
+        abortControllerRef={abortControllerRef}
+        dismissGuardRef={dismissGuardRef}
+      />
+    ),
     footer: null,
     maskClosable: false,
     title: null,
     width: 'min(92vw, 480px)',
     onOpenChange: (open) => {
-      if (!open) {
-        // Escape / dismiss / close — abort immediately, do not wait for unmount.
-        abortControllerRef.current?.abort();
-        abortControllerRef.current = null;
+      if (open) return;
+      const { closedExplicitly, phase } = dismissGuardRef.current;
+      // base-ui commits Escape close before this callback. While mutating, veto by
+      // re-opening so the admin does not lose progress/error state for a still-running
+      // request (tRPC has no abort signal here).
+      if (!closedExplicitly && phase === 'mutating') {
+        instance.update({ open: true });
+        return;
       }
+      // Escape / dismiss / close — abort immediately, do not wait for unmount.
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
     },
   });
+
+  return instance;
 };

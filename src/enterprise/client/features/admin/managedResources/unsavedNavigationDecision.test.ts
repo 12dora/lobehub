@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createUnsavedNavigationDecision } from './unsavedNavigationDecision';
+import { createUnsavedNavigationDecision } from '../primitives/useUnsavedChangesGuard';
 
 describe('unsaved managed policy navigation decision', () => {
   it('proceeds exactly once when duplicate modal events race', () => {

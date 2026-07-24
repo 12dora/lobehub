@@ -120,6 +120,14 @@ describe('managed resource policy controller', () => {
     expect(resolveManagedResourcePrimaryAction({ ...base, dirty: false, saveState: 'saved' })).toBe(
       'publish',
     );
+    // Stranded saved draft (dirty=false, hasChanges) must still offer publish after reload.
+    expect(
+      resolveManagedResourcePrimaryAction({
+        ...base,
+        dirty: false,
+        saveState: 'idle',
+      }),
+    ).toBe('publish');
     expect(
       resolveManagedResourcePrimaryAction({
         ...base,
@@ -129,6 +137,48 @@ describe('managed resource policy controller', () => {
       }),
     ).toBe('none');
     expect(resolveManagedResourcePrimaryAction({ ...base, conflict: true })).toBe('none');
+  });
+
+  it('retries the operation that failed (save vs publish)', () => {
+    const base = {
+      canPublish: true,
+      canUpdate: true,
+      conflict: false,
+      dirty: false,
+      hasChanges: true,
+      publishReady: true,
+      saveState: 'failed' as const,
+    };
+    expect(resolveManagedResourcePrimaryAction({ ...base, failedOperation: 'publish' })).toBe(
+      'retryPublish',
+    );
+    expect(resolveManagedResourcePrimaryAction({ ...base, failedOperation: 'save' })).toBe(
+      'retrySave',
+    );
+    // Dirty after a failed save still prefers retrySave over plain save.
+    expect(
+      resolveManagedResourcePrimaryAction({
+        ...base,
+        dirty: true,
+        failedOperation: 'save',
+      }),
+    ).toBe('retrySave');
+  });
+
+  it('never maps a failed publish to retrySave when readiness becomes false', () => {
+    const base = {
+      canPublish: true,
+      canUpdate: true,
+      conflict: false,
+      dirty: false,
+      failedOperation: 'publish' as const,
+      hasChanges: true,
+      publishReady: false,
+      saveState: 'failed' as const,
+    };
+    // Must preserve retryPublish (UI disables until ready) — not silently retrySave.
+    expect(resolveManagedResourcePrimaryAction(base)).toBe('retryPublish');
+    expect(resolveManagedResourcePrimaryAction({ ...base, canPublish: false })).toBe('none');
   });
 
   it('rebases local edits while accepting latest values for untouched resources', () => {

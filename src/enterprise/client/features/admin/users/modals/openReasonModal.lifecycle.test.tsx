@@ -15,6 +15,9 @@ const requestReauthMock = vi.fn();
 
 /** Captured from real createModal props when openReasonModal runs. */
 let capturedOnOpenChange: ((open: boolean) => void) | undefined;
+const updateSpy = vi.fn();
+/** Mirrors base-ui stack open state: closeModal commits before onOpenChange. */
+let committedOpen = true;
 let modalRoot: Root | null = null;
 let modalHost: HTMLDivElement | null = null;
 
@@ -52,12 +55,14 @@ vi.mock('@lobehub/ui/base-ui', async () => {
       ),
     createModal: (props: any) => {
       capturedOnOpenChange = props.onOpenChange;
+      committedOpen = true;
       modalHost = document.createElement('div');
       document.body.appendChild(modalHost);
       modalRoot = createRoot(modalHost);
       modalRoot.render(props.content);
       return {
         close: () => {
+          committedOpen = false;
           props.onOpenChange?.(false);
           mockClose();
           modalRoot?.unmount();
@@ -65,17 +70,23 @@ vi.mock('@lobehub/ui/base-ui', async () => {
         },
         destroy: () => {
           // Distinct destroy path: onOpenChange then unmount content
+          committedOpen = false;
           props.onOpenChange?.(false);
           modalRoot?.unmount();
           modalRoot = null;
         },
         setCanDismissByClickOutside: vi.fn(),
-        update: vi.fn(),
+        update: (next: { open?: boolean }) => {
+          updateSpy(next);
+          if (next?.open === true) committedOpen = true;
+          if (next?.open === false) committedOpen = false;
+        },
       };
     },
     useModalContext: () => ({
+      // Real base-ui: useModalContext().close() skips createModal onOpenChange.
       close: () => {
-        capturedOnOpenChange?.(false);
+        committedOpen = false;
         mockClose();
       },
     }),
@@ -157,8 +168,10 @@ const hangUntilAbort = ({ signal }: { signal?: AbortSignal }) =>
 describe('ReasonModalContent lifecycle (R4)', () => {
   beforeEach(() => {
     mockClose.mockReset();
+    updateSpy.mockReset();
     requestReauthMock.mockReset();
     capturedOnOpenChange = undefined;
+    committedOpen = true;
     modalRoot?.unmount();
     modalRoot = null;
     modalHost?.remove();
@@ -345,5 +358,38 @@ describe('ReasonModalContent lifecycle (R4)', () => {
       expect(screen.getByRole('alert').textContent).toMatch(/reauthCancelled/);
     });
     expect(attempts).toBe(1);
+  });
+
+  it('Escape during mutating re-opens the modal so the in-flight mutation keeps its UI', async () => {
+    updateSpy.mockReset();
+    let resolveSubmit!: () => void;
+    const phases: string[] = [];
+
+    openReasonModal({
+      title: 'T',
+      targetLabel: 'u',
+      submitLabel: 'Confirm',
+      buildPayload: (r) => ({ reason: r }),
+      onPhaseChange: (p) => phases.push(p),
+      onSubmit: () =>
+        new Promise<void>((resolve) => {
+          resolveSubmit = resolve;
+        }),
+    });
+
+    await waitFor(() => expect(screen.getByLabelText('reason')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('reason'), { target: { value: 'delete-me' } });
+    fireEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(phases).toContain('mutating'));
+
+    // base-ui commits Escape close before onOpenChange — veto while mutating.
+    committedOpen = false;
+    capturedOnOpenChange!(false);
+
+    expect(updateSpy).toHaveBeenCalledWith({ open: true });
+    expect(committedOpen).toBe(true);
+
+    resolveSubmit();
+    await waitFor(() => expect(mockClose).toHaveBeenCalled());
   });
 });

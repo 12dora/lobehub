@@ -122,6 +122,22 @@ const openRoles = vi.fn();
 const openRevokeRole = vi.fn();
 
 vi.mock('./modals/actions', () => ({
+  AUTO_REASON: {
+    delete: 'admin.users.delete',
+    revokeAll: 'admin.users.revoke_all_sessions',
+    revokeOne: 'admin.users.revoke_session',
+    roleRevoke: 'admin.users.revoke_role',
+    roles: 'admin.users.replace_roles',
+  },
+  AUTO_REASON_LEGACY: {
+    create: 'User created from admin console',
+    delete: 'User hard-deleted from admin console',
+    revokeAll: 'All sessions revoked from admin console',
+    revokeOne: 'Session revoked from admin console',
+    roleRevoke: 'Global role revoked from admin console',
+    roles: 'Global roles updated from admin console',
+    sharedOAuth: 'Set org shared OAuth authorization from managed resources',
+  },
   openBanUserModal: (...a: unknown[]) => openBan(...a),
   openUnbanUserModal: (...a: unknown[]) => openUnban(...a),
   openDeleteUserModal: (...a: unknown[]) => openDelete(...a),
@@ -371,13 +387,14 @@ describe('UserDetailPage', () => {
     await waitFor(() => expect(auditMock).toHaveBeenCalled());
   });
 
-  it('role modal receives actor roles (user_admin cannot include super)', () => {
+  it('role modal receives actor roles and full grant objects (not bare names)', () => {
     renderDetail();
     fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.access' }));
     fireEvent.click(screen.getByRole('button', { name: 'users.actions.replaceRoles' }));
     expect(openRoles).toHaveBeenCalledWith(
       expect.objectContaining({
         actorRoles: [{ displayName: 'User Admin', name: 'user_admin' }],
+        currentRoles: [{ expiresAt: null, name: 'user_admin' }],
       }),
     );
   });

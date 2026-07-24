@@ -7,6 +7,7 @@ import { Info } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { resolvePlatformRoleDescription, resolvePlatformRoleLabel } from '@/const/platform/roles';
 import type { AdminUsersGetOutput } from '@/enterprise/client/services/adminUsers';
 
 import { formatAdminDateTime } from '../utils';
@@ -91,8 +92,10 @@ const AccessTab = memo<AccessTabProps>(
                 <div className={styles.roleCardHeader}>
                   <Flexbox horizontal align="center" gap={8}>
                     <Tag>
-                      {role.displayName ||
-                        t(`users.roles.${role.name}` as never, { defaultValue: role.name })}
+                      {/* System roles: i18n only — never fall back to stored English seed displayName. */}
+                      {resolvePlatformRoleLabel(role, (key, options) =>
+                        String(t(key as never, { defaultValue: options?.defaultValue })),
+                      )}
                     </Tag>
                     <Text type="secondary">
                       {role.expiresAt
@@ -107,9 +110,9 @@ const AccessTab = memo<AccessTabProps>(
                   ) : null}
                 </div>
                 <Text type="secondary">
-                  {t(`users.roles.desc.${role.name}` as never, {
-                    defaultValue: role.displayName || role.name,
-                  })}
+                  {resolvePlatformRoleDescription(role, (key, options) =>
+                    String(t(key as never, { defaultValue: options?.defaultValue })),
+                  )}
                 </Text>
                 <Text type="secondary">
                   {t(`users.roles.impact.${role.name}` as never, { defaultValue: '' })}

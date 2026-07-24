@@ -22,8 +22,12 @@ import type {
   AdminUsersCreateOutput,
 } from '@/enterprise/client/services/adminUsers';
 
+import { CREATE_USER_AUTO_REASON } from '../auditReasonCodes';
 import { getAdminUsersCreateErrorKey } from '../utils';
 import { generatePassword } from './generatePassword';
+
+// Stable create-user reason code — defined in auditReasonCodes (lightweight).
+export { CREATE_USER_AUTO_REASON } from '../auditReasonCodes';
 
 const styles = createStaticStyles(({ css }) => ({
   body: css`
@@ -76,12 +80,6 @@ const styles = createStaticStyles(({ css }) => ({
 
 /** idle | waiting on reauth popup | server mutation in flight | one-time credentials panel */
 export type CreateUserModalPhase = 'idle' | 'reauthing' | 'mutating' | 'success';
-
-/**
- * Fixed audit reason (no free-form input) — stable, non-localized string keeps the
- * audit trail consistent across locales (same convention as AUTO_REASON in actions.tsx).
- */
-export const CREATE_USER_AUTO_REASON = 'User created from admin console';
 
 // Client-side mirrors of `adminUsersCreateInputSchema` bounds (server remains authoritative).
 const EMAIL_MAX = 255;

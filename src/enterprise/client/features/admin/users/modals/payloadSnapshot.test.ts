@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { cloneFromCanonical, createCanonicalSnapshot, deepFreeze } from './payloadSnapshot';
+import {
+  cloneFromCanonical,
+  createCanonicalSnapshot,
+  deepFreeze,
+} from '@/enterprise/client/features/admin/primitives/payloadSnapshot';
 
-describe('payloadSnapshot', () => {
+describe('payloadSnapshot (primitives)', () => {
   it('createCanonicalSnapshot freezes structure; cloneFromCanonical isolates Date/array mutation', () => {
     const original = {
       expiresAt: new Date('2025-06-01T12:00:00.000Z'),
