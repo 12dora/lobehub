@@ -1,0 +1,14 @@
+| Finding | Verified Sev | Fix status | Note                                                                                                                                                                                                                                                           |
+| ------- | ------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1      | HIGH         | PARTIAL    | Server rejects `revision > 0` deletion and UI hides it, but the regression test never archives/disables or invokes runtime resolution, despite its BYOK claim.                                                                                                 |
+| F2      | MEDIUM       | FIXED\_OK  | CAS finalization and audit are transactional; superseded probes neither audit nor return discarded results. Tests cover completed and pending supersession.                                                                                                    |
+| F3      | MEDIUM       | PARTIAL    | Draft loading, locking, and dependency checks are consolidated, removing quadratic reads, but up to 500 model mutations and audits remain sequential DB operations while holding the lock; bulk DML was not implemented.                                       |
+| F4      | MEDIUM       | PARTIAL    | Sleeps were replaced with lock observation, but the query accepts any database-wide ungranted lock. Additionally, cleanup uses forbidden `DELETE`s against immutable revisions/append-only audits, so these migrated PostgreSQL tests can fail during cleanup. |
+| F5      | LOW          | FIXED\_OK  | The unused `jsonContainsModelReference` helper was deleted.                                                                                                                                                                                                    |
+| F6      | LOW          | FIXED\_OK  | Retry rejection is caught, localized failure feedback is shown, and the discarded click promise resolves cleanly.                                                                                                                                              |
+
+VERDICT: needs-rework
+
+- F1 — Add a publish → archive/disable → rejected hard-delete → runtime-resolution test proving the provider fails closed without `PLATFORM_NOT_FOUND`/BYOK fallback.
+- F3 — Replace per-model sequential mutation/audit statements with bounded bulk DML while preserving atomicity and per-item audit records.
+- F4 — Scope `pg_locks` observation to the contender backend and expected blocker/lock, and use trigger-safe test cleanup such as `TRUNCATE` with guaranteed pool closure.

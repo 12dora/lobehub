@@ -1,0 +1,3 @@
+  F1 (VERIFIED HIGH): Enabling settings policy discards existing registered user preferences
+     scope-correction: Finding's word "discards" slightly overstates: the legacy user_settings row is preserved in the DB (shadowed by defaults on the effective read), not physically deleted, so the reset is recoverable by toggling the flag back off. Impact scope, reachability, and affected-path list are otherwise accurate.
+  F2 (VERIFIED HIGH): Effective-settings cache reuses results materialized from different legacy inputs

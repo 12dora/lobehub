@@ -1,0 +1,28 @@
+You are a senior TypeScript engineer fixing VERIFIED bugs in the "AIHub" enterprise secondary-development (二开) layer (built on LobeHub, Next.js 16 + React 19 + Drizzle + tRPC).
+
+CONTEXT TO READ FIRST:
+- audit/round2/partitions/agents.md  — the full findings for your partition (evidence, failure scenario, suggested Fix per finding).
+- audit/round2/fix/verify/agents.verified.txt — the VERIFIED severity + scope corrections from an independent cross-model review. TRUST THIS for scope: some findings codex marked HIGH/CRITICAL were verified down to MEDIUM/LOW with a precise reason. Fix the REAL defect at the RIGHT scope — do not over-engineer a MEDIUM into a huge refactor, and do implement the CRITICAL/HIGH fixes properly.
+
+YOUR JOB: Fix EVERY finding in agents.md that is a real defect, dead code, or rotten test:
+- Functional bug (⑤): implement the Fix described (use your judgment; the report's "Fix:" is guidance, not gospel). Match surrounding code style, idioms, and error/CAS/transaction patterns already used in these files.
+- Dead code (③): delete it (and its now-orphaned imports/exports/tests).
+- Rotten test (②): FIX it to assert correct behavior, or DELETE it if it has no value, exactly as the finding says. When a finding says a test "locks in the bug", the test MUST be updated to assert the NEW correct behavior you just implemented.
+- Missing regression (② ADD): add a focused test ONLY if it is quick and the test file/harness already exists nearby; otherwise skip and note it.
+- Skip pure "split this large file into modules" refactors (dimension ① size-only) — note them as deferred; do not do large mechanical refactors.
+
+STRICT RULES:
+- Edit ONLY files under these OWNED PATHS:
+  - apps/server/src/enterprise/services/agentCatalog/**
+  - packages/database/src/schemas/platform/agents.ts
+  - src/enterprise/client/features/admin/agents/**
+- Do NOT edit any file outside your owned paths. In particular do NOT edit locale files (packages/locales/**, locales/**) — i18n is a SEPARATE batch. If your fix needs a new user-facing string, call t('<namespace>.<key>', { defaultValue: '<English>' }) with a defaultValue and list the new key in your summary; the i18n batch will add zh-CN.
+- Do NOT run git (no add/commit/push/checkout). Leave changes in the working tree.
+- Do NOT run the full test suite or a full build (too slow). You MAY read files freely and MAY run `bunx tsc`/typecheck on a single file if quick, but it is optional.
+- Keep fixes MINIMAL and correct. Preserve public contracts unless the fix requires changing them; if a client and server contract both need changing and one side is outside your owned paths, implement your side and NOTE the counterpart needed.
+- DATABASE MIGRATIONS: you should NOT need a new migration. If you believe one is genuinely required, do NOT create it — instead implement the fix at code level if possible, or note the required migration in your summary for a dedicated DB batch.
+
+FINISH by printing a concise summary: for each finding ID in agents.md, one line — FIXED (what you changed) / DELETED / TEST-FIXED / SKIPPED (why) / DEFERRED (why). Then list any new i18n keys and any cross-batch counterparts you could not touch.
+
+PARTITION-SPECIFIC GUIDANCE:
+agents/F1: accept a same-agent refresh when EITHER draftSequence OR revision advances (not only revision) — fixes the permanent refresh-lock. agents/F2: define a canonical version order (descending createdAt, id tiebreak) at the aggregate boundary and select current/latest via explicit helpers, not versions[0]. agents/F3 verified LOW (owner-scoped, reversible) — small fail-closed fix if cheap. Also fix F4 mock/test, F5 overscan, F6 SemVer NaN, F7 preview warning, F8 dead swrKeys helper.

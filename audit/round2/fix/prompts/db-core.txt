@@ -1,0 +1,29 @@
+You are a senior TypeScript engineer fixing VERIFIED bugs in the "AIHub" enterprise secondary-development (二开) layer (built on LobeHub, Next.js 16 + React 19 + Drizzle + tRPC).
+
+CONTEXT TO READ FIRST:
+- audit/round2/partitions/db-core.md  — the full findings for your partition (evidence, failure scenario, suggested Fix per finding).
+- audit/round2/fix/verify/db-core.verified.txt — the VERIFIED severity + scope corrections from an independent cross-model review. TRUST THIS for scope: some findings codex marked HIGH/CRITICAL were verified down to MEDIUM/LOW with a precise reason. Fix the REAL defect at the RIGHT scope — do not over-engineer a MEDIUM into a huge refactor, and do implement the CRITICAL/HIGH fixes properly.
+
+YOUR JOB: Fix EVERY finding in db-core.md that is a real defect, dead code, or rotten test:
+- Functional bug (⑤): implement the Fix described (use your judgment; the report's "Fix:" is guidance, not gospel). Match surrounding code style, idioms, and error/CAS/transaction patterns already used in these files.
+- Dead code (③): delete it (and its now-orphaned imports/exports/tests).
+- Rotten test (②): FIX it to assert correct behavior, or DELETE it if it has no value, exactly as the finding says. When a finding says a test "locks in the bug", the test MUST be updated to assert the NEW correct behavior you just implemented.
+- Missing regression (② ADD): add a focused test ONLY if it is quick and the test file/harness already exists nearby; otherwise skip and note it.
+- Skip pure "split this large file into modules" refactors (dimension ① size-only) — note them as deferred; do not do large mechanical refactors.
+
+STRICT RULES:
+- Edit ONLY files under these OWNED PATHS:
+  - packages/database/src/models/platform/job.ts (+ *.test.ts), revision.ts, checksum.ts, cursor.ts, errors.ts, managedResourcePolicy.ts
+  - packages/database/src/schemas/platform/common.ts, revisions.ts, jobs.ts, managedPolicy.ts
+- Do NOT edit any file outside your owned paths. In particular do NOT edit locale files (packages/locales/**, locales/**) — i18n is a SEPARATE batch. If your fix needs a new user-facing string, call t('<namespace>.<key>', { defaultValue: '<English>' }) with a defaultValue and list the new key in your summary; the i18n batch will add zh-CN.
+- Do NOT run git (no add/commit/push/checkout). Leave changes in the working tree.
+- Do NOT run the full test suite or a full build (too slow). You MAY read files freely and MAY run `bunx tsc`/typecheck on a single file if quick, but it is optional.
+- Keep fixes MINIMAL and correct. Preserve public contracts unless the fix requires changing them; if a client and server contract both need changing and one side is outside your owned paths, implement your side and NOTE the counterpart needed.
+- DATABASE MIGRATIONS: if (and only if) a fix genuinely requires a schema change, create exactly ONE new migration file: packages/database/migrations/0148_round2_db-core.sql . Make every statement idempotent (IF NOT EXISTS / guarded DO blocks / CREATE ... IF NOT EXISTS). Follow the style of existing 013x/014x platform migrations. Also update the matching Drizzle schema file (in your owned paths) to match. Do NOT create any other-numbered migration. If you are unsure a migration is needed, prefer a code-level fix.
+
+FINISH by printing a concise summary: for each finding ID in db-core.md, one line — FIXED (what you changed) / DELETED / TEST-FIXED / SKIPPED (why) / DEFERRED (why). Then list any new i18n keys and any cross-batch counterparts you could not touch.
+
+PARTITION-SPECIFIC GUIDANCE:
+db-core/F1 (verified MEDIUM — only uncaught crashes bypass; jobs idempotent): in claimNext, exclude rows where maxAttempts IS NOT NULL AND attempt>=maxAttempts and transition exhausted expired jobs to 'dead'. F2 + platform-instance/F3: create migration 0148_round2_db-core.sql that rebuilds the non-CONCURRENTLY indexes on topics/messages/platform_audit_logs from 0141/0145 as CREATE INDEX CONCURRENTLY IF NOT EXISTS (non-transactional; drop the transaction-wrapped duplicates safely). F5 add checksum regression vectors, F6 delete dead assertImmutable + its test. Also implement the sidebar singleton CHECK migration if shared-infra flagged it (CHECK id='global', CHECK mode IN ('user','platform')) inside 0148.
+
+MIGRATION when-VALUE: this repo's migrator applies by ascending `when` timestamp and only runs migrations with when > the last-applied. The current max `when` in packages/database/migrations/meta/_journal.json is 1784900000000. Your migration 0148 MUST use `when`: 1784900000001 in its _journal.json entry. Match the existing hand-written migration + journal style; do NOT run drizzle-kit generate (it is broken in this repo).

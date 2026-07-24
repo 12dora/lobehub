@@ -1,0 +1,13 @@
+| Finding | Verified Sev | Fix status | Note                                                                                                                                                                                                                                                     |
+| ------- | ------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1      | MEDIUM       | FIXED\_OK  | Claim and update enforce the attempt budget; exhausted expired jobs are dead-lettered. The crash/lease-expiry regression test verifies no reclaim.                                                                                                       |
+| F2      | MEDIUM       | REGRESSION | 0141/0145 remain blocking; 0148 merely documents concurrent SQL before executing ordinary `CREATE INDEX`, and runs too late to protect upgrades. It also leaves journal order `147,150,148` with missing 0147/0148 snapshots, breaking migration guards. |
+| F3      | MEDIUM       | REGRESSION | Schema checks exist, but 0147 adds the auth constraint before handling invalid rows, while 0148 deletes unexpected auth/sidebar rows instead of rejecting or quarantining them.                                                                          |
+| F4      | LOW          | FIXED\_OK  | Schema and migration constrain mode after deterministic repair to `user`; the model also rejects malformed values.                                                                                                                                       |
+| F5      | LOW          | FIXED\_OK  | Added hard-coded digest vectors, insertion/nested ordering checks, array-order preservation, and non-JSON input tests.                                                                                                                                   |
+| F6      | LOW          | FIXED\_OK  | Misleading method and dedicated test were removed; `PlatformRevisionImmutableError` remains available to production callers.                                                                                                                             |
+
+VERDICT: needs-rework
+
+- F2 — Provide an executable autocommit `CREATE INDEX CONCURRENTLY` path that runs before legacy blocking migrations, and restore contiguous journal entries with matching snapshots.
+- F3 — Handle unexpected singleton IDs before adding constraints by explicitly aborting or moving rows to quarantine; never silently delete them.
