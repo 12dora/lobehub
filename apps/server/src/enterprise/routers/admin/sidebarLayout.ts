@@ -3,6 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PlatformSidebarLayoutModel } from '@/database/models/platform';
+import { PlatformRevisionConflictError } from '@/database/models/platform/errors';
 import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -28,9 +29,8 @@ const sidebarLayoutBase = authedProcedure
  * Direct-save: `update` persists the whole document immediately (no draft/publish).
  * Gated on POLICY_* — it lives under the Managed Resources surface.
  *
- * No CAS revision: platform_sidebar_layout has no revision column; lost-update is a known follow-up.
  * Config write + success audit share one DB transaction so an unavailable audit sink
- * cannot leave an unaudited committed change (fail closed).
+ * cannot leave an unaudited committed change (fail closed). CAS via `revision`.
  */
 export const adminSidebarLayoutRouter = router({
   get: sidebarLayoutBase
@@ -45,14 +45,20 @@ export const adminSidebarLayoutRouter = router({
     .mutation(async ({ ctx, input }) => {
       try {
         return await ctx.serverDB.transaction(async (tx) => {
+          const { expectedRevision, ...document } = input;
           const next = await new PlatformSidebarLayoutModel(
             tx as unknown as LobeChatDatabase,
-          ).update(ctx.userId!, input);
+          ).update(ctx.userId!, document, expectedRevision);
 
           await new PlatformAuditService(tx).append({
             action: 'admin.sidebarLayout.update',
             actorUserId: ctx.userId!,
-            afterDiff: { hasLayout: Boolean(next.layout), mode: next.mode },
+            afterDiff: {
+              hasLayout: Boolean(next.layout),
+              mode: next.mode,
+              revision: next.revision,
+            },
+            configRevision: next.revision,
             result: 'success',
             targetId: 'global',
             targetType: 'sidebarLayout',
@@ -62,6 +68,12 @@ export const adminSidebarLayoutRouter = router({
         });
       } catch (error) {
         if (error instanceof TRPCError) throw error;
+        if (error instanceof PlatformRevisionConflictError) {
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+            details: error.details as Record<string, string | number | boolean | null> | undefined,
+          });
+        }
         return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
           details: { issueCount: 1, reason: 'audit_or_write_failed' },
