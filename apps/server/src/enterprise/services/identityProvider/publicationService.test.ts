@@ -452,6 +452,75 @@ describe('IdentityProviderPublicationService', () => {
     expect(outageStartup.providerIds).not.toContain('work');
   });
 
+  it('total DB outage immediately after Disable does not resurrect via pre-tombstone LKG (identity/F10)', async () => {
+    // Disable advances the local LKG file so a total DB failure (selection throws)
+    // cannot fall back to a pre-revoke snapshot that still contains the provider.
+    const draft = await createDraft('revoked-immediate');
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'activate for immediate outage revoke',
+      requestId: requestId(95),
+    });
+    const env = await startupEnv();
+    // Seed LKG with the live provider (healthy startup before disable).
+    const liveStartup = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery,
+      env,
+    });
+    expect(liveStartup.source).toBe('database');
+    expect(liveStartup.databaseProviders.map((p) => p.providerKey)).toContain('revoked-immediate');
+
+    // Point process env at the same LKG path so disable's best-effort advance hits it.
+    const previousLkg = process.env.PLATFORM_OIDC_LKG_PATH;
+    const previousMaster = process.env.PLATFORM_MASTER_KEY;
+    const previousMasterId = process.env.PLATFORM_MASTER_KEY_ID;
+    process.env.PLATFORM_OIDC_LKG_PATH = env.PLATFORM_OIDC_LKG_PATH;
+    process.env.PLATFORM_MASTER_KEY = env.PLATFORM_MASTER_KEY;
+    process.env.PLATFORM_MASTER_KEY_ID = env.PLATFORM_MASTER_KEY_ID;
+    try {
+      await publication.disable('admin-1', {
+        expectedRevision: published.revision,
+        id: draft.id,
+        reason: 'immediate revoke before total outage',
+      });
+    } finally {
+      if (previousLkg === undefined) delete process.env.PLATFORM_OIDC_LKG_PATH;
+      else process.env.PLATFORM_OIDC_LKG_PATH = previousLkg;
+      if (previousMaster === undefined) delete process.env.PLATFORM_MASTER_KEY;
+      else process.env.PLATFORM_MASTER_KEY = previousMaster;
+      if (previousMasterId === undefined) delete process.env.PLATFORM_MASTER_KEY_ID;
+      else process.env.PLATFORM_MASTER_KEY_ID = previousMasterId;
+    }
+
+    // Total DB outage: selection cannot read tombstones; only advanced LKG remains.
+    const outageDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === 'select' || prop === 'transaction' || prop === 'execute') {
+          return () => {
+            throw new Error('simulated total database outage');
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as LobeChatDatabase;
+
+    const outageStartup = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db: outageDb,
+      discovery,
+      env,
+    });
+    expect(outageStartup.source).toBe('lkg');
+    expect(outageStartup.databaseProviders.map((p) => p.providerKey)).not.toContain(
+      'revoked-immediate',
+    );
+    expect(outageStartup.providerIds).not.toContain('revoked-immediate');
+  });
+
   it('publishes only an exact recently-tested draft and persists no secret material', async () => {
     const draft = await createDraft();
     await recordSuccessfulTest(draft.id);

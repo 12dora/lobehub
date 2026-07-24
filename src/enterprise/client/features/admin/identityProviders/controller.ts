@@ -327,3 +327,27 @@ export const resolveIdentityProviderRevisionRefresh = (input: {
   if (!input.nextRevision || input.currentRevision === input.nextRevision) return 'unchanged';
   return input.preserveDraft ? 'preserve' : 'hydrate';
 };
+
+/**
+ * Canonical provider row for wizard CAS (edit mode).
+ * Prefer the list cache hit when its revision is at least as new as the mutation-retained
+ * canonical row; otherwise keep the mutation response so page-scoped lists (first 100 /
+ * current page) cannot leave a stale revision for test/publish after save.
+ */
+export const resolveIdentityProviderWizardLiveProvider = <
+  T extends { id: string; revision: number },
+>(input: {
+  canonicalProvider?: T;
+  isEdit: boolean;
+  listHit?: T;
+  propProvider?: T;
+}): T | undefined => {
+  if (!input.isEdit) return input.canonicalProvider ?? input.propProvider;
+  if (
+    input.listHit &&
+    (!input.canonicalProvider || input.listHit.revision >= input.canonicalProvider.revision)
+  ) {
+    return input.listHit;
+  }
+  return input.canonicalProvider ?? input.propProvider;
+};

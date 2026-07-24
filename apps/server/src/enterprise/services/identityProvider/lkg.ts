@@ -9,10 +9,21 @@ import type { PlatformSecretService } from '../../security/secret';
 
 const LKG_DOMAIN = 'platform-oidc-lkg';
 const LKG_FORMAT = 'aihub.platform.oidc-lkg';
-const LKG_VERSION = 1;
+/** Legacy on-disk snapshot (six payload fields, no providerTombstones). Still readable. */
+export const IDENTITY_PROVIDER_LKG_VERSION_V1 = 1;
+/**
+ * Current write version. Adds optional-on-read `providerTombstones[]` for concurrent-disable
+ * merge and stale-tombstone protection. Writers always emit this version; readers still accept
+ * v1 six-field snapshots (missing tombstones → []).
+ */
+export const IDENTITY_PROVIDER_LKG_VERSION = 2;
+const LKG_WRITE_VERSION = IDENTITY_PROVIDER_LKG_VERSION;
 const DEFAULT_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const EMPTY_GENERATION = '0000-01-01T00:00:00.000Z:';
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
+
+export type IdentityProviderLkgVersion =
+  typeof IDENTITY_PROVIDER_LKG_VERSION_V1 | typeof IDENTITY_PROVIDER_LKG_VERSION;
 
 export interface IdentityProviderLkgProvider {
   checksum: string;
@@ -24,20 +35,32 @@ export interface IdentityProviderLkgProvider {
   secretFingerprint: string;
 }
 
+/** Per-provider revoke memory so concurrent disables merge and stale tombstones cannot revive. */
+export interface IdentityProviderLkgProviderTombstone {
+  generation: string;
+  providerId: string;
+}
+
 export interface IdentityProviderLkgPayload {
   createdAt: string;
   domain: typeof LKG_DOMAIN;
   generation: string;
   identityRevision: string;
   providers: IdentityProviderLkgProvider[];
-  version: typeof LKG_VERSION;
+  /**
+   * Highest tombstone generation observed per providerId.
+   * - v1 on-disk: field absent (reader defaults to [])
+   * - v2 writes: always present (may be empty)
+   */
+  providerTombstones?: IdentityProviderLkgProviderTombstone[];
+  version: IdentityProviderLkgVersion;
 }
 
 interface IdentityProviderLkgEnvelope {
   ciphertext: string;
   format: typeof LKG_FORMAT;
   signature: string;
-  version: typeof LKG_VERSION;
+  version: IdentityProviderLkgVersion;
 }
 
 export interface IdentityProviderLkgTestHooks {
@@ -49,6 +72,18 @@ type OpenHandle = Awaited<ReturnType<typeof open>>;
 type FileStat = Awaited<ReturnType<OpenHandle['stat']>>;
 
 export type IdentityProviderLkgWriteResult = 'rejected' | 'unchanged' | 'written';
+
+export type IdentityProviderLkgAdvanceSkipReason =
+  | 'generation_overflow'
+  | 'missing_input'
+  | 'no_lkg'
+  | 'read_failed'
+  | 'stale_tombstone'
+  | 'write_failed';
+
+export type IdentityProviderLkgAdvanceResult =
+  | IdentityProviderLkgWriteResult
+  | { outcome: 'skipped'; reason: IdentityProviderLkgAdvanceSkipReason };
 
 export class IdentityProviderLkgError extends Error {
   constructor(public readonly code: string) {
@@ -168,6 +203,9 @@ const openAndReadSecure = async (path: string, afterStat?: (path: string) => Pro
   }
 };
 
+const isSupportedLkgVersion = (value: unknown): value is IdentityProviderLkgVersion =>
+  value === IDENTITY_PROVIDER_LKG_VERSION_V1 || value === IDENTITY_PROVIDER_LKG_VERSION;
+
 const parseEnvelope = (value: unknown): IdentityProviderLkgEnvelope => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new IdentityProviderLkgError('OIDC_LKG_ENVELOPE_INVALID');
@@ -176,7 +214,7 @@ const parseEnvelope = (value: unknown): IdentityProviderLkgEnvelope => {
   if (
     Object.keys(envelope).length !== 4 ||
     envelope.format !== LKG_FORMAT ||
-    envelope.version !== LKG_VERSION ||
+    !isSupportedLkgVersion(envelope.version) ||
     typeof envelope.ciphertext !== 'string' ||
     typeof envelope.signature !== 'string'
   ) {
@@ -217,15 +255,91 @@ const parseProvider = (value: unknown): IdentityProviderLkgProvider => {
   return row as unknown as IdentityProviderLkgProvider;
 };
 
+const parseProviderTombstones = (value: unknown): IdentityProviderLkgProviderTombstone[] => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
+  }
+  const parsed = value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
+    }
+    const row = entry as Record<string, unknown>;
+    if (
+      Object.keys(row).length !== 2 ||
+      typeof row.providerId !== 'string' ||
+      row.providerId.length === 0 ||
+      row.providerId.length > 255 ||
+      typeof row.generation !== 'string' ||
+      row.generation.length === 0 ||
+      row.generation.length > 512
+    ) {
+      throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
+    }
+    return { generation: row.generation, providerId: row.providerId };
+  });
+  const ids = parsed.map((entry) => entry.providerId);
+  if (new Set(ids).size !== ids.length) {
+    throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
+  }
+  return [...parsed].sort((left, right) => left.providerId.localeCompare(right.providerId));
+};
+
+const normalizeProviderTombstones = (
+  tombstones: IdentityProviderLkgProviderTombstone[],
+  providers: IdentityProviderLkgProvider[],
+): IdentityProviderLkgProviderTombstone[] => {
+  const liveById = new Map(providers.map((provider) => [provider.providerId, provider]));
+  // Live provider with a strictly newer generation supersedes its tombstone (re-enable).
+  return tombstones
+    .filter((tombstone) => {
+      const live = liveById.get(tombstone.providerId);
+      return !live || live.generation <= tombstone.generation;
+    })
+    .sort((left, right) => left.providerId.localeCompare(right.providerId));
+};
+
+const mergeProviderTombstones = (
+  current: IdentityProviderLkgProviderTombstone[] | undefined,
+  candidate: IdentityProviderLkgProviderTombstone[] | undefined,
+  providers: IdentityProviderLkgProvider[],
+): IdentityProviderLkgProviderTombstone[] => {
+  const map = new Map<string, string>();
+  for (const entry of current ?? []) {
+    map.set(entry.providerId, entry.generation);
+  }
+  for (const entry of candidate ?? []) {
+    const previous = map.get(entry.providerId);
+    if (!previous || entry.generation > previous) {
+      map.set(entry.providerId, entry.generation);
+    }
+  }
+  return normalizeProviderTombstones(
+    [...map.entries()].map(([providerId, generation]) => ({ generation, providerId })),
+    providers,
+  );
+};
+
 const parsePayload = (value: unknown): IdentityProviderLkgPayload => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
   }
   const payload = value as Record<string, unknown>;
+  const keys = Object.keys(payload);
+  const version = payload.version;
+  // v1: strict six-field legacy (no providerTombstones). Still loadable.
+  // v2: seven fields including providerTombstones (may be empty).
+  const isV1 =
+    version === IDENTITY_PROVIDER_LKG_VERSION_V1 &&
+    keys.length === 6 &&
+    !('providerTombstones' in payload);
+  const isV2 =
+    version === IDENTITY_PROVIDER_LKG_VERSION &&
+    keys.length === 7 &&
+    'providerTombstones' in payload;
   if (
-    Object.keys(payload).length !== 6 ||
+    (!isV1 && !isV2) ||
     payload.domain !== LKG_DOMAIN ||
-    payload.version !== LKG_VERSION ||
     typeof payload.createdAt !== 'string' ||
     Number.isNaN(new Date(payload.createdAt).getTime()) ||
     typeof payload.generation !== 'string' ||
@@ -239,6 +353,11 @@ const parsePayload = (value: unknown): IdentityProviderLkgPayload => {
     throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
   }
   const providers = payload.providers.map(parseProvider);
+  const providerTombstones = normalizeProviderTombstones(
+    // Missing on v1 → []. Present on v2 (including empty).
+    parseProviderTombstones(isV1 ? undefined : payload.providerTombstones),
+    providers,
+  );
   // Generation may exceed the max provider generation when a signed tombstone
   // advanced the snapshot without materializing the removed provider.
   const providerGeneration = identityProviderLkgGeneration(providers);
@@ -249,7 +368,15 @@ const parsePayload = (value: unknown): IdentityProviderLkgPayload => {
   ) {
     throw new IdentityProviderLkgError('OIDC_LKG_IDENTITY_INVALID');
   }
-  return { ...payload, providers } as unknown as IdentityProviderLkgPayload;
+  return {
+    createdAt: payload.createdAt as string,
+    domain: LKG_DOMAIN,
+    generation: payload.generation as string,
+    identityRevision: payload.identityRevision as string,
+    providerTombstones,
+    providers,
+    version: version as IdentityProviderLkgVersion,
+  };
 };
 
 const maxAgeMs = (env: Record<string, string | undefined>): number => {
@@ -281,6 +408,11 @@ const decodePayload = async (input: {
 };
 
 export const readIdentityProviderLkg = async (input: {
+  /**
+   * When false, skip max-age rejection so revoke-time LKG advances still work on
+   * an aged but otherwise valid snapshot. Startup reads keep the default (true).
+   */
+  enforceAge?: boolean;
   env: Record<string, string | undefined>;
   secrets: PlatformSecretService;
   testHooks?: IdentityProviderLkgTestHooks;
@@ -288,10 +420,156 @@ export const readIdentityProviderLkg = async (input: {
   const path = resolveLkgPath(input.env);
   try {
     await assertSecureDirectory(pathModule.dirname(path), false);
-    return await decodePayload({ ...input, enforceAge: true, path });
+    return await decodePayload({
+      ...input,
+      enforceAge: input.enforceAge !== false,
+      path,
+    });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
+  }
+};
+
+const reportLkgAdvanceSkipped = (
+  reason: IdentityProviderLkgAdvanceSkipReason,
+  detail: { removedProviderId?: string },
+): IdentityProviderLkgAdvanceResult => {
+  // Safe diagnostics only — no secrets, ciphertext, or paths with env material.
+  console.warn('[identityProvider.lkg] advance after tombstone skipped', {
+    reason,
+    removedProviderId: detail.removedProviderId ?? null,
+  });
+  return { outcome: 'skipped', reason };
+};
+
+/**
+ * After a signed Disable (tombstone) commits to the database, advance the local
+ * out-of-DB LKG so a total database outage in the immediate post-disable window
+ * cannot resurrect the revoked provider from a pre-tombstone snapshot.
+ *
+ * Best-effort: missing LKG, secret/env unavailability, or write rejection must not
+ * fail Disable itself. Read→merge→write is one serialized operation under the process
+ * write lock so concurrent disables merge rather than resurrect each other. Per-provider
+ * tombstone generations prevent a delayed older revoke from undoing a newer re-enable.
+ */
+export const advanceIdentityProviderLkgAfterTombstone = async (input: {
+  env: Record<string, string | undefined>;
+  removedProviderId: string;
+  secrets: PlatformSecretService;
+  testHooks?: IdentityProviderLkgTestHooks;
+  tombstoneGeneration: string;
+}): Promise<IdentityProviderLkgAdvanceResult> => {
+  if (!input.tombstoneGeneration || !input.removedProviderId) {
+    return reportLkgAdvanceSkipped('missing_input', {
+      removedProviderId: input.removedProviderId,
+    });
+  }
+
+  let path: string;
+  try {
+    path = resolveLkgPath(input.env);
+  } catch {
+    return reportLkgAdvanceSkipped('read_failed', {
+      removedProviderId: input.removedProviderId,
+    });
+  }
+
+  try {
+    return await withProcessWriteLock(path, async () => {
+      let current: IdentityProviderLkgPayload;
+      try {
+        await assertSecureDirectory(pathModule.dirname(path), false);
+        current = await decodePayload({
+          enforceAge: false,
+          env: input.env,
+          path,
+          secrets: input.secrets,
+          testHooks: input.testHooks,
+        });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return reportLkgAdvanceSkipped('no_lkg', {
+            removedProviderId: input.removedProviderId,
+          });
+        }
+        return reportLkgAdvanceSkipped('read_failed', {
+          removedProviderId: input.removedProviderId,
+        });
+      }
+
+      const live = current.providers.find(
+        (provider) => provider.providerId === input.removedProviderId,
+      );
+      const existingTombstones = current.providerTombstones ?? [];
+      const existingTombGeneration = existingTombstones.find(
+        (entry) => entry.providerId === input.removedProviderId,
+      )?.generation;
+
+      // Re-enable already landed with a generation at least as new as this tombstone.
+      if (live && input.tombstoneGeneration <= live.generation) {
+        return reportLkgAdvanceSkipped('stale_tombstone', {
+          removedProviderId: input.removedProviderId,
+        });
+      }
+      // Provider already removed and we already recorded an equal-or-newer tombstone.
+      if (!live && existingTombGeneration && input.tombstoneGeneration <= existingTombGeneration) {
+        return 'unchanged';
+      }
+
+      const providers = current.providers.filter(
+        (provider) => provider.providerId !== input.removedProviderId,
+      );
+      if (
+        providers.length === current.providers.length &&
+        existingTombGeneration === input.tombstoneGeneration &&
+        input.tombstoneGeneration <= current.generation
+      ) {
+        return 'unchanged';
+      }
+
+      const providerTombstones = mergeProviderTombstones(
+        existingTombstones,
+        [{ generation: input.tombstoneGeneration, providerId: input.removedProviderId }],
+        providers,
+      );
+
+      let nextGeneration =
+        input.tombstoneGeneration > current.generation
+          ? input.tombstoneGeneration
+          : `${current.generation}:tombstone`;
+      if (nextGeneration <= current.generation) {
+        nextGeneration = `${current.generation}:tombstone`;
+      }
+      if (nextGeneration.length > 512) {
+        nextGeneration = nextGeneration.slice(0, 512);
+        if (nextGeneration <= current.generation) {
+          return reportLkgAdvanceSkipped('generation_overflow', {
+            removedProviderId: input.removedProviderId,
+          });
+        }
+      }
+
+      return writeIdentityProviderLkgUnderLock({
+        env: input.env,
+        path,
+        payload: {
+          createdAt: new Date().toISOString(),
+          domain: LKG_DOMAIN,
+          generation: nextGeneration,
+          identityRevision: identityProviderLkgIdentity(providers),
+          providerTombstones,
+          providers,
+          version: LKG_WRITE_VERSION,
+        },
+        secrets: input.secrets,
+        testHooks: input.testHooks,
+      });
+    });
+  } catch {
+    return reportLkgAdvanceSkipped('write_failed', {
+      removedProviderId: input.removedProviderId,
+    });
   }
 };
 
@@ -299,7 +577,23 @@ const compareSnapshots = (
   current: IdentityProviderLkgPayload,
   candidate: IdentityProviderLkgPayload,
 ): 'rejected' | 'unchanged' | 'upgrade' => {
-  if (current.identityRevision === candidate.identityRevision) return 'unchanged';
+  const currentTombstones = new Map(
+    (current.providerTombstones ?? []).map((entry) => [entry.providerId, entry.generation]),
+  );
+  // A delayed/stale re-materialization cannot override a newer per-provider tombstone.
+  for (const provider of candidate.providers) {
+    const tombGeneration = currentTombstones.get(provider.providerId);
+    if (tombGeneration && provider.generation <= tombGeneration) return 'rejected';
+  }
+
+  const sameProviders = current.identityRevision === candidate.identityRevision;
+  const sameTombstones =
+    (current.providerTombstones ?? []).length === (candidate.providerTombstones ?? []).length &&
+    (current.providerTombstones ?? []).every((entry, index) => {
+      const other = candidate.providerTombstones?.[index];
+      return other?.providerId === entry.providerId && other.generation === entry.generation;
+    });
+  if (sameProviders && sameTombstones) return 'unchanged';
   if (candidate.generation <= current.generation) return 'rejected';
   const candidateById = new Map(
     candidate.providers.map((provider) => [provider.providerId, provider]),
@@ -329,6 +623,16 @@ const compareSnapshots = (
   if (candidate.providers.length > current.providers.length) upgraded = true;
   // Pure removal with higher generation is still an upgrade.
   if (!upgraded && candidate.providers.length < current.providers.length) upgraded = true;
+  // New/stronger per-provider tombstones are upgrades even when the live set is identical.
+  if (!upgraded && !sameTombstones) {
+    for (const entry of candidate.providerTombstones ?? []) {
+      const previous = currentTombstones.get(entry.providerId);
+      if (!previous || entry.generation > previous) {
+        upgraded = true;
+        break;
+      }
+    }
+  }
   return upgraded ? 'upgrade' : 'rejected';
 };
 
@@ -352,6 +656,17 @@ const removeIfPresent = async (path: string): Promise<void> => {
   }
 };
 
+/**
+ * Process-local write serialization for LKG paths.
+ *
+ * ACCEPTABLE for the single-instance demo: overlapping Disable/LKG advances in the
+ * same Node process queue through `writeQueues` so read→merge→rename cannot interleave.
+ *
+ * DEFERRED LIMITATION (multi-instance): there is no cross-process filesystem lock or
+ * persisted-generation CAS. Concurrent Disable from separate processes/replicas can
+ * still race on the LKG file. Documented as identity/F10 single-instance scope; do not
+ * treat the overlap unit test as multi-process proof.
+ */
 const writeQueues = new Map<string, Promise<void>>();
 
 const withProcessWriteLock = async <T>(path: string, work: () => Promise<T>): Promise<T> => {
@@ -371,68 +686,110 @@ const withProcessWriteLock = async <T>(path: string, work: () => Promise<T>): Pr
   }
 };
 
+/**
+ * Write body that assumes the process write lock for `path` is already held.
+ * Used by public write and by tombstone advance so read→merge→write stays atomic.
+ * Always persists the current write version (v2) so on-disk shape is versioned.
+ */
+const writeIdentityProviderLkgUnderLock = async (input: {
+  env: Record<string, string | undefined>;
+  path: string;
+  payload: IdentityProviderLkgPayload;
+  secrets: PlatformSecretService;
+  testHooks?: IdentityProviderLkgTestHooks;
+}): Promise<IdentityProviderLkgWriteResult> => {
+  // Normalize to write-version shape before compare/persist (v1 inputs upgrade on write).
+  const requested = parsePayload({
+    ...input.payload,
+    providerTombstones: input.payload.providerTombstones ?? [],
+    version: LKG_WRITE_VERSION,
+  });
+  const directory = pathModule.dirname(input.path);
+  await assertSecureDirectory(directory, true);
+  await ensureExistingTargetIsSecure(input.path);
+
+  let current: IdentityProviderLkgPayload | null = null;
+  try {
+    current = await decodePayload({
+      enforceAge: false,
+      env: input.env,
+      path: input.path,
+      secrets: input.secrets,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  const providerTombstones = mergeProviderTombstones(
+    current?.providerTombstones,
+    requested.providerTombstones,
+    requested.providers,
+  );
+  const payload: IdentityProviderLkgPayload = {
+    ...requested,
+    providerTombstones,
+    version: LKG_WRITE_VERSION,
+  };
+
+  if (current) {
+    const comparison = compareSnapshots(current, payload);
+    if (comparison !== 'upgrade') return comparison;
+  }
+
+  const temporaryPath = `${input.path}.${process.pid}.${randomUUID()}.tmp`;
+  let temporaryCreated = false;
+  try {
+    const plaintext = JSON.stringify(payload);
+    const ciphertext = await input.secrets.encrypt(plaintext);
+    const envelope: IdentityProviderLkgEnvelope = {
+      ciphertext,
+      format: LKG_FORMAT,
+      signature: await input.secrets.signArtifact(LKG_DOMAIN, ciphertext),
+      version: LKG_WRITE_VERSION,
+    };
+    const temporary = await open(
+      temporaryPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+      0o600,
+    );
+    temporaryCreated = true;
+    try {
+      await temporary.writeFile(JSON.stringify(envelope), { encoding: 'utf8' });
+      await temporary.sync();
+      assertSecureFile(await temporary.stat());
+    } finally {
+      await temporary.close();
+    }
+    await input.testHooks?.beforeRename?.(temporaryPath);
+    await rename(temporaryPath, input.path);
+    temporaryCreated = false;
+    await openAndReadSecure(input.path);
+    const directoryHandle = await open(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      await directoryHandle.sync();
+    } finally {
+      await directoryHandle.close();
+    }
+    return 'written';
+  } finally {
+    if (temporaryCreated) await removeIfPresent(temporaryPath);
+  }
+};
+
 export const writeIdentityProviderLkg = async (input: {
   env: Record<string, string | undefined>;
   payload: IdentityProviderLkgPayload;
   secrets: PlatformSecretService;
   testHooks?: IdentityProviderLkgTestHooks;
 }): Promise<IdentityProviderLkgWriteResult> => {
-  const payload = parsePayload(input.payload);
   const path = resolveLkgPath(input.env);
-  return withProcessWriteLock(path, async () => {
-    const directory = pathModule.dirname(path);
-    await assertSecureDirectory(directory, true);
-    await ensureExistingTargetIsSecure(path);
-    try {
-      const current = await decodePayload({
-        enforceAge: false,
-        env: input.env,
-        path,
-        secrets: input.secrets,
-      });
-      const comparison = compareSnapshots(current, payload);
-      if (comparison !== 'upgrade') return comparison;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-
-    const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    let temporaryCreated = false;
-    try {
-      const plaintext = JSON.stringify(payload);
-      const ciphertext = await input.secrets.encrypt(plaintext);
-      const envelope: IdentityProviderLkgEnvelope = {
-        ciphertext,
-        format: LKG_FORMAT,
-        signature: await input.secrets.signArtifact(LKG_DOMAIN, ciphertext),
-        version: LKG_VERSION,
-      };
-      const temporary = await open(
-        temporaryPath,
-        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-        0o600,
-      );
-      temporaryCreated = true;
-      try {
-        await temporary.writeFile(JSON.stringify(envelope), { encoding: 'utf8' });
-        await temporary.sync();
-        assertSecureFile(await temporary.stat());
-      } finally {
-        await temporary.close();
-      }
-      await input.testHooks?.beforeRename?.(temporaryPath);
-      await rename(temporaryPath, path);
-      temporaryCreated = false;
-      await openAndReadSecure(path);
-      const directoryHandle = await open(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        await directoryHandle.sync();
-      } finally {
-        await directoryHandle.close();
-      }
-      return 'written';
-    } finally {
-      if (temporaryCreated) await removeIfPresent(temporaryPath);
-    }
-  });
+  return withProcessWriteLock(path, async () =>
+    writeIdentityProviderLkgUnderLock({
+      env: input.env,
+      path,
+      payload: input.payload,
+      secrets: input.secrets,
+      testHooks: input.testHooks,
+    }),
+  );
 };

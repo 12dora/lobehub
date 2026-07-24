@@ -41,10 +41,14 @@ vi.mock('@/database/core/db-adaptor', () => ({
 }));
 
 const cleanup = async () => {
-  await db.delete(platformIdentityProviderTestAttempts);
-  await db.delete(platformIdentityProviderSecrets);
-  await db.delete(platformIdentityProviders);
-  await db.delete(platformAuditLogs);
+  // Append-only audit + related identity fixtures need trigger bypass for teardown.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.delete(platformIdentityProviderTestAttempts);
+    await tx.delete(platformIdentityProviderSecrets);
+    await tx.delete(platformIdentityProviders);
+    await tx.delete(platformAuditLogs);
+  });
   const ownedRoles = await db
     .select({ id: roles.id })
     .from(roles)
@@ -312,6 +316,78 @@ describe('admin.identityProviders RBAC and feature gate', () => {
         .where(eq(platformIdentityProviders.id, provider.id)),
     ).toEqual([{ revision: provider.revision }]);
     consoleError.mockRestore();
+  });
+
+  it('redacts opaque replacement and current secrets from success and failure mutation audits', async () => {
+    // identity/F5: success-path and failure-path audits must never retain opaque secrets
+    // that an admin pasted into the free-text reason (denied-reauth path already covered).
+    const currentSecret = 'opaque-success-current-x7k9m2p4q8';
+    const nextSecret = 'opaque-success-next-z3n5w1v6b0';
+    const failureSecret = 'opaque-failure-replacement-j4h8';
+    const created = await (
+      await callerFor(ids.creator)
+    ).create(
+      identityInput(
+        'opaque-audit-success',
+        { operation: 'replace', value: currentSecret },
+        `seed with ${currentSecret}`,
+      ),
+    );
+
+    const rotated = await (
+      await callerFor(ids.updater)
+    ).update({
+      ...identityInput(
+        'opaque-audit-success',
+        { operation: 'replace', value: nextSecret },
+        `rotate using ${currentSecret} then ${nextSecret}`,
+      ),
+      expectedRevision: created.revision,
+      id: created.id,
+    });
+    expect(rotated.secret.configured).toBe(true);
+
+    await expect(
+      (await callerFor(ids.updater)).update({
+        ...identityInput(
+          'opaque-audit-success',
+          { operation: 'replace', value: failureSecret },
+          `stale rev with ${nextSecret} and ${failureSecret}`,
+        ),
+        // Stale CAS: server head is rotated.revision; this must fail after reason sanitization.
+        expectedRevision: created.revision,
+        id: created.id,
+      }),
+    ).rejects.toBeTruthy();
+
+    const providerSuccess = (await db.select().from(platformAuditLogs)).filter(
+      (row) =>
+        row.result === 'success' &&
+        (row.targetId === created.id || row.targetId === 'opaque-audit-success') &&
+        (row.action === 'admin.identityProviders.create' ||
+          row.action === 'admin.identityProviders.update'),
+    );
+    const providerFailure = (await db.select().from(platformAuditLogs)).filter(
+      (row) =>
+        row.result === 'failure' &&
+        row.targetId === created.id &&
+        row.action === 'admin.identityProviders.update',
+    );
+
+    expect(providerSuccess.length).toBeGreaterThanOrEqual(2);
+    expect(providerFailure.length).toBeGreaterThanOrEqual(1);
+
+    const serialized = JSON.stringify([...providerSuccess, ...providerFailure]);
+    expect(serialized).not.toContain(currentSecret);
+    expect(serialized).not.toContain(nextSecret);
+    expect(serialized).not.toContain(failureSecret);
+
+    for (const row of providerSuccess) {
+      expect(String(row.reason ?? '')).toContain('[REDACTED]');
+    }
+    for (const row of providerFailure) {
+      expect(String(row.reason ?? '')).toContain('[REDACTED]');
+    }
   });
 
   it('does not over-gate update keep, permits fresh replacement, and still forbids create keep', async () => {
