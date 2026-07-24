@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformRevisionConflictError } from '@/database/models/platform';
@@ -305,5 +305,314 @@ describe('AiCatalogAdminService model mutations', () => {
       (await db.select().from(platformAiModels).where(eq(platformAiModels.id, first.id)))[0]
         .enabled,
     ).toBe(true);
+  });
+
+  /**
+   * Count real drizzle DML entry-points on the transaction object (tx.update/insert/delete),
+   * not helper-function invocations. Sequential per-item paths issue one model UPDATE per id;
+   * bulk paths issue a single multi-row UPDATE for the unique set.
+   */
+  const withTxDmlCounters = async <T>(run: () => Promise<T>) => {
+    const counters = {
+      modelDeletes: 0,
+      modelInserts: 0,
+      modelUpdates: 0,
+      auditInserts: 0,
+    };
+    const originalTransaction = db.transaction.bind(db);
+    const spy = vi.spyOn(db, 'transaction').mockImplementation(((
+      callback: Parameters<typeof db.transaction>[0],
+      ...rest: unknown[]
+    ) =>
+      originalTransaction(
+        async (tx) => {
+          const rawUpdate = tx.update.bind(tx);
+          const rawInsert = tx.insert.bind(tx);
+          const rawDelete = tx.delete.bind(tx);
+          (tx as { update: typeof tx.update }).update = ((table: unknown, ...args: unknown[]) => {
+            if (table === platformAiModels) counters.modelUpdates += 1;
+            return (rawUpdate as (...a: unknown[]) => unknown)(table, ...args);
+          }) as typeof tx.update;
+          (tx as { insert: typeof tx.insert }).insert = ((table: unknown, ...args: unknown[]) => {
+            if (table === platformAiModels) counters.modelInserts += 1;
+            if (table === platformAuditLogs) counters.auditInserts += 1;
+            return (rawInsert as (...a: unknown[]) => unknown)(table, ...args);
+          }) as typeof tx.insert;
+          (tx as { delete: typeof tx.delete }).delete = ((table: unknown, ...args: unknown[]) => {
+            if (table === platformAiModels) counters.modelDeletes += 1;
+            return (rawDelete as (...a: unknown[]) => unknown)(table, ...args);
+          }) as typeof tx.delete;
+          return callback(tx);
+        },
+        ...(rest as []),
+      )) as typeof db.transaction);
+
+    try {
+      const result = await run();
+      return { counters, result };
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  it('batchToggle uses bounded bulk DML and matches per-item enabled outcomes', async () => {
+    const provider = await service.createProviderDraft('admin', {
+      displayName: 'Bulk Toggle',
+      providerKey: 'bulk-toggle',
+      reason: 'create',
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    const modelCount = 12;
+    const modelIds: string[] = [];
+    for (let i = 0; i < modelCount; i += 1) {
+      const created = await service.createModel('admin', {
+        enabled: true,
+        expectedDraftToken: detail.draftToken,
+        modelKey: `m-${i}`,
+        providerId: provider.id,
+        reason: `model ${i}`,
+        sort: i,
+      });
+      modelIds.push(created.id);
+      detail = await service.getDetail(provider.id);
+    }
+
+    const { counters } = await withTxDmlCounters(() =>
+      service.applyModelImmediate('admin', {
+        enabled: false,
+        expectedDraftToken: detail.draftToken,
+        modelIds,
+        operation: 'batchToggle',
+        providerId: provider.id,
+        reason: 'bulk toggle off',
+      }),
+    );
+
+    // Real SQL reduction: one multi-row model UPDATE, not N per-id updates.
+    expect(counters.modelUpdates).toBe(1);
+    expect(counters.modelUpdates).toBeLessThan(modelCount);
+    // One multi-row audit insert (chunked) rather than N single-row inserts.
+    expect(counters.auditInserts).toBe(1);
+
+    const after = await service.getDetail(provider.id);
+    expect(after.draft.models).toHaveLength(modelCount);
+    expect(after.draft.models.every((model) => model.enabled === false)).toBe(true);
+
+    const batchAudits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiModels.update' && row.reason === 'bulk toggle off',
+    );
+    expect(batchAudits).toHaveLength(modelCount);
+  });
+
+  it('batchToggle with duplicate ids matches sequential final state and per-item audits', async () => {
+    const provider = await service.createProviderDraft('admin', {
+      displayName: 'Dup Toggle',
+      providerKey: 'dup-toggle',
+      reason: 'create',
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    const first = await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'dup-a',
+      providerId: provider.id,
+      reason: 'a',
+      sort: 0,
+    });
+    detail = await service.getDetail(provider.id);
+    const second = await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'dup-b',
+      providerId: provider.id,
+      reason: 'b',
+      sort: 1,
+    });
+    detail = await service.getDetail(provider.id);
+
+    // Schema permits duplicates; legacy sequential path toggled each entry and audited each.
+    const modelIds = [first.id, second.id, first.id];
+    const { counters } = await withTxDmlCounters(() =>
+      service.applyModelImmediate('admin', {
+        enabled: false,
+        expectedDraftToken: detail.draftToken,
+        modelIds,
+        operation: 'batchToggle',
+        providerId: provider.id,
+        reason: 'dup toggle off',
+      }),
+    );
+
+    // Unique DML only — never throw on RETURNING vs raw input length.
+    expect(counters.modelUpdates).toBe(1);
+    expect(counters.auditInserts).toBe(1);
+
+    const after = await service.getDetail(provider.id);
+    expect(after.draft.models).toHaveLength(2);
+    expect(after.draft.models.every((model) => model.enabled === false)).toBe(true);
+
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiModels.update' && row.reason === 'dup toggle off',
+    );
+    // Per-input audits (3), not unique-id count (2).
+    expect(audits).toHaveLength(3);
+    expect(audits.map((row) => row.targetId).sort()).toEqual(
+      [first.id, first.id, second.id].sort(),
+    );
+  });
+
+  it('batchUpdate bulk path creates and updates with identical final state and fewer statements', async () => {
+    const provider = await service.createProviderDraft('admin', {
+      displayName: 'Bulk Update',
+      providerKey: 'bulk-update',
+      reason: 'create',
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    const existing: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const created = await service.createModel('admin', {
+        displayName: `Old ${i}`,
+        enabled: true,
+        expectedDraftToken: detail.draftToken,
+        modelKey: `existing-${i}`,
+        providerId: provider.id,
+        reason: `seed ${i}`,
+        sort: i,
+      });
+      existing.push(created.id);
+      detail = await service.getDetail(provider.id);
+    }
+
+    const { counters } = await withTxDmlCounters(() =>
+      service.applyModelImmediate('admin', {
+        expectedDraftToken: detail.draftToken,
+        models: [
+          ...existing.map((id, index) => ({
+            displayName: `Renamed ${index}`,
+            id,
+          })),
+          {
+            displayName: 'Brand New',
+            enabled: true,
+            id: 'brand-new-key',
+            type: 'chat' as const,
+          },
+        ],
+        operation: 'batchUpdate',
+        providerId: provider.id,
+        reason: 'bulk update mixed',
+      }),
+    );
+
+    // 1 multi-row model INSERT + 1 multi-row model UPDATE (not 7 per-item DML statements).
+    expect(counters.modelInserts).toBe(1);
+    expect(counters.modelUpdates).toBe(1);
+    expect(counters.modelInserts + counters.modelUpdates).toBeLessThan(7);
+    expect(counters.auditInserts).toBe(1);
+
+    const after = await service.getDetail(provider.id);
+    expect(after.draft.models).toHaveLength(7);
+    expect(
+      after.draft.models
+        .filter((model) => model.modelKey.startsWith('existing-'))
+        .map((model) => model.displayName)
+        .sort(),
+    ).toEqual(['Renamed 0', 'Renamed 1', 'Renamed 2', 'Renamed 3', 'Renamed 4', 'Renamed 5']);
+    expect(after.draft.models.find((model) => model.modelKey === 'brand-new-key')).toMatchObject({
+      displayName: 'Brand New',
+      enabled: true,
+      type: 'chat',
+    });
+
+    const logs = await db.select().from(platformAuditLogs);
+    expect(
+      logs.filter(
+        (row) => row.action === 'admin.aiModels.create' && row.reason === 'bulk update mixed',
+      ),
+    ).toHaveLength(1);
+    expect(
+      logs.filter(
+        (row) => row.action === 'admin.aiModels.update' && row.reason === 'bulk update mixed',
+      ),
+    ).toHaveLength(6);
+  });
+
+  it('batchUpdate with duplicate ids composes last-wins and keeps per-item audits', async () => {
+    const provider = await service.createProviderDraft('admin', {
+      displayName: 'Dup Update',
+      providerKey: 'dup-update',
+      reason: 'create',
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    const model = await service.createModel('admin', {
+      displayName: 'Original',
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'dup-target',
+      providerId: provider.id,
+      reason: 'seed',
+      sort: 0,
+    });
+    detail = await service.getDetail(provider.id);
+
+    const { counters } = await withTxDmlCounters(() =>
+      service.applyModelImmediate('admin', {
+        expectedDraftToken: detail.draftToken,
+        models: [
+          { displayName: 'First rename', id: model.id },
+          { displayName: 'Second rename', enabled: false, id: model.id },
+        ],
+        operation: 'batchUpdate',
+        providerId: provider.id,
+        reason: 'dup update compose',
+      }),
+    );
+
+    // One unique-id UPDATE statement even though input listed the id twice.
+    expect(counters.modelUpdates).toBe(1);
+    expect(counters.auditInserts).toBe(1);
+
+    const after = await service.getDetail(provider.id);
+    const row = after.draft.models.find((item) => item.id === model.id);
+    // Sequential composition: first rename then second rename + disable.
+    expect(row).toMatchObject({
+      displayName: 'Second rename',
+      enabled: false,
+    });
+
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiModels.update' && row.reason === 'dup update compose',
+    );
+    expect(audits).toHaveLength(2);
+    expect(audits.every((entry) => entry.targetId === model.id)).toBe(true);
+  });
+
+  it('clear uses bulk delete instead of per-model DML and keeps per-item audits', async () => {
+    const { first, provider, second } = await createProviderAndModels();
+    const detail = await service.getDetail(provider.id);
+
+    const { counters } = await withTxDmlCounters(() =>
+      service.applyModelImmediate('admin', {
+        expectedDraftToken: detail.draftToken,
+        operation: 'clear',
+        providerId: provider.id,
+        reason: 'bulk clear',
+      }),
+    );
+
+    expect(counters.modelDeletes).toBe(1);
+    expect(counters.auditInserts).toBe(1);
+
+    const after = await service.getDetail(provider.id);
+    expect(after.draft.models).toEqual([]);
+    const deleteAudits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiModels.deleteFromDraft' && row.reason === 'bulk clear',
+    );
+    expect(deleteAudits).toHaveLength(2);
+    expect(deleteAudits.map((row) => row.targetId).sort()).toEqual([first.id, second.id].sort());
   });
 });

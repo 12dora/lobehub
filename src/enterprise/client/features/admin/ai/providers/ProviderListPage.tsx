@@ -14,7 +14,7 @@ import { adminAiCatalogService } from '@/enterprise/client/services/adminAiCatal
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable from '../../primitives/DataTable';
 import StatusBadge from '../../primitives/StatusBadge';
-import { deriveAiCatalogPermissions } from '../controller';
+import { canHardDeleteAiProvider, deriveAiCatalogPermissions } from '../controller';
 import { refreshAdminAiProviderLists, useFetchAdminAiProviders } from '../hooks/useAdminAiCatalog';
 import { commitThenScheduleRefresh } from '../mutationRefresh';
 import type { AdminAiProviderListInput, AdminAiProviderListItem } from '../types';
@@ -137,7 +137,7 @@ const ProviderListPage = memo(() => {
               render: (_: unknown, item: AdminAiProviderListItem) =>
                 // Ever-published providers keep a fail-closed tombstone; only never-published
                 // drafts (revision === 0) may be hard-deleted. Use archive/disable instead.
-                item.revision > 0 ? null : (
+                canHardDeleteAiProvider(item) ? (
                   <Button
                     danger
                     size="small"
@@ -167,7 +167,7 @@ const ProviderListPage = memo(() => {
                   >
                     {t('aiCatalog.providers.actions.delete')}
                   </Button>
-                ),
+                ) : null,
             },
           ]
         : []),

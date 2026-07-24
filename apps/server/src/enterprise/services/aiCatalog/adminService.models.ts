@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import { PlatformAiCatalogModel, PlatformRevisionConflictError } from '@/database/models/platform';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import {
+  type NewPlatformAiModel,
   type PlatformAiModelAbilities,
   type PlatformAiModelConfig,
   type PlatformAiModelItem,
@@ -28,6 +29,7 @@ import {
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from './errors';
+import { modelBatchDml } from './modelBatchDml';
 import type { AiCatalogSecretManager, AiSecretMutation } from './secretManager';
 import type { getLockedAiCatalogDraft } from './shared';
 import { aiCatalogDraftToken } from './shared';
@@ -400,7 +402,10 @@ export abstract class AiCatalogAdminServiceModelOps {
         break;
       }
       case 'batchToggle': {
-        // One provider lock + one draft load; dependents prefetched once; no per-item reload.
+        // One lock + one draft load; dependents once; bulk UPDATE + bulk audit (no per-row DML).
+        // Input may contain duplicate ids (schema permits them). DML is unique-set;
+        // RETURNING is checked against that set. Audits stay one-per-input like the
+        // legacy sequential path (duplicate toggles compose to the same final state).
         const reasonText = await this.sanitizeReason(reason, providerId);
         try {
           await this.db.transaction(async (tx) => {
@@ -413,8 +418,16 @@ export abstract class AiCatalogAdminServiceModelOps {
             for (const modelId of modelIds) {
               if (!modelsById.has(modelId)) throw new AiCatalogNotFoundError();
             }
+            // Preserve first-seen order; DROP later dups for multi-row UPDATE only.
+            const uniqueModelIds: string[] = [];
+            const seenModelIds = new Set<string>();
+            for (const modelId of modelIds) {
+              if (seenModelIds.has(modelId)) continue;
+              seenModelIds.add(modelId);
+              uniqueModelIds.push(modelId);
+            }
             if (input.enabled === false) {
-              const keysToCheck = modelIds
+              const keysToCheck = uniqueModelIds
                 .map((modelId) => modelsById.get(modelId)!)
                 .filter((model) => model.enabled)
                 .map((model) => model.modelKey);
@@ -430,29 +443,34 @@ export abstract class AiCatalogAdminServiceModelOps {
               }
             }
             const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
-            const audit = new PlatformAuditService(tx);
-            for (const modelId of modelIds) {
+            for (const modelId of uniqueModelIds) {
               const current = modelsById.get(modelId)!;
               assertAiCatalogPublicFieldsExcludeCredentials(
                 { ...current, enabled: input.enabled! },
                 keyVaults,
               );
-              const row = await repository.updateModel(providerId, modelId, {
-                enabled: input.enabled!,
-                status: 'draft',
-                updatedBy: actorUserId,
-              });
-              if (!row) throw new AiCatalogNotFoundError();
-              await audit.append({
+            }
+            const updated = await modelBatchDml.bulkSetModelsEnabled(tx, {
+              enabled: input.enabled!,
+              modelIds: uniqueModelIds,
+              providerId,
+              updatedBy: actorUserId,
+            });
+            // Never compare RETURNING to the raw (possibly duplicate) input length.
+            if (updated.length !== uniqueModelIds.length) throw new AiCatalogNotFoundError();
+            // Per-input audits (including duplicate targetIds) match sequential toggles.
+            await modelBatchDml.bulkAppendAuditEntries(
+              tx,
+              modelIds.map((modelId) => ({
                 action: 'admin.aiModels.update',
                 actorUserId,
                 afterDiff: { modelId, providerId },
                 reason: reasonText,
-                result: 'success',
+                result: 'success' as const,
                 targetId: modelId,
                 targetType: 'model',
-              });
-            }
+              })),
+            );
             await repository.updateProvider(providerId, {
               status: 'draft',
               updatedBy: actorUserId,
@@ -470,7 +488,7 @@ export abstract class AiCatalogAdminServiceModelOps {
         break;
       }
       case 'batchUpdate': {
-        // Lock once, prefetch credentials once, mutate in memory order without full-draft reloads.
+        // Lock once; validate + plan in memory; bounded multi-row insert/update + bulk audit.
         const reasonText = await this.sanitizeReason(reason, providerId);
         try {
           await this.db.transaction(async (tx) => {
@@ -497,10 +515,23 @@ export abstract class AiCatalogAdminServiceModelOps {
                 throw new AiCatalogResourceInUseError(dependents);
               }
             }
-            const audit = new PlatformAuditService(tx);
+
+            const creates: NewPlatformAiModel[] = [];
+            const createAuditModelKeys: string[] = [];
+            // Duplicate update ids: compose patches in input order (same as sequential
+            // per-item updates that re-read the row), then DML once per unique id.
+            type PlannedUpdate = ReturnType<typeof modelBatchDml.mergeModelUpdateFields> & {
+              id: string;
+              updatedBy: string;
+            };
+            const updatesById = new Map<string, PlannedUpdate>();
+            const updateAuditIds: string[] = [];
+
             for (const item of input.models ?? []) {
               const current = modelsById.get(item.id);
               if (!current) {
+                // Creates keep every input row so duplicate modelKeys still hit the unique
+                // constraint (same failure as sequential create-then-create).
                 const values = {
                   abilities: item.abilities as CreateModelInput['abilities'],
                   config: item.config as CreateModelInput['config'],
@@ -516,7 +547,7 @@ export abstract class AiCatalogAdminServiceModelOps {
                   type: item.type as CreateModelInput['type'],
                 };
                 assertAiCatalogPublicFieldsExcludeCredentials(values, keyVaults);
-                const row = await repository.createModel({
+                creates.push({
                   ...values,
                   abilities: values.abilities as PlatformAiModelAbilities | undefined,
                   config: values.config as PlatformAiModelConfig | null | undefined,
@@ -529,16 +560,7 @@ export abstract class AiCatalogAdminServiceModelOps {
                   status: 'draft',
                   updatedBy: actorUserId,
                 });
-                modelsById.set(row.id, toModelDraft(row));
-                await audit.append({
-                  action: 'admin.aiModels.create',
-                  actorUserId,
-                  afterDiff: { modelKey: row.modelKey, providerId },
-                  reason: reasonText,
-                  result: 'success',
-                  targetId: row.id,
-                  targetType: 'model',
-                });
+                createAuditModelKeys.push(item.id);
               } else {
                 const values = {
                   abilities: item.abilities as UpdateModelInput['abilities'],
@@ -553,30 +575,62 @@ export abstract class AiCatalogAdminServiceModelOps {
                   settings: item.settings as UpdateModelInput['settings'],
                   type: item.type as UpdateModelInput['type'],
                 };
-                assertAiCatalogPublicFieldsExcludeCredentials({ ...current, ...values }, keyVaults);
-                const row = await repository.updateModel(providerId, item.id, {
-                  ...values,
-                  abilities: values.abilities as PlatformAiModelAbilities | undefined,
-                  config: values.config as PlatformAiModelConfig | null | undefined,
-                  parameters: values.parameters as PlatformAiModelParameters | undefined,
-                  pricing: values.pricing as PlatformAiModelPricing | null | undefined,
-                  settings: values.settings as PlatformAiModelSettings | undefined,
-                  status: 'draft',
+                const base = updatesById.get(item.id) ?? current;
+                const merged = modelBatchDml.mergeModelUpdateFields(base, values);
+                assertAiCatalogPublicFieldsExcludeCredentials(merged, keyVaults);
+                updatesById.set(item.id, {
+                  id: item.id,
                   updatedBy: actorUserId,
+                  ...merged,
                 });
-                if (!row) throw new AiCatalogNotFoundError();
-                modelsById.set(row.id, toModelDraft(row));
-                await audit.append({
+                updateAuditIds.push(item.id);
+              }
+            }
+
+            const createdRows = await modelBatchDml.bulkCreateModels(tx, creates);
+            if (createdRows.length !== creates.length) throw new AiCatalogNotFoundError();
+            const createdByModelKey = new Map(createdRows.map((row) => [row.modelKey, row]));
+            for (const modelKey of createAuditModelKeys) {
+              if (!createdByModelKey.has(modelKey)) throw new AiCatalogNotFoundError();
+            }
+
+            const updates = [...updatesById.values()];
+            const updatedRows = await modelBatchDml.bulkUpdateModelsMerged(tx, providerId, updates);
+            // RETURNING is unique-id count; never compare to raw input length with dups.
+            if (updatedRows.length !== updates.length) throw new AiCatalogNotFoundError();
+
+            // Audits follow input order (duplicate update targets produce multiple audits).
+            const auditEntries: Parameters<typeof modelBatchDml.bulkAppendAuditEntries>[1] = [];
+            let createIdx = 0;
+            let updateIdx = 0;
+            for (const item of input.models ?? []) {
+              if (modelsById.has(item.id)) {
+                const modelId = updateAuditIds[updateIdx++]!;
+                auditEntries.push({
                   action: 'admin.aiModels.update',
                   actorUserId,
-                  afterDiff: { modelId: item.id, providerId },
+                  afterDiff: { modelId, providerId },
                   reason: reasonText,
                   result: 'success',
-                  targetId: item.id,
+                  targetId: modelId,
+                  targetType: 'model',
+                });
+              } else {
+                const modelKey = createAuditModelKeys[createIdx++]!;
+                const row = createdByModelKey.get(modelKey)!;
+                auditEntries.push({
+                  action: 'admin.aiModels.create',
+                  actorUserId,
+                  afterDiff: { modelKey: row.modelKey, providerId },
+                  reason: reasonText,
+                  result: 'success',
+                  targetId: row.id,
                   targetType: 'model',
                 });
               }
             }
+            await modelBatchDml.bulkAppendAuditEntries(tx, auditEntries);
+
             await repository.updateProvider(providerId, {
               status: 'draft',
               updatedBy: actorUserId,
@@ -594,7 +648,7 @@ export abstract class AiCatalogAdminServiceModelOps {
         break;
       }
       case 'clear': {
-        // Lock once, batch dependency check, delete all models, single provider status update.
+        // Lock once, batch dependency check, bulk delete + bulk audit, single provider update.
         const reasonText = await this.sanitizeReason(reason, providerId);
         try {
           await this.db.transaction(async (tx) => {
@@ -610,10 +664,15 @@ export abstract class AiCatalogAdminServiceModelOps {
             if (dependents.some((item) => item.blocking)) {
               throw new AiCatalogResourceInUseError(dependents);
             }
-            const audit = new PlatformAuditService(tx);
-            for (const model of models) {
-              await repository.deleteModel(providerId, model.id);
-              await audit.append({
+            const deleted = await modelBatchDml.bulkDeleteModels(
+              tx,
+              providerId,
+              models.map((model) => model.id),
+            );
+            if (deleted !== models.length) throw new AiCatalogNotFoundError();
+            await modelBatchDml.bulkAppendAuditEntries(
+              tx,
+              models.map((model) => ({
                 action: 'admin.aiModels.deleteFromDraft',
                 actorUserId,
                 beforeDiff: {
@@ -622,11 +681,11 @@ export abstract class AiCatalogAdminServiceModelOps {
                   providerId,
                 },
                 reason: reasonText,
-                result: 'success',
+                result: 'success' as const,
                 targetId: model.id,
                 targetType: 'model',
-              });
-            }
+              })),
+            );
             await repository.updateProvider(providerId, {
               status: 'draft',
               updatedBy: actorUserId,

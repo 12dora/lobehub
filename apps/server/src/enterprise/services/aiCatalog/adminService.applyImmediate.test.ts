@@ -17,6 +17,7 @@ import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/sec
 
 import { AiCatalogAdminService, AiCatalogValidationError } from './adminService';
 import {
+  AiCatalogExecutionResolver,
   AiCatalogRuntimeAdapter,
   clearAiCatalogRuntimeCache,
   getEmptyAiProviderRuntimeState,
@@ -326,13 +327,17 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   });
 
   it('refuses hard-delete of ever-published providers so runtime keeps a BYOK tombstone', async () => {
-    const service = createService(async () => {});
+    const secretService = new PlatformSecretService({ keyProvider });
+    const service = new AiCatalogAdminService(db, secretService, {
+      connectionProbe: async () => {},
+    });
+    const providerKey = 'published-no-hard-delete';
     const created = await service.createProviderDraft('admin', {
       source: 'custom',
       checkModel: 'chat',
       displayName: 'Published tombstone',
       enabled: true,
-      providerKey: 'published-no-hard-delete',
+      providerKey,
       reason: 'create',
       secret: { operation: 'replace', value: 'seed-key' },
       settings: { sdkType: 'openai' },
@@ -357,6 +362,29 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     detail = await service.getDetail(created.id);
     expect(detail.draft.revision).toBeGreaterThan(0);
 
+    // Archive/disable is the supported retirement path; hard-delete must still be rejected.
+    await service.archiveProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'archive managed tombstone',
+    });
+    detail = await service.getDetail(created.id);
+    expect(detail.draft.status).toBe('archived');
+    expect(detail.draft.revision).toBeGreaterThan(0);
+
+    await expect(
+      service.deleteProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: created.id,
+        reason: 'hard delete published',
+      }),
+    ).rejects.toMatchObject({
+      issues: expect.arrayContaining([
+        expect.stringMatching(/cannot be hard-deleted|archive or disable/i),
+      ]),
+    });
     await expect(
       service.deleteProvider('admin', {
         expectedDraftToken: detail.draftToken,
@@ -366,9 +394,20 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
       }),
     ).rejects.toBeInstanceOf(AiCatalogValidationError);
 
-    // Provider row remains so archive/disable can keep the fail-closed tombstone.
+    // Provider row remains so the fail-closed tombstone survives.
     await expect(service.getDetail(created.id)).resolves.toMatchObject({
-      draft: { id: created.id, providerKey: 'published-no-hard-delete' },
+      draft: { id: created.id, providerKey, revision: expect.any(Number), status: 'archived' },
+    });
+    expect((await service.getDetail(created.id)).draft.revision).toBeGreaterThan(0);
+
+    // Runtime must fail closed with PROVIDER_DISABLED — never PLATFORM_NOT_FOUND (BYOK signal).
+    clearAiCatalogRuntimeCache();
+    const execution = new AiCatalogExecutionResolver(db, secretService);
+    await expect(execution.resolveProviderExecutionConfig(providerKey)).rejects.toMatchObject({
+      code: 'PLATFORM_AI_PROVIDER_DISABLED',
+    });
+    await expect(execution.resolveProviderExecutionConfig(providerKey)).rejects.not.toMatchObject({
+      code: 'PLATFORM_NOT_FOUND',
     });
   });
 

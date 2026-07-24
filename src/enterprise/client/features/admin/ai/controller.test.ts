@@ -8,6 +8,7 @@ import {
   buildModelCreateTargetListInput,
   buildProviderCreatePayload,
   buildProviderUpdatePayload,
+  canHardDeleteAiProvider,
   deriveAiCatalogPermissions,
   deriveAiProviderConnectionTestView,
   deriveGlobalModelActions,
@@ -60,6 +61,14 @@ describe('ai catalog controller', () => {
       canTestProvider: true,
       canUpdateProvider: false,
     });
+  });
+
+  it('gates hard-delete to never-published drafts only (revision === 0)', () => {
+    // UI must hide hard-delete for ever-published providers so the fail-closed
+    // tombstone is preserved (server also rejects revision > 0 deletes).
+    expect(canHardDeleteAiProvider({ revision: 0 })).toBe(true);
+    expect(canHardDeleteAiProvider({ revision: 1 })).toBe(false);
+    expect(canHardDeleteAiProvider({ revision: 12 })).toBe(false);
   });
 
   it('enables global model actions without any Provider update permission', () => {
