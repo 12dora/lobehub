@@ -77,8 +77,8 @@ describe('Better Auth callback documentation', () => {
   });
 
   it('keeps administrator-facing providerKey templates on the Generic OAuth route', () => {
-    const redevelopFiles = listTextFiles(path.join(repositoryRoot, 'docs/redevelopment'));
-    const failures = redevelopFiles
+    const enterpriseDocFiles = listTextFiles(path.join(repositoryRoot, 'docs/enterprise'));
+    const failures = enterpriseDocFiles
       .filter((file) => readFileSync(file, 'utf8').includes(`${legacyCallbackRoot}/{providerKey}`))
       .map((file) => path.relative(repositoryRoot, file));
 

@@ -1,14 +1,14 @@
 # Enterprise administration threat model
 
-Status: W9 runtime baseline. This document describes the code at the repository revision that contains it;
-it is not a production certification. The machine-readable companion is
-`apps/server/src/enterprise/security/policy/adminMutationRegistry.ts`.
+This document describes the enterprise admin security controls implemented at this repository revision;
+it is not a production certification. The machine-readable companion is the admin-mutation policy
+registry at `apps/server/src/enterprise/security/policy/adminMutationRegistry/`.
 
 ## Scope and security objectives
 
 This model covers the enterprise `admin` tRPC tree, platform configuration publication, managed
 agents and skills, connector and AI catalogs, identity providers, branding, users, global roles,
-EasyAuth synchronization, and controlled restart. It also covers the shared platform audit,
+and controlled restart. It also covers the shared platform audit,
 envelope-encryption, redaction, outbound-request, and administrative mutation rate-limit primitives
 used by those routes.
 
@@ -55,16 +55,16 @@ or telemetry consumer without a need to access plaintext material.
 
 ## Threats and current controls
 
-| STRIDE class           | Representative threat                                                              | Controls implemented now                                                                                                                                                                                                    | Residual risk / required work                                                                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Spoofing               | Client supplies a fake role or recent-auth timestamp                               | Authenticated tRPC context, active-user middleware, permission middleware, server-derived authentication metadata                                                                                                           | Dangerous procedures and protected-value replacement or clearing paths have enforced or conditional recent-auth controls                           |
-| Tampering              | Stale admin overwrites a newer draft or publication                                | Draft tokens/revisions, compare-and-set updates, immutable revisions, transactional publication in the implemented catalogs                                                                                                 | Reconciliation does not prove every service transaction is atomic; real PostgreSQL failure and rollback coverage remains a release acceptance item |
-| Repudiation            | Administrator denies a destructive change                                          | Bounded reason fields and sanitized platform audit records on the procedures marked `enforced`, including prepare-restart success/failure and validation outcomes                                                           | Denied-audit writes remain best effort and must never reclassify a denial as success                                                               |
-| Information disclosure | Integration material appears in API output, logs, or audit diffs                   | Server-side encrypted storage boundaries, redaction helpers, public projections, fingerprint removal on audit reads                                                                                                         | Environment-held master key remains available to the process; distributed trace/error-sink verification is incomplete                              |
-| Denial of service      | Repeated tests, syncs, publications, or restart requests consume resources         | Permission gates, bounded schemas, shared multi-instance admin mutation rate limiter (actor+procedure digest, PostgreSQL authority, fail closed without DB), outbound byte/deadline limits                                  | Rate-limit windows are fixed server-side defaults; ops still need multi-instance chaos evidence                                                    |
-| Elevation of privilege | Role replacement, protected-value change, publication, or managed-resource bypass  | Fine-grained platform permissions, active-user checks, recent reauth on dangerous and protected-value operations, last-super-admin protection, managed-resource guards                                                      | Shared administrative mutation rate limiting is enforced on all live admin mutations                                                               |
-| SSRF / confused deputy | Remote catalog or identity address reaches metadata or pivots through redirect/DNS | Shared outbound client blocks metadata, pins DNS per hop, re-reads policy per redirect, bounds bytes/time, and fails closed on secret-bearing cross-origin redirects; AI provider tests and EasyAuth sync use that boundary | No port allowlist or generic content-type enforcement at the base client                                                                           |
-| Replay / split brain   | A captured request, stale restart intent, or stale cache re-applies state          | Request identifiers on selected flows, revision checks, bounded restart intents, shared state for selected transitions, signed identity LKG                                                                                 | These controls are not a single global mutation protocol; cache convergence and multi-instance chaos evidence remain incomplete                    |
+| STRIDE class           | Representative threat                                                              | Controls implemented now                                                                                                                                                                                                                 | Residual risk / required work                                                                                                                      |
+| ---------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spoofing               | Client supplies a fake role or recent-auth timestamp                               | Authenticated tRPC context, active-user middleware, permission middleware, server-derived authentication metadata                                                                                                                        | Dangerous procedures and protected-value replacement or clearing paths have enforced or conditional recent-auth controls                           |
+| Tampering              | Stale admin overwrites a newer draft or publication                                | Draft tokens/revisions, compare-and-set updates, immutable revisions, transactional publication in the implemented catalogs                                                                                                              | Reconciliation does not prove every service transaction is atomic; real PostgreSQL failure and rollback coverage remains a release acceptance item |
+| Repudiation            | Administrator denies a destructive change                                          | Bounded reason fields and sanitized platform audit records on the procedures marked `enforced`, including prepare-restart success/failure and validation outcomes                                                                        | Denied-audit writes remain best effort and must never reclassify a denial as success                                                               |
+| Information disclosure | Integration material appears in API output, logs, or audit diffs                   | Server-side encrypted storage boundaries, redaction helpers, public projections, fingerprint removal on audit reads                                                                                                                      | Environment-held master key remains available to the process; distributed trace/error-sink verification is incomplete                              |
+| Denial of service      | Repeated tests, syncs, publications, or restart requests consume resources         | Permission gates, bounded schemas, shared multi-instance admin mutation rate limiter (actor+procedure digest, PostgreSQL authority, fail closed without DB), outbound byte/deadline limits                                               | Rate-limit windows are fixed server-side defaults; ops still need multi-instance chaos evidence                                                    |
+| Elevation of privilege | Role replacement, protected-value change, publication, or managed-resource bypass  | Fine-grained platform permissions, active-user checks, recent reauth on dangerous and protected-value operations, last-super-admin protection, managed-resource guards                                                                   | Shared administrative mutation rate limiting is enforced on all live admin mutations                                                               |
+| SSRF / confused deputy | Remote catalog or identity address reaches metadata or pivots through redirect/DNS | Shared outbound client blocks metadata, pins DNS per hop, re-reads policy per redirect, bounds bytes/time, and fails closed on secret-bearing cross-origin redirects; AI provider and identity-provider outbound calls use that boundary | No port allowlist or generic content-type enforcement at the base client                                                                           |
+| Replay / split brain   | A captured request, stale restart intent, or stale cache re-applies state          | Request identifiers on selected flows, revision checks, bounded restart intents, shared state for selected transitions, signed identity LKG                                                                                              | These controls are not a single global mutation protocol; cache convergence and multi-instance chaos evidence remain incomplete                    |
 
 ## Admin mutation policy registry
 
@@ -159,13 +159,6 @@ rotation, alerting, and disaster-recovery evidence remain required.
   Best-effort failure-audit handling must never turn a denied reauth into an allowed operation.
 - `admin.system.prepareRestart` writes a sanitized success audit in the same transaction as the
   prepared intent; failure and reauth-denial audits are best effort after rollback or rejection.
-- Administrative EasyAuth synchronization trims and bounds its reason, rejects values matched by the
-  centralized sensitive-material detector, and records minimized outcomes for bypass, skipped,
-  unchanged, degraded-cache, failure-without-cache, applied, and unexpected failure paths. Snapshot,
-  managed-role, and applied/degraded outcome-audit writes commit in one database transaction; an
-  outcome-audit failure rolls them all back and is not reclassified as a business failure. Remote
-  failure text is not copied into audit data. The EasyAuth app token is never placed in URLs, errors,
-  audits, snapshots, or test output.
 - Trace, error-reporting, and log-sink integration still require an end-to-end leakage check; the
   presence of a redaction helper alone is not proof that every sink invokes it.
 
@@ -179,13 +172,13 @@ checking, linting, and diff checks. The Vault fake suite's default run recorded
 for application reads. It verifies the integration path, but does not constitute production Vault or
 actual release acceptance.
 
-**M13 S06 runtime controls (code at this revision).** Shared multi-instance admin mutation rate
+**Runtime controls (code at this revision).** Shared multi-instance admin mutation rate
 limiting is implemented with PostgreSQL-authoritative windows and persisted `window_ms`, complete
-registry wiring (no live `gap`/`planned` rate-limit entries), SafeOutbound for EasyAuth sync and real
+registry wiring (no live `gap`/`planned` rate-limit entries), SafeOutbound for identity-provider and
 AI provider transports, prepareRestart success/failure audit, and Bedrock abort propagation. These
 are repository runtime controls, not production enablement evidence.
 
-**M13 PR-S05 / S07 repository security acceptance (automation only).** The harness under
+**Repository security acceptance (automation only).** The harness under
 `scripts/enterprise/security-acceptance/` produces a versioned, fail-closed report for production
 dependency advisory scanning (`pnpm audit` with an explicit exit matrix), enterprise leakage
 regression scanning (secret-shaped material on required roots; exact path+category+lineDigest

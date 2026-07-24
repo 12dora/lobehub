@@ -1,6 +1,0 @@
-=== YOUR PARTITION: routers ===
-Horizontal pass: TRPC ROUTER SURFACE — input validation, authorization registration, procedure to service wiring.
-Report issues only in these paths:
-- apps/server/src/enterprise/routers/**   (all admin/* and user/* routers and *Support.ts files, plus routers index)
-- apps/server/src/enterprise/index.ts
-Focus: every admin procedure must be registered in BOTH the security registry AND the policy registry — a new procedure missing from either registry is a defect. Input zod schemas must be strict: no unvalidated pass-through, and output schemas must not echo raw DB model rows. Reauth and rate-limit middleware must be applied where required; error mapping must be consistent. Cross-check that each router delegates to its service correctly — no business logic leaking into routers, no missing authz on a mutation. Dimension 5 is primary here: missing or duplicated authz registration, output schemas that echo raw DB rows, and procedures reachable without the intended permission. Also cover dimensions 1-4 for the router files themselves (long files, dead handlers, test rot in the many *.test.ts, missing zh-CN for any user-facing error copy surfaced here).
