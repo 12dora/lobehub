@@ -58,15 +58,23 @@ export const getTestDB = async (): Promise<LobeChatDatabase> => {
     )
   `);
 
-  for (const migration of migrations) {
-    const skipSql = migration.sql.some(
-      (s) => s.toLowerCase().includes('pg_search') || s.toLowerCase().includes('bm25'),
+  // Per-STATEMENT skip of Postgres/paradedb features PGlite lacks (pg_search/bm25 full-text,
+  // pg_trgm trigram indexes). Per-statement (not per-file) so a squashed single-file baseline
+  // still applies every PGlite-compatible statement. Real Postgres (paradedb) runs them all.
+  const isPgliteIncompatible = (stmt: string): boolean => {
+    const lower = stmt.toLowerCase();
+    return (
+      lower.includes('pg_search') ||
+      lower.includes('bm25') ||
+      lower.includes('pg_trgm') ||
+      lower.includes('gin_trgm_ops')
     );
+  };
 
-    if (!skipSql) {
-      for (const stmt of migration.sql) {
-        await testClientDB.execute(sql.raw(stmt));
-      }
+  for (const migration of migrations) {
+    for (const stmt of migration.sql) {
+      if (isPgliteIncompatible(stmt)) continue;
+      await testClientDB.execute(sql.raw(stmt));
     }
 
     await testClientDB.execute(
