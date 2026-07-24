@@ -31,14 +31,16 @@ import { assertPlatformPermission, loadPlatformAuthContext } from '../../guards/
 import { appendAuditAccessLog, buildAuditFilterSummary } from './accessLog';
 import { assertConversationAccessEnabled } from './contentPolicy';
 import {
+  buildAuditExportClientIdempotencyKey,
   buildAuditExportJobIdempotencyKey,
+  parseAuditExportJobInput,
   PLATFORM_AUDIT_EXPORT_JOB_TYPE,
 } from './exportConstants';
 import {
   type AuditExportArtifactStorage,
   AuditExportPrivateS3Storage,
   buildAuditExportStorageKey,
-  verifyArtifactChecksum,
+  checksumsMatch,
 } from './exportStorage';
 import { toPublicJobError } from './jobError';
 import { resolveAuditTimeWindow } from './timeWindow';
@@ -227,9 +229,33 @@ export class AdminAuditExportService {
     return { canReadConversations, permissions: auth.permissions };
   };
 
+  /**
+   * Resolve an export already published under a client mutation idempotency key
+   * (job type + actor-scoped key → job.input.exportId → export row).
+   */
+  private findExportByClientIdempotencyKey = async (
+    actorUserId: string,
+    clientKey: string,
+  ): Promise<PlatformAuditExportItem | undefined> => {
+    const job = await this.jobsModel.findByIdempotencyKey(
+      PLATFORM_AUDIT_EXPORT_JOB_TYPE,
+      buildAuditExportClientIdempotencyKey(actorUserId, clientKey),
+    );
+    if (!job) return undefined;
+    const parsed = parseAuditExportJobInput(job.input as Record<string, unknown>);
+    if (!parsed) return undefined;
+    return this.exportsModel.get(parsed.exportId);
+  };
+
   create = async (params: {
     actorPermissions?: readonly string[];
     actorUserId: string;
+    /**
+     * Optional client mutation idempotency key. Concurrent or retried create/publish
+     * calls with the same key converge on exactly one export + one job (return the
+     * existing row). When omitted, each call mints a new export (export-id job key).
+     */
+    idempotencyKey?: string;
     input: AdminAuditExportsCreateInputParsed;
   }) => {
     const filterSummary = buildAuditFilterSummary({
@@ -248,12 +274,23 @@ export class AdminAuditExportService {
       topicId: params.input.topicId,
       userId: params.input.userId,
     });
+    const clientIdempotencyKey =
+      params.idempotencyKey && params.idempotencyKey.length > 0 ? params.idempotencyKey : undefined;
 
     try {
       await this.assertConversationExportAccess(
         { actorPermissions: params.actorPermissions, actorUserId: params.actorUserId },
         params.input.kind,
       );
+
+      // Fast path: prior successful publication under this client key.
+      if (clientIdempotencyKey) {
+        const existing = await this.findExportByClientIdempotencyKey(
+          params.actorUserId,
+          clientIdempotencyKey,
+        );
+        if (existing) return toExportPublic(existing);
+      }
 
       const policy = await this.policyModel.getOrCreate();
       // Conversation / timeline exports are conversation surfaces — honor the kill-switch.
@@ -291,6 +328,8 @@ export class AdminAuditExportService {
 
       // Create + enqueue + required audit must commit together so workers cannot
       // claim a job for a request that never recorded its success audit (F1).
+      // Client idempotency (when set) uses job (type, key) dedup + export.job_id unique
+      // so concurrent publishers of the same logical key leave at most one export+job.
       const linkedRow = await this.inTransaction(async (tx) => {
         const exportsTx = new PlatformAuditExportModel(tx);
         const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
@@ -306,13 +345,26 @@ export class AdminAuditExportService {
           await this.afterCreateExport({ exportId: created.id });
         }
 
-        const { job } = await jobsTx.enqueue({
-          idempotencyKey: buildAuditExportJobIdempotencyKey(created.id),
+        const jobIdempotencyKey = clientIdempotencyKey
+          ? buildAuditExportClientIdempotencyKey(params.actorUserId, clientIdempotencyKey)
+          : buildAuditExportJobIdempotencyKey(created.id);
+
+        const { created: jobCreated, job } = await jobsTx.enqueue({
+          idempotencyKey: jobIdempotencyKey,
           input: { exportId: created.id },
           maxAttempts: 3,
           requestedBy: params.actorUserId,
           type: PLATFORM_AUDIT_EXPORT_JOB_TYPE,
         });
+
+        // Concurrent loser: another TX already published under this client key.
+        // Abort so our export row rolls back; caller reloads the winner.
+        if (clientIdempotencyKey && !jobCreated) {
+          const winnerId = parseAuditExportJobInput(job.input as Record<string, unknown>)?.exportId;
+          if (winnerId && winnerId !== created.id) {
+            throw new Error('AUDIT_EXPORT_PUBLICATION_DEDUP');
+          }
+        }
 
         if (this.afterEnqueue) {
           await this.afterEnqueue({ exportId: created.id, jobId: job.id });
@@ -344,6 +396,16 @@ export class AdminAuditExportService {
 
       return toExportPublic(linkedRow);
     } catch (error) {
+      // Concurrent loser under the same client key: return the winning export (dedup).
+      // Do not swallow auth/policy denials — only publication races / link conflicts.
+      if (clientIdempotencyKey && !isDeniedError(error)) {
+        const existing = await this.findExportByClientIdempotencyKey(
+          params.actorUserId,
+          clientIdempotencyKey,
+        );
+        if (existing) return toExportPublic(existing);
+      }
+
       await appendAuditAccessLog(this.db, {
         action: 'admin.audit.exports.create',
         actorUserId: params.actorUserId,
@@ -580,18 +642,19 @@ export class AdminAuditExportService {
         return failIntegrity('size_mismatch');
       }
 
-      const objectBytes = await this.storage.getObjectBytes(row.storageKey);
-      if (row.artifactBytes != null && objectBytes.byteLength !== row.artifactBytes) {
+      // Stream-hash the object (F10) — never buffer the full artifact for download verify.
+      const objectHash = await this.storage.hashObject(row.storageKey);
+      if (row.artifactBytes != null && objectHash.artifactBytes !== row.artifactBytes) {
         return failIntegrity('size_mismatch');
       }
-      if (!verifyArtifactChecksum(objectBytes, row.artifactChecksum)) {
+      if (!checksumsMatch(objectHash.artifactChecksum, row.artifactChecksum)) {
         return failIntegrity('checksum_mismatch');
       }
 
       // Shrink the replace-after-verify window: re-check size immediately before sign.
       // Full TOCTOU elimination requires immutable/versioned object keys (see OOS).
       const metaAfter = await this.storage.getObjectMetadata(row.storageKey);
-      if (metaAfter.contentLength !== objectBytes.byteLength) {
+      if (metaAfter.contentLength !== objectHash.artifactBytes) {
         return failIntegrity('size_mismatch_after_verify');
       }
 

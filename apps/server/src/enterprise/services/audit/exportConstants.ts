@@ -12,6 +12,16 @@ export type AuditExportJobInput = {
 export const buildAuditExportJobIdempotencyKey = (exportId: string): string =>
   `audit-export:${exportId}`;
 
+/**
+ * Client-owned mutation idempotency key for create/publish retries and concurrent
+ * double-submit of the same logical export request. Scoped by actor so keys never
+ * cross users. Distinct namespace from per-export keys (`audit-export:${exportId}`).
+ */
+export const buildAuditExportClientIdempotencyKey = (
+  actorUserId: string,
+  clientKey: string,
+): string => `audit-export:client:${actorUserId}:${clientKey}`;
+
 export const parseAuditExportJobInput = (
   input: Record<string, unknown> | null | undefined,
 ): AuditExportJobInput | null => {

@@ -39,6 +39,9 @@ const statsTopicRankProcedure = statsProcedure.use(
 
 /** Safety bound for full-month usage drain (pages × USAGE_PAGE_MAX). */
 const USAGE_FULL_MONTH_MAX_PAGES = 200;
+/** Max rows for the single-query bounded path (same ceiling as 200 × 500). */
+const USAGE_FULL_MONTH_MAX_ROWS =
+  USAGE_FULL_MONTH_MAX_PAGES * PlatformGlobalStatsModel.USAGE_PAGE_MAX;
 
 const isoDateString = z
   .string()
@@ -145,18 +148,37 @@ export const toSafeUsageLogs = (logs: GlobalUsageLog[]): SafeUsageLog[] =>
 
 /**
  * Public usage APIs return a plain full array (no `{ items, nextCursor }` envelope).
- * When the model only exposes keyset pages, walk them here so callers never see a
- * silently truncated first page.
+ * Prefer a single bounded SQL fetch (routers/F4); fall back to keyset page walks.
+ * Always fail closed with `usage_month_truncated` when the row budget is exhausted.
  */
 /** @internal exported for truncation regression tests */
 export const loadAllMonthUsage = async (
   model: PlatformGlobalStatsModel,
   mo?: string,
 ): Promise<GlobalUsageRecordItem[]> => {
+  const failTruncated = () =>
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: {
+        maxPages: USAGE_FULL_MONTH_MAX_PAGES,
+        maxRows: USAGE_FULL_MONTH_MAX_ROWS,
+        reason: 'usage_month_truncated',
+      },
+      httpCode: 'BAD_REQUEST',
+      message: 'Month usage exceeds the maximum full-fetch limit; use a narrower range',
+    });
+
+  // Hot path: one aggregate-sized SELECT with LIMIT maxRows+1 (no 200 serial pages).
+  if (typeof model.findByMonthBounded === 'function') {
+    const result = await model.findByMonthBounded(mo, USAGE_FULL_MONTH_MAX_ROWS);
+    if (result.hasMore) return failTruncated();
+    return result.items;
+  }
+
   if (typeof model.findByMonthPage === 'function') {
     const items: GlobalUsageRecordItem[] = [];
     let cursor: string | undefined;
-    // Safety bound: max pages × page size. If still truncated, fail closed (F8).
+    // Fallback page walk (stubs / older model surface). Fail closed at page budget (F8).
     for (let page = 0; page < USAGE_FULL_MONTH_MAX_PAGES; page += 1) {
       const result = await model.findByMonthPage(mo, {
         cursor,
@@ -166,17 +188,7 @@ export const loadAllMonthUsage = async (
       if (!result.nextCursor) return items;
       cursor = result.nextCursor;
     }
-    // Page budget exhausted while more rows remain — never return a silent undercount.
-    return throwEnterpriseError({
-      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-      details: {
-        maxPages: USAGE_FULL_MONTH_MAX_PAGES,
-        maxRows: USAGE_FULL_MONTH_MAX_PAGES * PlatformGlobalStatsModel.USAGE_PAGE_MAX,
-        reason: 'usage_month_truncated',
-      },
-      httpCode: 'BAD_REQUEST',
-      message: 'Month usage exceeds the maximum full-fetch limit; use a narrower range',
-    });
+    return failTruncated();
   }
   return model.findByMonth(mo);
 };

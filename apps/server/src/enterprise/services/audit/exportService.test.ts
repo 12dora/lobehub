@@ -232,6 +232,34 @@ describe('AdminAuditExportService', () => {
     expect(await serverDB.select().from(platformJobs)).toHaveLength(0);
   });
 
+  it('F12: same client idempotencyKey create returns the same export+job (no second row)', async () => {
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const input = {
+      from: window.from,
+      includeMessageBodies: false,
+      kind: 'operation_logs' as const,
+      reason: 'f12 sequential same-key create',
+      to: window.to,
+    };
+    const first = await service.create({
+      actorPermissions: EXPORT_ONLY,
+      actorUserId: actor,
+      idempotencyKey: 'f12-sequential-key',
+      input,
+    });
+    const second = await service.create({
+      actorPermissions: EXPORT_ONLY,
+      actorUserId: actor,
+      idempotencyKey: 'f12-sequential-key',
+      input,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.jobId).toBe(first.jobId);
+    expect(await serverDB.select().from(platformAuditExports)).toHaveLength(1);
+    expect(await serverDB.select().from(platformJobs)).toHaveLength(1);
+  });
+
   it('F5: cancel returns code-only public error (no purge outbox fields)', async () => {
     const service = new AdminAuditExportService(serverDB, { storage });
     const created = await service.create({

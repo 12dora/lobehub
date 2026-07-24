@@ -18,8 +18,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { finished } from 'node:stream/promises';
@@ -51,13 +51,13 @@ import {
   type AuditExportArtifactStorage,
   AuditExportPrivateS3Storage,
   buildAuditExportStorageKey,
+  checksumsMatch,
   formatArtifactChecksum,
-  sha256Hex,
 } from './exportStorage';
 import { mapExportFailureCode } from './jobError';
 
-/** Soft cap on artifact bytes while streaming (F10) — fails closed before multi-buffer upload. */
-const AUDIT_EXPORT_MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
+/** Defense-in-depth ceiling on artifact bytes while streaming (F10). */
+export const AUDIT_EXPORT_MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
 export interface ProcessNextAuditExportOptions {
   /**
@@ -75,6 +75,11 @@ export interface ProcessNextAuditExportOptions {
    */
   afterDomainComplete?: (info: { exportId: string; jobId: string }) => Promise<void> | void;
   leaseMs?: number;
+  /**
+   * Test seam: override the defense-in-depth byte ceiling (production keeps 256 MiB).
+   * Used to prove streaming handles artifacts larger than a small injected cap path.
+   */
+  maxArtifactBytes?: number;
   storage?: AuditExportArtifactStorage;
   workerId: string;
 }
@@ -204,6 +209,7 @@ export const processNextAuditExportJob = async (
   const exportsModel = new PlatformAuditExportModel(db);
   const storage = options.storage ?? new AuditExportPrivateS3Storage();
   const leaseMs = options.leaseMs ?? AUDIT_EXPORT_DEFAULT_LEASE_MS;
+  const maxArtifactBytes = options.maxArtifactBytes ?? AUDIT_EXPORT_MAX_ARTIFACT_BYTES;
 
   const claimed = await jobs.claimNext({
     leaseMs,
@@ -324,7 +330,7 @@ export const processNextAuditExportJob = async (
       const buf = Buffer.from(line, 'utf8');
       hasher.update(buf);
       totalBytes += buf.byteLength;
-      if (totalBytes > AUDIT_EXPORT_MAX_ARTIFACT_BYTES) {
+      if (totalBytes > maxArtifactBytes) {
         throw new AuditExportArtifactTooLargeError();
       }
       lineCount += 1;
@@ -418,36 +424,42 @@ export const processNextAuditExportJob = async (
       fileStream.end();
       await finished(fileStream);
 
-      // Single final read for upload (collection itself never held all rows in RAM).
-      const body = await readFile(tmpPath);
+      // Incremental digest from the write path — never re-buffer the temp file (F10).
       const localChecksum = formatArtifactChecksum(hasher.digest('hex'));
-      if (body.byteLength !== totalBytes) {
-        throw new Error('AUDIT_EXPORT_TEMP_SIZE_MISMATCH');
-      }
 
       // F6: durable cleanup intent before the object may exist. claimNext can
       // dead-letter a lease-expired final attempt without invoking worker cleanup.
       await exportsModel.recordArtifactUploadIntent(exportId, storageKey);
 
+      // Stream upload: createReadStream + precomputed checksum (bounded memory).
       const uploaded = await storage.uploadArtifact({
-        body,
+        artifactChecksum: localChecksum,
+        body: createReadStream(tmpPath),
+        contentLength: totalBytes,
         contentType: AUDIT_EXPORT_CONTENT_TYPE,
         storageKey,
       });
       uploadedBytes = uploaded.artifactBytes;
 
-      // Integrity: size + SHA-256 — same-length corruption must fail closed (clean + retry).
-      if (uploaded.artifactChecksum !== localChecksum) {
+      // Integrity: size + streaming SHA-256 — same-length corruption must fail closed.
+      if (!checksumsMatch(uploaded.artifactChecksum, localChecksum)) {
         await safeDelete(storage, storageKey);
         throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
+      }
+      if (uploaded.artifactBytes !== totalBytes) {
+        await safeDelete(storage, storageKey);
+        throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
       }
       const meta = await storage.getObjectMetadata(storageKey);
       if (meta.contentLength !== uploaded.artifactBytes || meta.contentLength !== totalBytes) {
         await safeDelete(storage, storageKey);
         throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
       }
-      const storedBytes = await storage.getObjectBytes(storageKey);
-      if (formatArtifactChecksum(sha256Hex(storedBytes)) !== uploaded.artifactChecksum) {
+      const storedHash = await storage.hashObject(storageKey);
+      if (
+        storedHash.artifactBytes !== totalBytes ||
+        !checksumsMatch(storedHash.artifactChecksum, uploaded.artifactChecksum)
+      ) {
         await safeDelete(storage, storageKey);
         throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
       }

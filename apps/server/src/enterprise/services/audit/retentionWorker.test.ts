@@ -1221,4 +1221,87 @@ describe('audit retention worker', () => {
     const legacy = await serverDB.select().from(topics).where(eq(topics.id, 'topic-null-legacy'));
     expect(legacy).toHaveLength(0);
   });
+
+  it('F12: cleanup-retry — delete fails once then outbox drains', async () => {
+    const exportId = 'export-f12-cleanup-retry';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"manifest"}\n'));
+
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 20,
+      artifactChecksum: 'sha256:cleanup-retry',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      filterSnapshot: {},
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'operation_logs',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+
+    let deletes = 0;
+    const flakyStorage = {
+      deleteObject: async (key: string) => {
+        deletes += 1;
+        if (deletes === 1) throw new Error('S3_TRANSIENT_DELETE');
+        storage.objects.delete(key);
+      },
+      getObjectBytes: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return Buffer.from(body);
+      },
+      getObjectMetadata: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return { contentLength: body.byteLength, contentType: 'application/x-ndjson' };
+      },
+      getSignedDownloadUrl: async () => 'https://audit-export.test/signed/x',
+      hashObject: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return {
+          artifactBytes: body.byteLength,
+          artifactChecksum: `sha256:${'a'.repeat(64)}`,
+        };
+      },
+      uploadArtifact: async () => {
+        throw new Error('upload not used');
+      },
+    };
+
+    const service = new AdminAuditRetentionService(serverDB, { storage: flakyStorage });
+    await service.run({
+      actorUserId: actor,
+      input: { reason: 'f12 cleanup retry', scope: 'export_artifacts' },
+    });
+
+    // First attempt may leave outbox pending; drain until object is gone.
+    for (let i = 0; i < 8; i++) {
+      await processNextAuditRetentionJob(serverDB, {
+        storage: flakyStorage,
+        workerId: `ret-f12-cleanup-${i}`,
+      });
+      if (!storage.objects.has(storageKey)) break;
+    }
+
+    expect(deletes).toBeGreaterThanOrEqual(2);
+    expect(storage.objects.has(storageKey)).toBe(false);
+
+    const [row] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(row?.storageKey).toBeNull();
+    expect(row?.status).toBe('expired');
+    expect(row?.error?.purgeStorageKey).toBeFalsy();
+  });
+
+  // F12 slow-storage two-worker lease race (block inside actual delete across the
+  // lease period, second worker cannot double-claim) lives in
+  // retentionWorker.multiconn.pg.test.ts — requires independent PG sessions.
 });
