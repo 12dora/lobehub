@@ -5,9 +5,15 @@
  * evidence is never public-read even when global S3_SET_ACL=true.
  * Only short-lived signed GET URLs are issued for download.
  * Never store or return permanent public URLs from list/get surfaces.
+ *
+ * Upload / integrity verification prefer streaming I/O (F10) so a multi‑hundred‑MiB
+ * artifact is never fully buffered twice in the worker or download path.
  */
 
 import { createHash } from 'node:crypto';
+import type { Readable } from 'node:stream';
+
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 import { fileEnv } from '@/envs/file';
 import { S3 } from '@/server/modules/S3';
@@ -31,12 +37,20 @@ export interface AuditExportObjectMetadata {
   contentType?: string;
 }
 
+export interface AuditExportObjectHash {
+  artifactBytes: number;
+  artifactChecksum: string;
+}
+
+/** Upload body: Buffer for small/test paths; Readable for production streaming. */
+export type AuditExportUploadBody = Buffer | Readable;
+
 export interface AuditExportArtifactStorage {
   /** Best-effort delete (cancel / fail cleanup). */
   deleteObject: (storageKey: string) => Promise<void>;
   /**
-   * Read full object bytes for integrity verification (SHA-256) before download
-   * or post-upload checks. Same-length corruption must be detected.
+   * Read full object bytes. Prefer {@link hashObject} for integrity checks so
+   * large artifacts are not fully buffered (F10). Kept for test fixtures.
    */
   getObjectBytes: (storageKey: string) => Promise<Buffer>;
   /** Head object for post-upload integrity check. */
@@ -47,11 +61,22 @@ export interface AuditExportArtifactStorage {
    */
   getSignedDownloadUrl: (storageKey: string, expiresInSeconds: number) => Promise<string>;
   /**
-   * Private upload of the full NDJSON artifact.
+   * Stream-hash object bytes (bounded memory). Same checksum semantics as
+   * `formatArtifactChecksum(sha256Hex(fullBuffer))`.
+   */
+  hashObject: (storageKey: string) => Promise<AuditExportObjectHash>;
+  /**
+   * Private upload of the NDJSON artifact.
+   * Accepts a Buffer or a Readable stream. When streaming, pass `contentLength`
+   * and preferably a precomputed `artifactChecksum` (worker hashes while writing).
    * Idempotent when the same deterministic key is reused.
    */
   uploadArtifact: (params: {
-    body: Buffer;
+    /** Precomputed `sha256:…` when `body` is a stream (avoids a second full read). */
+    artifactChecksum?: string;
+    body: AuditExportUploadBody;
+    /** Required when `body` is a stream (S3 Content-Length / result bytes). */
+    contentLength?: number;
     contentType?: string;
     storageKey: string;
   }) => Promise<AuditExportUploadResult>;
@@ -67,11 +92,46 @@ export const verifyArtifactChecksum = (
   return actual === formatArtifactChecksum(expectedChecksum);
 };
 
+/** Compare two checksum strings after normalizing the `sha256:` prefix. */
+export const checksumsMatch = (
+  actual: string | null | undefined,
+  expected: string | null | undefined,
+): boolean => {
+  if (!actual || !expected) return false;
+  return formatArtifactChecksum(actual) === formatArtifactChecksum(expected);
+};
+
 export const sha256Hex = (body: Buffer | string): string =>
   createHash('sha256').update(body).digest('hex');
 
 export const formatArtifactChecksum = (hex: string): string =>
   hex.startsWith('sha256:') ? hex : `sha256:${hex}`;
+
+/** Incremental SHA-256 over an async byte source (F10 streaming verify). */
+export const hashAsyncIterable = async (
+  source: AsyncIterable<Uint8Array | Buffer>,
+): Promise<AuditExportObjectHash> => {
+  const hasher = createHash('sha256');
+  let artifactBytes = 0;
+  for await (const chunk of source) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    hasher.update(buf);
+    artifactBytes += buf.byteLength;
+  }
+  return {
+    artifactBytes,
+    artifactChecksum: formatArtifactChecksum(hasher.digest('hex')),
+  };
+};
+
+/** Drain a Node Readable into a Buffer (tests / fallback only — not the hot path). */
+export const readableToBuffer = async (body: Readable): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of body) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+};
 
 /**
  * S3 constructor options for audit export artifacts.
@@ -96,12 +156,36 @@ export const createPrivateAuditExportS3 = (): S3 =>
     ...buildPrivateAuditExportS3Options(),
   });
 
+/** Streaming S3 client (private ACL) for Put/Get without full buffering (F10). */
+const createPrivateAuditExportS3Client = (): { bucket: string; client: S3Client } => {
+  const accessKeyId = fileEnv.S3_ACCESS_KEY_ID;
+  const secretAccessKey = fileEnv.S3_SECRET_ACCESS_KEY;
+  const endpoint = fileEnv.S3_ENDPOINT;
+  const bucket = fileEnv.S3_BUCKET;
+  if (!accessKeyId || !secretAccessKey || !endpoint || !bucket) {
+    throw new Error('S3 environment variables are not set completely, please check your env');
+  }
+  return {
+    bucket,
+    client: new S3Client({
+      credentials: { accessKeyId, secretAccessKey },
+      endpoint,
+      forcePathStyle: fileEnv.S3_ENABLE_PATH_STYLE,
+      region: fileEnv.S3_REGION || 'us-east-1',
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+    }),
+  };
+};
+
 /**
  * Production private S3-backed storage for audit export artifacts.
  * Does not use FileS3 (which may set public-read when S3_SET_ACL=true).
  */
 export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
   private readonly s3: S3;
+  /** Lazy streaming client — only built when a stream upload/hash is needed. */
+  private streamBackend: { bucket: string; client: S3Client } | null = null;
 
   constructor(s3?: S3) {
     this.s3 = s3 ?? createPrivateAuditExportS3();
@@ -110,20 +194,59 @@ export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
   /** Test/introspection: whether this adapter will ever request a public ACL. */
   static readonly enforcesPrivateAcl = true as const;
 
+  private getStreamBackend = (): { bucket: string; client: S3Client } => {
+    if (!this.streamBackend) {
+      this.streamBackend = createPrivateAuditExportS3Client();
+    }
+    return this.streamBackend;
+  };
+
   uploadArtifact = async (params: {
-    body: Buffer;
+    artifactChecksum?: string;
+    body: AuditExportUploadBody;
+    contentLength?: number;
     contentType?: string;
     storageKey: string;
   }): Promise<AuditExportUploadResult> => {
-    const checksum = formatArtifactChecksum(sha256Hex(params.body));
-    await this.s3.uploadBuffer(
-      params.storageKey,
-      params.body,
-      params.contentType ?? AUDIT_EXPORT_CONTENT_TYPE,
+    const contentType = params.contentType ?? AUDIT_EXPORT_CONTENT_TYPE;
+
+    if (Buffer.isBuffer(params.body)) {
+      const checksum = params.artifactChecksum ?? formatArtifactChecksum(sha256Hex(params.body));
+      await this.s3.uploadBuffer(params.storageKey, params.body, contentType);
+      return {
+        artifactBytes: params.body.byteLength,
+        artifactChecksum: formatArtifactChecksum(checksum),
+        storageKey: params.storageKey,
+      };
+    }
+
+    // Stream path: pipe Readable to PutObject without materializing the full body.
+    const contentLength = params.contentLength;
+    if (contentLength == null || contentLength < 0) {
+      throw new Error('AUDIT_EXPORT_STREAM_CONTENT_LENGTH_REQUIRED');
+    }
+    const { bucket, client } = this.getStreamBackend();
+    await client.send(
+      new PutObjectCommand({
+        // Always private — never public-read.
+        Body: params.body,
+        Bucket: bucket,
+        ContentLength: contentLength,
+        ContentType: contentType,
+        Key: params.storageKey,
+      }),
     );
+
+    let artifactChecksum = params.artifactChecksum;
+    if (!artifactChecksum) {
+      // Fallback: stream-hash the just-written object (still bounded memory).
+      const hashed = await this.hashObject(params.storageKey);
+      artifactChecksum = hashed.artifactChecksum;
+    }
+
     return {
-      artifactBytes: params.body.byteLength,
-      artifactChecksum: checksum,
+      artifactBytes: contentLength,
+      artifactChecksum: formatArtifactChecksum(artifactChecksum),
       storageKey: params.storageKey,
     };
   };
@@ -141,6 +264,21 @@ export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
     return Buffer.from(bytes);
   };
 
+  hashObject = async (storageKey: string): Promise<AuditExportObjectHash> => {
+    const { bucket, client } = this.getStreamBackend();
+    const response = await client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: storageKey,
+      }),
+    );
+    if (!response.Body) {
+      throw new Error(`No body in response with ${storageKey}`);
+    }
+    // AWS SDK v3 Body is AsyncIterable in Node.
+    return hashAsyncIterable(response.Body as AsyncIterable<Uint8Array>);
+  };
+
   getSignedDownloadUrl = async (storageKey: string, expiresInSeconds: number): Promise<string> => {
     return this.s3.createPreSignedUrlForPreview(storageKey, expiresInSeconds);
   };
@@ -154,15 +292,40 @@ export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
 export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactStorage {
   readonly objects = new Map<string, Buffer>();
 
+  /**
+   * Peak single allocation observed during upload (Buffer.byteLength or stream chunk).
+   * Streaming uploads should never allocate a single buffer equal to the full artifact
+   * when the producer is a multi-chunk Readable (F10 regression seam).
+   */
+  peakUploadChunkBytes = 0;
+
   uploadArtifact = async (params: {
-    body: Buffer;
+    artifactChecksum?: string;
+    body: AuditExportUploadBody;
+    contentLength?: number;
     contentType?: string;
     storageKey: string;
   }): Promise<AuditExportUploadResult> => {
-    this.objects.set(params.storageKey, Buffer.from(params.body));
+    let body: Buffer;
+    if (Buffer.isBuffer(params.body)) {
+      this.peakUploadChunkBytes = Math.max(this.peakUploadChunkBytes, params.body.byteLength);
+      body = Buffer.from(params.body);
+    } else {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for await (const chunk of params.body) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        this.peakUploadChunkBytes = Math.max(this.peakUploadChunkBytes, buf.byteLength);
+        chunks.push(buf);
+        total += buf.byteLength;
+      }
+      body = Buffer.concat(chunks, total);
+    }
+    this.objects.set(params.storageKey, body);
+    const checksum = params.artifactChecksum ?? formatArtifactChecksum(sha256Hex(body));
     return {
-      artifactBytes: params.body.byteLength,
-      artifactChecksum: formatArtifactChecksum(sha256Hex(params.body)),
+      artifactBytes: body.byteLength,
+      artifactChecksum: formatArtifactChecksum(checksum),
       storageKey: params.storageKey,
     };
   };
@@ -177,6 +340,22 @@ export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactSt
     const body = this.objects.get(storageKey);
     if (!body) throw new Error(`Object not found: ${storageKey}`);
     return Buffer.from(body);
+  };
+
+  hashObject = async (storageKey: string): Promise<AuditExportObjectHash> => {
+    const body = this.objects.get(storageKey);
+    if (!body) throw new Error(`Object not found: ${storageKey}`);
+    // Simulate streaming: hash in fixed-size windows rather than one-shot over the
+    // whole buffer (same digest as sha256Hex(body)).
+    const hasher = createHash('sha256');
+    const window = 64 * 1024;
+    for (let offset = 0; offset < body.byteLength; offset += window) {
+      hasher.update(body.subarray(offset, Math.min(offset + window, body.byteLength)));
+    }
+    return {
+      artifactBytes: body.byteLength,
+      artifactChecksum: formatArtifactChecksum(hasher.digest('hex')),
+    };
   };
 
   getSignedDownloadUrl = async (storageKey: string, expiresInSeconds: number): Promise<string> => {

@@ -722,6 +722,71 @@ export class PlatformGlobalStatsModel {
   };
 
   /**
+   * Single-query full-month usage detail with a hard row ceiling (routers/F4).
+   * Fetches `maxRows + 1` rows; when more remain, returns `hasMore: true` so the
+   * router can fail closed with `usage_month_truncated` without 200 serial pages.
+   */
+  findByMonthBounded = async (
+    mo: string | undefined,
+    maxRows: number,
+  ): Promise<{ hasMore: boolean; items: GlobalUsageRecordItem[] }> => {
+    const limit = Math.max(1, Math.floor(maxRows));
+    // One range query with LIMIT maxRows+1 — same projection as keyset pages.
+    const { endAt, startAt } = this.resolveMonthRange(mo);
+    const conditions = genWhere([
+      eq(messages.role, 'assistant'),
+      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+    ]);
+
+    const spends = await this.db
+      .select({
+        createdAt: messages.createdAt,
+        id: messages.id,
+        metadata: messages.metadata,
+        model: messages.model,
+        provider: messages.provider,
+        role: messages.role,
+        usage: messages.usage,
+        userDisplay: userDisplaySql,
+        userId: messages.userId,
+      })
+      .from(messages)
+      .leftJoin(users, eq(messages.userId, users.id))
+      .where(conditions)
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit + 1);
+
+    const hasMore = spends.length > limit;
+    const page = hasMore ? spends.slice(0, limit) : spends;
+    const items = page.map((spend) => {
+      const metadata = spend.metadata as MessageMetadata | null;
+      const usage = spend.usage ?? metadata?.usage;
+      const performance = metadata?.performance;
+      const totalInputTokens = usage?.totalInputTokens ?? metadata?.totalInputTokens ?? 0;
+      const totalOutputTokens = usage?.totalOutputTokens ?? metadata?.totalOutputTokens ?? 0;
+      return {
+        createdAt: spend.createdAt,
+        id: spend.id,
+        metadata: spend.metadata as MessageMetadata | null,
+        model: spend.model ?? '',
+        provider: spend.provider ?? '',
+        spend: usage?.cost ?? metadata?.cost ?? 0,
+        totalInputTokens,
+        totalOutputTokens,
+        totalTokens: totalInputTokens + totalOutputTokens,
+        tps: performance?.tps ?? metadata?.tps ?? 0,
+        ttft: performance?.ttft ?? metadata?.ttft ?? 0,
+        type: 'chat',
+        updatedAt: spend.createdAt,
+        userDisplay: spend.userDisplay || spend.userId,
+        userId: spend.userId,
+      } satisfies GlobalUsageRecordItem;
+    });
+
+    return { hasMore, items };
+  };
+
+  /**
    * Monthly usage detail. When `limit` is set, returns a single page; otherwise
    * drains via {@link findByDateRange} (hard-capped at {@link MAX_USAGE_DETAIL_ROWS}).
    */

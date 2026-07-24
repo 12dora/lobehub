@@ -207,6 +207,7 @@ describe('admin.stats full-month truncation', () => {
   it('throws when the page budget is exhausted with remaining rows (F8)', async () => {
     let calls = 0;
     const stub = {
+      // Prefer page-walk path: omit findByMonthBounded so the serial fallback is exercised.
       findByMonthPage: async () => {
         calls += 1;
         return {
@@ -239,6 +240,80 @@ describe('admin.stats full-month truncation', () => {
       code: 'BAD_REQUEST',
     });
     expect(calls).toBe(200);
+  });
+
+  it('throws when the single-query bounded path reports hasMore (routers/F4)', async () => {
+    let boundedCalls = 0;
+    const stub = {
+      findByMonthBounded: async (_mo: string | undefined, maxRows: number) => {
+        boundedCalls += 1;
+        expect(maxRows).toBe(200 * 500);
+        return {
+          hasMore: true,
+          items: Array.from({ length: 3 }, (_, i) => ({
+            createdAt: new Date('2026-03-01T00:00:00.000Z'),
+            id: `b-${i}`,
+            model: 'm',
+            provider: 'p',
+            spend: 0,
+            totalInputTokens: 1,
+            totalOutputTokens: 1,
+            totalTokens: 2,
+            tps: 0,
+            ttft: 0,
+            type: 'chat' as const,
+            updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+            userDisplay: 'u',
+            userId: 'u1',
+          })),
+        };
+      },
+      // If bounded is preferred, page walk must not run.
+      findByMonthPage: async () => {
+        throw new Error('findByMonthPage must not be called when bounded is available');
+      },
+      findByMonth: async () => [],
+    };
+
+    await expect(loadAllMonthUsage(stub as never, '2026-03')).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      // enterprise error body nested under cause / shape varies — match message path too
+    });
+    expect(boundedCalls).toBe(1);
+  });
+
+  it('returns all items from the single-query bounded path when under the ceiling', async () => {
+    const stub = {
+      findByMonthBounded: async () => ({
+        hasMore: false,
+        items: [
+          {
+            createdAt: new Date('2026-03-02T00:00:00.000Z'),
+            id: 'ok-1',
+            model: 'm',
+            provider: 'p',
+            spend: 1,
+            totalInputTokens: 2,
+            totalOutputTokens: 3,
+            totalTokens: 5,
+            tps: 0,
+            ttft: 0,
+            type: 'chat' as const,
+            updatedAt: new Date('2026-03-02T00:00:00.000Z'),
+            userDisplay: 'u',
+            userId: 'u1',
+          },
+        ],
+      }),
+      findByMonthPage: async () => {
+        throw new Error('page path unused');
+      },
+      findByMonth: async () => [],
+    };
+
+    const rows = await loadAllMonthUsage(stub as never, '2026-03');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe('ok-1');
   });
 });
 

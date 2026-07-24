@@ -550,8 +550,18 @@ describe('audit export worker', () => {
         return { contentLength: body.byteLength, contentType: 'application/x-ndjson' };
       },
       getSignedDownloadUrl: async () => 'https://audit-export.test/signed/x',
+      hashObject: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return {
+          artifactBytes: body.byteLength,
+          artifactChecksum: formatArtifactChecksum(sha256Hex(body)),
+        };
+      },
       uploadArtifact: async (params: {
-        body: Buffer;
+        artifactChecksum?: string;
+        body: Buffer | NodeJS.ReadableStream;
+        contentLength?: number;
         contentType?: string;
         storageKey: string;
       }) => {
@@ -559,10 +569,20 @@ describe('audit export worker', () => {
         if (uploads === 1) {
           throw new Error('S3_TRANSIENT_TIMEOUT');
         }
-        storage.objects.set(params.storageKey, Buffer.from(params.body));
+        let body: Buffer;
+        if (Buffer.isBuffer(params.body)) {
+          body = Buffer.from(params.body);
+        } else {
+          const chunks: Buffer[] = [];
+          for await (const chunk of params.body as AsyncIterable<Buffer | Uint8Array | string>) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          body = Buffer.concat(chunks);
+        }
+        storage.objects.set(params.storageKey, body);
         return {
-          artifactBytes: params.body.byteLength,
-          artifactChecksum: formatArtifactChecksum(sha256Hex(params.body)),
+          artifactBytes: body.byteLength,
+          artifactChecksum: params.artifactChecksum ?? formatArtifactChecksum(sha256Hex(body)),
           storageKey: params.storageKey,
         };
       },
@@ -777,6 +797,14 @@ describe('audit export worker', () => {
         return { contentLength: body.byteLength, contentType: 'application/x-ndjson' };
       },
       getSignedDownloadUrl: async () => 'https://audit-export.test/signed/x',
+      hashObject: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return {
+          artifactBytes: body.byteLength,
+          artifactChecksum: formatArtifactChecksum(sha256Hex(body)),
+        };
+      },
       uploadArtifact: async () => {
         throw new Error('upload not used');
       },
@@ -809,4 +837,269 @@ describe('audit export worker', () => {
     expect(finalRow?.error?.purgeStorageKey).toBeFalsy();
     expect(finalRow?.error?.code).toBe('EXPORT_FAILED');
   });
+
+  it('F10: streaming upload/hash — rejects Buffer path and forbids getObjectBytes', async () => {
+    // Explicit small buffering threshold: full Buffer uploads are rejected outright.
+    // Artifact is forced larger than createReadStream's default highWaterMark (64 KiB)
+    // so a multi-chunk stream is observable; a reverted worker that does
+    // readFile()+upload(Buffer) / getObjectBytes() fails hard (no conditional skip).
+    const BUFFERING_THRESHOLD_BYTES = 4 * 1024;
+    const STREAM_HIGH_WATER_MARK = 64 * 1024;
+    // Payload alone exceeds both the mock threshold and the stream window.
+    const payload = 'x'.repeat(STREAM_HIGH_WATER_MARK + BUFFERING_THRESHOLD_BYTES);
+
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      afterDiff: { big: payload },
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-f10-stream',
+      result: 'success',
+      targetType: 'settings',
+    });
+
+    const objects = new Map<string, Buffer>();
+    let streamUploadCount = 0;
+    let hashObjectCount = 0;
+    let peakStreamChunkBytes = 0;
+
+    const streamOnlyStorage = {
+      deleteObject: async (key: string) => {
+        objects.delete(key);
+      },
+      getObjectBytes: async (_key: string): Promise<Buffer> => {
+        // Download / post-upload verify must use hashObject streaming (F10).
+        throw new Error('GET_OBJECT_BYTES_FORBIDDEN: use hashObject streaming path');
+      },
+      getObjectMetadata: async (key: string) => {
+        const body = objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return { contentLength: body.byteLength, contentType: 'application/x-ndjson' };
+      },
+      getSignedDownloadUrl: async (key: string) =>
+        `https://audit-export.test/signed/${encodeURIComponent(key)}`,
+      hashObject: async (key: string) => {
+        hashObjectCount += 1;
+        const body = objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        // Simulate streaming windows: digest must still match one-shot sha256Hex.
+        let offset = 0;
+        const window = 1024;
+        const parts: Buffer[] = [];
+        while (offset < body.byteLength) {
+          parts.push(body.subarray(offset, Math.min(offset + window, body.byteLength)));
+          offset += window;
+        }
+        const reassembled = Buffer.concat(parts);
+        return {
+          artifactBytes: body.byteLength,
+          artifactChecksum: formatArtifactChecksum(sha256Hex(reassembled)),
+        };
+      },
+      uploadArtifact: async (params: {
+        artifactChecksum?: string;
+        body: Buffer | NodeJS.ReadableStream;
+        contentLength?: number;
+        contentType?: string;
+        storageKey: string;
+      }) => {
+        if (Buffer.isBuffer(params.body)) {
+          // Reverted worker path materializes the full artifact as a Buffer.
+          throw new Error(
+            `BUFFER_UPLOAD_REJECTED: full Buffer upload (${params.body.byteLength} bytes) — must stream`,
+          );
+        }
+        streamUploadCount += 1;
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of params.body as AsyncIterable<Buffer | Uint8Array | string>) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          peakStreamChunkBytes = Math.max(peakStreamChunkBytes, buf.byteLength);
+          chunks.push(buf);
+          total += buf.byteLength;
+        }
+        if (total <= BUFFERING_THRESHOLD_BYTES) {
+          throw new Error(
+            `ARTIFACT_TOO_SMALL: ${total} bytes — regression requires > ${BUFFERING_THRESHOLD_BYTES}`,
+          );
+        }
+        const body = Buffer.concat(chunks, total);
+        objects.set(params.storageKey, body);
+        const checksum = params.artifactChecksum ?? formatArtifactChecksum(sha256Hex(body));
+        return {
+          artifactBytes: body.byteLength,
+          artifactChecksum: formatArtifactChecksum(checksum),
+          storageKey: params.storageKey,
+        };
+      },
+    };
+
+    const service = new AdminAuditExportService(serverDB, { storage: streamOnlyStorage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'f10 stream upload',
+        to: window.to,
+      },
+    });
+
+    const result = await processNextAuditExportJob(serverDB, {
+      // Cap is well above the artifact — only used as an injected seam (not a skip gate).
+      maxArtifactBytes: 2 * 1024 * 1024,
+      storage: streamOnlyStorage,
+      workerId: 'export-f10-stream',
+    });
+    expect(result.outcome).toBe('completed');
+    expect(streamUploadCount).toBe(1);
+    // Post-upload integrity must call hashObject (getObjectBytes throws).
+    expect(hashObjectCount).toBeGreaterThanOrEqual(1);
+
+    const key = buildAuditExportStorageKey(created.id);
+    const body = objects.get(key);
+    expect(body).toBeTruthy();
+    expect(body!.byteLength).toBeGreaterThan(BUFFERING_THRESHOLD_BYTES);
+    expect(body!.byteLength).toBeGreaterThan(STREAM_HIGH_WATER_MARK);
+    // Stream chunks must stay under the full artifact (createReadStream windows).
+    // Unconditionally asserted — artifact is sized above highWaterMark so this
+    // fails if the producer handed over one materialized Buffer-sized chunk.
+    expect(peakStreamChunkBytes).toBeGreaterThan(0);
+    expect(peakStreamChunkBytes).toBeLessThanOrEqual(STREAM_HIGH_WATER_MARK);
+    expect(peakStreamChunkBytes).toBeLessThan(body!.byteLength);
+
+    const expectedChecksum = formatArtifactChecksum(sha256Hex(body!));
+    const got = await service.get({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      id: created.id,
+    });
+    expect(got.artifactChecksum).toBe(expectedChecksum);
+    expect(got.artifactBytes).toBe(body!.byteLength);
+
+    // Stream-hash verification matches the stored checksum (same as one-shot).
+    const hashed = await streamOnlyStorage.hashObject(key);
+    expect(hashed.artifactChecksum).toBe(expectedChecksum);
+    expect(hashed.artifactBytes).toBe(body!.byteLength);
+
+    const hashBeforeDownload = hashObjectCount;
+    // Download integrity also stream-hashes — getObjectBytes would throw.
+    const dl = await service.download({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: { id: created.id, reason: 'f10 download stream verify' },
+    });
+    expect(dl.artifactChecksum).toBe(got.artifactChecksum);
+    expect(hashObjectCount).toBeGreaterThan(hashBeforeDownload);
+  });
+
+  it('F12: disabled content-access policy fails create/execute/download closed', async () => {
+    const perms = ['platform_audit:export:all', 'platform_audit:conversation_read:all'] as const;
+    const service = new AdminAuditExportService(serverDB, { storage });
+
+    // Create under disabled policy — conversation surfaces fail closed.
+    await serverDB.insert(platformAuditPolicies).values({
+      contentAccessMode: 'disabled',
+      id: 'global',
+      revision: 0,
+    });
+
+    await expect(
+      service.create({
+        actorPermissions: perms,
+        actorUserId: actor,
+        input: {
+          from: window.from,
+          includeMessageBodies: false,
+          kind: 'conversations',
+          reason: 'disabled create',
+          to: window.to,
+          userId: userA,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    await expect(
+      service.create({
+        actorPermissions: perms,
+        actorUserId: actor,
+        input: {
+          from: window.from,
+          includeMessageBodies: false,
+          kind: 'user_timeline',
+          reason: 'disabled timeline create',
+          to: window.to,
+          userId: userA,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // Queue a conversations export while access is allowed, then flip the kill-switch.
+    await serverDB
+      .update(platformAuditPolicies)
+      .set({ contentAccessMode: 'metadata_only', revision: 1 })
+      .where(eq(platformAuditPolicies.id, 'global'));
+
+    const queued = await service.create({
+      actorPermissions: perms,
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'conversations',
+        reason: 'queued before revoke',
+        to: window.to,
+        userId: userA,
+      },
+    });
+
+    await serverDB
+      .update(platformAuditPolicies)
+      .set({ contentAccessMode: 'disabled', revision: 2 })
+      .where(eq(platformAuditPolicies.id, 'global'));
+
+    // Execute: worker rechecks live policy and terminal-fails without reading evidence.
+    const executed = await processNextAuditExportJob(serverDB, {
+      storage,
+      workerId: 'export-f12-disabled',
+    });
+    expect(executed.outcome).toBe('failed');
+
+    const afterFail = await service.get({
+      actorPermissions: perms,
+      actorUserId: actor,
+      id: queued.id,
+    });
+    expect(afterFail.status).toBe('failed');
+    expect(afterFail.error?.code).toBe('CONTENT_ACCESS_DISABLED');
+    expect(storage.objects.size).toBe(0);
+
+    // Download: completed conversation artifact also fails closed under disabled policy.
+    const storageKey = buildAuditExportStorageKey(queued.id);
+    const body = Buffer.from('{"type":"manifest"}\n');
+    storage.objects.set(storageKey, body);
+    await serverDB
+      .update(platformAuditExports)
+      .set({
+        artifactBytes: body.byteLength,
+        artifactChecksum: formatArtifactChecksum(sha256Hex(body)),
+        error: null,
+        expiresAt: new Date('2026-12-01T00:00:00.000Z'),
+        status: 'completed',
+        storageKey,
+      })
+      .where(eq(platformAuditExports.id, queued.id));
+
+    await expect(
+      service.download({
+        actorPermissions: perms,
+        actorUserId: actor,
+        input: { id: queued.id, reason: 'disabled download' },
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  // F12 concurrent same-key create/publish race (one export + one job) lives in
+  // exportPublication.multiconn.pg.test.ts — PGlite cannot prove multi-connection publication dedup.
 });
