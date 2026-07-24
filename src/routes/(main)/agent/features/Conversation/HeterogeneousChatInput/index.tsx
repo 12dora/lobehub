@@ -35,33 +35,41 @@ import { shouldShowHeteroModelSelector } from './shouldShowHeteroModelSelector';
 // agent chat), rather than off in the control-bar strip below the box.
 const leftActions: ActionKeys[] = ['typo'];
 
+type GuardBannerType = 'error' | 'info' | 'warning';
+
 /**
  * GuardBanner
  *
- * A deliberately thin, single-line warning that sits just above the input. We
+ * A deliberately thin, single-line strip that sits just above the input. We
  * fold the headline and the hint onto one line (no separate `description`
- * block, no oversized 24px icon) so the guard stays a compact strip instead of
+ * block, no oversized 24px icon) so the guard stays compact instead of
  * eating a chunk of the conversation area.
+ *
+ * `type` selects the Alert tone: warning (configure / device), info (loading),
+ * error (retryable credential-list failure).
  */
-const GuardBanner = memo<{ action: ReactNode; hint?: string; title: string }>(
-  ({ title, hint, action }) => (
-    <WideScreenContainer>
-      <Flexbox align={'center'} paddingBlock={'0 8px'} paddingInline={12}>
-        <Alert
-          action={action}
-          style={{ maxWidth: 880, width: '100%' }}
-          type={'warning'}
-          title={
-            <Flexbox horizontal align={'baseline'} gap={6} style={{ flexWrap: 'wrap' }}>
-              <span>{title}</span>
-              {hint && <span style={{ fontWeight: 400, opacity: 0.75 }}>{hint}</span>}
-            </Flexbox>
-          }
-        />
-      </Flexbox>
-    </WideScreenContainer>
-  ),
-);
+const GuardBanner = memo<{
+  action?: ReactNode;
+  hint?: string;
+  title: string;
+  type?: GuardBannerType;
+}>(({ title, hint, action, type = 'warning' }) => (
+  <WideScreenContainer>
+    <Flexbox align={'center'} paddingBlock={'0 8px'} paddingInline={12}>
+      <Alert
+        action={action}
+        style={{ maxWidth: 880, width: '100%' }}
+        type={type}
+        title={
+          <Flexbox horizontal align={'baseline'} gap={6} style={{ flexWrap: 'wrap' }}>
+            <span>{title}</span>
+            {hint && <span style={{ fontWeight: 400, opacity: 0.75 }}>{hint}</span>}
+          </Flexbox>
+        }
+      />
+    </Flexbox>
+  </WideScreenContainer>
+));
 
 GuardBanner.displayName = 'GuardBanner';
 
@@ -72,8 +80,11 @@ GuardBanner.displayName = 'GuardBanner';
  * Keeps only: text input, typo toggle, send button, and a working-directory
  * picker — no model/tools/memory/KB/MCP/runtime-mode/upload.
  *
- * In cloud (web) mode, shows a configuration prompt and disables the input
- * until the user sets up their cloud credentials in agent profile.
+ * In cloud (web) sandbox mode, credential readiness is discrete:
+ * loading → neutral strip (input disabled);
+ * error → retryable error (input fail-closed);
+ * not-configured → configure banner;
+ * configured/skipped → normal input.
  */
 const HeterogeneousChatInput = memo(() => {
   const { t } = useTranslation('chat');
@@ -82,7 +93,14 @@ const HeterogeneousChatInput = memo(() => {
   // agent that `agencyConfig`/`isDeviceExecution` are computed from, instead of
   // the global (hijack-prone) active agent.
   const agentId = useConversationStore(contextSelectors.agentId);
-  const { isConfigured, goToConfig } = useHeteroAgentCloudConfig(agentId);
+  const {
+    goToConfig,
+    isConfigured,
+    isError: isCloudCredError,
+    isLoading: isCloudCredLoading,
+    refetch: refetchCloudCreds,
+    status: cloudCredStatus,
+  } = useHeteroAgentCloudConfig(agentId);
   const params = useParams<{ aid: string }>();
   const navigate = useNavigate();
 
@@ -175,9 +193,59 @@ const HeterogeneousChatInput = memo(() => {
     );
   };
 
+  /**
+   * Cloud-sandbox credential guard — must NOT collapse loading / error into
+   * the "configure" banner. Loading is neutral; error is retryable and
+   * fail-closed; only settled `not-configured` shows configure.
+   */
   const renderCloudConfigGuard = () => {
-    if (isDeviceExecution || isConfigured) return null;
+    if (isDeviceExecution) return null;
 
+    if (cloudCredStatus === 'loading' || isCloudCredLoading) {
+      return (
+        <GuardBanner
+          type={'info'}
+          hint={t('heteroAgent.cloudCredLoading.desc', {
+            defaultValue: 'Verifying vault credentials before enabling the input.',
+          })}
+          title={t('heteroAgent.cloudCredLoading.title', {
+            defaultValue: 'Checking cloud credentials…',
+          })}
+        />
+      );
+    }
+
+    if (cloudCredStatus === 'error' || isCloudCredError) {
+      return (
+        <GuardBanner
+          type={'error'}
+          action={
+            <Flexbox horizontal gap={4}>
+              <Button size={'small'} variant={'filled'} onClick={refetchCloudCreds}>
+                {t('heteroAgent.cloudCredError.retry', { defaultValue: 'Retry' })}
+              </Button>
+              <Button size={'small'} type={'primary'} onClick={goToConfig}>
+                {t('heteroAgent.cloudNotConfigured.action')}
+              </Button>
+            </Flexbox>
+          }
+          hint={t('heteroAgent.cloudCredError.desc', {
+            defaultValue:
+              'The credential list could not be loaded. Retry or open agent settings to configure credentials.',
+          })}
+          title={t('heteroAgent.cloudCredError.title', {
+            defaultValue: 'Could not verify cloud credentials',
+          })}
+        />
+      );
+    }
+
+    // configured / skipped — input is usable
+    if (isConfigured || cloudCredStatus === 'configured' || cloudCredStatus === 'skipped') {
+      return null;
+    }
+
+    // Settled not-configured (deleted vault entry or stale key reference)
     return (
       <GuardBanner
         hint={t('heteroAgent.cloudNotConfigured.desc')}
@@ -192,9 +260,11 @@ const HeterogeneousChatInput = memo(() => {
   };
 
   // Device execution doesn't use the cloud sandbox, so it doesn't need cloud
-  // credentials — only the sandbox path gates on `isConfigured`.
-  const inputDisabled = (!isConfigured && !isDeviceExecution) || deviceBlocked;
-  const hasGuard = deviceBlocked || (!isConfigured && !isDeviceExecution);
+  // credentials. Sandbox path fail-closes whenever readiness is not confirmed
+  // (`isConfigured` is false for loading / error / not-configured).
+  const cloudCredBlocked = !isDeviceExecution && !isConfigured;
+  const inputDisabled = cloudCredBlocked || deviceBlocked;
+  const hasGuard = deviceBlocked || cloudCredBlocked;
 
   return (
     <Flexbox>
