@@ -27,6 +27,10 @@ export type PlatformConnectorBindingStatus =
 export type PlatformConnectorOAuthAuthorizationOutcome = 'completed' | 'failed';
 export type PlatformConnectorSecretSlot =
   'oauthBindingToken' | 'oauthClientSecret' | 'oauthPkceVerifier' | 'sharedSecret';
+/** Admin connection-probe outcome (AI-catalog parity; bound to draft revision + token). */
+export type PlatformConnectorConnectionTestStatus = 'pending' | 'success' | 'failure';
+export type PlatformConnectorConnectionTestErrorCategory =
+  'auth' | 'network' | 'protocol' | 'invalid_config' | 'policy';
 
 export interface PlatformConnectorOAuthConfig {
   authorizationEndpoint: string;
@@ -108,6 +112,23 @@ export const platformConnectors = pgTable(
     oauthClientSecretRef: text('oauth_client_secret_ref'),
     oauthClientSecretFingerprint: varchar('oauth_client_secret_fingerprint', { length: 256 }),
     oauthClientSecretUpdatedAt: timestamptz('oauth_client_secret_updated_at'),
+    /**
+     * Durable connection-test bookkeeping (multi-instance publish gate).
+     * Bound to draft revision + draftToken; null until a probe is recorded.
+     * Formal migration is owned by the serialized DB batch — never ADD COLUMN
+     * from request paths. All seven columns are nullable with no DB default.
+     */
+    connectionTestStatus: varchar('connection_test_status', {
+      length: 16,
+    }).$type<PlatformConnectorConnectionTestStatus>(),
+    connectionTestLatencyMs: integer('connection_test_latency_ms'),
+    connectionTestErrorCategory: varchar('connection_test_error_category', {
+      length: 32,
+    }).$type<PlatformConnectorConnectionTestErrorCategory>(),
+    connectionTestMessageCode: varchar('connection_test_message_code', { length: 128 }),
+    connectionTestedAt: timestamptz('connection_tested_at'),
+    connectionTestedDraftToken: varchar('connection_tested_draft_token', { length: 64 }),
+    connectionTestedRevision: integer('connection_tested_revision'),
     enabled: boolean('enabled').notNull().default(false),
     sort: integer('sort').notNull().default(0),
     status: varchar('status', { length: 32 })

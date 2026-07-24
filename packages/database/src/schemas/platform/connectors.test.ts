@@ -20,6 +20,21 @@ const checkSql = (table: Parameters<typeof getTableConfig>[0], name: string) => 
 };
 
 describe('platform connector persistence invariants', () => {
+  it('declares durable connection-test columns for multi-instance publish gates', () => {
+    const config = getTableConfig(platformConnectors);
+    expect(config.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        'connection_test_status',
+        'connection_test_latency_ms',
+        'connection_test_error_category',
+        'connection_test_message_code',
+        'connection_tested_at',
+        'connection_tested_draft_token',
+        'connection_tested_revision',
+      ]),
+    );
+  });
+
   it('pins a published connector to an immutable revision from the same resource identity', () => {
     const config = getTableConfig(platformConnectors);
 

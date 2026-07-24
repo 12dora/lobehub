@@ -15,7 +15,6 @@ import {
   type PlatformConnectorRevisionPayload,
 } from '@/database/repositories/platformConnectorCatalog';
 import {
-  type PlatformConnectorItem,
   platformConnectors,
   platformConnectorTools,
   platformResourceRevisions,
@@ -48,7 +47,6 @@ import type {
   ConnectorDraft,
   ConnectorResolvedSecret,
 } from './catalogTypes';
-import { resolveConnectorConnectionTest } from './connectionTestState';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorToolInsertValues, loadConnectorDraft } from './draftService';
 import { PlatformConnectorContractError } from './errors';
@@ -159,10 +157,7 @@ const assertNoRevisionCredentialMaterial = (
   });
 };
 
-const revisionPayload = (
-  connector: PlatformConnectorItem,
-  draft: ConnectorDraft,
-): PlatformConnectorRevisionPayload =>
+const revisionPayload = (draft: ConnectorDraft): PlatformConnectorRevisionPayload =>
   parseConnectorRevisionPayload({
     connector: {
       credentialMode: draft.credentialMode,
@@ -172,11 +167,12 @@ const revisionPayload = (
       endpoint: draft.endpoint,
       id: draft.id,
       key: draft.key,
-      oauthClientSecretConfigured: connector.oauthClientSecretRef !== null,
-      oauthClientSecretFingerprint: connector.oauthClientSecretFingerprint,
+      // Draft slot views already project ref-presence + fingerprints from the connector row.
+      oauthClientSecretConfigured: draft.oauthClientSecret.configured,
+      oauthClientSecretFingerprint: draft.oauthClientSecret.fingerprint,
       oauthConfig: draft.oauthConfig,
-      sharedSecretConfigured: connector.sharedSecretRef !== null,
-      sharedSecretFingerprint: connector.sharedSecretFingerprint,
+      sharedSecretConfigured: draft.sharedSecret.configured,
+      sharedSecretFingerprint: draft.sharedSecret.fingerprint,
       sort: draft.sort,
       transport: 'http',
     },
@@ -272,11 +268,10 @@ export class ConnectorCatalogPublicationService {
   }
 
   private prepareRevisionPayload = (
-    connector: PlatformConnectorItem,
     draft: ConnectorDraft,
     secretLeaves: ReadonlySet<string>,
   ): PlatformConnectorRevisionPayload => {
-    const payload = revisionPayload(connector, draft);
+    const payload = revisionPayload(draft);
     assertNoRevisionCredentialMaterial(payload, secretLeaves);
     return payload;
   };
@@ -311,21 +306,17 @@ export class ConnectorCatalogPublicationService {
     connectorId: string,
     expectedDraftToken: string,
   ): Promise<ConnectorPublicationProof> => {
-    const repository = new PlatformConnectorCatalogRepository(this.db);
-    const connector = await repository.getConnector(connectorId);
-    if (!connector) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
+    // Single connector select (includes durable connection-test columns) + tools.
+    // No request-time DDL, no separate connection-test query, no process-local fallback.
     const detail = await loadConnectorDraft(this.db, connectorId);
     if (detail.draftToken !== expectedDraftToken) throw new PlatformRevisionConflictError();
     parseConnectorToolsForWrite(detail.draft.tools);
     if (!detail.draft.enabled || !detail.draft.tools.some((tool) => tool.enabled)) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
     }
-    // Same invariant as the admin UI: publish requires a non-stale successful
-    // connection test bound to the exact draft revision + token.
-    const connectionTest = resolveConnectorConnectionTest(connectorId, {
-      draftToken: detail.draftToken,
-      revision: detail.draft.revision,
-    });
+    // Fail closed: publish requires a durable, non-stale, non-expired success bound
+    // to the exact draft revision + token. Absent/unreadable durable state denies.
+    const connectionTest = detail.draft.connectionTest;
     if (
       !connectionTest ||
       connectionTest.status !== 'success' ||
@@ -338,7 +329,6 @@ export class ConnectorCatalogPublicationService {
     const outboundProof = await this.outbound.preflight(detail.draft.endpoint);
     const sources = await loadConnectorSecretSourcesSafe(this.secrets, connectorId);
     const payload = this.prepareRevisionPayload(
-      connector,
       detail.draft,
       collectConnectorSecretLeaves(sources.oauthClientSecret, sources.sharedSecret),
     );

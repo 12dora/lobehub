@@ -54,6 +54,13 @@ const runtime = (revision: number, runtimePayload = payload(revision)) => ({
 });
 
 const connector = (revision = 1): PlatformConnectorItem => ({
+  connectionTestErrorCategory: null,
+  connectionTestLatencyMs: null,
+  connectionTestMessageCode: null,
+  connectionTestStatus: null,
+  connectionTestedAt: null,
+  connectionTestedDraftToken: null,
+  connectionTestedRevision: null,
   connectorKey: 'catalog',
   createdAt: new Date(),
   createdBy: null,

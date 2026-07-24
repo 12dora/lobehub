@@ -22,6 +22,7 @@ import {
 import type { ConnectorCatalogLifecycle, ConnectorCatalogSecretStore } from './catalogTypes';
 import {
   recordConnectorConnectionTest,
+  resetConnectorConnectionTestMemoryForTest,
   resetConnectorConnectionTestStateForTest,
 } from './connectionTestState';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
@@ -89,28 +90,30 @@ const createHarness = (lifecycle: ConnectorCatalogLifecycle = {}) => {
   };
 };
 
-/** Seed a connection-test result bound to the exact CAS identity used for publish. */
-const seedConnectionTest = (params: {
+/** Seed a durable connection-test result bound to the exact CAS identity used for publish. */
+const seedConnectionTest = async (params: {
   id: string;
   draftToken: string;
   revision: number;
   status?: 'failure' | 'success';
   stale?: boolean;
+  /** When set, marks the probe as expired for fail-closed publish checks. */
+  testedAt?: Date;
 }) => {
-  recordConnectorConnectionTest(params.id, {
+  await recordConnectorConnectionTest(db, params.id, {
     errorCategory: params.status === 'failure' ? 'network' : null,
     latencyMs: params.status === 'failure' ? null : 1,
     messageCode:
       params.status === 'failure' ? 'connector.operation_failed' : 'connector.operation_succeeded',
     status: params.status ?? 'success',
-    testedAt: new Date(),
+    testedAt: params.testedAt ?? new Date(),
     testedDraftToken: params.stale ? '0'.repeat(64) : params.draftToken,
     testedRevision: params.stale ? params.revision - 1 : params.revision,
   });
 };
 
 /** Publish helper that seeds a current successful connection test first. */
-const publish = (
+const publish = async (
   harness: ReturnType<typeof createHarness>,
   actorUserId: string,
   input: {
@@ -120,7 +123,7 @@ const publish = (
     reason: string;
   },
 ) => {
-  seedConnectionTest({
+  await seedConnectionTest({
     draftToken: input.expectedDraftToken,
     id: input.id,
     revision: input.expectedRevision,
@@ -159,7 +162,7 @@ describe('ConnectorCatalogPublicationService', () => {
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
 
-    seedConnectionTest({
+    await seedConnectionTest({
       draftToken: draft.draftToken,
       id: draft.draft.id,
       revision: 0,
@@ -174,7 +177,7 @@ describe('ConnectorCatalogPublicationService', () => {
       }),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
 
-    seedConnectionTest({
+    await seedConnectionTest({
       draftToken: draft.draftToken,
       id: draft.draft.id,
       revision: 0,
@@ -188,6 +191,77 @@ describe('ConnectorCatalogPublicationService', () => {
         reason: 'publish after stale test',
       }),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
+
+    await seedConnectionTest({
+      draftToken: draft.draftToken,
+      id: draft.draft.id,
+      revision: 0,
+      // Far past the 24h TTL — must fail closed even with matching revision/token.
+      testedAt: new Date(Date.now() - 48 * 60 * 60 * 1000),
+    });
+    await expect(
+      harness.publication.publish('admin-user', {
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: 0,
+        id: draft.draft.id,
+        reason: 'publish after expired test',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
+  });
+
+  it('accepts publish from a fresh service instance using durable connection-test state', async () => {
+    // Simulate multi-process: instance A records the probe; instance B publishes
+    // after process-local L1 is wiped (as if a different serverless worker).
+    // Shared secret store models a shared Vault/KMS; connection-test state must
+    // come only from the durable connector row, not process memory.
+    const writer = createHarness();
+    const draft = await createSharedDraft(writer, 'durable-test-secret', 'durable-test-connector');
+    await seedConnectionTest({
+      draftToken: draft.draftToken,
+      id: draft.draft.id,
+      revision: 0,
+    });
+    resetConnectorConnectionTestMemoryForTest();
+
+    const readerPublication = new ConnectorCatalogPublicationService(
+      db,
+      {
+        assertAllowed: vi.fn(async () => {}),
+        getPolicyVersion: () => 1,
+        preflight: vi.fn(async () => ({ policyVersion: 1 })),
+      } as unknown as ConnectorOutboundClient,
+      writer.secrets,
+      {},
+      new InMemoryPlatformConfigInvalidationPublisher(),
+    );
+    await expect(
+      readerPublication.publish('admin-user', {
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: 0,
+        id: draft.draft.id,
+        reason: 'publish from other process',
+      }),
+    ).resolves.toMatchObject({
+      auditId: expect.any(String),
+      revision: 1,
+    });
+    const [row] = await db
+      .select({
+        connectionTestStatus: platformConnectors.connectionTestStatus,
+        connectionTestedDraftToken: platformConnectors.connectionTestedDraftToken,
+        connectionTestedRevision: platformConnectors.connectionTestedRevision,
+        publishedRevision: platformConnectors.publishedRevision,
+        status: platformConnectors.status,
+      })
+      .from(platformConnectors)
+      .where(eq(platformConnectors.id, draft.draft.id));
+    expect(row).toMatchObject({
+      connectionTestStatus: 'success',
+      connectionTestedDraftToken: draft.draftToken,
+      connectionTestedRevision: 0,
+      publishedRevision: 1,
+      status: 'published',
+    });
   });
 
   it('completes DNS and Secret resolution before locking with no external I/O afterward', async () => {

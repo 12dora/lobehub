@@ -186,8 +186,8 @@ export class ConnectorCatalogDiscoveryService {
         latencyMs: Math.max(0, Date.now() - startedAt),
         testedAt: new Date(),
       });
-      // Persist revision/token-bound success so a subsequent get/refetch unlocks Publish.
-      recordConnectorConnectionTest(command.id, {
+      // Durable revision/token-bound success so any instance can publish after refetch.
+      await recordConnectorConnectionTest(this.db, command.id, {
         errorCategory: null,
         latencyMs: output.latencyMs,
         messageCode: output.messageCode,
@@ -239,7 +239,7 @@ export class ConnectorCatalogDiscoveryService {
         testedAt: new Date(),
       });
       if (detail) {
-        recordConnectorConnectionTest(command.id, {
+        await recordConnectorConnectionTest(this.db, command.id, {
           errorCategory: output.errorCategory,
           latencyMs: null,
           messageCode: output.messageCode,

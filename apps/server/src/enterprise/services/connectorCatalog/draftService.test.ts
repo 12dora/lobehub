@@ -334,7 +334,7 @@ describe('ConnectorCatalogDraftService', () => {
       reason: 'create disposable connector',
       transport: 'http',
     });
-    recordConnectorConnectionTest(created.draft.id, {
+    await recordConnectorConnectionTest(db, created.draft.id, {
       errorCategory: null,
       latencyMs: 1,
       messageCode: 'connector.operation_succeeded',
@@ -344,7 +344,7 @@ describe('ConnectorCatalogDraftService', () => {
       testedRevision: created.draft.revision,
     });
     expect(
-      resolveConnectorConnectionTest(created.draft.id, {
+      await resolveConnectorConnectionTest(db, created.draft.id, {
         draftToken: created.draftToken,
         revision: created.draft.revision,
       }),
@@ -357,9 +357,9 @@ describe('ConnectorCatalogDraftService', () => {
         reason: 'stale delete',
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
-    // Failed CAS delete must not clear the process-local connection-test entry.
+    // Failed CAS delete must not clear the durable / L1 connection-test entry.
     expect(
-      resolveConnectorConnectionTest(created.draft.id, {
+      await resolveConnectorConnectionTest(db, created.draft.id, {
         draftToken: created.draftToken,
         revision: created.draft.revision,
       }),
@@ -373,9 +373,9 @@ describe('ConnectorCatalogDraftService', () => {
       }),
     ).resolves.toMatchObject({ auditId: expect.any(String) });
     expect(await db.select().from(platformConnectors)).toEqual([]);
-    // Successful delete clears the process-local connection-test map entry.
+    // Successful delete clears L1; durable row is gone with the connector.
     expect(
-      resolveConnectorConnectionTest(created.draft.id, {
+      await resolveConnectorConnectionTest(db, created.draft.id, {
         draftToken: created.draftToken,
         revision: created.draft.revision,
       }),
