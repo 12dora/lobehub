@@ -83,6 +83,107 @@ describe('SettingsAction', () => {
       );
     });
 
+    it('should not resend an unchanged credential-bearing group with a general update', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockResolvedValue(undefined);
+
+      act(() => {
+        useUserStore.setState({
+          settings: {
+            languageModel: {
+              openai: { enabled: true },
+            },
+          },
+        });
+      });
+      vi.mocked(userService.updateUserSettings).mockResolvedValueOnce({ appliedPaths: [] });
+
+      await act(async () => {
+        await useUserStore.getState().setSettings({ general: { responseLanguage: 'zh-CN' } });
+      });
+
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        { general: { responseLanguage: 'zh-CN' } },
+        expect.any(AbortSignal),
+      );
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('should roll back a failed optimistic update so the same value can be retried', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const partialSettings: PartialDeep<UserSettings> = {
+        general: { responseLanguage: 'zh-CN' },
+      };
+      const failure = new Error('Failed to save settings');
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockResolvedValue(undefined);
+
+      vi.mocked(userService.updateUserSettings)
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce({ appliedPaths: [] });
+
+      let caughtError: unknown;
+      await act(async () => {
+        try {
+          await result.current.setSettings(partialSettings);
+        } catch (error) {
+          caughtError = error;
+        }
+      });
+
+      expect(caughtError).toBe(failure);
+      expect(useUserStore.getState().settings.general?.responseLanguage).toBeUndefined();
+
+      await act(async () => {
+        await useUserStore.getState().setSettings(partialSettings);
+      });
+
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        partialSettings,
+        expect.any(AbortSignal),
+      );
+      expect(refreshUserStateSpy).toHaveBeenCalledTimes(1);
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('should not let an aborted older request roll back a newer optimistic update', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const aborted = new Error('Request aborted');
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockResolvedValue(undefined);
+
+      vi.mocked(userService.updateUserSettings)
+        .mockImplementationOnce(
+          (_settings, signal) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(aborted), { once: true });
+            }),
+        )
+        .mockResolvedValueOnce({ appliedPaths: [] });
+
+      let olderRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        olderRequest = result.current
+          .setSettings({ general: { fontSize: 17 } })
+          .catch((error) => error);
+      });
+
+      await act(async () => {
+        await useUserStore.getState().setSettings({ general: { responseLanguage: 'zh-CN' } });
+      });
+
+      expect(await olderRequest).toBe(aborted);
+      expect(useUserStore.getState().settings.general).toMatchObject({
+        fontSize: 17,
+        responseLanguage: 'zh-CN',
+      });
+      refreshUserStateSpy.mockRestore();
+    });
+
     it('should include field in diffs when user resets it to default value', async () => {
       const { result } = renderHook(() => useUserStore());
 

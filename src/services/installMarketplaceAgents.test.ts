@@ -32,19 +32,21 @@ describe('installMarketplaceAgents', () => {
 
     vi.spyOn(agentService, 'getAgentByForkedFromIdentifier').mockResolvedValue(null);
     vi.spyOn(discoverService, 'getAssistantDetail').mockImplementation(
-      async ({ identifier }) =>
-        ({
-          avatar: 'avatar',
-          backgroundColor: '#fff',
-          category: 'engineering',
-          config: { params: {} } as any,
-          description: `desc-${identifier}`,
-          editorData: {},
-          identifier,
-          summary: `summary-${identifier}`,
-          tags: [],
-          title: `Title-${identifier}`,
-        }) as any,
+      async ({ identifier, source }) =>
+        source === 'legacy'
+          ? undefined
+          : ({
+              avatar: 'avatar',
+              backgroundColor: '#fff',
+              category: 'engineering',
+              config: { params: {} } as any,
+              description: `desc-${identifier}`,
+              editorData: {},
+              identifier,
+              summary: `summary-${identifier}`,
+              tags: [],
+              title: `Title-${identifier}`,
+            } as any),
     );
 
     const forkSpy = vi.spyOn(marketApiService, 'forkAgent').mockImplementation(async (items) =>
@@ -91,19 +93,21 @@ describe('installMarketplaceAgents', () => {
       id === 'src-a' ? null : `existing-${id}`,
     );
     vi.spyOn(discoverService, 'getAssistantDetail').mockImplementation(
-      async ({ identifier }) =>
-        ({
-          avatar: 'a',
-          backgroundColor: '#fff',
-          category: 'engineering',
-          config: { params: {} } as any,
-          description: 'd',
-          editorData: {},
-          identifier,
-          summary: 's',
-          tags: [],
-          title: 'T',
-        }) as any,
+      async ({ identifier, source }) =>
+        source === 'legacy'
+          ? undefined
+          : ({
+              avatar: 'a',
+              backgroundColor: '#fff',
+              category: 'engineering',
+              config: { params: {} } as any,
+              description: 'd',
+              editorData: {},
+              identifier,
+              summary: 's',
+              tags: [],
+              title: 'T',
+            } as any),
     );
     const forkSpy = vi.spyOn(marketApiService, 'forkAgent').mockImplementation(async (items) =>
       items.map((item) => ({
@@ -135,5 +139,50 @@ describe('installMarketplaceAgents', () => {
     expect(items.map((i) => i.sourceIdentifier)).toEqual(['src-a']);
     expect(result.skippedAgentIds).toEqual(['src-b', 'src-c']);
     expect(result.installedAgentIds).toEqual(['agent-src-a']);
+  });
+
+  it('copies legacy templates locally without requiring a Market fork', async () => {
+    vi.spyOn(agentService, 'getAgentByForkedFromIdentifier').mockResolvedValue(null);
+    vi.spyOn(discoverService, 'getAssistantDetail').mockImplementation(
+      async ({ identifier, source }) =>
+        source === 'legacy'
+          ? ({
+              avatar: '🤖',
+              backgroundColor: '#fff',
+              category: 'programming',
+              config: { params: {}, systemRole: 'Review code' } as any,
+              description: 'Reviews code',
+              editorData: {},
+              identifier,
+              summary: 'Reviews code',
+              tags: ['code'],
+              title: 'Code Reviewer',
+            } as any)
+          : undefined,
+    );
+    const forkSpy = vi.spyOn(marketApiService, 'forkAgent');
+    createAgent.mockResolvedValue({ agentId: 'local-agent' });
+
+    const result = await installMarketplaceAgents(['legacy:legacy-reviewer']);
+
+    expect(forkSpy).not.toHaveBeenCalled();
+    expect(createAgent).toHaveBeenCalledWith({
+      config: expect.objectContaining({
+        avatar: '🤖',
+        params: { forkedFromIdentifier: 'legacy:legacy-reviewer' },
+        systemRole: 'Review code',
+        title: 'Code Reviewer',
+      }),
+      visibility: undefined,
+    });
+    expect(createAgent.mock.calls[0][0].config).not.toHaveProperty('marketIdentifier');
+    expect(result.installedAgentIds).toEqual(['local-agent']);
+    expect(result.summaries[0]).toEqual(
+      expect.objectContaining({
+        installedAgentId: 'local-agent',
+        templateId: 'legacy:legacy-reviewer',
+      }),
+    );
+    expect(refreshAgentList).toHaveBeenCalledTimes(1);
   });
 });

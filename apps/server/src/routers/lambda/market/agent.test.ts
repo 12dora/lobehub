@@ -96,3 +96,54 @@ describe('agentRouter.publishOrCreate', () => {
     expect(mockMarketSDK.headers['x-lobe-owner-account-id']).toBeUndefined();
   });
 });
+
+describe('agentRouter.getOnboardingFull', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('forwards the trusted-client token and locale to Market', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+      new Response(JSON.stringify({ engineering: [{ identifier: 'coder', name: 'Coder' }] }), {
+        status: 200,
+      }),
+    );
+    const caller = agentRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    const result = await caller.getOnboardingFull({ locale: 'zh-CN' });
+
+    expect(result).toEqual({
+      engineering: [{ identifier: 'coder', name: 'Coder' }],
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: '/api/v1/agents/onboarding-full',
+        searchParams: expect.any(URLSearchParams),
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-lobe-trust-token': 'trust-token',
+        },
+        method: 'GET',
+      },
+    );
+    const requestUrl = fetchSpy.mock.calls[0][0] as URL;
+    expect(requestUrl.searchParams.get('locale')).toBe('zh-CN');
+  });
+
+  it('preserves an upstream 401 as a stable unauthorized error', async () => {
+    vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'unauthorized' }), {
+        status: 401,
+        statusText: 'Unauthorized',
+      }),
+    );
+    const caller = agentRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    await expect(caller.getOnboardingFull({ locale: 'zh-CN' })).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+      message: 'MARKET_ONBOARDING_AUTH_REQUIRED',
+    });
+  });
+});

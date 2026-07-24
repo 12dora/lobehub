@@ -542,12 +542,20 @@ export const agentRouter = router({
             response.statusText,
             errorText,
           );
+          if (response.status === 401) {
+            throw new TRPCError({
+              code: 'UNAUTHORIZED',
+              message: 'MARKET_ONBOARDING_AUTH_REQUIRED',
+            });
+          }
           throw new Error(`Failed to get onboarding full: ${response.statusText}`);
         }
 
         return (await response.json()) as Record<string, unknown[]>;
       } catch (error) {
         log('Error getting onboarding full: %O', error);
+        if (error instanceof TRPCError) throw error;
+
         throw new TRPCError({
           cause: error,
           code: 'INTERNAL_SERVER_ERROR',
