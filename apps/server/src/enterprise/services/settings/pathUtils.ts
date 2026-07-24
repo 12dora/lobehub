@@ -63,6 +63,53 @@ export const setByPath = <T extends Record<string, unknown>>(
 };
 
 /**
+ * Return a shallow-cloned tree with `path` removed.
+ * Prunes empty plain-object parents so leftover `{}` shells do not linger.
+ * Does not mutate the original root.
+ */
+export const deleteByPath = <T extends Record<string, unknown>>(root: T, path: string): T => {
+  const parts = splitSettingPath(path);
+  if (parts.length === 0) return root;
+  if (getByPath(root, path) === undefined) return root;
+
+  const clone = { ...root } as Record<string, unknown>;
+  if (parts.length === 1) {
+    delete clone[parts[0]!];
+    return clone as T;
+  }
+
+  const stack: Array<{ key: string; node: Record<string, unknown> }> = [];
+  let cur: Record<string, unknown> = clone;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const key = parts[i]!;
+    const next = cur[key];
+    if (next === null || typeof next !== 'object' || Array.isArray(next)) return root;
+    const nextObj = { ...(next as Record<string, unknown>) };
+    cur[key] = nextObj;
+    stack.push({ key, node: cur });
+    cur = nextObj;
+  }
+  delete cur[parts.at(-1)!];
+
+  // Prune empty parents from the leaf upward.
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const { key, node } = stack[i]!;
+    const child = node[key];
+    if (
+      child !== null &&
+      typeof child === 'object' &&
+      !Array.isArray(child) &&
+      Object.keys(child as object).length === 0
+    ) {
+      delete node[key];
+    } else {
+      break;
+    }
+  }
+  return clone as T;
+};
+
+/**
  * Flatten a nested object into leaf paths under `prefix`.
  * Only plain objects are walked; arrays / primitives are leaves.
  */

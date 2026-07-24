@@ -137,7 +137,7 @@ afterEach(async () => {
   await cleanup();
 });
 
-const createDraft = () =>
+const createDraft = (providerKey = 'work') =>
   admin.create('admin-1', {
     autoProvision: true,
     buttonLabel: 'Sign in with work',
@@ -148,7 +148,7 @@ const createDraft = () =>
     groupRoleMapping: {},
     icon: null,
     issuer: 'https://login.example.test',
-    providerKey: 'work',
+    providerKey,
     reason: 'configure work login',
     scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
     secret: { operation: 'replace', value: 'fake-client-secret-for-test' },
@@ -271,10 +271,11 @@ describe('IdentityProviderPublicationService', () => {
       id: draft.id,
       reason: 'compromise revoke',
     });
+    // Tombstone is a pending activation until every fresh instance reloads.
     expect(disabled).toMatchObject({
-      activationRevision: null,
+      activationRevision: published.revision + 1,
       enabled: false,
-      status: 'disabled',
+      status: 'pending_restart',
     });
     const revisions = await db.select().from(platformResourceRevisions);
     expect(revisions.some((row) => (row.payload as { enabled?: boolean }).enabled === false)).toBe(
@@ -329,9 +330,9 @@ describe('IdentityProviderPublicationService', () => {
       reason: 'revoke after edit',
     });
     expect(disabled).toMatchObject({
-      activationRevision: null,
+      activationRevision: edited.revision + 1,
       enabled: false,
-      status: 'disabled',
+      status: 'pending_restart',
     });
     const selection = await (
       await import('./startupSnapshot')
@@ -382,8 +383,9 @@ describe('IdentityProviderPublicationService', () => {
       reason: 'revoke after secret clear',
     });
     expect(disabled).toMatchObject({
+      activationRevision: cleared.revision + 1,
       enabled: false,
-      status: 'disabled',
+      status: 'pending_restart',
     });
     const tombstones = (await db.select().from(platformResourceRevisions)).filter(
       (row) => (row.payload as { enabled?: boolean }).enabled === false,
@@ -394,16 +396,26 @@ describe('IdentityProviderPublicationService', () => {
   });
 
   it('outage LKG does not resurrect a provider tombstoned after edit', async () => {
-    const draft = await createDraft();
-    await recordSuccessfulTest(draft.id);
-    const published = await publication.publish('admin-1', {
-      expectedRevision: draft.revision,
-      id: draft.id,
-      reason: 'activate for lkg outage tombstone',
+    // Mixed-provider case: A is tombstoned, B's secret is missing so live
+    // materialization fails. LKG still has A+B; validated tombstones from the
+    // DB selection must strip A even though the healthy path never re-wrote LKG.
+    const draftA = await createDraft('work');
+    await recordSuccessfulTest(draftA.id);
+    const publishedA = await publication.publish('admin-1', {
+      expectedRevision: draftA.revision,
+      id: draftA.id,
+      reason: 'activate A for lkg outage tombstone',
       requestId: requestId(93),
     });
+    const draftB = await createDraft('partner');
+    await recordSuccessfulTest(draftB.id);
+    await publication.publish('admin-1', {
+      expectedRevision: draftB.revision,
+      id: draftB.id,
+      reason: 'activate B for lkg outage tombstone',
+      requestId: requestId(94),
+    });
     const env = await startupEnv();
-    // Commit published provider into LKG (healthy path).
     const liveStartup = await loadIdentityProviderStartupSnapshot({
       cache: false,
       db,
@@ -411,55 +423,32 @@ describe('IdentityProviderPublicationService', () => {
       env,
     });
     expect(liveStartup.source).toBe('database');
-    expect(liveStartup.databaseProviders.map((p) => p.providerKey)).toContain('work');
+    expect(liveStartup.databaseProviders.map((p) => p.providerKey).sort()).toEqual([
+      'partner',
+      'work',
+    ]);
 
-    const edited = await admin.update('admin-1', {
-      autoProvision: true,
-      buttonLabel: 'Sign in with work',
-      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
-      clientId: 'client-id',
-      displayName: 'Work login (edited)',
-      domainAllowlist: [],
-      expectedRevision: published.revision,
-      groupRoleMapping: {},
-      icon: null,
-      id: draft.id,
-      issuer: 'https://login.example.test',
-      providerKey: 'work',
-      reason: 'edit then tombstone for outage proof',
-      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
-      secret: { operation: 'keep' },
-      type: 'generic_oidc',
-      usePkce: true,
-    });
+    // Tombstone A without a post-disable healthy load (immediate-outage window).
     await publication.disable('admin-1', {
-      expectedRevision: edited.revision,
-      id: draft.id,
-      reason: 'signed revoke after edit',
+      expectedRevision: publishedA.revision,
+      id: draftA.id,
+      reason: 'signed revoke of A',
     });
-    // Write tombstone-advanced LKG (empty providers, higher generation).
-    const afterDisable = await loadIdentityProviderStartupSnapshot({
+    // Corrupt B so live materialization fails after selection sees A's tombstone.
+    await db
+      .delete(platformIdentityProviderSecrets)
+      .where(eq(platformIdentityProviderSecrets.providerId, draftB.id));
+
+    const outageStartup = await loadIdentityProviderStartupSnapshot({
       cache: false,
       db,
       discovery,
       env,
     });
-    expect(afterDisable.databaseProviders).toHaveLength(0);
-
-    // Outage fallback: force DB failure path → LKG must not resurrect the tombstoned provider.
-    const failingDb = {
-      select: () => {
-        throw new Error('simulated database outage');
-      },
-    } as unknown as LobeChatDatabase;
-    const outageStartup = await loadIdentityProviderStartupSnapshot({
-      cache: false,
-      db: failingDb,
-      discovery,
-      env,
-    });
     expect(outageStartup.source).toBe('lkg');
-    expect(outageStartup.databaseProviders).toHaveLength(0);
+    // A must not be resurrected from pre-tombstone LKG; B may be absent because
+    // its secret is gone (LKG still holds B's ciphertext — it remains loadable).
+    expect(outageStartup.databaseProviders.map((p) => p.providerKey)).not.toContain('work');
     expect(outageStartup.providerIds).not.toContain('work');
   });
 

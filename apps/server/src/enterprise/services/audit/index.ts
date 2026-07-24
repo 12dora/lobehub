@@ -5,6 +5,7 @@ export * from './exportConstants';
 export * from './exportService';
 export * from './exportStorage';
 export * from './exportWorker';
+export * from './jobError';
 export * from './retentionConstants';
 export * from './retentionService';
 export * from './retentionWorker';

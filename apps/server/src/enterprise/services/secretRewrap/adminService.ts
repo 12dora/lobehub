@@ -18,6 +18,11 @@ import {
 type CoordinatorFactory = () => PlatformSecretRewrapCoordinator;
 type AuditFactory = (db: LobeChatDatabase | Transaction) => Pick<PlatformAuditService, 'append'>;
 
+/**
+ * Vault-backed coordinator for crypto-bearing mutations (start / enqueue).
+ * get / list / cancel are DB-only and must not require a valid Vault config
+ * so recovery remains possible during key-provider incidents.
+ */
 const createCoordinatorFromEnvironment = (): PlatformSecretRewrapCoordinator => {
   let secrets: PlatformSecretService | null;
   try {
@@ -30,6 +35,10 @@ const createCoordinatorFromEnvironment = (): PlatformSecretRewrapCoordinator => 
   }
   return new PlatformSecretRewrapCoordinator(secrets);
 };
+
+/** Unconfigured coordinator for database-only recovery operations. */
+const createDbOnlyCoordinator = (): PlatformSecretRewrapCoordinator =>
+  new PlatformSecretRewrapCoordinator();
 
 const failureCategory = (error: unknown): string => {
   if (error instanceof PlatformSecretRewrapConflictError) return 'rotation_conflict';
@@ -61,14 +70,26 @@ export class PlatformSecretRotationAdminService {
     private readonly db: LobeChatDatabase,
     private readonly coordinatorFactory: CoordinatorFactory = createCoordinatorFromEnvironment,
     private readonly auditFactory: AuditFactory = (auditDb) => new PlatformAuditService(auditDb),
+    /**
+     * DB-only ops (get / list / cancel). Defaults to an unconfigured coordinator
+     * so missing Vault does not block recovery. Tests may inject the same mock.
+     */
+    private readonly dbOnlyCoordinatorFactory: CoordinatorFactory = createDbOnlyCoordinator,
   ) {}
 
+  /** Crypto-bearing ops: validates Vault via the injected factory. */
   private coordinator = (): PlatformSecretRewrapCoordinator => this.coordinatorFactory();
+
+  /** Recovery / inspection ops: never require Vault configuration. */
+  private dbOnlyCoordinator = (): PlatformSecretRewrapCoordinator =>
+    this.dbOnlyCoordinatorFactory();
 
   private auditedMutation = async <T>(params: {
     action: string;
     actorUserId: string;
     reason: string;
+    /** When false, use the DB-only coordinator (no Vault requirement). Default true. */
+    requireVault?: boolean;
     requestId: string;
     run: (coordinator: PlatformSecretRewrapCoordinator, tx: Transaction) => Promise<T>;
     summarize: (result: T) => Record<string, unknown>;
@@ -76,7 +97,9 @@ export class PlatformSecretRotationAdminService {
   }): Promise<T> => {
     try {
       return await this.db.transaction(async (tx) => {
-        const result = await params.run(this.coordinator(), tx);
+        const coordinator =
+          params.requireVault === false ? this.dbOnlyCoordinator() : this.coordinator();
+        const result = await params.run(coordinator, tx);
         await this.auditFactory(tx).append({
           action: params.action,
           actorUserId: params.actorUserId,
@@ -115,6 +138,7 @@ export class PlatformSecretRotationAdminService {
       action: 'admin.security.secretRotation.cancel',
       actorUserId,
       reason: input.reason,
+      requireVault: false,
       requestId: input.requestId,
       run: (coordinator, tx) => coordinator.cancel(tx, input),
       summarize: summarizeJob,
@@ -122,13 +146,13 @@ export class PlatformSecretRotationAdminService {
     });
 
   get = async (jobId: string) => {
-    const job = await this.coordinator().get(this.db, jobId);
+    const job = await this.dbOnlyCoordinator().get(this.db, jobId);
     if (!job) throw new PlatformSecretRewrapNotFoundError();
     return job;
   };
 
   list = async (input: { cursor?: string; limit?: number } = {}) =>
-    this.coordinator().list(this.db, input);
+    this.dbOnlyCoordinator().list(this.db, input);
 
   retry = async (actorUserId: string, input: AdminSecretRotationRetryInput) =>
     this.auditedMutation({

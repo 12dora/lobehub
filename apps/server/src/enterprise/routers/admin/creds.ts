@@ -6,6 +6,7 @@
 import { z } from 'zod';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES } from '@/database/schemas/platform';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
@@ -13,6 +14,9 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauth, createCredsService, mapCredsServiceError } from './credsSupport';
+
+/** Base64 expands 3 bytes → 4 chars; bound encoded length before Buffer.from. */
+const MAX_UPLOAD_BASE64_CHARS = Math.ceil(PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES / 3) * 4;
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -204,6 +208,10 @@ export const adminCredsRouter = router({
     .input(
       z.object({
         description: z.string().optional(),
+        expectedRevision: z.number().int().min(0),
+        /** Owner-bound staged upload id (SHA-256) for file secret rotation. */
+        fileHashId: z.string().length(64).optional(),
+        fileName: z.string().min(1).optional(),
         id: z.number(),
         name: z.string().optional(),
         values: z.record(z.string()).optional(),
@@ -222,6 +230,9 @@ export const adminCredsRouter = router({
         return await createCredsService(ctx.serverDB).update({
           actorUserId: ctx.userId!,
           description: input.description,
+          expectedRevision: input.expectedRevision,
+          fileHashId: input.fileHashId,
+          fileName: input.fileName,
           id: input.id,
           name: input.name,
           values: input.values,
@@ -234,7 +245,13 @@ export const adminCredsRouter = router({
   uploadFile: createProcedure
     .input(
       z.object({
-        file: z.string(),
+        file: z
+          .string()
+          .max(MAX_UPLOAD_BASE64_CHARS)
+          .regex(
+            /^(?:[A-Z\d+/]{4})*(?:[A-Z\d+/]{2}==|[A-Z\d+/]{3}=)?$/i,
+            'Invalid base64 file payload',
+          ),
         fileName: z.string().min(1),
         fileType: z.string().min(1),
       }),

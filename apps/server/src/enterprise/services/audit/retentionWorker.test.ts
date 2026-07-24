@@ -1149,7 +1149,7 @@ describe('audit retention worker', () => {
 
     const result = await processNextAuditRetentionJob(serverDB, {
       afterDomainComplete: async () => {
-        // Steal lease after domain terminal complete, before jobs.complete ownership check.
+        // Steal lease before the terminal TX (domain complete + job succeed + audit).
         await serverDB
           .update(platformJobs)
           .set({
@@ -1168,9 +1168,11 @@ describe('audit retention worker', () => {
     expect(result.outcome).not.toBe('cancelled');
 
     const run = await service.getRun({ actorUserId: actor, id: runId });
-    // Domain work finished; do not corrupt by cancelling after lease loss.
-    expect(run.status).toBe('completed');
+    // Domain complete is in the same TX as job.complete — lease loss rolls it back
+    // so a reclaiming owner can finish without a half-written terminal state (F5).
+    expect(run.status).not.toBe('completed');
     expect(run.status).not.toBe('cancelled');
+    expect(['pending', 'running']).toContain(run.status);
 
     const job = await serverDB.query.platformJobs.findFirst({
       where: eq(platformJobs.id, jobId),

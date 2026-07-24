@@ -314,6 +314,8 @@ export class PlatformAgentAdminService {
     });
 
   listVersions = async (input: AdminPlatformAgentVersionsListInput) => {
+    // Repository pages by opaque id cursor. Full-detail aggregates (client
+    // `fetchAdminAgentDetail`) re-sort by createdAt desc after draining pages.
     const page = await new PlatformAgentCatalogRepository(this.db).listExactVersions(input);
     return { items: page.items.map(versionView), nextCursor: page.nextCursor };
   };
@@ -334,11 +336,10 @@ export class PlatformAgentAdminService {
       );
       if (!version) throw new PlatformAgentNotFoundError();
     }
-    // Mutable warning list matching the wire schema (not a readonly tuple from `as const`).
-    const warnings: Array<'ASSIGNMENT_DISABLED' | 'MANDATORY_AGENT_CANNOT_BE_HIDDEN'> = input
-      .assignment.enabled
-      ? []
-      : ['ASSIGNMENT_DISABLED'];
+    // Build warnings independently — disabled and mandatory are orthogonal signals.
+    const warnings: Array<'ASSIGNMENT_DISABLED' | 'MANDATORY_AGENT_CANNOT_BE_HIDDEN'> = [];
+    if (!input.assignment.enabled) warnings.push('ASSIGNMENT_DISABLED');
+    if (input.assignment.mode === 'mandatory') warnings.push('MANDATORY_AGENT_CANNOT_BE_HIDDEN');
     return {
       estimatedUsers: await repository.countAssignmentTargets(input.assignment),
       // Stable i18n codes only — the admin UI maps `agentCatalog.assignment.warning.${code}`.

@@ -69,8 +69,19 @@ export interface AiCatalogAdminServiceOptions {
   };
 }
 
+/**
+ * Project internal draft view → client-facing DTO.
+ * Secret fingerprint stays server-internal (draft tokens / connectivity); the strict
+ * `aiSecretStateSchema` intentionally omits it so it must never appear in list/detail outputs.
+ */
 const toProviderDraft = (view: PlatformAiProviderDraftView): AiProviderDraft =>
-  aiProviderDraftSchema.parse(view);
+  aiProviderDraftSchema.parse({
+    ...view,
+    secret: {
+      configured: view.secret.configured,
+      updatedAt: view.secret.updatedAt,
+    },
+  });
 
 export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
   protected readonly connectionTests: AiCatalogConnectionTestService;
@@ -419,6 +430,14 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
             resourceType: 'provider',
           });
         }
+        // Ever-published providers (revision > 0) must keep a fail-closed tombstone so runtime
+        // can distinguish deliberate removal from "never managed" and refuse BYOK fallback.
+        // Admins must archive/disable instead of hard-deleting published providers.
+        if (provider.revision > 0) {
+          throw new AiCatalogValidationError([
+            'Published providers cannot be hard-deleted; archive or disable them instead',
+          ]);
+        }
         // Refuse when any owned model is still referenced by a published agent / setting.
         const models = await repository.listModels(id);
         const dependents = await resolveAiCatalogDependentsForModels(
@@ -463,6 +482,8 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
     input: { id: string; reason: string },
   ): Promise<AiConnectionTestResult> => {
     const reason = await this.sanitizeReason(input.reason, input.id);
+    let finalized:
+      { applied: true; result: AiConnectionTestResult } | { applied: false } | undefined;
     try {
       const snapshot = await this.db.transaction(async (tx) => {
         const repository = new PlatformAiCatalogRepository(tx);
@@ -523,32 +544,39 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
             testedAt: new Date(),
           };
         }
-      await new PlatformAiCatalogRepository(this.db).completeProviderConnectionTest(
-        input.id,
-        snapshot.attemptId,
-        {
-          connectionTestErrorCategory: result.errorCategory,
-          connectionTestLatencyMs: result.latencyMs,
-          connectionTestSanitizedMessage: result.sanitizedMessage,
-          connectionTestStatus: result.status,
-          connectionTestedAt: result.testedAt,
-        },
-      );
-      await new PlatformAuditService(this.db).append({
-        action: 'admin.aiProviders.test',
-        actorUserId,
-        afterDiff: {
-          errorCategory: result.errorCategory,
-          latencyMs: result.latencyMs,
-          status: result.status,
-        },
-        reason,
-        result: result.status === 'success' ? 'success' : 'failure',
-        targetId: input.id,
-        targetType: 'provider',
+      // CAS finalization + success/failure audit must be one transaction so a discarded
+      // (superseded) probe never audits or returns as authoritative.
+      finalized = await this.db.transaction(async (tx) => {
+        const applied = await new PlatformAiCatalogRepository(tx).completeProviderConnectionTest(
+          input.id,
+          snapshot.attemptId,
+          {
+            connectionTestErrorCategory: result.errorCategory,
+            connectionTestLatencyMs: result.latencyMs,
+            connectionTestSanitizedMessage: result.sanitizedMessage,
+            connectionTestStatus: result.status,
+            connectionTestedAt: result.testedAt,
+          },
+        );
+        if (!applied) return { applied: false as const };
+        await new PlatformAuditService(tx).append({
+          action: 'admin.aiProviders.test',
+          actorUserId,
+          afterDiff: {
+            errorCategory: result.errorCategory,
+            latencyMs: result.latencyMs,
+            status: result.status,
+          },
+          reason,
+          result: result.status === 'success' ? 'success' : 'failure',
+          targetId: input.id,
+          targetType: 'provider',
+        });
+        return { applied: true as const, result };
       });
-      return result;
     } catch (error) {
+      // Real operational failures only. Superseded CAS no-ops are handled below and must
+      // not write a misleading FAILURE audit for a discarded probe.
       await this.appendFailureAudit({
         action: 'admin.aiProviders.test',
         actorUserId,
@@ -557,6 +585,24 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
       });
       throw error;
     }
+
+    if (finalized?.applied) return finalized.result;
+
+    // Superseded attempt (CAS no-op): return the authoritative persisted state without auditing.
+    const detail = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
+    if (!detail) throw new AiCatalogNotFoundError();
+    const current = detail.connectionTest;
+    if (current && (current.status === 'success' || current.status === 'failure')) {
+      return {
+        errorCategory: current.errorCategory,
+        latencyMs: current.latencyMs ?? 0,
+        sanitizedMessage: current.sanitizedMessage,
+        status: current.status,
+        testedAt: current.testedAt,
+      };
+    }
+    // Newer attempt still pending — surface as non-audited validation (not a probe failure).
+    throw new AiCatalogValidationError(['Connection test superseded by a newer attempt']);
   };
 
   publishProvider: AiCatalogPublicationService['publishProvider'] = (actorUserId, input) =>

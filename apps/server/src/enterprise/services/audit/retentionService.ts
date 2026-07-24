@@ -27,6 +27,7 @@ import { getEnterpriseErrorBody, throwEnterpriseError } from '../../guards/enter
 import { appendAuditAccessLog, buildAuditFilterSummary } from './accessLog';
 import type { AuditExportArtifactStorage } from './exportStorage';
 import { AuditExportPrivateS3Storage } from './exportStorage';
+import { toPublicJobError } from './jobError';
 import {
   AUDIT_RETENTION_MAX_ATTEMPTS,
   AUDIT_RETENTION_STORED_SCOPES,
@@ -56,7 +57,8 @@ export const toRetentionPublic = (row: PlatformAuditRetentionRunItem) => ({
   counts: row.counts ?? emptyCounts(),
   createdAt: row.createdAt,
   cutoffAt: row.cutoffAt,
-  error: row.error,
+  // Strict code-only DTO (F3) — never raw exception messages.
+  error: toPublicJobError(row.error as { code?: string } | null, 'RETENTION_FAILED'),
   finishedAt: row.finishedAt,
   id: row.id,
   jobId: row.jobId,
@@ -130,6 +132,19 @@ export class AdminAuditRetentionService {
   }
 
   /**
+   * Run work in a real DB transaction when `this.db` is a connection root.
+   * Workers cannot claim jobs enqueued here until the outer TX commits.
+   */
+  private inTransaction = async <T>(
+    callback: (tx: LobeChatDatabase | Transaction) => Promise<T>,
+  ): Promise<T> => {
+    const database = this.db as LobeChatDatabase;
+    return typeof database.transaction === 'function'
+      ? database.transaction(callback)
+      : callback(this.db);
+  };
+
+  /**
    * Artifact storage for export_artifacts retention only.
    * Injected storage is returned as-is; otherwise private S3 is created on first use.
    */
@@ -157,75 +172,50 @@ export class AdminAuditRetentionService {
       const policy = await this.policyModel.getOrCreate();
       const now = new Date();
       const scopes = resolveScopes(params.input.scope);
-      // Track immediately on create (before job link) so failures never orphan pending rows.
-      const tracked: { jobId: string | null; runId: string }[] = [];
-      const created: PlatformAuditRetentionRunItem[] = [];
 
-      const compensateTracked = async () => {
-        // Deterministic cleanup: every tracked run/job is failed or cancelled so
-        // unaudited / partial fan-out work cannot execute.
-        for (const entry of tracked) {
-          const current = await this.runsModel.get(entry.runId);
-          const jobId = entry.jobId ?? current?.jobId ?? null;
+      // Create + enqueue + required audit in one TX so workers cannot claim a job
+      // before the success audit commits (F1). Partial fan-out rolls back entirely.
+      const created = await this.inTransaction(async (tx) => {
+        const runsTx = new PlatformAuditRetentionRunModel(tx);
+        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
+        const rows: PlatformAuditRetentionRunItem[] = [];
 
-          if (current && !PlatformAuditRetentionRunModel.isTerminal(current.status)) {
-            if (!jobId) {
-              await this.runsModel.fail(entry.runId, {
-                code: 'PARTIAL_FANOUT',
-                message: 'retention fan-out failed before job link',
-              });
-            } else {
-              await this.runsModel.cancel(entry.runId);
-            }
-          }
-
-          if (jobId) {
-            await this.jobsModel.cancel(jobId).catch(() => undefined);
-          }
-        }
-      };
-
-      try {
         for (let index = 0; index < scopes.length; index++) {
           const scope = scopes[index]!;
           const cutoffAt = cutoffForScope(scope, policy, now);
-          const run = await this.runsModel.create({
+          const run = await runsTx.create({
             cutoffAt,
             mode: params.mode,
             policyRevision: policy.revision,
             requestedBy: params.actorUserId,
             scope,
           });
-          tracked.push({ jobId: null, runId: run.id });
 
           if (this.afterCreateRun) {
             await this.afterCreateRun({ index, runId: run.id, scope });
           }
 
-          const { job } = await this.jobsModel.enqueue({
+          const { job } = await jobsTx.enqueue({
             idempotencyKey: buildAuditRetentionJobIdempotencyKey(run.id),
             input: { runId: run.id },
             maxAttempts: AUDIT_RETENTION_MAX_ATTEMPTS,
             requestedBy: params.actorUserId,
             type: PLATFORM_AUDIT_RETENTION_JOB_TYPE,
           });
-          tracked.at(-1)!.jobId = job.id;
 
-          const linked =
-            (await this.runsModel.setJobId(run.id, job.id)) ?? (await this.runsModel.get(run.id));
+          const linked = (await runsTx.setJobId(run.id, job.id)) ?? (await runsTx.get(run.id));
           const row = linked ?? { ...run, jobId: job.id };
-          created.push(row);
+          rows.push(row);
         }
 
-        // Required audit must succeed or all fan-out work is compensated (fail closed).
-        await appendAuditAccessLog(this.db, {
+        await appendAuditAccessLog(tx, {
           action,
           actorUserId: params.actorUserId,
           afterDiff: {
-            itemCount: created.length,
+            itemCount: rows.length,
             mode: params.mode,
             scope: params.input.scope,
-            statuses: created.map((r) => r.status),
+            statuses: rows.map((r) => r.status),
           },
           filterSummary,
           reason: params.input.reason,
@@ -233,10 +223,9 @@ export class AdminAuditRetentionService {
           result: 'success',
           targetType: 'audit_retention_run',
         });
-      } catch (fanoutOrAuditError) {
-        await compensateTracked();
-        throw fanoutOrAuditError;
-      }
+
+        return rows;
+      });
 
       return { items: created.map(toRetentionPublic) };
     } catch (error) {
@@ -409,25 +398,31 @@ export class AdminAuditRetentionService {
         });
       }
 
-      // Cancel + required audit: if audit cannot be recorded, surface failure
-      // (domain cancel already applied — status is terminal and safe).
-      const cancelled = await this.runsModel.cancel(existing.id);
-      if (existing.jobId) {
-        await this.jobsModel.cancel(existing.jobId);
-      }
+      // Domain cancel + job cancel + required audit in one TX (F5).
+      const row = await this.inTransaction(async (tx) => {
+        const runsTx = new PlatformAuditRetentionRunModel(tx);
+        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
 
-      const row = cancelled ?? (await this.runsModel.get(existing.id)) ?? existing;
+        const cancelled = await runsTx.cancel(existing.id);
+        if (existing.jobId) {
+          await jobsTx.cancel(existing.jobId);
+        }
 
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.retention.cancel',
-        actorUserId: params.actorUserId,
-        afterDiff: { mode: row.mode, scope: row.scope, status: row.status },
-        filterSummary,
-        reason: params.input.reason,
-        required: true,
-        result: 'success',
-        targetId: row.id,
-        targetType: 'audit_retention_run',
+        const next = cancelled ?? (await runsTx.get(existing.id)) ?? existing;
+
+        await appendAuditAccessLog(tx, {
+          action: 'admin.audit.retention.cancel',
+          actorUserId: params.actorUserId,
+          afterDiff: { mode: next.mode, scope: next.scope, status: next.status },
+          filterSummary,
+          reason: params.input.reason,
+          required: true,
+          result: 'success',
+          targetId: next.id,
+          targetType: 'audit_retention_run',
+        });
+
+        return next;
       });
 
       return toRetentionPublic(row);

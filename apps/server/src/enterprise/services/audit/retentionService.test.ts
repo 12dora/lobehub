@@ -199,7 +199,7 @@ describe('AdminAuditRetentionService', () => {
     ).rejects.toBeTruthy();
   });
 
-  it('createFanout tracks runs immediately and fails/cancels every row on partial failure', async () => {
+  it('createFanout rolls back all scopes when partial fan-out fails inside the publication TX', async () => {
     const service = new AdminAuditRetentionService(serverDB, {
       afterCreateRun: async ({ index }) => {
         if (index === 1) {
@@ -215,25 +215,14 @@ describe('AdminAuditRetentionService', () => {
       }),
     ).rejects.toThrow(/INJECTED_FANOUT_FAILURE/);
 
+    // Atomic fan-out: no claimable run or job survives a mid-create failure (F1).
     const runs = await serverDB.select().from(platformAuditRetentionRuns);
-    // First scope created + second scope created before inject (afterCreateRun runs after create)
-    expect(runs.length).toBeGreaterThanOrEqual(2);
-    for (const run of runs) {
-      expect(['failed', 'cancelled']).toContain(run.status);
-      if (run.status === 'failed') {
-        expect(run.error).toMatchObject({ code: 'PARTIAL_FANOUT' });
-      }
-    }
+    expect(runs).toHaveLength(0);
 
-    // Any jobs that were enqueued for the first scope must be cancelled
-    const jobs = await serverDB.select().from(platformJobs);
-    for (const job of jobs) {
-      if (job.type === PLATFORM_AUDIT_RETENTION_JOB_TYPE) {
-        expect(job.status).toBe('cancelled');
-      }
-    }
-
-    // No open pending orphan
-    expect(runs.every((r) => r.status !== 'pending' && r.status !== 'running')).toBe(true);
+    const jobs = await serverDB
+      .select()
+      .from(platformJobs)
+      .where(eq(platformJobs.type, PLATFORM_AUDIT_RETENTION_JOB_TYPE));
+    expect(jobs).toHaveLength(0);
   });
 });

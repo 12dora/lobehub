@@ -23,9 +23,11 @@ const resolvedCache = new Map<
   { epoch: string; expiresAt: number; resolved: ResolvedConnectorGovernance }
 >();
 /**
- * Last successfully resolved snapshot per source — used as fail-closed LKG.
- * Epoch is retained so callers can reason about staleness; LKG is only returned
- * when a live resolve fails (not when policy intentionally changed).
+ * Last successfully resolved snapshot per source (diagnostic / process cache).
+ * Epoch is retained so helpers can reason about staleness. The public
+ * `resolveConnectorGovernance` path never restores this on read failure —
+ * same-epoch LKG can predate a committed restrictive publish whose invalidation
+ * was lost.
  */
 const lastKnownGoodCache = new Map<
   number,
@@ -116,7 +118,7 @@ export const resolvePublishedConnectorGovernance = async (
   return resolved;
 };
 
-/** Process-local last-known-good for fail-closed degradation (may be stale). */
+/** Process-local last-known-good snapshot (diagnostic; may be stale). */
 export const getLastKnownConnectorGovernance = (
   db: LobeChatDatabase,
 ): ResolvedConnectorGovernance | null => {
@@ -132,8 +134,7 @@ export const getLastKnownConnectorGovernanceEpoch = (db: LobeChatDatabase): stri
 
 /**
  * Return LKG only when its stored invalidation epoch still matches the live
- * epoch. If the epoch advanced (policy/governance published) or cannot be
- * read, return null so consumers deny rather than applying a stale policy.
+ * epoch. Diagnostic helper — public resolve does not use this for fail-open.
  */
 export const getLastKnownConnectorGovernanceIfCurrent = async (
   db: LobeChatDatabase,

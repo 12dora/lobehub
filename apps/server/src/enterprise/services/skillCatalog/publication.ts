@@ -1,5 +1,8 @@
 import {
   createPlatformSkillPointerAdapter,
+  draftView,
+  PlatformRevisionConflictError,
+  platformSkillDraftToken,
   type ResourcePointerAdapter,
 } from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
@@ -133,10 +136,76 @@ export class SkillCatalogPublicationService {
     }
   };
 
+  /**
+   * Never-published shells (no currentVersionId) cannot go through the revision
+   * pointer adapter. CAS-archive them to status=archived while keeping revision 0
+   * so the runtime authority scan (`revision > 0`) never sees a pointerless row.
+   * Draft sequence still advances for CAS / fingerprint; mutations treat archived
+   * as terminal.
+   */
+  private archiveNeverPublished = async (actorUserId: string, input: PublicationInput) => {
+    const result = await this.db.transaction(async (tx) => {
+      const repository = new PlatformSkillCatalogRepository(tx);
+      const locked = await repository.lockSkill(input.id);
+      const draft = draftView(locked);
+      if (!draft) throw new SkillCatalogNotFoundError();
+      // Concurrent publish may have set a pointer — fail closed so the caller retries
+      // the normal archive path with a fresh draft token.
+      if (locked?.currentVersionId) {
+        throw new PlatformRevisionConflictError('Skill draft changed', {
+          currentRevision: draft.revision,
+          expectedRevision: input.expectedRevision,
+          resourceId: input.id,
+          resourceType: 'skill',
+        });
+      }
+      if (draft.status === 'archived') throw new SkillCatalogNotFoundError();
+      if (
+        draft.revision !== input.expectedRevision ||
+        platformSkillDraftToken(draft) !== input.expectedDraftToken
+      ) {
+        throw new PlatformRevisionConflictError('Skill draft changed', {
+          currentRevision: draft.revision,
+          expectedRevision: input.expectedRevision,
+          resourceId: input.id,
+          resourceType: 'skill',
+        });
+      }
+      // Keep revision at 0 (never published). Bumping to a positive pointer without a
+      // resource_revision + currentVersionId breaks loadCurrentSkillCatalogSnapshot.
+      await repository.updateSkillDraft(input.id, {
+        status: 'archived',
+        updatedBy: actorUserId,
+      });
+      const audit = await new PlatformAuditService(tx).append({
+        action: 'admin.skills.archive',
+        actorUserId,
+        afterDiff: { neverPublished: true, revision: 0, status: 'archived' },
+        reason: input.reason,
+        result: 'success',
+        targetId: input.id,
+        targetType: 'skill',
+      });
+      return { auditId: audit.id, revision: 0 as const };
+    });
+    invalidatePublishedSkillCatalogReadCache();
+    return {
+      auditId: result.auditId,
+      catalogRevision: catalogRevision(input.id, result.revision),
+      revision: result.revision,
+      skillId: input.id,
+      status: 'archived' as const,
+      versionId: null as string | null,
+    };
+  };
+
   archive = async (actorUserId: string, input: PublicationInput) => {
     try {
       const skill = await new PlatformSkillCatalogRepository(this.db).getSkill(input.id);
-      if (!skill?.currentVersionId) throw new SkillCatalogNotFoundError();
+      if (!skill) throw new SkillCatalogNotFoundError();
+      if (!skill.currentVersionId) {
+        return this.archiveNeverPublished(actorUserId, input);
+      }
       const result = await this.publisher.publish({
         actorUserId,
         expectedRevision: input.expectedRevision,

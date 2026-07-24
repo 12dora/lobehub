@@ -144,7 +144,9 @@ export interface ResolveAllSettingsInput {
   /**
    * Legacy partial user_settings blob (deep partial).
    * When flag is OFF, this is the only user layer.
-   * When flag is ON, registered paths prefer override rows; legacy fills unregistered keys.
+   * When flag is ON, registered paths prefer override rows; a legacy leaf fills a
+   * registered path only when no override row exists (pre-policy user intent),
+   * and still fills unregistered keys.
    */
   legacyUserSettings?: Record<string, unknown> | null;
   /** Explicit override rows keyed by path. */
@@ -222,8 +224,14 @@ export const resolveEffectiveSettings = (
     const path = entry.path;
     const policy = policies[path];
     const override = overrides[path];
-
-    const userOverride = override ? { value: override.value } : null;
+    // Prefer explicit override rows. When absent, a pre-policy legacy leaf is
+    // treated as user intent so enabling the flag does not silently reset preferences.
+    const legacyLeaf = override ? undefined : getByPath(legacy, path);
+    const userOverride = override
+      ? { value: override.value }
+      : legacyLeaf !== undefined
+        ? { value: legacyLeaf }
+        : null;
 
     const resolved = resolveSettingPath({
       builtInDefault: entry.builtInDefault,
@@ -272,11 +280,15 @@ export const resolveEffectiveSettings = (
 /**
  * Cache key material for multi-instance correctness.
  * Consumers must combine with invalidation events; process-local Maps are only a soft cache.
+ *
+ * `legacyChecksum` must cover the caller's sanitized legacy input so partial-slice
+ * adapters cannot reuse a materialization built from a different legacy blob.
  */
 export const buildSettingsCacheKey = (params: {
+  legacyChecksum?: string;
   registryVersion: number;
   platformRevision: number;
   userId: string;
   userOverrideRevision: number;
 }): string =>
-  `settings:v${params.registryVersion}:p${params.platformRevision}:u${params.userId}:o${params.userOverrideRevision}`;
+  `settings:v${params.registryVersion}:p${params.platformRevision}:u${params.userId}:o${params.userOverrideRevision}:l${params.legacyChecksum ?? '0'}`;

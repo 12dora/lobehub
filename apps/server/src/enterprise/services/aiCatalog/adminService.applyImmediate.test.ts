@@ -325,6 +325,53 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     });
   });
 
+  it('refuses hard-delete of ever-published providers so runtime keeps a BYOK tombstone', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat',
+      displayName: 'Published tombstone',
+      enabled: true,
+      providerKey: 'published-no-hard-delete',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'test' });
+    detail = await service.getDetail(created.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'publish',
+    });
+    detail = await service.getDetail(created.id);
+    expect(detail.draft.revision).toBeGreaterThan(0);
+
+    await expect(
+      service.deleteProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: created.id,
+        reason: 'hard delete published',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+
+    // Provider row remains so archive/disable can keep the fail-closed tombstone.
+    await expect(service.getDetail(created.id)).resolves.toMatchObject({
+      draft: { id: created.id, providerKey: 'published-no-hard-delete' },
+    });
+  });
+
   it('secret rotation requires retest before publishing (connectivity-sensitive)', async () => {
     let probeCount = 0;
     const service = createService(async () => {

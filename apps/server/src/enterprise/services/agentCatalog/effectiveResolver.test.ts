@@ -12,7 +12,7 @@ import type {
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
-  PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN,
+  PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
   PLATFORM_AGENT_EFFECTIVE_LIST_MAX,
   PlatformAgentEffectiveResolver,
 } from './effectiveResolver';
@@ -114,9 +114,9 @@ describe('PlatformAgentEffectiveResolver', () => {
     expect(result.agents).toHaveLength(PLATFORM_AGENT_EFFECTIVE_LIST_MAX);
     // Contract ceiling — must never exceed the wire max even when the catalog is larger.
     expect(result.agents.length).toBeLessThanOrEqual(1000);
-    // Full-list path passes a bounded SQL overscan limit (never unbounded / undefined).
+    // Full-list path starts with a bounded SQL batch (never unbounded / undefined).
     expect(listEffectiveInputs).toHaveBeenCalledWith('user', {
-      limit: PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN,
+      limit: PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
     });
   });
 
@@ -143,6 +143,57 @@ describe('PlatformAgentEffectiveResolver', () => {
     const result = await createResolver().getEffectiveList('user');
     expect(result.agents).toHaveLength(50);
     expect(result.agents[0]?.platformAgentId).toBe(`agent-${PLATFORM_AGENT_EFFECTIVE_LIST_MAX}`);
+  });
+
+  it('expands the SQL window past the first batch when leading rows are hidden or duplicated', async () => {
+    // More than one batch of leading hidden optionals would starve a fixed one-shot overscan.
+    // Progressive expansion must keep growing the limit until visible winners appear.
+    const hiddenLead = PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH + 200;
+    const visibleTail = 30;
+    const total = hiddenLead + visibleTail;
+    const allRows = Array.from({ length: total }, (_, index) =>
+      row({
+        agentId: `agent-${index}`,
+        agentKey: `key-${String(index).padStart(4, '0')}`,
+        assignmentId: `asg-${index}`,
+        mode: 'optional',
+        priority: 1,
+      }),
+    );
+    listEffectiveInputs.mockImplementation(async (_userId, filter) => {
+      const limit = filter?.limit ?? allRows.length;
+      return allRows.slice(0, limit);
+    });
+    listHiddenPlatformAgentIds.mockResolvedValue(
+      new Set(Array.from({ length: hiddenLead }, (_, index) => `agent-${index}`)),
+    );
+
+    const result = await createResolver().getEffectiveList('user');
+    expect(result.agents).toHaveLength(visibleTail);
+    expect(result.agents[0]?.platformAgentId).toBe(`agent-${hiddenLead}`);
+    // Must have expanded beyond the initial batch to reach the visible tail.
+    const limits = listEffectiveInputs.mock.calls.map(([, filter]) => filter?.limit);
+    expect(Math.max(...limits.map((n) => n ?? 0))).toBeGreaterThan(
+      PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
+    );
+  });
+
+  it('de-dupes multi-assignment rows so six matches for one agent still leave room for others', async () => {
+    const rows = [
+      ...Array.from({ length: 6 }, (_, index) =>
+        row({
+          agentId: 'shared',
+          agentKey: 'shared',
+          assignmentId: `asg-shared-${index}`,
+          priority: 3,
+        }),
+      ),
+      row({ agentId: 'other', agentKey: 'other', assignmentId: 'asg-other', priority: 1 }),
+    ];
+    listEffectiveInputs.mockResolvedValue(rows);
+
+    const result = await createResolver().getEffectiveList('user');
+    expect(result.agents.map((agent) => agent.platformAgentId)).toEqual(['shared', 'other']);
   });
 
   it('getEffectiveAgent uses a targeted repository filter and never full-list projection', async () => {

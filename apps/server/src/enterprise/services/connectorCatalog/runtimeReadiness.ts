@@ -8,6 +8,7 @@ import { registerManagedResourceReadiness } from '../managedResourceReadiness';
 import { ConnectorCatalogReadService, resolveConnectorSecretVersion } from './catalogSnapshot';
 import type { ConnectorOAuthRuntimeDependencies, ConnectorOAuthRuntimeEnv } from './oauthRuntime';
 import { getConnectorOAuthRuntime } from './oauthRuntime';
+import { isConnectorRuntimeAuditReconcilerConfigured } from './runtimeAuditWorker';
 
 let registered = false;
 const READINESS_PAGE_SIZE = 100;
@@ -38,6 +39,10 @@ export const resolveConnectorCatalogRuntimeReadiness = async (
   const env = params.env ?? process.env;
   const flags = parseEnterpriseFeatureFlags(env);
   if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) return false;
+  // Fail closed on serverless when neither the persistent poller nor an
+  // external reconciler contract is configured — otherwise shared-credential
+  // terminal audits can strand as pending indefinitely after a delivery blip.
+  if (!isConnectorRuntimeAuditReconcilerConfigured(env)) return false;
   const db = params.db ?? ((await getServerDB()) as LobeChatDatabase);
   const runtime = params.runtime ?? getConnectorOAuthRuntime(db, env);
   if (!runtime.secrets.assertReady) return false;

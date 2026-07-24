@@ -20,6 +20,10 @@ import {
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
 import type { ConnectorCatalogLifecycle, ConnectorCatalogSecretStore } from './catalogTypes';
+import {
+  recordConnectorConnectionTest,
+  resetConnectorConnectionTestStateForTest,
+} from './connectionTestState';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { ConnectorCatalogDraftService } from './draftService';
 import { PlatformConnectorContractError } from './errors';
@@ -27,8 +31,14 @@ import { ConnectorCatalogPublicationService } from './publicationService';
 
 const db: LobeChatDatabase = await getTestDB();
 
-beforeEach(() => cleanupM09ServiceData(db));
-afterEach(() => cleanupM09ServiceData(db));
+beforeEach(() => {
+  resetConnectorConnectionTestStateForTest();
+  return cleanupM09ServiceData(db);
+});
+afterEach(() => {
+  resetConnectorConnectionTestStateForTest();
+  return cleanupM09ServiceData(db);
+});
 
 /**
  * Test-only: mutation of `platform_resource_revisions` is blocked by migration 0145.
@@ -79,6 +89,45 @@ const createHarness = (lifecycle: ConnectorCatalogLifecycle = {}) => {
   };
 };
 
+/** Seed a connection-test result bound to the exact CAS identity used for publish. */
+const seedConnectionTest = (params: {
+  id: string;
+  draftToken: string;
+  revision: number;
+  status?: 'failure' | 'success';
+  stale?: boolean;
+}) => {
+  recordConnectorConnectionTest(params.id, {
+    errorCategory: params.status === 'failure' ? 'network' : null,
+    latencyMs: params.status === 'failure' ? null : 1,
+    messageCode:
+      params.status === 'failure' ? 'connector.operation_failed' : 'connector.operation_succeeded',
+    status: params.status ?? 'success',
+    testedAt: new Date(),
+    testedDraftToken: params.stale ? '0'.repeat(64) : params.draftToken,
+    testedRevision: params.stale ? params.revision - 1 : params.revision,
+  });
+};
+
+/** Publish helper that seeds a current successful connection test first. */
+const publish = (
+  harness: ReturnType<typeof createHarness>,
+  actorUserId: string,
+  input: {
+    expectedDraftToken: string;
+    expectedRevision: number;
+    id: string;
+    reason: string;
+  },
+) => {
+  seedConnectionTest({
+    draftToken: input.expectedDraftToken,
+    id: input.id,
+    revision: input.expectedRevision,
+  });
+  return harness.publication.publish(actorUserId, input);
+};
+
 const createSharedDraft = async (
   harness: ReturnType<typeof createHarness>,
   secret: string,
@@ -97,6 +146,50 @@ const createSharedDraft = async (
   });
 
 describe('ConnectorCatalogPublicationService', () => {
+  it('rejects publish without a current successful connection test', async () => {
+    const harness = createHarness();
+    const draft = await createSharedDraft(harness, 'no-test-secret', 'no-test-connector');
+    await expect(
+      harness.publication.publish('admin-user', {
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: 0,
+        id: draft.draft.id,
+        reason: 'publish without test',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
+
+    seedConnectionTest({
+      draftToken: draft.draftToken,
+      id: draft.draft.id,
+      revision: 0,
+      status: 'failure',
+    });
+    await expect(
+      harness.publication.publish('admin-user', {
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: 0,
+        id: draft.draft.id,
+        reason: 'publish after failed test',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
+
+    seedConnectionTest({
+      draftToken: draft.draftToken,
+      id: draft.draft.id,
+      revision: 0,
+      stale: true,
+    });
+    await expect(
+      harness.publication.publish('admin-user', {
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: 0,
+        id: draft.draft.id,
+        reason: 'publish after stale test',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
+  });
+
   it('completes DNS and Secret resolution before locking with no external I/O afterward', async () => {
     const lifecycle: ConnectorCatalogLifecycle = {};
     const harness = createHarness(lifecycle);
@@ -110,7 +203,7 @@ describe('ConnectorCatalogPublicationService', () => {
       };
     };
 
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: draft.draftToken,
       expectedRevision: 0,
       id: draft.draft.id,
@@ -128,7 +221,7 @@ describe('ConnectorCatalogPublicationService', () => {
     lifecycle.afterPublicationPreflight = async () => harness.setPolicyVersion(2);
 
     await expect(
-      harness.publication.publish('admin-user', {
+      publish(harness, 'admin-user', {
         expectedDraftToken: draft.draftToken,
         expectedRevision: 0,
         id: draft.draft.id,
@@ -142,7 +235,7 @@ describe('ConnectorCatalogPublicationService', () => {
     const lifecycle: ConnectorCatalogLifecycle = {};
     const harness = createHarness(lifecycle);
     const draft = await createSharedDraft(harness, 'target-proof-secret', 'target-proof-connector');
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: draft.draftToken,
       expectedRevision: 0,
       id: draft.draft.id,
@@ -189,7 +282,7 @@ describe('ConnectorCatalogPublicationService', () => {
       'malicious-history-secret',
       'malicious-history-connector',
     );
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: draft.draftToken,
       expectedRevision: 0,
       id: draft.draft.id,
@@ -235,7 +328,7 @@ describe('ConnectorCatalogPublicationService', () => {
     const harness = createHarness();
     const draft = await createSharedDraft(harness, secret);
     await expect(
-      harness.publication.publish('admin-user', {
+      publish(harness, 'admin-user', {
         expectedDraftToken: draft.draftToken,
         expectedRevision: 0,
         id: draft.draft.id,
@@ -294,7 +387,7 @@ describe('ConnectorCatalogPublicationService', () => {
       ],
       transport: 'http',
     });
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: draft.draftToken,
       expectedRevision: 0,
       id: draft.draft.id,
@@ -334,7 +427,7 @@ describe('ConnectorCatalogPublicationService', () => {
       tools: [connectorToolFixture()],
       transport: 'http',
     });
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: first.draftToken,
       expectedRevision: 0,
       id: first.draft.id,
@@ -356,7 +449,7 @@ describe('ConnectorCatalogPublicationService', () => {
       },
       reason: 'prepare OAuth v2',
     });
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: second.draftToken,
       expectedRevision: 2,
       id: first.draft.id,
@@ -395,7 +488,7 @@ describe('ConnectorCatalogPublicationService', () => {
   it('rolls back endpoint, tools, and the exact historical Secret fingerprint', async () => {
     const harness = createHarness();
     const first = await createSharedDraft(harness, 'historical-secret-v1', 'rollback-connector');
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: first.draftToken,
       expectedRevision: 0,
       id: first.draft.id,
@@ -410,7 +503,7 @@ describe('ConnectorCatalogPublicationService', () => {
       reason: 'prepare v2',
       sharedSecret: { operation: 'replace', value: { apiKey: 'historical-secret-v2' } },
     });
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: updated.draftToken,
       expectedRevision: 2,
       id: first.draft.id,
@@ -458,7 +551,7 @@ describe('ConnectorCatalogPublicationService', () => {
   it('archives with the Published Secret fingerprint after the mutable Draft rotates', async () => {
     const harness = createHarness();
     const first = await createSharedDraft(harness, 'archive-secret-v1', 'archive-connector');
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: first.draftToken,
       expectedRevision: 0,
       id: first.draft.id,
@@ -490,7 +583,7 @@ describe('ConnectorCatalogPublicationService', () => {
   it('maps Secret version resolver failures to one stable non-echo code', async () => {
     const harness = createHarness();
     const draft = await createSharedDraft(harness, 'resolver-secret', 'resolver-connector');
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: draft.draftToken,
       expectedRevision: 0,
       id: draft.draft.id,
@@ -517,7 +610,7 @@ describe('ConnectorCatalogPublicationService', () => {
   it('revokes every binding with CAS/invalidation and archive removes the runtime snapshot', async () => {
     const harness = createHarness();
     const draft = await createSharedDraft(harness, 'revoke-secret', 'revoke-connector');
-    await harness.publication.publish('admin-user', {
+    await publish(harness, 'admin-user', {
       expectedDraftToken: draft.draftToken,
       expectedRevision: 0,
       id: draft.draft.id,
@@ -584,7 +677,15 @@ describe('ConnectorCatalogService publish secret boundary', () => {
       assertAllowed: vi.fn(async () => {}),
       getPolicyVersion: vi.fn(() => 1),
       preflight: vi.fn(async () => ({ policyVersion: 1 })),
-      requestJson: vi.fn(async () => ({ body: {}, status: 200 })),
+      requestJson: vi.fn(async () => ({
+        body: {
+          result: {
+            tools: [{ inputSchema: { type: 'object' }, name: 'canary.ping' }],
+          },
+        },
+        status: 200,
+        url: 'https://connector-canary.example.test/mcp',
+      })),
     } as unknown as ConnectorOutboundClient;
     const service = new ConnectorCatalogService(db, outbound, secrets, {
       redirectUri: 'https://aihub.example.test/oauth/connector/callback',

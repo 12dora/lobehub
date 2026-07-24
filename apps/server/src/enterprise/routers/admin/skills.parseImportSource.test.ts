@@ -463,28 +463,55 @@ describe('admin.skills.parseImportSource', () => {
   });
 
   it('passes fetch-layer maxContentLength so oversized bodies are capped before full buffering', async () => {
-    // Simulate the real ssrfSafeFetch contract: when maxContentLength is set, only
-    // up to that many bytes are returned (soft cap). The call site must wire the
-    // third-arg option so the package never materializes an unbounded arrayBuffer().
+    // Generic URLs fetch at the ZIP ceiling so extensionless application/zip responses
+    // are not truncated at 1 MiB; text is still enforced post-classification.
     vi.mocked(ssrfSafeFetch).mockImplementation(async (_url, _init, ssrfOptions) => {
-      expect(ssrfOptions?.maxContentLength).toBe(1_048_576);
-      // Body at exactly the fetch-layer cap — proves the option was required for safety.
-      // Post-hoc reader still accepts equality; oversize without the option would OOM.
-      return new Response('x'.repeat(ssrfOptions!.maxContentLength!), {
+      expect(ssrfOptions?.maxContentLength).toBe(MAX_IMPORT_ZIP_BYTES);
+      // Body larger than text limit — post-hoc reader rejects as content_too_large.
+      return new Response('x'.repeat(1_048_576 + 64), {
         headers: { 'content-type': 'text/markdown' },
       });
     });
     const caller = await callerFor({ userId: ids.superAdmin });
-    // Content of max bytes that is not valid skill markdown → parse fails, but the
-    // important assertion is that ssrfSafeFetch received maxContentLength (above).
     await expect(
       caller.parseImportSource({ source: 'url', url: 'https://example.com/SKILL.md' }),
-    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'skill_import_content_too_large',
+    });
     expect(vi.mocked(ssrfSafeFetch)).toHaveBeenCalledWith(
       'https://example.com/SKILL.md',
       expect.objectContaining({ signal: expect.anything() }),
-      { maxContentLength: 1_048_576 },
+      { maxContentLength: MAX_IMPORT_ZIP_BYTES },
     );
+  });
+
+  it('accepts extensionless application/zip responses larger than the markdown limit', async () => {
+    // Store uncompressed so repeated pad text stays above the 1 MiB wire limit
+    // (default deflate collapses it far below the markdown ceiling).
+    const largeZip = zipSync(
+      {
+        'SKILL.md': strToU8(SKILL_MD),
+        'references/pad.txt': strToU8('p'.repeat(1_200_000)),
+      },
+      { level: 0 },
+    );
+    expect(largeZip.byteLength).toBeGreaterThan(1_048_576);
+    expect(largeZip.byteLength).toBeLessThan(MAX_IMPORT_ZIP_BYTES);
+
+    vi.mocked(ssrfSafeFetch).mockImplementation(async (_url, _init, ssrfOptions) => {
+      expect(ssrfOptions?.maxContentLength).toBe(MAX_IMPORT_ZIP_BYTES);
+      return new Response(Buffer.from(largeZip), {
+        headers: { 'content-type': 'application/zip' },
+      });
+    });
+    const caller = await callerFor({ userId: ids.superAdmin });
+    const result = await caller.parseImportSource({
+      source: 'url',
+      url: 'https://example.com/artifact/123',
+    });
+    expect(result.sourceMeta?.kind).toBe('url');
+    expect(result.content).toContain('Demo Skill');
   });
 
   it('passes ZIP maxContentLength for package-looking URL downloads at the fetch layer', async () => {

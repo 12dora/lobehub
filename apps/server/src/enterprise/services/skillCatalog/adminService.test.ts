@@ -463,6 +463,192 @@ describe('SkillCatalogAdminService', () => {
     });
   });
 
+  it('rejects secret-bearing versions before any version row or draft-sequence change', async () => {
+    const service = new SkillCatalogAdminService(db, serviceOptions);
+    const draft = await createDraft(service, 'secret.blocked');
+    const before = await service.getDetail(draft.draft.id);
+    await expect(
+      service.createVersion('admin-1', {
+        content: 'postgres://admin:password@db.internal/catalog',
+        contentRef: null,
+        expectedDraftToken: before.draftToken,
+        expectedRevision: before.baseRevision,
+        manifest,
+        reason: 'must not persist secret material',
+        resources: [],
+        skillId: draft.draft.id,
+        version: '1.0.0',
+      }),
+    ).rejects.toBeInstanceOf(SkillCatalogValidationError);
+    const after = await service.getDetail(draft.draft.id);
+    expect(after.draft.draftSequence).toBe(before.draft.draftSequence);
+    expect(after.latestVersion).toBeNull();
+    const versions = await db.query.platformSkillVersions.findMany({
+      where: (row, { eq: equals }) => equals(row.skillId, draft.draft.id),
+    });
+    expect(versions).toHaveLength(0);
+  });
+
+  it('persists a refreshed validation result so getVersion matches validate', async () => {
+    const service = new SkillCatalogAdminService(db, serviceOptions);
+    const draft = await createDraft(service, 'validate.refresh');
+    const version = await createVersion(service, draft, '# validate refresh', '1.0.0');
+    const before = await service.getDetail(draft.draft.id);
+    const validation = await service.validate('admin-1', {
+      expectedDraftToken: before.draftToken,
+      expectedRevision: before.baseRevision,
+      reason: 'refresh validation metadata',
+      skillId: draft.draft.id,
+      versionId: version.id,
+    });
+    const stored = await service.getVersion(draft.draft.id, version.id);
+    expect(stored.validation).toEqual(validation);
+    expect(stored.validation?.validatedAt).toBeInstanceOf(Date);
+    // Fresh timestamp must differ from the create-time validation stamp when enough time passes;
+    // equality of the full result is the contract the admin UI verifies.
+    expect(JSON.stringify(stored.validation)).toBe(JSON.stringify(validation));
+  });
+
+  it('archives never-published empty shells and versioned drafts without a current pointer', async () => {
+    const service = new SkillCatalogAdminService(db, serviceOptions);
+    const empty = await createDraft(service, 'never.published.empty');
+    const emptyArchived = await service.archive('admin-1', {
+      expectedDraftToken: empty.draftToken,
+      expectedRevision: empty.draft.revision,
+      id: empty.draft.id,
+      reason: 'archive accidental empty draft',
+    });
+    expect(emptyArchived).toMatchObject({
+      revision: 0,
+      skillId: empty.draft.id,
+      status: 'archived',
+      versionId: null,
+    });
+    const emptyDetail = await service.getDetail(empty.draft.id);
+    expect(emptyDetail.draft.status).toBe('archived');
+    expect(emptyDetail.draft.revision).toBe(0);
+    // Pointerless positive revisions break authority; revision-zero archived must not.
+    await expect(new SkillCatalogReadService(db).getPublishedCatalog()).resolves.toMatchObject({
+      skills: [],
+    });
+    // Terminal: identity/version mutations must not revive the shell.
+    await expect(
+      service.updateDraft('admin-1', {
+        displayName: 'should not apply',
+        expectedDraftToken: emptyDetail.draftToken,
+        expectedRevision: emptyDetail.baseRevision,
+        id: empty.draft.id,
+        reason: 'mutate archived shell',
+      }),
+    ).rejects.toThrow(/not found/i);
+
+    const versioned = await createDraft(service, 'never.published.versioned');
+    await createVersion(service, versioned, '# never published', '1.0.0');
+    const ready = await service.getDetail(versioned.draft.id);
+    expect(ready.draft.currentVersionId).toBeNull();
+    const versionedArchived = await service.archive('admin-1', {
+      expectedDraftToken: ready.draftToken,
+      expectedRevision: ready.baseRevision,
+      id: versioned.draft.id,
+      reason: 'archive versioned unpublished draft',
+    });
+    expect(versionedArchived).toMatchObject({
+      revision: 0,
+      status: 'archived',
+      versionId: null,
+    });
+    const versionedDetail = await service.getDetail(versioned.draft.id);
+    expect(versionedDetail.draft.status).toBe('archived');
+    expect(versionedDetail.draft.revision).toBe(0);
+    expect(versionedDetail.latestVersion?.version).toBe('1.0.0');
+    await expect(new SkillCatalogReadService(db).getPublishedCatalog()).resolves.toMatchObject({
+      skills: [],
+    });
+    await expect(
+      service.createVersion('admin-1', {
+        content: '# after archive',
+        contentRef: null,
+        expectedDraftToken: versionedDetail.draftToken,
+        expectedRevision: versionedDetail.baseRevision,
+        manifest,
+        reason: 'mutate archived versioned shell',
+        resources: [],
+        skillId: versioned.draft.id,
+        version: '1.0.1',
+      }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it('keeps builtin override suppressed when archiving a disabled draft', async () => {
+    const skillKey = 'builtin.disabled.archive';
+    const builtinContent = '# builtin disabled archive';
+    const builtin = {
+      checksum: platformSkillVersionChecksum({ content: builtinContent, manifest }),
+      content: builtinContent,
+      description: 'Builtin disabled archive',
+      displayName: 'Builtin disabled archive',
+      distribution: 'default' as const,
+      manifest,
+      skillKey,
+      source: 'builtin' as const,
+      version: '1.0.0',
+    };
+    const service = new SkillCatalogAdminService(db, {
+      allowBuiltinOverride: true,
+      builtinSkills: [builtin],
+      invalidation,
+    });
+    const draft = await service.create('admin-1', {
+      allowBuiltinOverride: true,
+      displayName: 'Managed disabled archive',
+      distribution: 'default',
+      enabled: true,
+      reason: 'create override',
+      skillKey,
+    });
+    const version = await createVersion(service, draft, '# managed disabled', '2.0.0');
+    let detail = await service.getDetail(draft.draft.id);
+    await service.publish('admin-1', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: draft.draft.id,
+      reason: 'publish override',
+      versionId: version.id,
+    });
+    detail = await service.getDetail(draft.draft.id);
+    // Unpublished identity draft disables the override, then archive.
+    await service.updateDraft('admin-1', {
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: draft.draft.id,
+      reason: 'disable before archive',
+    });
+    detail = await service.getDetail(draft.draft.id);
+    expect(detail.draft.enabled).toBe(false);
+    await service.archive('admin-1', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: draft.draft.id,
+      reason: 'archive disabled override',
+    });
+    const reader = new SkillCatalogReadService(db, { builtinSkills: [builtin] });
+    // Tombstone must remain eligible so the bundled skill stays suppressed.
+    await expect(reader.resolveForExecution(skillKey)).resolves.toBeUndefined();
+    await expect(reader.getPublishedCatalog()).resolves.toMatchObject({ skills: [] });
+    const archived = await db.query.platformResourceRevisions.findFirst({
+      orderBy: (revision, { desc }) => [desc(revision.revision)],
+      where: (revision, { eq }) => eq(revision.resourceId, draft.draft.id),
+    });
+    expect(archived).toMatchObject({
+      payload: {
+        builtinOverrideTombstone: true,
+        skill: expect.objectContaining({ enabled: true }),
+      },
+      status: 'archived',
+    });
+  });
+
   it('records mutation reasons and rejects stale draft tokens', async () => {
     const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'audited.skill');

@@ -79,7 +79,8 @@ export const adminManagedResourcesRouter = router({
         serverDB: ctx.serverDB,
       });
       let connectorTransitionToken: string | null = null;
-      let connectorTransitionCanRestore = false;
+      // Track commit stage (not error class): cancel the transition whenever publish did not commit.
+      let publishCommitted = false;
       try {
         const flags = parseEnterpriseFeatureFlags(process.env);
         connectorTransitionToken = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
@@ -98,6 +99,7 @@ export const adminManagedResourcesRouter = router({
           expectedRevision: input.expectedRevision,
           reason: input.reason,
         });
+        publishCommitted = true;
         const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
         const policy = managed.published.connectors;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
@@ -116,7 +118,6 @@ export const adminManagedResourcesRouter = router({
         return result;
       } catch (error) {
         if (error instanceof PlatformRevisionConflictError) {
-          connectorTransitionCanRestore = true;
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
             details: error.details as Record<string, string | number | boolean | null> | undefined,
@@ -124,7 +125,6 @@ export const adminManagedResourcesRouter = router({
           });
         }
         if (error instanceof ManagedResourceCatalogNotReadyError) {
-          connectorTransitionCanRestore = true;
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
             details: { resourceCount: error.resources.length },
@@ -134,7 +134,9 @@ export const adminManagedResourcesRouter = router({
         }
         throw error;
       } finally {
-        if (connectorTransitionToken && connectorTransitionCanRestore) {
+        // Cancel owned transition on any pre-commit failure (DB, audit, conflict, catalog, etc.).
+        // After a confirmed commit, leave blocked mode for finalize / lease self-heal paths.
+        if (connectorTransitionToken && !publishCommitted) {
           try {
             await cancelConnectorRuntimeEffectiveStateTransition(connectorTransitionToken);
           } catch (cleanupError) {

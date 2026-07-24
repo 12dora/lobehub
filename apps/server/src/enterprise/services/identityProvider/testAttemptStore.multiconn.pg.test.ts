@@ -4,6 +4,8 @@
  *
  * @vitest-environment node
  */
+import { randomUUID } from 'node:crypto';
+
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
@@ -13,12 +15,14 @@ import { getTestDB } from '@/database/core/getTestDB';
 import * as schema from '@/database/schemas';
 import {
   platformIdentityProviders,
+  platformIdentityProviderSecrets,
   platformIdentityProviderTestAttempts,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { runIdentityProviderTestAttemptCleanup } from '../../jobs/identityProviderTestAttemptCleanup';
+import { IdentityProviderSecretStore } from './secretStore';
 import {
   cleanupExpiredIdentityProviderTestAttempts,
   IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS,
@@ -47,6 +51,7 @@ run('IdentityProviderTestAttemptStore — true multi-connection PostgreSQL', () 
   };
   const cleanup = async () => {
     await db.delete(platformIdentityProviderTestAttempts);
+    await db.delete(platformIdentityProviderSecrets);
     await db.delete(platformIdentityProviders);
   };
   const issueAndReserve = async () => {
@@ -185,4 +190,46 @@ run('IdentityProviderTestAttemptStore — true multi-connection PostgreSQL', () 
     expect(results.toSorted()).toEqual([0, 1]);
     expect(maxActiveCleanups).toBe(1);
   });
+
+  /**
+   * Merged from secretStore.pgConcurrency.test.ts so the PostgreSQL failure-drill
+   * suite always covers independent-connection secret CAS (identity/F11).
+   */
+  it('allows exactly one secret writer across independent database connections', async () => {
+    const firstStore = new IdentityProviderSecretStore(
+      independentDb(),
+      new PlatformSecretService({ keyProvider }),
+    );
+    const secondStore = new IdentityProviderSecretStore(
+      independentDb(),
+      new PlatformSecretService({ keyProvider }),
+    );
+    const [provider] = await db
+      .insert(platformIdentityProviders)
+      .values({ displayName: 'Concurrent secret', providerKey: `concurrent-${randomUUID()}` })
+      .returning();
+    const results = await Promise.allSettled([
+      firstStore.persistClientSecret({
+        expectedRevision: 0,
+        providerId: provider.id,
+        value: randomUUID(),
+      }),
+      secondStore.persistClientSecret({
+        expectedRevision: 0,
+        providerId: provider.id,
+        value: randomUUID(),
+      }),
+    ]);
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(({ status }) => status === 'rejected')).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({ code: 'PLATFORM_REVISION_CONFLICT' }),
+      }),
+    ]);
+    const [current] = await db
+      .select({ revision: platformIdentityProviders.revision })
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, provider.id));
+    expect(current.revision).toBe(1);
+  }, 20_000);
 });

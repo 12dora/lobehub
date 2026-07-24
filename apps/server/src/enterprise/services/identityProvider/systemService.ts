@@ -88,17 +88,16 @@ export const loadPublishedIdentityTarget = async (
       secretFingerprint: revision.secretFingerprint,
     };
   });
+  // Always compute the identity digest — including the empty provider set after a
+  // full tombstone — so restart status can converge on a real target revision.
   return {
     environmentShadowed: selection.environmentShadowed,
-    identityRevision:
-      providers.length > 0
-        ? identityProviderLkgIdentity(
-            providers.map((provider) => ({
-              ...provider,
-              payload: provider.payload as unknown as Record<string, unknown>,
-            })),
-          )
-        : null,
+    identityRevision: identityProviderLkgIdentity(
+      providers.map((provider) => ({
+        ...provider,
+        payload: provider.payload as unknown as Record<string, unknown>,
+      })),
+    ),
     providers,
   };
 };
@@ -274,16 +273,41 @@ export class IdentityProviderSystemService {
         );
         const reconciled = new Set<string>();
         for (const row of pendingRows) {
-          if (!row.activationRevision || !canonicalProviderIds.has(row.id)) continue;
+          if (!row.activationRevision) continue;
+          if (canonicalProviderIds.has(row.id)) {
+            // Live publish: mark active once every fresh instance reports the target.
+            const [updated] = await tx
+              .update(platformIdentityProviders)
+              .set({ status: 'active', updatedAt: sql`clock_timestamp()` })
+              .where(
+                and(
+                  eq(platformIdentityProviders.id, row.id),
+                  eq(platformIdentityProviders.status, 'pending_restart'),
+                  eq(platformIdentityProviders.activationRevision, row.activationRevision),
+                  eq(platformIdentityProviders.revision, row.activationRevision),
+                ),
+              )
+              .returning({ id: platformIdentityProviders.id });
+            if (updated) reconciled.add(updated.id);
+            continue;
+          }
+          // Tombstone / removal: provider is no longer in the live target set.
+          // Reconcile to disabled only after every fresh instance reports the reduced target.
           const [updated] = await tx
             .update(platformIdentityProviders)
-            .set({ status: 'active', updatedAt: sql`clock_timestamp()` })
+            .set({
+              activationRevision: null,
+              enabled: false,
+              status: 'disabled',
+              updatedAt: sql`clock_timestamp()`,
+            })
             .where(
               and(
                 eq(platformIdentityProviders.id, row.id),
                 eq(platformIdentityProviders.status, 'pending_restart'),
                 eq(platformIdentityProviders.activationRevision, row.activationRevision),
                 eq(platformIdentityProviders.revision, row.activationRevision),
+                eq(platformIdentityProviders.enabled, false),
               ),
             )
             .returning({ id: platformIdentityProviders.id });

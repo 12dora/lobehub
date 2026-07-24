@@ -300,6 +300,8 @@ export class SkillCatalogAdminService {
     if (!locked) throw new SkillCatalogNotFoundError();
     const detail = await this.model(tx).getDetail(input.id);
     if (!detail) throw new SkillCatalogNotFoundError();
+    // Archived is terminal for draft mutations; recovery is rollback only.
+    if (detail.draft.status === 'archived') throw new SkillCatalogNotFoundError();
     if (
       detail.baseRevision !== input.expectedRevision ||
       platformSkillDraftToken(detail.draft) !== input.expectedDraftToken
@@ -462,6 +464,14 @@ export class SkillCatalogAdminService {
       skillKey: detail.draft.skillKey,
       version: values.version,
     });
+    // Error-level secret material is non-persistable: never write the credential-bearing
+    // immutable version (or bump draft sequence) into PostgreSQL.
+    const secretErrors = validation.issues.filter(
+      (issue) => issue.code === 'secret_material_detected' && issue.severity === 'error',
+    );
+    if (secretErrors.length > 0) {
+      throw new SkillCatalogValidationError(secretErrors);
+    }
     const version = await this.atomicMutation({
       action: 'admin.skills.createVersion',
       actorUserId,
@@ -493,7 +503,20 @@ export class SkillCatalogAdminService {
       run: () =>
         this.db.transaction(async (tx) => {
           await this.assertDraft(tx, { ...input, id: input.skillId });
-          return this.validation.validateStoredVersion(tx, input.skillId, input.versionId);
+          const validation = await this.validation.validateStoredVersion(
+            tx,
+            input.skillId,
+            input.versionId,
+          );
+          // Persist the freshly timestamped result so getVersion matches validate
+          // (admin UI verifies JSON equality and otherwise locks writes as refreshFailed).
+          const stored = await this.model(tx).updateVersionValidation({
+            skillId: input.skillId,
+            validation: toStoredValidation(validation),
+            versionId: input.versionId,
+          });
+          if (!stored) throw new SkillCatalogNotFoundError();
+          return validation;
         }),
       summarize: (validation) => ({ issueCount: validation.issues.length }),
       targetId: () => input.skillId,
@@ -600,15 +623,14 @@ export class SkillCatalogAdminService {
 
   /**
    * Apply a skill draft mutation then publish immediately (admin settings UI parity).
-   * Create soft-fails when version missing/invalid; update on already-published throws on publish fail.
+   * Draft/version writes always commit first; publish failures return the partial-success
+   * contract `{published:false, publishError, draft}` so the client can refresh CAS state.
    */
   applyImmediate = async (actorUserId: string, input: ApplyImmediateInput) => {
     let skillId: string;
     let versionId: string | null;
-    let softFail: boolean;
 
     if (input.mode === 'create') {
-      softFail = true;
       const { mode: _mode, version, ...createInput } = input;
       const created = await this.create(actorUserId, createInput);
       skillId = created.draft.id;
@@ -634,39 +656,17 @@ export class SkillCatalogAdminService {
       await this.updateDraft(actorUserId, updateInput);
       skillId = input.id;
       versionId = await this.resolvePublishVersionId(skillId, preferredVersionId);
-      // Soft-fail only on first-publish path (revision 0).
-      const afterUpdate = await this.getDetail(skillId);
-      softFail = afterUpdate.baseRevision === 0;
     } else {
       // createVersion
       const { mode: _mode, ...versionInput } = input;
       const createdVersion = await this.createVersion(actorUserId, versionInput);
       skillId = input.skillId;
       versionId = createdVersion.id;
-      const after = await this.getDetail(skillId);
-      softFail = after.baseRevision === 0;
     }
 
-    const result = await this.tryPublishImmediate(actorUserId, skillId, input.reason, versionId, {
-      softFail,
+    return this.tryPublishImmediate(actorUserId, skillId, input.reason, versionId, {
+      softFail: true,
     });
-
-    // Align with W10-P: update on already-published must surface publish failures.
-    if (!result.published && input.mode === 'update') {
-      const after = await this.getDetail(skillId);
-      if (after.baseRevision > 0 && result.publishError) {
-        throw new SkillCatalogValidationError([
-          {
-            code: 'manifest_invalid',
-            message: result.publishError,
-            path: [],
-            severity: 'error',
-          },
-        ]);
-      }
-    }
-
-    return result;
   };
 
   /**

@@ -55,6 +55,23 @@ beforeEach(async () => {
 afterEach(cleanup);
 
 describe('AdminBrandingAssetService', () => {
+  it('compensates an accepted reservation when sweep fails before upload', async () => {
+    const storage = {
+      delete: vi.fn(async () => {}),
+      isConfigured: () => true,
+      upload: vi.fn(async () => {}),
+    };
+    const service = new AdminBrandingAssetService(db, { storage });
+    vi.spyOn(service, 'sweep').mockRejectedValueOnce(new Error('sweep discovery failed'));
+    const request = await input();
+
+    await expect(service.upload(actorUserId, request)).rejects.toThrow('sweep discovery failed');
+    expect(storage.upload).not.toHaveBeenCalled();
+    expect(await db.select().from(platformBrandingAssets)).toEqual([
+      expect.objectContaining({ status: 'orphaned', uploadOwner: null }),
+    ]);
+  });
+
   it('coalesces concurrent identical requests into one object write and exact replay', async () => {
     let releaseUpload!: () => void;
     const uploadGate = new Promise<void>((resolve) => {

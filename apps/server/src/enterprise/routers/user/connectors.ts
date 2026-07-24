@@ -67,7 +67,8 @@ export const userConnectorsRouter = router({
     .input(userConnectorDisconnectInputSchema)
     .output(userConnectorDisconnectOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      if (!featureEnabled()) return { disconnected: true as const };
+      // Revocation is flag-independent: a disabled feature must still tear down
+      // stored bindings/tokens so re-enabling cannot resurrect a "disconnected" auth.
       return execute(() => ctx.getUserConnectorOAuthService().disconnect(input));
     }),
 

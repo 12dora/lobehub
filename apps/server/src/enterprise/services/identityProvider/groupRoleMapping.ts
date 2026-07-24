@@ -50,7 +50,9 @@ export const resolveMappedPlatformRoles = (input: {
  * - Never grants super_admin via mapping
  * - Preserves an existing super_admin grant (break-glass)
  * - Replaces other global roles with the mapped set (+ platform_user)
- * Non-blocking: logs and returns on failure so login still succeeds.
+ *
+ * Fail-closed: when a mapping is configured, replacement failures (seed gaps,
+ * DB errors) throw so login/session creation cannot leave stale elevated roles.
  */
 export const applyGroupRoleMappingToUser = async (input: {
   db: LobeChatDatabase;
@@ -58,18 +60,18 @@ export const applyGroupRoleMappingToUser = async (input: {
   groupRoleMapping: Record<string, string>;
   userId: string;
 }): Promise<{ applied: string[]; skipped: boolean }> => {
+  if (!input.userId) return { applied: [], skipped: true };
+  // No mapping configured → do not touch roles (default path owns platform_user).
+  if (Object.keys(input.groupRoleMapping).length === 0) {
+    return { applied: [], skipped: true };
+  }
+
+  const desired = resolveMappedPlatformRoles({
+    groupRoleMapping: input.groupRoleMapping,
+    groups: input.groups,
+  });
+
   try {
-    if (!input.userId) return { applied: [], skipped: true };
-    // No mapping configured → do not touch roles (default path owns platform_user).
-    if (Object.keys(input.groupRoleMapping).length === 0) {
-      return { applied: [], skipped: true };
-    }
-
-    const desired = resolveMappedPlatformRoles({
-      groupRoleMapping: input.groupRoleMapping,
-      groups: input.groups,
-    });
-
     await seedPlatformRoles.ensurePlatformPermissionsExist(input.db);
     await seedPlatformRoles.seedPlatformRoles(input.db);
 
@@ -89,7 +91,7 @@ export const applyGroupRoleMappingToUser = async (input: {
       console.error('[identityProvider.groupRoleMapping] role seed incomplete', {
         desired: finalNames,
       });
-      return { applied: [], skipped: true };
+      throw new Error('PLATFORM_IDENTITY_GROUP_ROLE_SEED_INCOMPLETE');
     }
 
     await rbac.replaceGlobalUserRoles(input.userId, roleIds, {
@@ -99,11 +101,13 @@ export const applyGroupRoleMappingToUser = async (input: {
     });
     return { applied: finalNames, skipped: false };
   } catch (error) {
-    console.error('[identityProvider.groupRoleMapping] apply failed (non-blocking)', {
+    console.error('[identityProvider.groupRoleMapping] apply failed (fail-closed)', {
       errorClass: error instanceof Error ? error.name : 'UnknownError',
       message: error instanceof Error ? error.message : String(error),
       userId: input.userId,
     });
-    return { applied: [], skipped: true };
+    throw error instanceof Error
+      ? error
+      : new Error('PLATFORM_IDENTITY_GROUP_ROLE_RECONCILE_FAILED');
   }
 };

@@ -15,10 +15,11 @@ const db: LobeChatDatabase = await getTestDB();
 const createCaller = createCallerFactory(userConnectorsRouter);
 
 const listManagedSpy = vi.hoisted(() => vi.fn(async () => ({ items: [], nextCursor: null })));
+const disconnectSpy = vi.hoisted(() => vi.fn(async () => ({ disconnected: true as const })));
 
 vi.mock('../../services/connectorCatalog/userOAuthService', () => ({
   UserConnectorOAuthService: class {
-    disconnect = vi.fn(async () => ({ disconnected: true as const }));
+    disconnect = disconnectSpy;
     getAuthorizationStatus = vi.fn(async () => ({
       attemptId: 'a'.repeat(32),
       binding: null,
@@ -102,9 +103,11 @@ describe('user.connectors router', () => {
         connectorId: 'connector-1',
       }),
     ).resolves.toEqual({ attemptId: 'a'.repeat(32), binding: null, status: 'invalid' });
+    // Disconnect still revokes bindings/tokens while the feature is disabled.
     await expect(caller.disconnect({ connectorId: 'connector-1' })).resolves.toEqual({
       disconnected: true,
     });
+    expect(disconnectSpy).toHaveBeenCalledWith({ connectorId: 'connector-1' });
     await expect(caller.startAuthorization({ connectorId: 'connector-1' })).rejects.toMatchObject({
       code: 'FORBIDDEN',
       message: 'PLATFORM_FEATURE_DISABLED',

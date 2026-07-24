@@ -642,7 +642,7 @@ describe('admin.skills.applyImmediate', () => {
     }
   });
 
-  it('applyImmediate update throws when publish fails on already-published skill', async () => {
+  it('applyImmediate update returns partial success when publish fails after draft commit', async () => {
     const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
     const created = await caller.applyImmediate({
       displayName: 'Hard Fail Target',
@@ -661,18 +661,21 @@ describe('admin.skills.applyImmediate', () => {
     });
     expect(created.published).toBe(true);
     const detail = await caller.get({ id: created.draft.id });
-    // Force publish to fail after update by pointing at a non-existent version id via createVersion path?
-    // Soft path: update with bogus versionId still resolves/throws from publish.
-    await expect(
-      caller.applyImmediate({
-        displayName: 'Hard Fail Renamed',
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: created.draft.id,
-        mode: 'update',
-        reason: 'force bad version',
-        versionId: 'missing-version-id',
-      }),
-    ).rejects.toMatchObject({ code: expect.stringMatching(/NOT_FOUND|PRECONDITION/) });
+    // Publish fails (missing version) after the identity draft update has already committed.
+    // Partial-success contract: published:false + draft reflects the committed rename.
+    const result = await caller.applyImmediate({
+      displayName: 'Hard Fail Renamed',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.draft.id,
+      mode: 'update',
+      reason: 'force bad version',
+      versionId: 'missing-version-id',
+    });
+    expect(result.published).toBe(false);
+    expect(result.publishError).toBeTruthy();
+    expect(result.draft.displayName).toBe('Hard Fail Renamed');
+    const after = await caller.get({ id: created.draft.id });
+    expect(after.draft.displayName).toBe('Hard Fail Renamed');
   });
 });

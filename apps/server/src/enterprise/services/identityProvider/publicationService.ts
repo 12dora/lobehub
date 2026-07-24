@@ -1240,6 +1240,26 @@ export class IdentityProviderPublicationService {
   };
 
   /**
+   * True when any signed published revision exists for this provider (including prior
+   * live snapshots that remain tombstoneable after the mutable head forked to draft).
+   * Never-published drafts return false and must use adminService.delete, not disable.
+   */
+  hasPublishedHistory = async (id: string): Promise<boolean> => {
+    const [row] = await this.db
+      .select({ revision: platformResourceRevisions.revision })
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'oidc'),
+          eq(platformResourceRevisions.resourceId, id),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  };
+
+  /**
    * Publish a signed tombstone revision (`enabled: false`) and mark the provider disabled.
    * Startup skips tombstones; LKG treats higher-generation removals as monotonic upgrades.
    *
@@ -1291,6 +1311,7 @@ export class IdentityProviderPublicationService {
           : null;
         if (!basePayload) {
           // Never published: hard delete path belongs to adminService.delete.
+          // Discriminator: hasPublishedHistory(id) === false for this branch.
           throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
         }
 
@@ -1323,13 +1344,16 @@ export class IdentityProviderPublicationService {
           secretFingerprint: parsed.secretFingerprint,
           status: 'published',
         });
+        // Treat the tombstone like a pending activation so restart status and the
+        // UI surface a Reload/Restart action. Reconcile to `disabled` only after
+        // every fresh instance reports the tombstoned (empty/reduced) target.
         const [updated] = await tx
           .update(platformIdentityProviders)
           .set({
-            activationRevision: null,
+            activationRevision: nextRevision,
             enabled: false,
             revision: nextRevision,
-            status: 'disabled',
+            status: 'pending_restart',
             updatedAt: now,
             updatedBy: actorUserId,
           })
@@ -1345,16 +1369,16 @@ export class IdentityProviderPublicationService {
 
         const result: PlatformIdentityProviderInternalDraft = {
           ...draft,
-          activationRevision: null,
+          activationRevision: nextRevision,
           enabled: false,
           revision: nextRevision,
-          status: 'disabled',
+          status: 'pending_restart',
         };
         await new PlatformAuditService(tx).append({
           action: 'admin.identityProviders.disable',
           actorUserId,
           afterDiff: {
-            activation: 'disabled',
+            activation: 'pending_restart',
             checksum,
             enabled: false,
             providerKey: parsed.providerKey,

@@ -130,8 +130,11 @@ export const loadPublishedIdentityProviderSelection = async (input: {
       secretFingerprint: string;
     }
   >();
-  /** Tombstones advance generation/identity so LKG cannot resurrect a disabled provider. */
-  const tombstoneGenerations: string[] = [];
+  /**
+   * Signed tombstones (enabled:false). Kept independently of live materialization so
+   * LKG fallback can still apply monotonic removals when a co-provider fails validation.
+   */
+  const tombstones: Array<{ generation: string; providerId: string; revision: number }> = [];
   const environmentShadowed: Array<{ providerId: string; providerKey: string }> = [];
   for (const row of rows) {
     // An environment provider is the break-glass authority. Skip its database
@@ -154,7 +157,7 @@ export const loadPublishedIdentityProviderSelection = async (input: {
     const generation = `${row.publishedAt.toISOString()}:${row.id}`;
     // Signed tombstone: do not materialize for login, but honor in generation.
     if (payload.enabled === false) {
-      tombstoneGenerations.push(generation);
+      tombstones.push({ generation, providerId: row.resourceId, revision: row.revision });
       continue;
     }
     latest.set(row.resourceId, {
@@ -170,7 +173,12 @@ export const loadPublishedIdentityProviderSelection = async (input: {
   if (new Set(selected.map((row) => row.payload.providerKey)).size !== selected.length) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_DUPLICATE_KEY');
   }
-  return { environmentShadowed, selected, tombstoneGenerations };
+  return {
+    environmentShadowed,
+    selected,
+    tombstoneGenerations: tombstones.map((entry) => entry.generation),
+    tombstones,
+  };
 };
 
 export const loadCanonicalPublishedIdentityProviders = async (input: {
@@ -188,10 +196,14 @@ type DatabaseProviderRow = {
   secretFingerprint: string;
 };
 
+type ValidatedTombstone = { generation: string; providerId: string; revision: number };
+
 type DatabasePayload = {
   rows: DatabaseProviderRow[];
   /** Generations from signed tombstones (enabled:false) so LKG advances on revoke. */
   tombstoneGenerations: string[];
+  /** Provider IDs of validated tombstones — applied to LKG fallback even if live materialization fails. */
+  tombstones: ValidatedTombstone[];
 };
 
 const loadDatabasePayload = async (input: {
@@ -201,7 +213,11 @@ const loadDatabasePayload = async (input: {
   const selection = await loadPublishedIdentityProviderSelection(input);
   const selected = selection.selected;
   if (selected.length === 0) {
-    return { rows: [], tombstoneGenerations: selection.tombstoneGenerations };
+    return {
+      rows: [],
+      tombstoneGenerations: selection.tombstoneGenerations,
+      tombstones: selection.tombstones,
+    };
   }
   // Exact (providerId, fingerprint) pairs only — filter after query so unrelated
   // historical secrets that share only one of the two keys are discarded.
@@ -239,7 +255,11 @@ const loadDatabasePayload = async (input: {
     }
     return { ...provider, secretCiphertext: secret.ciphertext };
   });
-  return { rows, tombstoneGenerations: selection.tombstoneGenerations };
+  return {
+    rows,
+    tombstoneGenerations: selection.tombstoneGenerations,
+    tombstones: selection.tombstones,
+  };
 };
 
 const snapshotGeneration = (payload: DatabasePayload): string =>
@@ -316,41 +336,52 @@ const toLkgPayload = (payload: DatabasePayload): IdentityProviderLkgPayload => (
 const fromLkgPayload = (
   payload: IdentityProviderLkgPayload,
   environmentProviderIds: Set<string>,
-): DatabasePayload => ({
-  rows: payload.providers.flatMap((provider) => {
-    const rawProviderKey = provider.payload.providerKey;
-    if (
-      typeof rawProviderKey === 'string' &&
-      environmentProviderIds.has(rawProviderKey.toLowerCase())
-    ) {
-      return [];
-    }
-    const parsed = parsePublishedIdentityProviderPayload(provider.payload);
-    if (
-      !parsed ||
-      parsed.enabled === false ||
-      checksumPayload(provider.payload) !== provider.checksum ||
-      parsed.secretFingerprint !== provider.secretFingerprint
-    ) {
-      // Skip tombstones and invalid rows; LKG must not resurrect disabled providers.
-      if (parsed?.enabled === false) return [];
-      if (!parsed) throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-      throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
-    }
-    return [
-      {
-        checksum: provider.checksum,
-        generation: provider.generation,
-        payload: parsed,
-        providerId: provider.providerId,
-        revision: provider.revision,
-        secretCiphertext: provider.secretCiphertext,
-        secretFingerprint: provider.secretFingerprint,
-      },
-    ];
-  }),
-  tombstoneGenerations: [],
-});
+  /**
+   * Tombstones validated from the (partially successful) database selection.
+   * Applied even when live-provider materialization failed so LKG cannot
+   * resurrect a provider that already has a signed revoke in the database.
+   */
+  validatedTombstones: ValidatedTombstone[] = [],
+): DatabasePayload => {
+  const removedProviderIds = new Set(validatedTombstones.map((entry) => entry.providerId));
+  return {
+    rows: payload.providers.flatMap((provider) => {
+      if (removedProviderIds.has(provider.providerId)) return [];
+      const rawProviderKey = provider.payload.providerKey;
+      if (
+        typeof rawProviderKey === 'string' &&
+        environmentProviderIds.has(rawProviderKey.toLowerCase())
+      ) {
+        return [];
+      }
+      const parsed = parsePublishedIdentityProviderPayload(provider.payload);
+      if (
+        !parsed ||
+        parsed.enabled === false ||
+        checksumPayload(provider.payload) !== provider.checksum ||
+        parsed.secretFingerprint !== provider.secretFingerprint
+      ) {
+        // Skip tombstones and invalid rows; LKG must not resurrect disabled providers.
+        if (parsed?.enabled === false) return [];
+        if (!parsed) throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+        throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+      }
+      return [
+        {
+          checksum: provider.checksum,
+          generation: provider.generation,
+          payload: parsed,
+          providerId: provider.providerId,
+          revision: provider.revision,
+          secretCiphertext: provider.secretCiphertext,
+          secretFingerprint: provider.secretFingerprint,
+        },
+      ];
+    }),
+    tombstoneGenerations: validatedTombstones.map((entry) => entry.generation),
+    tombstones: validatedTombstones,
+  };
+};
 
 const loadDatabase = async (): Promise<LobeChatDatabase> => {
   const database = await import('@lobechat/database');
@@ -379,15 +410,29 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
     options.discovery ??
     new IdentityProviderDiscoveryValidator(new SafeOutboundHttpClient({ mode: 'public-only' }));
   let databaseError: unknown = new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE');
+  /** Tombstones validated before a later live-provider failure — applied to LKG fallback. */
+  let validatedTombstones: ValidatedTombstone[] = [];
   if (secrets) {
     try {
       const db = options.db ?? (await loadDatabase());
       const environmentProviderIdSet = new Set(environmentProviderIds);
       for (let attempt = 0; attempt < 2; attempt++) {
+        // Capture tombstones before live secret/discovery materialization so a
+        // co-provider failure cannot discard an already-validated revoke.
+        try {
+          const selection = await loadPublishedIdentityProviderSelection({
+            db,
+            environmentProviderIds: environmentProviderIdSet,
+          });
+          validatedTombstones = selection.tombstones;
+        } catch {
+          // Selection itself failed; LKG path may still run without tombstone filter.
+        }
         const payload = await loadDatabasePayload({
           db,
           environmentProviderIds: environmentProviderIdSet,
         });
+        validatedTombstones = payload.tombstones;
         // Secret integrity and every remote endpoint are validated before the
         // candidate is allowed to replace the last-known-good snapshot.
         const databaseProviders = await enrichRuntimeProviders(
@@ -453,7 +498,8 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
     try {
       const lkg = await readIdentityProviderLkg({ env, secrets });
       if (lkg) {
-        const payload = fromLkgPayload(lkg, new Set(environmentProviderIds));
+        // Apply validated tombstone removals even when live materialization failed.
+        const payload = fromLkgPayload(lkg, new Set(environmentProviderIds), validatedTombstones);
         const databaseProviders = await enrichRuntimeProviders(
           await materializeProviders(payload.rows, secrets),
           discovery,

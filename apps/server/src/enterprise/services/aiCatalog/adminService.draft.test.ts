@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -22,11 +23,17 @@ const keyProvider: KeyProvider = {
 };
 const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }));
 
+/** Append-only audit/revision rows cannot be DELETE'd (0145); TRUNCATE bypasses the row trigger. */
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformAiModels);
-  await db.delete(platformAiProviders);
+  await db.execute(sql`
+    TRUNCATE TABLE
+      ${platformAuditLogs},
+      ${platformResourceRevisions},
+      ${platformAiModels},
+      ${platformAiProviderSecrets},
+      ${platformAiProviders}
+    RESTART IDENTITY CASCADE
+  `);
 };
 
 beforeEach(cleanup);
@@ -142,7 +149,15 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     const stateJson = JSON.stringify(detail.draft.connectionTest);
     expect(stateJson).not.toContain('connection-state-secret');
     expect(stateJson).not.toContain('private-test-state.example.test');
-    expect(stateJson).not.toContain(created.secret.fingerprint!);
+    // Client-facing draft must never project secret fingerprint.
+    expect(detail.draft.secret).toEqual(
+      expect.objectContaining({ configured: true, updatedAt: expect.anything() }),
+    );
+    expect(detail.draft.secret).not.toHaveProperty('fingerprint');
+    const [rowWithFp] = await db.select().from(platformAiProviders);
+    if (rowWithFp.secretFingerprint) {
+      expect(JSON.stringify(detail.draft)).not.toContain(rowWithFp.secretFingerprint);
+    }
 
     await testedService.updateProviderDraft('admin', {
       displayName: 'Mutated after test',
@@ -216,12 +231,95 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     second.resolve();
     await expect(newAttempt).resolves.toMatchObject({ status: 'success' });
     first.reject(new Error('older probe failed'));
-    await expect(oldAttempt).resolves.toMatchObject({ status: 'failure' });
+    // Superseded older attempt must return authoritative persisted success (not the discarded failure).
+    await expect(oldAttempt).resolves.toMatchObject({ status: 'success' });
 
     expect((await testedService.getDetail(created.id)).draft.connectionTest).toMatchObject({
       stale: false,
       status: 'success',
     });
+    // Exactly one authoritative test audit (the winning attempt) — discarded probe must not
+    // append a misleading failure audit via the outer catch.
+    const testAudits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiProviders.test',
+    );
+    expect(testAudits).toHaveLength(1);
+    expect(testAudits[0]).toMatchObject({ result: 'success' });
+  });
+
+  it('does not failure-audit a superseded attempt while the newer probe is still pending', async () => {
+    const probes: Array<{
+      entered: () => void;
+      enteredPromise: Promise<void>;
+      promise: Promise<void>;
+      resolve: () => void;
+    }> = [];
+    const createProbe = () => {
+      let entered!: () => void;
+      let resolve!: () => void;
+      const enteredPromise = new Promise<void>((done) => {
+        entered = done;
+      });
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { entered, enteredPromise, promise, resolve };
+    };
+    const first = createProbe();
+    const second = createProbe();
+    probes.push(first, second);
+    let probeIndex = 0;
+    const testedService = new AiCatalogAdminService(
+      db,
+      new PlatformSecretService({ keyProvider }),
+      {
+        connectionProbe: async () => {
+          const probe = probes[probeIndex++];
+          probe.entered();
+          await probe.promise;
+        },
+      },
+    );
+    const created = await testedService.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Pending Supersede',
+      enabled: true,
+      providerKey: 'pending-supersede',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'pending-secret' },
+      source: 'custom',
+    });
+    await testedService.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await testedService.getDetail(created.id)).draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'add check model',
+      type: 'chat',
+    });
+
+    const oldAttempt = testedService.testProvider('admin', { id: created.id, reason: 'old' });
+    await first.enteredPromise;
+    const newAttempt = testedService.testProvider('admin', { id: created.id, reason: 'new' });
+    await second.enteredPromise;
+
+    // Finish the older probe while the newer attempt is still pending.
+    first.resolve();
+    await expect(oldAttempt).rejects.toMatchObject({
+      issues: expect.arrayContaining([expect.stringMatching(/superseded by a newer attempt/i)]),
+    });
+    const midAudits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiProviders.test',
+    );
+    expect(midAudits).toHaveLength(0);
+
+    second.resolve();
+    await expect(newAttempt).resolves.toMatchObject({ status: 'success' });
+    const finalAudits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiProviders.test',
+    );
+    expect(finalAudits).toHaveLength(1);
+    expect(finalAudits[0]).toMatchObject({ result: 'success' });
   });
 
   it('persists only sanitized failure metadata', async () => {
@@ -279,6 +377,7 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       source: 'custom',
     });
     expect(created.secret).toMatchObject({ configured: true });
+    expect(created.secret).not.toHaveProperty('fingerprint');
     expect(JSON.stringify(created)).not.toContain(credential);
 
     const [stored] = await db.select().from(platformAiProviders);
@@ -359,7 +458,12 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       reason: 'rename',
       secret: { operation: 'keep' },
     });
-    expect(kept.secret.fingerprint).toBe(before.draft.secret.fingerprint);
+    // Client DTO keeps secret configured; fingerprint is server-internal and must be absent.
+    expect(kept.secret).toEqual(
+      expect.objectContaining({ configured: true, updatedAt: expect.anything() }),
+    );
+    expect(kept.secret).not.toHaveProperty('fingerprint');
+    expect(before.draft.secret).not.toHaveProperty('fingerprint');
 
     await expect(
       service.updateProviderDraft('admin', {
@@ -380,7 +484,8 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       reason: 'clear secret',
       secret: { operation: 'clear' },
     });
-    expect(cleared.secret).toEqual({ configured: false, fingerprint: null, updatedAt: null });
+    expect(cleared.secret).toEqual({ configured: false, updatedAt: null });
+    expect(cleared.secret).not.toHaveProperty('fingerprint');
     const [clearedRow] = await db.select().from(platformAiProviders);
     expect(clearedRow.encryptedKeyVaults).toBeNull();
     expect(clearedRow.secretKeyId).toBeNull();

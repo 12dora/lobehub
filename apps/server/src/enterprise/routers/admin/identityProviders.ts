@@ -1,3 +1,5 @@
+import { TRPCError } from '@trpc/server';
+
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { toPublicIdentityProviderDraft } from '@/database/models/platform';
@@ -76,6 +78,9 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
     if (enterpriseCode === PLATFORM_ERROR_CODES.PLATFORM_SECRET_NOT_READABLE) {
       return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_NOT_READABLE });
     }
+    if (enterpriseCode === PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT) {
+      return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT });
+    }
     const message = error instanceof Error ? error.message : '';
     // Legacy string throws from support helpers (APP_URL gap, explicit SECRET_REQUIRED).
     if (message.includes('PLATFORM_SECRET_REQUIRED') || message === 'PLATFORM_SECRET_REQUIRED') {
@@ -103,7 +108,16 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
         httpCode: 'PRECONDITION_FAILED',
       });
     }
-    return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT });
+    // Untyped / unexpected failures are infrastructure or programming errors —
+    // do not mislabel them as client input validation.
+    console.error('[admin.identityProviders] unexpected operation failure', {
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+    });
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Identity provider operation failed',
+    });
   }
 };
 
@@ -111,7 +125,12 @@ export const identitySecretMutationRequiresReauth = (mutation: {
   operation: 'clear' | 'keep' | 'replace';
 }): boolean => mutation.operation === 'replace' || mutation.operation === 'clear';
 
-const safeIdentityDeniedReason = async (input: {
+/**
+ * Redact known client-secret values and pattern-detected secret material from an
+ * admin-supplied reason. Used for both denied-reauth audits and success-path audits
+ * so opaque secrets pasted into free-text reason never land in the append-only log.
+ */
+const sanitizeIdentityReason = async (input: {
   currentSecretTargetId?: string | null;
   reason: string;
   replacementSecrets?: unknown[];
@@ -129,9 +148,11 @@ const safeIdentityDeniedReason = async (input: {
         input.serverDB,
         secretService,
       ).resolveCurrentClientSecret(input.currentSecretTargetId);
+      // Fail closed: without the current secret we cannot prove the reason is free of it.
       if (!currentSecret) return null;
       credentialValues.push(currentSecret);
     } catch {
+      // Secret store/outage: redact entire reason rather than risk persisting the opaque secret.
       return null;
     }
   }
@@ -141,6 +162,17 @@ const safeIdentityDeniedReason = async (input: {
     reason = reason.replaceAll(value, '[REDACTED]');
   }
   return containsEnterpriseSecretMaterial(reason) ? null : reason;
+};
+
+/** Always returns a safe reason string for mutation/audit paths (never the raw secret). */
+const requireSanitizedIdentityReason = async (input: {
+  currentSecretTargetId?: string | null;
+  reason: string;
+  replacementSecrets?: unknown[];
+  serverDB: Parameters<typeof createAdminIdentityProviderRuntime>[0];
+}): Promise<string> => {
+  const sanitized = await sanitizeIdentityReason(input);
+  return sanitized ?? '[REDACTED]';
 };
 
 const assertIdentityDangerousReauth = async (input: {
@@ -160,7 +192,7 @@ const assertIdentityDangerousReauth = async (input: {
     auditFailureLog: '[admin.identityProviders] reauth denied audit unavailable',
     authenticatedAt: input.authenticatedAt,
     authMethod: input.authMethod,
-    resolveDeniedReason: () => safeIdentityDeniedReason(input),
+    resolveDeniedReason: () => sanitizeIdentityReason(input),
     serverDB: input.serverDB,
     targetId: input.targetId,
     targetType: 'identity_provider',
@@ -199,6 +231,7 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderCreateInputSchema)
     .output(adminIdentityProviderMutationOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      const replacementSecrets = input.secret.operation === 'replace' ? [input.secret.value] : [];
       if (identitySecretMutationRequiresReauth(input.secret)) {
         await assertIdentityDangerousReauth({
           action: 'admin.identityProviders.create',
@@ -207,12 +240,20 @@ export const adminIdentityProvidersRouter = router({
           authMethod: ctx.authMethod,
           currentSecretTargetId: null,
           reason: input.reason,
-          replacementSecrets: input.secret.operation === 'replace' ? [input.secret.value] : [],
+          replacementSecrets,
           serverDB: ctx.serverDB,
           targetId: input.providerKey,
         });
       }
-      return execute(() => ctx.getIdentityProviderRuntime().admin.create(ctx.userId!, input));
+      const reason = await requireSanitizedIdentityReason({
+        currentSecretTargetId: null,
+        reason: input.reason,
+        replacementSecrets,
+        serverDB: ctx.serverDB,
+      });
+      return execute(() =>
+        ctx.getIdentityProviderRuntime().admin.create(ctx.userId!, { ...input, reason }),
+      );
     }),
 
   delete: identityProviderProcedure
@@ -229,7 +270,13 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
-      return execute(() => ctx.getIdentityProviderRuntime().admin.delete(ctx.userId!, input));
+      const reason = await requireSanitizedIdentityReason({
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+      });
+      return execute(() =>
+        ctx.getIdentityProviderRuntime().admin.delete(ctx.userId!, { ...input, reason }),
+      );
     }),
 
   disable: identityProviderProcedure
@@ -246,9 +293,16 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
+      const reason = await requireSanitizedIdentityReason({
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+      });
       return execute(async () =>
         toPublicIdentityProviderDraft(
-          await new IdentityProviderPublicationService(ctx.serverDB).disable(ctx.userId!, input),
+          await new IdentityProviderPublicationService(ctx.serverDB).disable(ctx.userId!, {
+            ...input,
+            reason,
+          }),
         ),
       );
     }),
@@ -299,9 +353,16 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
+      const reason = await requireSanitizedIdentityReason({
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+      });
       return execute(async () =>
         toPublicIdentityProviderDraft(
-          await new IdentityProviderPublicationService(ctx.serverDB).publish(ctx.userId!, input),
+          await new IdentityProviderPublicationService(ctx.serverDB).publish(ctx.userId!, {
+            ...input,
+            reason,
+          }),
         ),
       );
     }),
@@ -320,9 +381,16 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
+      const reason = await requireSanitizedIdentityReason({
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+      });
       return execute(async () =>
         toPublicIdentityProviderDraft(
-          await new IdentityProviderPublicationService(ctx.serverDB).rollback(ctx.userId!, input),
+          await new IdentityProviderPublicationService(ctx.serverDB).rollback(ctx.userId!, {
+            ...input,
+            reason,
+          }),
         ),
       );
     }),
@@ -368,6 +436,7 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderUpdateInputSchema)
     .output(adminIdentityProviderMutationOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      const replacementSecrets = input.secret.operation === 'replace' ? [input.secret.value] : [];
       if (identitySecretMutationRequiresReauth(input.secret)) {
         await assertIdentityDangerousReauth({
           action: 'admin.identityProviders.update',
@@ -376,12 +445,20 @@ export const adminIdentityProvidersRouter = router({
           authMethod: ctx.authMethod,
           currentSecretTargetId: input.id,
           reason: input.reason,
-          replacementSecrets: input.secret.operation === 'replace' ? [input.secret.value] : [],
+          replacementSecrets,
           serverDB: ctx.serverDB,
           targetId: input.id,
         });
       }
-      return execute(() => ctx.getIdentityProviderRuntime().admin.update(ctx.userId!, input));
+      const reason = await requireSanitizedIdentityReason({
+        currentSecretTargetId: input.id,
+        reason: input.reason,
+        replacementSecrets,
+        serverDB: ctx.serverDB,
+      });
+      return execute(() =>
+        ctx.getIdentityProviderRuntime().admin.update(ctx.userId!, { ...input, reason }),
+      );
     }),
 
   validateNetwork: identityProviderProcedure

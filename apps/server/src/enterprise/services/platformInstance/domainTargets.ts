@@ -25,13 +25,13 @@ import {
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 import { getBuiltinSkillDefinitions } from '../skillCatalog/builtinAdapter';
-import type { CurrentAiCatalogSnapshot, CurrentSkillCatalogSnapshot } from './catalogAuthority';
-import { loadCurrentAiCatalogSnapshot, loadCurrentSkillCatalogSnapshot } from './catalogAuthority';
-import type { SkillCatalogBuiltinTokenEntry } from './catalogTokens';
 import {
-  buildSkillCatalogRevisionToken,
-  PlatformCatalogTokenInvariantError,
-} from './catalogTokens';
+  buildCurrentSkillCatalogTargetToken,
+  loadCurrentAiCatalogTargetToken,
+  loadCurrentSkillCatalogTargetTokenEntries,
+} from './catalogAuthority';
+import type { SkillCatalogBuiltinTokenEntry, SkillCatalogTokenEntry } from './catalogTokens';
+import { PlatformCatalogTokenInvariantError } from './catalogTokens';
 
 type DomainEnabled = (flags: ReturnType<typeof parseEnterpriseFeatureFlags>) => boolean;
 
@@ -68,26 +68,34 @@ const isChecksum = (value: string | null | undefined): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
 type IdentityTargetLoader = typeof loadPublishedIdentityTarget;
-type AiCatalogSnapshotLoader = () => Promise<CurrentAiCatalogSnapshot>;
+type AiCatalogTargetTokenLoader = () => Promise<PlatformRevisionToken>;
 type SkillBuiltinTokenLoader = () => SkillCatalogBuiltinTokenEntry[];
-type SkillCatalogSnapshotLoader = () => Promise<CurrentSkillCatalogSnapshot>;
+type SkillCatalogTargetTokenLoader = () => Promise<PlatformRevisionToken>;
 
 export interface PlatformDomainTargetResolverOptions {
   env?: Record<string, string | undefined>;
-  loadAiCatalogSnapshot?: AiCatalogSnapshotLoader;
+  /**
+   * Bounded AI catalog token loader (no payload rehash). Prefer this for health polling.
+   * Legacy `loadAiCatalogSnapshot` is still accepted for tests that inject a full snapshot.
+   */
+  loadAiCatalogSnapshot?: () => Promise<{ token: PlatformRevisionToken }>;
+  loadAiCatalogTargetToken?: AiCatalogTargetTokenLoader;
   loadBuiltinSkillTokenEntries?: SkillBuiltinTokenLoader;
   loadIdentityTarget?: IdentityTargetLoader;
-  loadSkillCatalogSnapshot?: SkillCatalogSnapshotLoader;
+  loadSkillCatalogSnapshot?: () => Promise<{
+    tokenEntries: SkillCatalogTokenEntry[];
+  }>;
+  loadSkillCatalogTargetToken?: SkillCatalogTargetTokenLoader;
 }
 
 /** Resolves only normalized, authoritative current pointers; immutable history is never scanned. */
 export class PlatformDomainTargetResolver {
   private readonly env: Record<string, string | undefined>;
   private readonly flags: ReturnType<typeof parseEnterpriseFeatureFlags>;
-  private readonly loadAiCatalogSnapshot: AiCatalogSnapshotLoader;
+  private readonly loadAiCatalogTargetToken: AiCatalogTargetTokenLoader;
   private readonly loadBuiltinSkillTokenEntries: SkillBuiltinTokenLoader;
   private readonly loadIdentityTarget: IdentityTargetLoader;
-  private readonly loadSkillCatalogSnapshot: SkillCatalogSnapshotLoader;
+  private readonly loadSkillCatalogTargetToken: SkillCatalogTargetTokenLoader;
 
   constructor(
     private readonly db: LobeChatDatabase | Transaction,
@@ -95,8 +103,11 @@ export class PlatformDomainTargetResolver {
   ) {
     this.env = options.env ?? process.env;
     this.flags = parseEnterpriseFeatureFlags(this.env);
-    this.loadAiCatalogSnapshot =
-      options.loadAiCatalogSnapshot ?? (() => loadCurrentAiCatalogSnapshot(this.db));
+    this.loadAiCatalogTargetToken =
+      options.loadAiCatalogTargetToken ??
+      (options.loadAiCatalogSnapshot
+        ? async () => (await options.loadAiCatalogSnapshot!()).token
+        : () => loadCurrentAiCatalogTargetToken(this.db));
     this.loadBuiltinSkillTokenEntries =
       options.loadBuiltinSkillTokenEntries ??
       (() =>
@@ -106,8 +117,19 @@ export class PlatformDomainTargetResolver {
           version,
         })));
     this.loadIdentityTarget = options.loadIdentityTarget ?? loadPublishedIdentityTarget;
-    this.loadSkillCatalogSnapshot =
-      options.loadSkillCatalogSnapshot ?? (() => loadCurrentSkillCatalogSnapshot(this.db));
+    this.loadSkillCatalogTargetToken =
+      options.loadSkillCatalogTargetToken ??
+      (options.loadSkillCatalogSnapshot
+        ? async () =>
+            buildCurrentSkillCatalogTargetToken({
+              builtins: this.loadBuiltinSkillTokenEntries(),
+              platform: (await options.loadSkillCatalogSnapshot!()).tokenEntries,
+            })
+        : async () =>
+            buildCurrentSkillCatalogTargetToken({
+              builtins: this.loadBuiltinSkillTokenEntries(),
+              platform: await loadCurrentSkillCatalogTargetTokenEntries(this.db),
+            }));
   }
 
   private available = (
@@ -157,15 +179,11 @@ export class PlatformDomainTargetResolver {
   };
 
   private resolveAiCatalog = async (): Promise<PlatformRevisionToken> => {
-    return (await this.loadAiCatalogSnapshot()).token;
+    return this.loadAiCatalogTargetToken();
   };
 
   private resolveSkillCatalog = async (): Promise<PlatformRevisionToken> => {
-    const snapshot = await this.loadSkillCatalogSnapshot();
-    return buildSkillCatalogRevisionToken({
-      builtins: this.loadBuiltinSkillTokenEntries(),
-      platform: snapshot.tokenEntries,
-    });
+    return this.loadSkillCatalogTargetToken();
   };
 
   private resolveConnectorCatalog = async (): Promise<PlatformRevisionToken> => {

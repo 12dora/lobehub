@@ -9,6 +9,7 @@ import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { z } from 'zod';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import {
   type GlobalUsageLog,
@@ -20,6 +21,7 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
+import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 
 dayjs.extend(customParseFormat);
@@ -30,6 +32,13 @@ const adminBase = authedProcedure
   .use(withAdminMutationRateLimit());
 
 const statsProcedure = adminBase.use(withPlatformPermission(PLATFORM_PERMISSIONS.STATS_READ));
+/** Topic titles/ids are conversation evidence — require conversation audit read (F4). */
+const statsTopicRankProcedure = statsProcedure.use(
+  withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ),
+);
+
+/** Safety bound for full-month usage drain (pages × USAGE_PAGE_MAX). */
+const USAGE_FULL_MONTH_MAX_PAGES = 200;
 
 const isoDateString = z
   .string()
@@ -139,24 +148,35 @@ export const toSafeUsageLogs = (logs: GlobalUsageLog[]): SafeUsageLog[] =>
  * When the model only exposes keyset pages, walk them here so callers never see a
  * silently truncated first page.
  */
-const loadAllMonthUsage = async (
+/** @internal exported for truncation regression tests */
+export const loadAllMonthUsage = async (
   model: PlatformGlobalStatsModel,
   mo?: string,
 ): Promise<GlobalUsageRecordItem[]> => {
   if (typeof model.findByMonthPage === 'function') {
     const items: GlobalUsageRecordItem[] = [];
     let cursor: string | undefined;
-    // Safety bound: 200 pages × max page size (avoids unbounded loops).
-    for (let page = 0; page < 200; page += 1) {
+    // Safety bound: max pages × page size. If still truncated, fail closed (F8).
+    for (let page = 0; page < USAGE_FULL_MONTH_MAX_PAGES; page += 1) {
       const result = await model.findByMonthPage(mo, {
         cursor,
         limit: PlatformGlobalStatsModel.USAGE_PAGE_MAX,
       });
       items.push(...result.items);
-      if (!result.nextCursor) break;
+      if (!result.nextCursor) return items;
       cursor = result.nextCursor;
     }
-    return items;
+    // Page budget exhausted while more rows remain — never return a silent undercount.
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: {
+        maxPages: USAGE_FULL_MONTH_MAX_PAGES,
+        maxRows: USAGE_FULL_MONTH_MAX_PAGES * PlatformGlobalStatsModel.USAGE_PAGE_MAX,
+        reason: 'usage_month_truncated',
+      },
+      httpCode: 'BAD_REQUEST',
+      message: 'Month usage exceeds the maximum full-fetch limit; use a narrower range',
+    });
   }
   return model.findByMonth(mo);
 };
@@ -227,7 +247,7 @@ export const adminStatsRouter = router({
       return model.rankModels(input?.limit);
     }),
 
-  rankTopics: statsProcedure
+  rankTopics: statsTopicRankProcedure
     .input(z.object({ limit: z.number().int().min(1).max(100).optional() }).optional())
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);

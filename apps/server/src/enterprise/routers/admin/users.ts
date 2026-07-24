@@ -4,7 +4,6 @@
  */
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
@@ -32,7 +31,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertRecentReauth } from '../../guards/reauth';
+import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   AdminUserEmailConflictError,
   AdminUserNotFoundError,
@@ -113,37 +112,36 @@ const mapServiceError = (error: unknown): never => {
   throw error;
 };
 
-const withReauth = async <T>(
-  ctx: {
-    authenticatedAt?: Date | null;
-    authMethod?: 'better-auth' | 'oidc' | 'api-key' | 'dev-mock' | null;
-    serverDB: LobeChatDatabase;
-    userId?: string | null;
-  },
-  action: string,
-  targetId: string | undefined,
-  reason: string | undefined,
-  run: () => Promise<T>,
-): Promise<T> => {
-  try {
-    assertRecentReauth({
-      authenticatedAt: ctx.authenticatedAt,
-      authMethod: ctx.authMethod,
-    });
-  } catch (error) {
-    if (ctx.userId) {
-      const service = new AdminUserService(ctx.serverDB);
-      await service.recordReauthDenied({
-        action,
-        actorUserId: ctx.userId,
-        reason,
-        targetId,
-      });
-    }
-    throw error;
-  }
-  return run();
-};
+/**
+ * Typed dangerous-mutation reauth gate for admin.users.
+ * Uses the shared helper so router-context fields stay compile-checked
+ * (no `ctx as never` erasure).
+ */
+const assertUsersDangerousReauth = async (params: {
+  action: string;
+  actorUserId: string;
+  authenticatedAt?: Date | null;
+  authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
+  reason?: string;
+  serverDB: Parameters<typeof assertDangerousReauthWithAudit>[0]['serverDB'];
+  targetId?: string;
+}): Promise<void> =>
+  assertDangerousReauthWithAudit({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    auditFailureLog: '[platform-audit] append failed',
+    auditFailureMeta: {
+      action: params.action,
+      result: 'denied',
+      targetType: 'user',
+    },
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: params.reason ?? null,
+    serverDB: params.serverDB,
+    targetId: params.targetId ?? null,
+    targetType: 'user',
+  });
 
 export const adminUsersRouter = router({
   list: adminBase
@@ -186,14 +184,20 @@ export const adminUsersRouter = router({
     .input(adminUsersCreateInputSchema)
     .output(adminUsersCreateOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withReauth(ctx as never, 'admin.users.create', undefined, input.reason, async () => {
-        const service = new AdminUserService(ctx.serverDB);
-        try {
-          return await service.createUser({ actorUserId: ctx.userId!, input });
-        } catch (error) {
-          return mapServiceError(error);
-        }
+      await assertUsersDangerousReauth({
+        action: 'admin.users.create',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
       });
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.createUser({ actorUserId: ctx.userId!, input });
+      } catch (error) {
+        return mapServiceError(error);
+      }
     }),
 
   ban: adminBase
@@ -201,14 +205,21 @@ export const adminUsersRouter = router({
     .input(adminUsersBanInputSchema)
     .output(adminUsersBanOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withReauth(ctx as never, 'admin.users.ban', input.userId, input.reason, async () => {
-        const service = new AdminUserService(ctx.serverDB);
-        try {
-          return await service.ban({ actorUserId: ctx.userId!, input });
-        } catch (error) {
-          return mapServiceError(error);
-        }
+      await assertUsersDangerousReauth({
+        action: 'admin.users.ban',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.userId,
       });
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.ban({ actorUserId: ctx.userId!, input });
+      } catch (error) {
+        return mapServiceError(error);
+      }
     }),
 
   unban: adminBase
@@ -216,14 +227,21 @@ export const adminUsersRouter = router({
     .input(adminUsersUnbanInputSchema)
     .output(adminUsersUnbanOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withReauth(ctx as never, 'admin.users.unban', input.userId, input.reason, async () => {
-        const service = new AdminUserService(ctx.serverDB);
-        try {
-          return await service.unban({ actorUserId: ctx.userId!, input });
-        } catch (error) {
-          return mapServiceError(error);
-        }
+      await assertUsersDangerousReauth({
+        action: 'admin.users.unban',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.userId,
       });
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.unban({ actorUserId: ctx.userId!, input });
+      } catch (error) {
+        return mapServiceError(error);
+      }
     }),
 
   delete: adminBase
@@ -231,20 +249,21 @@ export const adminUsersRouter = router({
     .input(adminUsersDeleteInputSchema)
     .output(adminUsersDeleteOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withReauth(
-        ctx as never,
-        'admin.users.delete',
-        input.userId,
-        input.reason,
-        async () => {
-          const service = new AdminUserService(ctx.serverDB);
-          try {
-            return await service.deleteUser({ actorUserId: ctx.userId!, input });
-          } catch (error) {
-            return mapServiceError(error);
-          }
-        },
-      );
+      await assertUsersDangerousReauth({
+        action: 'admin.users.delete',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.userId,
+      });
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.deleteUser({ actorUserId: ctx.userId!, input });
+      } catch (error) {
+        return mapServiceError(error);
+      }
     }),
 
   revokeSessions: adminBase
@@ -252,24 +271,25 @@ export const adminUsersRouter = router({
     .input(adminUsersRevokeSessionsInputSchema)
     .output(adminUsersRevokeSessionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withReauth(
-        ctx as never,
-        'admin.users.revokeSessions',
-        input.userId,
-        input.reason,
-        async () => {
-          const service = new AdminUserService(ctx.serverDB);
-          try {
-            return await service.revokeSessions({
-              actorSessionId: ctx.sessionId,
-              actorUserId: ctx.userId!,
-              input,
-            });
-          } catch (error) {
-            return mapServiceError(error);
-          }
-        },
-      );
+      await assertUsersDangerousReauth({
+        action: 'admin.users.revokeSessions',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.userId,
+      });
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.revokeSessions({
+          actorSessionId: ctx.sessionId,
+          actorUserId: ctx.userId!,
+          input,
+        });
+      } catch (error) {
+        return mapServiceError(error);
+      }
     }),
 
   replaceGlobalRoles: adminBase
@@ -277,22 +297,23 @@ export const adminUsersRouter = router({
     .input(adminUsersReplaceGlobalRolesInputSchema)
     .output(adminUsersReplaceGlobalRolesOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withReauth(
-        ctx as never,
-        'admin.users.replaceGlobalRoles',
-        input.userId,
-        input.reason,
-        async () => {
-          const service = new AdminUserService(ctx.serverDB);
-          try {
-            return await service.replaceGlobalRoles({
-              actorUserId: ctx.userId!,
-              input,
-            });
-          } catch (error) {
-            return mapServiceError(error);
-          }
-        },
-      );
+      await assertUsersDangerousReauth({
+        action: 'admin.users.replaceGlobalRoles',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.userId,
+      });
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.replaceGlobalRoles({
+          actorUserId: ctx.userId!,
+          input,
+        });
+      } catch (error) {
+        return mapServiceError(error);
+      }
     }),
 });

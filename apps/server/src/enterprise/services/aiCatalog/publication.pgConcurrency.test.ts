@@ -33,6 +33,22 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+/**
+ * Wait until PostgreSQL reports at least one ungranted lock wait.
+ * Deterministic alternative to wall-clock sleeps when proving a second transaction is blocked.
+ */
+const waitForUngrantedLock = async (pool: Pool, timeoutMs = 10_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ waiting: string }>(
+      `SELECT count(*)::text AS waiting FROM pg_locks WHERE NOT granted`,
+    );
+    if (Number(result.rows[0]?.waiting ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for an ungranted pg_locks wait`);
+};
+
 describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (PostgreSQL)', () => {
   it('prevents settings T2 from referencing a model after publish T1 checked its removal', async () => {
     await getTestDB(); // Ensure the shared test database is migrated before opening two pools.
@@ -40,6 +56,8 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
     if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
     const firstPool = new Pool({ connectionString, max: 1 });
     const secondPool = new Pool({ connectionString, max: 1 });
+    // Observer pool must stay free — contender pools use max:1 and hold their only connection.
+    const observerPool = new Pool({ connectionString, max: 1 });
     const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
     const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
     const cleanup = async () => {
@@ -170,7 +188,8 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
         .finally(() => {
           settingsSettled = true;
         });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Prove the second transaction reached a lock wait (not a wall-clock assumption).
+      await waitForUngrantedLock(observerPool);
       expect(settingsSettled).toBe(false);
 
       releasePublish.resolve();
@@ -182,16 +201,17 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
     } finally {
       releasePublish.resolve();
       await cleanup();
-      await Promise.all([firstPool.end(), secondPool.end()]);
+      await Promise.all([firstPool.end(), secondPool.end(), observerPool.end()]);
     }
   }, 15_000);
 
-  it('serializes hard-delete against concurrent publish via CAS + lock order', async () => {
+  it('serializes never-published hard-delete against concurrent first publish via CAS + lock order', async () => {
     await getTestDB();
     const connectionString = serverDBEnv.DATABASE_TEST_URL;
     if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
     const firstPool = new Pool({ connectionString, max: 1 });
     const secondPool = new Pool({ connectionString, max: 1 });
+    const observerPool = new Pool({ connectionString, max: 1 });
     const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
     const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
     const cleanup = async () => {
@@ -212,6 +232,8 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
 
     try {
       await cleanup();
+      // Use a never-published draft (revision 0): published providers reject hard-delete outright,
+      // so the lock-order race is only meaningful before first publish.
       const seedService = new AiCatalogAdminService(
         firstDb,
         new PlatformSecretService({ keyProvider }),
@@ -240,21 +262,7 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
       });
       await seedService.testProvider('admin', { id: provider.id, reason: 'test' });
       detail = await seedService.getDetail(provider.id);
-      await seedService.publishProvider('admin', {
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: 0,
-        id: provider.id,
-        reason: 'publish',
-      });
-      detail = await seedService.getDetail(provider.id);
-      await seedService.updateProviderDraft('admin', {
-        displayName: 'Delete race renamed',
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: provider.id,
-        reason: 'rename for concurrent publish',
-      });
-      detail = await seedService.getDetail(provider.id);
+      expect(detail.baseRevision).toBe(0);
 
       const cas = {
         expectedDraftToken: detail.draftToken,
@@ -299,18 +307,18 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
           deleteSettled = true;
         });
       // Delete must block on the shared lock order while publish holds locks.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitForUngrantedLock(observerPool);
       expect(deleteSettled).toBe(false);
 
       releasePublishHold.resolve();
       await expect(publishing).resolves.toMatchObject({ revision: expect.any(Number) });
-      // Stale delete CAS (pre-publish draft token/revision) must fail closed.
+      // Stale delete CAS (pre-publish draft token/revision) must fail closed after publish commits.
       await expect(deleting).rejects.toBeTruthy();
       expect(await firstDb.select().from(platformAiProviders)).toHaveLength(1);
     } finally {
       releasePublishHold.resolve();
       await cleanup();
-      await Promise.all([firstPool.end(), secondPool.end()]);
+      await Promise.all([firstPool.end(), secondPool.end(), observerPool.end()]);
     }
   }, 15_000);
 });

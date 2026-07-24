@@ -176,7 +176,7 @@ export const adminBrandingRouter = router({
     .output(adminBrandingPublishOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
-        action: 'platform.branding.publish',
+        action: 'admin.branding.publish',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
         authMethod: ctx.authMethod,

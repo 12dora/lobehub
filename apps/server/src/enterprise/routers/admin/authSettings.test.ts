@@ -86,16 +86,18 @@ const callerFor = async () =>
   } as never);
 
 describe('authSettings/sidebarLayout roll back on audit failure — authSettings', () => {
-  const fullSettings = (openRegistration: boolean) => ({
+  const fullSettings = (openRegistration: boolean, expectedRevision = 0) => ({
     emailDomainAllowlist: [] as string[],
     emailDomainAllowlistEnabled: false,
+    expectedRevision,
     openRegistration,
   });
 
   it('commits settings + audit together on success', async () => {
     const caller = await callerFor();
-    const next = await caller.update(fullSettings(false));
+    const next = await caller.update(fullSettings(false, 0));
     expect(next.openRegistration).toBe(false);
+    expect(next.revision).toBe(1);
     expect(appendSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'admin.authSettings.update',
@@ -109,10 +111,10 @@ describe('authSettings/sidebarLayout roll back on audit failure — authSettings
   it('rolls back the settings write when the audit append fails', async () => {
     const caller = await callerFor();
     // Establish a known baseline.
-    await caller.update(fullSettings(true));
+    await caller.update(fullSettings(true, 0));
     appendSpy.mockRejectedValueOnce(new Error('audit sink unavailable'));
 
-    await expect(caller.update(fullSettings(false))).rejects.toBeTruthy();
+    await expect(caller.update(fullSettings(false, 1))).rejects.toBeTruthy();
 
     const rows = await db.select().from(platformAuthSettings);
     // Transaction rolled back — open registration stays true.

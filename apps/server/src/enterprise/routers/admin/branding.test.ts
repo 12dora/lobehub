@@ -166,7 +166,7 @@ describe('admin.branding router gates', () => {
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect((await service.getDraft()).published).toBeNull();
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
-      expect.objectContaining({ action: 'platform.branding.publish', result: 'denied' }),
+      expect.objectContaining({ action: 'admin.branding.publish', result: 'denied' }),
     );
   });
 });

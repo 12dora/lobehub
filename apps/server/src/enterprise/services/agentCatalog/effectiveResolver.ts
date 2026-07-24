@@ -26,11 +26,18 @@ type Distribution = EffectiveAgent['distribution'];
 export const PLATFORM_AGENT_EFFECTIVE_LIST_MAX = 1000;
 
 /**
- * Assignment-row overscan for full-list resolution. Multi-target assignments de-dupe to one
- * Agent; fetching more rows than the wire max keeps de-dupe + hidden filtering from starving
- * the visible set while still bounding repository memory.
+ * Initial SQL window and expansion step for full-list resolution. Multi-target assignments
+ * de-dupe to one Agent and optional rows may be hidden; the resolver expands this window until
+ * {@link PLATFORM_AGENT_EFFECTIVE_LIST_MAX} visible winners are collected or the source is exhausted
+ * (never a fixed one-shot multiple that can starve entitled agents past an arbitrary row cap).
  */
-export const PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN = PLATFORM_AGENT_EFFECTIVE_LIST_MAX * 5;
+export const PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH = PLATFORM_AGENT_EFFECTIVE_LIST_MAX;
+
+/** @deprecated Prefer {@link PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH}; kept as the first-page size. */
+export const PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN = PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH;
+
+/** Hard ceiling on assignment rows scanned while filling the effective list (memory bound). */
+export const PLATFORM_AGENT_EFFECTIVE_INPUT_MAX_SCAN = PLATFORM_AGENT_EFFECTIVE_LIST_MAX * 50;
 
 /**
  * Immutable, copy-safe exact-version snapshot captured at the start of one operation (R2).
@@ -138,20 +145,14 @@ export class PlatformAgentEffectiveResolver {
    * never loads an unbounded assignment set; de-dupe then returns the winner set for further
    * hidden filtering / wire-cap in `getEffectiveList`.
    */
-  private resolveAuthorized = async (
-    userId: string,
-    filter?: EffectiveInputFilter,
-  ): Promise<AuthorizedAgent[]> => {
-    const flags = this.options.flags ?? parseEnterpriseFeatureFlags(process.env);
-    if (!flags.ENABLE_PLATFORM_MANAGED_AGENTS) return [];
-
-    const policy = await (
-      this.options.policyModel ?? new PlatformManagedResourcePolicyModel(this.db)
-    ).getSnapshot();
-    if (!isAgentRuntimeManaged(policy)) return [];
-
-    const rows = await this.repository().listEffectiveInputs(userId, filter);
-    rows.sort(
+  /**
+   * Project assignment rows into de-duplicated authorized Agents in stable winner order.
+   * Does not apply the wire cap or hidden filtering — callers decide those policy layers.
+   */
+  private projectAuthorizedRows = (
+    rows: Awaited<ReturnType<ResolverRepository['listEffectiveInputs']>>,
+  ): AuthorizedAgent[] => {
+    const ordered = [...rows].sort(
       (left, right) =>
         right.targetPriority - left.targetPriority ||
         left.agent.agentKey.localeCompare(right.agent.agentKey) ||
@@ -160,13 +161,7 @@ export class PlatformAgentEffectiveResolver {
     const seenAgents = new Set<string>();
     const seenSystemKeys = new Set<string>();
     const authorized: AuthorizedAgent[] = [];
-    // Full-list path overscans authorized winners so hidden filtering can still fill the wire
-    // max; the wire cap is applied AFTER hidden filter in `getEffectiveList`.
-    const maxAgents =
-      filter?.platformAgentId || filter?.systemKey
-        ? Number.POSITIVE_INFINITY
-        : PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN;
-    for (const row of rows) {
+    for (const row of ordered) {
       if (seenAgents.has(row.agent.id)) continue;
       if (row.agent.systemKey && seenSystemKeys.has(row.agent.systemKey)) continue;
       seenAgents.add(row.agent.id);
@@ -181,28 +176,65 @@ export class PlatformAgentEffectiveResolver {
         version: row.version.version,
         versionId: row.version.id,
       });
-      if (authorized.length >= maxAgents) break;
     }
     return authorized;
   };
 
+  private resolveAuthorized = async (
+    userId: string,
+    filter?: EffectiveInputFilter,
+  ): Promise<AuthorizedAgent[]> => {
+    const flags = this.options.flags ?? parseEnterpriseFeatureFlags(process.env);
+    if (!flags.ENABLE_PLATFORM_MANAGED_AGENTS) return [];
+
+    const policy = await (
+      this.options.policyModel ?? new PlatformManagedResourcePolicyModel(this.db)
+    ).getSnapshot();
+    if (!isAgentRuntimeManaged(policy)) return [];
+
+    const rows = await this.repository().listEffectiveInputs(userId, filter);
+    return this.projectAuthorizedRows(rows);
+  };
+
   getEffectiveList = async (userId: string): Promise<EffectiveList> => {
     try {
-      // Bound the repository scan (SQL LIMIT) with overscan for de-dupe; never full-catalog load.
-      const authorized = await this.resolveAuthorized(userId, {
-        limit: PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN,
-      });
-      if (authorized.length === 0) return emptyEffectiveList();
+      const flags = this.options.flags ?? parseEnterpriseFeatureFlags(process.env);
+      if (!flags.ENABLE_PLATFORM_MANAGED_AGENTS) return emptyEffectiveList();
 
-      // Owner-scoped hidden read: mandatory Agents ignore hidden (always visible); default /
-      // optional Agents respect the requesting user's own hidden choices (R1).
-      // IMPORTANT: filter hidden BEFORE the wire-cap slice so hidden tiles near the front of
-      // priority order cannot starve visible Agents that would still fit under the 1000 max.
+      const policy = await (
+        this.options.policyModel ?? new PlatformManagedResourcePolicyModel(this.db)
+      ).getSnapshot();
+      if (!isAgentRuntimeManaged(policy)) return emptyEffectiveList();
+
+      // Owner-scoped hidden read once; mandatory Agents ignore hidden (always visible).
       const hidden = await this.repository().listHiddenPlatformAgentIds(userId);
-      const agents = authorized
-        .filter((agent) => agent.distribution === 'mandatory' || !hidden.has(agent.platformAgentId))
-        .slice(0, PLATFORM_AGENT_EFFECTIVE_LIST_MAX)
-        .map(projectEffective);
+      const repository = this.repository();
+
+      // Expand the SQL window until we collect the wire max of *visible* unique winners, or the
+      // source is exhausted. A fixed 5× overscan can omit entitled agents when leading rows are
+      // duplicate assignments or hidden optional agents.
+      let fetchLimit = PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH;
+      let agents: EffectiveAgent[] = [];
+      for (;;) {
+        const rows = await repository.listEffectiveInputs(userId, { limit: fetchLimit });
+        agents = this.projectAuthorizedRows(rows)
+          .filter(
+            (agent) => agent.distribution === 'mandatory' || !hidden.has(agent.platformAgentId),
+          )
+          .slice(0, PLATFORM_AGENT_EFFECTIVE_LIST_MAX)
+          .map(projectEffective);
+
+        const sourceExhausted = rows.length < fetchLimit;
+        const listFull = agents.length >= PLATFORM_AGENT_EFFECTIVE_LIST_MAX;
+        if (sourceExhausted || listFull || fetchLimit >= PLATFORM_AGENT_EFFECTIVE_INPUT_MAX_SCAN) {
+          break;
+        }
+        fetchLimit = Math.min(
+          fetchLimit + PLATFORM_AGENT_EFFECTIVE_INPUT_BATCH,
+          PLATFORM_AGENT_EFFECTIVE_INPUT_MAX_SCAN,
+        );
+      }
+
       return { agents, revision: checksumPayload({ agents }) };
     } catch (error) {
       // Redact any unexpected driver / SQL failure at the read boundary (REWORK-5).

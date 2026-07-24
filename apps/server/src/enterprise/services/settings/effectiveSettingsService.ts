@@ -10,7 +10,7 @@
  */
 
 import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { PlatformSettingsModel } from '@/database/models/platform';
+import { checksumPayload, PlatformSettingsModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
 import type {
@@ -33,8 +33,20 @@ import {
 } from '../platformInstance/runtimeReporter';
 import { buildSettingsCacheKey, resolveEffectiveSettings } from './effectiveResolver';
 import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
-import { flattenLeaves } from './pathUtils';
+import { deleteByPath, flattenLeaves, getByPath } from './pathUtils';
 import { settingsRegistry } from './registry';
+
+/** Drop secrets and normalize empty legacy for cache keys. */
+const sanitizeLegacyForCache = (
+  legacy: Record<string, unknown> | null | undefined,
+): Record<string, unknown> => {
+  if (!legacy) return {};
+  const { keyVaults: _keyVaults, ...rest } = legacy;
+  return rest;
+};
+
+const legacyCacheChecksum = (legacy: Record<string, unknown> | null | undefined): string =>
+  checksumPayload(sanitizeLegacyForCache(legacy));
 
 export class SettingsPathError extends Error {
   constructor(
@@ -177,16 +189,19 @@ export class EffectiveSettingsService {
   /**
    * Resolve effective settings for a user.
    * Flag OFF: pure legacy blob + built-ins (no platform table reads required).
+   * Flag ON: idempotently backfills registered legacy leaves into override rows,
+   * then resolves policy + overrides (+ remaining legacy for unregistered keys).
    */
   getEffectiveSettings = async (params: {
     legacyUserSettings?: Record<string, unknown> | null;
     userId: string;
   }): Promise<EffectiveSettingsResult> => {
     const flagOn = this.isPolicyEnabled();
+    const legacyUserSettings = params.legacyUserSettings ?? {};
 
     if (!flagOn) {
       return resolveEffectiveSettings({
-        legacyUserSettings: params.legacyUserSettings ?? {},
+        legacyUserSettings,
         platformPolicyEnabled: false,
         platformRevision: 0,
         userOverrideRevision: 0,
@@ -209,7 +224,9 @@ export class EffectiveSettingsService {
       throw error;
     }
 
+    const legacyChecksum = legacyCacheChecksum(legacyUserSettings);
     const cacheKey = buildSettingsCacheKey({
+      legacyChecksum,
       platformRevision,
       registryVersion: settingsRegistry.version,
       userId: params.userId,
@@ -258,8 +275,27 @@ export class EffectiveSettingsService {
       overrides[row.path] = { value: row.value };
     }
 
+    // One-time migration: copy validated registered legacy leaves into override rows.
+    // Idempotent (ON CONFLICT DO NOTHING); never overwrites an existing override.
+    try {
+      const backfilled = await this.backfillRegisteredLegacyOverrides({
+        legacyUserSettings,
+        overrides,
+        userId: params.userId,
+      });
+      if (backfilled) {
+        userOverrideRevision = backfilled.revision;
+        for (const [path, value] of Object.entries(backfilled.overrides)) {
+          overrides[path] = value;
+        }
+      }
+    } catch (error) {
+      this.reportUnavailable(error);
+      throw error;
+    }
+
     const result = resolveEffectiveSettings({
-      legacyUserSettings: params.legacyUserSettings ?? {},
+      legacyUserSettings,
       overrides,
       platformPolicyEnabled: true,
       platformRevision,
@@ -267,7 +303,17 @@ export class EffectiveSettingsService {
       userOverrideRevision,
     });
 
-    writeSoftCache(cacheKey, result);
+    // Cache under both the pre- and post-backfill revision keys when backfill bumped the token.
+    writeSoftCache(
+      buildSettingsCacheKey({
+        legacyChecksum,
+        platformRevision,
+        registryVersion: settingsRegistry.version,
+        userId: params.userId,
+        userOverrideRevision,
+      }),
+      result,
+    );
     reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
       domain: 'settings',
       health: 'healthy',
@@ -275,6 +321,77 @@ export class EffectiveSettingsService {
       source: 'database',
     });
     return result;
+  };
+
+  /**
+   * Copy registered legacy leaves into `user_setting_overrides` when no override exists.
+   * Strips those leaves from the caller's legacy blob in DB after insert so a later
+   * reset does not re-materialize the same preference.
+   */
+  private backfillRegisteredLegacyOverrides = async (params: {
+    legacyUserSettings: Record<string, unknown>;
+    overrides: Record<string, { value: unknown }>;
+    userId: string;
+  }): Promise<{ overrides: Record<string, { value: unknown }>; revision: number } | null> => {
+    const ops: Array<{ path: string; value: unknown }> = [];
+    for (const entry of settingsRegistry.list()) {
+      if (params.overrides[entry.path]) continue;
+      if (settingsRegistry.isSecretPath(entry.path)) continue;
+      const leaf = getByPath(params.legacyUserSettings, entry.path);
+      if (leaf === undefined) continue;
+      const validated = settingsRegistry.validateValue(entry.path, leaf);
+      if (!validated.ok) continue;
+      ops.push({ path: entry.path, value: validated.value });
+    }
+    if (ops.length === 0) return null;
+
+    const { insertedPaths, revision } = await this.model.insertUserOverridesIfAbsent({
+      ops,
+      source: 'legacy_migration',
+      userId: params.userId,
+    });
+    if (insertedPaths.length === 0) return null;
+
+    const nextOverrides = { ...params.overrides };
+    for (const path of insertedPaths) {
+      const op = ops.find((item) => item.path === path);
+      if (op) nextOverrides[path] = { value: op.value };
+    }
+
+    // Strip migrated registered leaves from durable legacy so reset cannot re-backfill them.
+    // Always load the full user_settings row — callers often pass partial legacy slices.
+    await this.stripRegisteredLegacyLeaves(params.userId, insertedPaths);
+
+    return { overrides: nextOverrides, revision };
+  };
+
+  private stripRegisteredLegacyLeaves = async (userId: string, paths: string[]): Promise<void> => {
+    if (paths.length === 0) return;
+    const userModel = new UserModel(this.db, userId);
+    const row = await userModel.getUserSettings();
+    if (!row) return;
+
+    const touchedTops = new Set<string>();
+    for (const path of paths) {
+      const top = path.split('.')[0];
+      if (top && top !== 'keyVaults') touchedTops.add(top);
+    }
+    if (touchedTops.size === 0) return;
+
+    // Build a full top-level snapshot for the columns we will rewrite.
+    let tree: Record<string, unknown> = {};
+    for (const top of touchedTops) {
+      tree[top] = (row as Record<string, unknown>)[top];
+    }
+    for (const path of paths) {
+      tree = deleteByPath(tree, path);
+    }
+
+    const patch: Record<string, unknown> = {};
+    for (const top of touchedTops) {
+      patch[top] = tree[top] ?? null;
+    }
+    await userModel.updateSetting(patch as Parameters<UserModel['updateSetting']>[0]);
   };
 
   private reportUnavailable = (error: unknown): void => {
@@ -368,9 +485,25 @@ export class EffectiveSettingsService {
       if (policy?.mode === 'locked') {
         throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
       }
-      return model.deleteUserOverride(params.userId, params.path, {
+      const deleted = await model.deleteUserOverride(params.userId, params.path, {
         alreadyInTransaction: true,
       });
+      // Clear the registered leaf from legacy so resolve/backfill cannot re-apply it.
+      const userModel = new UserModel(tx as LobeChatDatabase, params.userId);
+      const row = await userModel.getUserSettings();
+      if (row) {
+        const top = params.path.split('.')[0];
+        if (top && top !== 'keyVaults') {
+          const blob = (row as Record<string, unknown>)[top];
+          if (blob !== null && blob !== undefined && typeof blob === 'object') {
+            const stripped = deleteByPath({ [top]: blob } as Record<string, unknown>, params.path);
+            await userModel.updateSetting({
+              [top]: stripped[top] ?? null,
+            } as Parameters<UserModel['updateSetting']>[0]);
+          }
+        }
+      }
+      return deleted;
     });
 
     this.dropUserCache(params.userId);

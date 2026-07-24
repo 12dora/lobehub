@@ -38,6 +38,7 @@ import {
 } from '@/database/models/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { assertConversationAccessEnabled } from './contentPolicy';
 import {
   AUDIT_EXPORT_ARTIFACT_VERSION,
   AUDIT_EXPORT_BATCH_LIMIT,
@@ -53,8 +54,21 @@ import {
   formatArtifactChecksum,
   sha256Hex,
 } from './exportStorage';
+import { mapExportFailureCode } from './jobError';
+
+/** Soft cap on artifact bytes while streaming (F10) — fails closed before multi-buffer upload. */
+const AUDIT_EXPORT_MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
 export interface ProcessNextAuditExportOptions {
+  /**
+   * Test seam: after successful object upload (+ integrity checks), before domain complete.
+   * Used to simulate process crash / lease loss after an uploaded object may exist (F6).
+   */
+  afterArtifactUpload?: (info: {
+    exportId: string;
+    jobId: string;
+    storageKey: string;
+  }) => Promise<void> | void;
   /**
    * Test seam: after domain `complete` succeeds, before `jobs.complete`.
    * Used to simulate final-step lease loss without cancelling the domain.
@@ -104,8 +118,18 @@ class AuditExportInvalidFilterError extends Error {
   }
 }
 
+/** Terminal: streamed artifact exceeds the hard byte cap (F10). */
+class AuditExportArtifactTooLargeError extends Error {
+  constructor() {
+    super('AUDIT_EXPORT_ARTIFACT_TOO_LARGE');
+    this.name = 'AuditExportArtifactTooLargeError';
+  }
+}
+
 const isTerminalContractError = (error: unknown): boolean =>
-  error instanceof AuditExportMaxRowsError || error instanceof AuditExportInvalidFilterError;
+  error instanceof AuditExportMaxRowsError ||
+  error instanceof AuditExportInvalidFilterError ||
+  error instanceof AuditExportArtifactTooLargeError;
 
 /** Align with adminAuditPolicyUpdateInputSchema max bounds. */
 const FROZEN_MAX_EXPORT_ROWS_BOUND = 1_000_000;
@@ -191,7 +215,7 @@ export const processNextAuditExportJob = async (
   const parsedInput = parseAuditExportJobInput(claimed.input);
   if (!parsedInput) {
     await jobs.fail({
-      error: { code: 'INVALID_INPUT', message: 'exportId missing from job input' },
+      error: { code: 'INVALID_INPUT' },
       jobId: claimed.id,
       terminal: true,
       workerId: options.workerId,
@@ -206,7 +230,7 @@ export const processNextAuditExportJob = async (
     const exportRow = await exportsModel.get(exportId);
     if (!exportRow) {
       await jobs.fail({
-        error: { code: 'NOT_FOUND', message: 'export row missing' },
+        error: { code: 'NOT_FOUND' },
         jobId: claimed.id,
         terminal: true,
         workerId: options.workerId,
@@ -216,7 +240,7 @@ export const processNextAuditExportJob = async (
 
     if (exportRow.status === 'cancelled') {
       await jobs.cancel(claimed.id);
-      await safeDelete(storage, storageKey);
+      await safeDelete(storage, storageKey, exportsModel, exportId);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
     }
 
@@ -231,7 +255,7 @@ export const processNextAuditExportJob = async (
 
     if (exportRow.status === 'failed' || exportRow.status === 'expired') {
       await jobs.fail({
-        error: { code: 'EXPORT_TERMINAL', message: `export already ${exportRow.status}` },
+        error: { code: 'EXPORT_TERMINAL' },
         jobId: claimed.id,
         terminal: true,
         workerId: options.workerId,
@@ -246,6 +270,22 @@ export const processNextAuditExportJob = async (
 
     // Live policy only as fallback for legacy rows missing frozen caps.
     const livePolicy = await new PlatformAuditPolicyModel(db).getOrCreate();
+    // Conversation surfaces: recheck kill-switch before reading evidence (F3).
+    if (exportRow.kind === 'conversations' || exportRow.kind === 'user_timeline') {
+      try {
+        assertConversationAccessEnabled(livePolicy.contentAccessMode);
+      } catch {
+        // Domain stores code-only for public projection compliance (F3).
+        await exportsModel.fail(exportId, { code: 'CONTENT_ACCESS_DISABLED' });
+        await jobs.fail({
+          error: { code: 'CONTENT_ACCESS_DISABLED' },
+          jobId: claimed.id,
+          terminal: true,
+          workerId: options.workerId,
+        });
+        return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
+      }
+    }
     const filter = exportRow.filterSnapshot ?? {};
     // Time window is mandatory: invalid/missing from|to must never widen to full-table scan.
     const timeWindow: ExportTimeWindow = {
@@ -284,6 +324,9 @@ export const processNextAuditExportJob = async (
       const buf = Buffer.from(line, 'utf8');
       hasher.update(buf);
       totalBytes += buf.byteLength;
+      if (totalBytes > AUDIT_EXPORT_MAX_ARTIFACT_BYTES) {
+        throw new AuditExportArtifactTooLargeError();
+      }
       lineCount += 1;
       if (!fileStream.write(buf)) {
         await new Promise<void>((resolve, reject) => {
@@ -382,6 +425,10 @@ export const processNextAuditExportJob = async (
         throw new Error('AUDIT_EXPORT_TEMP_SIZE_MISMATCH');
       }
 
+      // F6: durable cleanup intent before the object may exist. claimNext can
+      // dead-letter a lease-expired final attempt without invoking worker cleanup.
+      await exportsModel.recordArtifactUploadIntent(exportId, storageKey);
+
       const uploaded = await storage.uploadArtifact({
         body,
         contentType: AUDIT_EXPORT_CONTENT_TYPE,
@@ -405,6 +452,14 @@ export const processNextAuditExportJob = async (
         throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
       }
 
+      if (options.afterArtifactUpload) {
+        await options.afterArtifactUpload({
+          exportId,
+          jobId: claimed.id,
+          storageKey: uploaded.storageKey,
+        });
+      }
+
       const expiresAt = new Date(
         Date.now() + Math.max(1, exportArtifactRetentionDays) * 24 * 60 * 60 * 1000,
       );
@@ -422,8 +477,8 @@ export const processNextAuditExportJob = async (
     }
 
     if (!completedRow) {
-      // Race with cancel — clean object
-      await safeDelete(storage, storageKey);
+      // Race with cancel — clean object (durable outbox if S3 delete fails)
+      await safeDelete(storage, storageKey, exportsModel, exportId);
       await jobs.cancel(claimed.id);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
     }
@@ -458,32 +513,28 @@ export const processNextAuditExportJob = async (
     if (error instanceof AuditExportCancelledError) {
       await exportsModel.cancel(exportId);
       await jobs.cancel(claimed.id);
-      await safeDelete(storage, storageKey);
+      await safeDelete(storage, storageKey, exportsModel, exportId);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
     }
 
-    const code =
-      error instanceof AuditExportMaxRowsError
+    // Bounded enum only — never Error.name / free-form message as public code (F3).
+    const code = isTerminalContractError(error)
+      ? error instanceof AuditExportMaxRowsError
         ? 'MAX_EXPORT_ROWS_EXCEEDED'
         : error instanceof AuditExportInvalidFilterError
           ? 'INVALID_FILTER_SNAPSHOT'
-          : error instanceof Error
-            ? error.name || 'EXPORT_FAILED'
-            : 'EXPORT_FAILED';
-    const message =
-      error instanceof AuditExportMaxRowsError
-        ? `Export exceeds maxExportRows (${error.maxExportRows}); no partial artifact retained`
-        : error instanceof Error
-          ? error.message.slice(0, 500)
-          : 'export failed';
-
-    // Always clean the deterministic object before fail/retry so retries start clean.
-    await safeDelete(storage, storageKey);
+          : error instanceof AuditExportArtifactTooLargeError
+            ? 'ARTIFACT_TOO_LARGE'
+            : mapExportFailureCode(error)
+      : mapExportFailureCode(error);
 
     if (isTerminalContractError(error)) {
-      await exportsModel.fail(exportId, { code, message });
+      // Terminal first so purge outbox can attach to failed status (F6).
+      // Code-only domain error; outbox may add purgeStorageKey internally.
+      await exportsModel.fail(exportId, { code });
+      await safeDelete(storage, storageKey, exportsModel, exportId);
       await jobs.fail({
-        error: { code, message },
+        error: { code },
         jobId: claimed.id,
         terminal: true,
         workerId: options.workerId,
@@ -492,15 +543,18 @@ export const processNextAuditExportJob = async (
     }
 
     // Transient / unknown: requeue job (or dead when maxAttempts exhausted).
-    // Keep domain `running` while the job can still retry.
+    // Best-effort object clean only — domain still running, no durable purge outbox.
+    await safeDelete(storage, storageKey);
+
     const failedJob = await jobs.fail({
-      error: { code, message },
+      error: { code },
       jobId: claimed.id,
       workerId: options.workerId,
     });
 
     if (failedJob?.status === 'dead') {
-      await exportsModel.fail(exportId, { code, message });
+      await exportsModel.fail(exportId, { code });
+      await safeDelete(storage, storageKey, exportsModel, exportId);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
     }
 
@@ -508,14 +562,31 @@ export const processNextAuditExportJob = async (
   }
 };
 
+/**
+ * Object delete with durable purge outbox when domain is terminal (F6).
+ * Outbox persistence is **required** before relying on best-effort S3 delete —
+ * never swallow enqueue failures (orphaned objects would be unrecoverable).
+ */
 const safeDelete = async (
   storage: AuditExportArtifactStorage,
   storageKey: string,
+  exportsModel?: PlatformAuditExportModel,
+  exportId?: string,
 ): Promise<void> => {
+  if (exportsModel && exportId) {
+    // Required cleanup intent — must not be swallowed.
+    await exportsModel.enqueueArtifactObjectPurge(exportId, storageKey);
+  }
   try {
     await storage.deleteObject(storageKey);
+    if (exportsModel && exportId) {
+      await exportsModel.completeArtifactObjectDelete(exportId);
+    }
   } catch {
-    // best-effort cleanup
+    // Leave purge outbox for retention recovery. Re-assert outbox if complete failed mid-flight.
+    if (exportsModel && exportId) {
+      await exportsModel.enqueueArtifactObjectPurge(exportId, storageKey);
+    }
   }
 };
 

@@ -3,7 +3,7 @@
  *
  * @vitest-environment node
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -30,14 +30,22 @@ vi.mock('@/database/core/db-adaptor', () => ({
 const createCaller = createCallerFactory(adminRouter);
 const fixture = createAdminAuthorizationFixture({ namespace: 'admin-audit-a2' });
 
+const clearAuditLogs = async () => {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+  });
+};
+
 beforeAll(async () => {
   db = await getTestDB();
-});
+}, 60_000);
 
 beforeEach(async () => {
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+  await clearAuditLogs();
   await fixture.setup(db);
-  await db.delete(platformAuditLogs);
+  await clearAuditLogs();
   await db.delete(platformAuditLegalHolds);
   await db.delete(platformAuditExports);
   await db.delete(platformAuditRetentionRuns);
@@ -46,8 +54,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await clearAuditLogs();
   await fixture.cleanup(db);
-  await db.delete(platformAuditLogs);
+  await clearAuditLogs();
   await db.delete(platformAuditLegalHolds);
   await db.delete(platformAuditExports);
   await db.delete(platformAuditRetentionRuns);
@@ -76,6 +85,11 @@ describe('admin.audit router', () => {
 
     await expect(
       auditor.audit.conversations.list({ userId: fixture.actors.normal }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // users.timeline is conversation evidence — AUDIT_READ alone must not pass (F2).
+    await expect(
+      auditor.audit.users.timeline({ userId: fixture.actors.normal }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     await expect(

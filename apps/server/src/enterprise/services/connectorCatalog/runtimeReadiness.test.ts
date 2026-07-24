@@ -391,4 +391,30 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
       resolveConnectorCatalogRuntimeReadiness({ db, env, repository: listedRepository([]) }),
     ).resolves.toBe(false);
   });
+
+  it('fails closed on serverless without a configured runtime-audit reconciler', async () => {
+    const fixture = await publish('none');
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({
+        db,
+        env: {
+          ...env,
+          VERCEL_ENV: 'production',
+        },
+        repository: listedRepository([fixture.connector]),
+      }),
+    ).resolves.toBe(false);
+
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({
+        db,
+        env: {
+          ...env,
+          CONNECTOR_RUNTIME_AUDIT_RECONCILE_ENABLED: '1',
+          VERCEL_ENV: 'production',
+        },
+        repository: listedRepository([fixture.connector]),
+      }),
+    ).resolves.toBe(true);
+  });
 });
