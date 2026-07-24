@@ -179,6 +179,23 @@ export class PlatformGlobalCredentialModel {
     return row ? toPublicView(row) : undefined;
   };
 
+  /**
+   * Row-lock the credential for a secret merge / CAS update.
+   * Must be called inside an open transaction so the lock is held across
+   * decrypt → merge → encrypt → write.
+   */
+  getByIdForUpdate = async (
+    id: number,
+  ): Promise<PlatformGlobalCredentialPublicView | undefined> => {
+    const [row] = await this.db
+      .select()
+      .from(platformGlobalCredentials)
+      .where(eq(platformGlobalCredentials.id, id))
+      .for('update')
+      .limit(1);
+    return row ? toPublicView(row) : undefined;
+  };
+
   getByKey = async (key: string): Promise<PlatformGlobalCredentialPublicView | undefined> => {
     const [row] = await this.db
       .select()

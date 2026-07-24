@@ -141,6 +141,8 @@ export class PlatformAuditLegalHoldModel {
     if (!params.reason?.trim()) {
       throw new Error('reason is required for platform audit legal holds');
     }
+    // Non-future expiresAt is rejected at the admin service boundary. The model
+    // still accepts timestamps for fixtures / system repair of already-elapsed rows.
 
     const scopeId = normalizeScopeId(params.scopeType, params.scopeId);
     const values: NewPlatformAuditLegalHold = {
@@ -190,7 +192,20 @@ export class PlatformAuditLegalHoldModel {
         conditions.push(eq(platformAuditLegalHolds.scopeId, params.scopeId));
       }
     }
-    if (params.status) conditions.push(eq(platformAuditLegalHolds.status, params.status));
+    if (params.status) {
+      conditions.push(eq(platformAuditLegalHolds.status, params.status));
+      // "Active" list filter excludes holds that have already elapsed — retention
+      // already ignores them, and the service projects them as `expired`.
+      if (params.status === 'active') {
+        const now = new Date();
+        conditions.push(
+          or(
+            isNull(platformAuditLegalHolds.expiresAt),
+            gt(platformAuditLegalHolds.expiresAt, now),
+          )!,
+        );
+      }
+    }
     if (params.createdBy) {
       conditions.push(eq(platformAuditLegalHolds.createdBy, params.createdBy));
     }

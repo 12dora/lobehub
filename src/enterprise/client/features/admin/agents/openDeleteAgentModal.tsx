@@ -20,13 +20,19 @@ const DELETE_REASON = 'Platform assistant hard-deleted from admin console';
 /**
  * Irreversible hard delete of a platform assistant (and all its versions, assignments,
  * materializations). Reuses the shared reason modal (confirm-only + reauth). Default / system
- * assistants are refused server-side. `onDeleted` runs after a successful commit and must not
- * throw (swallow refresh errors) or the modal will surface a false failure.
+ * assistants are refused server-side.
+ *
+ * Full identity CAS (`expectedDraftToken` + `expectedRevision`) is required so concurrent
+ * version/assignment/draft mutations cannot be wiped by a stale list row. `onDeleted` runs after
+ * a successful commit; refresh failures must not convert the committed delete into a false
+ * mutation failure (caller should catch and surface a retryable refresh warning).
  */
 export const openDeleteAgentModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   agentId: string;
   displayName: string;
+  expectedDraftToken: string;
+  expectedRevision: number;
   onDeleted: () => void | Promise<void>;
 }) => {
   openReasonModal({
@@ -39,11 +45,21 @@ export const openDeleteAgentModal = (params: {
     submitLabel: t('agentCatalog.delete.submit'),
     targetLabel: params.displayName,
     title: t('agentCatalog.delete.title'),
-    buildPayload: (reason): AdminPlatformAgentDeleteInput => ({ agentId: params.agentId, reason }),
+    buildPayload: (reason): AdminPlatformAgentDeleteInput => ({
+      agentId: params.agentId,
+      expectedDraftToken: params.expectedDraftToken,
+      expectedRevision: params.expectedRevision,
+      reason,
+    }),
     onSubmit: async (payload) => {
       await adminAgentsService.delete(payload as AdminPlatformAgentDeleteInput);
       toast.success(t('agentCatalog.toast.deleted'));
-      await params.onDeleted();
+      try {
+        await params.onDeleted();
+      } catch {
+        // Deletion already committed — never surface refresh failure as a mutation failure.
+        toast.error(t('agentCatalog.recovery.refreshFailed'));
+      }
     },
   });
 };

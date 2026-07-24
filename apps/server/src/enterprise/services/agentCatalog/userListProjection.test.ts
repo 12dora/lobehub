@@ -401,10 +401,11 @@ describe('PlatformAgentUserListService', () => {
     });
   });
 
-  // REWORK-1: a materialized local row whose platform Agent is now hidden/revoked (so it is NOT in
-  // the visible effective list) must still be stripped everywhere — never leak back into the
-  // ordinary local list, where it would also become runnable via the ordinary runtime.
-  describe('hidden / revoked materialized rows (REWORK-1)', () => {
+  // REWORK-1 / hard-delete scale race: a materialized local row whose platform Agent is now
+  // hidden, revoked, OR hard-deleted (tombstoned so it is NOT in the visible effective list)
+  // must still be stripped everywhere — never leak back into the ordinary local list, where it
+  // would also become runnable via the ordinary runtime as an "editable local" clone.
+  describe('hidden / revoked / post-delete tombstoned materializations (REWORK-1)', () => {
     const sidebarLocal = (id: string): SidebarAgentItem => ({
       id,
       pinned: false,
@@ -452,6 +453,41 @@ describe('PlatformAgentUserListService', () => {
         'anything',
       );
       expect(merged.map((i) => i.id)).toEqual(['agt_x']);
+    });
+
+    it('post-delete materialization remains managed/tombstoned — excluded from picker/sidebar/search', async () => {
+      // After hard-delete, listMaterializedAgentIds still returns the local clone id (tombstone).
+      // Effective list is empty (platform identity gone) — clone must stay excluded everywhere.
+      const { service, listMaterializedAgentIds } = makeService({
+        effective: [],
+        materialized: ['agt_post_delete_clone'],
+      });
+      const local = localItem('agt_post_delete_clone', 'Surviving clone');
+      const picker = await service.mergeAvailableAgents(
+        'u',
+        { limit: 10, offset: 0 },
+        localLoader([local, localItem('agt_keep', 'Keep')]),
+        unusedLegacyLoader,
+      );
+      expect(picker.map((r) => r.id)).toEqual(['builtin-inbox-id', 'agt_keep']);
+      expect(listMaterializedAgentIds).toHaveBeenCalled();
+
+      const sidebar = await service.mergeSidebarList('u', {
+        groups: [],
+        pinned: [sidebarLocal('agt_post_delete_clone')],
+        privateGroups: [],
+        privateUngrouped: [],
+        ungrouped: [sidebarLocal('agt_post_delete_clone'), sidebarLocal('agt_u')],
+      });
+      expect(sidebar.pinned).toEqual([]);
+      expect(sidebar.ungrouped.map((i) => i.id)).toEqual(['builtin-inbox-id', 'agt_u']);
+
+      const search = await service.mergeSearchResults(
+        'u',
+        [sidebarLocal('agt_post_delete_clone'), sidebarLocal('agt_x')],
+        'clone',
+      );
+      expect(search.map((i) => i.id)).toEqual(['agt_x']);
     });
   });
 });

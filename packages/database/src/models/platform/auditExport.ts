@@ -412,6 +412,9 @@ export class PlatformAuditExportModel {
    * - Hold free → returns the private storage key (caller may delete the object).
    * - Hold active → restores `storageKey` onto the export (evidence addressable again),
    *   marks outbox deferred, omits from the result (caller must NOT delete).
+   *
+   * Prefer {@link purgeArtifactObjectsUnderHoldLock} when the external object
+   * delete must stay serialized with hold creation (no authorize→delete race).
    */
   authorizeArtifactObjectDeletes = async (
     ids: string[],
@@ -431,59 +434,160 @@ export class PlatformAuditExportModel {
     const db = params.db ?? (this.db as LobeChatDatabase);
 
     return withPlatformAuditRetentionHoldLock(db, async (tx) => {
-      const existingRows = await tx
-        .select({
-          error: platformAuditExports.error,
-          filterSnapshot: platformAuditExports.filterSnapshot,
-          id: platformAuditExports.id,
-          kind: platformAuditExports.kind,
-        })
-        .from(platformAuditExports)
-        .where(inArray(platformAuditExports.id, ids));
-
-      const pending = existingRows
-        .map((row) => {
-          const storageKey = readPurgeOutboxStorageKey(row.error);
-          return storageKey ? { ...row, storageKey } : null;
-        })
-        .filter((row): row is NonNullable<typeof row> => row !== null);
-
-      if (pending.length === 0) return [];
-
-      const heldIds = await params.resolveHeldIds(
-        tx,
-        pending.map((r) => ({
-          filterSnapshot: r.filterSnapshot,
-          id: r.id,
-          kind: r.kind,
-        })),
-      );
-
-      const authorized: Array<{ id: string; storageKey: string }> = [];
-      const now = new Date();
-
-      for (const row of pending) {
-        if (heldIds.has(row.id)) {
-          // Defer: restore addressable key; leave status expired so retention may
-          // re-scan once the hold is released (storageKey IS NOT NULL).
-          await tx
-            .update(platformAuditExports)
-            .set({
-              error: {
-                code: ARTIFACT_PURGE_DEFERRED_HOLD_CODE,
-                message: 'legal hold active between claim and object delete',
-              },
-              storageKey: row.storageKey,
-              updatedAt: now,
-            })
-            .where(eq(platformAuditExports.id, row.id));
-          continue;
-        }
-        authorized.push({ id: row.id, storageKey: row.storageKey });
-      }
-
+      const { authorized } = await this.recheckPurgeOutboxesUnderTx(tx, ids, params.resolveHeldIds);
       return authorized;
     });
+  };
+
+  /**
+   * Hold recheck + external object delete + outbox complete under **one** advisory
+   * lock transaction. Legal-hold creates serialize behind this TX, so a hold cannot
+   * appear between authorize and object destruction.
+   *
+   * `deleteObject` runs while the lock is held (keep it fast / idempotent).
+   */
+  purgeArtifactObjectsUnderHoldLock = async (
+    ids: string[],
+    params: {
+      db?: LobeChatDatabase;
+      deleteObject: (storageKey: string) => Promise<void>;
+      resolveHeldIds: (
+        tx: Transaction,
+        rows: Array<{
+          filterSnapshot: PlatformAuditExportItem['filterSnapshot'];
+          id: string;
+          kind: PlatformAuditExportItem['kind'];
+        }>,
+      ) => Promise<Set<string>>;
+    },
+  ): Promise<{ deleted: number; skippedHold: number }> => {
+    if (ids.length === 0) return { deleted: 0, skippedHold: 0 };
+    const db = params.db ?? (this.db as LobeChatDatabase);
+
+    return withPlatformAuditRetentionHoldLock(db, async (tx) => {
+      const { authorized, skippedHold } = await this.recheckPurgeOutboxesUnderTx(
+        tx,
+        ids,
+        params.resolveHeldIds,
+      );
+
+      let deleted = 0;
+      for (const item of authorized) {
+        await params.deleteObject(item.storageKey);
+        if (await this.completeArtifactObjectDelete(item.id, tx)) {
+          deleted += 1;
+        }
+      }
+
+      return { deleted, skippedHold };
+    });
+  };
+
+  /**
+   * Shared hold recheck for pending purge outboxes (caller holds the retention lock TX).
+   */
+  private recheckPurgeOutboxesUnderTx = async (
+    tx: Transaction,
+    ids: string[],
+    resolveHeldIds: (
+      tx: Transaction,
+      rows: Array<{
+        filterSnapshot: PlatformAuditExportItem['filterSnapshot'];
+        id: string;
+        kind: PlatformAuditExportItem['kind'];
+      }>,
+    ) => Promise<Set<string>>,
+  ): Promise<{
+    authorized: Array<{ id: string; storageKey: string }>;
+    skippedHold: number;
+  }> => {
+    const existingRows = await tx
+      .select({
+        error: platformAuditExports.error,
+        filterSnapshot: platformAuditExports.filterSnapshot,
+        id: platformAuditExports.id,
+        kind: platformAuditExports.kind,
+      })
+      .from(platformAuditExports)
+      .where(inArray(platformAuditExports.id, ids));
+
+    const pending = existingRows
+      .map((row) => {
+        const storageKey = readPurgeOutboxStorageKey(row.error);
+        return storageKey ? { ...row, storageKey } : null;
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+
+    if (pending.length === 0) return { authorized: [], skippedHold: 0 };
+
+    const heldIds = await resolveHeldIds(
+      tx,
+      pending.map((r) => ({
+        filterSnapshot: r.filterSnapshot,
+        id: r.id,
+        kind: r.kind,
+      })),
+    );
+
+    const authorized: Array<{ id: string; storageKey: string }> = [];
+    let skippedHold = 0;
+    const now = new Date();
+
+    for (const row of pending) {
+      if (heldIds.has(row.id)) {
+        // Defer: restore addressable key; leave status expired so retention may
+        // re-scan once the hold is released (storageKey IS NOT NULL).
+        await tx
+          .update(platformAuditExports)
+          .set({
+            error: {
+              code: ARTIFACT_PURGE_DEFERRED_HOLD_CODE,
+              message: 'legal hold active between claim and object delete',
+            },
+            storageKey: row.storageKey,
+            updatedAt: now,
+          })
+          .where(eq(platformAuditExports.id, row.id));
+        skippedHold += 1;
+        continue;
+      }
+      authorized.push({ id: row.id, storageKey: row.storageKey });
+    }
+
+    return { authorized, skippedHold };
+  };
+
+  /**
+   * Durable purge outbox rows left after claim (storageKey cleared) when the
+   * worker crashed or object delete failed before {@link completeArtifactObjectDelete}.
+   * Candidate scan requires storageKey IS NOT NULL, so these must be drained separately.
+   */
+  listPendingArtifactPurges = async (params?: {
+    limit?: number;
+  }): Promise<Array<{ id: string; storageKey: string }>> => {
+    const limit = clampListLimit(params?.limit);
+    const rows = await this.db
+      .select({
+        error: platformAuditExports.error,
+        id: platformAuditExports.id,
+      })
+      .from(platformAuditExports)
+      .where(
+        and(
+          eq(platformAuditExports.status, 'expired'),
+          isNull(platformAuditExports.storageKey),
+          sql`${platformAuditExports.error}->>'code' = ${ARTIFACT_PURGE_PENDING_CODE}`,
+        ),
+      )
+      .orderBy(desc(platformAuditExports.updatedAt), desc(platformAuditExports.id))
+      .limit(limit);
+
+    return rows
+      .map((row) => {
+        const storageKey = readPurgeOutboxStorageKey(row.error);
+        return storageKey ? { id: row.id, storageKey } : null;
+      })
+      .filter((row): row is { id: string; storageKey: string } => row !== null);
   };
 
   /**

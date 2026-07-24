@@ -17,7 +17,7 @@ const nextVersion = (version: string | undefined) => {
   return `${major}.${minor}.${Number(patch) + 1}`;
 };
 
-const toDraft = (snapshot: AdminAgentDetailOutput): AdminAgentDraft => {
+const toDraft = (snapshot: AdminAgentDetailOutput, defaultSystemRole = ''): AdminAgentDraft => {
   const current = snapshot.versions.find(({ id }) => id === snapshot.identity.currentVersionId);
   const version = snapshot.versions[0] ?? current;
   return version
@@ -41,7 +41,8 @@ const toDraft = (snapshot: AdminAgentDetailOutput): AdminAgentDraft => {
           modelParameters: {},
           openingMessage: null,
           openingQuestions: [],
-          systemRole: 'You are a helpful organization Agent.',
+          // Localized by the editor hook — never hardcode English into the persisted draft.
+          systemRole: defaultSystemRole,
           tags: [],
         },
         // No fabricated model — a first version must pick an exact published model.
@@ -69,6 +70,7 @@ const sameBaseline = (left: AgentDraftBaseline, right: AgentDraftBaseline) =>
 
 export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, editable: boolean) => {
   const { t } = useTranslation('admin');
+  const defaultSystemRole = t('agentCatalog.editor.defaultSystemRole');
   const [draft, setDraft] = useState<AdminAgentDraft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
@@ -82,7 +84,19 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
   const [draftBaseline, setDraftBaseline] = useState<AgentDraftBaseline | null>(null);
 
   useEffect(() => {
-    if (!snapshot) return;
+    // While the route identity is loading/transitioning, drop any previous agent's editor state so
+    // a subsequent hydrate cannot paint B with A's draft for one frame.
+    if (!snapshot) {
+      if (draftBaseline || draft) {
+        setDraftBaseline(null);
+        setDraft(null);
+        setDirty(false);
+        setConflict(false);
+        setSaveState('idle');
+        setPersistState(null);
+      }
+      return;
+    }
     const incoming = baselineFromSnapshot(snapshot);
 
     // Hydrate once per Agent context. A stored dirty draft keeps the CAS it was authored against,
@@ -102,7 +116,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
           }
         : incoming,
     );
-    setDraft(stored?.draft ?? toDraft(snapshot));
+    setDraft(stored?.draft ?? toDraft(snapshot, defaultSystemRole));
     setDirty(Boolean(stored));
     setConflict(
       Boolean(
@@ -113,7 +127,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     );
     setSaveState(stored ? 'dirty' : 'idle');
     setPersistState(stored ? 'saved' : null);
-  }, [dirty, draftBaseline, editable, snapshot]);
+  }, [defaultSystemRole, dirty, draft, draftBaseline, editable, snapshot]);
 
   useEffect(() => {
     if (!editable || !draftBaseline || !draft || !dirty) return;
@@ -151,12 +165,12 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     if (!snapshot) return;
     clearAdminAgentDraft(snapshot.identity.id);
     setDraftBaseline(baselineFromSnapshot(snapshot));
-    setDraft(toDraft(snapshot));
+    setDraft(toDraft(snapshot, defaultSystemRole));
     setDirty(false);
     setConflict(false);
     setSaveState('idle');
     setPersistState(null);
-  }, [snapshot]);
+  }, [defaultSystemRole, snapshot]);
 
   const markSaved = useCallback((baseline: AgentDraftBaseline) => {
     clearAdminAgentDraft(baseline.agentId);

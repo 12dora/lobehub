@@ -1,8 +1,8 @@
 'use client';
 
 import { Flexbox, Text } from '@lobehub/ui';
-import { Select, toast } from '@lobehub/ui/base-ui';
-import { useCallback, useState } from 'react';
+import { Input, Select, toast } from '@lobehub/ui/base-ui';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
@@ -17,7 +17,7 @@ import { adminPlatformAgentAppendVersionInputSchema } from '@/server/enterprise/
 import type { deriveAdminAgentPermissions } from './controller';
 import { toDependencySnapshot } from './dependencyCatalog';
 import type { AdminAgentDetailOutput, AdminPlatformAgentAppendVersionOutput } from './types';
-import { fetchAllAdminAgents } from './useAdminAgents';
+import { fetchPublishedAdminAgentReplacements, findDefaultAdminAgent } from './useAdminAgents';
 import type { useAgentEditor } from './useAgentEditor';
 import type { RefreshLock } from './useRefreshLock';
 
@@ -32,27 +32,83 @@ interface UseAgentActionsParams {
   snapshot: AdminAgentDetailOutput;
 }
 
+const REPLACEMENT_SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * Searchable published-agent picker for archive-default replacement. Loads one page at a time
+ * (initial + debounced server `query`) — never silently drains the catalog into options.
+ */
 const ArchiveReplacementField = ({
-  candidates,
   disabled,
+  excludeAgentId,
   isDefault,
   onChange,
 }: {
-  candidates: { label: string; value: string }[];
   disabled: boolean;
+  excludeAgentId: string;
   isDefault: boolean;
   onChange: (value: string | null) => void;
 }) => {
   const { t } = useTranslation('admin');
   const [value, setValue] = useState<string>();
+  const [search, setSearch] = useState('');
+  const [options, setOptions] = useState<{ label: string; value: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [empty, setEmpty] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestIdRef = useRef(0);
+
+  const loadCandidates = useCallback(
+    async (query?: string) => {
+      const requestId = ++requestIdRef.current;
+      setLoading(true);
+      try {
+        const items = await fetchPublishedAdminAgentReplacements(
+          excludeAgentId,
+          adminAgentsService,
+          {
+            limit: 50,
+            query: query?.trim() || undefined,
+          },
+        );
+        if (requestId !== requestIdRef.current) return;
+        setOptions(
+          items.map(({ displayName, identity }) => ({
+            label: displayName,
+            value: identity.id,
+          })),
+        );
+        setEmpty(items.length === 0);
+      } catch {
+        if (requestId !== requestIdRef.current) return;
+        setOptions([]);
+        setEmpty(true);
+        toast.error(t('agentCatalog.toast.actionFailed'));
+      } finally {
+        if (requestId === requestIdRef.current) setLoading(false);
+      }
+    },
+    [excludeAgentId, t],
+  );
+
+  useEffect(() => {
+    if (!isDefault) return;
+    void loadCandidates();
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [isDefault, loadCandidates]);
+
   if (!isDefault) return null;
   return (
     <Flexbox gap={6}>
       <Text strong>{t('agentCatalog.archive.replacement')}</Text>
       <Select
+        showSearch
         aria-label={t('agentCatalog.archive.replacement')}
         disabled={disabled}
-        options={candidates}
+        loading={loading}
+        options={options}
         placeholder={t('agentCatalog.archive.replacementPlaceholder')}
         value={value}
         onChange={(next) => {
@@ -61,7 +117,22 @@ const ArchiveReplacementField = ({
           onChange(id);
         }}
       />
-      {candidates.length === 0 ? (
+      {/* Server-side catalog search (one page). Local Select showSearch only filters the loaded page. */}
+      <Input
+        aria-label={t('agentCatalog.archive.replacementPlaceholder')}
+        disabled={disabled}
+        placeholder={t('agentCatalog.archive.replacementPlaceholder')}
+        value={search}
+        onChange={(event) => {
+          const q = event.target.value;
+          setSearch(q);
+          if (debounceRef.current) clearTimeout(debounceRef.current);
+          debounceRef.current = setTimeout(() => {
+            void loadCandidates(q);
+          }, REPLACEMENT_SEARCH_DEBOUNCE_MS);
+        }}
+      />
+      {empty && !loading ? (
         <Text type="danger">{t('agentCatalog.archive.noReplacement')}</Text>
       ) : null}
     </Flexbox>
@@ -283,9 +354,8 @@ export const useAgentActions = ({
     let currentDefault: Awaited<ReturnType<typeof adminAgentsService.get>> | null;
     try {
       // Resolve the outgoing default's exact CAS BEFORE opening the modal, then freeze it.
-      const currentDefaultIdentity = (await fetchAllAdminAgents({}, adminAgentsService)).find(
-        ({ identity }) => identity.isDefault,
-      )?.identity;
+      // Early-exit page walk — never drain the full catalog just to find one default row.
+      const currentDefaultIdentity = (await findDefaultAdminAgent(adminAgentsService))?.identity;
       currentDefault =
         currentDefaultIdentity && currentDefaultIdentity.id !== snapshot.identity.id
           ? await adminAgentsService.get({ id: currentDefaultIdentity.id })
@@ -348,17 +418,8 @@ export const useAgentActions = ({
 
   const archive = useCallback(async () => {
     if (lock.isLocked()) return;
-    let candidates: { label: string; value: string }[];
-    try {
-      candidates = snapshot.identity.isDefault
-        ? (await fetchAllAdminAgents({ status: 'published' }, adminAgentsService))
-            .filter(({ identity }) => identity.id !== snapshot.identity.id)
-            .map(({ displayName, identity }) => ({ label: displayName, value: identity.id }))
-        : [];
-    } catch {
-      toast.error(t('agentCatalog.toast.actionFailed'));
-      return;
-    }
+    // Replacement candidates load inside the searchable picker (one page + remote query) —
+    // never pre-drain the published catalog into the modal.
     const replacementRef: { current: string | null } = { current: null };
     const writeToken = {};
     openReasonModal({
@@ -374,8 +435,8 @@ export const useAgentActions = ({
       description: t('agentCatalog.archive.description'),
       extra: ({ locked }) => (
         <ArchiveReplacementField
-          candidates={candidates}
           disabled={locked}
+          excludeAgentId={snapshot.identity.id}
           isDefault={snapshot.identity.isDefault}
           onChange={(value) => {
             replacementRef.current = value;

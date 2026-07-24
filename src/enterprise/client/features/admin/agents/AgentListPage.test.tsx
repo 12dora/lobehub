@@ -10,11 +10,14 @@ import AgentListPage from './AgentListPage';
 import type { AdminAgentListItem } from './types';
 
 const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
   list: {} as Record<string, unknown>,
   openCreate: vi.fn(),
   openDelete: vi.fn(),
   permissions: [] as string[],
   refresh: vi.fn(),
+  removeItem: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 // NOTE: AsyncBoundary is intentionally NOT mocked — this exercises its real
@@ -36,6 +39,11 @@ vi.mock('./openCreateAgentModal', () => ({
 }));
 vi.mock('./openDeleteAgentModal', () => ({
   openDeleteAgentModal: (...args: unknown[]) => mocks.openDelete(...args),
+}));
+vi.mock('@/enterprise/client/services/adminAgents', () => ({
+  adminAgentsService: {
+    get: (...args: unknown[]) => mocks.get(...args),
+  },
 }));
 vi.mock('@/components/Loading/BrandTextLoading', () => ({
   default: () => <div role="status">loading</div>,
@@ -79,6 +87,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       ))}
     </select>
   ),
+  toast: { error: (...args: unknown[]) => mocks.toastError(...args), success: vi.fn() },
 }));
 vi.mock('../primitives/AdminPageTemplate', () => ({
   default: ({ actions, children, toolbar }: any) => (
@@ -130,6 +139,7 @@ const pagination = (over: Record<string, unknown>) => ({
   loadMore: vi.fn(),
   loadMoreError: false,
   refresh: mocks.refresh,
+  removeItem: mocks.removeItem,
   retry: vi.fn(),
   ...over,
 });
@@ -148,6 +158,9 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     mocks.openCreate.mockReset();
     mocks.openDelete.mockReset();
     mocks.refresh.mockReset().mockResolvedValue(undefined);
+    mocks.removeItem.mockReset().mockResolvedValue(undefined);
+    mocks.get.mockReset();
+    mocks.toastError.mockReset();
   });
 
   it('shows the real loading state before the first page settles (data undefined)', () => {
@@ -221,8 +234,21 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     ).toBe(toolbar);
   });
 
-  it('refreshes the bound infinite list after a successful delete', async () => {
+  it('refreshes the bound infinite list after a successful delete via removeItem', async () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.get.mockResolvedValue({
+      draftToken: 'a'.repeat(64),
+      identity: {
+        agentKey: 'agent-1',
+        draftSequence: 0,
+        id: 'agent-1',
+        isDefault: false,
+        migrationRequired: false,
+        revision: 3,
+        status: 'draft',
+        systemKey: null,
+      },
+    });
     mocks.list = pagination({
       boundaryData: [item('agent-1')],
       items: [item('agent-1')],
@@ -230,17 +256,73 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     renderPage();
 
     fireEvent.click(screen.getByText('agentCatalog.delete.action'));
-    expect(mocks.openDelete).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: 'agent-1',
-        displayName: 'agent-1',
-      }),
+    // List delete fetches authoritative CAS before opening the modal.
+    await waitFor(() =>
+      expect(mocks.openDelete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          displayName: 'agent-1',
+          expectedDraftToken: 'a'.repeat(64),
+          expectedRevision: 3,
+        }),
+      ),
     );
+    expect(mocks.get).toHaveBeenCalledWith({ id: 'agent-1' });
     const { onDeleted } = mocks.openDelete.mock.calls[0]![0] as {
       onDeleted: () => void | Promise<void>;
     };
     await onDeleted();
-    expect(mocks.refresh).toHaveBeenCalledOnce();
+    // Committed delete drops the row from bound pages (not a bare revalidate that can leave it).
+    expect(mocks.removeItem).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('surfaces a localized preflight failure without opening the delete modal', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.get.mockRejectedValue(new Error('offline'));
+    mocks.list = pagination({
+      boundaryData: [item('agent-1')],
+      items: [item('agent-1')],
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentCatalog.delete.action'));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    expect(mocks.openDelete).not.toHaveBeenCalled();
+    // Row remains — preflight never committed a delete.
+    expect(screen.getByText('rows:1')).toBeTruthy();
+  });
+
+  it('still invokes removeItem when post-delete revalidation rejects', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ, PLATFORM_PERMISSIONS.AGENT_DELETE];
+    mocks.get.mockResolvedValue({
+      draftToken: 'a'.repeat(64),
+      identity: {
+        agentKey: 'agent-1',
+        draftSequence: 0,
+        id: 'agent-1',
+        isDefault: false,
+        migrationRequired: false,
+        revision: 3,
+        status: 'draft',
+        systemKey: null,
+      },
+    });
+    // removeItem optimistically drops then revalidates; revalidation failure must still resolve
+    // the optimistic drop path (caller catches at openDeleteAgentModal).
+    mocks.removeItem.mockRejectedValueOnce(new Error('revalidate failed'));
+    mocks.list = pagination({
+      boundaryData: [item('agent-1')],
+      items: [item('agent-1')],
+    });
+    renderPage();
+
+    fireEvent.click(screen.getByText('agentCatalog.delete.action'));
+    await waitFor(() => expect(mocks.openDelete).toHaveBeenCalled());
+    const { onDeleted } = mocks.openDelete.mock.calls[0]![0] as {
+      onDeleted: () => void | Promise<void>;
+    };
+    await expect(onDeleted()).rejects.toThrow('revalidate failed');
+    expect(mocks.removeItem).toHaveBeenCalledWith('agent-1');
   });
 
   it('refreshes the bound infinite list after create before navigating', async () => {

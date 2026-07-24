@@ -108,7 +108,8 @@ describe('mock Admin Agents contract adapter', () => {
     const cancelled = await client.cancelRollout({
       agentId: 'agent-inbox',
       expectedJobRevision: started.revision,
-      expectedStatus: started.status,
+      // Narrowed contract: cancel only accepts active statuses.
+      expectedStatus: 'pending',
       jobId: started.jobId,
       reason: 'pause rollout',
     });
@@ -117,7 +118,8 @@ describe('mock Admin Agents contract adapter', () => {
       client.retryRollout({
         agentId: 'agent-inbox',
         expectedJobRevision: started.revision,
-        expectedStatus: started.status,
+        // Stale CAS uses a still-valid retry status enum member (not the live job status).
+        expectedStatus: 'cancelled',
         jobId: started.jobId,
         reason: 'stale retry',
       }),
@@ -125,7 +127,7 @@ describe('mock Admin Agents contract adapter', () => {
     const retried = await client.retryRollout({
       agentId: 'agent-inbox',
       expectedJobRevision: cancelled.revision,
-      expectedStatus: cancelled.status,
+      expectedStatus: 'cancelled',
       jobId: cancelled.jobId,
       reason: 'retry rollout',
     });

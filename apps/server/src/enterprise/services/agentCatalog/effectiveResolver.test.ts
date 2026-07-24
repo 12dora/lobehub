@@ -11,7 +11,11 @@ import type {
 } from '@/database/repositories/platformAgentCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { PlatformAgentEffectiveResolver } from './effectiveResolver';
+import {
+  PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN,
+  PLATFORM_AGENT_EFFECTIVE_LIST_MAX,
+  PlatformAgentEffectiveResolver,
+} from './effectiveResolver';
 import { PlatformAgentUnavailableError } from './errors';
 
 const config = {
@@ -94,6 +98,65 @@ describe('PlatformAgentEffectiveResolver', () => {
       >,
     });
 
+  it('effective list handles the 1000/1001 boundary', async () => {
+    listEffectiveInputs.mockResolvedValue(
+      Array.from({ length: PLATFORM_AGENT_EFFECTIVE_LIST_MAX + 1 }, (_, index) =>
+        row({
+          agentId: `agent-${index}`,
+          agentKey: `key-${String(index).padStart(4, '0')}`,
+          assignmentId: `asg-${index}`,
+          priority: 1,
+        }),
+      ),
+    );
+
+    const result = await createResolver().getEffectiveList('user');
+    expect(result.agents).toHaveLength(PLATFORM_AGENT_EFFECTIVE_LIST_MAX);
+    // Contract ceiling — must never exceed the wire max even when the catalog is larger.
+    expect(result.agents.length).toBeLessThanOrEqual(1000);
+    // Full-list path passes a bounded SQL overscan limit (never unbounded / undefined).
+    expect(listEffectiveInputs).toHaveBeenCalledWith('user', {
+      limit: PLATFORM_AGENT_EFFECTIVE_INPUT_OVERSCAN,
+    });
+  });
+
+  it('filters hidden before the wire-cap so visible agents past the first 1000 slots survive', async () => {
+    // First 1000 authorized winners are hidden optional Agents; the next 50 are visible.
+    // Truncating BEFORE hidden filter would return [] — wrong. Hidden-then-slice fills the list.
+    listEffectiveInputs.mockResolvedValue(
+      Array.from({ length: PLATFORM_AGENT_EFFECTIVE_LIST_MAX + 50 }, (_, index) =>
+        row({
+          agentId: `agent-${index}`,
+          agentKey: `key-${String(index).padStart(4, '0')}`,
+          assignmentId: `asg-${index}`,
+          mode: 'optional',
+          priority: 1,
+        }),
+      ),
+    );
+    listHiddenPlatformAgentIds.mockResolvedValue(
+      new Set(
+        Array.from({ length: PLATFORM_AGENT_EFFECTIVE_LIST_MAX }, (_, index) => `agent-${index}`),
+      ),
+    );
+
+    const result = await createResolver().getEffectiveList('user');
+    expect(result.agents).toHaveLength(50);
+    expect(result.agents[0]?.platformAgentId).toBe(`agent-${PLATFORM_AGENT_EFFECTIVE_LIST_MAX}`);
+  });
+
+  it('getEffectiveAgent uses a targeted repository filter and never full-list projection', async () => {
+    listEffectiveInputs.mockResolvedValue([
+      row({ agentId: 'only', agentKey: 'only', assignmentId: 'asg', priority: 3 }),
+    ]);
+
+    const result = await createResolver().getEffectiveAgent('user', 'only');
+    expect(result).toMatchObject({ platformAgentId: 'only' });
+    expect(listEffectiveInputs).toHaveBeenCalledWith('user', { platformAgentId: 'only' });
+    // Single-agent path must not re-enter with an unfiltered full catalog scan.
+    expect(listEffectiveInputs).toHaveBeenCalledTimes(1);
+  });
+
   it('does not read policy, Agent, or hidden tables while the feature is disabled', async () => {
     const result = await createResolver(DEFAULT_ENTERPRISE_FEATURE_FLAGS).getEffectiveList('user');
     expect(result.agents).toEqual([]);
@@ -126,6 +189,11 @@ describe('PlatformAgentEffectiveResolver', () => {
     it('redacts a raw error from getEffectiveList', async () => {
       listEffectiveInputs.mockRejectedValueOnce(rawDbError);
       await expectRedacted(() => createResolver().getEffectiveList('user'));
+    });
+
+    it('redacts a raw error from getEffectiveAgent', async () => {
+      listEffectiveInputs.mockRejectedValueOnce(rawDbError);
+      await expectRedacted(() => createResolver().getEffectiveAgent('user', 'agent-1'));
     });
 
     it('redacts a raw error from beginOperation', async () => {
@@ -193,9 +261,14 @@ describe('PlatformAgentEffectiveResolver', () => {
   });
 
   it('returns only an Agent assigned to the requesting user', async () => {
-    listEffectiveInputs.mockResolvedValue([
-      row({ agentId: 'visible', agentKey: 'visible', assignmentId: 'global', priority: 1 }),
-    ]);
+    listEffectiveInputs.mockImplementation(async (_userId, filter) => {
+      if (filter?.platformAgentId === 'visible') {
+        return [
+          row({ agentId: 'visible', agentKey: 'visible', assignmentId: 'global', priority: 1 }),
+        ];
+      }
+      return [];
+    });
     await expect(createResolver().getEffectiveAgent('user', 'visible')).resolves.toMatchObject({
       platformAgentId: 'visible',
     });

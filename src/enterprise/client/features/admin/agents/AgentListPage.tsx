@@ -1,7 +1,7 @@
 'use client';
 
 import { Empty, Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { memo, useMemo, useState } from 'react';
@@ -11,11 +11,13 @@ import { useNavigate, useSearchParams } from 'react-router';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { deriveAdminAgentPermissions } from './controller';
+import { getAdminAgentErrorMessage } from './errorPresentation';
 import { openCreateAgentModal } from './openCreateAgentModal';
 import { openDeleteAgentModal } from './openDeleteAgentModal';
 import type { AdminAgentListItem } from './types';
@@ -66,6 +68,7 @@ const AgentListPage = memo(() => {
   );
   const list = useAdminAgentListPagination(input, agentPermissions.canRead);
   const refreshList = list.refresh;
+  const removeListItem = list.removeItem;
   const filtered = Boolean(input.query || input.status);
   const columns = useMemo<TableColumnsType<AdminAgentListItem>>(
     () => [
@@ -126,15 +129,29 @@ const AgentListPage = memo(() => {
                     onClick={(event) => {
                       // Row is clickable (navigates to detail) — keep the delete click local.
                       event.stopPropagation();
-                      openDeleteAgentModal({
-                        agentId: item.identity.id,
-                        authMethod: authMethod ?? undefined,
-                        displayName: item.displayName,
-                        // Bound infinite mutate — global predicate refresh misses useSWRInfinite pages.
-                        onDeleted: () => {
-                          void refreshList();
-                        },
-                      });
+                      // List rows lack draftToken; fetch authoritative identity CAS before confirm
+                      // so concurrent version/assignment edits cannot be wiped by a stale list row.
+                      void (async () => {
+                        try {
+                          const detail = await adminAgentsService.get({ id: item.identity.id });
+                          openDeleteAgentModal({
+                            agentId: detail.identity.id,
+                            authMethod: authMethod ?? undefined,
+                            displayName: item.displayName,
+                            expectedDraftToken: detail.draftToken,
+                            expectedRevision: detail.identity.revision,
+                            // Drop the committed row from bound infinite pages first so a failed
+                            // refresh cannot leave a still-actionable deleted assistant.
+                            onDeleted: async () => {
+                              await removeListItem(detail.identity.id);
+                            },
+                          });
+                        } catch (cause) {
+                          // Preflight GET failed — never open a delete modal on unknown CAS, and
+                          // never leave an unhandled rejection.
+                          toast.error(getAdminAgentErrorMessage(cause, t));
+                        }
+                      })();
                     }}
                   >
                     {t('agentCatalog.delete.action')}
@@ -145,7 +162,7 @@ const AgentListPage = memo(() => {
           ]
         : []),
     ],
-    [t, agentPermissions.canDelete, authMethod, refreshList],
+    [t, agentPermissions.canDelete, authMethod, removeListItem],
   );
   const patch = (key: 'q' | 'status', value?: string) => {
     const next = new URLSearchParams(searchParams);

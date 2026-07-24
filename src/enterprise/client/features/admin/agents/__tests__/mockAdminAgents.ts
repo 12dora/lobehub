@@ -315,13 +315,8 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       return adminPlatformAgentCreateOutputSchema.parse({ draftToken, identity });
     },
     delete: async (input) => {
-      const record = requireRecord(input.agentId);
-      if (
-        typeof input.expectedRevision === 'number' &&
-        record.identity.revision !== input.expectedRevision
-      ) {
-        throw new Error('PLATFORM_AGENT_REVISION_CONFLICT');
-      }
+      // Full identity CAS — same contract as the live admin delete procedure.
+      const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       if (record.identity.isDefault || record.identity.systemKey !== null) {
         throw new Error('PLATFORM_AGENT_DEFAULT_REPLACEMENT_REQUIRED');
       }
@@ -352,6 +347,9 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
     list: async (input) => {
       const query = input.query?.trim().toLocaleLowerCase();
       const items = [...records.values()].map(toListItem).filter((item) => {
+        if (input.isDefault !== undefined && item.identity.isDefault !== input.isDefault) {
+          return false;
+        }
         if (input.status && item.identity.status !== input.status) return false;
         if (!query) return true;
         return `${item.displayName} ${item.identity.agentKey}`.toLocaleLowerCase().includes(query);

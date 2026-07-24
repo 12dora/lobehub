@@ -60,8 +60,52 @@ const createSnapshot = (
   ],
 });
 
+const versionlessSnapshot = (id: string): AdminAgentDetailOutput => ({
+  assignments: [],
+  draftToken: 'z'.repeat(64),
+  identity: {
+    agentKey: id,
+    currentVersionId: null,
+    draftSequence: 0,
+    id,
+    isDefault: false,
+    migrationRequired: false,
+    revision: 1,
+    status: 'draft',
+    systemKey: null,
+  },
+  rollouts: [],
+  versions: [],
+});
+
 describe('useAgentEditor frozen recovery baseline', () => {
   beforeEach(() => localStorage.clear());
+
+  it('seeds a versionless first draft with the localized default system role key', async () => {
+    const { result } = renderHook(() => useAgentEditor(versionlessSnapshot('agent-new'), true));
+    await waitFor(() => expect(result.current.draft).not.toBeNull());
+    // Mock t() returns the key itself — runtime catalogs must resolve it to localized prose.
+    expect(result.current.draft?.config.systemRole).toBe('agentCatalog.editor.defaultSystemRole');
+    expect(result.current.draftBaseline?.agentId).toBe('agent-new');
+  });
+
+  it('clears previous editor state when the snapshot disappears during an identity transition', async () => {
+    const { result, rerender } = renderHook(
+      ({ snapshot }: { snapshot: AdminAgentDetailOutput | undefined }) =>
+        useAgentEditor(snapshot, true),
+      {
+        initialProps: {
+          snapshot: createSnapshot(1, 'a', 'Agent A') as AdminAgentDetailOutput | undefined,
+        },
+      },
+    );
+    await waitFor(() => expect(result.current.draft?.config.displayName).toBe('Agent A'));
+    expect(result.current.draftBaseline?.agentId).toBe('agent-1');
+
+    rerender({ snapshot: undefined });
+    await waitFor(() => expect(result.current.draft).toBeNull());
+    expect(result.current.draftBaseline).toBeNull();
+  });
 
   it('keeps dirty input and its origin CAS across repeated same-Agent refreshes', async () => {
     const initial = createSnapshot(3, 'b', 'Server original');

@@ -315,6 +315,12 @@ describe('PlatformAgentCatalogRepository', () => {
     expect(
       (await repository.listEffectiveInputs(USER_B)).map(({ targetPriority }) => targetPriority),
     ).toEqual([1]);
+    // Full-list path accepts a SQL LIMIT so catalog scale cannot force an unbounded scan.
+    expect(
+      (await repository.listEffectiveInputs(USER_A, { limit: 2 })).map(
+        ({ targetPriority }) => targetPriority,
+      ),
+    ).toEqual([3, 2]);
 
     await expect(
       repository.createAssignment({
@@ -899,6 +905,11 @@ describe('PlatformAgentCatalogRepository', () => {
     // The user's local agent is preserved — the materialization FK points the other way.
     expect(await serverDB.select().from(agents).where(eq(agents.id, 'm10-local-a'))).toHaveLength(
       1,
+    );
+    // post-delete materialization remains managed/tombstoned — reverse lookup + list exclusion.
+    expect(await repository.listMaterializedAgentIds(USER_A)).toEqual(new Set(['m10-local-a']));
+    expect(await repository.getPlatformAgentIdByMaterializedAgentId(USER_A, 'm10-local-a')).toBe(
+      agent.id,
     );
   });
 

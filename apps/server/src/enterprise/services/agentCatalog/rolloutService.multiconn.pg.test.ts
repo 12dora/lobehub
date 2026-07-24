@@ -222,7 +222,8 @@ run('Platform Agent rollout — true multi-connection PostgreSQL', () => {
     await service.retry('admin', {
       agentId: identity.id,
       expectedJobRevision: cancelled.revision,
-      expectedStatus: cancelled.status,
+      // Narrowed contract: retry only accepts terminal failure statuses.
+      expectedStatus: 'cancelled',
       jobId: cancelled.jobId,
       reason: 'retry real expired writer',
     });

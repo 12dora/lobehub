@@ -19,7 +19,8 @@ const mocks = vi.hoisted(() => ({
     rollback: vi.fn(),
     setDefaultInbox: vi.fn(),
   },
-  fetchAllAdminAgents: vi.fn(),
+  fetchPublishedAdminAgentReplacements: vi.fn(),
+  findDefaultAdminAgent: vi.fn(),
   toastError: vi.fn(),
 }));
 
@@ -28,9 +29,13 @@ vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () =>
   openReasonModal: mocks.openReasonModal,
 }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({ adminAgentsService: mocks.service }));
-vi.mock('./useAdminAgents', () => ({ fetchAllAdminAgents: mocks.fetchAllAdminAgents }));
+vi.mock('./useAdminAgents', () => ({
+  fetchPublishedAdminAgentReplacements: mocks.fetchPublishedAdminAgentReplacements,
+  findDefaultAdminAgent: mocks.findDefaultAdminAgent,
+}));
 vi.mock('@lobehub/ui', () => ({ Flexbox: () => null, Text: () => null }));
 vi.mock('@lobehub/ui/base-ui', () => ({
+  Input: () => null,
   Select: () => null,
   toast: { error: mocks.toastError, success: vi.fn() },
 }));
@@ -134,7 +139,8 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
   beforeEach(() => {
     for (const fn of Object.values(mocks.service)) fn.mockReset();
     mocks.openReasonModal.mockReset();
-    mocks.fetchAllAdminAgents.mockReset().mockResolvedValue([]);
+    mocks.findDefaultAdminAgent.mockReset().mockResolvedValue(undefined);
+    mocks.fetchPublishedAdminAgentReplacements.mockReset().mockResolvedValue([]);
     mocks.toastError.mockReset();
   });
 
@@ -376,7 +382,7 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
 
   it('surfaces a default-switch preflight failure without opening the confirmation modal', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    mocks.fetchAllAdminAgents.mockRejectedValue(new Error('offline'));
+    mocks.findDefaultAdminAgent.mockRejectedValue(new Error('offline'));
     const { result } = renderHook(() =>
       useAgentActions({
         authMethod: null,
@@ -397,9 +403,9 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     consoleError.mockRestore();
   });
 
-  it('surfaces a default-archive candidate load failure without opening the modal', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    mocks.fetchAllAdminAgents.mockRejectedValue(new Error('offline'));
+  it('opens archive without pre-draining replacement candidates (picker loads independently)', async () => {
+    // Replacement catalog is fetched inside ArchiveReplacementField, not as an archive preflight.
+    mocks.fetchPublishedAdminAgentReplacements.mockRejectedValue(new Error('offline'));
     const { result } = renderHook(() =>
       useAgentActions({
         authMethod: null,
@@ -415,8 +421,8 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
       await result.current.archive();
     });
 
-    expect(mocks.openReasonModal).not.toHaveBeenCalled();
-    expect(mocks.toastError).toHaveBeenCalledWith('agentCatalog.toast.actionFailed');
-    consoleError.mockRestore();
+    expect(mocks.openReasonModal).toHaveBeenCalledOnce();
+    // No eager catalog drain before the modal mounts.
+    expect(mocks.fetchPublishedAdminAgentReplacements).not.toHaveBeenCalled();
   });
 });

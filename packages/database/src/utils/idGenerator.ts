@@ -59,6 +59,7 @@ const prefixes = {
   platformSkillVersions: 'pskv',
   platformUserConnectorBindings: 'pucb',
   platformUserAgentMaterializations: 'puam',
+  platformUserAgentMaterializationTombstones: 'puat',
   sessionGroups: 'sg',
   sessions: 'ssn',
   threads: 'thd',

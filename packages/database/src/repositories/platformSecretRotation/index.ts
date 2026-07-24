@@ -1,10 +1,12 @@
-import { and, asc, eq, gt, isNotNull, isNull, ne, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, isNull, ne, or, type SQL, sql } from 'drizzle-orm';
 import type { AnyPgColumn, PgTable, SelectedFields } from 'drizzle-orm/pg-core';
 
 import {
   platformAiProviders,
   platformAiProviderSecrets,
   platformConnectorSecrets,
+  platformGlobalCredentialSecrets,
+  platformGlobalCredentialUploads,
   platformIdentityProviderSecrets,
   platformIdentityProviderTestAttempts,
 } from '../../schemas/platform';
@@ -528,6 +530,129 @@ const identityProviderTestPkceHandler = createColumnDomainHandler({
   table: platformIdentityProviderTestAttempts,
 });
 
+const GLOBAL_CREDENTIAL_SECRET_COLUMNS = {
+  ciphertext: platformGlobalCredentialSecrets.ciphertext,
+  fingerprint: platformGlobalCredentialSecrets.fingerprint,
+  id: platformGlobalCredentialSecrets.id,
+  // credentialId is integer — not projected as ownerId (string contract).
+  revision: platformGlobalCredentialSecrets.revision,
+  storedKeyId: platformGlobalCredentialSecrets.keyId,
+} as const satisfies DomainColumns;
+
+const GLOBAL_CREDENTIAL_UPLOAD_COLUMNS = {
+  ciphertext: platformGlobalCredentialUploads.ciphertext,
+  fingerprint: platformGlobalCredentialUploads.fingerprint,
+  id: platformGlobalCredentialUploads.id,
+  ownerId: platformGlobalCredentialUploads.createdBy,
+  storedKeyId: platformGlobalCredentialUploads.keyId,
+} as const satisfies DomainColumns;
+
+/**
+ * Active (non-revoked) platform global credential envelopes. Revoked history
+ * rows are inventory-excluded: they are never decrypted at runtime and are
+ * not required for historical-key retirement readiness.
+ */
+const globalCredentialSecretHandler: DomainRotationHandler = {
+  domain: 'globalCredentialSecret',
+
+  getById: async (db, id) => {
+    const [row] = await selectCandidates({
+      columns: GLOBAL_CREDENTIAL_SECRET_COLUMNS,
+      db,
+      table: platformGlobalCredentialSecrets,
+      where: and(
+        eq(GLOBAL_CREDENTIAL_SECRET_COLUMNS.id, id),
+        isNull(platformGlobalCredentialSecrets.revokedAt),
+      ),
+    });
+    return row ? toCandidate('globalCredentialSecret', row) : undefined;
+  },
+
+  listDomain: async (db, params) => {
+    const rows = await selectCandidates({
+      columns: GLOBAL_CREDENTIAL_SECRET_COLUMNS,
+      db,
+      limit: params.limit,
+      table: platformGlobalCredentialSecrets,
+      where: and(
+        isNull(platformGlobalCredentialSecrets.revokedAt),
+        ne(GLOBAL_CREDENTIAL_SECRET_COLUMNS.storedKeyId, params.targetKeyId),
+        params.afterId ? gt(GLOBAL_CREDENTIAL_SECRET_COLUMNS.id, params.afterId) : undefined,
+      ),
+    });
+    return rows.map((row) => toCandidate('globalCredentialSecret', row));
+  },
+
+  rotateExact: async ({ db }, { candidate, ciphertext, targetKeyId }) => {
+    if (candidate.revision === null) return NO_CURRENT;
+    const columns = GLOBAL_CREDENTIAL_SECRET_COLUMNS;
+    const updated = await casUpdated({
+      db,
+      idColumn: columns.id,
+      set: { ciphertext, keyId: targetKeyId },
+      table: platformGlobalCredentialSecrets,
+      where: and(
+        eq(columns.id, candidate.id),
+        eq(columns.ciphertext, candidate.ciphertext),
+        keyIdCondition(columns.storedKeyId, candidate.storedKeyId),
+        eq(columns.revision!, candidate.revision),
+        isNull(platformGlobalCredentialSecrets.revokedAt),
+      ),
+    });
+    return { currentSynchronized: false, updated };
+  },
+};
+
+/** Unexpired staged upload envelopes only — expired staging is not runtime material. */
+const globalCredentialUploadHandler: DomainRotationHandler = {
+  domain: 'globalCredentialUpload',
+
+  getById: async (db, id) => {
+    const [row] = await selectCandidates({
+      columns: GLOBAL_CREDENTIAL_UPLOAD_COLUMNS,
+      db,
+      table: platformGlobalCredentialUploads,
+      where: and(
+        eq(GLOBAL_CREDENTIAL_UPLOAD_COLUMNS.id, id),
+        gt(platformGlobalCredentialUploads.expiresAt, sql`clock_timestamp()`),
+      ),
+    });
+    return row ? toCandidate('globalCredentialUpload', row) : undefined;
+  },
+
+  listDomain: async (db, params) => {
+    const rows = await selectCandidates({
+      columns: GLOBAL_CREDENTIAL_UPLOAD_COLUMNS,
+      db,
+      limit: params.limit,
+      table: platformGlobalCredentialUploads,
+      where: and(
+        gt(platformGlobalCredentialUploads.expiresAt, sql`clock_timestamp()`),
+        ne(GLOBAL_CREDENTIAL_UPLOAD_COLUMNS.storedKeyId, params.targetKeyId),
+        params.afterId ? gt(GLOBAL_CREDENTIAL_UPLOAD_COLUMNS.id, params.afterId) : undefined,
+      ),
+    });
+    return rows.map((row) => toCandidate('globalCredentialUpload', row));
+  },
+
+  rotateExact: async ({ db }, { candidate, ciphertext, targetKeyId }) => {
+    const columns = GLOBAL_CREDENTIAL_UPLOAD_COLUMNS;
+    const updated = await casUpdated({
+      db,
+      idColumn: columns.id,
+      set: { ciphertext, keyId: targetKeyId },
+      table: platformGlobalCredentialUploads,
+      where: and(
+        eq(columns.id, candidate.id),
+        eq(columns.ciphertext, candidate.ciphertext),
+        keyIdCondition(columns.storedKeyId, candidate.storedKeyId),
+        gt(platformGlobalCredentialUploads.expiresAt, sql`clock_timestamp()`),
+      ),
+    });
+    return { currentSynchronized: false, updated };
+  },
+};
+
 /**
  * Exhaustive domain registry. Adding a domain forces a new entry here and
  * cannot leave getById/listDomain/rotateExact out of sync.
@@ -536,6 +661,8 @@ const DOMAIN_HANDLERS = {
   aiCurrent: aiCurrentHandler,
   aiImmutable: aiImmutableHandler,
   connector: connectorHandler,
+  globalCredentialSecret: globalCredentialSecretHandler,
+  globalCredentialUpload: globalCredentialUploadHandler,
   identityProvider: identityProviderHandler,
   identityProviderTestPkce: identityProviderTestPkceHandler,
 } as const satisfies Record<PlatformSecretRotationDomain, DomainRotationHandler>;

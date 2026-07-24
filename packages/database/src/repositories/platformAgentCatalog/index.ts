@@ -21,6 +21,7 @@ import {
   type PlatformUserAgentMaterializationItem,
   platformUserAgentMaterializations,
   type PlatformUserAgentMaterializationStatus,
+  platformUserAgentMaterializationTombstones,
 } from '../../schemas/platform';
 import { roles, userRoles } from '../../schemas/rbac';
 import { users } from '../../schemas/user';
@@ -203,6 +204,7 @@ export class PlatformAgentCatalogRepository {
 
   listIdentities = async (params: {
     cursor?: string;
+    isDefault?: boolean;
     limit?: number;
     query?: string;
     status?: PlatformAgentItem['status'];
@@ -215,6 +217,9 @@ export class PlatformAgentCatalogRepository {
         and(
           eq(platformAgents.migrationRequired, false),
           params.cursor ? gt(platformAgents.agentKey, params.cursor) : undefined,
+          params.isDefault === undefined
+            ? undefined
+            : eq(platformAgents.isDefault, params.isDefault),
           params.query ? ilike(platformAgents.agentKey, likeContains(params.query)) : undefined,
           params.status ? eq(platformAgents.status, params.status) : undefined,
         ),
@@ -386,18 +391,49 @@ export class PlatformAgentCatalogRepository {
    * Order matters because every child FK is `restrict` and version rows are immutable:
    * 1. detach `currentVersionId` (RESTRICT FK) and demote to `archived` so the published-pointer
    *    trigger + CHECK constraint stay satisfied while the pointer is nulled;
-   * 2. delete owner-scoped materializations (the user's local `agents` row is preserved — that FK
-   *    points the other way);
-   * 3. delete assignments (clears both the agent and pinned-version FKs);
-   * 4. flip the transaction-local escape hatch so the version-immutability trigger permits DELETE,
+   * 2. tombstone any local materializations (local `agents` rows are preserved for history, but
+   *    must remain excluded from ordinary lists and mutation guards after the mapping is gone);
+   * 3. delete live materialization mappings (they cannot outlive the platform Agent FKs);
+   * 4. delete assignments (clears both the agent and pinned-version FKs);
+   * 5. flip the transaction-local escape hatch so the version-immutability trigger permits DELETE,
    *    then delete the immutable version rows;
-   * 5. delete the identity row.
+   * 6. delete the identity row.
    */
   hardDeleteAgentCascade = async (agentId: string): Promise<void> => {
     await this.db
       .update(platformAgents)
       .set({ currentVersionId: null, publishedAt: null, status: 'archived', updatedAt: new Date() })
       .where(eq(platformAgents.id, agentId));
+
+    // Preserve provenance for surviving local clones before the live mapping is removed.
+    const materializations = await this.db
+      .select({
+        materializedAgentId: platformUserAgentMaterializations.materializedAgentId,
+        userId: platformUserAgentMaterializations.userId,
+      })
+      .from(platformUserAgentMaterializations)
+      .where(eq(platformUserAgentMaterializations.platformAgentId, agentId));
+    const tombstones = materializations
+      .filter(
+        (row): row is { materializedAgentId: string; userId: string } =>
+          typeof row.materializedAgentId === 'string' && row.materializedAgentId.length > 0,
+      )
+      .map((row) => ({
+        formerPlatformAgentId: agentId,
+        id: idGenerator('platformUserAgentMaterializationTombstones', 16),
+        materializedAgentId: row.materializedAgentId,
+        userId: row.userId,
+      }));
+    if (tombstones.length > 0) {
+      await this.db
+        .insert(platformUserAgentMaterializationTombstones)
+        .values(tombstones)
+        // A prior hard-delete of another identity should never leave two tombstones for one local id.
+        .onConflictDoNothing({
+          target: platformUserAgentMaterializationTombstones.materializedAgentId,
+        });
+    }
+
     await this.db
       .delete(platformUserAgentMaterializations)
       .where(eq(platformUserAgentMaterializations.platformAgentId, agentId));
@@ -900,13 +936,21 @@ export class PlatformAgentCatalogRepository {
     return row;
   };
 
-  listEffectiveInputs = async (userId: string): Promise<PlatformAgentEffectiveInput[]> => {
+  /**
+   * Assignment-scoped effective inputs for one user. Optional `platformAgentId` / `systemKey`
+   * filters keep single-agent entitlement paths from scanning the entire catalog.
+   * Full-list callers MUST pass `limit` so a large catalog cannot force unbounded memory.
+   */
+  listEffectiveInputs = async (
+    userId: string,
+    filter?: { limit?: number; platformAgentId?: string; systemKey?: string },
+  ): Promise<PlatformAgentEffectiveInput[]> => {
     const effectiveVersionId = sql<string>`CASE
       WHEN ${platformAgentAssignments.versionPolicy} = 'pinned'
         THEN ${platformAgentAssignments.pinnedVersionId}
       ELSE ${platformAgents.currentVersionId}
     END`;
-    const rows = await this.db
+    const query = this.db
       .select({
         agent: platformAgents,
         assignment: safeAssignmentColumns,
@@ -944,6 +988,8 @@ export class PlatformAgentCatalogRepository {
           eq(platformAgentAssignments.status, 'active'),
           eq(platformAgents.migrationRequired, false),
           eq(platformAgents.status, 'published'),
+          filter?.platformAgentId ? eq(platformAgents.id, filter.platformAgentId) : undefined,
+          filter?.systemKey ? eq(platformAgents.systemKey, filter.systemKey) : undefined,
           or(
             eq(platformAgentAssignments.targetType, 'global'),
             and(
@@ -955,6 +1001,14 @@ export class PlatformAgentCatalogRepository {
         ),
       )
       .orderBy(desc(targetPriority), platformAgents.agentKey, platformAgentAssignments.id);
+    // Targeted single-agent / system-key lookups stay unbounded (tiny). Full-list path requires a
+    // hard SQL ceiling so the repository never materializes an open-ended result set.
+    const rows =
+      filter?.limit !== undefined && filter.limit > 0
+        ? await query.limit(filter.limit)
+        : filter?.platformAgentId || filter?.systemKey
+          ? await query
+          : await query.limit(10_000);
     return rows as PlatformAgentEffectiveInput[];
   };
 
@@ -979,20 +1033,31 @@ export class PlatformAgentCatalogRepository {
    * Owner-scoped set of local Agent ids that are materializations of a platform Agent for the
    * given user. Strictly filtered by the trusted `userId`. Used by the unified list to
    * de-duplicate: a materialized local row is represented by its platform list item, never a
-   * second local entry. Only rows with a real local Agent (materializedAgentId set) are returned
-   * — pure visibility-only rows carry no local Agent.
+   * second local entry. Includes hard-delete tombstones so surviving local clones stay hidden
+   * after the live mapping is removed. Only rows with a real local Agent id are returned.
    */
   listMaterializedAgentIds = async (userId: string): Promise<Set<string>> => {
-    const rows = await this.db
-      .select({ materializedAgentId: platformUserAgentMaterializations.materializedAgentId })
-      .from(platformUserAgentMaterializations)
-      .where(
-        and(
-          eq(platformUserAgentMaterializations.userId, userId),
-          isNotNull(platformUserAgentMaterializations.materializedAgentId),
+    const [live, tombstoned] = await Promise.all([
+      this.db
+        .select({ materializedAgentId: platformUserAgentMaterializations.materializedAgentId })
+        .from(platformUserAgentMaterializations)
+        .where(
+          and(
+            eq(platformUserAgentMaterializations.userId, userId),
+            isNotNull(platformUserAgentMaterializations.materializedAgentId),
+          ),
         ),
-      );
-    return new Set(rows.map((row) => row.materializedAgentId as string));
+      this.db
+        .select({
+          materializedAgentId: platformUserAgentMaterializationTombstones.materializedAgentId,
+        })
+        .from(platformUserAgentMaterializationTombstones)
+        .where(eq(platformUserAgentMaterializationTombstones.userId, userId)),
+    ]);
+    return new Set([
+      ...live.map((row) => row.materializedAgentId as string),
+      ...tombstoned.map((row) => row.materializedAgentId),
+    ]);
   };
 
   /**
@@ -1001,6 +1066,8 @@ export class PlatformAgentCatalogRepository {
    * id belonging to another user (or an ordinary, non-materialized Agent) can never resolve to a
    * platform Agent. Used by the chat runtime to force a materialized local id back through
    * owner-scoped entitlement + the exact pinned snapshot instead of running the local row directly.
+   * Tombstoned (hard-deleted catalog) rows still resolve to their former platform id so mutation
+   * guards and runtime stay fail-closed rather than treating the clone as an ordinary assistant.
    */
   getPlatformAgentIdByMaterializedAgentId = async (
     userId: string,
@@ -1016,25 +1083,58 @@ export class PlatformAgentCatalogRepository {
         ),
       )
       .limit(1);
-    return row?.platformAgentId ?? null;
+    if (row?.platformAgentId) return row.platformAgentId;
+
+    const [tombstone] = await this.db
+      .select({
+        formerPlatformAgentId: platformUserAgentMaterializationTombstones.formerPlatformAgentId,
+      })
+      .from(platformUserAgentMaterializationTombstones)
+      .where(
+        and(
+          eq(platformUserAgentMaterializationTombstones.userId, userId),
+          eq(platformUserAgentMaterializationTombstones.materializedAgentId, materializedAgentId),
+        ),
+      )
+      .limit(1);
+    return tombstone?.formerPlatformAgentId ?? null;
   };
 
-  /** Owner-scoped batch reverse lookup used by mutation guards. */
+  /** Owner-scoped batch reverse lookup used by mutation guards (includes hard-delete tombstones). */
   getPlatformAgentIdsByMaterializedAgentIds = async (
     userId: string,
     materializedAgentIds: string[],
   ): Promise<Set<string>> => {
     if (materializedAgentIds.length === 0) return new Set();
-    const rows = await this.db
-      .select({ platformAgentId: platformUserAgentMaterializations.platformAgentId })
-      .from(platformUserAgentMaterializations)
-      .where(
-        and(
-          eq(platformUserAgentMaterializations.userId, userId),
-          inArray(platformUserAgentMaterializations.materializedAgentId, materializedAgentIds),
+    const [live, tombstoned] = await Promise.all([
+      this.db
+        .select({ platformAgentId: platformUserAgentMaterializations.platformAgentId })
+        .from(platformUserAgentMaterializations)
+        .where(
+          and(
+            eq(platformUserAgentMaterializations.userId, userId),
+            inArray(platformUserAgentMaterializations.materializedAgentId, materializedAgentIds),
+          ),
         ),
-      );
-    return new Set(rows.map(({ platformAgentId }) => platformAgentId));
+      this.db
+        .select({
+          formerPlatformAgentId: platformUserAgentMaterializationTombstones.formerPlatformAgentId,
+        })
+        .from(platformUserAgentMaterializationTombstones)
+        .where(
+          and(
+            eq(platformUserAgentMaterializationTombstones.userId, userId),
+            inArray(
+              platformUserAgentMaterializationTombstones.materializedAgentId,
+              materializedAgentIds,
+            ),
+          ),
+        ),
+    ]);
+    return new Set([
+      ...live.map(({ platformAgentId }) => platformAgentId),
+      ...tombstoned.map(({ formerPlatformAgentId }) => formerPlatformAgentId),
+    ]);
   };
 
   /**

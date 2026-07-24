@@ -8,11 +8,24 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { deriveAdminAgentPermissions } from './controller';
 import { RolloutPanel } from './RolloutPanel';
 import type { AdminAgentDetailOutput } from './types';
+import type { RefreshLock } from './useRefreshLock';
 
 const mocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   openModal: vi.fn(),
 }));
+
+const unlockedLock = (): RefreshLock => ({
+  abortWrite: vi.fn(),
+  beginWrite: vi.fn(() => true),
+  commitWrite: vi.fn(async () => undefined),
+  isLocked: () => false,
+  locked: false,
+  markCommitted: vi.fn(),
+  refreshFailed: false,
+  resolveWrite: vi.fn(),
+  retryRefresh: vi.fn(async () => undefined),
+});
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
@@ -91,6 +104,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled={false}
+        lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         refresh={vi.fn()}
         snapshot={runningSnapshot}
@@ -107,6 +121,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         refresh={vi.fn()}
         snapshot={runningSnapshot}
@@ -121,6 +136,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_PUBLISH])}
         refresh={vi.fn()}
         snapshot={{
@@ -146,6 +162,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         pollError={new Error('poll failed')}
         refresh={refresh}
@@ -162,6 +179,62 @@ describe('RolloutPanel capability gate', () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it('routes rollback through the shared identity lock and keeps writes locked on failed refresh', async () => {
+    const { adminAgentsService } = await import('@/enterprise/client/services/adminAgents');
+    const rollback = vi.spyOn(adminAgentsService, 'rollbackRollout').mockResolvedValue({} as never);
+    const beginWrite = vi.fn(() => true);
+    const markCommitted = vi.fn();
+    let lockedAfterRefresh = false;
+    const commitWrite = vi.fn(async () => {
+      // Simulate post-commit refresh failure: shared lock remains engaged for all writes.
+      lockedAfterRefresh = true;
+    });
+    const lock: RefreshLock = {
+      ...unlockedLock(),
+      beginWrite,
+      commitWrite,
+      isLocked: () => lockedAfterRefresh,
+      get locked() {
+        return lockedAfterRefresh;
+      },
+      markCommitted,
+    };
+    render(
+      <RolloutPanel
+        enabled
+        lock={lock}
+        refresh={vi.fn()}
+        permissions={deriveAdminAgentPermissions([
+          PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+          PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+        ])}
+        snapshot={{
+          ...runningSnapshot,
+          rollouts: [
+            {
+              ...runningSnapshot.rollouts[0]!,
+              previousVersionId: 'version-0',
+              status: 'completed',
+            },
+          ],
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByText('agentCatalog.rollout.rollback'));
+    const options = mocks.openModal.mock.calls[0]![0] as {
+      onConfirm: (reason: string) => Promise<void>;
+    };
+    await act(async () => {
+      await options.onConfirm('rollback');
+    });
+    expect(beginWrite).toHaveBeenCalledOnce();
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(markCommitted).toHaveBeenCalledOnce();
+    expect(commitWrite).toHaveBeenCalledOnce();
+    // Failed post-commit refresh leaves the shared lock engaged — further writes must gate.
+    expect(lock.isLocked()).toBe(true);
+  });
+
   it('disables duplicate controls during mutation and surfaces a refresh failure', async () => {
     let resolveCancel!: () => void;
     mocks.cancel.mockReturnValueOnce(new Promise<void>((resolve) => (resolveCancel = resolve)));
@@ -169,6 +242,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         refresh={refresh}
         snapshot={runningSnapshot}

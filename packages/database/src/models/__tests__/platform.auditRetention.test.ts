@@ -383,4 +383,48 @@ describe('PlatformAuditRetentionRepository export artifact purge outbox race', (
     // History retained
     expect(done[0]?.artifactChecksum).toBe('sha256:race');
   });
+
+  it('purge under hold lock defers when hold appears after claim (serialized with delete)', async () => {
+    const claimed = await repo.claimExportArtifactsRechecked({
+      cutoffAt: cutoff,
+      ids: [exportId],
+      now,
+      resolveHeldIds: async () => new Set(),
+    });
+    expect(claimed).toHaveLength(1);
+
+    await new PlatformAuditLegalHoldModel(serverDB).create({
+      createdBy: 'admin-hold',
+      reason: 'litigation before lock-held purge',
+      scopeId: 'user-held-export',
+      scopeType: 'user',
+    });
+
+    const deletedKeys: string[] = [];
+    const result = await repo.purgeExportArtifactObjectsUnderHoldLock({
+      deleteObject: async (key) => {
+        deletedKeys.push(key);
+      },
+      ids: [exportId],
+      resolveHeldIds: async (tx, rows) => {
+        const holds = await new PlatformAuditLegalHoldModel(tx).findActiveScopes([
+          { scopeId: 'user-held-export', scopeType: 'user' },
+        ]);
+        const held = new Set<string>();
+        if (holds.length > 0) {
+          for (const row of rows) held.add(row.id);
+        }
+        return held;
+      },
+    });
+
+    expect(result).toEqual({ deleted: 0, skippedHold: 1 });
+    expect(deletedKeys).toEqual([]);
+    const after = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(after[0]?.storageKey).toBe(storageKey);
+    expect(after[0]?.error?.code).toBe('ARTIFACT_PURGE_DEFERRED_HOLD');
+  });
 });

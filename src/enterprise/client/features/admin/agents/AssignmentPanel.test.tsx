@@ -114,8 +114,8 @@ describe('AssignmentPanel', () => {
       <AssignmentPanel
         authMethod={null}
         lock={lock}
-        mutate={vi.fn() as any}
         permissions={permissions}
+        refresh={vi.fn()}
         rolloutsEnabled={false}
         snapshot={snapshot}
       />,
@@ -132,8 +132,8 @@ describe('AssignmentPanel', () => {
         rolloutsEnabled
         authMethod={null}
         lock={lock}
-        mutate={vi.fn() as any}
         permissions={permissions}
+        refresh={vi.fn()}
         snapshot={snapshot}
       />,
     );
@@ -146,12 +146,81 @@ describe('AssignmentPanel', () => {
       <AssignmentPanel
         authMethod={null}
         lock={lock}
-        mutate={vi.fn() as any}
         permissions={permissions}
+        refresh={vi.fn()}
         rolloutsEnabled={false}
         snapshot={snapshot}
       />,
     );
     expect(screen.getByText('agentCatalog.recovery.refreshFailed')).toBeTruthy();
+  });
+
+  it('disables Start while the shared identity lock is active without entering commitWrite', async () => {
+    const { openReasonModal } =
+      await import('@/enterprise/client/features/admin/users/modals/openReasonModal');
+    editorMock.value.locked = true;
+    const locked = {
+      ...lock,
+      isLocked: () => true,
+      locked: true,
+      beginWrite: vi.fn(() => false),
+      commitWrite: vi.fn(async () => undefined),
+    };
+    render(
+      <AssignmentPanel
+        rolloutsEnabled
+        authMethod={null}
+        lock={locked}
+        permissions={permissions}
+        refresh={vi.fn()}
+        snapshot={snapshot}
+      />,
+    );
+    const start = screen.getByText('agentCatalog.rollout.start');
+    expect(start).toBeDisabled();
+    start.click();
+    expect(openReasonModal).not.toHaveBeenCalled();
+    expect(locked.beginWrite).not.toHaveBeenCalled();
+    expect(locked.commitWrite).not.toHaveBeenCalled();
+  });
+
+  it('Start refresh path never enters identity CAS beginWrite/commitWrite', async () => {
+    const { openReasonModal } =
+      await import('@/enterprise/client/features/admin/users/modals/openReasonModal');
+    const { adminAgentsService } = await import('@/enterprise/client/services/adminAgents');
+    const startRollout = vi
+      .spyOn(adminAgentsService, 'startRollout')
+      .mockResolvedValue({} as never);
+    const refresh = vi.fn().mockResolvedValue(snapshot);
+    const beginWrite = vi.fn(() => true);
+    const commitWrite = vi.fn(async () => undefined);
+    const writeLock = { ...lock, beginWrite, commitWrite, isLocked: () => false, locked: false };
+
+    render(
+      <AssignmentPanel
+        rolloutsEnabled
+        authMethod={null}
+        lock={writeLock}
+        permissions={permissions}
+        refresh={refresh}
+        snapshot={snapshot}
+      />,
+    );
+    screen.getByText('agentCatalog.rollout.start').click();
+    expect(openReasonModal).toHaveBeenCalledOnce();
+    const { onSubmit } = (openReasonModal as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      onSubmit: (input: unknown) => Promise<void>;
+    };
+    await onSubmit({
+      agentId: 'agent-1',
+      assignmentId: 'assignment-1',
+      expectedDraftToken: snapshot.draftToken,
+      expectedRevision: 1,
+      reason: 'start',
+    });
+    expect(startRollout).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(beginWrite).not.toHaveBeenCalled();
+    expect(commitWrite).not.toHaveBeenCalled();
   });
 });

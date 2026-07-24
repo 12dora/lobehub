@@ -36,20 +36,27 @@ const AgentDetailPage = memo(() => {
     adminAgentsService,
     rolloutsEnabled,
   );
-  const editor = useAgentEditor(data, agentPermissions.canUpdate);
+  // Never surface retained/stale detail for a different route identity.
+  const matchedData = data && id && data.identity.id === id ? data : undefined;
+  const editor = useAgentEditor(matchedData, agentPermissions.canUpdate);
+  // Withhold the view until the editor has hydrated for THIS route agent. Otherwise a B snapshot
+  // can paint one frame with A's still-mounted draftBaseline/draft (A→B navigation race).
+  const editorMatchesRoute = Boolean(id && editor.draftBaseline?.agentId === id);
+  const readyData = matchedData && editorMatchesRoute ? matchedData : undefined;
 
   if (isNotFoundError(error)) return <AdminNotFoundSurface />;
 
   return (
     <AsyncBoundary
-      data={data}
-      error={data ? undefined : error}
+      data={readyData}
+      // Do not suppress the current key's error with a previous agent's data.
+      error={readyData ? undefined : error}
       errorVariant="page"
-      isLoading={isLoading}
+      isLoading={isLoading || Boolean(matchedData && !editorMatchesRoute)}
       loading={<Loading debugId="AdminAgentDetail" />}
       onRetry={() => void mutate()}
     >
-      {data ? (
+      {readyData ? (
         <AgentDetailView
           authMethod={authMethod ?? null}
           editor={editor}
@@ -58,7 +65,7 @@ const AgentDetailPage = memo(() => {
           pollError={rolloutPollError}
           retryRolloutPoll={retryRolloutPoll}
           rolloutsEnabled={rolloutsEnabled}
-          snapshot={data}
+          snapshot={readyData}
         />
       ) : null}
     </AsyncBoundary>
