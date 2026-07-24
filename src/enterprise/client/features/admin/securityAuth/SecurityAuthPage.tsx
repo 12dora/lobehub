@@ -13,7 +13,7 @@ type SecurityAuthTab = 'general' | 'login';
 
 /**
  * "安全与认证 / Security & Authentication" — a merged nav surface with two tabs:
- * "登录与权限" (the identity-provider page) and "通用设置" (registration/login policy).
+ * "登录方式" (the identity-provider page) and "通用设置" (registration/login policy).
  * Each sub-page renders `embedded`, so it drops its own <h1> (the tab already names it).
  * The active tab rides in `?tab=` for deep links, mirroring UnifiedManagementPage.
  */
