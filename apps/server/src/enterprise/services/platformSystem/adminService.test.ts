@@ -1,14 +1,20 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { checksumPayload } from '@/database/models/platform';
 import {
   platformAuditLogs,
   platformIdentityProviderInstances,
+  platformIdentityProviderRestartRequests,
+  platformIdentityProviders,
   platformInstanceHeartbeats,
   platformInstanceRevisionStates,
   platformJobs,
+  platformResourceRevisions,
+  platformSettingsBundle,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import { isRedisEnabled } from '@/libs/redis/manager';
@@ -17,6 +23,15 @@ import {
   adminSystemGetStatusOutputSchema,
 } from '@/server/enterprise/contracts/adminSystem';
 
+import {
+  getIdentityProviderProcessInstance,
+  stopIdentityProviderHeartbeatForTest,
+} from '../identityProvider/instanceRegistry';
+import {
+  commitIdentityProviderStartupSnapshot,
+  resetIdentityProviderStartupArtifactForTest,
+} from '../identityProvider/startupArtifact';
+import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 import { PlatformSystemAdminService } from './adminService';
 import { PlatformSystemJobConflictError, PlatformSystemJobInvalidError } from './errors';
 
@@ -49,11 +64,22 @@ const rewrapInput = (revision: number) => ({
 
 afterEach(async () => {
   vi.unstubAllEnvs();
-  await db.delete(platformIdentityProviderInstances);
-  await db.delete(platformInstanceRevisionStates);
-  await db.delete(platformInstanceHeartbeats);
-  await db.delete(platformJobs);
-  await db.delete(platformAuditLogs);
+  resetIdentityProviderStartupArtifactForTest();
+  stopIdentityProviderHeartbeatForTest();
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+    await tx.delete(platformIdentityProviderRestartRequests);
+    await tx.delete(platformIdentityProviderInstances);
+    await tx.delete(platformIdentityProviders);
+    await tx.delete(platformResourceRevisions);
+    await tx.delete(platformInstanceRevisionStates);
+    await tx.delete(platformInstanceHeartbeats);
+    await tx.delete(platformJobs);
+    await tx.delete(platformSettingsBundle);
+    await tx.delete(platformAuditLogs);
+  });
+  // Audit logs are append-only (row triggers); TRUNCATE is the test cleanup path.
+  await db.execute(sql.raw('TRUNCATE TABLE platform_audit_logs CASCADE'));
 });
 
 describe('PlatformSystemAdminService instance revisions', () => {
@@ -124,6 +150,56 @@ describe('PlatformSystemAdminService instance revisions', () => {
     expect(collected.filter(({ fresh }) => !fresh)).toHaveLength(14);
     expect(collected.at(0)?.instanceId).toBe(identityFreshIds[0]);
     expect(collected.at(-1)?.instanceId).toBe(platformStaleIds.at(-1));
+  });
+
+  it('returnsOneConsistentInstanceSnapshotAcrossPublishRace', async () => {
+    const freshHeartbeat = new Date(Date.now() - 1_000);
+    const startedAt = new Date(Date.now() - 300_000);
+    const ids = Array.from(
+      { length: 3 },
+      (_, index) => `pinst_${index.toString(16).padStart(48, '0')}`,
+    );
+    await db.insert(platformInstanceHeartbeats).values(
+      ids.map((instanceId) => ({
+        instanceId,
+        lastHeartbeatAt: freshHeartbeat,
+        startedAt,
+      })),
+    );
+    await db.insert(platformSettingsBundle).values({
+      draft: {},
+      id: 'global',
+      revision: 1,
+      status: 'published',
+    });
+
+    const service = new PlatformSystemAdminService(db, {
+      env: { ENABLE_PLATFORM_SETTINGS_POLICY: '1' },
+    });
+    const first = await service.getInstanceRevisions({ limit: 1 });
+    expect(() => adminSystemGetInstanceRevisionsOutputSchema.parse(first)).not.toThrow();
+    expect(first.targetRevision).toMatch(/^[a-f0-9]{32}$/);
+    expect(first.domains.some((domain) => domain.domain === 'settings')).toBe(true);
+    const settingsDomain = first.domains.find((domain) => domain.domain === 'settings');
+    expect(settingsDomain?.targetToken).toEqual({ kind: 'revision', value: 1 });
+    expect(first.nextCursor).toBeTruthy();
+
+    // Publish a new settings revision between pages — cursor is bound to the old fingerprint.
+    await db
+      .update(platformSettingsBundle)
+      .set({ revision: 2 })
+      .where(eq(platformSettingsBundle.id, 'global'));
+
+    await expect(
+      service.getInstanceRevisions({ cursor: first.nextCursor!, limit: 1 }),
+    ).rejects.toBeInstanceOf(PlatformSystemJobInvalidError);
+
+    const restarted = await service.getInstanceRevisions({ limit: 1 });
+    expect(restarted.targetRevision).not.toBe(first.targetRevision);
+    expect(restarted.domains.find((domain) => domain.domain === 'settings')?.targetToken).toEqual({
+      kind: 'revision',
+      value: 2,
+    });
   });
 });
 
@@ -467,5 +543,166 @@ describe('PlatformSystemAdminService status', () => {
       errorCategory: 'configuration_incomplete',
       status: 'degraded',
     });
+  });
+
+  it('reportsEnvironmentShadowedPendingRestartFromCanonicalStatus', async () => {
+    const now = new Date();
+    const payload = {
+      autoProvision: true,
+      buttonLabel: 'Work account',
+      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      clientId: 'client-id',
+      displayName: 'Work',
+      domainAllowlist: [],
+      enabled: true,
+      groupRoleMapping: {},
+      icon: null,
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secretFingerprint: 'b'.repeat(64),
+      secretUpdatedAt: now.toISOString(),
+      type: 'generic_oidc' as const,
+      usePkce: true as const,
+    };
+    await db.insert(platformIdentityProviders).values({
+      activationRevision: 1,
+      buttonLabel: 'Work account',
+      displayName: 'Work',
+      enabled: true,
+      id: 'provider-work',
+      providerKey: 'work',
+      revision: 1,
+      status: 'pending_restart',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      id: 'revision-work-1',
+      payload,
+      publishedAt: now,
+      resourceId: 'provider-work',
+      resourceType: 'oidc',
+      revision: 1,
+      secretFingerprint: 'b'.repeat(64),
+      status: 'published',
+    });
+    const local = getIdentityProviderProcessInstance();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: null,
+      health: 'healthy',
+      identityRevision: null,
+      lastError: null,
+      loadedAt: now,
+      providerIds: ['work'],
+      source: 'environment',
+    });
+    await db.insert(platformIdentityProviderInstances).values({
+      activeIdentityRevision: null,
+      health: 'healthy',
+      hostnameHash: local.hostnameHash,
+      instanceId: local.instanceId,
+      lastHeartbeat: now,
+      loadedAt: now,
+      startedAt: local.startedAt,
+      startupGeneration: null,
+      startupSource: 'environment',
+    });
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        AUTH_SSO_PROVIDERS: 'work',
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      now: () => now,
+      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    // Canonical ledger reports pendingRestart even when environment shadows DB providers.
+    expect(status.oidc.pendingRestart).toBe(true);
+    expect(status.oidc.configured).toBe(true);
+  });
+
+  it('clearsPendingRestartAfterCanonicalReconciliation', async () => {
+    const now = new Date();
+    const payload = {
+      autoProvision: true,
+      buttonLabel: 'Work account',
+      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      clientId: 'client-id',
+      displayName: 'Work',
+      domainAllowlist: [],
+      enabled: true,
+      groupRoleMapping: {},
+      icon: null,
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secretFingerprint: 'b'.repeat(64),
+      secretUpdatedAt: now.toISOString(),
+      type: 'generic_oidc' as const,
+      usePkce: true as const,
+    };
+    await db.insert(platformIdentityProviders).values({
+      activationRevision: 1,
+      buttonLabel: 'Work account',
+      displayName: 'Work',
+      enabled: true,
+      id: 'provider-work',
+      providerKey: 'work',
+      revision: 1,
+      status: 'pending_restart',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      id: 'revision-work-1',
+      payload,
+      publishedAt: now,
+      resourceId: 'provider-work',
+      resourceType: 'oidc',
+      revision: 1,
+      secretFingerprint: 'b'.repeat(64),
+      status: 'published',
+    });
+    // identityRevision is the checksum of published selection (same as systemService tests).
+    const target = (await loadPublishedIdentityTarget(db)).identityRevision!;
+    const local = getIdentityProviderProcessInstance();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: 'generation',
+      health: 'healthy',
+      identityRevision: target,
+      lastError: null,
+      loadedAt: now,
+      providerIds: ['work'],
+      source: 'database',
+    });
+    await db.insert(platformIdentityProviderInstances).values({
+      activeIdentityRevision: target,
+      health: 'healthy',
+      hostnameHash: local.hostnameHash,
+      instanceId: local.instanceId,
+      lastHeartbeat: now,
+      loadedAt: now,
+      startedAt: local.startedAt,
+      startupGeneration: 'generation',
+      startupSource: 'database',
+    });
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      now: () => now,
+      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    // All fresh instances active → canonical reconciliation clears pending rows.
+    expect(status.oidc.pendingRestart).toBe(false);
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('active');
   });
 });

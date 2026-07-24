@@ -10,6 +10,9 @@ import {
   platformAiProviderSecrets,
   platformConnectors,
   platformConnectorSecrets,
+  platformGlobalCredentials,
+  platformGlobalCredentialSecrets,
+  platformGlobalCredentialUploads,
   platformIdentityProviders,
   platformIdentityProviderSecrets,
   platformIdentityProviderTestAttempts,
@@ -27,6 +30,8 @@ import {
   parsePlatformSecretRewrapInput,
   parsePlatformSecretRewrapResult,
   PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
+  PLATFORM_SECRET_REWRAP_JOB_TYPE,
+  platformSecretRewrapIdempotencyKey,
 } from './contracts';
 import { PlatformSecretRewrapCoordinator } from './coordinator';
 import { processNextPlatformSecretRewrapBatch } from './worker';
@@ -36,10 +41,14 @@ const oldKeyId = 'vault:test-old';
 const targetKeyId = 'vault:test-target';
 const requestId = '11111111-1111-4111-8111-111111111111';
 const fingerprint = 'a'.repeat(64);
+/** Expected rotated row count across all PLATFORM_SECRET_ROTATION_DOMAINS. */
+const ROTATION_DOMAIN_ROW_COUNT = 7;
 
 class MutableVaultProvider implements KeyProvider {
   activeKeyId = oldKeyId;
   unavailable = false;
+  /** Artificial delay (ms) applied to every getKek call for lease-renewal tests. */
+  delayMs = 0;
   readonly providerId = 'vault';
   readonly #keys = new Map([
     [oldKeyId, randomBytes(32)],
@@ -47,11 +56,27 @@ class MutableVaultProvider implements KeyProvider {
   ]);
 
   getKek = async (keyId?: string): Promise<KekMaterial> => {
+    if (this.delayMs > 0) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, this.delayMs);
+      });
+    }
     if (this.unavailable) throw secretNotReadable('provider unavailable');
     const resolvedKeyId = keyId ?? this.activeKeyId;
     const key = this.#keys.get(resolvedKeyId);
     if (!key) throw secretNotReadable('historical key unavailable', { reason: 'unknown-key-id' });
     return { key: new Uint8Array(key), keyId: resolvedKeyId };
+  };
+
+  /** Simulate historical-key retirement after a successful rewrap. */
+  retireKey = (keyId: string) => {
+    this.#keys.delete(keyId);
+  };
+
+  resetKeys = () => {
+    this.#keys.clear();
+    this.#keys.set(oldKeyId, randomBytes(32));
+    this.#keys.set(targetKeyId, randomBytes(32));
   };
 }
 
@@ -68,6 +93,9 @@ const cleanup = () =>
       ${platformIdentityProviders},
       ${platformConnectorSecrets},
       ${platformConnectors},
+      ${platformGlobalCredentialSecrets},
+      ${platformGlobalCredentialUploads},
+      ${platformGlobalCredentials},
       ${platformAiProviderSecrets},
       ${platformAiProviders}
     CASCADE
@@ -77,6 +105,8 @@ beforeEach(async () => {
   await cleanup();
   provider.activeKeyId = oldKeyId;
   provider.unavailable = false;
+  provider.delayMs = 0;
+  provider.resetKeys();
 });
 afterEach(async () => {
   vi.useRealTimers();
@@ -85,7 +115,7 @@ afterEach(async () => {
 
 const encrypt = (value: string) => secrets.encrypt(value);
 
-const seedFiveDomains = async () => {
+const seedAllDomains = async () => {
   const aiCiphertext = await encrypt('ai-secret');
   await db.insert(platformAiProviders).values({
     displayName: 'AI provider',
@@ -155,7 +185,41 @@ const seedFiveDomains = async () => {
     stateHash: 'c'.repeat(64),
     userId: 'user-a',
   });
+
+  const [credential] = await db
+    .insert(platformGlobalCredentials)
+    .values({
+      key: 'global-a',
+      name: 'Global A',
+      type: 'kv-env',
+    })
+    .returning();
+  await db.insert(platformGlobalCredentialSecrets).values({
+    ciphertext: await encrypt(JSON.stringify({ API_KEY: 'global-secret' })),
+    credentialId: credential!.id,
+    fingerprint,
+    id: 'global-secret-a',
+    keyId: oldKeyId,
+    ref: 'kms://platform-global-credentials/1/a',
+    revision: 1,
+  });
+  await db.insert(platformGlobalCredentialUploads).values({
+    ciphertext: await encrypt('upload-bytes'),
+    createdBy: 'admin-a',
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    fileHashId: 'd'.repeat(64),
+    fileName: 'secret.bin',
+    fileSize: 12,
+    fileType: 'application/octet-stream',
+    fingerprint,
+    id: 'global-upload-a',
+    keyId: oldKeyId,
+    ref: 'kms://platform-global-credentials/upload/a',
+  });
 };
+
+/** @deprecated alias — keep call sites compiling while migrating. */
+const seedFiveDomains = seedAllDomains;
 
 const enqueue = async () => {
   provider.activeKeyId = targetKeyId;
@@ -210,25 +274,42 @@ const expectAllTarget = async () => {
     .select()
     .from(platformIdentityProviderTestAttempts)
     .where(eq(platformIdentityProviderTestAttempts.id, 'identity-test-a'));
+  const [globalSecret] = await db
+    .select()
+    .from(platformGlobalCredentialSecrets)
+    .where(eq(platformGlobalCredentialSecrets.id, 'global-secret-a'));
+  const [globalUpload] = await db
+    .select()
+    .from(platformGlobalCredentialUploads)
+    .where(eq(platformGlobalCredentialUploads.id, 'global-upload-a'));
   expect([
     ai.secretKeyId,
     aiImmutable.keyId,
     connector.keyId,
     identity.keyId,
     pkce.pkceKeyId,
-  ]).toEqual(Array.from({ length: 5 }, () => targetKeyId));
+    globalSecret.keyId,
+    globalUpload.keyId,
+  ]).toEqual(Array.from({ length: ROTATION_DOMAIN_ROW_COUNT }, () => targetKeyId));
   expect([
     secrets.peekKeyId(ai.encryptedKeyVaults!),
     secrets.peekKeyId(aiImmutable.ciphertext),
     secrets.peekKeyId(connector.ciphertext),
     secrets.peekKeyId(identity.ciphertext),
     secrets.peekKeyId(pkce.pkceCiphertext),
-  ]).toEqual(Array.from({ length: 5 }, () => targetKeyId));
+    secrets.peekKeyId(globalSecret.ciphertext),
+    secrets.peekKeyId(globalUpload.ciphertext),
+  ]).toEqual(Array.from({ length: ROTATION_DOMAIN_ROW_COUNT }, () => targetKeyId));
+  // Post-rotation decryptability of global credential envelopes.
+  expect(JSON.parse(await secrets.decrypt(globalSecret.ciphertext))).toEqual({
+    API_KEY: 'global-secret',
+  });
+  expect(await secrets.decrypt(globalUpload.ciphertext)).toBe('upload-bytes');
 };
 
 describe('PlatformSecretRewrapCoordinator and worker', () => {
-  it('rotates five domains with real envelopes, AI dual synchronization, and cursor resume', async () => {
-    await seedFiveDomains();
+  it('rotates all domains with real envelopes, AI dual synchronization, and cursor resume', async () => {
+    await seedAllDomains();
     const job = await enqueue();
     const first = await processNextPlatformSecretRewrapBatch(db, secrets, 'worker-first', {
       batchSize: 2,
@@ -242,11 +323,11 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
     const completed = await getJob(job.jobId);
     expect(completed.status).toBe('succeeded');
     expect(parsePlatformSecretRewrapResult(completed.resultSummary)).toMatchObject({
-      examined: 5,
+      examined: ROTATION_DOMAIN_ROW_COUNT,
       failed: 0,
       historicalKeyRemovalReady: false,
       noOp: 0,
-      rotated: 5,
+      rotated: ROTATION_DOMAIN_ROW_COUNT,
     });
     await expectAllTarget();
 
@@ -260,8 +341,289 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
     expect(same.status).toBe('succeeded');
   });
 
+  it('rewrapsPlatformGlobalCredentialSecretsAndStagedUploads', async () => {
+    await seedAllDomains();
+    const beforeSecret = await secrets.decrypt(
+      (
+        await db
+          .select()
+          .from(platformGlobalCredentialSecrets)
+          .where(eq(platformGlobalCredentialSecrets.id, 'global-secret-a'))
+      )[0]!.ciphertext,
+    );
+    const beforeUpload = await secrets.decrypt(
+      (
+        await db
+          .select()
+          .from(platformGlobalCredentialUploads)
+          .where(eq(platformGlobalCredentialUploads.id, 'global-upload-a'))
+      )[0]!.ciphertext,
+    );
+    expect(JSON.parse(beforeSecret)).toEqual({ API_KEY: 'global-secret' });
+    expect(beforeUpload).toBe('upload-bytes');
+
+    const job = await enqueue();
+    await drain();
+    const completed = await getJob(job.jobId);
+    expect(completed.status).toBe('succeeded');
+    await expectAllTarget();
+
+    // Historical key retirement readiness: after rewrap, decrypt with only the target key.
+    provider.retireKey(oldKeyId);
+    const [globalSecret] = await db
+      .select()
+      .from(platformGlobalCredentialSecrets)
+      .where(eq(platformGlobalCredentialSecrets.id, 'global-secret-a'));
+    const [globalUpload] = await db
+      .select()
+      .from(platformGlobalCredentialUploads)
+      .where(eq(platformGlobalCredentialUploads.id, 'global-upload-a'));
+    expect(JSON.parse(await secrets.decrypt(globalSecret!.ciphertext))).toEqual({
+      API_KEY: 'global-secret',
+    });
+    expect(await secrets.decrypt(globalUpload!.ciphertext)).toBe('upload-bytes');
+  });
+
+  it('treatsRevokedGlobalCredentialBetweenScanAndCasAsNoOp', async () => {
+    await seedAllDomains();
+    const job = await enqueue();
+    let revoked = false;
+    await processNextPlatformSecretRewrapBatch(db, secrets, 'worker-revoke-race', {
+      lifecycle: {
+        beforeCandidateCas: async ({ candidate, db: tx }) => {
+          if (candidate.domain !== 'globalCredentialSecret' || revoked) return;
+          revoked = true;
+          await tx
+            .update(platformGlobalCredentialSecrets)
+            .set({ revokedAt: new Date() })
+            .where(eq(platformGlobalCredentialSecrets.id, candidate.id));
+        },
+      },
+    });
+    const completed = await getJob(job.jobId);
+    expect(completed.status).toBe('succeeded');
+    expect(parsePlatformSecretRewrapResult(completed.resultSummary)).toMatchObject({
+      categories: { concurrent_change: 0 },
+      failed: 0,
+      noOp: 1,
+      rotated: ROTATION_DOMAIN_ROW_COUNT - 1,
+    });
+    // Revoked row stays on the historical key — inventory-excluded, not a failure.
+    const [globalSecret] = await db
+      .select()
+      .from(platformGlobalCredentialSecrets)
+      .where(eq(platformGlobalCredentialSecrets.id, 'global-secret-a'));
+    expect(globalSecret!.keyId).toBe(oldKeyId);
+    expect(globalSecret!.revokedAt).not.toBeNull();
+  });
+
+  it('treatsExpiredGlobalCredentialUploadBetweenScanAndCasAsNoOp', async () => {
+    await seedAllDomains();
+    const job = await enqueue();
+    let expired = false;
+    await processNextPlatformSecretRewrapBatch(db, secrets, 'worker-expire-race', {
+      lifecycle: {
+        beforeCandidateCas: async ({ candidate, db: tx }) => {
+          if (candidate.domain !== 'globalCredentialUpload' || expired) return;
+          expired = true;
+          await tx
+            .update(platformGlobalCredentialUploads)
+            .set({ expiresAt: new Date(Date.now() - 1000) })
+            .where(eq(platformGlobalCredentialUploads.id, candidate.id));
+        },
+      },
+    });
+    const completed = await getJob(job.jobId);
+    expect(completed.status).toBe('succeeded');
+    expect(parsePlatformSecretRewrapResult(completed.resultSummary)).toMatchObject({
+      categories: { concurrent_change: 0 },
+      failed: 0,
+      noOp: 1,
+      rotated: ROTATION_DOMAIN_ROW_COUNT - 1,
+    });
+    const [globalUpload] = await db
+      .select()
+      .from(platformGlobalCredentialUploads)
+      .where(eq(platformGlobalCredentialUploads.id, 'global-upload-a'));
+    expect(globalUpload!.keyId).toBe(oldKeyId);
+  });
+
+  it('resolvesMissingFailureLedgerRowsAsNoOpOnRetry', async () => {
+    await seedAllDomains();
+    // Seed a parent job already in failed (retry) phase with a ledger pointing at a revoked secret.
+    provider.activeKeyId = targetKeyId;
+    const [parent] = await db
+      .insert(platformJobs)
+      .values({
+        cursor: null,
+        idempotencyKey: platformSecretRewrapIdempotencyKey(targetKeyId),
+        input: {
+          control: { phase: 'failed', revision: 1 },
+          reason: 'retry missing inventory',
+          requestId,
+          schemaVersion: 1,
+          targetKeyId,
+        },
+        requestedBy: 'internal-test',
+        resultSummary: {
+          categories: {
+            ciphertext_not_readable: 0,
+            concurrent_change: 1,
+            historical_key_unavailable: 0,
+            invalid_ciphertext: 0,
+          },
+          examined: 1,
+          externalArtifactGate: 'identity_lkg_instance_convergence_required',
+          failed: 1,
+          historicalKeyRemovalReady: false,
+          noOp: 0,
+          rotated: 0,
+          schemaVersion: 1,
+        },
+        status: 'pending',
+        type: PLATFORM_SECRET_REWRAP_JOB_TYPE,
+      })
+      .returning();
+    await db.insert(platformJobs).values({
+      idempotencyKey: `${parent!.id}:globalCredentialSecret:global-secret-a`,
+      input: {
+        category: 'concurrent_change',
+        domain: 'globalCredentialSecret',
+        parentJobId: parent!.id,
+        parentRevision: 1,
+        requestId,
+        rowId: 'global-secret-a',
+        schemaVersion: 1,
+        targetKeyId,
+      },
+      requestedBy: 'internal-test',
+      status: 'failed',
+      type: PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
+    });
+    await db
+      .update(platformGlobalCredentialSecrets)
+      .set({ revokedAt: new Date() })
+      .where(eq(platformGlobalCredentialSecrets.id, 'global-secret-a'));
+
+    await drain();
+    const completed = await getJob(parent!.id);
+    expect(completed.status).toBe('succeeded');
+    expect(parsePlatformSecretRewrapResult(completed.resultSummary)).toMatchObject({
+      categories: { concurrent_change: 0 },
+      failed: 0,
+      noOp: 1,
+    });
+    const ledgers = await db
+      .select()
+      .from(platformJobs)
+      .where(
+        and(
+          eq(platformJobs.type, PLATFORM_SECRET_REWRAP_FAILURE_TYPE),
+          eq(platformJobs.status, 'failed'),
+        ),
+      );
+    expect(ledgers).toHaveLength(0);
+  });
+
+  it('renewsLeaseDuringSlowVaultBatch', async () => {
+    await seedAllDomains();
+    // Each candidate performs multiple getKek calls; a per-call delay that would
+    // exceed a short lease without mid-batch renewals proves the renew path.
+    provider.delayMs = 50;
+    const job = await enqueue();
+    const result = await processNextPlatformSecretRewrapBatch(db, secrets, 'worker-slow', {
+      batchSize: 3,
+      leaseMs: 120,
+    });
+    expect(result).toMatchObject({ claimed: true, terminal: false });
+    const checkpoint = await getJob(job.jobId);
+    expect(checkpoint.status).toBe('pending');
+    expect(parsePlatformSecretRewrapResult(checkpoint.resultSummary).rotated).toBeGreaterThan(0);
+
+    // Drain remaining batches with a normal provider.
+    provider.delayMs = 0;
+    await drain(3);
+    const completed = await getJob(job.jobId);
+    expect(completed.status).toBe('succeeded');
+    expect(parsePlatformSecretRewrapResult(completed.resultSummary)).toMatchObject({
+      examined: ROTATION_DOMAIN_ROW_COUNT,
+      failed: 0,
+      rotated: ROTATION_DOMAIN_ROW_COUNT,
+    });
+  }, 60_000);
+
+  it('checkpointsWhenSingleProviderCallExceedsLease', async () => {
+    await seedAllDomains();
+    // One awaited getKek longer than leaseMs — checkpoint must still succeed
+    // (ownership under FOR UPDATE, no leaseUntil>now predicate).
+    provider.delayMs = 200;
+    const job = await enqueue();
+    const result = await processNextPlatformSecretRewrapBatch(db, secrets, 'worker-long-call', {
+      batchSize: 1,
+      leaseMs: 50,
+    });
+    expect(result).toMatchObject({ claimed: true, terminal: false });
+    const checkpoint = await getJob(job.jobId);
+    expect(checkpoint.status).toBe('pending');
+    expect(parsePlatformSecretRewrapResult(checkpoint.resultSummary).rotated).toBe(1);
+
+    provider.delayMs = 0;
+    await drain(1);
+    const completed = await getJob(job.jobId);
+    expect(completed.status).toBe('succeeded');
+  }, 60_000);
+
+  it('requeuesRewrapWhenSucceededJobPredatesDomainSetExpansion', async () => {
+    await seedAllDomains();
+    provider.activeKeyId = targetKeyId;
+    // Simulate a pre-fix succeeded job that used the unversioned idempotency key
+    // and therefore never scanned global credential domains.
+    await db.insert(platformJobs).values({
+      finishedAt: new Date(),
+      idempotencyKey: `rewrap:${targetKeyId}`,
+      input: {
+        control: { phase: 'scan', revision: 1 },
+        reason: 'legacy pre-domain-set rewrap',
+        requestId: '99999999-9999-4999-8999-999999999999',
+        schemaVersion: 1,
+        targetKeyId,
+      },
+      requestedBy: 'legacy',
+      resultSummary: {
+        categories: {
+          ciphertext_not_readable: 0,
+          concurrent_change: 0,
+          historical_key_unavailable: 0,
+          invalid_ciphertext: 0,
+        },
+        examined: 5,
+        externalArtifactGate: 'identity_lkg_instance_convergence_required',
+        failed: 0,
+        historicalKeyRemovalReady: false,
+        noOp: 0,
+        rotated: 5,
+        schemaVersion: 1,
+      },
+      status: 'succeeded',
+      type: PLATFORM_SECRET_REWRAP_JOB_TYPE,
+    });
+
+    const job = await enqueue();
+    expect(job.status).toBe('pending');
+    // New domain-set version must not reuse the legacy idempotency key.
+    expect(platformSecretRewrapIdempotencyKey(targetKeyId)).toMatch(/^rewrap:d2:/);
+    const [row] = await db.select().from(platformJobs).where(eq(platformJobs.id, job.jobId));
+    expect(row!.idempotencyKey).toBe(platformSecretRewrapIdempotencyKey(targetKeyId));
+    expect(row!.idempotencyKey).not.toBe(`rewrap:${targetKeyId}`);
+
+    await drain();
+    const completed = await getJob(job.jobId);
+    expect(completed.status).toBe('succeeded');
+    await expectAllTarget();
+  });
+
   it('isolates a malformed row, retries exactly its failed ledger, and preserves safe output', async () => {
-    await seedFiveDomains();
+    await seedAllDomains();
     await db
       .update(platformConnectorSecrets)
       .set({ ciphertext: 'malformed-envelope' })
@@ -272,9 +634,9 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
     expect(failed.status).toBe('failed');
     expect(parsePlatformSecretRewrapResult(failed.resultSummary)).toMatchObject({
       categories: { invalid_ciphertext: 1 },
-      examined: 5,
+      examined: ROTATION_DOMAIN_ROW_COUNT,
       failed: 1,
-      rotated: 4,
+      rotated: ROTATION_DOMAIN_ROW_COUNT - 1,
     });
     expect(JSON.stringify(failed.resultSummary)).not.toMatch(
       /"(?:rowId|ciphertext|fingerprint|provider|ref)"/i,
@@ -309,9 +671,9 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
     expect(retried.status).toBe('succeeded');
     expect(parsePlatformSecretRewrapResult(retried.resultSummary)).toMatchObject({
       categories: { invalid_ciphertext: 0 },
-      examined: 5,
+      examined: ROTATION_DOMAIN_ROW_COUNT,
       failed: 0,
-      rotated: 5,
+      rotated: ROTATION_DOMAIN_ROW_COUNT,
     });
   });
 
@@ -337,7 +699,7 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
     expect(parsePlatformSecretRewrapResult(completed.resultSummary)).toMatchObject({
       failed: 0,
       noOp: 1,
-      rotated: 4,
+      rotated: ROTATION_DOMAIN_ROW_COUNT - 1,
     });
   });
 

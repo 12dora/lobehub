@@ -41,6 +41,40 @@ class PlatformSecretRewrapLeaseLostError extends Error {
   }
 }
 
+/**
+ * Extend the job lease on the same transaction connection.
+ *
+ * Crypto (Vault) work can exceed DEFAULT_LEASE_MS while the batch transaction is
+ * still open. Mid-batch + post-provider renewals keep wall-clock leases fresh for
+ * observers; checkpoint itself only verifies ownership (not leaseUntil > now).
+ * The batch already holds `FOR UPDATE` on the job row, so reclaimers using
+ * `SKIP LOCKED` cannot steal it even if the wall-clock lease expired between
+ * heartbeats — therefore renew does **not** require `leaseUntil > now`.
+ */
+const renewLease = async (
+  tx: Transaction,
+  params: { jobId: string; leaseMs: number; revision: number; workerId: string },
+) => {
+  const [renewed] = await tx
+    .update(platformJobs)
+    .set({
+      heartbeatAt: sql`clock_timestamp()`,
+      leaseUntil: sql`clock_timestamp() + (${params.leaseMs} * interval '1 millisecond')`,
+      updatedAt: sql`clock_timestamp()`,
+    })
+    .where(
+      and(
+        eq(platformJobs.id, params.jobId),
+        eq(platformJobs.type, PLATFORM_SECRET_REWRAP_JOB_TYPE),
+        eq(platformJobs.status, 'running'),
+        eq(platformJobs.leaseOwner, params.workerId),
+        eq(platformSecretRewrapJobRevision, params.revision),
+      ),
+    )
+    .returning({ id: platformJobs.id });
+  if (!renewed) throw new PlatformSecretRewrapLeaseLostError();
+};
+
 export interface PlatformSecretRewrapWorkerLifecycle {
   /** Test/fault seam after the DB-clock claim and before the dedicated transaction. */
   afterClaim?: (job: PlatformJobItem) => Promise<void>;
@@ -225,12 +259,16 @@ const processCandidate = async (
   if (updated.updated) return { kind: 'rotated' };
 
   const current = await repository.getById(candidate.domain, candidate.id);
-  if (current) {
-    try {
-      if (isAlreadyTarget(secrets, current, targetKeyId)) return { kind: 'no_op' };
-    } catch {
-      // A concurrent malformed replacement is a CAS conflict, not this worker's crypto failure.
-    }
+  if (!current) {
+    // Row left the active/unexpired inventory between scan and CAS (revoked secret,
+    // expired upload, hard delete). Not a permanent concurrent_change deadlock —
+    // treat as resolved no-op so the job can finish and historical keys can retire.
+    return { kind: 'no_op' };
+  }
+  try {
+    if (isAlreadyTarget(secrets, current, targetKeyId)) return { kind: 'no_op' };
+  } catch {
+    // A concurrent malformed replacement is a CAS conflict, not this worker's crypto failure.
   }
   return { category: 'concurrent_change', kind: 'failed' };
 };
@@ -479,6 +517,14 @@ export const processNextPlatformSecretRewrapBatch = async (
           targetKeyId: input.targetKeyId,
         });
         for (const candidate of page.items) {
+          // Renew before crypto so a slow Vault path cannot expire the lease
+          // before the first row finishes.
+          await renewLease(tx, {
+            jobId: current.id,
+            leaseMs,
+            revision: input.control.revision,
+            workerId,
+          });
           const outcome = await processCandidate(
             tx,
             secrets,
@@ -508,10 +554,18 @@ export const processNextPlatformSecretRewrapBatch = async (
         });
         const repository = PlatformSecretRotationRepository.forTransaction(tx);
         for (const failure of page.items) {
+          await renewLease(tx, {
+            jobId: current.id,
+            leaseMs,
+            revision: input.control.revision,
+            workerId,
+          });
           const candidate = await repository.getById(failure.domain, failure.rowId);
+          // Missing inventory row on retry = already out of rotation scope (revoked /
+          // expired). Mark resolved instead of looping concurrent_change forever.
           const outcome = candidate
             ? await processCandidate(tx, secrets, candidate, input.targetKeyId, options.lifecycle)
-            : ({ category: 'concurrent_change', kind: 'failed' } as const);
+            : ({ kind: 'no_op' } as const);
           result = applyOutcome(result, outcome, failure.category);
           if (outcome.kind === 'failed') {
             await upsertFailureLedger(tx, {
@@ -533,16 +587,36 @@ export const processNextPlatformSecretRewrapBatch = async (
         terminal = page.nextCursor === null;
       }
 
+      // Final renew before slow commit-boundary work (Vault revalidation / hooks).
+      await renewLease(tx, {
+        jobId: current.id,
+        leaseMs,
+        revision: input.control.revision,
+        workerId,
+      });
       // Revalidate at the commit boundary. A Vault outage or active-key drift
       // after the first row must roll back data, ledger, cursor, and checkpoint.
       await assertActiveTarget(secrets, input.targetKeyId);
       await options.lifecycle?.beforeCheckpoint?.({ db: tx, job: current });
+      // Renew again after every potentially slow final operation. A single
+      // provider call longer than leaseMs must not make checkpoint fail and
+      // re-run the batch forever. Ownership is still verified below under FOR UPDATE.
+      await renewLease(tx, {
+        jobId: current.id,
+        leaseMs,
+        revision: input.control.revision,
+        workerId,
+      });
       const nextInput: PlatformSecretRewrapJobInput = {
         ...input,
         control: { ...input.control, revision: input.control.revision + 1 },
       };
       const completed = result.rotated + result.noOp;
       const total = result.rotated + result.noOp + result.failed;
+      // Checkpoint ownership: status/owner/revision under the same FOR UPDATE
+      // connection. Do **not** require leaseUntil > now — a provider call that
+      // outlasts leaseMs already passed while we held the row lock; reclaimers
+      // use SKIP LOCKED and cannot steal this connection's lock.
       const [checkpointed] = await tx
         .update(platformJobs)
         .set({
@@ -574,7 +648,6 @@ export const processNextPlatformSecretRewrapBatch = async (
             eq(platformJobs.status, 'running'),
             eq(platformJobs.leaseOwner, workerId),
             eq(platformSecretRewrapJobRevision, input.control.revision),
-            gt(platformJobs.leaseUntil, sql`clock_timestamp()`),
           ),
         )
         .returning({ id: platformJobs.id });

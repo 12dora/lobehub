@@ -63,11 +63,13 @@ const instance = (
 const page = (
   items: AdminSystemInstanceRevisions['items'],
   nextCursor: string | null,
+  targetRevision = 'a'.repeat(32),
 ): AdminSystemInstanceRevisions => ({
   domains: [],
   items,
   nextCursor,
   snapshotAt: new Date('2026-07-20T00:00:03.000Z'),
+  targetRevision,
 });
 
 const service: AdminSystemService = {
@@ -140,5 +142,60 @@ describe('useAdminSystemInstances', () => {
 
     expect(result.current.initialError).toBeInstanceOf(Error);
     expect(result.current.hasMore).toBe(false);
+  });
+
+  it('drops later pages when targetRevision drifts mid-pagination', () => {
+    const first = instance(`pinst_${'a'.repeat(48)}`);
+    const second = instance(`pinst_${'b'.repeat(48)}`);
+    mocks.infinite.data = [
+      page([first], 'next-page', 'a'.repeat(32)),
+      page([second], null, 'b'.repeat(32)),
+    ];
+    mocks.infinite.size = 2;
+
+    const { result } = renderHook(() => useAdminSystemInstances(true, service));
+
+    expect(result.current.data?.items.map(({ instanceId }) => instanceId)).toEqual([
+      first.instanceId,
+    ]);
+    expect(result.current.hasMore).toBe(false);
+    expect(result.current.loadMoreError).toBe(true);
+  });
+
+  it('restartsPaginationFromPageOneWhenSecondPageCursorIsRejected', async () => {
+    const first = instance(`pinst_${'a'.repeat(48)}`);
+    mocks.infinite.data = [page([first], 'stale-cursor', 'a'.repeat(32))];
+    // Server maps target-revision mismatch → PLATFORM_INVALID_INPUT (via tRPC).
+    mocks.infinite.error = Object.assign(new Error('PLATFORM_INVALID_INPUT'), {
+      data: { errorData: { code: 'PLATFORM_INVALID_INPUT' } },
+    });
+    mocks.infinite.size = 2;
+
+    const { result } = renderHook(() => useAdminSystemInstances(true, service));
+
+    expect(result.current.loadMoreError).toBe(true);
+    expect(result.current.data?.items.map(({ instanceId }) => instanceId)).toEqual([
+      first.instanceId,
+    ]);
+
+    result.current.retryLoadMore();
+    // Must not re-request the same size (stale cursor); restart from page one.
+    await vi.waitFor(() => {
+      expect(mocks.infinite.setSize).toHaveBeenCalledWith(1);
+      expect(mocks.infinite.mutate).toHaveBeenCalled();
+    });
+  });
+
+  it('retriesOrdinaryLoadMoreFailureByRepeatingTheRequestedPage', () => {
+    const first = instance(`pinst_${'a'.repeat(48)}`);
+    mocks.infinite.data = [page([first], 'next-page')];
+    mocks.infinite.error = new Error('network blip');
+    mocks.infinite.size = 2;
+
+    const { result } = renderHook(() => useAdminSystemInstances(true, service));
+    result.current.retryLoadMore();
+
+    expect(mocks.infinite.setSize).toHaveBeenCalledWith(2);
+    expect(mocks.infinite.mutate).not.toHaveBeenCalled();
   });
 });

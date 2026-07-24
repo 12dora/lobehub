@@ -32,7 +32,10 @@ const UnifiedManagementPage = memo(() => {
 
   const granted = useMemo(() => new Set(permissions), [permissions]);
   const canReadSettings = granted.has(PLATFORM_PERMISSIONS.SETTINGS_READ);
-  const canReadManaged = granted.has(PLATFORM_PERMISSIONS.POLICY_READ);
+  // Policy map OR connector governance (nested shared-OAuth control is independently authorized).
+  const canReadManaged =
+    granted.has(PLATFORM_PERMISSIONS.POLICY_READ) ||
+    granted.has(PLATFORM_PERMISSIONS.CONNECTOR_READ);
 
   const tabs = useMemo(() => {
     const items: { key: UnifiedTab; label: string }[] = [];

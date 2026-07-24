@@ -1,6 +1,7 @@
 'use client';
 
-import { Skeleton } from '@lobehub/ui';
+import { Alert, Skeleton } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -31,12 +32,41 @@ KpiTile.displayName = 'AdminOverviewKpiTile';
 
 const KpiRow = memo(() => {
   const { t } = useTranslation('admin');
-  const { data, isLoading } = useOverviewKpis();
-  const loading = isLoading || !data;
+  const { data, error, isLoading, mutate } = useOverviewKpis();
+  const loading = isLoading && !data;
   const scope = t('overview.scope.days', { days: OVERVIEW_WINDOW_DAYS });
+
+  if (error && !data) {
+    return (
+      <Alert
+        showIcon
+        description={t('overview.error.loadFailedDescription')}
+        message={t('overview.error.loadFailed')}
+        type="error"
+        action={
+          <Button size="small" onClick={() => void mutate()}>
+            {t('overview.error.retry')}
+          </Button>
+        }
+      />
+    );
+  }
 
   return (
     <div className={styles.stack}>
+      {error && data ? (
+        <Alert
+          showIcon
+          description={t('overview.error.refreshFailedDescription')}
+          message={t('overview.error.refreshFailed')}
+          type="warning"
+          action={
+            <Button size="small" onClick={() => void mutate()}>
+              {t('overview.error.retry')}
+            </Button>
+          }
+        />
+      ) : null}
       <div className={styles.kpiGrid}>
         <KpiTile label={t('overview.kpi.usersTotal')} loading={loading} value={data?.usersTotal} />
         <KpiTile

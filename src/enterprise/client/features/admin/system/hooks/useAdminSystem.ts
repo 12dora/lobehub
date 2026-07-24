@@ -14,6 +14,7 @@ import {
   didAdminSystemJobRefreshConfirm,
   hasActiveAdminSystemJobs,
   isAdminSystemConflictError,
+  isAdminSystemInvalidInputError,
   resetAdminSystemJobPages,
   shouldPollAdminSystemJobs,
 } from '@/enterprise/client/features/admin/system/controller';
@@ -27,8 +28,8 @@ import type {
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
-  ADMIN_SYSTEM_JOBS_KEY,
   buildAdminSystemInstancesKey,
+  buildAdminSystemJobsKey,
   buildAdminSystemJobsPollKey,
   buildAdminSystemStatusKey,
 } from '../swrKeys';
@@ -74,34 +75,60 @@ export const useAdminSystemInstances = (
   const pages = swr.data ?? [];
   const loadedPages = swr.data?.length ?? 0;
   const settled = swr.data !== undefined;
+  // Bind accumulated pages to the first page's targetRevision. A mid-pagination
+  // publish changes the fingerprint — drop later pages so rows are not mixed
+  // across independent convergence snapshots.
+  const anchorTargetRevision = pages[0]?.targetRevision;
+  const consistentPages =
+    anchorTargetRevision === undefined
+      ? pages
+      : pages.filter((page) => page.targetRevision === anchorTargetRevision);
+  const targetRevisionDrift = consistentPages.length < pages.length;
   const seen = new Set<string>();
-  const items = pages.flatMap((page) =>
+  const items = consistentPages.flatMap((page) =>
     page.items.filter((instance) => {
       if (seen.has(instance.instanceId)) return false;
       seen.add(instance.instanceId);
       return true;
     }),
   );
-  const data = pages[0] ? { ...pages[0], items } : undefined;
+  const data = consistentPages[0] ? { ...consistentPages[0], items } : undefined;
   const errorPhase = classifyAdminSystemJobsError({
     error: swr.error,
     loadedPages,
     requestedPages: swr.size,
     settled,
   });
-  const reachedEnd = loadedPages > 0 && pages.at(-1)?.nextCursor === null;
+  const reachedEnd =
+    !targetRevisionDrift && loadedPages > 0 && consistentPages.at(-1)?.nextCursor === null;
 
   return {
     backgroundError: errorPhase === 'background' ? swr.error : undefined,
     data,
-    hasMore: enabled && loadedPages > 0 && !reachedEnd,
+    hasMore: enabled && loadedPages > 0 && !reachedEnd && !targetRevisionDrift,
     initialError: errorPhase === 'initial' ? swr.error : undefined,
     isLoadingInitial: enabled && !settled && swr.isValidating,
     isLoadingMore: swr.isValidating && loadedPages > 0 && swr.size > loadedPages,
     loadMore: () => void swr.setSize((size) => size + 1),
-    loadMoreError: errorPhase === 'load_more' && !swr.isValidating,
+    loadMoreError:
+      (errorPhase === 'load_more' && !swr.isValidating) ||
+      (targetRevisionDrift && !swr.isValidating),
     refresh: () => swr.mutate(),
-    retryLoadMore: () => void swr.setSize(swr.size),
+    retryLoadMore: () => {
+      // Target-bound cursor rejected (or a successfully returned later page drifted):
+      // re-sending the same cursor loops forever. Restart from page one.
+      const cursorInvalidated =
+        targetRevisionDrift ||
+        (errorPhase === 'load_more' && isAdminSystemInvalidInputError(swr.error));
+      if (cursorInvalidated) {
+        void (async () => {
+          await swr.setSize(1);
+          await swr.mutate();
+        })();
+        return;
+      }
+      void swr.setSize(swr.size);
+    },
   };
 };
 
@@ -137,7 +164,7 @@ export const useAdminSystemJobs = (
       if (!enabled) return null;
       if (previous && previous.nextCursor === null) return null;
       const cursor = index === 0 ? undefined : (previous?.nextCursor ?? undefined);
-      return [ADMIN_SYSTEM_JOBS_KEY, { cursor, limit }] as const;
+      return buildAdminSystemJobsKey({ cursor, limit }, enabled);
     },
     ([, input]: readonly [string, { cursor?: string; limit: number }]) => service.getJobs(input),
     { revalidateFirstPage: false, revalidateOnFocus: false },

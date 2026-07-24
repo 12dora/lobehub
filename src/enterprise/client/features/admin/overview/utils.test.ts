@@ -1,48 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import type { UsageLog } from '@/types/usage/usageRecord';
-
-import {
-  currentMonthKey,
-  isEmptyRank,
-  isEmptyTokenTrend,
-  overviewWindowStartDate,
-  toDailyTokenTrend,
-} from './utils';
+import { currentMonthKey, isEmptyRank, isEmptyTokenTrend, overviewWindowStartDate } from './utils';
 
 describe('overviewWindowStartDate', () => {
-  it('returns YYYY-MM-DD for N days before the given now', () => {
+  it('returnsExactlyThirtyCalendarDaysIncludingToday', () => {
     const now = new Date('2026-07-22T15:30:00.000Z');
-    expect(overviewWindowStartDate(30, now)).toBe('2026-06-22');
-    expect(overviewWindowStartDate(7, now)).toBe('2026-07-15');
+    // Inclusive window: 2026-06-23 … 2026-07-22 = 30 calendar days.
+    expect(overviewWindowStartDate(30, now)).toBe('2026-06-23');
+    // Inclusive 7-day window: 2026-07-16 … 2026-07-22.
+    expect(overviewWindowStartDate(7, now)).toBe('2026-07-16');
   });
 });
 
 describe('currentMonthKey', () => {
   it('formats year-month', () => {
     expect(currentMonthKey(new Date('2026-07-22T00:00:00.000Z'))).toBe('2026-07');
-  });
-});
-
-describe('toDailyTokenTrend', () => {
-  it('maps logs to day/token points', () => {
-    const logs = [
-      { day: '2026-07-01', totalTokens: 1200 },
-      { day: '2026-07-02', totalTokens: 0 },
-      { day: '2026-07-03', totalTokens: undefined },
-    ] as unknown as UsageLog[];
-
-    expect(toDailyTokenTrend(logs)).toEqual([
-      { day: '2026-07-01', tokens: 1200 },
-      { day: '2026-07-02', tokens: 0 },
-      { day: '2026-07-03', tokens: 0 },
-    ]);
-  });
-
-  it('returns empty array for missing input', () => {
-    expect(toDailyTokenTrend(undefined)).toEqual([]);
-    expect(toDailyTokenTrend(null)).toEqual([]);
-    expect(toDailyTokenTrend([])).toEqual([]);
   });
 });
 

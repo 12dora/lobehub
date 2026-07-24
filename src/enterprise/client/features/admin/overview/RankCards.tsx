@@ -3,7 +3,8 @@
 import type { ModelRankItem } from '@lobechat/types';
 import { BarList } from '@lobehub/charts';
 import { ModelIcon } from '@lobehub/icons';
-import { Avatar } from '@lobehub/ui';
+import { Alert, Avatar } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -40,10 +41,14 @@ const RankCards = memo(() => {
   const models = useOverviewModelRank();
   const agents = useOverviewAgentRank();
 
-  const modelsLoading = models.isLoading || !models.data;
-  const agentsLoading = agents.isLoading || !agents.data;
-  const modelsEmpty = !modelsLoading && isEmptyRank(models.data);
-  const agentsEmpty = !agentsLoading && isEmptyRank(agents.data);
+  const modelsLoading = models.isLoading && !models.data;
+  const agentsLoading = agents.isLoading && !agents.data;
+  const modelsFirstError = Boolean(models.error && !models.data);
+  const agentsFirstError = Boolean(agents.error && !agents.data);
+  const modelsStaleError = Boolean(models.error && models.data);
+  const agentsStaleError = Boolean(agents.error && agents.data);
+  const modelsEmpty = !modelsLoading && !modelsFirstError && isEmptyRank(models.data);
+  const agentsEmpty = !agentsLoading && !agentsFirstError && isEmptyRank(agents.data);
   const fallbackAgent = t('overview.rank.agentFallback');
 
   const noData = {
@@ -51,43 +56,85 @@ const RankCards = memo(() => {
     title: t('overview.rank.emptyTitle'),
   };
 
+  const firstLoadError = (retry: () => void) => (
+    <Alert
+      showIcon
+      description={t('overview.error.loadFailedDescription')}
+      message={t('overview.error.loadFailed')}
+      type="error"
+      action={
+        <Button size="small" onClick={retry}>
+          {t('overview.error.retry')}
+        </Button>
+      }
+    />
+  );
+
+  const refreshWarning = (retry: () => void) => (
+    <Alert
+      showIcon
+      description={t('overview.error.refreshFailedDescription')}
+      message={t('overview.error.refreshFailed')}
+      type="warning"
+      action={
+        <Button size="small" onClick={retry}>
+          {t('overview.error.retry')}
+        </Button>
+      }
+    />
+  );
+
   return (
     <div className={styles.rankGrid}>
       <section className={styles.card}>
         <h2 className={styles.sectionTitle}>{t('overview.rank.modelsTitle')}</h2>
-        {modelsEmpty ? (
-          <div className={styles.empty}>
-            <p className={styles.emptyTitle}>{noData.title}</p>
-            <p className={styles.emptyDesc}>{noData.desc}</p>
-          </div>
+        {modelsFirstError ? (
+          firstLoadError(() => void models.mutate())
         ) : (
-          <BarList
-            data={(models.data ?? []).map(mapModel)}
-            height={220}
-            leftLabel={t('overview.rank.modelsLeft')}
-            loading={modelsLoading}
-            noDataText={noData}
-            rightLabel={t('overview.rank.modelsRight')}
-          />
+          <>
+            {modelsStaleError ? refreshWarning(() => void models.mutate()) : null}
+            {modelsEmpty ? (
+              <div className={styles.empty}>
+                <p className={styles.emptyTitle}>{noData.title}</p>
+                <p className={styles.emptyDesc}>{noData.desc}</p>
+              </div>
+            ) : (
+              <BarList
+                data={(models.data ?? []).map(mapModel)}
+                height={220}
+                leftLabel={t('overview.rank.modelsLeft')}
+                loading={modelsLoading}
+                noDataText={noData}
+                rightLabel={t('overview.rank.modelsRight')}
+              />
+            )}
+          </>
         )}
       </section>
 
       <section className={styles.card}>
         <h2 className={styles.sectionTitle}>{t('overview.rank.agentsTitle')}</h2>
-        {agentsEmpty ? (
-          <div className={styles.empty}>
-            <p className={styles.emptyTitle}>{noData.title}</p>
-            <p className={styles.emptyDesc}>{noData.desc}</p>
-          </div>
+        {agentsFirstError ? (
+          firstLoadError(() => void agents.mutate())
         ) : (
-          <BarList
-            data={(agents.data ?? []).map((item) => mapAgent(item, fallbackAgent))}
-            height={220}
-            leftLabel={t('overview.rank.agentsLeft')}
-            loading={agentsLoading}
-            noDataText={noData}
-            rightLabel={t('overview.rank.agentsRight')}
-          />
+          <>
+            {agentsStaleError ? refreshWarning(() => void agents.mutate()) : null}
+            {agentsEmpty ? (
+              <div className={styles.empty}>
+                <p className={styles.emptyTitle}>{noData.title}</p>
+                <p className={styles.emptyDesc}>{noData.desc}</p>
+              </div>
+            ) : (
+              <BarList
+                data={(agents.data ?? []).map((item) => mapAgent(item, fallbackAgent))}
+                height={220}
+                leftLabel={t('overview.rank.agentsLeft')}
+                loading={agentsLoading}
+                noDataText={noData}
+                rightLabel={t('overview.rank.agentsRight')}
+              />
+            )}
+          </>
         )}
       </section>
     </div>

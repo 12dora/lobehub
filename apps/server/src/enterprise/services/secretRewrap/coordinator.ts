@@ -10,6 +10,7 @@ import {
   parsePlatformSecretRewrapResult,
   PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
   PLATFORM_SECRET_REWRAP_JOB_TYPE,
+  platformSecretRewrapIdempotencyKey,
   platformSecretRewrapJobInputSchema,
 } from './contracts';
 import {
@@ -91,7 +92,9 @@ export class PlatformSecretRewrapCoordinator {
       return projectJob(active);
     }
 
-    const idempotencyKey = `rewrap:${input.targetKeyId}`;
+    // Domain-set version in the key forces a new job after rotation domain expansion
+    // so a pre-fix succeeded job for the same targetKeyId is not reused blindly.
+    const idempotencyKey = platformSecretRewrapIdempotencyKey(input.targetKeyId);
     let inserted: typeof platformJobs.$inferSelect | undefined;
     try {
       [inserted] = await db

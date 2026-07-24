@@ -35,8 +35,12 @@ import {
   PLATFORM_AGENT_ROLLOUT_JOB_TYPE,
 } from '../agentCatalog/rolloutService';
 import { getIdentityProviderStartupArtifactHealth } from '../identityProvider/startupArtifact';
+import { IdentityProviderSystemService } from '../identityProvider/systemService';
 import { PlatformAuditService } from '../platformAudit';
-import { PlatformInstanceStatusService } from '../platformInstance/statusService';
+import {
+  PlatformInstanceStatusService,
+  PlatformInstanceTargetRevisionMismatchError,
+} from '../platformInstance/statusService';
 import {
   parsePlatformSecretRewrapInput,
   PLATFORM_SECRET_REWRAP_JOB_TYPE,
@@ -454,31 +458,48 @@ export class PlatformSystemAdminService {
     const cursor = decodeCursor(input?.cursor);
     const cursorHeartbeat =
       typeof cursor?.lastHeartbeatAt === 'string' ? new Date(cursor.lastHeartbeatAt) : null;
+    const cursorTargetRevision =
+      typeof cursor?.targetRevision === 'string' ? cursor.targetRevision : null;
     if (
       input?.cursor &&
       (!cursor ||
         typeof cursor.id !== 'string' ||
         !/^(?:oidci_|pinst_)[a-f0-9]{48}$/.test(cursor.id) ||
         !cursorHeartbeat ||
-        Number.isNaN(cursorHeartbeat.getTime()))
+        Number.isNaN(cursorHeartbeat.getTime()) ||
+        !cursorTargetRevision ||
+        !/^[a-f0-9]{32}$/.test(cursorTargetRevision))
     ) {
       throw new PlatformSystemJobInvalidError();
     }
     const statusService = new PlatformInstanceStatusService(this.db, {
       env: this.env,
     });
-    const [snapshot, page] = await Promise.all([
-      statusService.getStatus(),
-      statusService.getRevisionInventoryPage({
+    // First page: inventory rows + domain summary share one target resolution
+    // and one transaction. Later pages bind the cursor to that targetRevision so
+    // a mid-pagination publish cannot mix rows evaluated against different targets.
+    let page: Awaited<ReturnType<typeof statusService.getRevisionInventoryPage>>;
+    try {
+      page = await statusService.getRevisionInventoryPage({
         cursor:
-          cursorHeartbeat && typeof cursor?.id === 'string'
-            ? { instanceId: cursor.id, lastHeartbeatAt: cursorHeartbeat }
+          cursorHeartbeat && typeof cursor?.id === 'string' && cursorTargetRevision
+            ? {
+                instanceId: cursor.id,
+                lastHeartbeatAt: cursorHeartbeat,
+                targetRevision: cursorTargetRevision,
+              }
             : undefined,
+        includeDomains: !cursor,
         limit,
-      }),
-    ]);
+      });
+    } catch (error) {
+      if (error instanceof PlatformInstanceTargetRevisionMismatchError) {
+        throw new PlatformSystemJobInvalidError();
+      }
+      throw error;
+    }
     return {
-      domains: snapshot.domains,
+      domains: page.domains,
       items: page.items.map(({ fresh, item }) => ({
         domains: item.domains.map(({ errorCategory, ...domain }) => ({
           ...domain,
@@ -499,9 +520,11 @@ export class PlatformSystemAdminService {
         ? encodeCursor({
             id: page.nextCursor.instanceId,
             lastHeartbeatAt: page.nextCursor.lastHeartbeatAt.toISOString(),
+            targetRevision: page.nextCursor.targetRevision,
           })
         : null,
       snapshotAt: page.snapshotAt,
+      targetRevision: page.targetRevision,
     };
   };
 
@@ -552,26 +575,41 @@ export class PlatformSystemAdminService {
 
   getStatus = async () => {
     const flags = parseEnterpriseFeatureFlags(this.env);
-    const [databaseResult, instanceResult, jobsResult, redisResult, publishFailureResult] =
-      await Promise.allSettled([
-        this.db.execute(sql`select 1`),
-        new PlatformInstanceStatusService(this.db, { env: this.env }).getStatus(),
-        this.jobSummary(),
-        this.redisProbe(),
-        this.publishFailureSummary(),
-      ]);
+    const [
+      databaseResult,
+      instanceResult,
+      jobsResult,
+      redisResult,
+      publishFailureResult,
+      authSnapshotResult,
+    ] = await Promise.allSettled([
+      this.db.execute(sql`select 1`),
+      new PlatformInstanceStatusService(this.db, { env: this.env }).getStatus(),
+      this.jobSummary(),
+      this.redisProbe(),
+      this.publishFailureSummary(),
+      // Canonical pending-restart ledger (includes environment-shadowed rows and
+      // reconciliation). Do not re-derive pendingRestart from artifact ≠ target alone.
+      flags.ENABLE_DATABASE_OIDC
+        ? new IdentityProviderSystemService(
+            this.db,
+            undefined,
+            this.now,
+            undefined,
+            this.env,
+          ).getAuthSnapshotStatus()
+        : Promise.resolve(null),
+    ]);
     const instance = instanceResult.status === 'fulfilled' ? instanceResult.value : null;
     const rawGitSha = this.env.VERCEL_GIT_COMMIT_SHA ?? this.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA;
     const gitSha = rawGitSha && /^[a-f0-9]{7,40}$/.test(rawGitSha) ? rawGitSha : null;
     const artifact = flags.ENABLE_DATABASE_OIDC ? getIdentityProviderStartupArtifactHealth() : null;
-    const identityDomain = instance?.domains.find(({ domain }) => domain === 'identity');
-    const targetRevision =
-      identityDomain?.targetToken?.kind === 'immutable_id'
-        ? identityDomain.targetToken.value
-        : null;
-    const pendingRestart = Boolean(
-      artifact && targetRevision && targetRevision !== artifact.identityRevision,
-    );
+    const authSnapshot =
+      authSnapshotResult.status === 'fulfilled' ? authSnapshotResult.value : null;
+    // Fail closed: if the canonical ledger is unavailable, do not claim "active".
+    const pendingRestart = authSnapshot
+      ? authSnapshot.pendingRestart
+      : Boolean(flags.ENABLE_DATABASE_OIDC && artifact);
     return {
       build: { gitSha, version: CURRENT_VERSION },
       dependencies: {
@@ -626,12 +664,14 @@ export class PlatformSystemAdminService {
               configured: true,
               pendingRestart,
               source: artifact.source,
-              status: artifact.health,
+              // Prefer artifact health when the ledger is available; mark unavailable
+              // when the canonical restart status could not be loaded.
+              status: authSnapshot ? artifact.health : ('unavailable' as const),
             } as const)
           : ({
               activeRevision: null,
               configured: true,
-              pendingRestart: false,
+              pendingRestart: true,
               source: 'unknown',
               status: 'unavailable',
             } as const),
