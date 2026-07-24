@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -12,7 +13,7 @@ import {
   userSettingOverrideRevisions,
   userSettingOverrides,
 } from '@/database/schemas/platform';
-import { users, userSettings } from '@/database/schemas/user';
+import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
@@ -34,15 +35,22 @@ vi.mock('../../featureFlags', async (importOriginal) => {
 
 const serverDB: LobeChatDatabase = await getTestDB();
 
+/** TRUNCATE bypasses append-only audit/revision immutability triggers (migration 0145). */
 const clearState = async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(userSettingOverrides);
-  await serverDB.delete(userSettingOverrideRevisions);
-  await serverDB.delete(platformSettingPolicies);
-  await serverDB.delete(platformSettingsBundle);
-  await serverDB.delete(userSettings);
-  await serverDB.delete(users);
+  await serverDB.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_audit_logs,
+        platform_resource_revisions,
+        user_setting_overrides,
+        user_setting_override_revisions,
+        platform_setting_policies,
+        platform_settings_bundle,
+        user_settings,
+        users
+      CASCADE
+    `),
+  );
 };
 
 beforeEach(async () => {
@@ -150,7 +158,7 @@ describe('M05 transaction fault injection', () => {
     expect(policies).toEqual([]);
     expect(audits.filter((row) => row.result === 'success')).toHaveLength(1);
     expect(audits.filter((row) => row.action === 'admin.settings.publish')).toMatchObject([
-      { result: 'failure' },
+      { afterDiff: { error: 'internal' }, result: 'failure' },
     ]);
     expect(invalidation.events).toEqual([]);
   });

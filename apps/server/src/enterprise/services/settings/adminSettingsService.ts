@@ -20,6 +20,7 @@ import {
   type SettingsValidationIssue,
 } from '@/types/platform/settings';
 
+import { classifyEnterpriseError } from '../../observability';
 import {
   type CreatePlatformAuditLogParams,
   type PlatformAuditLogItem,
@@ -745,6 +746,12 @@ export class AdminSettingsService {
     if (error instanceof PlatformRevisionConflictError) return 'revision_conflict';
     if (error instanceof SettingsDraftValidationError) return 'validation';
     if (error instanceof SettingsDirtyDraftError) return 'dirty_draft';
+    // DB / network unavailability and timeouts get a dedicated category so publish-health
+    // aggregation can separate availability incidents from unexpected internal faults.
+    const enterpriseClass = classifyEnterpriseError(error);
+    if (enterpriseClass === 'UnavailableError' || enterpriseClass === 'TimeoutError') {
+      return 'availability';
+    }
     return 'internal';
   };
 
