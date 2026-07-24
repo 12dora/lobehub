@@ -1,6 +1,7 @@
 import {
   createPlatformSkillPointerAdapter,
   draftView,
+  PlatformCatalogAuthorityModel,
   PlatformRevisionConflictError,
   platformSkillDraftToken,
   type ResourcePointerAdapter,
@@ -11,6 +12,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import { invalidateSkillCatalogAuthorityToken } from '../platformInstance/catalogTokens';
 import { PlatformPublisherService } from '../platformPublisher';
 import { SkillCatalogNotFoundError, SkillCatalogValidationError } from './errors';
 import { invalidatePublishedSkillCatalogReadCache } from './readService';
@@ -90,6 +92,11 @@ export class SkillCatalogPublicationService {
         const errors = result.issues.filter((issue) => issue.severity === 'error');
         if (errors.length > 0) throw new SkillCatalogValidationError(errors);
       },
+      updatePointer: async (tx, args) => {
+        await base.updatePointer(tx, args);
+        // Advance multi-instance catalog authority in the same transaction as the pointer.
+        await new PlatformCatalogAuthorityModel(tx).bumpGeneration('skill_catalog');
+      },
     };
   };
 
@@ -117,6 +124,7 @@ export class SkillCatalogPublicationService {
         resourceType: 'skill',
       });
       invalidatePublishedSkillCatalogReadCache();
+      invalidateSkillCatalogAuthorityToken();
       return {
         auditId: result.auditId,
         catalogRevision: catalogRevision(input.id, result.revision.revision),
@@ -224,6 +232,7 @@ export class SkillCatalogPublicationService {
         status: 'archived',
       });
       invalidatePublishedSkillCatalogReadCache();
+      invalidateSkillCatalogAuthorityToken();
       return {
         auditId: result.auditId,
         catalogRevision: catalogRevision(input.id, result.revision.revision),
@@ -268,6 +277,7 @@ export class SkillCatalogPublicationService {
         targetRevision,
       });
       invalidatePublishedSkillCatalogReadCache();
+      invalidateSkillCatalogAuthorityToken();
       return {
         auditId: result.auditId,
         catalogRevision: catalogRevision(input.id, result.revision.revision),

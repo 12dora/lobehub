@@ -28,7 +28,7 @@ import { getBuiltinSkillDefinitions } from '../skillCatalog/builtinAdapter';
 import {
   buildCurrentSkillCatalogTargetToken,
   loadCurrentAiCatalogTargetToken,
-  loadCurrentSkillCatalogTargetTokenEntries,
+  loadCurrentSkillCatalogTargetToken,
 } from './catalogAuthority';
 import type { SkillCatalogBuiltinTokenEntry, SkillCatalogTokenEntry } from './catalogTokens';
 import { PlatformCatalogTokenInvariantError } from './catalogTokens';
@@ -125,11 +125,8 @@ export class PlatformDomainTargetResolver {
               builtins: this.loadBuiltinSkillTokenEntries(),
               platform: (await options.loadSkillCatalogSnapshot!()).tokenEntries,
             })
-        : async () =>
-            buildCurrentSkillCatalogTargetToken({
-              builtins: this.loadBuiltinSkillTokenEntries(),
-              platform: await loadCurrentSkillCatalogTargetTokenEntries(this.db),
-            }));
+        : () =>
+            loadCurrentSkillCatalogTargetToken(this.db, () => this.loadBuiltinSkillTokenEntries()));
   }
 
   private available = (

@@ -13,6 +13,11 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
+import {
+  aiCatalogAuthorityToken,
+  invalidateSkillCatalogAuthorityToken,
+  skillCatalogAuthorityToken,
+} from '../platformInstance/catalogTokens';
 import { resetPublishedSkillCatalogReadCacheForTest } from './readService';
 
 export const db: LobeChatDatabase = await getTestDB();
@@ -46,9 +51,21 @@ export const manifest = readServiceTestManifest;
 
 export const cleanupReadServiceTestDb = async () => {
   resetPublishedSkillCatalogReadCacheForTest();
+  // Process-wide authority tokens must not leak across tests (same PGlite process).
+  aiCatalogAuthorityToken.clear();
+  skillCatalogAuthorityToken.clear();
   await db.execute(
     sql`TRUNCATE TABLE ${platformResourceRevisions}, ${platformSkillVersions}, ${platformSkills} CASCADE`,
   );
+  // Reset persisted generation so peekAt(0) cold-starts after truncate-style fixtures.
+  // Relation must exist via migration 0154 — do not swallow missing-relation errors.
+  await db.execute(sql`
+    UPDATE platform_catalog_authority
+    SET generation = 0,
+        token_kind = 'immutable_id',
+        token_value = ${'0'.repeat(64)},
+        updated_at = now()
+  `);
 };
 
 export const installReadServiceTestLifecycle = () => {
@@ -122,9 +139,16 @@ export const publishReadServiceSkill = async (params: {
     status: 'published',
   });
   await repository.updateSkill(skill.id, {
+    // Align pointer columns with the published snapshot (payload.enabled is always true).
+    // Lightweight domain-target tokens read `platform_skills.enabled`, not the payload.
     currentVersionId: version.id,
+    enabled: true,
     revision,
     status: 'published',
   });
+  // Fixture publishes bypass PlatformPublisherService; advance authority like a real publish.
+  const { PlatformCatalogAuthorityModel } = await import('@/database/models/platform');
+  await new PlatformCatalogAuthorityModel(db).bumpGeneration('skill_catalog');
+  invalidateSkillCatalogAuthorityToken();
   return { skill, version };
 };

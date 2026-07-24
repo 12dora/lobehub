@@ -5,6 +5,7 @@ import type { z } from 'zod';
 import {
   PlatformAiCatalogModel,
   type PlatformAiProviderDraftView,
+  PlatformCatalogAuthorityModel,
   PlatformRevisionConflictError,
   type ResourcePointerAdapter,
 } from '@/database/models/platform';
@@ -34,6 +35,7 @@ import {
 } from '../../contracts/aiCatalog';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import { invalidateAiCatalogAuthorityToken } from '../platformInstance/catalogTokens';
 import { PlatformPublisherService } from '../platformPublisher';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
@@ -378,6 +380,8 @@ export class AiCatalogPublicationService {
             updatedBy: actorUserId,
           })
           .where(eq(platformAiModels.providerId, providerId));
+        // Advance multi-instance catalog authority in the same transaction as the pointer.
+        await new PlatformCatalogAuthorityModel(tx).bumpGeneration('ai_catalog');
       },
     };
   };
@@ -409,6 +413,7 @@ export class AiCatalogPublicationService {
         resourceType: 'provider',
         secretFingerprint: draft.secret.fingerprint,
       });
+      invalidateAiCatalogAuthorityToken();
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendAiCatalogFailureAudit(this.db, {
@@ -439,6 +444,7 @@ export class AiCatalogPublicationService {
         secretFingerprint: draft.secret.fingerprint,
         status: 'archived',
       });
+      invalidateAiCatalogAuthorityToken();
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendAiCatalogFailureAudit(this.db, {
@@ -473,6 +479,7 @@ export class AiCatalogPublicationService {
         resourceType: 'provider',
         targetRevision: input.targetRevision,
       });
+      invalidateAiCatalogAuthorityToken();
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendAiCatalogFailureAudit(this.db, {

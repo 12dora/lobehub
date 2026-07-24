@@ -7,7 +7,10 @@ import { PlatformSkillCatalogRepository } from '@/database/repositories/platform
 import { platformResourceRevisions } from '@/database/schemas/platform';
 
 import { loadCurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
-import { PlatformCatalogTokenInvariantError } from '../platformInstance/catalogTokens';
+import {
+  invalidateSkillCatalogAuthorityToken,
+  PlatformCatalogTokenInvariantError,
+} from '../platformInstance/catalogTokens';
 import { PlatformDomainTargetResolver } from '../platformInstance/domainTargets';
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import {
@@ -165,6 +168,8 @@ describe('SkillCatalogReadService readiness / reporting', () => {
         .delete(platformResourceRevisions)
         .where(eq(platformResourceRevisions.resourceId, skill.id));
     });
+    // Direct corruption is not a publish — force process cache to rebuild on next poll.
+    invalidateSkillCatalogAuthorityToken();
     const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
     const service = new SkillCatalogReadService(db, {
       runtimeReporting: { database: db, reporter: reportRuntimeState },
@@ -185,6 +190,7 @@ describe('SkillCatalogReadService readiness / reporting', () => {
       await tx.execute(sql`SET LOCAL session_replication_role = replica`);
       await tx.insert(platformResourceRevisions).values(savedRevision!);
     });
+    invalidateSkillCatalogAuthorityToken();
     const repairedTarget = await new PlatformDomainTargetResolver(db, {
       env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
       loadBuiltinSkillTokenEntries: () => [],
@@ -226,10 +232,14 @@ describe('SkillCatalogReadService readiness / reporting', () => {
           status: 'draft',
         });
       }
+      // Direct pointer corruption is not a publish — force process cache rebuild.
+      invalidateSkillCatalogAuthorityToken();
 
       await expect(new SkillCatalogReadService(db).getPublishedCatalog()).rejects.toBeInstanceOf(
         PlatformCatalogTokenInvariantError,
       );
+      // Full snapshot and lightweight health-poll authority both fail closed on
+      // missing and retargeted (mismatch) currentVersionId pointers.
       await expect(
         new PlatformDomainTargetResolver(db, {
           env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
