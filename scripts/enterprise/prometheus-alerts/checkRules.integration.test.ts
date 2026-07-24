@@ -7,7 +7,11 @@
  *
  * Requires: Docker daemon, ability to pull/run pinned Prometheus + OTel images.
  */
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkEnterprisePrometheusRules, testEnterprisePrometheusRules } from './checkRules';
 import { validateEnterpriseCollectorConfig } from './collectorValidate';
@@ -23,6 +27,22 @@ import {
 const enabled = process.env.ENTERPRISE_PROM_INTEGRATION === '1';
 const describeIntegration = enabled ? describe : describe.skip;
 
+const tempDirs: string[] = [];
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+const writeTempRules = (contents: string): string => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'enterprise-prom-rules-int-'));
+  tempDirs.push(dir);
+  const file = path.join(dir, 'enterprise-platform-alerts.yml');
+  writeFileSync(file, contents, 'utf8');
+  return file;
+};
+
 describeIntegration('enterprise prometheus — docker integration (opt-in)', () => {
   it('passes promtool check rules (fail closed)', () => {
     const result = checkEnterprisePrometheusRules();
@@ -34,6 +54,28 @@ describeIntegration('enterprise prometheus — docker integration (opt-in)', () 
     const result = testEnterprisePrometheusRules();
     expect(result.image).toBe(ENTERPRISE_PROMETHEUS_IMAGE);
     expect(result.stdout.toLowerCase()).toMatch(/success/);
+  });
+
+  // Migrated from the hermetic unit suite (F11): invalid PromQL must still fail closed
+  // under real promtool — kept opt-in so ordinary unit runs stay Docker-free.
+  it('fails closed on invalid PromQL expressions', () => {
+    const rulesFile = writeTempRules(`
+groups:
+  - name: broken
+    rules:
+      - alert: BrokenAlert
+        expr: this is not valid promql((((
+        for: 1m
+        labels:
+          severity: warning
+          component: test
+        annotations:
+          summary: broken
+          runbook: docs/x.md#a
+`);
+    expect(() => checkEnterprisePrometheusRules({ rulesPath: rulesFile })).toThrow(
+      /promtool check rules failed/i,
+    );
   });
 
   it('rejects forbidden Prometheus flags on the pinned image', () => {
