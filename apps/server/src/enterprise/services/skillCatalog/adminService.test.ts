@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
@@ -23,6 +23,42 @@ import { resolvePlatformSkillRuntimeSnapshot } from './runtimeSnapshot';
 const db: LobeChatDatabase = await getTestDB();
 const invalidation = { publish: vi.fn(async () => {}) };
 const serviceOptions = { builtinSkillKeys: new Set<string>(), invalidation };
+
+/**
+ * Bridge until the migration-owned batch teaches `prevent_platform_skill_version_mutation`
+ * to honor `lobe.allow_platform_skill_version_validation_update` for validation_result-only
+ * UPDATEs (mirrors 0140 agent-version delete / 0145 audit retention GUCs). Production code
+ * only sets the GUC — it must not disable triggers via session_replication_role.
+ */
+const installSkillVersionValidationUpdateGuard = async () => {
+  await db.execute(
+    sql.raw(`
+CREATE OR REPLACE FUNCTION prevent_platform_skill_version_mutation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND current_setting('lobe.allow_platform_skill_version_validation_update', true) = 'on'
+  THEN
+    IF NEW.id IS NOT DISTINCT FROM OLD.id
+       AND NEW.skill_id IS NOT DISTINCT FROM OLD.skill_id
+       AND NEW.version IS NOT DISTINCT FROM OLD.version
+       AND NEW.content IS NOT DISTINCT FROM OLD.content
+       AND NEW.content_ref IS NOT DISTINCT FROM OLD.content_ref
+       AND NEW.checksum IS NOT DISTINCT FROM OLD.checksum
+       AND NEW.manifest IS NOT DISTINCT FROM OLD.manifest
+       AND NEW.resources IS NOT DISTINCT FROM OLD.resources
+       AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+       AND NEW.created_by IS NOT DISTINCT FROM OLD.created_by
+    THEN
+      RETURN NEW;
+    END IF;
+  END IF;
+  RAISE EXCEPTION 'platform_skill_versions are immutable' USING ERRCODE = '55000';
+END;
+$$;
+`),
+  );
+};
 
 const manifest = {
   description: 'Search approved sources',
@@ -49,9 +85,14 @@ const cleanup = async () => {
   `);
 };
 
+beforeAll(async () => {
+  await installSkillVersionValidationUpdateGuard();
+});
+
 beforeEach(async () => {
   await cleanup();
   invalidation.publish.mockClear();
+  vi.restoreAllMocks();
 });
 afterEach(cleanup);
 
@@ -493,7 +534,11 @@ describe('SkillCatalogAdminService', () => {
     const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'validate.refresh');
     const version = await createVersion(service, draft, '# validate refresh', '1.0.0');
+    const oldValidatedAt = version.validation?.validatedAt;
+    expect(oldValidatedAt).toBeInstanceOf(Date);
     const before = await service.getDetail(draft.draft.id);
+    // Ensure the re-validation timestamp is strictly after create-time metadata.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     const validation = await service.validate('admin-1', {
       expectedDraftToken: before.draftToken,
       expectedRevision: before.baseRevision,
@@ -504,9 +549,68 @@ describe('SkillCatalogAdminService', () => {
     const stored = await service.getVersion(draft.draft.id, version.id);
     expect(stored.validation).toEqual(validation);
     expect(stored.validation?.validatedAt).toBeInstanceOf(Date);
-    // Fresh timestamp must differ from the create-time validation stamp when enough time passes;
+    // Fresh timestamp must advance past the create-time validation stamp;
     // equality of the full result is the contract the admin UI verifies.
+    expect(stored.validation!.validatedAt.getTime()).toBeGreaterThan(oldValidatedAt!.getTime());
     expect(JSON.stringify(stored.validation)).toBe(JSON.stringify(validation));
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'admin.skills.validate',
+          reason: 'refresh validation metadata',
+          result: 'success',
+          targetId: draft.draft.id,
+        }),
+      ]),
+    );
+  });
+
+  it('rolls back validation metadata when PlatformAuditService.append fails', async () => {
+    const normal = new SkillCatalogAdminService(db, serviceOptions);
+    const draft = await createDraft(normal, 'validate.atomic');
+    const version = await createVersion(normal, draft, '# validate atomic', '1.0.0');
+    const oldValidatedAt = version.validation?.validatedAt;
+    expect(oldValidatedAt).toBeInstanceOf(Date);
+    const before = await normal.getDetail(draft.draft.id);
+
+    // Fault-inject the real append path (instance field) via constructor — not a lifecycle hook —
+    // so this proves validation persistence and the success audit share one transaction.
+    const platformAudit = await import('../platformAudit');
+    const appendMock = vi.fn().mockRejectedValue(new Error('injected validate audit failure'));
+    vi.spyOn(platformAudit, 'PlatformAuditService').mockImplementation(
+      () =>
+        ({
+          append: appendMock,
+        }) as never,
+    );
+
+    await expect(
+      normal.validate('admin-1', {
+        expectedDraftToken: before.draftToken,
+        expectedRevision: before.baseRevision,
+        reason: 'inject validate audit failure',
+        skillId: draft.draft.id,
+        versionId: version.id,
+      }),
+    ).rejects.toThrow('injected validate audit failure');
+
+    // Validation write must roll back with the failed audit; timestamp stays at create-time.
+    const stored = await normal.getVersion(draft.draft.id, version.id);
+    expect(stored.validation?.validatedAt?.getTime()).toBe(oldValidatedAt!.getTime());
+    expect(JSON.stringify(stored.validation)).toBe(JSON.stringify(version.validation));
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.filter((row) => row.action === 'admin.skills.validate' && row.result === 'success'),
+    ).toHaveLength(0);
+    expect(appendMock).toHaveBeenCalled();
+    expect(appendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'admin.skills.validate',
+        result: 'success',
+        targetId: draft.draft.id,
+      }),
+    );
   });
 
   it('archives never-published empty shells and versioned drafts without a current pointer', async () => {

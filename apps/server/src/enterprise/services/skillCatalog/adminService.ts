@@ -496,28 +496,29 @@ export class SkillCatalogAdminService {
   };
 
   validate = async (actorUserId: string, input: ValidateInput) => {
-    const result = await this.mutation({
+    // Persist validation + success audit in one transaction so a crash between
+    // the two cannot leave a validated version without an audit trail.
+    const result = await this.atomicMutation({
       action: 'admin.skills.validate',
       actorUserId,
       reason: input.reason,
-      run: () =>
-        this.db.transaction(async (tx) => {
-          await this.assertDraft(tx, { ...input, id: input.skillId });
-          const validation = await this.validation.validateStoredVersion(
-            tx,
-            input.skillId,
-            input.versionId,
-          );
-          // Persist the freshly timestamped result so getVersion matches validate
-          // (admin UI verifies JSON equality and otherwise locks writes as refreshFailed).
-          const stored = await this.model(tx).updateVersionValidation({
-            skillId: input.skillId,
-            validation: toStoredValidation(validation),
-            versionId: input.versionId,
-          });
-          if (!stored) throw new SkillCatalogNotFoundError();
-          return validation;
-        }),
+      run: async (tx) => {
+        await this.assertDraft(tx, { ...input, id: input.skillId });
+        const validation = await this.validation.validateStoredVersion(
+          tx,
+          input.skillId,
+          input.versionId,
+        );
+        // Persist the freshly timestamped result so getVersion matches validate
+        // (admin UI verifies JSON equality and otherwise locks writes as refreshFailed).
+        const stored = await this.model(tx).updateVersionValidation({
+          skillId: input.skillId,
+          validation: toStoredValidation(validation),
+          versionId: input.versionId,
+        });
+        if (!stored) throw new SkillCatalogNotFoundError();
+        return validation;
+      },
       summarize: (validation) => ({ issueCount: validation.issues.length }),
       targetId: () => input.skillId,
     });
