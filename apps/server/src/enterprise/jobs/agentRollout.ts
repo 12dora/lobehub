@@ -5,6 +5,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { processNextPlatformAgentRolloutBatch } from '../services/agentCatalog/rolloutWorker';
+import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_INTERVAL_MS = 2000;
@@ -32,18 +33,15 @@ export const runPlatformAgentRolloutBatches = async (
 
 let workerStarted = false;
 
+export const isPlatformAgentRolloutWorkerRuntime = (
+  env: Partial<NodeJS.ProcessEnv> = process.env,
+): boolean =>
+  isPersistentEnterpriseWorkerRuntime(env) &&
+  parseEnterpriseFeatureFlags(env).ENABLE_PLATFORM_MANAGED_AGENTS;
+
 /** Starts one non-overlapping poller per Node process; M01 leases coordinate multiple instances. */
 export const ensurePlatformAgentRolloutWorkerStarted = (): void => {
-  if (
-    workerStarted ||
-    !parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS ||
-    process.env.NODE_ENV !== 'production' ||
-    process.env.NEXT_RUNTIME !== 'nodejs' ||
-    !process.env.DATABASE_URL ||
-    process.env.VERCEL_ENV
-  ) {
-    return;
-  }
+  if (workerStarted || !isPlatformAgentRolloutWorkerRuntime()) return;
   workerStarted = true;
   const schedule = () => {
     const timer = setTimeout(run, DEFAULT_INTERVAL_MS);
@@ -51,6 +49,7 @@ export const ensurePlatformAgentRolloutWorkerStarted = (): void => {
   };
   const run = async () => {
     try {
+      if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return;
       await runPlatformAgentRolloutBatches(await getServerDB());
     } catch (error) {
       console.error('[platform-agent-rollout-worker] batch failed', {

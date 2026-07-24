@@ -79,11 +79,6 @@ export class AdminAiModelService {
     return merged;
   };
 
-  getAiModelById = async (id: string) => {
-    void id;
-    return undefined;
-  };
-
   toggleModelEnabled = async (params: ToggleAiModelEnableParams) => {
     const { detail, model } = await this.#resolveModelUuid(params.providerId, params.id);
     if (!model) throw new Error(`Model not found: ${params.id}`);

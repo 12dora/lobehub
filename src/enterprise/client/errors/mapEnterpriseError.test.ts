@@ -20,6 +20,20 @@ describe('mapEnterpriseError (structured)', () => {
     expect(mapped?.details?.path).toBe('admin.system.getStatus');
   });
 
+  it('accepts MANAGED_AGENT_BATCH_LIMIT and forwards details.max', () => {
+    const mapped = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: MANAGED_ERROR_CODES.MANAGED_AGENT_BATCH_LIMIT,
+          details: { max: 100, reason: 'managed_agent_batch_limit' },
+        },
+      },
+    });
+    expect(mapped?.code).toBe(MANAGED_ERROR_CODES.MANAGED_AGENT_BATCH_LIMIT);
+    expect(mapped?.i18nKey).toBe('enterprise.error.MANAGED_AGENT_BATCH_LIMIT');
+    expect(mapped?.details?.max).toBe(100);
+  });
+
   it('reads cause.data body', () => {
     const mapped = mapEnterpriseError({
       cause: {

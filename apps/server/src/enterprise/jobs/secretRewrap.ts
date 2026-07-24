@@ -5,6 +5,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parsePlatformKeyProviderName, PlatformSecretService } from '../security/secret';
 import { processNextPlatformSecretRewrapBatch } from '../services/secretRewrap';
+import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_INTERVAL_MS = 2000;
@@ -34,13 +35,7 @@ let workerStarted = false;
 export const isPlatformSecretRewrapWorkerRuntime = (
   env: Partial<NodeJS.ProcessEnv> = process.env,
 ): boolean =>
-  env.NODE_ENV === 'production' &&
-  env.NEXT_RUNTIME !== 'edge' &&
-  env.VERCEL !== '1' &&
-  !env.VERCEL_ENV &&
-  !env.AWS_LAMBDA_FUNCTION_NAME &&
-  Boolean(env.DATABASE_URL) &&
-  parsePlatformKeyProviderName(env) === 'vault';
+  isPersistentEnterpriseWorkerRuntime(env) && parsePlatformKeyProviderName(env) === 'vault';
 
 /**
  * Persistent Node-process poller only. Serverless/Vercel deployments must use

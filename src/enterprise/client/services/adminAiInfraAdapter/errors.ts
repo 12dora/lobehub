@@ -54,7 +54,23 @@ export const notifyAdminAiInfraError = (
   }
   if (mapped?.i18nKey) {
     // enterprise.error.* keys live in the admin namespace; fall back to the localized default.
-    toast.error(t(mapped.i18nKey, { defaultValue: fallback }));
+    // Only forward allowlisted interpolation keys — never spread raw details into i18next
+    // options (a detail named defaultValue/lng/ns/… could override translation behavior).
+    const details =
+      mapped.details && typeof mapped.details === 'object'
+        ? (mapped.details as Record<string, unknown>)
+        : {};
+    const interpolation: Record<string, unknown> = {};
+    if (typeof details.max === 'number' || typeof details.max === 'string') {
+      interpolation.max = details.max;
+    }
+    if (typeof details.count === 'number' || typeof details.count === 'string') {
+      interpolation.count = details.count;
+    }
+    if (typeof details.issueCount === 'number' || typeof details.issueCount === 'string') {
+      interpolation.issueCount = details.issueCount;
+    }
+    toast.error(t(mapped.i18nKey, { defaultValue: fallback, ...interpolation }));
     return;
   }
 

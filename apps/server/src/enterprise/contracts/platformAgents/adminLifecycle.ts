@@ -33,6 +33,11 @@ export const adminPlatformAgentCreateInputSchema = z
 export const adminPlatformAgentListInputSchema = z
   .object({
     cursor: z.string().trim().min(1).max(512).optional(),
+    /**
+     * Dedicated default-inbox pointer read. When true, returns at most the current default
+     * Agent (O(1) index lookup path) so clients never page-walk the catalog to find it.
+     */
+    isDefault: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).default(50),
     query: safeText(200, 1).optional(),
     status: z.enum(['archived', 'draft', 'published']).optional(),
@@ -160,14 +165,15 @@ export const adminPlatformAgentArchiveInputSchema = z
 export const adminPlatformAgentArchiveOutputSchema = adminPlatformAgentMutationOutputSchema;
 
 /**
- * Hard-delete a platform agent and every row it owns. CAS-light: the list row carries no draft
- * token, so only an optional revision guard is accepted. Default / system agents are refused
- * server-side (their pointer must be reassigned via setDefaultInbox first).
+ * Hard-delete a platform agent and every row it owns. Full identity CAS is required: revision
+ * alone misses draftSequence/assignment mutations that advance the draft token without bumping
+ * revision. Default / system agents are refused server-side (reassign via setDefaultInbox first).
  */
 export const adminPlatformAgentDeleteInputSchema = z
   .object({
     agentId: idSchema,
-    expectedRevision: revisionSchema.optional(),
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
     reason: reasonSchema,
   })
   .strict();

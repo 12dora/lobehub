@@ -18,26 +18,65 @@ export const PLATFORM_SYSTEM_ROLES = {
 export type PlatformSystemRoleName =
   (typeof PLATFORM_SYSTEM_ROLES)[keyof typeof PLATFORM_SYSTEM_ROLES];
 
+const PLATFORM_SYSTEM_ROLE_NAME_SET = new Set<string>(Object.values(PLATFORM_SYSTEM_ROLES));
+
+/** True when `name` is a built-in platform system role (not a custom role). */
+export const isPlatformSystemRoleName = (name: string): name is PlatformSystemRoleName =>
+  PLATFORM_SYSTEM_ROLE_NAME_SET.has(name);
+
+/**
+ * Stable, locale-neutral seed metadata for system roles.
+ *
+ * Built-in roles persist the machine `name` as `displayName` / a non-localized
+ * description — never English UI copy. Client UI must resolve labels from i18n
+ * keys `users.roles.*` / `users.roles.desc.*` and must not treat stored
+ * displayName as a user-facing translation override for system roles.
+ */
 export const PLATFORM_ROLE_DISPLAY_NAMES: Record<PlatformSystemRoleName, string> = {
-  [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN]: 'Super Admin',
-  [PLATFORM_SYSTEM_ROLES.USER_ADMIN]: 'User Admin',
-  [PLATFORM_SYSTEM_ROLES.AI_ADMIN]: 'AI Admin',
-  [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]: 'Identity Admin',
-  [PLATFORM_SYSTEM_ROLES.AUDITOR]: 'Auditor',
-  [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]: 'Platform User',
+  [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN]: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.USER_ADMIN]: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.AI_ADMIN]: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.AUDITOR]: PLATFORM_SYSTEM_ROLES.AUDITOR,
+  [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
 };
 
+/** Locale-neutral seed descriptions (machine ids only — not shown as UI copy). */
 export const PLATFORM_ROLE_DESCRIPTIONS: Record<PlatformSystemRoleName, string> = {
-  [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN]:
-    'Local break-glass administrator with all platform permissions.',
-  [PLATFORM_SYSTEM_ROLES.USER_ADMIN]:
-    'Manage users, sessions, and global role packages (except super_admin).',
-  [PLATFORM_SYSTEM_ROLES.AI_ADMIN]:
-    'Manage AI providers/models, skills, connectors, platform agents, and global credentials. Settings read-only.',
-  [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]:
-    'Manage OIDC identity providers, branding, and related audit views.',
-  [PLATFORM_SYSTEM_ROLES.AUDITOR]: 'Read-only access to all admin resources and audit export.',
-  [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]: 'Default role for authenticated users. No admin APIs.',
+  [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN]: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.USER_ADMIN]: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.AI_ADMIN]: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
+  [PLATFORM_SYSTEM_ROLES.AUDITOR]: PLATFORM_SYSTEM_ROLES.AUDITOR,
+  [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+};
+
+/**
+ * Resolve a platform role label for UI.
+ * System roles always use the i18n key; English seed metadata must never win.
+ * Custom roles fall back to stored displayName / name.
+ */
+export const resolvePlatformRoleLabel = (
+  role: { displayName?: string | null; name: string },
+  t: (key: string, options?: { defaultValue?: string }) => string,
+): string => {
+  if (isPlatformSystemRoleName(role.name)) {
+    return t(`users.roles.${role.name}`, { defaultValue: role.name });
+  }
+  return role.displayName?.trim() || role.name;
+};
+
+/**
+ * Resolve a platform role description for UI (system roles → i18n only).
+ */
+export const resolvePlatformRoleDescription = (
+  role: { displayName?: string | null; name: string },
+  t: (key: string, options?: { defaultValue?: string }) => string,
+): string => {
+  if (isPlatformSystemRoleName(role.name)) {
+    return t(`users.roles.desc.${role.name}`, { defaultValue: '' });
+  }
+  return role.displayName?.trim() || role.name;
 };
 
 const allPlatformPermissions = Object.values(PLATFORM_PERMISSIONS) as PlatformPermission[];

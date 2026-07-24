@@ -174,7 +174,8 @@ class AdminAuditService {
       limit?: number;
       scopeId?: string | null;
       scopeType?: AdminAuditLegalHoldItem['scopeType'];
-      status?: AdminAuditLegalHoldItem['status'];
+      /** Stored filter only — projected `expired` is not a list filter value. */
+      status?: 'active' | 'released';
     } = {},
   ): Promise<AdminAuditLegalHoldsListOutput> => {
     return lambdaClient.admin.audit.legalHolds.list.query(input);

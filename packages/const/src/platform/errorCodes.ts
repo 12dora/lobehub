@@ -70,6 +70,11 @@ export const MANAGED_ERROR_CODES = {
   MANAGED_SETTING_NOT_POLICY_ELIGIBLE: 'MANAGED_SETTING_NOT_POLICY_ELIGIBLE',
   /** Value failed the registry Zod schema. */
   MANAGED_SETTING_INVALID_VALUE: 'MANAGED_SETTING_INVALID_VALUE',
+  /**
+   * Batch mutation exceeds the managed-agent guard id limit.
+   * `details.max` carries the allowed upper bound for client i18n (`{{max}}`).
+   */
+  MANAGED_AGENT_BATCH_LIMIT: 'MANAGED_AGENT_BATCH_LIMIT',
 } as const;
 
 export type ManagedErrorCode = (typeof MANAGED_ERROR_CODES)[keyof typeof MANAGED_ERROR_CODES];

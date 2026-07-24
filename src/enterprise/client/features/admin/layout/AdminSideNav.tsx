@@ -1,34 +1,11 @@
 'use client';
 
-import { Accordion, AccordionItem, Flexbox, Icon, type IconProps, Text } from '@lobehub/ui';
-import { SkillsIcon } from '@lobehub/ui/icons';
-import {
-  Blocks,
-  Bot,
-  Brain,
-  BrainCircuit,
-  ChartColumnBig,
-  Download,
-  FileSearch,
-  Fingerprint,
-  Gavel,
-  LayoutDashboard,
-  ListTree,
-  MessagesSquare,
-  Palette,
-  Radio,
-  ScrollText,
-  Server,
-  ShieldCheck,
-  SlidersHorizontal,
-  Sparkles,
-  Timer,
-  Users,
-} from 'lucide-react';
+import { Accordion, AccordionItem, Flexbox, Icon, Text } from '@lobehub/ui';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation, useNavigate } from 'react-router';
 
+import { ADMIN_NAV_ICONS } from '@/enterprise/client/nav/adminIcons';
 import {
   ADMIN_NAV_ITEMS,
   type AdminNavItem,
@@ -39,36 +16,6 @@ import NavItem from '@/features/NavPanel/components/NavItem';
 import { isModifierClick } from '@/utils/navigation';
 
 import { adminShellStyles } from './style';
-
-/**
- * Icon per nav id (presentation only — kept out of the permission catalog).
- * AI-group children mirror the user Settings "智能体" group icons for parity.
- */
-const NAV_ICONS: Record<string, IconProps['icon']> = {
-  'agents': MessagesSquare,
-  'ai': Bot,
-  'ai-connectors': Blocks,
-  'ai-memory': BrainCircuit,
-  'ai-providers': Brain,
-  'ai-service-model': Sparkles,
-  'ai-skills': SkillsIcon,
-  'audit': ScrollText,
-  'audit-conversations': FileSearch,
-  'audit-exports': Download,
-  'audit-legal-holds': Gavel,
-  'audit-live': Radio,
-  'audit-logs': ListTree,
-  'audit-retention': Timer,
-  'branding': Palette,
-  'identity-providers': Fingerprint,
-  'managed-resources': ShieldCheck,
-  'overview': LayoutDashboard,
-  'settings': SlidersHorizontal,
-  'stats': ChartColumnBig,
-  'system': Server,
-  'unified-management': SlidersHorizontal,
-  'users': Users,
-};
 
 const isActivePath = (pathname: string, itemPath: string) => {
   if (itemPath === '/admin') return pathname === '/admin' || pathname === '/admin/';
@@ -92,7 +39,7 @@ const AdminNavLink = memo<{ item: AdminNavItem }>(({ item }) => {
         navigate(item.path);
       }}
     >
-      <NavItem active={active} icon={NAV_ICONS[item.id]} title={t(item.labelKey)} />
+      <NavItem active={active} icon={ADMIN_NAV_ICONS[item.id]} title={t(item.labelKey)} />
     </Link>
   );
 });
@@ -127,7 +74,9 @@ const AdminSideNav = memo(() => {
                   paddingInline={'8px 4px'}
                   title={
                     <Flexbox horizontal align="center" gap={8}>
-                      {NAV_ICONS[item.id] ? <Icon icon={NAV_ICONS[item.id]} size={16} /> : null}
+                      {ADMIN_NAV_ICONS[item.id] ? (
+                        <Icon icon={ADMIN_NAV_ICONS[item.id]} size={16} />
+                      ) : null}
                       <Text ellipsis fontSize={12} type="secondary" weight={500}>
                         {t(item.labelKey)}
                       </Text>

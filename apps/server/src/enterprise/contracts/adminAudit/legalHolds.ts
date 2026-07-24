@@ -9,6 +9,7 @@ import {
   limitSchema,
   platformAuditLegalHoldScopeTypeSchema,
   platformAuditLegalHoldStatusSchema,
+  platformAuditLegalHoldStoredStatusSchema,
 } from './common';
 
 const scopeIdSchema = z.string().min(1).max(128);
@@ -105,7 +106,8 @@ export const adminAuditLegalHoldsListInputSchema = z
     limit: limitSchema,
     scopeId: scopeIdSchema.nullable().optional(),
     scopeType: platformAuditLegalHoldScopeTypeSchema.optional(),
-    status: platformAuditLegalHoldStatusSchema.optional(),
+    // List filter uses stored status; service projects elapsed `active` → `expired`.
+    status: platformAuditLegalHoldStoredStatusSchema.optional(),
   })
   .strict()
   .superRefine(refineOptionalListScopePair)

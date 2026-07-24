@@ -1,24 +1,12 @@
 import { type RouteObject } from 'react-router';
 
-import { isPlatformAdminBootEnabled } from '@/enterprise/client/boot/isPlatformAdminBootEnabled';
-import { AdminMobileUnsupportedSurface } from '@/enterprise/client/features/admin/pages/AdminStateSurfaces';
+import { getEnterpriseMobileRoutesWithoutMainLayout } from '@/enterprise/client/routes/mobile';
 
 export const BusinessMobileRoutesWithMainLayout: RouteObject[] = [];
 export const BusinessMobileRoutesWithSettingsLayout: RouteObject[] = [];
 
 /**
- * Mobile: when platform admin is on, deep links hit an explicit unsupported surface.
- * When flag is off, `/admin` is not registered at all.
+ * Declarative business mount: mobile admin routes come from enterprise only.
  */
-export const BusinessMobileRoutesWithoutMainLayout: RouteObject[] = isPlatformAdminBootEnabled()
-  ? [
-      {
-        element: <AdminMobileUnsupportedSurface />,
-        path: '/admin/*',
-      },
-      {
-        element: <AdminMobileUnsupportedSurface />,
-        path: '/admin',
-      },
-    ]
-  : [];
+export const BusinessMobileRoutesWithoutMainLayout: RouteObject[] =
+  getEnterpriseMobileRoutesWithoutMainLayout();

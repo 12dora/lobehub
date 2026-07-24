@@ -27,6 +27,7 @@ const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError[
   [ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED]: 'none',
   [MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM]: 'contact_admin',
   [MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN]: 'contact_admin',
+  [MANAGED_ERROR_CODES.MANAGED_AGENT_BATCH_LIMIT]: 'none',
 };
 
 /** M06 contract spelling; normalize to the legacy catalog entry for compatible UI copy/actions. */

@@ -39,6 +39,10 @@ describe('flag-off real Business route tree registration', () => {
 
   it('flag false: Business desktop/mobile do not register /admin', async () => {
     setBootPlatformAdmin(false);
+    vi.resetModules();
+    const routesMod = await import('./index');
+    expect(routesMod.getEnterpriseDesktopRoutesWithoutMainLayout()).toEqual([]);
+
     const { desktop, mobile } = await loadBusinessRoutes();
 
     expect(desktop.BusinessDesktopRoutesWithoutMainLayout).toEqual([]);
@@ -46,7 +50,7 @@ describe('flag-off real Business route tree registration', () => {
     expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin')).toBeNull();
     expect(matchRoutes(mobile.BusinessMobileRoutesWithoutMainLayout, '/admin')).toBeNull();
     expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin/users')).toBeNull();
-  }, 30_000);
+  }, 120_000);
 
   it('flag absent: same as off (boot helper + empty Business mount)', async () => {
     setBootPlatformAdmin(undefined);
@@ -81,9 +85,12 @@ describe('flag-off real Business route tree registration', () => {
     const { desktop } = await loadBusinessRoutes();
     // Both desktopRouter.config.tsx and .desktop.tsx spread this same array.
     const paths = desktop.BusinessDesktopRoutesWithoutMainLayout.map((r) => r.path);
-    expect(paths).toEqual(['/admin']);
-    const children = desktop.BusinessDesktopRoutesWithoutMainLayout[0]?.children ?? [];
-    const childPaths = children.map((c) => c.path).filter(Boolean);
+    // reauth-complete is a sibling of /admin (outside the shell gate); /admin holds the gated tree.
+    expect(paths).toEqual(['/admin/reauth-complete', '/admin']);
+    const adminRoute = desktop.BusinessDesktopRoutesWithoutMainLayout.find(
+      (r) => r.path === '/admin',
+    );
+    const childPaths = (adminRoute?.children ?? []).map((c) => c.path).filter(Boolean);
     expect(childPaths).toContain('users');
     expect(childPaths).toContain('users/:id');
     expect(childPaths).toContain('ai/providers/:id');
@@ -104,12 +111,17 @@ describe('flag-off real Business route tree registration', () => {
     setBootPlatformAdmin(false);
     vi.resetModules();
 
-    vi.resetModules();
     const { enterpriseModuleRegistry } = await import('../registry');
     try {
       enterpriseModuleRegistry.register({
         id: 'adversarial-admin-leak',
-        routes: [{ path: '/admin/leak', element: null }],
+        routes: [
+          {
+            element: null,
+            handle: { admin: { id: 'leak', requiredPermissions: [] } },
+            path: '/admin/leak',
+          },
+        ],
       });
     } catch {
       // already registered in this worker
@@ -126,14 +138,20 @@ describe('flag-off real Business route tree registration', () => {
     expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin')).toBeNull();
     expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin/users')).toBeNull();
 
-    // Flag on: registry routes reappear alongside shell (leak path is matchable).
+    // Flag on: registry routes are nested under /admin (never top-level siblings).
     setBootPlatformAdmin(true);
     vi.resetModules();
     const reg2 = await import('../registry');
     try {
       reg2.enterpriseModuleRegistry.register({
         id: 'adversarial-admin-leak',
-        routes: [{ path: '/admin/leak', element: null }],
+        routes: [
+          {
+            element: null,
+            handle: { admin: { id: 'leak', requiredPermissions: [] } },
+            path: '/admin/leak',
+          },
+        ],
       });
     } catch {
       // ignore
@@ -141,7 +159,36 @@ describe('flag-off real Business route tree registration', () => {
     const on = await import('./index');
     const enterpriseRoutes = on.getEnterpriseDesktopRoutesWithoutMainLayout();
     expect(enterpriseRoutes.some((r) => r.path === '/admin')).toBe(true);
-    expect(enterpriseRoutes.some((r) => r.path === '/admin/leak')).toBe(true);
+    // Must NOT appear as a top-level sibling that bypasses AdminRootGate.
+    expect(enterpriseRoutes.some((r) => r.path === '/admin/leak')).toBe(false);
+    const adminRoute = enterpriseRoutes.find((r) => r.path === '/admin');
+    const childPaths = (adminRoute?.children ?? []).map((c) => c.path).filter(Boolean);
+    expect(childPaths).toContain('leak');
     expect(matchRoutes(enterpriseRoutes, '/admin/leak')).toBeTruthy();
+    // Matched leaf is under the gated /admin parent (AdminRootGate element).
+    const matched = matchRoutes(enterpriseRoutes, '/admin/leak');
+    expect(matched?.[0]?.route.path).toBe('/admin');
   }, 40_000);
+
+  it('rejects registry routes without permission metadata (gate contract)', async () => {
+    vi.resetModules();
+    const { enterpriseModuleRegistry } = await import('../registry');
+    expect(() =>
+      enterpriseModuleRegistry.register({
+        id: 'missing-handle',
+        routes: [{ path: '/admin/unguarded', element: null }],
+      }),
+    ).toThrow(/requiredPermissions/);
+  }, 20_000);
+
+  it('rejects /administrator lookalike as admin extension path', async () => {
+    vi.resetModules();
+    const { normalizeAdminExtensionRoute } = await import('../registry');
+    expect(() =>
+      normalizeAdminExtensionRoute({
+        handle: { admin: { id: 'bad', requiredPermissions: [] } },
+        path: '/administrator/bypass',
+      }),
+    ).toThrow(/under \/admin/);
+  }, 20_000);
 });

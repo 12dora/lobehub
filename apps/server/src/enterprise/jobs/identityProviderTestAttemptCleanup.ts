@@ -1,6 +1,7 @@
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
+import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
 
 const CLEANUP_INTERVAL_MS = 60 * 1000;
 const CLEANUP_LOCK_NAMESPACE = 'aihub:identity-provider-test-attempt-cleanup:v1';
@@ -41,18 +42,14 @@ export const runIdentityProviderTestAttemptCleanup = async (
 
 let workerStarted = false;
 
-/** Starts one non-overlapping reaper in persistent Node deployments. */
+export const isIdentityProviderTestAttemptCleanupWorkerRuntime = (
+  env: Partial<NodeJS.ProcessEnv> = process.env,
+): boolean =>
+  isPersistentEnterpriseWorkerRuntime(env) && parseEnterpriseFeatureFlags(env).ENABLE_DATABASE_OIDC;
+
+/** Starts one non-overlapping reaper in persistent Node deployments (never AWS Lambda). */
 export const ensureIdentityProviderTestAttemptCleanupStarted = (): void => {
-  if (
-    workerStarted ||
-    !parseEnterpriseFeatureFlags(process.env).ENABLE_DATABASE_OIDC ||
-    process.env.NODE_ENV !== 'production' ||
-    process.env.NEXT_RUNTIME !== 'nodejs' ||
-    !process.env.DATABASE_URL ||
-    process.env.VERCEL_ENV
-  ) {
-    return;
-  }
+  if (workerStarted || !isIdentityProviderTestAttemptCleanupWorkerRuntime()) return;
   workerStarted = true;
   const schedule = () => {
     const timer = setTimeout(run, CLEANUP_INTERVAL_MS);

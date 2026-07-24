@@ -1,6 +1,5 @@
 import { TRPCError } from '@trpc/server';
 
-import type { EnterpriseErrorCode } from '@/const/platform/errorCodes';
 import { MANAGED_ERROR_CODES } from '@/const/platform/errorCodes';
 import { AgentModel } from '@/database/models/agent';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
@@ -21,10 +20,10 @@ export const MAX_MANAGED_AGENT_GUARD_IDS = 100;
 
 /**
  * Dedicated enterprise code for managed-agent batch size limit.
- * Not yet in packages/const ENTERPRISE_ERROR_CODES — shared-infra must register it.
+ * Registered in packages/const MANAGED_ERROR_CODES.
  * Client i18n key: `enterprise.error.MANAGED_AGENT_BATCH_LIMIT` with `{{max}}`.
  */
-export const MANAGED_AGENT_BATCH_LIMIT_CODE = 'MANAGED_AGENT_BATCH_LIMIT' as const;
+export const MANAGED_AGENT_BATCH_LIMIT_CODE = MANAGED_ERROR_CODES.MANAGED_AGENT_BATCH_LIMIT;
 
 /** `details.reason` when a batch mutation exceeds {@link MAX_MANAGED_AGENT_GUARD_IDS}. */
 export const MANAGED_AGENT_BATCH_LIMIT_REASON = 'managed_agent_batch_limit' as const;
@@ -89,8 +88,7 @@ export const assertAgentsNotPlatformManaged = async (params: {
     // Dedicated code + structured max for client i18n (`enterprise.error.MANAGED_AGENT_BATCH_LIMIT`, {{max}}).
     // PLATFORM_INVALID_INPUT stays generic — do not overload it with batch-specific copy.
     throwEnterpriseError({
-      // Cast until packages/const registers MANAGED_AGENT_BATCH_LIMIT (OUT_OF_SCOPE shared-infra).
-      code: MANAGED_AGENT_BATCH_LIMIT_CODE as EnterpriseErrorCode,
+      code: MANAGED_AGENT_BATCH_LIMIT_CODE,
       details: {
         max: MAX_MANAGED_AGENT_GUARD_IDS,
         reason: MANAGED_AGENT_BATCH_LIMIT_REASON,
