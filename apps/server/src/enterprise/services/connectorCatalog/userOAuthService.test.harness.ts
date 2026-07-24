@@ -5,6 +5,7 @@ import { getTestDB } from '@/database/core/getTestDB';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { connectorToolFixture, MemoryConnectorSecretStore } from './catalogTestUtils';
+import { recordConnectorConnectionTest } from './connectionTestState';
 import type {
   ConnectorOutboundClient,
   ConnectorOutboundJsonResponse,
@@ -92,6 +93,41 @@ export const createHarness = () => {
   };
 };
 
+/** Seed a durable connection-test result bound to the exact CAS identity used for publish. */
+export const seedConnectionTest = async (params: {
+  id: string;
+  draftToken: string;
+  revision: number;
+}) => {
+  await recordConnectorConnectionTest(db, params.id, {
+    errorCategory: null,
+    latencyMs: 1,
+    messageCode: 'connector.operation_succeeded',
+    status: 'success',
+    testedAt: new Date(),
+    testedDraftToken: params.draftToken,
+    testedRevision: params.revision,
+  });
+};
+
+/** Publish helper that seeds a current successful connection test first. */
+export const publishWithConnectionTest = async (
+  harness: ReturnType<typeof createHarness>,
+  input: {
+    expectedDraftToken: string;
+    expectedRevision: number;
+    id: string;
+    reason: string;
+  },
+) => {
+  await seedConnectionTest({
+    draftToken: input.expectedDraftToken,
+    id: input.id,
+    revision: input.expectedRevision,
+  });
+  return harness.publication.publish('admin-user', input);
+};
+
 export const publishOAuthConnector = async (harness: ReturnType<typeof createHarness>) => {
   const draft = await harness.drafts.createDraft('admin-user', {
     credentialMode: 'per_user_oauth',
@@ -111,7 +147,7 @@ export const publishOAuthConnector = async (harness: ReturnType<typeof createHar
     tools: [connectorToolFixture()],
     transport: 'http',
   });
-  await harness.publication.publish('admin-user', {
+  await publishWithConnectionTest(harness, {
     expectedDraftToken: draft.draftToken,
     expectedRevision: 0,
     id: draft.draft.id,

@@ -20,30 +20,9 @@ import type {
   ConnectorSecretSlot,
 } from './catalogTypes';
 
-/**
- * Test-only expand for durable connection-test columns.
- * Production request paths never run DDL — the serialized DB batch owns the migration.
- * PGlite/test DBs apply committed migrations only; keep this so connector suites can
- * exercise the schema before that migration lands.
- */
-const ensureConnectorConnectionTestColumnsForTest = async (db: LobeChatDatabase): Promise<void> => {
-  const columns = [
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "connection_test_status" varchar(16)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "connection_test_latency_ms" integer`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "connection_test_error_category" varchar(32)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "connection_test_message_code" varchar(128)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "connection_tested_at" timestamp with time zone`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "connection_tested_draft_token" varchar(64)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "connection_tested_revision" integer`,
-  ] as const;
-  for (const statement of columns) {
-    await db.execute(sql.raw(statement));
-  }
-};
-
 export const cleanupM09ServiceData = async (db: LobeChatDatabase): Promise<void> => {
   // Test harness only — not used on production request paths.
-  await ensureConnectorConnectionTestColumnsForTest(db);
+  // Connection-test columns come from migration 0153_round2_connector_test_state.
   // Collect connector ids before child rows go away so revision cleanup stays scoped.
   const connectorRows = await db.select({ id: platformConnectors.id }).from(platformConnectors);
   const connectorIds = connectorRows.map((row) => row.id);

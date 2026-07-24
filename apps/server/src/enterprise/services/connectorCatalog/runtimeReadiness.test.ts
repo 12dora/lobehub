@@ -37,7 +37,7 @@ const connectorIds: string[] = [];
 
 beforeAll(async () => {
   db = await getTestDB();
-});
+}, 60_000);
 
 afterAll(async () => {
   if (connectorIds.length === 0) return;
@@ -52,7 +52,7 @@ afterAll(async () => {
       .delete(platformResourceRevisions)
       .where(inArray(platformResourceRevisions.resourceId, connectorIds));
   });
-});
+}, 60_000);
 
 const publish = async (
   mode: PlatformConnectorCredentialMode,
