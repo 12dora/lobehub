@@ -393,7 +393,7 @@ describe('BrandingPage interactions', () => {
     const fileInputs = document.querySelectorAll('input[type="file"]');
     // logo, icon, favicon, ogImage, desktopIcon — last asset input is desktop.
     expect(fileInputs.length).toBeGreaterThanOrEqual(5);
-    const desktopInput = fileInputs.at(-1) as HTMLInputElement;
+    const desktopInput = Array.from(fileInputs).at(-1) as HTMLInputElement;
     const file = new File([new Uint8Array([1, 2, 3])], 'desktop.png', { type: 'image/png' });
     await act(async () => {
       fireEvent.change(desktopInput, { target: { files: [file] } });
