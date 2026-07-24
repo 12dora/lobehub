@@ -1035,6 +1035,20 @@ export default {
     'Publication failed. Retry after confirming the catalog is ready.',
   'skillCatalog.import.resourcesTruncated':
     'Some package resources could not be imported (size, binary, or path limits). Fix the package or remove unsupported files, then import again.',
+  // Stable skill_import_* reason codes from admin.skills.parseImportSource (client maps details.reason).
+  'skillCatalog.import.error.skill_import_content_too_large':
+    'Skill package content is too large to import.',
+  'skillCatalog.import.error.skill_import_fetch_failed':
+    'Could not download the skill package. Check the URL and try again.',
+  'skillCatalog.import.error.skill_import_invalid_zip':
+    'The skill package is not a valid ZIP archive.',
+  'skillCatalog.import.error.skill_import_not_found': 'Skill package not found at the given URL.',
+  'skillCatalog.import.error.skill_import_parse_failed':
+    'Could not parse the skill package. Check SKILL.md and package layout.',
+  'skillCatalog.import.error.skill_import_timeout':
+    'Skill package download timed out. Try again later.',
+  'skillCatalog.import.error.skill_import_zip_too_large':
+    'Skill package ZIP is too large to import.',
   'skillCatalog.toast.archive': 'Skill archived',
   'skillCatalog.toast.created': 'Skill created',
   'skillCatalog.toast.publish': 'Skill version published',
@@ -1550,11 +1564,13 @@ export default {
   'connectorCatalog.actions.rollback': 'Roll back revision',
   'connectorCatalog.actions.save': 'Save draft',
   'connectorCatalog.actions.test': 'Test connection',
+  'connectorCatalog.audit.action.admin.connectors.applyImmediate': 'Apply Connector changes',
   'connectorCatalog.audit.action.admin.connectors.archive': 'Archive Connector',
   'connectorCatalog.audit.action.admin.connectors.createDraft': 'Create Connector draft',
   'connectorCatalog.audit.action.admin.connectors.deleteDraft': 'Delete Connector draft',
   'connectorCatalog.audit.action.admin.connectors.discover': 'Discover Connector tools',
   'connectorCatalog.audit.action.admin.connectors.publish': 'Publish Connector',
+  'connectorCatalog.audit.action.admin.connectors.publishNow': 'Publish Connector now',
   'connectorCatalog.audit.action.admin.connectors.revokeAllBindings': 'Revoke all user connections',
   'connectorCatalog.audit.action.admin.connectors.rollback': 'Roll back Connector revision',
   'connectorCatalog.audit.action.admin.connectors.setSharedAuthorization':
@@ -1790,6 +1806,9 @@ export default {
     'Branding asset storage is unavailable. Ask an operator to configure object storage.',
   'enterprise.error.PLATFORM_IDEMPOTENCY_CONFLICT':
     'This request ID was already used for different changes. Retry as a new action.',
+  // Generic invalid-input copy — never overload with batch / domain-specific text.
+  'enterprise.error.PLATFORM_INVALID_INPUT':
+    'The request is invalid. Check the input and try again.',
   'identityProviders.actions.create': 'New',
   'identityProviders.columns.name': 'Sign-in method',
   'identityProviders.columns.type': 'Type',
@@ -2265,8 +2284,19 @@ export default {
   'audit.logs.action.admin.audit.users.summary': 'View user summary',
   'audit.logs.action.admin.audit.users.timeline': 'View user timeline',
   'audit.logs.action.admin.authSettings.update': 'Update sign-in settings',
+  'audit.logs.action.admin.connectors.applyImmediate': 'Apply connector changes',
+  'audit.logs.action.admin.connectors.archive': 'Archive connector',
+  'audit.logs.action.admin.connectors.createDraft': 'Create connector draft',
+  'audit.logs.action.admin.connectors.deleteDraft': 'Delete connector draft',
+  'audit.logs.action.admin.connectors.discover': 'Discover connector tools',
+  'audit.logs.action.admin.connectors.publish': 'Publish connector',
+  'audit.logs.action.admin.connectors.publishNow': 'Publish connector now',
+  'audit.logs.action.admin.connectors.revokeAllBindings': 'Revoke all user connections',
+  'audit.logs.action.admin.connectors.rollback': 'Roll back connector revision',
   'audit.logs.action.admin.connectors.setSharedAuthorization': 'Set connector shared authorization',
+  'audit.logs.action.admin.connectors.test': 'Test connector connection',
   'audit.logs.action.admin.connectors.updateBuiltinToolPolicy': 'Update built-in tool policy',
+  'audit.logs.action.admin.connectors.updateDraft': 'Update connector draft',
   'audit.logs.action.admin.identityProviders.create': 'Create sign-in method',
   'audit.logs.action.admin.identityProviders.publish': 'Publish sign-in method',
   'audit.logs.action.admin.identityProviders.publish.requestReserved': 'Reserve sign-in publish',
@@ -2420,8 +2450,14 @@ export default {
   'audit.exports.cancel.submit': 'Cancel job',
   'audit.exports.detail.title': 'Export detail',
   'audit.exports.detail.error': 'Error',
-  'audit.exports.error.ENQUEUE_FAILED': 'Failed to queue the export job',
   'audit.exports.error.AUDIT_APPEND_FAILED': 'Failed to record the export audit event',
+  'audit.exports.error.ENQUEUE_FAILED': 'Failed to queue the export job',
+  'audit.exports.error.EXPORT_FAILED': 'Export failed',
+  'audit.exports.error.EXPORT_TERMINAL': 'Export already finished',
+  'audit.exports.error.INVALID_FILTER_SNAPSHOT': 'Invalid export filter snapshot',
+  'audit.exports.error.INVALID_INPUT': 'Invalid export job input',
+  'audit.exports.error.MAX_EXPORT_ROWS_EXCEEDED': 'Export exceeds the maximum row limit',
+  'audit.exports.error.NOT_FOUND': 'Export job not found',
   'audit.exports.error.unknown': 'Export failed',
   'audit.exports.detail.filters': 'Filter snapshot',
   'audit.exports.filter.action': 'Action',

@@ -75,14 +75,38 @@ const extractBody = (error: unknown): EnterpriseErrorBody | null => {
   return null;
 };
 
+/** Stable skill-import reason codes returned as `details.reason` / error message. */
+const isSkillImportReason = (value: string): boolean => /^skill_import_[a-z0-9_]+$/.test(value);
+
+const skillImportI18nKey = (reason: string): string => `skillCatalog.import.error.${reason}`;
+
+const readDetailsReason = (details: EnterpriseErrorBody['details']): string | undefined => {
+  if (!details || typeof details !== 'object') return undefined;
+  const reason = (details as { reason?: unknown }).reason;
+  return typeof reason === 'string' ? reason : undefined;
+};
+
 /**
  * Map tRPC / enterprise errors to stable codes for UI.
  * Prefers structured `errorData` / `cause.data` (EnterpriseErrorBody);
  * falls back to free-text message matching for older callers.
+ *
+ * Skill import failures use enterprise codes (`PLATFORM_INVALID_INPUT` /
+ * `PLATFORM_NOT_FOUND`) with a stable `details.reason` (`skill_import_*`).
+ * Prefer the skill-import locale key so toasts never show the raw reason code.
  */
 export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null => {
   const body = extractBody(error);
   if (body && isEnterpriseErrorCode(body.code)) {
+    const reason = readDetailsReason(body.details);
+    if (reason && isSkillImportReason(reason)) {
+      return {
+        action: ACTION_BY_CODE[body.code] ?? 'none',
+        code: body.code,
+        details: body.details,
+        i18nKey: skillImportI18nKey(reason),
+      };
+    }
     return {
       action: ACTION_BY_CODE[body.code] ?? 'none',
       code: body.code,
@@ -98,7 +122,17 @@ export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null
         ? String((error as { message?: unknown }).message ?? '')
         : '';
 
-  const codeCandidate = normalizeEnterpriseErrorCode(message.trim());
+  const trimmed = message.trim();
+  if (isSkillImportReason(trimmed)) {
+    return {
+      action: 'none',
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: trimmed },
+      i18nKey: skillImportI18nKey(trimmed),
+    };
+  }
+
+  const codeCandidate = normalizeEnterpriseErrorCode(trimmed);
   if (!isEnterpriseErrorCode(codeCandidate)) return null;
 
   return {
