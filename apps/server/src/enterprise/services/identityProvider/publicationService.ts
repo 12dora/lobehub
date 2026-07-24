@@ -56,6 +56,7 @@ export class IdentityProviderPublicationError extends Error {
   constructor(
     public readonly code:
       | 'PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT'
+      | 'PLATFORM_IDENTITY_PROVIDER_DRAFT_REQUIRED'
       | 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT'
       | 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
       | 'PLATFORM_IDENTITY_PROVIDER_NOT_FOUND'
@@ -904,7 +905,7 @@ export class IdentityProviderPublicationService {
           });
         }
         if (draft.status !== 'draft') {
-          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_DRAFT_REQUIRED');
         }
         const payload = toPublishedPayload(draft);
         const [secret] = await tx

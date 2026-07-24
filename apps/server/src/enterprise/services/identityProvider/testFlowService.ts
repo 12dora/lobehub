@@ -216,7 +216,9 @@ export class IdentityProviderTestFlowService {
         'client_id',
         'code_challenge',
         'code_challenge_method',
+        'max_age',
         'nonce',
+        'prompt',
         'redirect_uri',
         'response_type',
         'scope',
@@ -283,6 +285,11 @@ export class IdentityProviderTestFlowService {
       authorizationUrl.searchParams.set('response_type', 'code');
       authorizationUrl.searchParams.set('scope', provider.scopes.join(' '));
       authorizationUrl.searchParams.set('state', attempt.state);
+      // Force a fresh interactive authentication for the safe-login test so it never silently
+      // rides — or is confused with — the admin's ambient IdP session. The test validates
+      // whoever authenticates here; it must be a deliberate login, not the current operator's.
+      authorizationUrl.searchParams.set('prompt', 'login');
+      authorizationUrl.searchParams.set('max_age', '0');
       return {
         attemptId: attempt.attemptId,
         authorizationUrl: authorizationUrl.toString(),

@@ -102,7 +102,21 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
     if (message.includes('SECRET_UNAVAILABLE') || message.includes('SECRET_NOT_READABLE')) {
       return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_NOT_READABLE });
     }
-    if (message.includes('NOT_TESTED') || message.includes('INVALID_SNAPSHOT')) {
+    if (message.includes('DRAFT_REQUIRED') || message.includes('NOT_DRAFT')) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+        details: { reason: 'identity_provider_draft_required' },
+        httpCode: 'PRECONDITION_FAILED',
+      });
+    }
+    if (message.includes('NOT_TESTED')) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+        details: { reason: 'identity_provider_test_required' },
+        httpCode: 'PRECONDITION_FAILED',
+      });
+    }
+    if (message.includes('INVALID_SNAPSHOT')) {
       return throwEnterpriseError({
         code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
         httpCode: 'PRECONDITION_FAILED',
