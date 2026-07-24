@@ -229,6 +229,59 @@ export class PlatformAuditRetentionRunModel {
     return row;
   };
 
+  /**
+   * Atomically add non-negative count deltas (F7). Used when object delete +
+   * outbox complete commit under a lock while the job lease may already be lost —
+   * accounting must still land on the domain row.
+   */
+  incrementCounts = async (
+    id: string,
+    delta: PlatformAuditRetentionCounts,
+    executor: LobeChatDatabase | Transaction = this.db,
+  ): Promise<PlatformAuditRetentionRunItem | undefined> => {
+    const existing = await executor
+      .select()
+      .from(platformAuditRetentionRuns)
+      .where(eq(platformAuditRetentionRuns.id, id))
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!existing) return undefined;
+    if (
+      existing.status === 'completed' ||
+      existing.status === 'failed' ||
+      existing.status === 'cancelled'
+    ) {
+      return undefined;
+    }
+
+    const next: PlatformAuditRetentionCounts = { ...existing.counts };
+    for (const [key, value] of Object.entries(delta)) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
+      const k = key as keyof PlatformAuditRetentionCounts;
+      next[k] = (next[k] ?? 0) + Math.floor(value);
+    }
+
+    const now = new Date();
+    const [row] = await executor
+      .update(platformAuditRetentionRuns)
+      .set({
+        counts: next,
+        // progressDone tracks scanned work, not delete attribution — leave as-is.
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(platformAuditRetentionRuns.id, id),
+          or(
+            eq(platformAuditRetentionRuns.status, 'pending'),
+            eq(platformAuditRetentionRuns.status, 'running'),
+          ),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
   complete = async (
     id: string,
     opts?: { counts?: PlatformAuditRetentionCounts },

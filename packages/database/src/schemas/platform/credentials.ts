@@ -51,6 +51,11 @@ export const platformGlobalCredentials = pgTable(
     type: varchar('type', { length: 32 }).$type<PlatformGlobalCredentialType>().notNull(),
     meta: jsonb('meta').$type<PlatformGlobalCredentialMeta>().notNull().default({}),
     enabled: boolean('enabled').notNull().default(true),
+    /**
+     * Optimistic CAS generation for metadata / secret rotations.
+     * Update requires matching expectedRevision and advances atomically.
+     */
+    revision: integer('revision').notNull().default(0),
     createdBy: text('created_by'),
     updatedBy: text('updated_by'),
     createdAt: createdAt(),
@@ -68,6 +73,7 @@ export const platformGlobalCredentials = pgTable(
       'platform_global_credentials_key_check',
       sql`${t.key} ~ '^[\\w-]+$' AND char_length(${t.key}) >= 1`,
     ),
+    check('platform_global_credentials_revision_check', sql`${t.revision} >= 0`),
   ],
 );
 

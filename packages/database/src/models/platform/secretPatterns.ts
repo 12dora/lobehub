@@ -53,13 +53,16 @@ export const SENSITIVE_KEY_EXACT = new Set(
 );
 
 /**
- * Prefixed vendor tokens / API keys (GitHub PAT, OpenAI-style sk-, Slack xox*).
+ * Prefixed vendor tokens / API keys (GitHub token families, OpenAI-style sk-, Slack xox*).
  * Detection variant (no `g`) for `.test()`; global for `.replaceAll()`.
+ *
+ * GitHub families (docs): ghp_ classic PAT, github_pat_ fine-grained PAT,
+ * gho_ OAuth, ghu_ user-to-server, ghs_ server-to-server, ghr_ refresh.
  */
 export const PREFIXED_SECRET_PATTERN =
-  /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/iu;
+  /(?<![\w-])(?:gh[pousr]_[a-z0-9]{20,}|github_pat_\w{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/iu;
 export const PREFIXED_SECRET_GLOBAL =
-  /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/giu;
+  /(?<![\w-])(?:gh[pousr]_[a-z0-9]{20,}|github_pat_\w{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/giu;
 
 /** Compact JWT shape. */
 export const JWT_PATTERN = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/iu;

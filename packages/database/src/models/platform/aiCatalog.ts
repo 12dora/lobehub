@@ -15,11 +15,19 @@ import type {
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { checksumPayload } from './checksum';
 
+/**
+ * Internal draft secret state.
+ * `fingerprint` is server-only (draft-token / connectivity / secret-version lookup).
+ * Client-facing projections must strip it before validating against `aiSecretStateSchema`.
+ */
 export interface PlatformAiSecretState {
   configured: boolean;
   fingerprint: string | null;
   updatedAt: Date | null;
 }
+
+/** Client-safe secret presence — no fingerprint. */
+export type PlatformAiPublicSecretState = Pick<PlatformAiSecretState, 'configured' | 'updatedAt'>;
 
 export interface PlatformAiModelDraftView {
   abilities: PlatformAiModelAbilities;
@@ -237,11 +245,11 @@ export class PlatformAiCatalogModel {
         logo: provider.logo ?? null,
         providerKey: provider.providerKey,
         revision: provider.revision,
+        // List is a client-facing projection: never emit secret fingerprint.
         secret: {
           configured: Boolean(provider.encryptedKeyVaults),
-          fingerprint: provider.secretFingerprint ?? null,
           updatedAt: provider.secretUpdatedAt ?? null,
-        },
+        } satisfies PlatformAiPublicSecretState,
         settings: provider.settings,
         sort: provider.sort,
         source: provider.source,

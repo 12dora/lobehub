@@ -380,5 +380,36 @@ describe('PlatformJobModel', () => {
       expect(dead?.status).toBe('dead');
       expect(dead?.attempt).toBe(2);
     });
+
+    it('does not reclaim after crash once attempt budget is exhausted', async () => {
+      const { job } = await jobModel.enqueue({
+        idempotencyKey: 'crash-budget-1',
+        maxAttempts: 1,
+        type: 'agent.distribute',
+      });
+
+      const claimed = await jobModel.claimNext({ leaseMs: 5_000, workerId: 'worker-a' });
+      expect(claimed?.id).toBe(job.id);
+      expect(claimed?.attempt).toBe(1);
+      expect(claimed?.status).toBe('running');
+
+      // Uncaught crash: lease expires without fail()/complete().
+      await serverDB
+        .update(platformJobs)
+        .set({ leaseUntil: new Date(Date.now() - 1_000) })
+        .where(eq(platformJobs.id, job.id));
+
+      const reclaimed = await jobModel.claimNext({ leaseMs: 5_000, workerId: 'worker-b' });
+      expect(reclaimed).toBeNull();
+
+      const row = await jobModel.findById(job.id);
+      expect(row?.status).toBe('dead');
+      expect(row?.attempt).toBe(1);
+      expect(row?.leaseOwner).toBeNull();
+      expect(row?.lastError).toMatchObject({
+        code: 'MAX_ATTEMPTS_EXCEEDED',
+        reason: 'lease_expired_after_attempt_budget',
+      });
+    });
   });
 });

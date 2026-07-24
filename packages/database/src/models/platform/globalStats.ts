@@ -43,6 +43,18 @@ import { normalizeInboxAgentMeta } from '../../utils/inboxAgent';
  */
 export const MAX_USAGE_DETAIL_ROWS = 20000;
 
+/**
+ * Chart path cardinality caps for {@link PlatformGlobalStatsModel.findAndGroupByDay}.
+ * Per-user series stays populated for GroupBy.User; long-tail users fold into `other`.
+ */
+export const GROUP_BY_DAY_TOP_USERS = 20;
+/** Max distinct model values kept per day (remainder rolled into `__other__` model). */
+export const GROUP_BY_DAY_MAX_MODELS = 30;
+/** Max distinct provider values kept per day (remainder rolled into `__other__` provider). */
+export const GROUP_BY_DAY_MAX_PROVIDERS = 20;
+/** Synthetic userId for aggregated long-tail users (never blank). */
+export const GROUP_BY_DAY_OTHER_USER_ID = '__other__';
+
 /** Usage row with platform-global user display name (join users). */
 export type GlobalUsageRecordItem = UsageRecordItem & { userDisplay: string };
 
@@ -66,6 +78,133 @@ const MAX_HEATMAP_LEVEL = 4;
 const HEATMAP_MESSAGES_PER_LEVEL = 5;
 
 const userDisplaySql = sql<string>`COALESCE(NULLIF(TRIM(${users.fullName}), ''), NULLIF(TRIM(${users.username}), ''), NULLIF(TRIM(${users.email}), ''), ${users.id})`;
+
+type GroupByDayDimRow = {
+  day: string;
+  model: string;
+  provider: string;
+  spend: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  userDisplay: string | null;
+  userId: string;
+};
+
+/**
+ * Cap day-level chart series: top-N users by tokens + `__other__`, and
+ * model/provider cardinality. Never emits blank userId (GroupBy.User).
+ */
+const capGroupByDayRecords = (day: string, rows: GroupByDayDimRow[]): GlobalUsageRecordItem[] => {
+  if (rows.length === 0) return [];
+
+  // User totals for ranking.
+  const userTotals = new Map<string, { display: string; tokens: number }>();
+  for (const row of rows) {
+    const uid = row.userId || GROUP_BY_DAY_OTHER_USER_ID;
+    const prev = userTotals.get(uid);
+    const tokens = row.totalInputTokens + row.totalOutputTokens;
+    const display = (row.userDisplay || row.userId || GROUP_BY_DAY_OTHER_USER_ID).trim();
+    if (prev) {
+      prev.tokens += tokens;
+    } else {
+      userTotals.set(uid, { display, tokens });
+    }
+  }
+
+  const rankedUsers = [...userTotals.entries()].sort(
+    (a, b) => b[1].tokens - a[1].tokens || a[0].localeCompare(b[0]),
+  );
+  const topUserIds = new Set(rankedUsers.slice(0, GROUP_BY_DAY_TOP_USERS).map(([id]) => id));
+
+  // Model / provider global cardinality for the day (by token mass).
+  const modelTokens = new Map<string, number>();
+  const providerTokens = new Map<string, number>();
+  for (const row of rows) {
+    const tokens = row.totalInputTokens + row.totalOutputTokens;
+    const model = row.model || '__other__';
+    const provider = row.provider || '__other__';
+    modelTokens.set(model, (modelTokens.get(model) ?? 0) + tokens);
+    providerTokens.set(provider, (providerTokens.get(provider) ?? 0) + tokens);
+  }
+  const topModels = new Set(
+    [...modelTokens.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, GROUP_BY_DAY_MAX_MODELS)
+      .map(([id]) => id),
+  );
+  const topProviders = new Set(
+    [...providerTokens.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, GROUP_BY_DAY_MAX_PROVIDERS)
+      .map(([id]) => id),
+  );
+
+  // Merge into (userId, model, provider) buckets after caps.
+  type Bucket = {
+    model: string;
+    provider: string;
+    spend: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    userDisplay: string;
+    userId: string;
+  };
+  const buckets = new Map<string, Bucket>();
+
+  for (const row of rows) {
+    let userId = row.userId || GROUP_BY_DAY_OTHER_USER_ID;
+    let userDisplay = (row.userDisplay || row.userId || 'Other').trim() || userId;
+    if (!topUserIds.has(userId)) {
+      userId = GROUP_BY_DAY_OTHER_USER_ID;
+      userDisplay = 'Other';
+    }
+
+    let model = row.model || '';
+    if (model && !topModels.has(model)) model = '__other__';
+    let provider = row.provider || '';
+    if (provider && !topProviders.has(provider)) provider = '__other__';
+
+    const key = `${userId}\0${model}\0${provider}`;
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.spend += row.spend;
+      existing.totalInputTokens += row.totalInputTokens;
+      existing.totalOutputTokens += row.totalOutputTokens;
+    } else {
+      buckets.set(key, {
+        model,
+        provider,
+        spend: row.spend,
+        totalInputTokens: row.totalInputTokens,
+        totalOutputTokens: row.totalOutputTokens,
+        userDisplay,
+        userId,
+      });
+    }
+  }
+
+  const dayAt = dayjs(day).startOf('day').toDate();
+  return [...buckets.values()].map((b) => {
+    const totalInputTokens = b.totalInputTokens;
+    const totalOutputTokens = b.totalOutputTokens;
+    return {
+      createdAt: dayAt,
+      id: `agg:${day}:${b.userId}:${b.model}:${b.provider}`,
+      model: b.model,
+      provider: b.provider,
+      spend: b.spend,
+      totalInputTokens,
+      totalOutputTokens,
+      totalTokens: totalInputTokens + totalOutputTokens,
+      tps: 0,
+      ttft: 0,
+      type: 'chat' as const,
+      updatedAt: dayAt,
+      userDisplay: b.userDisplay,
+      userId: b.userId,
+    } satisfies GlobalUsageRecordItem;
+  });
+};
 
 export class PlatformGlobalStatsModel {
   private readonly db: LobeChatDatabase;
@@ -601,9 +740,10 @@ export class PlatformGlobalStatsModel {
 
   /**
    * Daily chart aggregates computed in SQL. Never materializes unbounded raw
-   * message rows. Populates `records` with **per-day dimension aggregates**
-   * (model × provider × user) so upstream charts can derive categories /
-   * spend / tokens / call-group counts without loading every message.
+   * message rows. Populates `records` with **capped per-day dimension aggregates**:
+   * top-N users by tokens + an aggregated `__other__` user bucket, with model and
+   * provider cardinality caps (platform-instance/F6). GroupBy.User always gets
+   * non-blank userId/displayName series.
    */
   findAndGroupByDay = async (mo?: string): Promise<GlobalUsageLog[]> => {
     const { endAt, startAt } = this.resolveMonthRange(mo);
@@ -649,7 +789,7 @@ export class PlatformGlobalStatsModel {
         .where(rangeWhere)
         .groupBy(dayExpr)
         .orderBy(asc(dayExpr)),
-      // Dimension rollup for chart categories (bounded by distinct combos/day, not raw rows).
+      // day × user × model × provider — capped in memory (top-N users + other).
       this.db
         .select({
           day: dayExpr.as('day'),
@@ -658,43 +798,27 @@ export class PlatformGlobalStatsModel {
           spend: sql<number>`COALESCE(SUM(${costExpr}), 0)`.mapWith(Number),
           totalInputTokens: sql<number>`COALESCE(SUM(${inputTokensExpr}), 0)`.mapWith(Number),
           totalOutputTokens: sql<number>`COALESCE(SUM(${outputTokensExpr}), 0)`.mapWith(Number),
-          userDisplay: userDisplaySql.as('user_display'),
+          userDisplay: userDisplaySql,
           userId: messages.userId,
         })
         .from(messages)
         .leftJoin(users, eq(messages.userId, users.id))
         .where(rangeWhere)
-        .groupBy(dayExpr, modelExpr, providerExpr, messages.userId, userDisplaySql)
+        .groupBy(dayExpr, messages.userId, userDisplaySql, modelExpr, providerExpr)
         .orderBy(asc(dayExpr)),
     ]);
 
-    const recordsByDay = new Map<string, GlobalUsageRecordItem[]>();
+    type DimRow = (typeof dimRows)[number];
+    const rowsByDay = new Map<string, DimRow[]>();
     for (const row of dimRows) {
-      const dayAt = dayjs(row.day).startOf('day').toDate();
-      const totalInputTokens = row.totalInputTokens;
-      const totalOutputTokens = row.totalOutputTokens;
-      // One row per (day, model, provider, user) — bounded by distinct combos, not raw msgs.
-      // UI charts sum spend/tokens and collect model/provider/userId categories from these.
-      // Call counts should use log.totalRequests (not records.length); see OUT_OF_SCOPE if UI still uses length.
-      const record: GlobalUsageRecordItem = {
-        createdAt: dayAt,
-        id: `agg:${row.day}:${row.model}:${row.provider}:${row.userId}`,
-        model: row.model,
-        provider: row.provider,
-        spend: row.spend,
-        totalInputTokens,
-        totalOutputTokens,
-        totalTokens: totalInputTokens + totalOutputTokens,
-        tps: 0,
-        ttft: 0,
-        type: 'chat',
-        updatedAt: dayAt,
-        userDisplay: row.userDisplay || row.userId,
-        userId: row.userId,
-      };
-      const list = recordsByDay.get(row.day) ?? [];
-      list.push(record);
-      recordsByDay.set(row.day, list);
+      const list = rowsByDay.get(row.day) ?? [];
+      list.push(row);
+      rowsByDay.set(row.day, list);
+    }
+
+    const recordsByDay = new Map<string, GlobalUsageRecordItem[]>();
+    for (const [day, rows] of rowsByDay) {
+      recordsByDay.set(day, capGroupByDayRecords(day, rows));
     }
 
     const byDay = new Map(

@@ -11,6 +11,7 @@ export {
   canonicalizePlatformSkillContent,
   canonicalizePlatformSkillManifest,
   canonicalizePlatformSkillResources,
+  draftView,
   parsePlatformPublishedSkillSnapshot,
   type PlatformPublishedSkillPageView,
   type PlatformPublishedSkillView,

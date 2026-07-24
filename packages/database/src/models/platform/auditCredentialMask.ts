@@ -99,6 +99,15 @@ export const isCredentialKey = (key: string): boolean => {
   return false;
 };
 
+/** Decode percent-encoding; null on malformed sequences (URIError). */
+const tryDecodeURIComponent = (value: string): string | null => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+};
+
 const maskSignedUrlAuthParams = (value: string): string => {
   // Fast path: no query string.
   if (!value.includes('?') && !value.includes('&')) return value;
@@ -106,7 +115,12 @@ const maskSignedUrlAuthParams = (value: string): string => {
   return value.replaceAll(
     /([?&])([^=&#\s]+)=([^&#\s]*)/g,
     (full, sep: string, rawKey: string, _rawVal: string) => {
-      const key = decodeURIComponent(rawKey).toLowerCase();
+      const decoded = tryDecodeURIComponent(rawKey);
+      // Fail closed: malformed encoding must not throw or leave the pair intact.
+      if (decoded === null) {
+        return `${sep}${rawKey}=${REDACTED}`;
+      }
+      const key = decoded.toLowerCase();
       if (SIGNED_URL_AUTH_KEYS.has(key) || SIGNED_URL_AUTH_KEYS.has(key.replaceAll('_', '-'))) {
         return `${sep}${rawKey}=${REDACTED}`;
       }

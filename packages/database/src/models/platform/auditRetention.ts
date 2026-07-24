@@ -463,6 +463,8 @@ export class PlatformAuditRetentionRepository {
   purgeExportArtifactObjectsUnderHoldLock = async (params: {
     deleteObject: (storageKey: string) => Promise<void>;
     ids: string[];
+    onObjectDeleted?: (tx: Transaction, id: string) => Promise<void>;
+    onObjectDeferredHold?: (tx: Transaction, id: string) => Promise<void>;
     resolveHeldIds: (
       tx: Transaction,
       rows: Array<{
@@ -476,6 +478,8 @@ export class PlatformAuditRetentionRepository {
     return exportsModel.purgeArtifactObjectsUnderHoldLock(params.ids, {
       db: this.db as LobeChatDatabase,
       deleteObject: params.deleteObject,
+      onObjectDeleted: params.onObjectDeleted,
+      onObjectDeferredHold: params.onObjectDeferredHold,
       resolveHeldIds: params.resolveHeldIds,
     });
   };
@@ -503,6 +507,18 @@ export class PlatformAuditRetentionRepository {
   }): Promise<Array<{ id: string; storageKey: string }>> => {
     const exportsModel = new PlatformAuditExportModel(this.db);
     return exportsModel.listPendingArtifactPurges(params);
+  };
+
+  /**
+   * F6: dead-lettered export jobs leave domain `running` without worker cleanup.
+   * Promote those rows to failed + durable purge outbox so listPending can drain.
+   */
+  reconcileDeadLetterExportArtifacts = async (params: {
+    buildStorageKey: (exportId: string) => string;
+    limit?: number;
+  }): Promise<number> => {
+    const exportsModel = new PlatformAuditExportModel(this.db);
+    return exportsModel.reconcileDeadLetterExportArtifacts(params);
   };
 
   /**

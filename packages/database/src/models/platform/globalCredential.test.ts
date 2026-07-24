@@ -9,6 +9,7 @@ import {
   platformGlobalCredentialUploads,
 } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+import { PlatformRevisionConflictError } from './errors';
 import {
   assertPlatformGlobalCredentialFileSize,
   fingerprintPayload,
@@ -143,9 +144,11 @@ describe('PlatformGlobalCredentialModel', () => {
       name: 'Rotate',
       type: 'kv-env',
     });
+    expect(created.revision).toBe(0);
 
     const updated = await model.update({
       envelope: fakeEnvelope('v2'),
+      expectedRevision: created.revision,
       id: created.id,
       meta: { valueKeys: ['A', 'B'], maskedPreview: 'configured' },
       name: 'Rotated',
@@ -154,11 +157,98 @@ describe('PlatformGlobalCredentialModel', () => {
 
     expect(updated.name).toBe('Rotated');
     expect(updated.valueKeys).toEqual(['A', 'B']);
+    expect(updated.revision).toBe(1);
     expect(JSON.stringify(updated)).not.toContain('aihub.secret.v1');
 
     const envelope = await model.getActiveSecretEnvelope(created.id);
     expect(envelope?.ciphertext).toBe('aihub.secret.v1.test.v2');
     expect(await model.countSecrets(created.id)).toBe(2);
+  });
+
+  it('rejects stale expectedRevision with a revision conflict', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const created = await model.create({
+      envelope: fakeEnvelope('cas-v1'),
+      key: 'cas-cred',
+      name: 'CAS',
+      type: 'kv-env',
+    });
+    await model.update({
+      expectedRevision: 0,
+      id: created.id,
+      name: 'CAS renamed',
+      updatedBy: 'admin-a',
+    });
+    await expect(
+      model.update({
+        expectedRevision: 0,
+        id: created.id,
+        name: 'stale writer',
+        updatedBy: 'admin-b',
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect((await model.getById(created.id))?.name).toBe('CAS renamed');
+    expect((await model.getById(created.id))?.revision).toBe(1);
+  });
+
+  it('rotates a file credential from a staged upload while preserving id/key', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const actor = 'admin-file-rotate';
+    const created = await model.create({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-v1'),
+      key: 'file-rotate',
+      meta: { fileName: 'old.json', fileSize: 8, maskedPreview: 'old.json' },
+      name: 'File rotate',
+      type: 'file',
+    });
+    const hash = 'a'.repeat(64);
+    await model.stageUpload({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-v2'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hash,
+      fileName: 'new.json',
+      fileSize: 16,
+      fileType: 'application/json',
+    });
+
+    const rotated = await model.updateFromStagedUpload({
+      createdBy: actor,
+      expectedRevision: created.revision,
+      fileHashId: hash,
+      id: created.id,
+      name: 'File rotate',
+    });
+    expect(rotated.id).toBe(created.id);
+    expect(rotated.key).toBe('file-rotate');
+    expect(rotated.fileName).toBe('new.json');
+    expect(rotated.fileSize).toBe(16);
+    expect(rotated.revision).toBe(1);
+    expect((await model.getActiveSecretEnvelope(created.id))?.ciphertext).toBe(
+      'aihub.secret.v1.test.file-v2',
+    );
+    expect(await model.countSecrets(created.id)).toBe(2);
+    await expect(model.getStagedUpload(hash, actor)).resolves.toBeNull();
+
+    // Wrong owner cannot consume another admin's staging row.
+    await model.stageUpload({
+      createdBy: 'other-admin',
+      envelope: fakeEnvelope('file-stolen'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: 'b'.repeat(64),
+      fileName: 'x.json',
+      fileSize: 4,
+      fileType: 'application/json',
+    });
+    await expect(
+      model.updateFromStagedUpload({
+        createdBy: actor,
+        expectedRevision: rotated.revision,
+        fileHashId: 'b'.repeat(64),
+        id: created.id,
+      }),
+    ).rejects.toBeInstanceOf(PlatformGlobalCredentialValidationError);
   });
 
   it('deletes by id and by key', async () => {
@@ -182,9 +272,9 @@ describe('PlatformGlobalCredentialModel', () => {
     await expect(model.deleteByKey('del-b')).resolves.toBe(true);
     await expect(model.getByKey('del-b')).resolves.toBeUndefined();
     await expect(model.deleteById(b.id)).resolves.toBe(false);
-    await expect(model.update({ id: 9_999_999, name: 'missing' })).rejects.toBeInstanceOf(
-      PlatformGlobalCredentialNotFoundError,
-    );
+    await expect(
+      model.update({ expectedRevision: 0, id: 9_999_999, name: 'missing' }),
+    ).rejects.toBeInstanceOf(PlatformGlobalCredentialNotFoundError);
   });
 
   it('stages and consumes file uploads', async () => {

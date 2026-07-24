@@ -10,7 +10,7 @@ import { platformBranding } from '../../schemas/platform/branding';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformAuditLogModel } from './auditLog';
 import { checksumPayload } from './checksum';
-import { PlatformRevisionConflictError, PlatformRevisionImmutableError } from './errors';
+import { PlatformRevisionConflictError } from './errors';
 import { acquireIdentityProviderPublishedRevisionLock } from './identityProviderPublishedRevisionLock';
 import { redactSensitive, type RedactSensitiveOptions } from './redact';
 
@@ -175,20 +175,6 @@ export class PlatformRevisionModel {
         eq(platformResourceRevisions.resourceId, resourceId),
       ),
     });
-  };
-
-  /**
-   * Refuse in-place mutation of any existing revision row.
-   * Callers must append a new revision instead.
-   */
-  assertImmutable = async (revisionId: string): Promise<void> => {
-    const row = await this.db.query.platformResourceRevisions.findFirst({
-      where: eq(platformResourceRevisions.id, revisionId),
-    });
-    if (!row) return;
-    if (row.status === 'published' || row.status === 'archived' || row.status === 'rolled_back') {
-      throw new PlatformRevisionImmutableError();
-    }
   };
 
   /**

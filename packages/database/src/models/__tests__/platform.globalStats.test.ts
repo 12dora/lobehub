@@ -212,18 +212,28 @@ describe('PlatformGlobalStatsModel', () => {
       expect(dayWithData?.totalRequests).toBe(2);
       expect(dayWithData?.totalSpend).toBeCloseTo(0.3);
       expect(dayWithData?.totalTokens).toBe(40);
-      // Chart path: per-day dimension aggregates (model×provider×user), not raw messages.
+      // Chart path: per-user × model × provider with non-blank userId (GroupBy.User).
       expect(dayWithData?.records).toHaveLength(2);
       const aliceAgg = dayWithData?.records.find((r) => r.userId === USER_A);
       const bobAgg = dayWithData?.records.find((r) => r.userId === USER_B);
-      expect(aliceAgg?.model).toBe('gpt-4');
-      expect(aliceAgg?.provider).toBe('openai');
+      expect(aliceAgg).toMatchObject({
+        model: 'gpt-4',
+        provider: 'openai',
+        userDisplay: 'Alice Full',
+        userId: USER_A,
+      });
       expect(aliceAgg?.spend).toBeCloseTo(0.1);
       expect(aliceAgg?.totalTokens).toBe(30);
-      expect(aliceAgg?.userDisplay).toBe('Alice Full');
+      expect(bobAgg).toMatchObject({
+        model: 'gpt-4',
+        provider: 'openai',
+        userDisplay: 'bob',
+        userId: USER_B,
+      });
       expect(bobAgg?.spend).toBeCloseTo(0.2);
       expect(bobAgg?.totalTokens).toBe(10);
-      expect(bobAgg?.userDisplay).toBe('bob');
+      // Never emit blank userId series (would break GroupBy.User).
+      expect(dayWithData?.records.every((r) => Boolean(r.userId))).toBe(true);
 
       vi.useRealTimers();
     });
@@ -284,6 +294,8 @@ describe('PlatformGlobalStatsModel', () => {
       expect(feb29?.records).toHaveLength(1);
       expect(feb29?.records[0]?.model).toBe('gpt-4');
       expect(feb29?.records[0]?.spend).toBe(0.5);
+      expect(feb29?.records[0]?.userId).toBe(USER_A);
+      expect(feb29?.records[0]?.userDisplay).toBe('Alice Full');
 
       vi.useRealTimers();
     });

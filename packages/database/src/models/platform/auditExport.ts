@@ -7,6 +7,7 @@ import {
   type PlatformAuditExportKind,
   platformAuditExports,
   type PlatformAuditExportStatus,
+  platformJobs,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { withPlatformAuditRetentionHoldLock } from './auditRetentionHoldLock';
@@ -34,8 +35,12 @@ type ExportErrorPayload = {
   purgeStorageKey?: string;
 } | null;
 
+/**
+ * Purge outbox is present when `purgeStorageKey` is set — code may still be the
+ * domain failure code (failed/cancelled) or {@link ARTIFACT_PURGE_PENDING_CODE}.
+ */
 export const readPurgeOutboxStorageKey = (error: ExportErrorPayload | undefined): string | null => {
-  if (!error || error.code !== ARTIFACT_PURGE_PENDING_CODE) return null;
+  if (!error) return null;
   const key = error.purgeStorageKey;
   return key && key.length > 0 ? key : null;
 };
@@ -235,10 +240,23 @@ export class PlatformAuditExportModel {
     error: { code?: string; message?: string },
   ): Promise<PlatformAuditExportItem | undefined> => {
     const now = new Date();
+    // Preserve upload-time purge intent across terminal failure (F6).
+    const [existing] = await this.db
+      .select({ error: platformAuditExports.error })
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, id))
+      .limit(1);
+    const priorKey = readPurgeOutboxStorageKey(existing?.error as ExportErrorPayload | undefined);
+    const nextError: ExportErrorPayload = {
+      code: error.code,
+      message: error.message,
+      ...(priorKey ? { purgeStorageKey: priorKey } : {}),
+    };
+
     const [row] = await this.db
       .update(platformAuditExports)
       .set({
-        error,
+        error: nextError,
         finishedAt: now,
         status: 'failed',
         updatedAt: now,
@@ -445,12 +463,20 @@ export class PlatformAuditExportModel {
    * appear between authorize and object destruction.
    *
    * `deleteObject` runs while the lock is held (keep it fast / idempotent).
+   * Optional `onObjectDeleted` runs in the same TX after outbox complete so
+   * retention accounting cannot be lost if the job lease expires mid-delete (F7).
    */
   purgeArtifactObjectsUnderHoldLock = async (
     ids: string[],
     params: {
       db?: LobeChatDatabase;
       deleteObject: (storageKey: string) => Promise<void>;
+      /**
+       * Called after a successful object delete + outbox complete, still inside
+       * the hold-lock transaction. Use to attribute retention counts atomically.
+       */
+      onObjectDeleted?: (tx: Transaction, id: string) => Promise<void>;
+      onObjectDeferredHold?: (tx: Transaction, id: string) => Promise<void>;
       resolveHeldIds: (
         tx: Transaction,
         rows: Array<{
@@ -465,17 +491,26 @@ export class PlatformAuditExportModel {
     const db = params.db ?? (this.db as LobeChatDatabase);
 
     return withPlatformAuditRetentionHoldLock(db, async (tx) => {
-      const { authorized, skippedHold } = await this.recheckPurgeOutboxesUnderTx(
+      const { authorized, skippedHold, deferredIds } = await this.recheckPurgeOutboxesUnderTx(
         tx,
         ids,
         params.resolveHeldIds,
       );
+
+      if (params.onObjectDeferredHold) {
+        for (const id of deferredIds) {
+          await params.onObjectDeferredHold(tx, id);
+        }
+      }
 
       let deleted = 0;
       for (const item of authorized) {
         await params.deleteObject(item.storageKey);
         if (await this.completeArtifactObjectDelete(item.id, tx)) {
           deleted += 1;
+          if (params.onObjectDeleted) {
+            await params.onObjectDeleted(tx, item.id);
+          }
         }
       }
 
@@ -499,6 +534,7 @@ export class PlatformAuditExportModel {
     ) => Promise<Set<string>>,
   ): Promise<{
     authorized: Array<{ id: string; storageKey: string }>;
+    deferredIds: string[];
     skippedHold: number;
   }> => {
     const existingRows = await tx
@@ -518,7 +554,7 @@ export class PlatformAuditExportModel {
       })
       .filter((row): row is NonNullable<typeof row> => row !== null);
 
-    if (pending.length === 0) return { authorized: [], skippedHold: 0 };
+    if (pending.length === 0) return { authorized: [], deferredIds: [], skippedHold: 0 };
 
     const heldIds = await resolveHeldIds(
       tx,
@@ -530,6 +566,7 @@ export class PlatformAuditExportModel {
     );
 
     const authorized: Array<{ id: string; storageKey: string }> = [];
+    const deferredIds: string[] = [];
     let skippedHold = 0;
     const now = new Date();
 
@@ -549,12 +586,106 @@ export class PlatformAuditExportModel {
           })
           .where(eq(platformAuditExports.id, row.id));
         skippedHold += 1;
+        deferredIds.push(row.id);
         continue;
       }
       authorized.push({ id: row.id, storageKey: row.storageKey });
     }
 
-    return { authorized, skippedHold };
+    return { authorized, deferredIds, skippedHold };
+  };
+
+  /**
+   * Record durable cleanup intent **before** an uploaded object may exist (F6).
+   * Survives process crash / claimNext dead-letter without the worker cleanup path.
+   * Does not change status; {@link complete} clears the intent on success.
+   */
+  recordArtifactUploadIntent = async (
+    id: string,
+    storageKey: string,
+    executor: LobeChatDatabase | Transaction = this.db,
+  ): Promise<boolean> => {
+    if (!storageKey) return false;
+    const now = new Date();
+    const [existing] = await executor
+      .select({ error: platformAuditExports.error, status: platformAuditExports.status })
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, id))
+      .limit(1);
+    if (!existing || (existing.status !== 'running' && existing.status !== 'pending')) {
+      return false;
+    }
+    const prior = (existing.error ?? null) as ExportErrorPayload;
+    const alreadyKey = readPurgeOutboxStorageKey(prior);
+    if (alreadyKey && alreadyKey !== storageKey) return false;
+
+    const [row] = await executor
+      .update(platformAuditExports)
+      .set({
+        error: {
+          code:
+            prior?.code &&
+            prior.code !== ARTIFACT_PURGE_PENDING_CODE &&
+            prior.code !== ARTIFACT_PURGE_DEFERRED_HOLD_CODE
+              ? prior.code
+              : ARTIFACT_PURGE_PENDING_CODE,
+          message: prior?.message,
+          purgeStorageKey: storageKey,
+        },
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(platformAuditExports.id, id),
+          or(
+            eq(platformAuditExports.status, 'running'),
+            eq(platformAuditExports.status, 'pending'),
+          ),
+        ),
+      )
+      .returning({ id: platformAuditExports.id });
+    return Boolean(row);
+  };
+
+  /**
+   * Promote running exports whose platform job was dead-lettered (lease expiry /
+   * attempt budget) into terminal failed + durable purge outbox (F6).
+   * claimNext can mark the job dead without invoking the export worker cleanup path.
+   * Returns the number of exports transitioned.
+   */
+  reconcileDeadLetterExportArtifacts = async (params?: {
+    /** Deterministic object key for an export id (same as worker upload key). */
+    buildStorageKey: (exportId: string) => string;
+    limit?: number;
+  }): Promise<number> => {
+    if (!params?.buildStorageKey) return 0;
+    const limit = clampListLimit(params.limit);
+
+    // Running domain + dead job: worker never got a chance to fail/enqueue outbox.
+    const abandoned = await this.db
+      .select({
+        error: platformAuditExports.error,
+        id: platformAuditExports.id,
+        storageKey: platformAuditExports.storageKey,
+      })
+      .from(platformAuditExports)
+      .innerJoin(platformJobs, eq(platformAuditExports.jobId, platformJobs.id))
+      .where(and(eq(platformAuditExports.status, 'running'), eq(platformJobs.status, 'dead')))
+      .orderBy(desc(platformAuditExports.updatedAt), desc(platformAuditExports.id))
+      .limit(limit);
+
+    let n = 0;
+    for (const row of abandoned) {
+      const key =
+        row.storageKey ||
+        readPurgeOutboxStorageKey(row.error as ExportErrorPayload | undefined) ||
+        params.buildStorageKey(row.id);
+      const failed = await this.fail(row.id, { code: 'EXPORT_FAILED' });
+      if (!failed) continue;
+      await this.enqueueArtifactObjectPurge(row.id, key);
+      n += 1;
+    }
+    return n;
   };
 
   /**
@@ -574,9 +705,11 @@ export class PlatformAuditExportModel {
       .from(platformAuditExports)
       .where(
         and(
-          eq(platformAuditExports.status, 'expired'),
+          // Include failed/cancelled so cleanup after upload/cancel is never stranded.
+          inArray(platformAuditExports.status, ['expired', 'failed', 'cancelled']),
           isNull(platformAuditExports.storageKey),
-          sql`${platformAuditExports.error}->>'code' = ${ARTIFACT_PURGE_PENDING_CODE}`,
+          // Outbox is keyed by purgeStorageKey (may keep domain fail code).
+          sql`coalesce(${platformAuditExports.error}->>'purgeStorageKey', '') <> ''`,
         ),
       )
       .orderBy(desc(platformAuditExports.updatedAt), desc(platformAuditExports.id))
@@ -588,6 +721,57 @@ export class PlatformAuditExportModel {
         return storageKey ? { id: row.id, storageKey } : null;
       })
       .filter((row): row is { id: string; storageKey: string } => row !== null);
+  };
+
+  /**
+   * Durable purge outbox for failed / cancelled / expired exports that may still
+   * hold a private object (deterministic key or cleared storageKey).
+   * Retention {@link listPendingArtifactPurges} drains these until delete confirms.
+   */
+  enqueueArtifactObjectPurge = async (
+    id: string,
+    storageKey: string,
+    executor: LobeChatDatabase | Transaction = this.db,
+  ): Promise<boolean> => {
+    if (!storageKey) return false;
+    const now = new Date();
+    // Preserve domain failure code/message when attaching the purge key (tests + ops).
+    const [existing] = await executor
+      .select({ error: platformAuditExports.error })
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, id))
+      .limit(1);
+    const prior = (existing?.error ?? null) as ExportErrorPayload;
+    const alreadyKey = readPurgeOutboxStorageKey(prior);
+    if (alreadyKey && alreadyKey !== storageKey) return false;
+
+    const [row] = await executor
+      .update(platformAuditExports)
+      .set({
+        error: {
+          code:
+            prior?.code && prior.code !== ARTIFACT_PURGE_PENDING_CODE
+              ? prior.code
+              : ARTIFACT_PURGE_PENDING_CODE,
+          message: prior?.message,
+          purgeStorageKey: storageKey,
+        },
+        storageKey: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(platformAuditExports.id, id),
+          or(
+            eq(platformAuditExports.status, 'failed'),
+            eq(platformAuditExports.status, 'cancelled'),
+            eq(platformAuditExports.status, 'expired'),
+            eq(platformAuditExports.status, 'completed'),
+          ),
+        ),
+      )
+      .returning({ id: platformAuditExports.id });
+    return Boolean(row);
   };
 
   /**
@@ -607,19 +791,26 @@ export class PlatformAuditExportModel {
       .where(eq(platformAuditExports.id, id))
       .limit(1);
 
-    if (!readPurgeOutboxStorageKey(existing?.error)) return false;
+    const prior = existing?.error as ExportErrorPayload | undefined;
+    if (!readPurgeOutboxStorageKey(prior)) return false;
+
+    // Drop only the purge key. Keep domain fail/cancel codes for operators & tests.
+    const retainedError =
+      prior?.code && prior.code !== ARTIFACT_PURGE_PENDING_CODE
+        ? { code: prior.code, message: prior.message }
+        : null;
 
     const [row] = await executor
       .update(platformAuditExports)
       .set({
-        error: null,
+        error: retainedError,
         updatedAt: new Date(),
       })
       .where(
         and(
           eq(platformAuditExports.id, id),
-          // Only clear while still purge-pending (lost races / double-complete stay safe).
-          sql`${platformAuditExports.error}->>'code' = ${ARTIFACT_PURGE_PENDING_CODE}`,
+          // Only clear while a purge key is still present (lost races stay safe).
+          sql`coalesce(${platformAuditExports.error}->>'purgeStorageKey', '') <> ''`,
         ),
       )
       .returning({ id: platformAuditExports.id });

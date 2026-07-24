@@ -42,6 +42,12 @@ export class PlatformSidebarLayoutModel {
     actorId: string | null,
     next: PlatformSidebarLayout,
   ): Promise<PlatformSidebarLayout> => {
+    // Fail closed at the model boundary before insert: mode must be an exact allowed value.
+    // (Schema CHECK + migration still required on existing DBs — see db-core.)
+    if (next.mode !== 'user' && next.mode !== 'platform') {
+      throw new Error(`Invalid sidebar layout mode: ${String(next.mode)}`);
+    }
+
     await this.db
       .insert(platformSidebarLayout)
       .values({
