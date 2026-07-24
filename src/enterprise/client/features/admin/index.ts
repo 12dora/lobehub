@@ -7,6 +7,5 @@ export { default as AdminSideNav } from './layout/AdminSideNav';
 export { ManagedResourcesPolicyPage } from './managedResources';
 export { default as NotFoundPage } from './pages/NotFoundPage';
 export { default as OverviewPage } from './pages/OverviewPage';
-export { default as PlaceholderPage } from './pages/PlaceholderPage';
 export * from './primitives';
 export { UserDetailPage, UsersListPage } from './users';

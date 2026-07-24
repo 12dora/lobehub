@@ -62,11 +62,6 @@ export interface AdminNavItem {
    */
   path: string;
   /**
-   * Placeholder for modules not yet implemented (M04+).
-   * Still registered so deep links resolve to a deliberate "coming soon" surface.
-   */
-  placeholder?: boolean;
-  /**
    * Permissions required to show the item / enter the route.
    * Empty array means only shell access (`platform_admin:access:all`) is required.
    * User must have **all** listed permissions.
@@ -74,7 +69,7 @@ export interface AdminNavItem {
   requiredPermissions: readonly string[];
 }
 
-/** Planned admin IA — keep in sync with docs/redevelopment/list/03_前端路由与页面清单.md */
+/** Admin IA — keep in sync with docs/enterprise/reference/admin-routes.md */
 export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
   {
     id: 'overview',
@@ -86,7 +81,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'stats',
     labelKey: 'nav.stats',
     path: '/admin/stats',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.STATS_READ],
   },
   {
@@ -94,7 +88,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     labelKey: 'nav.users',
     path: '/admin/users',
     // M04: real list page
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
   },
   {
@@ -103,7 +96,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     labelKey: 'nav.userDetail',
     path: '/admin/users/:id',
     // M04: real detail page
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
   },
   {
@@ -112,7 +104,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     labelKey: 'nav.reauthComplete',
     path: '/admin/reauth-complete',
     // Popup landing after Better Auth reauth — no extra permission
-    placeholder: false,
     requiredPermissions: [],
   },
   {
@@ -121,7 +112,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'unified-management',
     labelKey: 'nav.unifiedManagement',
     path: '/admin/unified',
-    placeholder: false,
     requiredPermissions: [],
   },
   {
@@ -131,7 +121,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     labelKey: 'nav.settings',
     // M05: production settings policy page
     path: '/admin/settings',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
   },
   {
@@ -142,7 +131,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'managed-resources',
     labelKey: 'nav.managedResources',
     path: '/admin/managed-resources',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.POLICY_READ],
   },
   {
@@ -151,7 +139,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-providers',
         labelKey: 'nav.aiProviders',
         path: '/admin/ai/providers',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
@@ -159,21 +146,18 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-provider-detail',
         labelKey: 'nav.aiProviderDetail',
         path: '/admin/ai/providers/:id',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
         id: 'ai-service-model',
         labelKey: 'nav.aiServiceModel',
         path: '/admin/ai/service-model',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
       },
       {
         id: 'ai-skills',
         labelKey: 'nav.aiSkills',
         path: '/admin/ai/skills',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
       },
       {
@@ -181,14 +165,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-skill-detail',
         labelKey: 'nav.aiSkillDetail',
         path: '/admin/ai/skills/:id',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
       },
       {
         id: 'ai-connectors',
         labelKey: 'nav.aiConnectors',
         path: '/admin/ai/connectors',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
       },
       {
@@ -196,14 +178,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-connector-detail',
         labelKey: 'nav.aiConnectorDetail',
         path: '/admin/ai/connectors/:id',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
       },
       {
         id: 'ai-memory',
         labelKey: 'nav.aiMemory',
         path: '/admin/ai/memory',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
       },
       // Advanced draft/publish/revision catalog (former self-built pages) — hidden from nav
@@ -212,7 +192,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-catalog-providers',
         labelKey: 'nav.aiCatalogProviders',
         path: '/admin/ai/catalog/providers',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
@@ -220,7 +199,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-catalog-provider-detail',
         labelKey: 'nav.aiCatalogProviderDetail',
         path: '/admin/ai/catalog/providers/:id',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
@@ -228,14 +206,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-catalog-models',
         labelKey: 'nav.aiCatalogModels',
         path: '/admin/ai/catalog/models',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ],
       },
     ],
     id: 'ai',
     labelKey: 'nav.ai',
     path: '/admin/ai',
-    placeholder: true,
     requiredPermissions: [],
   },
   // Advanced catalog (former top-level) — routes kept, hidden from nav
@@ -244,7 +220,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'skills',
     labelKey: 'nav.skills',
     path: '/admin/skills',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
   },
   {
@@ -252,7 +227,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'skills-detail',
     labelKey: 'nav.skillDetail',
     path: '/admin/skills/:id',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
   },
   {
@@ -260,7 +234,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'connectors',
     labelKey: 'nav.connectors',
     path: '/admin/connectors',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
   },
   {
@@ -268,14 +241,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'connectors-detail',
     labelKey: 'nav.connectorDetail',
     path: '/admin/connectors/:id',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
   },
   {
     id: 'agents',
     labelKey: 'nav.agents',
     path: '/admin/agents',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
   },
   {
@@ -283,7 +254,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'agents-detail',
     labelKey: 'nav.agentDetail',
     path: '/admin/agents/:id',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
   },
   {
@@ -292,14 +262,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'identity-providers',
     labelKey: 'nav.securityAuth',
     path: '/admin/identity-providers',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],
   },
   {
     id: 'branding',
     labelKey: 'nav.branding',
     path: '/admin/branding',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
   },
   {
@@ -308,21 +276,18 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'audit-logs',
         labelKey: 'nav.auditLogs',
         path: '/admin/audit/logs',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_READ],
       },
       {
         id: 'audit-live',
         labelKey: 'nav.auditLive',
         path: '/admin/audit/live',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
       {
         id: 'audit-conversations',
         labelKey: 'nav.auditConversations',
         path: '/admin/audit/conversations',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
       {
@@ -330,7 +295,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'audit-conversation-user',
         labelKey: 'nav.auditConversationUser',
         path: '/admin/audit/conversations/:userId',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
       {
@@ -338,35 +302,30 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'audit-conversation-topic',
         labelKey: 'nav.auditConversationTopic',
         path: '/admin/audit/conversations/:userId/topics/:topicId',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
       },
       {
         id: 'audit-exports',
         labelKey: 'nav.auditExports',
         path: '/admin/audit/exports',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_EXPORT],
       },
       {
         id: 'audit-legal-holds',
         labelKey: 'nav.auditLegalHolds',
         path: '/admin/audit/holds',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE],
       },
       {
         id: 'audit-retention',
         labelKey: 'nav.auditRetention',
         path: '/admin/audit/retention',
-        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_RETENTION_OPERATE],
       },
     ],
     id: 'audit',
     labelKey: 'nav.audit',
     path: '/admin/audit',
-    placeholder: false,
     // Group shell: visible when any child is allowed (same as `ai` group).
     requiredPermissions: [],
   },
@@ -374,7 +333,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'system',
     labelKey: 'nav.system',
     path: '/admin/system',
-    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
   },
 ] as const;

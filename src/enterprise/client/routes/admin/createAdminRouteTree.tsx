@@ -23,14 +23,13 @@ export const createAdminRouteTree = (extensionRoutes: RouteObject[] = []): Route
     // Convert absolute /admin/foo to relative foo under the /admin parent.
     // Exact segment boundary only — never strip `/administrator`.
     const relative = item.path === '/admin' ? '' : item.path.replace(/^\/admin\//, '');
-    const page = resolveAdminPage(item.id, item.placeholder);
+    const page = resolveAdminPage(item.id);
     return {
       element: page.element,
       handle: {
         admin: {
           componentId: page.componentId,
           id: item.id,
-          placeholder: item.placeholder ?? false,
           requiredPermissions: item.requiredPermissions,
         },
       },
@@ -38,7 +37,7 @@ export const createAdminRouteTree = (extensionRoutes: RouteObject[] = []): Route
     } satisfies RouteObject;
   });
 
-  const reauthPage = resolveAdminPage(reauthComplete.id, reauthComplete.placeholder);
+  const reauthPage = resolveAdminPage(reauthComplete.id);
 
   return [
     {
@@ -47,7 +46,6 @@ export const createAdminRouteTree = (extensionRoutes: RouteObject[] = []): Route
         admin: {
           componentId: reauthPage.componentId,
           id: reauthComplete.id,
-          placeholder: false,
           requiredPermissions: reauthComplete.requiredPermissions,
         },
       },
@@ -61,7 +59,6 @@ export const createAdminRouteTree = (extensionRoutes: RouteObject[] = []): Route
             admin: {
               componentId: 'OverviewPage',
               id: 'overview',
-              placeholder: false,
               requiredPermissions: [],
             },
           },

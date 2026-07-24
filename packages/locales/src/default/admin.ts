@@ -798,6 +798,8 @@ export default {
 
   'nav.userDetail': 'User detail',
   'nav.users': 'Users',
+  'groupRedirect.noAccess': 'You do not have access to any page in this section.',
+  'groupRedirect.redirecting': 'Opening the first page you can access…',
   'notFound.desc': 'This admin page does not exist or is not available.',
   'notFound.title': 'Page not found',
   'overview.desc':
@@ -843,9 +845,6 @@ export default {
   'page.backHome': 'Back to app',
   'page.forbidden.desc': 'You do not have permission to open this page.',
   'page.forbidden.title': 'Forbidden',
-  'placeholder.desc':
-    'This management area is reserved for a later module. The route is registered so deep links resolve safely; functionality is not available yet.',
-  'placeholder.title': 'Coming soon',
   'primitives.dangerConfirm.cancel': 'Cancel',
   'primitives.dangerConfirm.confirm': 'Confirm',
   'primitives.dataTable.empty': 'No results',
@@ -2236,7 +2235,6 @@ export default {
   'nav.auditExports': 'Evidence exports',
   'nav.auditLegalHolds': 'Data retention',
   'nav.auditRetention': 'General settings',
-  'audit.redirecting': 'Opening the first audit page you can access…',
   'audit.noPermission': 'You do not have permission to use any audit tools on this account.',
   'audit.shared.userSearchPlaceholder': 'Search users by email, username, or name',
   'audit.shared.clearFilters': 'Clear filters',
