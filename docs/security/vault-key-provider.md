@@ -86,4 +86,4 @@ AIHUB_TEST_VAULT_INTEGRATION=1 \
 
 只对一次性本地开发 Vault 使用该引导方式。不得把 root token 保存到 `.env`、测试快照、报告或 CI artifact。
 
-总体安全边界与验收要求见 [M13 安全加固计划](../redevelopment/plan/M13_安全、Secret、SSRF、重新认证与审计加固.md)。
+总体安全边界与验收要求见 [企业威胁模型](./enterprise-threat-model.md)。
