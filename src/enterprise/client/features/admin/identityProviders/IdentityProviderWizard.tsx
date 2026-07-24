@@ -1,7 +1,7 @@
 'use client';
 
 import { DEFAULT_IDP_BUTTON_LABEL, type PlatformIdentityProviderDraft } from '@lobechat/types';
-import { Alert, copyToClipboard, Flexbox, Tag, Text } from '@lobehub/ui';
+import { copyToClipboard, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -12,8 +12,10 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
+  classifyIdentityProviderWorkflowError,
   type IdentityProviderCreateDraftSeed,
   IdentityProviderTestPopupBlockedError,
+  isIdentityProviderDraftWorkflowReady,
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRevisionRefresh,
@@ -33,13 +35,9 @@ import {
   type EditableDraft,
   PolicyStep,
   PublishStep,
-  TestStep,
 } from './steps';
 import { identityProviderStyles as styles } from './styles';
-import {
-  useIdentityProviderRevisionHistory,
-  useIdentityProviderTestResult,
-} from './useIdentityProviders';
+import { useIdentityProviderTestResult } from './useIdentityProviders';
 import { useUnsavedIdentityProviderGuard } from './useUnsavedIdentityProviderGuard';
 
 const fromSeed = (seed: IdentityProviderCreateDraftSeed): EditableDraft => ({
@@ -90,7 +88,7 @@ interface IdentityProviderWizardProps {
   onDirtyChange: (dirty: boolean) => void;
   onDiscard: () => void;
   onRefresh: () => Promise<unknown>;
-  /** Called after save/publish/rollback; pass the mutation response so revision CAS stays fresh. */
+  /** Called after save/publish; pass the mutation response so revision CAS stays fresh. */
   onSaved: (saved?: PlatformIdentityProviderDraft) => Promise<unknown>;
   provider?: PlatformIdentityProviderDraft;
 }
@@ -142,17 +140,11 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     > | null>(null);
     const [networkValid, setNetworkValid] = useState(false);
     const [busy, setBusy] = useState<string | null>(null);
-    const [error, setError] = useState<string | null>(null);
     const [attempt, setAttempt] = useState<{ id: string; startedAt: number } | null>(null);
     const [testPolling, setTestPolling] = useState(false);
     const testResult = useIdentityProviderTestResult(attempt?.id ?? null, testPolling, () =>
       setTestPolling(false),
     );
-    const revisions = useIdentityProviderRevisionHistory(
-      provider?.id,
-      Boolean(provider && canPublish),
-    );
-    const [rollbackTarget, setRollbackTarget] = useState<number | undefined>(undefined);
     const [conflict, setConflict] = useState(false);
     const [conflictRefreshFailed, setConflictRefreshFailed] = useState(false);
     const lastProviderRevisionRef = useRef(provider?.revision);
@@ -167,6 +159,10 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     );
     const invalidJson = jsonErrors.claims;
     const dirty = JSON.stringify(draft) !== baseline || Boolean(secret) || clearSecret;
+    const draftWorkflowReady = isIdentityProviderDraftWorkflowReady(provider);
+    const testSucceeded =
+      testResult.data?.status === 'succeeded' && Boolean(testResult.data.result?.valid);
+    const isLastStep = step === IDENTITY_PROVIDER_STEPS.at(-1);
 
     useEffect(() => {
       const refresh = resolveIdentityProviderRevisionRefresh({
@@ -207,8 +203,22 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       if (cause instanceof IdentityProviderTestPopupBlockedError) {
         return t('identityProviders.test.popupBlocked');
       }
-      if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
+      const mapped = mapEnterpriseError(cause);
+      if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
         return t('identityProviders.conflict.description');
+      }
+      if (mapped?.code === 'PLATFORM_SSRF_BLOCKED') {
+        return t('identityProviders.errors.networkBlocked');
+      }
+      if (mapped?.code === 'PLATFORM_OIDC_DISCOVERY_FAILED') {
+        return t('identityProviders.errors.discoveryFailed');
+      }
+      const workflowError = classifyIdentityProviderWorkflowError(cause);
+      if (workflowError === 'draft-required') {
+        return t('identityProviders.workflow.draftRequired');
+      }
+      if (workflowError === 'test-required') {
+        return t('identityProviders.workflow.testRequired');
       }
       return t('identityProviders.errors.generic');
     };
@@ -224,7 +234,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
 
     const run = async (name: string, action: () => Promise<void>, propagate = true) => {
       setBusy(name);
-      setError(null);
       try {
         await action();
       } catch (cause) {
@@ -233,7 +242,8 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           preserveDraftOnRefreshRef.current = true;
           await refreshConflict();
         }
-        setError(friendlyError(cause));
+        // Surface all operation failures as a toast; the wizard body stays about the form.
+        toast.error(friendlyError(cause));
         if (propagate) throw cause;
       } finally {
         setBusy(null);
@@ -258,7 +268,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         !draft.issuer ||
         !draft.clientId
       ) {
-        setError(t('identityProviders.errors.required'));
+        toast.error(t('identityProviders.errors.required'));
         return;
       }
       openReasonModal({
@@ -322,6 +332,10 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
 
     const startTest = () => {
       if (!provider) return;
+      if (!draftWorkflowReady) {
+        toast.error(t('identityProviders.workflow.draftRequired'));
+        return;
+      }
       openReasonModal({
         authMethod,
         buildPayload: (reason) => ({ reason }),
@@ -343,50 +357,30 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       });
     };
 
-    const publish = (rollback = false) => {
+    const publish = () => {
       if (!provider) return;
-      if (rollback && !rollbackTarget) {
-        setError(t('identityProviders.rollback.targetRequired'));
+      if (!draftWorkflowReady) {
+        toast.error(t('identityProviders.workflow.draftRequired'));
         return;
       }
       openReasonModal({
         authMethod,
         buildPayload: (reason) => ({ reason }),
-        danger: rollback,
-        impact: t(
-          rollback ? 'identityProviders.rollback.impact' : 'identityProviders.publish.impact',
-        ),
+        impact: t('identityProviders.publish.impact'),
         onSubmit: async (payload) =>
-          run(rollback ? 'rollback' : 'publish', async () => {
-            const common = {
+          run('publish', async () => {
+            const published = await adminIdentityProvidersService.publish({
               expectedRevision: provider.revision,
               id: provider.id,
               reason: (payload as { reason: string }).reason,
               requestId: crypto.randomUUID(),
-            };
-            if (rollback) {
-              const rolled = await adminIdentityProvidersService.rollback({
-                ...common,
-                targetRevision: rollbackTarget!,
-              });
-              await onSaved(rolled);
-            } else {
-              const published = await adminIdentityProvidersService.publish(common);
-              await onSaved(published);
-            }
-            toast.success(
-              t(
-                rollback
-                  ? 'identityProviders.rollback.success'
-                  : 'identityProviders.publish.success',
-              ),
-            );
+            });
+            await onSaved(published);
+            toast.success(t('identityProviders.publish.success'));
           }),
-        submitLabel: t(
-          rollback ? 'identityProviders.actions.rollback' : 'identityProviders.actions.publish',
-        ),
+        submitLabel: t('identityProviders.actions.publish'),
         targetLabel: provider.displayName,
-        title: t(rollback ? 'identityProviders.rollback.title' : 'identityProviders.publish.title'),
+        title: t('identityProviders.publish.title'),
       });
     };
 
@@ -413,8 +407,6 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       const discoveryComplete = Boolean(draft.issuer && networkValid && discovery);
       const clientComplete = Boolean(draft.clientId && (secret || provider?.secret.configured));
       const claimsComplete = !jsonErrors.claims;
-      const testComplete =
-        testResult.data?.status === 'succeeded' && Boolean(testResult.data.result?.valid);
       return {
         basic: basicComplete ? 'complete' : 'pending',
         claims: jsonErrors.claims ? 'error' : claimsComplete ? 'complete' : 'pending',
@@ -426,12 +418,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           provider?.status === 'active' ||
           provider?.status === 'pending_restart'
             ? 'complete'
-            : 'pending',
-        test: testComplete
-          ? 'complete'
-          : testResult.data?.status === 'failed'
-            ? 'error'
-            : 'pending',
+            : testResult.data?.status === 'failed'
+              ? 'error'
+              : 'pending',
       };
     }, [
       discovery,
@@ -497,61 +486,49 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         case 'policy': {
           return <PolicyStep draft={draft} patch={patch} />;
         }
-        case 'test': {
-          return (
-            <TestStep
-              attempt={attempt}
-              busy={busy}
-              canTest={canTest}
-              dirty={dirty}
-              hasProvider={Boolean(provider)}
-              resultError={Boolean(testResult.error)}
-              testResult={testResult.data}
-              onRetryResult={() => void testResult.mutate()}
-              onStartTest={startTest}
-            />
-          );
-        }
         case 'publish': {
           return (
             <PublishStep
-              activationRevision={provider?.activationRevision}
+              attempt={attempt}
               busy={busy}
               canPublish={canPublish}
+              canTest={canTest}
               dirty={dirty}
+              draftWorkflowReady={draftWorkflowReady}
               hasProvider={Boolean(provider)}
-              historyError={Boolean(revisions.error)}
-              revisions={revisions.data}
-              rollbackTarget={rollbackTarget}
-              onPublish={publish}
-              onRetryHistory={() => void revisions.mutate()}
-              onRollbackTargetChange={setRollbackTarget}
+              resultError={Boolean(testResult.error)}
+              testResult={testResult.data}
+              testSucceeded={testSucceeded}
+              onRetryResult={() => void testResult.mutate()}
+              onStartTest={startTest}
             />
           );
         }
       }
     };
 
+    const typeLabel =
+      (provider?.type ?? draft.type) === 'authentik'
+        ? 'Authentik'
+        : t('identityProviders.templates.genericOidc.label');
+
     return (
       <div
         className={embedded ? styles.stack : styles.panel}
         data-testid="identity-provider-wizard"
       >
-        <IdentityProviderWizardNavigation stepStates={stepStates} value={step} onChange={setStep} />
-        {provider ? (
-          <Flexbox horizontal align="center" gap={8}>
-            <Tag>{t(`identityProviders.values.providerStatus.${provider.status}` as never)}</Tag>
-            {dirty ? <Text type="secondary">{t('identityProviders.unsaved')}</Text> : null}
-          </Flexbox>
-        ) : (
+        <Flexbox horizontal align="center" gap={8} justify="space-between">
           <Text type="secondary">
-            {t('identityProviders.newProvider')} ·{' '}
-            {draft.type === 'authentik'
-              ? 'Authentik'
-              : t('identityProviders.templates.genericOidc.label')}
+            {provider ? typeLabel : `${t('identityProviders.newProvider')} · ${typeLabel}`}
           </Text>
-        )}
-        {error ? <Alert showIcon description={error} type="error" /> : null}
+          <Flexbox horizontal align="center" gap={8}>
+            {dirty ? <Text type="secondary">{t('identityProviders.unsaved')}</Text> : null}
+            <Tag>
+              {t(`identityProviders.values.providerStatus.${provider?.status ?? 'draft'}` as never)}
+            </Tag>
+          </Flexbox>
+        </Flexbox>
+        <IdentityProviderWizardNavigation stepStates={stepStates} value={step} onChange={setStep} />
         {conflict ? (
           <IdentityProviderConflictAlert
             refreshFailed={conflictRefreshFailed}
@@ -567,7 +544,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           <Flexbox horizontal gap={8}>
             <Button
               loading={busy === 'save'}
-              type="primary"
+              type={isLastStep ? 'default' : 'primary'}
               disabled={
                 invalidJson || conflictRefreshFailed || (provider ? !canUpdate : !canCreate)
               }
@@ -575,12 +552,20 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             >
               {t('identityProviders.actions.save')}
             </Button>
-            <Button
-              disabled={invalidJson || step === IDENTITY_PROVIDER_STEPS.at(-1)}
-              onClick={() => navigateStep(1)}
-            >
-              {t('identityProviders.actions.next')}
-            </Button>
+            {isLastStep ? (
+              <Button
+                disabled={!provider || !draftWorkflowReady || dirty || !canPublish}
+                loading={busy === 'publish'}
+                type="primary"
+                onClick={publish}
+              >
+                {t('identityProviders.actions.publish')}
+              </Button>
+            ) : (
+              <Button disabled={invalidJson} onClick={() => navigateStep(1)}>
+                {t('identityProviders.actions.next')}
+              </Button>
+            )}
           </Flexbox>
         </Flexbox>
       </div>

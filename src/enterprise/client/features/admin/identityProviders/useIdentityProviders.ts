@@ -42,13 +42,6 @@ export const useIdentityProviderTestResult = (
     },
   );
 
-export const useIdentityProviderRevisionHistory = (id: string | undefined, enabled: boolean) =>
-  useClientDataSWR(
-    enabled && id ? ['admin.identityProviders.revisions', id] : null,
-    () => adminIdentityProvidersService.listPublishedRevisions(id!),
-    { revalidateOnFocus: false },
-  );
-
 export const useAuthSnapshotStatus = (enabled: boolean, poll: boolean) =>
   useClientDataSWR(
     enabled ? ['admin.system.authSnapshotStatus'] : null,

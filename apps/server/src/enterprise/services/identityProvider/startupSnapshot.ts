@@ -22,6 +22,7 @@ import {
   readIdentityProviderLkg,
   writeIdentityProviderLkg,
 } from './lkg';
+import { resolveIdentityProviderOutboundMode } from './outboundMode';
 import { parsePublishedIdentityProviderPayload } from './publicationService';
 import {
   commitIdentityProviderStartupFailure,
@@ -408,7 +409,9 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
   const secrets = PlatformSecretService.tryFromEnv(env);
   const discovery =
     options.discovery ??
-    new IdentityProviderDiscoveryValidator(new SafeOutboundHttpClient({ mode: 'public-only' }));
+    new IdentityProviderDiscoveryValidator(
+      new SafeOutboundHttpClient({ mode: resolveIdentityProviderOutboundMode(env) }),
+    );
   let databaseError: unknown = new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE');
   /** Tombstones validated before a later live-provider failure — applied to LKG fallback. */
   let validatedTombstones: ValidatedTombstone[] = [];

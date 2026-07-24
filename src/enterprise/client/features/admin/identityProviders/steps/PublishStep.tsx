@@ -1,95 +1,127 @@
 'use client';
 
-import { Alert, Flexbox, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 
-type RevisionItem = Awaited<
-  ReturnType<typeof adminIdentityProvidersService.listPublishedRevisions>
->[number];
+type TestResult = Awaited<ReturnType<typeof adminIdentityProvidersService.testResult>>;
 
 interface PublishStepProps {
-  activationRevision: number | null | undefined;
+  attempt: { id: string; startedAt: number } | null;
   busy: string | null;
   canPublish: boolean;
+  canTest: boolean;
   dirty: boolean;
+  draftWorkflowReady: boolean;
   hasProvider: boolean;
-  historyError: boolean;
-  onPublish: (rollback: boolean) => void;
-  onRetryHistory: () => void;
-  onRollbackTargetChange: (value: number | undefined) => void;
-  revisions: RevisionItem[] | undefined;
-  rollbackTarget: number | undefined;
+  onRetryResult: () => void;
+  onStartTest: () => void;
+  resultError: boolean;
+  testResult: TestResult | undefined;
+  testSucceeded: boolean;
 }
 
+/**
+ * Final wizard step. Hosts the safe login test (the publish hard-precondition) and
+ * the publish guidance; the publish action itself rides the footer's primary button.
+ * Rollback / revision selection was intentionally removed — the login method keeps a
+ * single mutable draft head.
+ */
 export const PublishStep = memo<PublishStepProps>(
   ({
-    activationRevision,
+    attempt,
     busy,
     canPublish,
+    canTest,
     dirty,
+    draftWorkflowReady,
     hasProvider,
-    historyError,
-    onPublish,
-    onRetryHistory,
-    onRollbackTargetChange,
-    revisions,
-    rollbackTarget,
+    onRetryResult,
+    onStartTest,
+    resultError,
+    testResult,
+    testSucceeded,
   }) => {
     const { t } = useTranslation('admin');
 
     return (
-      <Flexbox gap={12}>
-        <Text>{t('identityProviders.publish.description')}</Text>
-        <Flexbox horizontal gap={8}>
-          <Button
-            disabled={!hasProvider || dirty || !canPublish}
-            loading={busy === 'publish'}
-            type="primary"
-            onClick={() => onPublish(false)}
-          >
-            {t('identityProviders.actions.publish')}
-          </Button>
-          <Select
-            aria-label={t('identityProviders.rollback.target')}
-            placeholder={t('identityProviders.rollback.target')}
-            style={{ minWidth: 220 }}
-            value={rollbackTarget}
-            options={(revisions ?? [])
-              .filter((item) => item.revision !== activationRevision)
-              .map((item) => ({
-                label: t('identityProviders.rollback.revisionOption', {
-                  publishedAt: item.publishedAt.toLocaleString(),
-                  revision: item.revision,
-                }),
-                value: item.revision,
-              }))}
-            onChange={(value) => onRollbackTargetChange(value as number | undefined)}
-          />
-          <Button
-            danger
-            disabled={!activationRevision || !rollbackTarget || dirty || !canPublish}
-            loading={busy === 'rollback'}
-            onClick={() => onPublish(true)}
-          >
-            {t('identityProviders.actions.rollback')}
-          </Button>
+      <Flexbox gap={20}>
+        <Flexbox gap={8}>
+          <Text strong>{t('identityProviders.test.title')}</Text>
+          <Text type="secondary">{t('identityProviders.test.description')}</Text>
+          {hasProvider && !draftWorkflowReady ? (
+            <Alert
+              showIcon
+              description={t('identityProviders.workflow.draftRequired')}
+              type="warning"
+            />
+          ) : null}
+          <Flexbox horizontal>
+            <Button
+              disabled={!hasProvider || !draftWorkflowReady || dirty || !canTest}
+              loading={busy === 'test'}
+              onClick={onStartTest}
+            >
+              {t('identityProviders.actions.startTest')}
+            </Button>
+          </Flexbox>
+          {attempt && Date.now() - attempt.startedAt > 120_000 ? (
+            <Alert showIcon description={t('identityProviders.test.timeout')} type="warning" />
+          ) : null}
+          {testResult ? (
+            <Alert
+              showIcon
+              description={t('identityProviders.test.status', {
+                status: t(`identityProviders.values.testStatus.${testResult.status}` as never),
+              })}
+              type={
+                testResult.status === 'succeeded' && testResult.result?.valid
+                  ? 'success'
+                  : testResult.status === 'failed'
+                    ? 'error'
+                    : 'info'
+              }
+            />
+          ) : null}
+          {testResult?.result ? (
+            <Flexbox horizontal gap={6} wrap="wrap">
+              {Object.entries(testResult.result.claims).map(([claim, summary]) => (
+                <Tag key={claim}>
+                  {t('identityProviders.test.claimPresent', {
+                    claim,
+                    type: t(`identityProviders.values.claimType.${summary.type}` as never),
+                  })}
+                </Tag>
+              ))}
+            </Flexbox>
+          ) : null}
+          {resultError ? (
+            <Alert
+              showIcon
+              description={t('identityProviders.test.resultLoadError')}
+              type="error"
+              action={
+                <Button size="small" onClick={onRetryResult}>
+                  {t('identityProviders.actions.retry')}
+                </Button>
+              }
+            />
+          ) : null}
         </Flexbox>
-        {historyError ? (
-          <Alert
-            showIcon
-            description={t('identityProviders.rollback.historyLoadError')}
-            type="error"
-            action={
-              <Button size="small" onClick={onRetryHistory}>
-                {t('identityProviders.actions.retry')}
-              </Button>
-            }
-          />
-        ) : null}
+        <Flexbox gap={8}>
+          <Text strong>{t('identityProviders.publish.title')}</Text>
+          <Text type="secondary">{t('identityProviders.publish.description')}</Text>
+          {hasProvider && draftWorkflowReady && canPublish && !testSucceeded ? (
+            <Alert
+              showIcon
+              description={t('identityProviders.workflow.testRequired')}
+              type="info"
+            />
+          ) : null}
+        </Flexbox>
       </Flexbox>
     );
   },

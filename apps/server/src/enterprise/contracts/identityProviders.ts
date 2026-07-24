@@ -268,6 +268,10 @@ export const adminIdentityProviderDiscoverInputSchema = z
 export const adminIdentityProviderDiscoveryOutputSchema = z
   .object({
     authorizationEndpoint: z.string().url(),
+    // RFC 9207 support flag surfaced by the discovery validator; part of the metadata the
+    // runtime carries, so the strict discovery response must accept it (absence caused the
+    // "发现并校验网络" 500 / output-validation failure).
+    authorizationResponseIssParameterSupported: z.boolean(),
     codeChallengeMethodsSupported: z.array(z.string()),
     idTokenSigningAlgValuesSupported: z.array(z.string()),
     issuer: z.string().url(),

@@ -6,6 +6,7 @@ import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { AdminIdentityProviderService } from '../../services/identityProvider/adminService';
 import { createIdentityProviderSecurityFoundation } from '../../services/identityProvider/factory';
+import { resolveIdentityProviderOutboundMode } from '../../services/identityProvider/outboundMode';
 import { IdentityProviderTestFlowService } from '../../services/identityProvider/testFlowService';
 
 export interface AdminIdentityProviderRuntime {
@@ -27,8 +28,9 @@ export const createAdminIdentityProviderRuntime = (
   const flags = parseEnterpriseFeatureFlags(env);
   const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise(env, flags);
   if (!secretService) throw new Error('PLATFORM_SECRET_REQUIRED');
-  // Shared outbound client so test token/userinfo exchange uses the same public-only boundary.
-  const outbound = new SafeOutboundHttpClient({ mode: 'public-only' });
+  // Shared outbound client so test token/userinfo exchange uses the same SSRF boundary as
+  // discovery. Honors SSRF_ALLOW_PRIVATE_IP_ADDRESS so internal-network issuers work end-to-end.
+  const outbound = new SafeOutboundHttpClient({ mode: resolveIdentityProviderOutboundMode(env) });
   const publicAppUrl = env === process.env ? appEnv.APP_URL : env.APP_URL;
   if (!publicAppUrl) throw new Error('PLATFORM_APP_URL_INVALID');
   return {

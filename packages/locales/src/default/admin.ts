@@ -591,7 +591,7 @@ export default {
     'Server settings changed while you were editing. Discard local changes and reload to continue.',
   'generalSettings.stale.refresh': 'Discard and refresh',
   'generalSettings.stale.title': 'Settings updated on the server',
-  'securityAuth.tabs.login': 'Login & access',
+  'securityAuth.tabs.login': 'Login methods',
   'securityAuth.tabs.general': 'General settings',
   'sidebarLayout.title': 'Sidebar layout',
   'sidebarLayout.desc':
@@ -1868,11 +1868,15 @@ export default {
   'identityProviders.empty': 'No sign-in methods yet. Click "New" to add one.',
   'identityProviders.emptyHint':
     'Choose Authentik or a generic OIDC provider to configure work-account sign-in.',
+  'identityProviders.errors.discoveryFailed':
+    'Could not read the OIDC discovery document from this issuer. Check the issuer URL and that the provider is reachable, then retry.',
   'identityProviders.errors.forbidden': 'You do not have permission to view identity providers.',
   'identityProviders.errors.generic':
     'The identity provider operation could not be completed. Review the current state and retry.',
   'identityProviders.errors.invalidJson': 'Enter valid JSON before continuing.',
   'identityProviders.errors.load': 'Identity providers could not be loaded.',
+  'identityProviders.errors.networkBlocked':
+    'The issuer address was blocked by the network policy. It must be a public, resolvable HTTPS endpoint (private and internal addresses are rejected).',
   'identityProviders.errors.required':
     'Display name, provider key, issuer, and client ID are required.',
   'identityProviders.fields.autoProvision': 'Automatically provision eligible users',
@@ -1991,6 +1995,10 @@ export default {
   'identityProviders.unsaved.discard': 'Discard local draft',
   'identityProviders.unsaved.stay': 'Keep editing',
   'identityProviders.unsaved.title': 'Discard unsaved identity provider changes?',
+  'identityProviders.workflow.draftRequired':
+    'Save this login method as a draft before testing or publishing it.',
+  'identityProviders.workflow.testRequired':
+    'Complete a successful safe login test for this draft before publishing it.',
   'identityProviders.revision': 'Revision {{revision}}',
   'identityProviders.values.claimType.string': 'text',
   'identityProviders.values.degraded.break_glass_fallback': 'break-glass fallback',
