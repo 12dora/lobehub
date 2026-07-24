@@ -326,6 +326,7 @@ export default {
   'aiCatalog.editor.sort': 'Sort order',
   'aiCatalog.editor.test.failure': 'Connection test failed',
   'aiCatalog.editor.test.message.failure': 'Connection probe failed',
+  'aiCatalog.editor.test.message.pending': 'Connection test in progress',
   'aiCatalog.editor.test.message.success': 'Connection probe succeeded',
   'aiCatalog.editor.test.notRun': 'No persisted connection test result yet.',
   'aiCatalog.editor.test.pending': 'Connection test pending',
@@ -586,6 +587,10 @@ export default {
     'You have unsaved registration or allowlist changes. Leave anyway?',
   'generalSettings.unsaved.leave': 'Leave without saving',
   'generalSettings.unsaved.stay': 'Keep editing',
+  'generalSettings.stale.description':
+    'Server settings changed while you were editing. Discard local changes and reload to continue.',
+  'generalSettings.stale.refresh': 'Discard and refresh',
+  'generalSettings.stale.title': 'Settings updated on the server',
   'securityAuth.tabs.login': 'Login & access',
   'securityAuth.tabs.general': 'General settings',
   'sidebarLayout.title': 'Sidebar layout',
@@ -641,6 +646,8 @@ export default {
     'Validation failed — changes stay as draft until fixed.',
   'aiSettings.draftBanner.error.publish_failed': 'Publish failed — changes stay as draft.',
   'aiSettings.draftBanner.error.version_required': 'A version is required before publish.',
+  'aiSettings.draftBanner.retryFailed':
+    'Publish retry failed. Try again or open advanced catalog management.',
   'aiToolSettings.connectors.partialLoadFailed':
     '{{count}} connectors failed to load; retry to refresh.',
   'aiSettingsDefaults.dirtyDraft.title': 'Unpublished settings draft blocks save',
@@ -1214,6 +1221,7 @@ export default {
   'users.toast.roleRevokeSuccess': 'Role revoked',
   'users.toast.savedRefreshFailed':
     'Saved, but the latest view could not be refreshed. Reload if it looks stale.',
+  'users.stale.refreshFailed': 'Showing cached data — the latest refresh failed.',
   'users.errors.reauthRequired':
     'Recent re-authentication is required for this action. Sign out and sign in again, then retry.',
   'users.errors.lastSuperAdmin': 'This action would remove the last permanent super admin.',
@@ -1776,6 +1784,10 @@ export default {
     'Web surfaces refresh after publication. Desktop package fields remain rebuild-only.',
   'branding.publish.title': 'Publish Branding revision',
   'branding.readOnly': 'You can inspect Branding, but you do not have permission to edit it.',
+  'branding.refresh.committedFailed':
+    'Branding was published, but refreshing the editor failed. Retry refresh before making more changes.',
+  'branding.refresh.committedTitle': 'Published — refresh required',
+  'branding.refresh.retry': 'Retry refresh',
   'branding.rollback.description': 'Restore revision #{{revision}} into the editable draft.',
   'branding.rollback.impact':
     'Published Branding does not change now. Review and publish the restored draft separately.',
@@ -1810,6 +1822,8 @@ export default {
   'enterprise.error.PLATFORM_INVALID_INPUT':
     'The request is invalid. Check the input and try again.',
   'identityProviders.actions.create': 'New',
+  'identityProviders.actions.disable': 'Disable',
+  'identityProviders.columns.actions': 'Actions',
   'identityProviders.columns.name': 'Sign-in method',
   'identityProviders.columns.type': 'Type',
   'identityProviders.columns.status': 'Status',
@@ -1824,6 +1838,12 @@ export default {
   'identityProviders.actions.rollback': 'Rollback',
   'identityProviders.actions.save': 'Save draft',
   'identityProviders.actions.startTest': 'Start safe login test',
+  'identityProviders.disable.cancel': 'Cancel',
+  'identityProviders.disable.confirm': 'Disable provider',
+  'identityProviders.disable.impact':
+    'This publishes a signed tombstone revision. The provider will stop accepting logins after instances reload. This cannot be undone without republishing a new configuration.',
+  'identityProviders.disable.success': 'Provider disabled — restart required',
+  'identityProviders.disable.title': 'Disable identity provider',
   'identityProviders.callback.copy': 'Copy',
   'identityProviders.callback.copied': 'Callback URL copied.',
   'identityProviders.callback.copyFailed': 'Could not copy the callback URL.',
@@ -1895,6 +1915,7 @@ export default {
     'The controlled restart was not accepted. Review the runtime status and retry the restart.',
   'identityProviders.restart.failedAccepted':
     'Restart request {{requestId}} did not converge to revision {{revision}} before its deadline. Retry starts a new controlled restart.',
+  'identityProviders.restart.failedWithCategory': 'Restart failed ({{category}})',
   'identityProviders.restart.target': 'Identity provider runtime',
   'identityProviders.restart.title': 'Activate published identity configuration?',
   'identityProviders.restart.unsupported':
@@ -2625,6 +2646,10 @@ export default {
   'audit.live.empty.pickUser': 'Pick a user to start watching.',
   'audit.live.empty.noConversationPermission':
     'You do not have permission to view conversation content.',
+  'audit.live.errors.loadFailed': 'Failed to refresh the live feed. Retry or check connectivity.',
+  'audit.live.errors.loadMoreMessages': 'Failed to load older messages. Try again.',
+  'audit.live.errors.loadMoreTopics': 'Failed to load more topics. Try again.',
+  'audit.live.errors.retry': 'Retry',
   'audit.live.banner.contentAllowed':
     'Chat text is loaded here and this access is written to the audit log.',
   'audit.live.banner.metadataOnly': 'Policy allows metadata only — message text stays hidden.',
