@@ -40,6 +40,13 @@ const payload: PlatformConnectorRevisionPayload = {
 };
 const checksum = checksumPayload(payload);
 const connector = (overrides: Partial<PlatformConnectorItem> = {}): PlatformConnectorItem => ({
+  connectionTestErrorCategory: null,
+  connectionTestLatencyMs: null,
+  connectionTestMessageCode: null,
+  connectionTestStatus: null,
+  connectionTestedAt: null,
+  connectionTestedDraftToken: null,
+  connectionTestedRevision: null,
   connectorKey: 'catalog',
   createdAt: new Date(),
   createdBy: null,

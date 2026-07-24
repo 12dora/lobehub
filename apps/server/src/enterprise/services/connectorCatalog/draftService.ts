@@ -53,7 +53,7 @@ import type {
 } from './catalogTypes';
 import {
   clearConnectorConnectionTest,
-  resolveConnectorConnectionTest,
+  projectConnectorConnectionTestFromRow,
 } from './connectionTestState';
 import { PlatformConnectorContractError } from './errors';
 import { assertConnectorPersistentTextSafe } from './secretBoundary';
@@ -217,11 +217,13 @@ const toDraft = (
     });
   }
   const draftToken = connectorDraftToken(draft);
-  const connectionTest = resolveConnectorConnectionTest(connector.id, {
+  // Durable columns only (multi-instance). Projected from the already-loaded row —
+  // no extra query and no process-local authorization fallback.
+  const fromRow = projectConnectorConnectionTestFromRow(connector, {
     draftToken,
     revision: draft.revision,
   });
-  return connectionTest ? { ...draft, connectionTest } : draft;
+  return fromRow ? { ...draft, connectionTest: fromRow } : draft;
 };
 
 const listAllTools = async (
@@ -253,12 +255,14 @@ export const loadConnectorDraft = async (
   const repository = new PlatformConnectorCatalogRepository(db);
   const connector = await repository.getConnector(connectorId);
   if (!connector) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
+  // Single connector read already includes durable connection-test columns.
   const draft = toDraft(connector, await listAllTools(db, connectorId));
   return { draft, draftToken: connectorDraftToken(draft) };
 };
 
 /**
  * Bulk draft load: 1 connectors query + 1 tools query.
+ * Connection-test state is projected from already-loaded rows (no per-id N+1).
  * Missing ids are absent from the map (caller reports failedIds).
  */
 export const loadConnectorDraftsBatch = async (
@@ -718,8 +722,8 @@ export class ConnectorCatalogDraftService {
         });
         return { auditId: audit.id };
       });
-      // Process-local test map is not transactional; clear only after commit.
-      clearConnectorConnectionTest(command.id);
+      // Durable row is gone with the connector; no process-local authorization cache.
+      await clearConnectorConnectionTest(null, command.id);
       return result;
     } catch (error) {
       await appendConnectorFailureAudit(

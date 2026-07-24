@@ -7,7 +7,11 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import { cleanupM09ServiceData, MemoryConnectorSecretStore } from './catalogTestUtils';
-import { resetConnectorConnectionTestStateForTest } from './connectionTestState';
+import {
+  recordConnectorConnectionTest,
+  resetConnectorConnectionTestMemoryForTest,
+  resetConnectorConnectionTestStateForTest,
+} from './connectionTestState';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { ConnectorCatalogDiscoveryService } from './discoveryService';
 import { ConnectorCatalogDraftService, loadConnectorDraft } from './draftService';
@@ -172,6 +176,16 @@ describe('ConnectorCatalogDiscoveryService', () => {
       reason: 'enable discovered tools',
       tools: enabledTools,
     });
+    // Publish requires a revision/token-bound successful connection test (server gate).
+    await recordConnectorConnectionTest(db, created.draft.id, {
+      errorCategory: null,
+      latencyMs: 1,
+      messageCode: 'connector.operation_succeeded',
+      status: 'success',
+      testedAt: new Date(),
+      testedDraftToken: saved.draftToken,
+      testedRevision: saved.draft.revision,
+    });
     const outbound = {
       getPolicyVersion: () => 1,
       preflight: vi.fn(async () => ({ policyVersion: 1 })),
@@ -280,6 +294,9 @@ describe('ConnectorCatalogDiscoveryService', () => {
       messageCode: 'connector.operation_succeeded',
       status: 'success',
     });
+
+    // Drop process-local L1 — multi-instance refetch must still read durable columns.
+    resetConnectorConnectionTestMemoryForTest();
 
     // Refetch must surface a non-stale success bound to the current revision/token.
     const refetched = await loadConnectorDraft(db, connectorId);
