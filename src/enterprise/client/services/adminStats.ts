@@ -32,6 +32,14 @@ class AdminStatsService {
 
   totals = async (activeDays?: number) => lambdaClient.admin.stats.totals.query({ activeDays });
 
+  /** User totals only — avoids unused lifetime message/topic/agent counts. */
+  userTotals = async (activeDays?: number) =>
+    lambdaClient.admin.stats.userTotals.query({ activeDays });
+
+  /** Bounded daily token series for the overview chart (no per-message payload). */
+  usageDailyTokenTotals = async (mo?: string) =>
+    lambdaClient.admin.stats.usageDailyTokenTotals.query({ mo });
+
   usageFindAndGroupByDay = async (mo?: string) =>
     lambdaClient.admin.stats.usageFindAndGroupByDay.query({ mo });
 

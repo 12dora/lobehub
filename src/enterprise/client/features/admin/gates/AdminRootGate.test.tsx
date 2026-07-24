@@ -1,9 +1,10 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import AdminAccessProvider from '@/enterprise/client/providers/AdminAccessProvider';
+import { createAdminRouteTree } from '@/enterprise/client/routes/admin/createAdminRouteTree';
 
 import AdminPermissionOutlet from './AdminPermissionOutlet';
 import AdminRootGate from './AdminRootGate';
@@ -111,18 +112,51 @@ const BusinessChild = () => {
   return <div data-testid="business-child">secret data</div>;
 };
 
+const ExtensionSentinel = () => {
+  childBusinessFetch();
+  return <div data-testid="extension-sentinel">extension secret</div>;
+};
+
+/** Data router required for useMatches() inside AdminPermissionOutlet. */
+const renderDataRouter = (
+  routes: Parameters<typeof createMemoryRouter>[0],
+  initialPath: string,
+) => {
+  const router = createMemoryRouter(routes, { initialEntries: [initialPath] });
+  return render(<RouterProvider router={router} />);
+};
+
 const renderGate = (initialPath = '/admin') =>
-  render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route element={<AdminRootGate />} path="/admin">
-          <Route index element={<BusinessChild />} />
-          <Route element={<BusinessChild />} path="users" />
-          <Route element={<BusinessChild />} path="ai/providers/:id" />
-          <Route element={<BusinessChild />} path="connectors/:id" />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+  renderDataRouter(
+    [
+      {
+        children: [
+          { element: <BusinessChild />, index: true },
+          { element: <BusinessChild />, path: 'users' },
+          { element: <BusinessChild />, path: 'ai/providers/:id' },
+          { element: <BusinessChild />, path: 'connectors/:id' },
+        ],
+        element: <AdminRootGate />,
+        path: '/admin',
+      },
+    ],
+    initialPath,
+  );
+
+const renderPermissionTree = (initialPath: string, childPath: string) =>
+  renderDataRouter(
+    [
+      {
+        children: [{ element: <BusinessChild />, path: childPath }],
+        element: (
+          <AdminAccessProvider fetchAccess={fetchAccess}>
+            <AdminPermissionOutlet />
+          </AdminAccessProvider>
+        ),
+        path: '/admin',
+      },
+    ],
+    initialPath,
   );
 
 describe('AdminRootGate (production mount)', () => {
@@ -226,17 +260,7 @@ describe('AdminPermissionOutlet permissions', () => {
       roles: [],
     });
 
-    render(
-      <MemoryRouter initialEntries={['/admin/ai/providers/p1']}>
-        <AdminAccessProvider fetchAccess={fetchAccess}>
-          <Routes>
-            <Route element={<AdminPermissionOutlet />} path="/admin">
-              <Route element={<BusinessChild />} path="ai/providers/:id" />
-            </Route>
-          </Routes>
-        </AdminAccessProvider>
-      </MemoryRouter>,
-    );
+    renderPermissionTree('/admin/ai/providers/p1', 'ai/providers/:id');
 
     await waitFor(() => {
       expect(screen.getByTestId('business-child')).toBeTruthy();
@@ -250,17 +274,7 @@ describe('AdminPermissionOutlet permissions', () => {
       roles: [],
     });
 
-    render(
-      <MemoryRouter initialEntries={['/admin/ai/providers/p1']}>
-        <AdminAccessProvider fetchAccess={fetchAccess}>
-          <Routes>
-            <Route element={<AdminPermissionOutlet />} path="/admin">
-              <Route element={<BusinessChild />} path="ai/providers/:id" />
-            </Route>
-          </Routes>
-        </AdminAccessProvider>
-      </MemoryRouter>,
-    );
+    renderPermissionTree('/admin/ai/providers/p1', 'ai/providers/:id');
 
     await waitFor(() => {
       expect(screen.getByText('page.forbidden.title')).toBeTruthy();
@@ -275,16 +289,19 @@ describe('AdminPermissionOutlet permissions', () => {
       roles: [],
     });
 
-    render(
-      <MemoryRouter initialEntries={['/admin/unknown-thing']}>
-        <AdminAccessProvider fetchAccess={fetchAccess}>
-          <Routes>
-            <Route element={<AdminPermissionOutlet />} path="/admin/*">
-              <Route element={<BusinessChild />} path="*" />
-            </Route>
-          </Routes>
-        </AdminAccessProvider>
-      </MemoryRouter>,
+    renderDataRouter(
+      [
+        {
+          children: [{ element: <BusinessChild />, path: '*' }],
+          element: (
+            <AdminAccessProvider fetchAccess={fetchAccess}>
+              <AdminPermissionOutlet />
+            </AdminAccessProvider>
+          ),
+          path: '/admin',
+        },
+      ],
+      '/admin/unknown-thing',
     );
 
     await waitFor(() => {
@@ -300,17 +317,7 @@ describe('AdminPermissionOutlet permissions', () => {
       roles: [],
     });
 
-    render(
-      <MemoryRouter initialEntries={['/admin/connectors/c1']}>
-        <AdminAccessProvider fetchAccess={fetchAccess}>
-          <Routes>
-            <Route element={<AdminPermissionOutlet />} path="/admin">
-              <Route element={<BusinessChild />} path="connectors/:id" />
-            </Route>
-          </Routes>
-        </AdminAccessProvider>
-      </MemoryRouter>,
-    );
+    renderPermissionTree('/admin/connectors/c1', 'connectors/:id');
 
     await waitFor(() => {
       expect(screen.getByText('page.forbidden.title')).toBeTruthy();
@@ -325,20 +332,190 @@ describe('AdminPermissionOutlet permissions', () => {
       roles: [{ displayName: 'Auditor', name: 'auditor' }],
     });
 
-    render(
-      <MemoryRouter initialEntries={['/admin/connectors/c1']}>
-        <AdminAccessProvider fetchAccess={fetchAccess}>
-          <Routes>
-            <Route element={<AdminPermissionOutlet />} path="/admin">
-              <Route element={<BusinessChild />} path="connectors/:id" />
-            </Route>
-          </Routes>
-        </AdminAccessProvider>
-      </MemoryRouter>,
-    );
+    renderPermissionTree('/admin/connectors/c1', 'connectors/:id');
 
     await waitFor(() => {
       expect(screen.getByTestId('business-child')).toBeTruthy();
     });
+  });
+});
+
+describe('registered extension routes under AdminRootGate', () => {
+  const extensionRoutes = [
+    {
+      element: <ExtensionSentinel />,
+      handle: {
+        admin: {
+          id: 'ext-sentinel',
+          requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
+        },
+      },
+      path: 'extensions/sentinel',
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    childBusinessFetch.mockClear();
+    authState.isLoaded = true;
+    authState.isSignedIn = false;
+    serverConfigState.platformAdmin = true;
+    serverConfigState.serverConfigInit = true;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        href: 'http://localhost/admin/extensions/sentinel',
+        pathname: '/admin/extensions/sentinel',
+        toString: () => 'http://localhost/admin/extensions/sentinel',
+      },
+    });
+  });
+
+  const renderExtensionTree = () =>
+    renderDataRouter(createAdminRouteTree(extensionRoutes), '/admin/extensions/sentinel');
+
+  it('anonymous: never mounts extension sentinel', async () => {
+    authState.isSignedIn = false;
+    renderExtensionTree();
+
+    await waitFor(() => {
+      expect(screen.getByText('access.signInRedirect')).toBeTruthy();
+    });
+    expect(childBusinessFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('extension-sentinel')).toBeNull();
+  });
+
+  it('ordinary user: shell forbidden, sentinel never mounts', async () => {
+    authState.isSignedIn = true;
+    fetchAccess.mockResolvedValue({
+      hasAdminAccess: false,
+      permissions: [],
+      roles: [],
+    });
+    renderExtensionTree();
+
+    await waitFor(() => {
+      expect(screen.getByText('access.forbidden.title')).toBeTruthy();
+    });
+    expect(childBusinessFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('extension-sentinel')).toBeNull();
+  });
+
+  it('admin without extension permission: page 403, sentinel never mounts', async () => {
+    authState.isSignedIn = true;
+    fetchAccess.mockResolvedValue({
+      hasAdminAccess: true,
+      permissions: [PLATFORM_PERMISSIONS.ADMIN_ACCESS, PLATFORM_PERMISSIONS.USER_READ],
+      roles: [],
+    });
+    renderExtensionTree();
+
+    await waitFor(() => {
+      expect(screen.getByText('page.forbidden.title')).toBeTruthy();
+    });
+    expect(childBusinessFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('extension-sentinel')).toBeNull();
+  });
+
+  it('authorized admin: extension sentinel mounts under gates', async () => {
+    authState.isSignedIn = true;
+    fetchAccess.mockResolvedValue({
+      hasAdminAccess: true,
+      permissions: [PLATFORM_PERMISSIONS.ADMIN_ACCESS, PLATFORM_PERMISSIONS.SYSTEM_READ],
+      roles: [],
+    });
+    renderExtensionTree();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('extension-sentinel')).toBeTruthy();
+    });
+    expect(childBusinessFetch).toHaveBeenCalled();
+  });
+
+  it('nested child with empty requiredPermissions cannot override parent permission', async () => {
+    authState.isSignedIn = true;
+    // Has admin shell access but lacks parent SYSTEM_READ.
+    fetchAccess.mockResolvedValue({
+      hasAdminAccess: true,
+      permissions: [PLATFORM_PERMISSIONS.ADMIN_ACCESS, PLATFORM_PERMISSIONS.USER_READ],
+      roles: [],
+    });
+
+    const nestedExtensionRoutes = [
+      {
+        children: [
+          {
+            element: <ExtensionSentinel />,
+            handle: {
+              admin: {
+                id: 'ext-child-empty',
+                // Empty = access-only at this segment; must still satisfy parent.
+                requiredPermissions: [] as const,
+              },
+            },
+            path: 'leaf',
+          },
+        ],
+        handle: {
+          admin: {
+            id: 'ext-parent',
+            requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
+          },
+        },
+        path: 'extensions/nested',
+      },
+    ];
+
+    renderDataRouter(createAdminRouteTree(nestedExtensionRoutes), '/admin/extensions/nested/leaf');
+
+    await waitFor(() => {
+      expect(screen.getByText('page.forbidden.title')).toBeTruthy();
+    });
+    expect(childBusinessFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('extension-sentinel')).toBeNull();
+  });
+
+  it('nested child requires union of parent + child permissions', async () => {
+    authState.isSignedIn = true;
+    fetchAccess.mockResolvedValue({
+      hasAdminAccess: true,
+      permissions: [
+        PLATFORM_PERMISSIONS.ADMIN_ACCESS,
+        PLATFORM_PERMISSIONS.SYSTEM_READ,
+        PLATFORM_PERMISSIONS.USER_READ,
+      ],
+      roles: [],
+    });
+
+    const nestedExtensionRoutes = [
+      {
+        children: [
+          {
+            element: <ExtensionSentinel />,
+            handle: {
+              admin: {
+                id: 'ext-child',
+                requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
+              },
+            },
+            path: 'leaf',
+          },
+        ],
+        handle: {
+          admin: {
+            id: 'ext-parent',
+            requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
+          },
+        },
+        path: 'extensions/nested',
+      },
+    ];
+
+    renderDataRouter(createAdminRouteTree(nestedExtensionRoutes), '/admin/extensions/nested/leaf');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('extension-sentinel')).toBeTruthy();
+    });
+    expect(childBusinessFetch).toHaveBeenCalled();
   });
 });

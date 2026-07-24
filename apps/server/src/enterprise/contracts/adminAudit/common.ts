@@ -55,4 +55,10 @@ export const platformAuditLegalHoldScopeTypeSchema = z.enum([
   'workspace',
   'global',
 ]);
-export const platformAuditLegalHoldStatusSchema = z.enum(['active', 'released']);
+/** Stored DB values only. */
+export const platformAuditLegalHoldStoredStatusSchema = z.enum(['active', 'released']);
+/**
+ * Public projection may surface `expired` when status is still stored as
+ * `active` but `expiresAt` has elapsed (retention already ignores these).
+ */
+export const platformAuditLegalHoldStatusSchema = z.enum(['active', 'released', 'expired']);

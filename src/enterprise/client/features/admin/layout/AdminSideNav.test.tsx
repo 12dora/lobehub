@@ -46,7 +46,7 @@ vi.mock('@lobehub/ui', async () => {
 vi.mock('@/features/NavPanel/components/NavItem', async () => {
   const React = await import('react');
   return {
-    default: ({ title, active, icon, ...rest }: any) =>
+    default: ({ title, active, icon: _icon, ...rest }: any) =>
       React.createElement(
         'div',
         { 'data-active': String(!!active), 'data-testid': 'nav-item', ...rest },

@@ -1,21 +1,8 @@
 import { type ReactNode } from 'react';
 
-import { EnterprisePlatformProvider } from '@/enterprise/client/providers';
-import DynamicFavicon from '@/layout/GlobalProvider/DynamicFavicon';
-import { FaviconProvider } from '@/layout/GlobalProvider/FaviconProvider';
+import { EnterpriseBusinessGlobalProvider } from '@/enterprise/client/providers/EnterpriseBusinessGlobalProvider';
 
-import DefaultInboxBrandingSync from './DefaultInboxBrandingSync';
-
+/** Declarative business mount — implementation lives under enterprise. */
 export default function BusinessGlobalProvider({ children }: { children: ReactNode }) {
-  return (
-    <EnterprisePlatformProvider
-      initialPublicSnapshot={window.__SERVER_CONFIG__?.platformPublicSnapshot}
-    >
-      <DefaultInboxBrandingSync />
-      <FaviconProvider>
-        <DynamicFavicon />
-        {children}
-      </FaviconProvider>
-    </EnterprisePlatformProvider>
-  );
+  return <EnterpriseBusinessGlobalProvider>{children}</EnterpriseBusinessGlobalProvider>;
 }

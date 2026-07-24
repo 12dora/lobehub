@@ -5,7 +5,7 @@ import {
   platformAgentAssignmentCoreSchema,
   refinePlatformAgentAssignmentInvariants,
 } from './assignmentCore';
-import { draftTokenSchema, idSchema, reasonSchema, revisionSchema, safeText } from './common';
+import { draftTokenSchema, idSchema, reasonSchema, revisionSchema } from './common';
 import { platformAgentAssignmentSchema } from './domain';
 
 export {
@@ -58,6 +58,19 @@ export const adminPlatformAgentAssignmentRemoveOutputSchema = z
 
 export const adminPlatformAgentAssignmentUpsertOutputSchema = platformAgentAssignmentSchema;
 
+/** Stable i18n warning codes returned by assignment preview (client key: agentCatalog.assignment.warning.*). */
+export const PLATFORM_AGENT_ASSIGNMENT_WARNING_CODES = [
+  'ASSIGNMENT_DISABLED',
+  'MANDATORY_AGENT_CANNOT_BE_HIDDEN',
+] as const;
+
+export type PlatformAgentAssignmentWarningCode =
+  (typeof PLATFORM_AGENT_ASSIGNMENT_WARNING_CODES)[number];
+
+export const platformAgentAssignmentWarningCodeSchema = z.enum(
+  PLATFORM_AGENT_ASSIGNMENT_WARNING_CODES,
+);
+
 export const adminPlatformAgentAssignmentPreviewInputSchema = z
   .object({
     agentId: idSchema,
@@ -68,6 +81,6 @@ export const adminPlatformAgentAssignmentPreviewInputSchema = z
 export const adminPlatformAgentAssignmentPreviewOutputSchema = z
   .object({
     estimatedUsers: z.number().int().nonnegative(),
-    warnings: z.array(safeText(500, 1)).max(50),
+    warnings: z.array(platformAgentAssignmentWarningCodeSchema).max(50),
   })
   .strict();

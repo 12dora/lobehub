@@ -239,6 +239,11 @@ export const adminSystemGetInstanceRevisionsOutputSchema = z
     items: z.array(adminSystemInstanceRevisionSchema).max(50),
     nextCursor: paginationCursorSchema.nullable(),
     snapshotAt: z.date(),
+    /**
+     * Fingerprint of the domain-target set used to evaluate this page.
+     * Clients must not accumulate pages with differing targetRevision values.
+     */
+    targetRevision: z.string().regex(/^[a-f0-9]{32}$/),
   })
   .strict();
 

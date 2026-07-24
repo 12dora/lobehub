@@ -31,23 +31,6 @@ import type {
 } from '../features/admin/skills/types';
 import { withAdminAiInfraErrorToast } from './adminAiInfraAdapter/errors';
 
-/** Last applyImmediate/publishNow outcome for draft banner (module-level; admin page only). */
-export type AdminSkillPublishOutcome = {
-  published: boolean;
-  publishError?: string | null;
-  skillId: string;
-};
-
-let lastSkillPublishOutcome: AdminSkillPublishOutcome | null = null;
-
-export const getLastAdminSkillPublishOutcome = () => lastSkillPublishOutcome;
-export const clearLastAdminSkillPublishOutcome = () => {
-  lastSkillPublishOutcome = null;
-};
-export const setLastAdminSkillPublishOutcome = (outcome: AdminSkillPublishOutcome | null) => {
-  lastSkillPublishOutcome = outcome;
-};
-
 const withToastAndReauth = <T>(fn: () => Promise<T>): Promise<T> =>
   withAdminAiInfraErrorToast(() => withAdminReauthRetry(fn));
 
@@ -112,26 +95,10 @@ class AdminSkillsService {
   applyImmediate = async (
     input: AdminSkillApplyImmediateInput,
   ): Promise<AdminSkillApplyImmediateOutput> =>
-    withToastAndReauth(async () => {
-      const result = await lambdaClient.admin.skills.applyImmediate.mutate(input);
-      setLastAdminSkillPublishOutcome({
-        published: result.published,
-        publishError: result.publishError,
-        skillId: result.draft.id,
-      });
-      return result;
-    });
+    withToastAndReauth(() => lambdaClient.admin.skills.applyImmediate.mutate(input));
 
   publishNow = async (input: AdminSkillPublishNowInput): Promise<AdminSkillApplyImmediateOutput> =>
-    withToastAndReauth(async () => {
-      const result = await lambdaClient.admin.skills.publishNow.mutate(input);
-      setLastAdminSkillPublishOutcome({
-        published: result.published,
-        publishError: result.publishError,
-        skillId: result.draft.id,
-      });
-      return result;
-    });
+    withToastAndReauth(() => lambdaClient.admin.skills.publishNow.mutate(input));
 }
 
 export const adminSkillsService = new AdminSkillsService();

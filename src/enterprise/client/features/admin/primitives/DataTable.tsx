@@ -273,10 +273,54 @@ function DataTableInner<T extends object>({
     );
   }
 
+  const cursorNav =
+    cursorPagination &&
+    // Keep Previous/Next when the current page is empty but a prior cursor exists
+    // (e.g. last row deleted on page 2) so the user is not trapped.
+    (Boolean(dataSource?.length) || cursorPagination.hasPrevious || cursorPagination.hasNext) ? (
+      <div
+        aria-label={t('primitives.dataTable.cursorNav')}
+        className={styles.cursorBar}
+        role="navigation"
+      >
+        {cursorPagination.onPageSizeChange && cursorPagination.pageSize ? (
+          <Select
+            aria-label={t('primitives.dataTable.pageSize')}
+            style={{ minWidth: 88 }}
+            value={String(cursorPagination.pageSize)}
+            options={(cursorPagination.pageSizeOptions ?? ['20', '50', '100']).map((opt) => ({
+              label: opt,
+              value: opt,
+            }))}
+            onChange={(value) => {
+              cursorPagination.onPageSizeChange?.(Number(value));
+            }}
+          />
+        ) : null}
+        <Button
+          disabled={!cursorPagination.hasPrevious}
+          size="small"
+          type="default"
+          onClick={cursorPagination.onPrevious}
+        >
+          {t('primitives.dataTable.previous')}
+        </Button>
+        <Button
+          disabled={!cursorPagination.hasNext}
+          size="small"
+          type="default"
+          onClick={cursorPagination.onNext}
+        >
+          {t('primitives.dataTable.next')}
+        </Button>
+      </div>
+    ) : null;
+
   if (!dataSource?.length) {
     return (
       <div className={cx(styles.root, styles.empty)}>
         <Empty description={emptyDescription ?? t('primitives.dataTable.empty')} />
+        {cursorNav}
       </div>
     );
   }
@@ -310,44 +354,7 @@ function DataTableInner<T extends object>({
             : undefined
         }
       />
-      {cursorPagination ? (
-        <div
-          aria-label={t('primitives.dataTable.cursorNav')}
-          className={styles.cursorBar}
-          role="navigation"
-        >
-          {cursorPagination.onPageSizeChange && cursorPagination.pageSize ? (
-            <Select
-              aria-label={t('primitives.dataTable.pageSize')}
-              style={{ minWidth: 88 }}
-              value={String(cursorPagination.pageSize)}
-              options={(cursorPagination.pageSizeOptions ?? ['20', '50', '100']).map((opt) => ({
-                label: opt,
-                value: opt,
-              }))}
-              onChange={(value) => {
-                cursorPagination.onPageSizeChange?.(Number(value));
-              }}
-            />
-          ) : null}
-          <Button
-            disabled={!cursorPagination.hasPrevious}
-            size="small"
-            type="default"
-            onClick={cursorPagination.onPrevious}
-          >
-            {t('primitives.dataTable.previous')}
-          </Button>
-          <Button
-            disabled={!cursorPagination.hasNext}
-            size="small"
-            type="default"
-            onClick={cursorPagination.onNext}
-          >
-            {t('primitives.dataTable.next')}
-          </Button>
-        </div>
-      ) : null}
+      {cursorNav}
     </div>
   );
 }

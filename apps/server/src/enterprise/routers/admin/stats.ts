@@ -241,6 +241,33 @@ export const adminStatsRouter = router({
       return model.totals({ activeDays: input?.activeDays });
     }),
 
+  /** User totals only — no lifetime message/topic/agent full-table counts. */
+  userTotals: statsProcedure
+    .input(z.object({ activeDays: z.number().int().min(1).max(365).optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const model = new PlatformGlobalStatsModel(ctx.serverDB);
+      return model.userTotals({ activeDays: input?.activeDays });
+    }),
+
+  /**
+   * Bounded daily token totals for the admin overview chart.
+   * Response is only `{ day, totalTokens }[]` — never per-message records.
+   */
+  usageDailyTokenTotals: statsProcedure
+    .input(monthInput)
+    .output(
+      z.array(
+        z.object({
+          day: z.string(),
+          totalTokens: z.number(),
+        }),
+      ),
+    )
+    .query(async ({ ctx, input }) => {
+      const model = new PlatformGlobalStatsModel(ctx.serverDB);
+      return model.findDailyTokenTotals(input?.mo);
+    }),
+
   usageFindAndGroupByDay: statsProcedure
     .input(monthInput)
     .output(z.array(usageLogOutputSchema))

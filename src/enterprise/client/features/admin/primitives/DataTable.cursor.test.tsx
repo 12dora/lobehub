@@ -71,4 +71,29 @@ describe('DataTable cursor pagination', () => {
     fireEvent.keyDown(row, { key: 'Enter' });
     expect(onRowActivate).toHaveBeenCalledWith({ id: '1', name: 'A' });
   });
+
+  it('empty cursor page retains Previous', () => {
+    const onPrevious = vi.fn();
+
+    render(
+      <DataTable<Row>
+        columns={[{ dataIndex: 'name', key: 'name', title: 'Name' }]}
+        dataSource={[]}
+        pagination={false}
+        rowKey="id"
+        cursorPagination={{
+          hasNext: false,
+          hasPrevious: true,
+          onNext: vi.fn(),
+          onPrevious,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('primitives.dataTable.empty')).toBeTruthy();
+    const previous = screen.getByText('primitives.dataTable.previous');
+    expect(previous).toBeTruthy();
+    fireEvent.click(previous);
+    expect(onPrevious).toHaveBeenCalledTimes(1);
+  });
 });

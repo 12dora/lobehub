@@ -1,7 +1,12 @@
 import { matchRoutes } from 'react-router';
 import { describe, expect, it } from 'vitest';
 
-import { ADMIN_NAV_FLAT } from '@/enterprise/client/nav/adminNavMeta';
+import { ADMIN_NAV_ICONS, assertAdminNavIconsComplete } from '@/enterprise/client/nav/adminIcons';
+import { ADMIN_NAV_FLAT, ADMIN_NAV_ITEMS } from '@/enterprise/client/nav/adminNavMeta';
+import {
+  ADMIN_PAGE_BY_ID,
+  getAdminPageComponentId,
+} from '@/enterprise/client/nav/adminPageCatalog';
 
 import { createAdminRouteTree } from './createAdminRouteTree';
 
@@ -171,9 +176,32 @@ describe('createAdminRouteTree', () => {
       (auditRetention?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
     ).toBe(false);
 
-    // Element is not the shared PlaceholderPage for users (lazy wrapper present)
-    expect(users?.element).toBeTruthy();
-    expect(usersDetail?.element).toBeTruthy();
+    // Component identity from the single page catalog (not mere element truthiness).
+    expect((users?.handle as { admin?: { componentId?: string } })?.admin?.componentId).toBe(
+      'UsersListPage',
+    );
+    expect((usersDetail?.handle as { admin?: { componentId?: string } })?.admin?.componentId).toBe(
+      'UserDetailPage',
+    );
+    expect(getAdminPageComponentId('users')).toBe('UsersListPage');
+    expect(getAdminPageComponentId('connectors')).toBe('ConnectorListPage');
+    expect(getAdminPageComponentId('unknown-future')).toBe('PlaceholderPage');
+
+    // Every non-placeholder leaf catalog id resolves to a real page registry entry.
+    // Group-only nodes (ai) may be placeholder; overview is the index route.
+    for (const item of ADMIN_NAV_FLAT) {
+      if (item.placeholder) continue;
+      if (item.children?.length) continue; // pure group shells
+      expect(ADMIN_PAGE_BY_ID[item.id]?.componentId, item.id).toBeTruthy();
+      expect(ADMIN_PAGE_BY_ID[item.id]?.componentId, item.id).not.toBe('PlaceholderPage');
+    }
+
+    // Nav-visible items have icons in the shared icon catalog.
+    const visibleIds = ADMIN_NAV_FLAT.filter((i) => !i.hideFromNav).map((i) => i.id);
+    const { missing } = assertAdminNavIconsComplete(visibleIds);
+    expect(missing).toEqual([]);
+    expect(ADMIN_NAV_ICONS.users).toBeTruthy();
+    expect(ADMIN_NAV_ITEMS.length).toBeGreaterThan(0);
 
     const placeholders = ADMIN_NAV_FLAT.filter((i) => i.placeholder);
     expect(

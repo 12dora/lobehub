@@ -3,17 +3,6 @@ import { lambdaClient } from '@/libs/trpc/client';
 import type { AdminAgentsClient } from '../features/admin/agents/types';
 
 /**
- * Retained for downstream adapters that deliberately disable rollout transport. The production
- * lambda adapter now uses the real PR-052 router and never throws this error.
- */
-export class PlatformAgentRolloutUnavailableError extends Error {
-  constructor() {
-    super('PLATFORM_AGENT_ROLLOUT_UNAVAILABLE');
-    this.name = 'PlatformAgentRolloutUnavailableError';
-  }
-}
-
-/**
  * Production adapter backed by the reviewed M10 core routers (`admin.agents.*`).
  *
  * Every method forwards its already-contract-typed input straight to the matching TRPC

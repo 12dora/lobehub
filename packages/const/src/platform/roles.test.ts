@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from './permissions';
-import { PLATFORM_ROLE_PERMISSIONS, PLATFORM_SYSTEM_ROLES } from './roles';
+import {
+  isPlatformSystemRoleName,
+  PLATFORM_ROLE_DESCRIPTIONS,
+  PLATFORM_ROLE_DISPLAY_NAMES,
+  PLATFORM_ROLE_PERMISSIONS,
+  PLATFORM_SYSTEM_ROLES,
+  resolvePlatformRoleDescription,
+  resolvePlatformRoleLabel,
+} from './roles';
 
 describe('platform system roles', () => {
   it('defines the expected system role set', () => {
@@ -14,6 +22,48 @@ describe('platform system roles', () => {
         PLATFORM_SYSTEM_ROLES.AUDITOR,
         PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
       ]),
+    );
+  });
+
+  it('identifies system role names for i18n-first display', () => {
+    expect(isPlatformSystemRoleName(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)).toBe(true);
+    expect(isPlatformSystemRoleName('custom_role')).toBe(false);
+  });
+
+  it('persists locale-neutral seed metadata (never English UI copy)', () => {
+    for (const name of Object.values(PLATFORM_SYSTEM_ROLES)) {
+      expect(PLATFORM_ROLE_DISPLAY_NAMES[name]).toBe(name);
+      expect(PLATFORM_ROLE_DESCRIPTIONS[name]).toBe(name);
+      // Guard against reintroducing English prose that would override zh-CN.
+      expect(PLATFORM_ROLE_DISPLAY_NAMES[name]).not.toMatch(/[A-Z][a-z]+ [A-Z]/);
+    }
+  });
+
+  it('zh-CN system role labels ignore stored English displayName', () => {
+    const zh = {
+      'users.roles.desc.super_admin': '本地应急超级管理员',
+      'users.roles.super_admin': '超级管理员',
+    };
+    const t = (key: string, options?: { defaultValue?: string }) =>
+      (zh as Record<string, string>)[key] ?? options?.defaultValue ?? key;
+
+    // Even if DB still has historical English seed text, i18n must win.
+    expect(
+      resolvePlatformRoleLabel(
+        { displayName: 'Super Admin', name: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN },
+        t,
+      ),
+    ).toBe('超级管理员');
+    expect(
+      resolvePlatformRoleDescription(
+        { displayName: 'Super Admin', name: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN },
+        t,
+      ),
+    ).toBe('本地应急超级管理员');
+
+    // Custom roles still use stored displayName.
+    expect(resolvePlatformRoleLabel({ displayName: 'Ops Lead', name: 'ops_lead' }, t)).toBe(
+      'Ops Lead',
     );
   });
 

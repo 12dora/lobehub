@@ -250,6 +250,9 @@ describe('platform Agent contracts', () => {
 
   it('defines strict list, get and detail endpoint projections', () => {
     expect(adminPlatformAgentListInputSchema.safeParse({ query: 'research' }).success).toBe(true);
+    expect(adminPlatformAgentListInputSchema.safeParse({ isDefault: true, limit: 1 }).success).toBe(
+      true,
+    );
     expect(
       adminPlatformAgentListInputSchema.safeParse({ poison: true, query: 'research' }).success,
     ).toBe(false);

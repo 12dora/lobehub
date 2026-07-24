@@ -38,6 +38,8 @@ describe('enterprise error codes', () => {
     expect(ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED).toBe('ADMIN_REAUTH_REQUIRED');
     expect(MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM).toBe('MANAGED_RESOURCE_BY_PLATFORM');
     expect(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM).toBe('RESOURCE_MANAGED_BY_PLATFORM');
+    expect(MANAGED_ERROR_CODES.MANAGED_AGENT_BATCH_LIMIT).toBe('MANAGED_AGENT_BATCH_LIMIT');
+    expect(isEnterpriseErrorCode('MANAGED_AGENT_BATCH_LIMIT')).toBe(true);
   });
 
   it('type-guards known codes only', () => {

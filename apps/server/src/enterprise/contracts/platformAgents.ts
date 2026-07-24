@@ -39,6 +39,7 @@ export {
   platformAgentDependencyValidationOutputSchema,
   platformAgentPublicationOutputSchema,
 } from './platformAgents/adminLifecycle';
+export type { PlatformAgentAssignmentWarningCode } from './platformAgents/assignments';
 export {
   adminPlatformAgentAssignmentListInputSchema,
   adminPlatformAgentAssignmentListOutputSchema,
@@ -48,6 +49,8 @@ export {
   adminPlatformAgentAssignmentRemoveOutputSchema,
   adminPlatformAgentAssignmentUpsertInputSchema,
   adminPlatformAgentAssignmentUpsertOutputSchema,
+  PLATFORM_AGENT_ASSIGNMENT_WARNING_CODES,
+  platformAgentAssignmentWarningCodeSchema,
 } from './platformAgents/assignments';
 export {
   platformAgentConnectorDependencyRefSchema,

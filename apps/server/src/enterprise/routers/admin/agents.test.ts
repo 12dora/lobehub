@@ -533,7 +533,12 @@ describe('adminAgentsRouter hard delete', () => {
     const deleter = await callerFor({ authenticatedAt: new Date(), userId: ids.deleter });
 
     await expect(
-      deleter.delete({ agentId: created.identity.id, reason: 'remove test agent' }),
+      deleter.delete({
+        agentId: created.identity.id,
+        expectedDraftToken: created.draftToken,
+        expectedRevision: created.identity.revision,
+        reason: 'remove test agent',
+      }),
     ).resolves.toEqual({ deleted: true });
 
     expect(await agentRows(created.identity.id)).toHaveLength(0);
@@ -551,7 +556,12 @@ describe('adminAgentsRouter hard delete', () => {
   it('denies a caller without AGENT_DELETE', async () => {
     const normal = await callerFor({ authenticatedAt: new Date(), userId: ids.normal });
     await expect(
-      normal.delete({ agentId: 'any-agent', reason: 'no permission' }),
+      normal.delete({
+        agentId: 'any-agent',
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 1,
+        reason: 'no permission',
+      }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
@@ -561,7 +571,12 @@ describe('adminAgentsRouter hard delete', () => {
     const staleDeleter = await callerFor({ authenticatedAt: null, userId: ids.deleter });
 
     await expect(
-      staleDeleter.delete({ agentId: created.identity.id, reason: 'stale reauth delete' }),
+      staleDeleter.delete({
+        agentId: created.identity.id,
+        expectedDraftToken: created.draftToken,
+        expectedRevision: created.identity.revision,
+        reason: 'stale reauth delete',
+      }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
 
     expect(await agentRows(created.identity.id)).toHaveLength(1);
@@ -582,7 +597,12 @@ describe('adminAgentsRouter hard delete', () => {
     const deleter = await callerFor({ authenticatedAt: new Date(), userId: ids.deleter });
 
     await expect(
-      deleter.delete({ agentId: 'default-inbox-agent', reason: 'try delete default' }),
+      deleter.delete({
+        agentId: 'default-inbox-agent',
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 1,
+        reason: 'try delete default',
+      }),
     ).rejects.toThrow();
     expect(await agentRows('default-inbox-agent')).toHaveLength(1);
   });

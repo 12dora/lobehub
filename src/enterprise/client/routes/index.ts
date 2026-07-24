@@ -9,7 +9,7 @@ import { createAdminRouteTree } from './admin/createAdminRouteTree';
  *
  * Flag-off (boot `enterprise.platformAdmin` false/absent): returns **[]** — no admin
  * shell routes and **no** registry-provided platform-admin routes either.
- * Flag-on: admin shell + registered module routes.
+ * Flag-on: admin shell with registry children nested **under** AdminRootGate.
  *
  * Boot source: `window.__SERVER_CONFIG__` only (synchronous HTML inject).
  */
@@ -18,7 +18,8 @@ export const getEnterpriseDesktopRoutesWithoutMainLayout = (): RouteObject[] => 
   if (!isPlatformAdminBootEnabled()) {
     return [];
   }
-  return [...createAdminRouteTree(), ...enterpriseModuleRegistry.getRoutes()];
+  // Nest module routes under the gated /admin parent — never as top-level siblings.
+  return createAdminRouteTree(enterpriseModuleRegistry.getRoutes());
 };
 
 /**

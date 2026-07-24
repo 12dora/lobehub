@@ -136,6 +136,8 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
   },
   {
     // Kept registered (hidden) for deep-link back-compat; the visible surface is `unified-management`.
+    // Shell requires POLICY_READ for this deep link; connector-only admins use the unified tab
+    // (which OR-gates POLICY_READ | CONNECTOR_READ and self-gates the page body).
     hideFromNav: true,
     id: 'managed-resources',
     labelKey: 'nav.managedResources',
