@@ -3,6 +3,7 @@ import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import type {
   AdminSecretRotationCancelInput,
+  AdminSecretRotationRestartInput,
   AdminSecretRotationRetryInput,
   AdminSecretRotationStartInput,
 } from '../../contracts/adminSecretRotation';
@@ -20,8 +21,8 @@ type AuditFactory = (db: LobeChatDatabase | Transaction) => Pick<PlatformAuditSe
 
 /**
  * Vault-backed coordinator for crypto-bearing mutations (start / enqueue).
- * get / list / cancel are DB-only and must not require a valid Vault config
- * so recovery remains possible during key-provider incidents.
+ * get / list / cancel / retry / restart are DB-only and must not require a
+ * valid Vault config so recovery remains possible during key-provider incidents.
  */
 const createCoordinatorFromEnvironment = (): PlatformSecretRewrapCoordinator => {
   let secrets: PlatformSecretService | null;
@@ -71,8 +72,9 @@ export class PlatformSecretRotationAdminService {
     private readonly coordinatorFactory: CoordinatorFactory = createCoordinatorFromEnvironment,
     private readonly auditFactory: AuditFactory = (auditDb) => new PlatformAuditService(auditDb),
     /**
-     * DB-only ops (get / list / cancel). Defaults to an unconfigured coordinator
-     * so missing Vault does not block recovery. Tests may inject the same mock.
+     * DB-only ops (get / list / cancel / retry / restart). Defaults to an
+     * unconfigured coordinator so missing Vault does not block recovery.
+     * Tests may inject the same mock.
      */
     private readonly dbOnlyCoordinatorFactory: CoordinatorFactory = createDbOnlyCoordinator,
   ) {}
@@ -92,6 +94,8 @@ export class PlatformSecretRotationAdminService {
     requireVault?: boolean;
     requestId: string;
     run: (coordinator: PlatformSecretRewrapCoordinator, tx: Transaction) => Promise<T>;
+    /** Optional pre-mutation snapshot for audits that clear terminal diagnostics (e.g. restart). */
+    summarizeBefore?: (result: T) => Record<string, unknown> | null;
     summarize: (result: T) => Record<string, unknown>;
     targetId: string;
   }): Promise<T> => {
@@ -104,6 +108,7 @@ export class PlatformSecretRotationAdminService {
           action: params.action,
           actorUserId: params.actorUserId,
           afterDiff: params.summarize(result),
+          beforeDiff: params.summarizeBefore?.(result) ?? undefined,
           reason: params.reason,
           requestId: params.requestId,
           result: 'success',
@@ -154,16 +159,42 @@ export class PlatformSecretRotationAdminService {
   list = async (input: { cursor?: string; limit?: number } = {}) =>
     this.dbOnlyCoordinator().list(this.db, input);
 
+  /**
+   * Re-queue a failed job from its failure ledger. Pure DB — no Vault.
+   * Allows recovery while the key provider is down.
+   */
   retry = async (actorUserId: string, input: AdminSecretRotationRetryInput) =>
     this.auditedMutation({
       action: 'admin.security.secretRotation.retry',
       actorUserId,
       reason: input.reason,
+      requireVault: false,
       requestId: input.requestId,
       run: (coordinator, tx) => coordinator.retry(tx, input),
       summarize: summarizeJob,
       targetId: input.jobId,
     });
+
+  /**
+   * Restart a cancelled/dead job as a new generation. Pure DB — no Vault.
+   * Distinct from failed-ledger retry; cancelled/dead jobs have no ledger.
+   * Terminal status / error / counts are captured in the success audit beforeDiff
+   * so the cleared dead-job diagnostics remain auditable.
+   */
+  restart = async (actorUserId: string, input: AdminSecretRotationRestartInput) => {
+    const outcome = await this.auditedMutation({
+      action: 'admin.security.secretRotation.restart',
+      actorUserId,
+      reason: input.reason,
+      requireVault: false,
+      requestId: input.requestId,
+      run: (coordinator, tx) => coordinator.restart(tx, input),
+      summarize: (result) => summarizeJob(result.job),
+      summarizeBefore: (result) => result.terminalBefore,
+      targetId: input.jobId,
+    });
+    return outcome.job;
+  };
 
   start = async (actorUserId: string, input: AdminSecretRotationStartInput) =>
     this.auditedMutation({

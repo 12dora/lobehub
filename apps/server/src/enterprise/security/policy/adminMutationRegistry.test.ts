@@ -570,7 +570,7 @@ describe('enterprise admin mutation policy registry', () => {
     const entries = Object.values(ADMIN_MUTATION_REGISTRY).filter(({ procedure }) =>
       procedure.startsWith('admin.security.secretRotation.'),
     );
-    expect(entries).toHaveLength(3);
+    expect(entries).toHaveLength(4);
     for (const entry of entries) {
       expect(entry).toMatchObject({
         dangerous: true,
@@ -591,6 +591,12 @@ describe('enterprise admin mutation policy registry', () => {
       lastKnownGood: { status: 'conditional' },
       outbound: { status: 'not-applicable' },
     });
+    expect(ADMIN_MUTATION_REGISTRY['admin.security.secretRotation.restart'].controls).toMatchObject(
+      {
+        lastKnownGood: { status: 'conditional' },
+        outbound: { status: 'not-applicable' },
+      },
+    );
     expect(ADMIN_MUTATION_REGISTRY['admin.security.secretRotation.cancel'].controls).toMatchObject({
       lastKnownGood: { status: 'not-applicable' },
       outbound: { status: 'not-applicable' },

@@ -12,6 +12,8 @@ import {
   adminSecretRotationGetOutputSchema,
   adminSecretRotationListInputSchema,
   adminSecretRotationListOutputSchema,
+  adminSecretRotationRestartInputSchema,
+  adminSecretRotationRestartOutputSchema,
   adminSecretRotationRetryInputSchema,
   adminSecretRotationRetryOutputSchema,
   adminSecretRotationStartInputSchema,
@@ -141,6 +143,27 @@ export const adminSecretRotationRouter = router({
     .query(({ ctx, input }) =>
       execute(() => new PlatformSecretRotationAdminService(ctx.serverDB).list(input)),
     ),
+
+  restart: secretRotationBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSecretRotationRestartInputSchema)
+    .output(adminSecretRotationRestartOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertMutationReauth(
+        {
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+          serverDB: ctx.serverDB,
+          userId: ctx.userId!,
+        },
+        input,
+        'admin.security.secretRotation.restart',
+        input.jobId,
+      );
+      return execute(() =>
+        new PlatformSecretRotationAdminService(ctx.serverDB).restart(ctx.userId!, input),
+      );
+    }),
 
   retry: secretRotationBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))

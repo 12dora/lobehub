@@ -30,6 +30,16 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Stop future batches of an active secret re-wrap job without reverting committed envelopes.',
     { audit: secretRotationAudit, reauth: recentReauth },
   ),
+  'admin.security.secretRotation.restart': dangerousMutation(
+    'admin.security.secretRotation.restart',
+    'critical',
+    'Restart a cancelled or dead secret re-wrap job as a new generation.',
+    {
+      audit: secretRotationAudit,
+      lastKnownGood: secretRotationExternalGate,
+      reauth: recentReauth,
+    },
+  ),
   'admin.security.secretRotation.retry': dangerousMutation(
     'admin.security.secretRotation.retry',
     'critical',

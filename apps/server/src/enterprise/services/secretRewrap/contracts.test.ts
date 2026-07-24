@@ -5,8 +5,10 @@ import {
   EMPTY_PLATFORM_SECRET_REWRAP_RESULT,
   platformSecretRewrapCursorSchema,
   platformSecretRewrapFailureInputSchema,
+  platformSecretRewrapIdempotencyKey,
   platformSecretRewrapJobInputSchema,
   platformSecretRewrapResultSchema,
+  platformSecretRewrapTargetKeyIdFromIdempotencyKey,
 } from './contracts';
 
 const requestId = '11111111-1111-4111-8111-111111111111';
@@ -74,5 +76,17 @@ describe('secret rewrap contracts', () => {
     expect(
       platformSecretRewrapResultSchema.safeParse({ ...parsed, rowId: 'must-not-leak' }).success,
     ).toBe(false);
+  });
+
+  it('recovers targetKeyId from versioned and legacy rewrap idempotency keys', () => {
+    expect(
+      platformSecretRewrapTargetKeyIdFromIdempotencyKey(
+        platformSecretRewrapIdempotencyKey('vault:2026-07'),
+      ),
+    ).toBe('vault:2026-07');
+    expect(platformSecretRewrapTargetKeyIdFromIdempotencyKey('rewrap:vault:legacy-key')).toBe(
+      'vault:legacy-key',
+    );
+    expect(platformSecretRewrapTargetKeyIdFromIdempotencyKey('other:not-a-rewrap')).toBeNull();
   });
 });
