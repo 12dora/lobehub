@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { sql } from 'drizzle-orm';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq, sql } from 'drizzle-orm';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
@@ -24,40 +24,16 @@ const db: LobeChatDatabase = await getTestDB();
 const invalidation = { publish: vi.fn(async () => {}) };
 const serviceOptions = { builtinSkillKeys: new Set<string>(), invalidation };
 
-/**
- * Bridge until the migration-owned batch teaches `prevent_platform_skill_version_mutation`
- * to honor `lobe.allow_platform_skill_version_validation_update` for validation_result-only
- * UPDATEs (mirrors 0140 agent-version delete / 0145 audit retention GUCs). Production code
- * only sets the GUC — it must not disable triggers via session_replication_role.
- */
-const installSkillVersionValidationUpdateGuard = async () => {
-  await db.execute(
-    sql.raw(`
-CREATE OR REPLACE FUNCTION prevent_platform_skill_version_mutation()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF TG_OP = 'UPDATE'
-     AND current_setting('lobe.allow_platform_skill_version_validation_update', true) = 'on'
-  THEN
-    IF NEW.id IS NOT DISTINCT FROM OLD.id
-       AND NEW.skill_id IS NOT DISTINCT FROM OLD.skill_id
-       AND NEW.version IS NOT DISTINCT FROM OLD.version
-       AND NEW.content IS NOT DISTINCT FROM OLD.content
-       AND NEW.content_ref IS NOT DISTINCT FROM OLD.content_ref
-       AND NEW.checksum IS NOT DISTINCT FROM OLD.checksum
-       AND NEW.manifest IS NOT DISTINCT FROM OLD.manifest
-       AND NEW.resources IS NOT DISTINCT FROM OLD.resources
-       AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
-       AND NEW.created_by IS NOT DISTINCT FROM OLD.created_by
-    THEN
-      RETURN NEW;
-    END IF;
-  END IF;
-  RAISE EXCEPTION 'platform_skill_versions are immutable' USING ERRCODE = '55000';
-END;
-$$;
-`),
-  );
+/** Drizzle wraps PG errors; match message or cause. */
+const expectRejectedWith = async (promise: Promise<unknown>, pattern: RegExp) => {
+  try {
+    await promise;
+    throw new Error('expected rejection');
+  } catch (error) {
+    const err = error as Error & { cause?: Error };
+    const text = `${err.message}\n${err.cause?.message ?? ''}`;
+    expect(text).toMatch(pattern);
+  }
 };
 
 const manifest = {
@@ -84,10 +60,6 @@ const cleanup = async () => {
     CASCADE
   `);
 };
-
-beforeAll(async () => {
-  await installSkillVersionValidationUpdateGuard();
-});
 
 beforeEach(async () => {
   await cleanup();
@@ -531,39 +503,114 @@ describe('SkillCatalogAdminService', () => {
   });
 
   it('persists a refreshed validation result so getVersion matches validate', async () => {
+    // Exercises the migrated prevent_platform_skill_version_mutation GUC escape hatch
+    // (0155): validation_result-only UPDATE succeeds under the transaction-local GUC set
+    // by updateVersionValidation — no runtime DDL trigger replacement.
+    //
+    // Fake only Date (not timers) so async DB work still runs; control the wall clock
+    // so create-time vs re-validate timestamps are deterministic (no setTimeout sleep).
+    const createAt = new Date('2026-06-01T12:00:00.000Z');
+    const refreshAt = new Date('2026-06-01T12:00:05.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(createAt);
+      const service = new SkillCatalogAdminService(db, serviceOptions);
+      const draft = await createDraft(service, 'validate.refresh');
+      const version = await createVersion(service, draft, '# validate refresh', '1.0.0');
+      const oldValidatedAt = version.validation?.validatedAt;
+      expect(oldValidatedAt).toBeInstanceOf(Date);
+      expect(oldValidatedAt!.getTime()).toBe(createAt.getTime());
+      const before = await service.getDetail(draft.draft.id);
+
+      vi.setSystemTime(refreshAt);
+      const validation = await service.validate('admin-1', {
+        expectedDraftToken: before.draftToken,
+        expectedRevision: before.baseRevision,
+        reason: 'refresh validation metadata',
+        skillId: draft.draft.id,
+        versionId: version.id,
+      });
+      const stored = await service.getVersion(draft.draft.id, version.id);
+      expect(stored.validation).toEqual(validation);
+      expect(stored.validation?.validatedAt).toBeInstanceOf(Date);
+      // Fresh timestamp must advance past the create-time validation stamp;
+      // equality of the full result is the contract the admin UI verifies.
+      expect(stored.validation!.validatedAt.getTime()).toBe(refreshAt.getTime());
+      expect(stored.validation!.validatedAt.getTime()).toBeGreaterThan(oldValidatedAt!.getTime());
+      expect(JSON.stringify(stored.validation)).toBe(JSON.stringify(validation));
+      const audits = await db.select().from(platformAuditLogs);
+      expect(audits).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'admin.skills.validate',
+            reason: 'refresh validation metadata',
+            result: 'success',
+            targetId: draft.draft.id,
+          }),
+        ]),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still rejects non-validation content mutation on skill version rows', async () => {
+    // Immutability preserved: even with the validation GUC set, content changes are rejected.
     const service = new SkillCatalogAdminService(db, serviceOptions);
-    const draft = await createDraft(service, 'validate.refresh');
-    const version = await createVersion(service, draft, '# validate refresh', '1.0.0');
-    const oldValidatedAt = version.validation?.validatedAt;
-    expect(oldValidatedAt).toBeInstanceOf(Date);
-    const before = await service.getDetail(draft.draft.id);
-    // Ensure the re-validation timestamp is strictly after create-time metadata.
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    const validation = await service.validate('admin-1', {
-      expectedDraftToken: before.draftToken,
-      expectedRevision: before.baseRevision,
-      reason: 'refresh validation metadata',
-      skillId: draft.draft.id,
-      versionId: version.id,
-    });
-    const stored = await service.getVersion(draft.draft.id, version.id);
-    expect(stored.validation).toEqual(validation);
-    expect(stored.validation?.validatedAt).toBeInstanceOf(Date);
-    // Fresh timestamp must advance past the create-time validation stamp;
-    // equality of the full result is the contract the admin UI verifies.
-    expect(stored.validation!.validatedAt.getTime()).toBeGreaterThan(oldValidatedAt!.getTime());
-    expect(JSON.stringify(stored.validation)).toBe(JSON.stringify(validation));
-    const audits = await db.select().from(platformAuditLogs);
-    expect(audits).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          action: 'admin.skills.validate',
-          reason: 'refresh validation metadata',
-          result: 'success',
-          targetId: draft.draft.id,
-        }),
-      ]),
+    const draft = await createDraft(service, 'validate.immut');
+    const version = await createVersion(service, draft, '# immutable content', '1.0.0');
+
+    await expectRejectedWith(
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT set_config('lobe.allow_platform_skill_version_validation_update', 'on', true)`,
+        );
+        await tx
+          .update(platformSkillVersions)
+          .set({ content: '# tampered content' })
+          .where(eq(platformSkillVersions.id, version.id));
+      }),
+      /platform_skill_versions are immutable/i,
     );
+
+    // Without GUC, any UPDATE (including validation_result) is rejected.
+    await expectRejectedWith(
+      db
+        .update(platformSkillVersions)
+        .set({
+          validationResult: {
+            issues: [],
+            validatedAt: new Date().toISOString(),
+            validatorVersion: 'test',
+          },
+        })
+        .where(eq(platformSkillVersions.id, version.id)),
+      /platform_skill_versions are immutable/i,
+    );
+
+    const stored = await service.getVersion(draft.draft.id, version.id);
+    expect(stored.content).toBe('# immutable content');
+  });
+
+  it('rejects DELETE on skill version rows even with the validation GUC enabled', async () => {
+    // 0155 GUC gates only validation_result UPDATEs — never DELETE (or content UPDATE).
+    const service = new SkillCatalogAdminService(db, serviceOptions);
+    const draft = await createDraft(service, 'validate.delete');
+    const version = await createVersion(service, draft, '# must remain', '1.0.0');
+
+    await expectRejectedWith(
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT set_config('lobe.allow_platform_skill_version_validation_update', 'on', true)`,
+        );
+        await tx.delete(platformSkillVersions).where(eq(platformSkillVersions.id, version.id));
+      }),
+      /platform_skill_versions are immutable/i,
+    );
+
+    const stored = await service.getVersion(draft.draft.id, version.id);
+    expect(stored.id).toBe(version.id);
+    expect(stored.content).toBe('# must remain');
   });
 
   it('rolls back validation metadata when PlatformAuditService.append fails', async () => {

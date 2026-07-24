@@ -1,9 +1,10 @@
 import { isRecord } from '@lobechat/utils/object';
-import { and, asc, eq, gt } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 
 import {
   checksumPayload,
   parsePlatformPublishedSkillSnapshot,
+  PlatformCatalogAuthorityModel,
   platformSkillVersionChecksum,
 } from '@/database/models/platform';
 import type { PlatformPublishedSkillView } from '@/database/models/platform/skillCatalog';
@@ -23,10 +24,17 @@ import type {
   SkillCatalogTokenEntry,
 } from './catalogTokens';
 import {
+  aiCatalogAuthorityToken,
   buildAiCatalogRevisionToken,
   buildSkillCatalogRevisionToken,
+  invalidateAiCatalogAuthorityToken,
+  invalidateSkillCatalogAuthorityToken,
   PlatformCatalogTokenInvariantError,
+  skillCatalogAuthorityToken,
 } from './catalogTokens';
+
+/** Re-export writer-side invalidation so AI/skill publish paths can advance the poll token. */
+export { invalidateAiCatalogAuthorityToken, invalidateSkillCatalogAuthorityToken };
 
 type CatalogDatabase = LobeChatDatabase | Transaction;
 
@@ -232,13 +240,15 @@ export const loadCurrentSkillCatalogSnapshot = async (
 };
 
 /**
- * Lightweight AI catalog token projection for system-health / domain-target polling.
+ * Lightweight AI catalog token entries for domain-target polling.
  * Selects only pointer IDs, revisions, stored checksums, status, and secret fingerprints —
  * never revision payloads — and trusts stored checksums (full rehash stays on publish/runtime).
+ *
+ * Not called on the steady-state health-poll path (see {@link loadCurrentAiCatalogTargetToken}).
  */
-export const loadCurrentAiCatalogTargetToken = async (
+export const loadCurrentAiCatalogTargetTokenEntries = async (
   db: CatalogDatabase,
-): Promise<PlatformRevisionToken> => {
+): Promise<AiCatalogTokenEntry[]> => {
   const rows = await db
     .select({
       checksum: platformResourceRevisions.checksum,
@@ -281,7 +291,32 @@ export const loadCurrentAiCatalogTargetToken = async (
       secretFingerprint: row.secretFingerprint ?? null,
     });
   }
-  return buildAiCatalogRevisionToken(tokenEntries);
+  return tokenEntries;
+};
+
+/**
+ * Lightweight AI catalog token projection for system-health / domain-target polling.
+ *
+ * Steady-state path (persisted generation unchanged + warm local slot):
+ * one PK read of `platform_catalog_authority`, **zero** catalog-wide scans/hashes.
+ *
+ * On miss (generation advanced by another instance / local invalidate / cold start):
+ * rebuild once from lightweight pointer rows, then cache under that generation.
+ */
+export const loadCurrentAiCatalogTargetToken = async (
+  db: CatalogDatabase,
+): Promise<PlatformRevisionToken> => {
+  aiCatalogAuthorityToken.recordPkRead();
+  const { generation } = await new PlatformCatalogAuthorityModel(db).peekGeneration('ai_catalog');
+  const hit = aiCatalogAuthorityToken.peekAt(generation);
+  if (hit) return hit;
+
+  const tokenEntries = await loadCurrentAiCatalogTargetTokenEntries(db);
+  return aiCatalogAuthorityToken.put(
+    buildAiCatalogRevisionToken(tokenEntries),
+    { entryHashes: 1, rowsScanned: tokenEntries.length },
+    generation,
+  );
 };
 
 /**
@@ -289,9 +324,13 @@ export const loadCurrentAiCatalogTargetToken = async (
  *
  * Bounds I/O for the 3s system-health poll:
  * - never selects version content / manifest / resources
- * - never selects revision payloads (tombstone uses pointer columns only;
- *   archive always publishes `builtinOverrideTombstone = allowBuiltinOverride`)
+ * - never rehashes revision payloads; only extracts the scalar `payload.versionId`
+ *   so a retargeted `currentVersionId` still fails closed (matches full-snapshot authority)
  * - trusts stored version checksums (full rehash stays on publish/runtime)
+ * - tombstone uses pointer columns only (archive always publishes
+ *   `builtinOverrideTombstone = allowBuiltinOverride`)
+ *
+ * Called only on catalog-authority cache miss / rebuild — not on the O(1) steady-state path.
  */
 export const loadCurrentSkillCatalogTargetTokenEntries = async (
   db: CatalogDatabase,
@@ -303,6 +342,9 @@ export const loadCurrentSkillCatalogTargetTokenEntries = async (
       currentVersionId: platformSkills.currentVersionId,
       enabled: platformSkills.enabled,
       pointerRevision: platformSkills.revision,
+      // Scalar extract only — not a full payload load/rehash; restores fail-closed
+      // when currentVersionId is retargeted away from the published snapshot.
+      publishedVersionId: sql<string | null>`(${platformResourceRevisions.payload}->>'versionId')`,
       revisionNumber: platformResourceRevisions.revision,
       skillId: platformSkills.id,
       skillKey: platformSkills.skillKey,
@@ -334,8 +376,11 @@ export const loadCurrentSkillCatalogTargetTokenEntries = async (
       !row.currentVersionId ||
       !row.versionId ||
       !row.checksum ||
+      !row.publishedVersionId ||
       row.revisionNumber !== row.pointerRevision ||
       row.versionId !== row.currentVersionId ||
+      // Fail closed on pointer/snapshot version mismatch (same invariant as full snapshot).
+      row.publishedVersionId !== row.currentVersionId ||
       (row.status !== 'published' && row.status !== 'archived') ||
       !isChecksum(row.checksum)
     ) {
@@ -363,3 +408,31 @@ export const buildCurrentSkillCatalogTargetToken = (input: {
   builtins: readonly SkillCatalogBuiltinTokenEntry[];
   platform: readonly SkillCatalogTokenEntry[];
 }): PlatformRevisionToken => buildSkillCatalogRevisionToken(input);
+
+/**
+ * Skill catalog authority token for domain-target polling.
+ *
+ * Steady-state path: one PK generation read + O(1) slot compare — **no** builtin
+ * reconstruction and **no** platform catalog scan.
+ *
+ * On miss only: load builtins (caller-supplied factory) + platform pointer entries once.
+ */
+export const loadCurrentSkillCatalogTargetToken = async (
+  db: CatalogDatabase,
+  loadBuiltins: () => readonly SkillCatalogBuiltinTokenEntry[],
+): Promise<PlatformRevisionToken> => {
+  skillCatalogAuthorityToken.recordPkRead();
+  const { generation } = await new PlatformCatalogAuthorityModel(db).peekGeneration(
+    'skill_catalog',
+  );
+  const hit = skillCatalogAuthorityToken.peekAt(generation);
+  if (hit) return hit;
+
+  const builtins = loadBuiltins();
+  const platform = await loadCurrentSkillCatalogTargetTokenEntries(db);
+  return skillCatalogAuthorityToken.put(
+    buildSkillCatalogRevisionToken({ builtins, platform }),
+    { entryHashes: 1, rowsScanned: builtins.length + platform.length },
+    generation,
+  );
+};
