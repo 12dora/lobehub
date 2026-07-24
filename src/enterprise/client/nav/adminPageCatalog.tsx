@@ -2,7 +2,7 @@ import { Text } from '@lobehub/ui';
 import { lazy, type ReactNode, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import PlaceholderPage from '@/enterprise/client/features/admin/pages/PlaceholderPage';
+import NotFoundPage from '@/enterprise/client/features/admin/pages/NotFoundPage';
 
 /**
  * Single source of truth for admin leaf page components.
@@ -72,8 +72,8 @@ const SystemPage = lazy(() => import('@/enterprise/client/features/admin/system'
 const GlobalStatsPage = lazy(
   () => import('@/enterprise/client/features/admin/stats/GlobalStatsPage'),
 );
-const AuditIndexRedirect = lazy(
-  () => import('@/enterprise/client/features/admin/audit/AuditIndexRedirect'),
+const GroupIndexRedirect = lazy(
+  () => import('@/enterprise/client/features/admin/gates/GroupIndexRedirect'),
 );
 const OperationLogsPage = lazy(
   () => import('@/enterprise/client/features/admin/audit/operationLogs/OperationLogsPage'),
@@ -195,7 +195,11 @@ export const ADMIN_PAGE_BY_ID: Readonly<
   },
   'system': { componentId: 'SystemPage', element: withLazy(<SystemPage />) },
   'stats': { componentId: 'GlobalStatsPage', element: withLazy(<GlobalStatsPage />) },
-  'audit': { componentId: 'AuditIndexRedirect', element: withLazy(<AuditIndexRedirect />) },
+  'ai': { componentId: 'AiIndexRedirect', element: withLazy(<GroupIndexRedirect groupId="ai" />) },
+  'audit': {
+    componentId: 'AuditIndexRedirect',
+    element: withLazy(<GroupIndexRedirect groupId="audit" />),
+  },
   'audit-logs': {
     componentId: 'OperationLogsPage',
     element: withLazy(<OperationLogsPage />),
@@ -229,18 +233,12 @@ export type AdminPageDescriptor = {
   element: ReactNode;
 };
 
-/** Resolve page for a catalog id. Known placeholders stay PlaceholderPage; unknown ids throw in tests via assert. */
-export const resolveAdminPage = (id: string, placeholder?: boolean): AdminPageDescriptor => {
-  const entry = ADMIN_PAGE_BY_ID[id];
-  if (entry) return entry;
-  if (placeholder) {
-    return { componentId: 'PlaceholderPage', element: <PlaceholderPage /> };
-  }
-  // Deliberate fallback for incomplete catalog entries still marked non-placeholder.
-  return { componentId: 'PlaceholderPage', element: <PlaceholderPage /> };
+/** Resolve page for a catalog id. Every registered nav id has an entry; unknown ids fall back to a scoped 404. */
+export const resolveAdminPage = (id: string): AdminPageDescriptor => {
+  return ADMIN_PAGE_BY_ID[id] ?? { componentId: 'NotFoundPage', element: <NotFoundPage /> };
 };
 
 /** Component identity for tests — never rely on element truthiness alone. */
 export const getAdminPageComponentId = (id: string): string => {
-  return ADMIN_PAGE_BY_ID[id]?.componentId ?? 'PlaceholderPage';
+  return ADMIN_PAGE_BY_ID[id]?.componentId ?? 'NotFoundPage';
 };

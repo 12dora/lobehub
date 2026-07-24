@@ -48,7 +48,7 @@ describe('adminNavMeta', () => {
     expect(findAdminNavItemByPath('/admin/system')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.SYSTEM_READ,
     ]);
-    expect(findAdminNavItemByPath('/admin/system')?.placeholder).toBe(false);
+    expect(findAdminNavItemByPath('/admin/system')?.id).toBe('system');
   });
 
   it('lets Provider auditors inspect detail without granting write actions', () => {

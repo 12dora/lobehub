@@ -9,39 +9,38 @@ import { ADMIN_NAV_ITEMS, hasAllPermissions } from '@/enterprise/client/nav/admi
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 /**
- * `/admin/audit` group index: redirect to the first child the principal can open.
- * Mirrors the AI group pattern (parent path is not a real workspace).
+ * Group index route (e.g. `/admin/ai`, `/admin/audit`): the parent path is not a real
+ * workspace, so redirect to the first child the current principal can open. Every nav group
+ * uses this so no group parent ever renders a dead-end surface.
  */
-const AuditIndexRedirect = memo(() => {
+const GroupIndexRedirect = memo<{ groupId: string }>(({ groupId }) => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { permissions } = useAdminAccess();
 
   const firstChild = useMemo(() => {
-    const group = ADMIN_NAV_ITEMS.find((item) => item.id === 'audit');
+    const group = ADMIN_NAV_ITEMS.find((item) => item.id === groupId);
     const children = group?.children ?? [];
     return children.find(
       (child) => !child.hideFromNav && hasAllPermissions(permissions, child.requiredPermissions),
     );
-  }, [permissions]);
+  }, [groupId, permissions]);
 
   useEffect(() => {
-    if (firstChild) {
-      navigate(firstChild.path, { replace: true });
-    }
+    if (firstChild) navigate(firstChild.path, { replace: true });
   }, [firstChild, navigate]);
 
   if (firstChild) {
     return (
       <Text role="status" type="secondary">
-        {t('audit.redirecting')}
+        {t('groupRedirect.redirecting')}
       </Text>
     );
   }
 
-  return <Empty description={t('audit.noPermission')} style={{ paddingBlock: 64 }} />;
+  return <Empty description={t('groupRedirect.noAccess')} style={{ paddingBlock: 64 }} />;
 });
 
-AuditIndexRedirect.displayName = 'AuditIndexRedirect';
+GroupIndexRedirect.displayName = 'GroupIndexRedirect';
 
-export default AuditIndexRedirect;
+export default GroupIndexRedirect;

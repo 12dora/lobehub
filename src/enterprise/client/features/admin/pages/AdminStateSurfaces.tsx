@@ -152,16 +152,3 @@ export const AdminNotFoundSurface = memo(() => {
 });
 
 AdminNotFoundSurface.displayName = 'AdminNotFoundSurface';
-
-export const AdminPlaceholderSurface = memo(() => {
-  const { t } = useTranslation('admin');
-  return (
-    <StateCenter>
-      <FluentEmoji emoji="🛠️" size={48} />
-      <h2 style={{ fontWeight: 700, margin: 0 }}>{t('placeholder.title')}</h2>
-      <p style={{ maxWidth: 480, margin: 0 }}>{t('placeholder.desc')}</p>
-    </StateCenter>
-  );
-});
-
-AdminPlaceholderSurface.displayName = 'AdminPlaceholderSurface';

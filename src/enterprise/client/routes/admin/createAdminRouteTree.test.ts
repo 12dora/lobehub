@@ -80,120 +80,44 @@ describe('createAdminRouteTree', () => {
     expect(nestedUnknown?.at(-1)?.route.path).toBe('*');
   });
 
-  it('implemented admin routes are real pages; later modules remain placeholders', () => {
+  it('every nav route resolves to a real page; group parents redirect (no placeholder surface)', () => {
     const routes = createAdminRouteTree();
     const admin = routes.find((r) => r.path === '/admin');
     const children = admin?.children ?? [];
 
-    const users = children.find((c) => c.path === 'users');
-    const usersDetail = children.find((c) => c.path === 'users/:id');
-    const settings = children.find((c) => c.path === 'settings');
-    const managedResources = children.find((c) => c.path === 'managed-resources');
-    const aiProviders = children.find((c) => c.path === 'ai/providers');
-    const aiProviderDetail = children.find((c) => c.path === 'ai/providers/:id');
-    const aiCatalogProviders = children.find((c) => c.path === 'ai/catalog/providers');
-    const aiCatalogModels = children.find((c) => c.path === 'ai/catalog/models');
-    const skills = children.find((c) => c.path === 'skills');
-    const skillDetail = children.find((c) => c.path === 'skills/:id');
-    const connectors = children.find((c) => c.path === 'connectors');
-    const connectorDetail = children.find((c) => c.path === 'connectors/:id');
-    const agents = children.find((c) => c.path === 'agents');
-    const agentDetail = children.find((c) => c.path === 'agents/:id');
-    const branding = children.find((c) => c.path === 'branding');
-    const identityProviders = children.find((c) => c.path === 'identity-providers');
-    const system = children.find((c) => c.path === 'system');
+    const componentIdOf = (path: string) =>
+      (children.find((c) => c.path === path)?.handle as { admin?: { componentId?: string } })?.admin
+        ?.componentId;
 
-    expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect((usersDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect((settings?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect(
-      (managedResources?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-    expect((aiProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect(
-      (aiCatalogProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-    expect(
-      (aiCatalogModels?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-    expect(
-      (aiProviderDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-    expect((skills?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect((skillDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect((connectors?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect(
-      (connectorDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-    expect((agents?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect((agentDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect((branding?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect(
-      (identityProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-    expect((system?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
+    // Leaf routes resolve to their real page components.
+    expect(componentIdOf('users')).toBe('UsersListPage');
+    expect(componentIdOf('users/:id')).toBe('UserDetailPage');
+    expect(componentIdOf('agents')).toBe('AgentListPage');
+    expect(componentIdOf('branding')).toBe('BrandingPage');
+    expect(componentIdOf('system')).toBe('SystemPage');
+
+    // Group parents (/admin/ai, /admin/audit) are index redirects to the first accessible child —
+    // never a "coming soon" placeholder surface.
+    expect(componentIdOf('ai')).toBe('AiIndexRedirect');
+    expect(componentIdOf('audit')).toBe('AuditIndexRedirect');
+
+    // The /admin index route is the Overview dashboard.
+    const index = children.find((c) => c.index);
+    expect((index?.handle as { admin?: { componentId?: string } })?.admin?.componentId).toBe(
+      'OverviewPage',
     );
 
-    const auditLogs = children.find((c) => c.path === 'audit/logs');
-    const auditLive = children.find((c) => c.path === 'audit/live');
-    const auditExports = children.find((c) => c.path === 'audit/exports');
-    const auditHolds = children.find((c) => c.path === 'audit/holds');
-    const auditRetention = children.find((c) => c.path === 'audit/retention');
-    expect((auditLogs?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect((auditLive?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect(
-      (auditExports?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-    expect((auditHolds?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
-    expect(
-      (auditRetention?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
-    ).toBe(false);
-
-    // Component identity from the single page catalog (not mere element truthiness).
-    expect((users?.handle as { admin?: { componentId?: string } })?.admin?.componentId).toBe(
-      'UsersListPage',
-    );
-    expect((usersDetail?.handle as { admin?: { componentId?: string } })?.admin?.componentId).toBe(
-      'UserDetailPage',
-    );
+    // Component identity comes from the single page catalog.
     expect(getAdminPageComponentId('users')).toBe('UsersListPage');
     expect(getAdminPageComponentId('connectors')).toBe('ConnectorListPage');
-    expect(getAdminPageComponentId('unknown-future')).toBe('PlaceholderPage');
+    // Unknown ids fall back to a scoped 404, not a "coming soon" placeholder (which no longer exists).
+    expect(getAdminPageComponentId('unknown-future')).toBe('NotFoundPage');
 
-    // Every non-placeholder leaf catalog id resolves to a real page registry entry.
-    // Group-only nodes (ai) may be placeholder; overview is the index route.
+    // Every registered nav id — leaves, hidden details, and group parents — resolves to a real
+    // catalog entry; nothing silently falls through to the 404 fallback.
     for (const item of ADMIN_NAV_FLAT) {
-      if (item.placeholder) continue;
-      if (item.children?.length) continue; // pure group shells
       expect(ADMIN_PAGE_BY_ID[item.id]?.componentId, item.id).toBeTruthy();
-      expect(ADMIN_PAGE_BY_ID[item.id]?.componentId, item.id).not.toBe('PlaceholderPage');
+      expect(ADMIN_PAGE_BY_ID[item.id]?.componentId, item.id).not.toBe('NotFoundPage');
     }
 
     // Nav-visible items have icons in the shared icon catalog.
@@ -202,33 +126,5 @@ describe('createAdminRouteTree', () => {
     expect(missing).toEqual([]);
     expect(ADMIN_NAV_ICONS.users).toBeTruthy();
     expect(ADMIN_NAV_ITEMS.length).toBeGreaterThan(0);
-
-    const placeholders = ADMIN_NAV_FLAT.filter((i) => i.placeholder);
-    expect(
-      placeholders.every(
-        (i) =>
-          i.id !== 'users' &&
-          i.id !== 'users-detail' &&
-          i.id !== 'managed-resources' &&
-          i.id !== 'ai-providers' &&
-          i.id !== 'ai-provider-detail' &&
-          i.id !== 'ai-service-model' &&
-          i.id !== 'ai-memory' &&
-          i.id !== 'ai-catalog-providers' &&
-          i.id !== 'ai-catalog-provider-detail' &&
-          i.id !== 'ai-catalog-models' &&
-          i.id !== 'skills' &&
-          i.id !== 'skills-detail' &&
-          i.id !== 'connectors' &&
-          i.id !== 'connectors-detail' &&
-          i.id !== 'agents' &&
-          i.id !== 'agents-detail' &&
-          i.id !== 'branding' &&
-          i.id !== 'identity-providers' &&
-          i.id !== 'system' &&
-          i.id !== 'audit' &&
-          !i.id.startsWith('audit-'),
-      ),
-    ).toBe(true);
   });
 });
