@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import type { AdminSystemJob, AdminSystemJobs } from '@/enterprise/client/services/adminSystem';
 
@@ -10,6 +11,7 @@ import {
   collectAdminSystemJobs,
   deriveAdminSystemPermissions,
   didAdminSystemJobRefreshConfirm,
+  isAdminSystemInvalidInputError,
   resetAdminSystemJobPages,
   shouldPollAdminSystemJobs,
 } from './controller';
@@ -92,6 +94,15 @@ describe('Admin System job polling and errors', () => {
         settled: true,
       }),
     ).toBeNull();
+  });
+
+  it('detects PLATFORM_INVALID_INPUT for target-bound cursor invalidation', () => {
+    expect(
+      isAdminSystemInvalidInputError({
+        data: { errorData: { code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT } },
+      }),
+    ).toBe(true);
+    expect(isAdminSystemInvalidInputError(new Error('network blip'))).toBe(false);
   });
 });
 

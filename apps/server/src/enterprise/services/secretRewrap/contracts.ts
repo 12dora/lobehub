@@ -12,6 +12,16 @@ export const PLATFORM_SECRET_REWRAP_JOB_TYPE = 'platform.secret.rewrap.v1';
 export { PLATFORM_SECRET_REWRAP_FAILURE_TYPE };
 export const PLATFORM_SECRET_REWRAP_BATCH_SIZE = 50;
 export const PLATFORM_SECRET_REWRAP_EXTERNAL_GATE = 'identity_lkg_instance_convergence_required';
+/**
+ * Bump when PLATFORM_SECRET_ROTATION_DOMAINS gains/loses domains so a pre-expansion
+ * succeeded job for the same targetKeyId is not reused without re-scanning.
+ * Included in the job idempotency key (not schemaVersion, which versions the wire shape).
+ */
+export const PLATFORM_SECRET_REWRAP_DOMAIN_SET_VERSION = 2;
+
+/** Build the unique idempotency key for a rewrap of `targetKeyId` under the current domain set. */
+export const platformSecretRewrapIdempotencyKey = (targetKeyId: string): string =>
+  `rewrap:d${PLATFORM_SECRET_REWRAP_DOMAIN_SET_VERSION}:${targetKeyId}`;
 
 const addSecretIssue = (value: string, context: z.RefinementCtx) => {
   if (containsEnterpriseSecretMaterial(value)) {

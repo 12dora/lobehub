@@ -117,3 +117,10 @@ export const didAdminSystemJobRefreshConfirm = (
 
 export const isAdminSystemConflictError = (error: unknown): boolean =>
   mapEnterpriseError(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT;
+
+/**
+ * Server maps target-revision cursor drift to PLATFORM_INVALID_INPUT.
+ * Load-more retry must restart from page one rather than re-send the stale cursor.
+ */
+export const isAdminSystemInvalidInputError = (error: unknown): boolean =>
+  mapEnterpriseError(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;

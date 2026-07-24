@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, not, or, sql } from 'drizzle-orm';
 
 import {
@@ -61,6 +63,39 @@ export interface PlatformInstanceStatusServiceOptions {
   getIdentityRegistrationState?: typeof getIdentityProviderInstanceRegistrationState;
   loadIdentityTarget?: typeof loadPublishedIdentityTarget;
 }
+
+/** Cursor bound to the domain-target fingerprint that produced the page. */
+export type PlatformInstanceRevisionInventoryBoundCursor =
+  PlatformInstanceRevisionInventoryCursor & {
+    targetRevision: string;
+  };
+
+/**
+ * Thrown when a pagination cursor was issued against a different published
+ * domain-target set than the one resolved for this request.
+ */
+export class PlatformInstanceTargetRevisionMismatchError extends Error {
+  constructor() {
+    super('PLATFORM_INSTANCE_TARGET_REVISION_MISMATCH');
+    this.name = 'PlatformInstanceTargetRevisionMismatchError';
+  }
+}
+
+/** Stable fingerprint of resolved domain targets for pagination binding. */
+export const fingerprintDomainTargets = (targets: PlatformDomainTarget[]): string => {
+  const payload = targets
+    .map((target) =>
+      [
+        target.domain,
+        target.status,
+        target.token?.kind ?? '',
+        String(target.token?.value ?? ''),
+        target.errorCategory ?? '',
+      ].join(':'),
+    )
+    .join('|');
+  return createHash('sha256').update(payload).digest('hex').slice(0, 32);
+};
 
 const tokenFromState = (state: {
   loadedRevision: number | null;
@@ -403,8 +438,45 @@ export class PlatformInstanceStatusService {
     };
   };
 
+  /**
+   * Build domain convergence rows from already-resolved targets + inventory
+   * counts. Shared by getStatus and first-page inventory so summary + rows share
+   * one target resolution.
+   */
+  private buildDomainConvergence = async (
+    tx: Transaction,
+    targets: PlatformDomainTarget[],
+    snapshotAt: Date,
+  ): Promise<PlatformDomainConvergence[]> => {
+    const repository = new PlatformInstanceRepository(tx);
+    const platformTargets: PlatformInstanceInventoryTarget[] = targets
+      .filter(({ domain }) => domain !== 'identity')
+      .map(({ domain, loadMode, status, token }) => ({ domain, loadMode, status, token }));
+    const platform = await repository.getConvergenceInventorySnapshot(platformTargets, snapshotAt);
+    const identityTarget = targets.find(({ domain }) => domain === 'identity')!;
+    const identity = await this.readIdentityInventory(tx, identityTarget, snapshotAt);
+    const platformCounts = new Map(platform.counts.map((row) => [row.domain, row.counts]));
+    return PLATFORM_CONVERGENCE_DOMAINS.map((domain) => {
+      const target = targets.find((candidate) => candidate.domain === domain)!;
+      const counts =
+        domain === 'identity' ? identity.counts : (platformCounts.get(domain) ?? ZERO_COUNTS);
+      const status = convergenceStatus(target, counts);
+      return {
+        counts,
+        domain,
+        errorCategory: status === 'unavailable' ? target.errorCategory : null,
+        fallbackPolicy: target.fallbackPolicy,
+        loadMode: target.loadMode,
+        status,
+        targetToken: status === 'disabled' || status === 'not_applicable' ? null : target.token,
+      };
+    });
+  };
+
   getRevisionInventoryPage = async (input: {
-    cursor?: PlatformInstanceRevisionInventoryCursor;
+    cursor?: PlatformInstanceRevisionInventoryBoundCursor;
+    /** When true (first page), attach domain summary from the same transaction. */
+    includeDomains?: boolean;
     limit?: number;
   }) =>
     this.db.transaction(async (tx) => {
@@ -412,11 +484,25 @@ export class PlatformInstanceStatusService {
         env: this.env,
         loadIdentityTarget: this.options.loadIdentityTarget,
       }).resolveAll();
+      const targetRevision = fingerprintDomainTargets(targets);
+      if (input.cursor?.targetRevision && input.cursor.targetRevision !== targetRevision) {
+        throw new PlatformInstanceTargetRevisionMismatchError();
+      }
       const repository = new PlatformInstanceRepository(tx);
-      const page = await repository.listRevisionInventoryPage(input);
+      const page = await repository.listRevisionInventoryPage({
+        cursor: input.cursor
+          ? { instanceId: input.cursor.instanceId, lastHeartbeatAt: input.cursor.lastHeartbeatAt }
+          : undefined,
+        limit: input.limit,
+      });
       const identityTarget = targets.find(({ domain }) => domain === 'identity')!;
       const cutoff = new Date(page.snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+      const domains =
+        input.includeDomains === true
+          ? await this.buildDomainConvergence(tx, targets, page.snapshotAt)
+          : [];
       return {
+        domains,
         items: page.items.map((item) => {
           const diagnostic =
             item.instanceKind === 'platform'
@@ -424,8 +510,15 @@ export class PlatformInstanceStatusService {
               : identityDiagnostic(item.instance, identityTarget);
           return { fresh: diagnostic.lastHeartbeatAt >= cutoff, item: diagnostic };
         }),
-        nextCursor: page.nextCursor,
+        nextCursor: page.nextCursor
+          ? {
+              instanceId: page.nextCursor.instanceId,
+              lastHeartbeatAt: page.nextCursor.lastHeartbeatAt,
+              targetRevision,
+            }
+          : null,
         snapshotAt: page.snapshotAt,
+        targetRevision,
       };
     });
 

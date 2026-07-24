@@ -19,12 +19,20 @@ import {
   PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES,
   type PlatformGlobalCredentialType,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { PlatformSecretService } from '../../security/secret';
 import { PlatformAuditService } from '../platformAudit';
 
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
+
+/** Canonical base64 only — Node's Buffer decoder is lenient with invalid chars. */
+const isCanonicalBase64 = (value: string, bytes: Buffer): boolean => {
+  if (!/^(?:[A-Z\d+/]{4})*(?:[A-Z\d+/]{2}==|[A-Z\d+/]{3}=)?$/i.test(value)) {
+    return false;
+  }
+  return bytes.toString('base64') === value;
+};
 
 /** Fixed mask returned by get(decrypt) — never accept as a real secret value. */
 export const PLATFORM_GLOBAL_CREDENTIAL_MASK = '••••••••';
@@ -103,17 +111,49 @@ export const filterNonEmptySecretValues = (
   return next;
 };
 
+export interface PlatformGlobalCredentialAdminServiceOptions {
+  /**
+   * Test/fault seams. Production callers leave this undefined.
+   * `afterLockBeforeSecretMerge` runs after FOR UPDATE + current secret read,
+   * before encrypt/write — used to force concurrent interleaving in tests.
+   * `createAudit` substitutes the transaction-scoped audit service (rollback tests).
+   */
+  createAudit?: (db: LobeChatDatabase | Transaction) => PlatformAuditService;
+  lifecycle?: {
+    afterLockBeforeSecretMerge?: (params: { id: number }) => Promise<void>;
+  };
+}
+
 export class PlatformGlobalCredentialAdminService {
   private readonly model: PlatformGlobalCredentialModel;
-  private readonly audit: PlatformAuditService;
+  private readonly createAudit: (db: LobeChatDatabase | Transaction) => PlatformAuditService;
+  private readonly lifecycle: PlatformGlobalCredentialAdminServiceOptions['lifecycle'];
 
   constructor(
     private readonly db: LobeChatDatabase,
     private readonly secrets: PlatformSecretService,
+    options: PlatformGlobalCredentialAdminServiceOptions = {},
   ) {
     this.model = new PlatformGlobalCredentialModel(db);
-    this.audit = new PlatformAuditService(db);
+    this.createAudit = options.createAudit ?? ((conn) => new PlatformAuditService(conn));
+    this.lifecycle = options.lifecycle;
   }
+
+  /** Bind model + audit to a single transaction so mutation and success audit commit atomically. */
+  private withTxn = async <T>(
+    callback: (ctx: {
+      audit: PlatformAuditService;
+      model: PlatformGlobalCredentialModel;
+      tx: Transaction;
+    }) => Promise<T>,
+  ): Promise<T> =>
+    this.db.transaction(async (tx) =>
+      callback({
+        audit: this.createAudit(tx),
+        model: new PlatformGlobalCredentialModel(tx),
+        tx,
+      }),
+    );
 
   list = async (): Promise<{ data: PlatformGlobalCredentialSummaryDto[] }> => {
     const rows = await this.model.list();
@@ -156,35 +196,37 @@ export class PlatformGlobalCredentialAdminService {
     const payload = JSON.stringify(valueMap);
     const envelope = await this.encryptPayload(payload);
 
-    const created = await this.model.create({
-      createdBy: params.actorUserId,
-      envelope,
-      key: params.key,
-      meta: {
-        description: params.description,
-        maskedPreview: 'configured',
-        valueKeys,
-      },
-      name: params.name,
-      type: params.type,
-    });
+    return this.withTxn(async ({ audit, model }) => {
+      const created = await model.create({
+        createdBy: params.actorUserId,
+        envelope,
+        key: params.key,
+        meta: {
+          description: params.description,
+          maskedPreview: 'configured',
+          valueKeys,
+        },
+        name: params.name,
+        type: params.type,
+      });
 
-    await this.audit.append({
-      action: 'admin.creds.createKV',
-      actorUserId: params.actorUserId,
-      afterDiff: {
-        id: created.id,
-        key: created.key,
-        type: created.type,
-        valueKeyCount: valueKeys.length,
-      },
-      reason: 'platform_global_credential_mutation',
-      result: 'success',
-      targetId: String(created.id),
-      targetType: 'platform_global_credential',
-    });
+      await audit.append({
+        action: 'admin.creds.createKV',
+        actorUserId: params.actorUserId,
+        afterDiff: {
+          id: created.id,
+          key: created.key,
+          type: created.type,
+          valueKeyCount: valueKeys.length,
+        },
+        reason: 'platform_global_credential_mutation',
+        result: 'success',
+        targetId: String(created.id),
+        targetType: 'platform_global_credential',
+      });
 
-    return toSummary(created);
+      return toSummary(created);
+    });
   };
 
   uploadFile = async (params: {
@@ -193,14 +235,9 @@ export class PlatformGlobalCredentialAdminService {
     fileName: string;
     fileType: string;
   }): Promise<{ fileHashId: string; fileName: string }> => {
-    let bytes: Buffer;
-    try {
-      bytes = Buffer.from(params.fileBase64, 'base64');
-    } catch {
+    const bytes = Buffer.from(params.fileBase64, 'base64');
+    if (!isCanonicalBase64(params.fileBase64, bytes) || bytes.byteLength === 0) {
       throw new PlatformGlobalCredentialValidationError('Invalid base64 file payload');
-    }
-    if (bytes.byteLength === 0) {
-      throw new PlatformGlobalCredentialValidationError('File is empty');
     }
     if (bytes.byteLength > PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES) {
       throw new PlatformGlobalCredentialFileTooLargeError();
@@ -209,31 +246,33 @@ export class PlatformGlobalCredentialAdminService {
     const fileHashId = createHash('sha256').update(bytes).digest('hex');
     const envelope = await this.encryptBytes(bytes);
 
-    const staged = await this.model.stageUpload({
-      createdBy: params.actorUserId,
-      envelope,
-      expiresAt: new Date(Date.now() + UPLOAD_TTL_MS),
-      fileHashId,
-      fileName: params.fileName,
-      fileSize: bytes.byteLength,
-      fileType: params.fileType,
-    });
-
-    await this.audit.append({
-      action: 'admin.creds.uploadFile',
-      actorUserId: params.actorUserId,
-      afterDiff: {
-        fileHashId: staged.fileHashId,
-        fileName: staged.fileName,
+    return this.withTxn(async ({ audit, model }) => {
+      const staged = await model.stageUpload({
+        createdBy: params.actorUserId,
+        envelope,
+        expiresAt: new Date(Date.now() + UPLOAD_TTL_MS),
+        fileHashId,
+        fileName: params.fileName,
         fileSize: bytes.byteLength,
-      },
-      reason: 'platform_global_credential_mutation',
-      result: 'success',
-      targetId: staged.fileHashId,
-      targetType: 'platform_global_credential_upload',
-    });
+        fileType: params.fileType,
+      });
 
-    return staged;
+      await audit.append({
+        action: 'admin.creds.uploadFile',
+        actorUserId: params.actorUserId,
+        afterDiff: {
+          fileHashId: staged.fileHashId,
+          fileName: staged.fileName,
+          fileSize: bytes.byteLength,
+        },
+        reason: 'platform_global_credential_mutation',
+        result: 'success',
+        targetId: staged.fileHashId,
+        targetType: 'platform_global_credential_upload',
+      });
+
+      return staged;
+    });
   };
 
   createFile = async (params: {
@@ -243,37 +282,38 @@ export class PlatformGlobalCredentialAdminService {
     fileName: string;
     key: string;
     name: string;
-  }): Promise<PlatformGlobalCredentialSummaryDto> => {
-    // Single TX: key conflict rolls back and keeps staging for retry.
-    const created = await this.model.createFromStagedUpload({
-      createdBy: params.actorUserId,
-      fileHashId: params.fileHashId,
-      key: params.key,
-      meta: {
-        description: params.description,
-        fileName: params.fileName,
-      },
-      name: params.name,
-    });
+  }): Promise<PlatformGlobalCredentialSummaryDto> =>
+    // Single TX: key conflict rolls back staging consume + keeps audit atomic.
+    this.withTxn(async ({ audit, model }) => {
+      const created = await model.createFromStagedUpload({
+        createdBy: params.actorUserId,
+        fileHashId: params.fileHashId,
+        key: params.key,
+        meta: {
+          description: params.description,
+          fileName: params.fileName,
+        },
+        name: params.name,
+      });
 
-    await this.audit.append({
-      action: 'admin.creds.createFile',
-      actorUserId: params.actorUserId,
-      afterDiff: {
-        fileName: created.fileName,
-        fileSize: created.fileSize,
-        id: created.id,
-        key: created.key,
-        type: 'file',
-      },
-      reason: 'platform_global_credential_mutation',
-      result: 'success',
-      targetId: String(created.id),
-      targetType: 'platform_global_credential',
-    });
+      await audit.append({
+        action: 'admin.creds.createFile',
+        actorUserId: params.actorUserId,
+        afterDiff: {
+          fileName: created.fileName,
+          fileSize: created.fileSize,
+          id: created.id,
+          key: created.key,
+          type: 'file',
+        },
+        reason: 'platform_global_credential_mutation',
+        result: 'success',
+        targetId: String(created.id),
+        targetType: 'platform_global_credential',
+      });
 
-    return toSummary(created);
-  };
+      return toSummary(created);
+    });
 
   update = async (params: {
     actorUserId: string;
@@ -282,106 +322,118 @@ export class PlatformGlobalCredentialAdminService {
     name?: string;
     values?: Record<string, string>;
   }): Promise<PlatformGlobalCredentialSummaryDto> => {
-    const existing = await this.model.getById(params.id);
-    if (!existing) throw new PlatformGlobalCredentialNotFoundError();
-
-    let envelope:
-      | {
-          ciphertext: string;
-          fingerprint: string;
-          keyId: string;
-        }
-      | undefined;
-    let valueKeys = existing.valueKeys;
-    let maskedPreview = existing.maskedPreview;
-
-    // values missing / empty after filter → metadata-only (do not touch secret).
+    // Validate type/mask outside the lock when possible; secret merge must run
+    // under FOR UPDATE so concurrent partial updates cannot lose disjoint keys.
     if (params.values !== undefined) {
-      if (existing.type !== 'kv-env' && existing.type !== 'kv-header') {
-        throw new PlatformGlobalCredentialValidationError(
-          'Values can only be updated for KV credentials',
-        );
-      }
       assertNoMaskedSecretValues(params.values);
-      const submitted = filterNonEmptySecretValues(params.values);
-
-      if (Object.keys(submitted).length > 0) {
-        // Merge: rotate only submitted keys; keep remaining secrets from current envelope.
-        const current = await this.readCurrentKvMap(existing.id);
-        const merged = { ...current, ...submitted };
-        envelope = await this.encryptPayload(JSON.stringify(merged));
-        valueKeys = Object.keys(merged);
-        maskedPreview = 'configured';
-      }
     }
 
-    const updated = await this.model.update({
-      envelope,
-      id: params.id,
-      meta: {
-        description: params.description !== undefined ? params.description : existing.description,
-        maskedPreview,
-        valueKeys,
-      },
-      name: params.name,
-      updatedBy: params.actorUserId,
-    });
+    return this.withTxn(async ({ audit, model }) => {
+      // Lock first so concurrent partial secret updates serialize before merge.
+      const existing = await model.getByIdForUpdate(params.id);
+      if (!existing) throw new PlatformGlobalCredentialNotFoundError();
 
-    await this.audit.append({
-      action: 'admin.creds.update',
-      actorUserId: params.actorUserId,
-      afterDiff: {
-        id: updated.id,
-        name: updated.name,
-        rotatedSecret: Boolean(envelope),
-        valueKeyCount: valueKeys?.length,
-      },
-      beforeDiff: { id: existing.id, name: existing.name },
-      reason: 'platform_global_credential_mutation',
-      result: 'success',
-      targetId: String(updated.id),
-      targetType: 'platform_global_credential',
-    });
+      let envelope:
+        | {
+            ciphertext: string;
+            fingerprint: string;
+            keyId: string;
+          }
+        | undefined;
+      let valueKeys = existing.valueKeys;
+      let maskedPreview = existing.maskedPreview;
 
-    return toSummary(updated);
+      // values missing / empty after filter → metadata-only (do not touch secret).
+      if (params.values !== undefined) {
+        if (existing.type !== 'kv-env' && existing.type !== 'kv-header') {
+          throw new PlatformGlobalCredentialValidationError(
+            'Values can only be updated for KV credentials',
+          );
+        }
+        const submitted = filterNonEmptySecretValues(params.values);
+
+        if (Object.keys(submitted).length > 0) {
+          // Decrypt/merge/encrypt while holding FOR UPDATE — disjoint concurrent
+          // key additions both succeed without silent loss.
+          const current = await this.readCurrentKvMap(existing.id, model);
+          await this.lifecycle?.afterLockBeforeSecretMerge?.({ id: existing.id });
+          const merged = { ...current, ...submitted };
+          envelope = await this.encryptPayload(JSON.stringify(merged));
+          valueKeys = Object.keys(merged);
+          maskedPreview = 'configured';
+        }
+      }
+
+      const updated = await model.update({
+        envelope,
+        id: params.id,
+        meta: {
+          description: params.description !== undefined ? params.description : existing.description,
+          maskedPreview,
+          valueKeys,
+        },
+        name: params.name,
+        updatedBy: params.actorUserId,
+      });
+
+      await audit.append({
+        action: 'admin.creds.update',
+        actorUserId: params.actorUserId,
+        afterDiff: {
+          id: updated.id,
+          name: updated.name,
+          rotatedSecret: Boolean(envelope),
+          valueKeyCount: valueKeys?.length,
+        },
+        beforeDiff: { id: existing.id, name: existing.name },
+        reason: 'platform_global_credential_mutation',
+        result: 'success',
+        targetId: String(updated.id),
+        targetType: 'platform_global_credential',
+      });
+
+      return toSummary(updated);
+    });
   };
 
-  delete = async (params: { actorUserId: string; id: number }): Promise<{ success: boolean }> => {
-    const existing = await this.model.getById(params.id);
-    if (!existing) throw new PlatformGlobalCredentialNotFoundError();
+  delete = async (params: { actorUserId: string; id: number }): Promise<{ success: boolean }> =>
+    this.withTxn(async ({ audit, model }) => {
+      const existing = await model.getById(params.id);
+      if (!existing) throw new PlatformGlobalCredentialNotFoundError();
 
-    const ok = await this.model.deleteById(params.id);
-    await this.audit.append({
-      action: 'admin.creds.delete',
-      actorUserId: params.actorUserId,
-      beforeDiff: { id: existing.id, key: existing.key, type: existing.type },
-      reason: 'platform_global_credential_mutation',
-      result: 'success',
-      targetId: String(params.id),
-      targetType: 'platform_global_credential',
+      const ok = await model.deleteById(params.id);
+      await audit.append({
+        action: 'admin.creds.delete',
+        actorUserId: params.actorUserId,
+        beforeDiff: { id: existing.id, key: existing.key, type: existing.type },
+        reason: 'platform_global_credential_mutation',
+        result: 'success',
+        targetId: String(params.id),
+        targetType: 'platform_global_credential',
+      });
+      return { success: ok };
     });
-    return { success: ok };
-  };
 
   deleteByKey = async (params: {
     actorUserId: string;
     key: string;
-  }): Promise<{ success: boolean }> => {
-    const existing = await this.model.getByKey(params.key);
-    if (!existing) throw new PlatformGlobalCredentialNotFoundError();
+  }): Promise<{ success: boolean }> =>
+    this.withTxn(async ({ audit, model }) => {
+      const existing = await model.getByKey(params.key);
+      if (!existing) throw new PlatformGlobalCredentialNotFoundError();
 
-    const ok = await this.model.deleteByKey(params.key);
-    await this.audit.append({
-      action: 'admin.creds.deleteByKey',
-      actorUserId: params.actorUserId,
-      beforeDiff: { id: existing.id, key: existing.key, type: existing.type },
-      reason: 'platform_global_credential_mutation',
-      result: 'success',
-      targetId: String(existing.id),
-      targetType: 'platform_global_credential',
+      const ok = await model.deleteByKey(params.key);
+      await audit.append({
+        action: 'admin.creds.deleteByKey',
+        actorUserId: params.actorUserId,
+        beforeDiff: { id: existing.id, key: existing.key, type: existing.type },
+        reason: 'platform_global_credential_mutation',
+        result: 'success',
+        targetId: String(existing.id),
+        targetType: 'platform_global_credential',
+      });
+      return { success: ok };
     });
-    return { success: ok };
-  };
 
   /** Honest empty skill status — runtime inject is out of scope for this wave. */
   getSkillCredStatus = async (_skillIdentifier: string): Promise<unknown[]> => [];
@@ -393,8 +445,11 @@ export class PlatformGlobalCredentialAdminService {
     throw new PlatformGlobalCredentialOauthUnsupportedError();
   };
 
-  private readCurrentKvMap = async (credentialId: number): Promise<Record<string, string>> => {
-    const active = await this.model.getActiveSecretEnvelope(credentialId);
+  private readCurrentKvMap = async (
+    credentialId: number,
+    model: PlatformGlobalCredentialModel = this.model,
+  ): Promise<Record<string, string>> => {
+    const active = await model.getActiveSecretEnvelope(credentialId);
     if (!active) return {};
     try {
       const plain = await this.secrets.decrypt(active.ciphertext);

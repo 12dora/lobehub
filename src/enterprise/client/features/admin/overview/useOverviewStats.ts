@@ -1,10 +1,9 @@
 import { adminStatsService } from '@/enterprise/client/services/adminStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { ADMIN_GLOBAL_STATS_SCOPE } from '@/routes/(main)/settings/stats/features/StatsDataSource';
-import type { UsageLog } from '@/types/usage/usageRecord';
 
 import { OVERVIEW_RANK_LIMIT, OVERVIEW_WINDOW_DAYS } from './constants';
-import { currentMonthKey, overviewWindowStartDate, toDailyTokenTrend } from './utils';
+import { currentMonthKey, overviewWindowStartDate } from './utils';
 
 const scope = ADMIN_GLOBAL_STATS_SCOPE;
 
@@ -24,8 +23,9 @@ export const useOverviewKpis = () => {
   return useClientDataSWR(
     ['admin-stats:overview-kpi', scope, days],
     async (): Promise<OverviewKpiData> => {
-      const [totals, messages, topics, agents] = await Promise.all([
-        adminStatsService.totals(days),
+      // userTotals avoids the three unused lifetime table scans from totals().
+      const [users, messages, topics, agents] = await Promise.all([
+        adminStatsService.userTotals(days),
         adminStatsService.countMessages({ startDate }),
         adminStatsService.countTopics({ startDate }),
         adminStatsService.countAgents({ startDate }),
@@ -35,8 +35,8 @@ export const useOverviewKpis = () => {
         agents,
         messages,
         topics,
-        usersActive: totals.usersActive,
-        usersTotal: totals.usersTotal,
+        usersActive: users.usersActive,
+        usersTotal: users.usersTotal,
       };
     },
   );
@@ -47,8 +47,8 @@ export const useOverviewUsageTrend = () => {
   const mo = currentMonthKey();
 
   return useClientDataSWR(['admin-stats:overview-usage-day', scope, mo], async () => {
-    const logs = (await adminStatsService.usageFindAndGroupByDay(mo)) as UsageLog[];
-    return toDailyTokenTrend(logs);
+    const rows = await adminStatsService.usageDailyTokenTotals(mo);
+    return rows.map((row) => ({ day: row.day, tokens: Number(row.totalTokens) || 0 }));
   });
 };
 
