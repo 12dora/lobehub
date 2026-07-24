@@ -24,7 +24,9 @@ import {
 
 import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
+import { PlatformSecretService } from '../../security/secret';
 import { PlatformAuditService } from '../platformAudit';
+import { advanceIdentityProviderLkgAfterTombstone } from './lkg';
 
 const SUCCESSFUL_TEST_MAX_AGE_MS = 10 * 60 * 1000;
 const IDEMPOTENCY_LEASE_MS = 5 * 60 * 1000;
@@ -1275,7 +1277,7 @@ export class IdentityProviderPublicationService {
   ): Promise<PlatformIdentityProviderInternalDraft> => {
     const reason = assertReason(input.reason);
     try {
-      return await this.db.transaction(async (tx) => {
+      const committed = await this.db.transaction(async (tx) => {
         await acquireIdentityProviderPublishedRevisionLock(tx);
         const { draft } = await this.lockedDraft(tx, input.id);
         if (draft.revision !== input.expectedRevision) {
@@ -1332,19 +1334,28 @@ export class IdentityProviderPublicationService {
         const nextRevision = draft.revision + 1;
         const now = new Date();
         const checksum = checksumPayload(parsed);
-        await tx.insert(platformResourceRevisions).values({
-          checksum,
-          comment: reason,
-          createdBy: actorUserId,
-          payload: parsed as unknown as Record<string, unknown>,
-          publishedAt: now,
-          publishedBy: actorUserId,
-          resourceId: input.id,
-          resourceType: 'oidc',
-          revision: nextRevision,
-          secretFingerprint: parsed.secretFingerprint,
-          status: 'published',
-        });
+        const [tombstoneRow] = await tx
+          .insert(platformResourceRevisions)
+          .values({
+            checksum,
+            comment: reason,
+            createdBy: actorUserId,
+            payload: parsed as unknown as Record<string, unknown>,
+            publishedAt: now,
+            publishedBy: actorUserId,
+            resourceId: input.id,
+            resourceType: 'oidc',
+            revision: nextRevision,
+            secretFingerprint: parsed.secretFingerprint,
+            status: 'published',
+          })
+          .returning({
+            id: platformResourceRevisions.id,
+            publishedAt: platformResourceRevisions.publishedAt,
+          });
+        if (!tombstoneRow?.id || !tombstoneRow.publishedAt) {
+          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+        }
         // Treat the tombstone like a pending activation so restart status and the
         // UI surface a Reload/Restart action. Reconcile to `disabled` only after
         // every fresh instance reports the tombstoned (empty/reduced) target.
@@ -1393,8 +1404,50 @@ export class IdentityProviderPublicationService {
           targetId: input.id,
           targetType: 'identity_provider',
         });
-        return result;
+        return {
+          result,
+          tombstoneGeneration: `${tombstoneRow.publishedAt.toISOString()}:${tombstoneRow.id}`,
+        };
       });
+
+      // identity/F10: advance local LKG synchronously after Disable so a total DB
+      // outage in the immediate post-disable window cannot resurrect this provider.
+      // Best-effort only — Disable success is already committed.
+      // Single-instance: in-process LKG write queue serializes overlaps; multi-instance
+      // cross-process LKG lock is a deferred limitation (see lkg.ts writeQueues).
+      try {
+        const secrets = PlatformSecretService.tryFromEnv(process.env);
+        if (!secrets) {
+          // Safe structured outcome — no secret material.
+          console.warn('[admin.identityProviders] LKG advance after disable skipped', {
+            reason: 'missing_secret',
+            removedProviderId: input.id,
+          });
+        } else {
+          const advanceResult = await advanceIdentityProviderLkgAfterTombstone({
+            env: process.env,
+            removedProviderId: input.id,
+            secrets,
+            tombstoneGeneration: committed.tombstoneGeneration,
+          });
+          if (
+            advanceResult === 'rejected' ||
+            (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped')
+          ) {
+            console.warn('[admin.identityProviders] LKG advance after disable not applied', {
+              reason: typeof advanceResult === 'object' ? advanceResult.reason : 'rejected',
+              removedProviderId: input.id,
+              result: advanceResult,
+            });
+          }
+        }
+      } catch (lkgError) {
+        console.error('[admin.identityProviders] LKG advance after disable unavailable', {
+          errorClass: lkgError instanceof Error ? lkgError.name : 'UnknownError',
+          removedProviderId: input.id,
+        });
+      }
+      return committed.result;
     } catch (error) {
       try {
         await new PlatformAuditService(this.db).append({

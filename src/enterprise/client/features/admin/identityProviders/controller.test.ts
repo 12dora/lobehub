@@ -18,6 +18,7 @@ import {
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRestartPhase,
   resolveIdentityProviderRevisionRefresh,
+  resolveIdentityProviderWizardLiveProvider,
   resolvePublishedHistorySignal,
   toIdentityProviderStatusBadge,
 } from './controller';
@@ -408,5 +409,26 @@ describe('identity provider editor controller', () => {
         preserveDraft: false,
       }),
     ).toBe('unchanged');
+  });
+
+  it('prefers fresher list hits over retained mutation rows when present', () => {
+    // Selector unit coverage only — the page-2 save→test/publish wiring is covered by
+    // openIdentityProviderWizardModal.revision.test.tsx (identity/F8 mounted regression).
+    expect(
+      resolveIdentityProviderWizardLiveProvider({
+        canonicalProvider: { id: 'idp-page-2', revision: 5 },
+        isEdit: true,
+        listHit: { id: 'idp-page-2', revision: 6 },
+        propProvider: { id: 'idp-page-2', revision: 4 },
+      }),
+    ).toEqual({ id: 'idp-page-2', revision: 6 });
+    expect(
+      resolveIdentityProviderWizardLiveProvider({
+        canonicalProvider: { id: 'idp-page-2', revision: 5 },
+        isEdit: true,
+        listHit: undefined,
+        propProvider: { id: 'idp-page-2', revision: 4 },
+      }),
+    ).toEqual({ id: 'idp-page-2', revision: 5 });
   });
 });

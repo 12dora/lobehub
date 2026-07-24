@@ -14,6 +14,9 @@ import {
 import { validatePlatformIdentityProviderClaims } from '@/server/enterprise/services/identityProvider/claimValidation';
 import { extractIdentityProviderGroups } from '@/server/enterprise/services/identityProvider/groupRoleMapping';
 import {
+  bindIdentityProviderGroupRoleMappingFlow,
+  discardIdentityProviderGroupRoleMapping,
+  discardIdentityProviderGroupRoleMappingByFlow,
   reconcileIdentityProviderGroupRoles,
   stashIdentityProviderGroupRoleMapping,
 } from '@/server/enterprise/services/identityProvider/groupRoleMappingRuntime';
@@ -108,6 +111,7 @@ interface PlatformIdentityProviderUser {
 const mapPlatformProfileToUser = (
   provider: RuntimeIdentityProvider,
   profile: Record<string, unknown>,
+  options?: { flowId?: string },
 ): PlatformIdentityProviderUser => {
   const { issues, values } = validatePlatformIdentityProviderClaims({
     claimMapping: provider.claimMapping,
@@ -119,8 +123,10 @@ const mapPlatformProfileToUser = (
   }
   // Stash IdP groups for account/session after-hook role reconciliation.
   // getUserInfo knows groups but not userId; session/account create has userId.
+  // Prefer flowId (OAuth state) so terminal failures discard only this attempt.
   if (Object.keys(provider.groupRoleMapping).length > 0) {
     stashIdentityProviderGroupRoleMapping({
+      flowId: options?.flowId,
       groupRoleMapping: provider.groupRoleMapping,
       groups: extractIdentityProviderGroups(profile),
       providerKey: provider.providerKey,
@@ -137,15 +143,39 @@ const mapPlatformProfileToUser = (
 };
 
 /**
+ * Resolve OAuth `state` for the current request (better-auth request-scoped state).
+ * Available during OAuth callback after parseState → setOAuthState, including when
+ * session.create.before runs in the same request (identity/F9 flow-exact reconcile).
+ */
+export const resolvePlatformOidcOAuthFlowId = async (
+  readOAuthState: typeof getOAuthState = getOAuthState,
+): Promise<string | undefined> => {
+  try {
+    const oauthState = await readOAuthState();
+    if (typeof oauthState?.oauthState === 'string' && oauthState.oauthState.trim()) {
+      return oauthState.oauthState;
+    }
+  } catch {
+    // No Better Auth request context (tests, non-OAuth session creates).
+  }
+  return undefined;
+};
+
+/**
  * Enforce stashed IdP group→platform role mapping at login time.
  * Call from Better Auth session.create.before (pre-session boundary) once userId is known.
  * Fail-closed: reconcileIdentityProviderGroupRoles propagates apply failures so the
  * session hook can abort creation (return false) rather than issue an elevated session.
+ *
+ * Prefer `flowId` (OAuth state) so concurrent same-provider+same-subject logins
+ * consume only THIS attempt's pending mapping (identity/F9).
  */
 export const enforcePlatformOidcGroupRoleMappingOnLogin = async (input: {
   /** Better Auth account.accountId = IdP subject */
   accountId: string;
   db: LobeChatDatabase;
+  /** OAuth state / flow id for this login attempt (from getOAuthState). */
+  flowId?: string;
   /** Better Auth account.providerId = platform providerKey */
   providerId: string;
   userId: string;
@@ -153,6 +183,7 @@ export const enforcePlatformOidcGroupRoleMappingOnLogin = async (input: {
   if (!input.userId || !input.providerId || !input.accountId) return;
   await reconcileIdentityProviderGroupRoles({
     db: input.db,
+    flowId: input.flowId,
     providerKey: input.providerId,
     subject: input.accountId,
     userId: input.userId,
@@ -160,19 +191,70 @@ export const enforcePlatformOidcGroupRoleMappingOnLogin = async (input: {
 };
 
 /**
+ * Terminal login failure (OAuth callback without session, or abort before reconcile):
+ * drop the pending group→role stash for THIS attempt only.
+ *
+ * Scope order: OAuth flow/state id first (same-provider+same-subject concurrent safe),
+ * then subject-only synthetic entry when no flow id is known. Never clear every pending
+ * mapping for the provider — a concurrent successful login would lose its reconciliation
+ * and the session hook would treat "no pending" as success (stale roles).
+ * Provider-wide clear remains only for unload/disable via
+ * discardIdentityProviderGroupRoleMappingsForProvider.
+ */
+export const discardPlatformOidcGroupRoleMappingOnLoginFailure = (input: {
+  /** OAuth `state` (or equivalent per-login flow identifier) from the callback. */
+  flowId?: string;
+  providerKey: string;
+  subject?: string;
+}): void => {
+  if (!input.providerKey) return;
+  // Prefer flow-scoped discard so a failed older flow cannot drop a concurrent
+  // same-provider+same-subject surviving login's mapping (identity/F9).
+  if (input.flowId) {
+    discardIdentityProviderGroupRoleMappingByFlow({
+      flowId: input.flowId,
+      providerKey: input.providerKey,
+    });
+    return;
+  }
+  if (input.subject) {
+    // No flow id: only the subject-only synthetic slot (not all concurrent flows).
+    discardIdentityProviderGroupRoleMapping({
+      providerKey: input.providerKey,
+      subject: input.subject,
+    });
+  }
+  // No subject/flow: do not clear-all. TTL/sweep retires abandoned entries.
+};
+
+/**
  * Session-create path: try every linked account so a returning OIDC login
  * (account update may not fire) still applies the pending group mapping.
+ *
+ * Resolves OAuth flow id from better-auth request state when not passed in, so
+ * session.create.before can consume the exact flow's pending mapping (identity/F9).
  */
 export const enforcePlatformOidcGroupRoleMappingForUserAccounts = async (input: {
   accounts: ReadonlyArray<{ accountId: string; providerId: string }>;
   db: LobeChatDatabase;
+  /**
+   * Explicit OAuth flow/state id. When omitted, reads request-scoped OAuth state
+   * via better-auth `getOAuthState` (set by parseState before createSession).
+   */
+  flowId?: string;
+  /** Test seam / override for reading request OAuth state. */
+  readOAuthState?: typeof getOAuthState;
   userId: string;
 }): Promise<void> => {
   if (!input.userId || input.accounts.length === 0) return;
+  const flowId =
+    input.flowId?.trim() ||
+    (await resolvePlatformOidcOAuthFlowId(input.readOAuthState ?? getOAuthState));
   for (const linked of input.accounts) {
     await enforcePlatformOidcGroupRoleMappingOnLogin({
       accountId: linked.accountId,
       db: input.db,
+      flowId,
       providerId: linked.providerId,
       userId: input.userId,
     });
@@ -350,8 +432,20 @@ export const buildPlatformIdentityProvider = (
         sub: idTokenClaims.sub,
       };
       await markPlatformOidcLoginStage('authenticated');
+      const flowId =
+        typeof oauthState?.oauthState === 'string' && oauthState.oauthState
+          ? oauthState.oauthState
+          : undefined;
       try {
-        mapPlatformProfileToUser(provider, profile);
+        const mapped = mapPlatformProfileToUser(provider, profile, { flowId });
+        // Ensure flow binding even if stash ran without flowId on a prior mapProfile call.
+        if (flowId) {
+          bindIdentityProviderGroupRoleMappingFlow({
+            flowId,
+            providerKey: provider.providerKey,
+            subject: mapped.id,
+          });
+        }
       } catch (error) {
         await markPlatformOidcLoginStage('authenticated', 'claim_invalid');
         await observePlatformOidcLoginFailure();

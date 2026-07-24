@@ -16,6 +16,7 @@ import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import {
+  IDENTITY_PROVIDER_LKG_VERSION,
   identityProviderLkgGeneration,
   identityProviderLkgIdentity,
   type IdentityProviderLkgPayload,
@@ -322,6 +323,11 @@ const toLkgPayload = (payload: DatabasePayload): IdentityProviderLkgPayload => (
   domain: 'platform-oidc-lkg',
   generation: snapshotGeneration(payload),
   identityRevision: identityRevision(payload.rows),
+  // Persist signed revoke memory so LKG merges concurrent disables and blocks stale re-adds.
+  // Written as v2 so legacy strict six-field v1 readers do not mis-parse this field.
+  providerTombstones: [...payload.tombstones]
+    .map((entry) => ({ generation: entry.generation, providerId: entry.providerId }))
+    .sort((left, right) => left.providerId.localeCompare(right.providerId)),
   providers: payload.rows.map((row) => ({
     checksum: row.checksum,
     generation: row.generation,
@@ -331,7 +337,7 @@ const toLkgPayload = (payload: DatabasePayload): IdentityProviderLkgPayload => (
     secretCiphertext: row.secretCiphertext,
     secretFingerprint: row.secretFingerprint,
   })),
-  version: 1,
+  version: IDENTITY_PROVIDER_LKG_VERSION,
 });
 
 const fromLkgPayload = (

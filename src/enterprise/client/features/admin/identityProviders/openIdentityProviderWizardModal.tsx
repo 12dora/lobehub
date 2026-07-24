@@ -12,6 +12,7 @@ import {
   createIdentityProviderDraftFromTemplate,
   type IdentityProviderCreateDraftSeed,
   type IdentityProviderCreateTemplateId,
+  resolveIdentityProviderWizardLiveProvider,
 } from './controller';
 import IdentityProviderTypePicker from './IdentityProviderTypePicker';
 import IdentityProviderWizard from './IdentityProviderWizard';
@@ -42,7 +43,8 @@ interface ContentProps extends IdentityProviderWizardModalProps {
  * feeding it the live provider from the shared cache so its revision stays
  * fresh for the next test/publish.
  */
-const IdentityProviderWizardModalContent = memo<ContentProps>(
+/** Exported for mounted save→test/publish revision regressions (identity/F8). */
+export const IdentityProviderWizardModalContent = memo<ContentProps>(
   ({ authMethod, canCreate, canPublish, canTest, canUpdate, dirtyRef, onChanged, provider }) => {
     const { t } = useTranslation('admin');
     const { close } = useModalContext();
@@ -59,10 +61,13 @@ const IdentityProviderWizardModalContent = memo<ContentProps>(
     const listHit = isEdit
       ? providers.data?.items.find((item) => item.id === provider!.id)
       : undefined;
-    const liveProvider =
-      isEdit && listHit && (!canonicalProvider || listHit.revision >= canonicalProvider.revision)
-        ? listHit
-        : (canonicalProvider ?? provider);
+    // Mutation retention beats a page-scoped list miss (identity/F8).
+    const liveProvider = resolveIdentityProviderWizardLiveProvider({
+      canonicalProvider,
+      isEdit,
+      listHit,
+      propProvider: provider,
+    });
     const [seed, setSeed] = useState<IdentityProviderCreateDraftSeed | null>(null);
 
     const handleSaved = useCallback(

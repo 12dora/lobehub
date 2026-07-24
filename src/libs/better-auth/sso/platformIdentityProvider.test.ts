@@ -1,4 +1,5 @@
 // @vitest-environment node
+import type { getOAuthState } from 'better-auth/api';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +9,8 @@ import {
 
 import {
   buildPlatformIdentityProvider,
+  discardPlatformOidcGroupRoleMappingOnLoginFailure,
+  enforcePlatformOidcGroupRoleMappingForUserAccounts,
   enforcePlatformOidcGroupRoleMappingOnLogin,
   getStableDingTalkClaims,
   type RuntimeIdentityProvider,
@@ -226,25 +229,295 @@ describe('platform identity provider Better Auth adapter', () => {
       groups: ['engineering'],
     });
 
-    // Re-stash; enforceOnLogin takes pending (apply may no-op on fake db — non-blocking).
+    // Re-stash; enforceOnLogin takes pending then fail-closed apply (fake db) propagates.
     config.mapProfileToUser!({
       display_name: 'Ada',
       employee_id: 'employee-1',
       groups: ['engineering'],
       mail: 'ada@example.test',
     });
-    await enforcePlatformOidcGroupRoleMappingOnLogin({
-      accountId: 'employee-1',
-      db: { __test: true } as never,
-      providerId: 'corp-oidc',
-      userId: 'user_local_1',
-    });
+    await expect(
+      enforcePlatformOidcGroupRoleMappingOnLogin({
+        accountId: 'employee-1',
+        db: { __test: true } as never,
+        providerId: 'corp-oidc',
+        userId: 'user_local_1',
+      }),
+    ).rejects.toBeTruthy();
+    // Pending entry is still consumed (one-shot) so it cannot be retried into a session.
     expect(
       takeIdentityProviderGroupRoleMapping({
         providerKey: 'corp-oidc',
         subject: 'employee-1',
       }),
     ).toBeNull();
+  });
+
+  it('discards pending group-role mapping on terminal login failure (identity/F9)', async () => {
+    resetIdentityProviderGroupRoleMappingRuntimeForTest();
+    const mappedProvider = {
+      ...provider,
+      groupRoleMapping: { engineering: 'ai_admin' },
+    } as const satisfies RuntimeIdentityProvider;
+    const config = buildPlatformIdentityProvider(mappedProvider, 'https://app.example.test');
+    // Stash failed attempt with flow id (OAuth state) as production getUserInfo does.
+    const { stashIdentityProviderGroupRoleMapping } =
+      await import('@/server/enterprise/services/identityProvider/groupRoleMappingRuntime');
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-fail-1',
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+      providerKey: 'corp-oidc',
+      subject: 'employee-fail',
+    });
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'employee-fail',
+      }),
+    ).not.toBeNull();
+
+    // Re-stash then terminal-failure discard scoped to this OAuth state.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-fail-1',
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+      providerKey: 'corp-oidc',
+      subject: 'employee-fail',
+    });
+    discardPlatformOidcGroupRoleMappingOnLoginFailure({
+      flowId: 'oauth-state-fail-1',
+      providerKey: 'corp-oidc',
+    });
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'employee-fail',
+      }),
+    ).toBeNull();
+    void config;
+  });
+
+  it('callback-hook failure cannot clear a concurrent successful login mapping (identity/F9)', async () => {
+    resetIdentityProviderGroupRoleMappingRuntimeForTest();
+    const { stashIdentityProviderGroupRoleMapping } =
+      await import('@/server/enterprise/services/identityProvider/groupRoleMappingRuntime');
+    const { platformIdentityProviderState } = await import('./platformIdentityProviderState');
+
+    // Concurrent logins against the same provider: one will fail at callback, one succeed.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-failed-login',
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+      providerKey: 'corp-oidc',
+      subject: 'subject-failed',
+    });
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-success-login',
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+      providerKey: 'corp-oidc',
+      subject: 'subject-success',
+    });
+
+    const plugin = platformIdentityProviderState(['corp-oidc']);
+    const afterHooks = plugin.hooks?.after ?? [];
+    // Better Auth matchers compare the route pattern, not the resolved path.
+    const callbackFailureHook = afterHooks.find((hook) =>
+      hook.matcher({ path: '/oauth2/callback/:providerId' } as never),
+    );
+    expect(callbackFailureHook).toBeTruthy();
+
+    // Production after-hook path: terminal failure without session cookie.
+    await callbackFailureHook!.handler({
+      context: {
+        responseHeaders: new Headers({ location: 'https://app.example.test/login?error=1' }),
+      },
+      params: { providerId: 'corp-oidc' },
+      query: { state: 'state-failed-login' },
+    } as never);
+
+    // Failed attempt discarded; concurrent success mapping retained for reconcile.
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'subject-failed',
+      }),
+    ).toBeNull();
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'subject-success',
+      }),
+    ).toMatchObject({
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+    });
+
+    // Subject-less / flow-less failure must not clear remaining provider mappings.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-success-login-2',
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+      providerKey: 'corp-oidc',
+      subject: 'subject-success-2',
+    });
+    discardPlatformOidcGroupRoleMappingOnLoginFailure({ providerKey: 'corp-oidc' });
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'subject-success-2',
+      }),
+    ).not.toBeNull();
+  });
+
+  it('same-provider+same-subject: callback failure discards only the failed flow (identity/F9)', async () => {
+    resetIdentityProviderGroupRoleMappingRuntimeForTest();
+    const { stashIdentityProviderGroupRoleMapping, takeIdentityProviderGroupRoleMapping } =
+      await import('@/server/enterprise/services/identityProvider/groupRoleMappingRuntime');
+    const { platformIdentityProviderState } = await import('./platformIdentityProviderState');
+
+    const subject = 'employee-same-subject';
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-older-fail',
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-newer-ok',
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+
+    const plugin = platformIdentityProviderState(['corp-oidc']);
+    const afterHooks = plugin.hooks?.after ?? [];
+    const callbackFailureHook = afterHooks.find((hook) =>
+      hook.matcher({ path: '/oauth2/callback/:providerId' } as never),
+    );
+    expect(callbackFailureHook).toBeTruthy();
+
+    await callbackFailureHook!.handler({
+      context: {
+        responseHeaders: new Headers({ location: 'https://app.example.test/login?error=1' }),
+      },
+      params: { providerId: 'corp-oidc' },
+      query: { state: 'state-older-fail' },
+    } as never);
+
+    // Surviving same-subject flow mapping must still be consumable for reconcile.
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        flowId: 'state-newer-ok',
+        providerKey: 'corp-oidc',
+        subject,
+      }),
+    ).toMatchObject({
+      groupRoleMapping: { engineering: 'ai_admin' },
+      groups: ['engineering'],
+    });
+  });
+
+  it('success session reconciles before concurrent fail cleanup: only own flow (identity/F9)', async () => {
+    // Opposite ordering vs "fail cleanup first": successful session.create.before
+    // runs while the failed flow's pending mapping still exists (and is newer).
+    resetIdentityProviderGroupRoleMappingRuntimeForTest();
+    const {
+      pendingIdentityProviderGroupRoleMappingSizeForTest,
+      stashIdentityProviderGroupRoleMapping,
+      takeIdentityProviderGroupRoleMapping,
+    } = await import('@/server/enterprise/services/identityProvider/groupRoleMappingRuntime');
+    const { platformIdentityProviderState } = await import('./platformIdentityProviderState');
+
+    const subject = 'employee-opposite-order';
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-success-flow',
+      groupRoleMapping: { success_team: 'ai_admin' },
+      groups: ['success_team'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-failed-newer-flow',
+      groupRoleMapping: { failed_team: 'identity_admin' },
+      groups: ['failed_team'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(2);
+
+    // Session path: resolve flow id the way production does (getOAuthState.oauthState).
+    await enforcePlatformOidcGroupRoleMappingForUserAccounts({
+      accounts: [{ accountId: subject, providerId: 'corp-oidc' }],
+      db: { __test: true } as never,
+      // apply will throw (fake db) after consuming — prove exact flow was taken first.
+      flowId: 'state-success-flow',
+      userId: 'user_local_opposite',
+    }).catch(() => undefined);
+
+    // Success flow consumed; failed flow's distinguishable mapping must remain.
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        flowId: 'state-success-flow',
+        providerKey: 'corp-oidc',
+        subject,
+      }),
+    ).toBeNull();
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        flowId: 'state-failed-newer-flow',
+        providerKey: 'corp-oidc',
+        subject,
+      }),
+    ).toMatchObject({
+      groupRoleMapping: { failed_team: 'identity_admin' },
+      groups: ['failed_team'],
+    });
+
+    // Re-stash both for full ordering: success take-by-flow then fail cleanup.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-success-flow',
+      groupRoleMapping: { success_team: 'ai_admin' },
+      groups: ['success_team'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'state-failed-newer-flow',
+      groupRoleMapping: { failed_team: 'identity_admin' },
+      groups: ['failed_team'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+
+    // Production session path also reads flow id from request OAuth state.
+    await enforcePlatformOidcGroupRoleMappingForUserAccounts({
+      accounts: [{ accountId: subject, providerId: 'corp-oidc' }],
+      db: { __test: true } as never,
+      readOAuthState: async () =>
+        ({ oauthState: 'state-success-flow' }) as unknown as Awaited<
+          ReturnType<typeof getOAuthState>
+        >,
+      userId: 'user_local_opposite',
+    }).catch(() => undefined);
+
+    const plugin = platformIdentityProviderState(['corp-oidc']);
+    const afterHooks = plugin.hooks?.after ?? [];
+    const callbackFailureHook = afterHooks.find((hook) =>
+      hook.matcher({ path: '/oauth2/callback/:providerId' } as never),
+    );
+    await callbackFailureHook!.handler({
+      context: {
+        responseHeaders: new Headers({ location: 'https://app.example.test/login?error=1' }),
+      },
+      params: { providerId: 'corp-oidc' },
+      query: { state: 'state-failed-newer-flow' },
+    } as never);
+
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(0);
   });
 });
 

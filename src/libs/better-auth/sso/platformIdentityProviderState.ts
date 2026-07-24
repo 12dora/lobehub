@@ -155,6 +155,15 @@ export const platformIdentityProviderState = (
               await observePlatformOidcLoginSuccess();
               return;
             }
+            // Terminal OAuth callback failure: discard ONLY this login's pending mapping
+            // (flow/state-scoped). Never clear all subjects for the provider (identity/F9).
+            const { discardPlatformOidcGroupRoleMappingOnLoginFailure } =
+              await import('./platformIdentityProvider');
+            const flowId = typeof ctx.query?.state === 'string' ? ctx.query.state : undefined;
+            discardPlatformOidcGroupRoleMappingOnLoginFailure({
+              flowId,
+              providerKey: providerId,
+            });
             await observePlatformOidcLoginFailure('unexpected');
           }),
           matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',

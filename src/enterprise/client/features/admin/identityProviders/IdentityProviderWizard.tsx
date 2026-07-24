@@ -6,7 +6,7 @@ import { Button, toast } from '@lobehub/ui/base-ui';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { mapEnterpriseError } from '@/enterprise/client';
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 

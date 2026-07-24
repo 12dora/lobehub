@@ -182,4 +182,195 @@ describe('identity provider groupRoleMapping runtime enforcement', () => {
     expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(0);
     vi.useRealTimers();
   });
+
+  it('provider-wide discard is reserved for unload/disable, not per-login failure', async () => {
+    // identity/F9: clear-all stays available for provider-wide events only.
+    const {
+      discardIdentityProviderGroupRoleMappingsForProvider,
+      pendingIdentityProviderGroupRoleMappingSizeForTest,
+      stashIdentityProviderGroupRoleMapping,
+      takeIdentityProviderGroupRoleMapping,
+    } = await import('./groupRoleMappingRuntime');
+
+    stashIdentityProviderGroupRoleMapping({
+      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['eng'],
+      providerKey: 'corp-oidc',
+      subject: 'subject-a',
+    });
+    stashIdentityProviderGroupRoleMapping({
+      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['eng'],
+      providerKey: 'corp-oidc',
+      subject: 'subject-b',
+    });
+    stashIdentityProviderGroupRoleMapping({
+      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['eng'],
+      providerKey: 'other-idp',
+      subject: 'subject-c',
+    });
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(3);
+
+    discardIdentityProviderGroupRoleMappingsForProvider('corp-oidc');
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(1);
+    expect(
+      takeIdentityProviderGroupRoleMapping({ providerKey: 'corp-oidc', subject: 'subject-a' }),
+    ).toBeNull();
+    expect(
+      takeIdentityProviderGroupRoleMapping({ providerKey: 'other-idp', subject: 'subject-c' }),
+    ).not.toBeNull();
+  });
+
+  it('flow-scoped discard removes only the failed login attempt (identity/F9)', async () => {
+    const {
+      discardIdentityProviderGroupRoleMappingByFlow,
+      pendingIdentityProviderGroupRoleMappingSizeForTest,
+      stashIdentityProviderGroupRoleMapping,
+      takeIdentityProviderGroupRoleMapping,
+    } = await import('./groupRoleMappingRuntime');
+
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-failed',
+      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['eng'],
+      providerKey: 'corp-oidc',
+      subject: 'subject-failed',
+    });
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-ok',
+      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['eng'],
+      providerKey: 'corp-oidc',
+      subject: 'subject-ok',
+    });
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(2);
+
+    discardIdentityProviderGroupRoleMappingByFlow({
+      flowId: 'oauth-state-failed',
+      providerKey: 'corp-oidc',
+    });
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(1);
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'subject-failed',
+      }),
+    ).toBeNull();
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        providerKey: 'corp-oidc',
+        subject: 'subject-ok',
+      }),
+    ).not.toBeNull();
+  });
+
+  it('same-provider+same-subject concurrent flows: failed older does not steal surviving reconcile (identity/F9)', async () => {
+    const {
+      discardIdentityProviderGroupRoleMappingByFlow,
+      pendingIdentityProviderGroupRoleMappingSizeForTest,
+      reconcileIdentityProviderGroupRoles,
+      stashIdentityProviderGroupRoleMapping,
+    } = await import('./groupRoleMappingRuntime');
+
+    const subject = 'same-subject-concurrent';
+    // Older flow stashes first, then newer flow for the same provider+subject.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-older-fail',
+      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['eng'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-newer-ok',
+      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['eng'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(2);
+
+    // Older callback fails: must discard ONLY its flow entry.
+    discardIdentityProviderGroupRoleMappingByFlow({
+      flowId: 'oauth-state-older-fail',
+      providerKey: 'corp-oidc',
+    });
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(1);
+
+    // Surviving login performs real reconcile with ITS flow id (session.create path).
+    await reconcileIdentityProviderGroupRoles({
+      db,
+      flowId: 'oauth-state-newer-ok',
+      providerKey: 'corp-oidc',
+      subject,
+      userId,
+    });
+
+    const rbac = new RbacModel(db, userId);
+    const names = (await rbac.getGlobalUserRoles(userId)).map((role) => role.name);
+    expect(names).toContain(PLATFORM_SYSTEM_ROLES.AI_ADMIN);
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(0);
+  });
+
+  it('success reconciles before concurrent fail cleanup: consumes only its own flow mapping (identity/F9)', async () => {
+    // Opposite concurrent ordering: successful session.create.before runs BEFORE
+    // the failed callback's after-hook discard. Flow-exact take must never pick the
+    // failed flow's mapping (even when that entry is newer by stashedAt).
+    const {
+      discardIdentityProviderGroupRoleMappingByFlow,
+      pendingIdentityProviderGroupRoleMappingSizeForTest,
+      reconcileIdentityProviderGroupRoles,
+      stashIdentityProviderGroupRoleMapping,
+      takeIdentityProviderGroupRoleMapping,
+    } = await import('./groupRoleMappingRuntime');
+
+    const subject = 'same-subject-opposite-order';
+    // Success flow stashes first with distinguishable groups.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-success',
+      groupRoleMapping: { success_group: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
+      groups: ['success_group'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    // Failed concurrent flow stashes later (would win "newest" subject take).
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-failed-newer',
+      groupRoleMapping: { failed_group: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN },
+      groups: ['failed_group'],
+      providerKey: 'corp-oidc',
+      subject,
+    });
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(2);
+
+    // SUCCESS path first: session.create.before with this login's OAuth state.
+    await reconcileIdentityProviderGroupRoles({
+      db,
+      flowId: 'oauth-state-success',
+      providerKey: 'corp-oidc',
+      subject,
+      userId,
+    });
+
+    const rbac = new RbacModel(db, userId);
+    const names = (await rbac.getGlobalUserRoles(userId)).map((role) => role.name);
+    // Must apply success_group → AI_ADMIN, never failed_group → IDENTITY_ADMIN.
+    expect(names).toContain(PLATFORM_SYSTEM_ROLES.AI_ADMIN);
+    expect(names).not.toContain(PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN);
+
+    // Failed callback cleanup still only removes its own entry.
+    discardIdentityProviderGroupRoleMappingByFlow({
+      flowId: 'oauth-state-failed-newer',
+      providerKey: 'corp-oidc',
+    });
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        flowId: 'oauth-state-failed-newer',
+        providerKey: 'corp-oidc',
+        subject,
+      }),
+    ).toBeNull();
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(0);
+  });
 });
