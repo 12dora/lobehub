@@ -7,39 +7,50 @@ import {
 } from './adminSidebarLayout';
 
 describe('admin sidebar layout contracts', () => {
-  it('accepts direct-save get/update documents without CAS revision fields', () => {
-    // platform_sidebar_layout has no revision column; CAS is a known follow-up.
+  it('accepts direct-save get/update documents with CAS revision fields', () => {
     expect(
       adminSidebarLayoutGetOutputSchema.parse({
         layout: null,
         mode: 'user',
+        revision: 0,
       }),
-    ).toEqual({ layout: null, mode: 'user' });
+    ).toEqual({ layout: null, mode: 'user', revision: 0 });
 
     expect(
       adminSidebarLayoutUpdateInputSchema.parse({
+        expectedRevision: 0,
         layout: {
           hiddenSidebarSections: [],
           sidebarItems: ['chat', 'settings'],
         },
         mode: 'platform',
       }),
-    ).toMatchObject({ mode: 'platform' });
+    ).toMatchObject({ expectedRevision: 0, mode: 'platform' });
+  });
 
-    // Strict schema rejects unknown CAS fields until server-side revision exists.
+  it('requires revision on get output and expectedRevision on update input', () => {
     expect(
-      adminSidebarLayoutUpdateInputSchema.safeParse({
-        expectedRevision: 1,
+      adminSidebarLayoutGetOutputSchema.safeParse({
         layout: null,
         mode: 'user',
       }).success,
     ).toBe(false);
 
     expect(
-      adminSidebarLayoutGetOutputSchema.safeParse({
+      adminSidebarLayoutUpdateInputSchema.safeParse({
         layout: null,
         mode: 'user',
-        revision: 0,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects unknown keys (strict)', () => {
+    expect(
+      adminSidebarLayoutUpdateInputSchema.safeParse({
+        expectedRevision: 1,
+        extra: true,
+        layout: null,
+        mode: 'user',
       }).success,
     ).toBe(false);
   });

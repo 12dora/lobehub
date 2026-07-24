@@ -3,12 +3,11 @@ import { z } from 'zod';
 import { sidebarLayoutConfigSchema } from '@/types/platform/sidebarLayout';
 
 /**
- * Platform sidebar-layout admin contracts (direct-save).
+ * Platform sidebar-layout admin contracts (direct-save + CAS).
  *
- * Flat document shape: layout fields only. No CAS revision — the
- * `platform_sidebar_layout` table/model has no revision column. Lost-update
- * protection (expectedRevision / revision) is a known follow-up; do not re-add
- * wire fields until server-side CAS is implemented.
+ * Flat document shape: layout fields + CAS revision token. Writers must supply
+ * `expectedRevision` matching the last-loaded `revision`; the server advances
+ * revision only on a successful conditional update.
  */
 
 const sidebarLayoutFields = {
@@ -16,12 +15,22 @@ const sidebarLayoutFields = {
   mode: z.enum(['platform', 'user']),
 } as const;
 
-/** Full platform sidebar-layout document (direct-save; no revision token). */
-export const adminSidebarLayoutGetOutputSchema = z.object(sidebarLayoutFields).strict();
+/** Full platform sidebar-layout document including CAS revision. */
+export const adminSidebarLayoutGetOutputSchema = z
+  .object({
+    ...sidebarLayoutFields,
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
 export type AdminSidebarLayoutGetOutput = z.infer<typeof adminSidebarLayoutGetOutputSchema>;
 
-/** Full-document update (direct-save; no expectedRevision). */
-export const adminSidebarLayoutUpdateInputSchema = z.object(sidebarLayoutFields).strict();
+/** Full-document update with CAS expectedRevision. */
+export const adminSidebarLayoutUpdateInputSchema = z
+  .object({
+    ...sidebarLayoutFields,
+    expectedRevision: z.number().int().nonnegative(),
+  })
+  .strict();
 export type AdminSidebarLayoutUpdateInput = z.infer<typeof adminSidebarLayoutUpdateInputSchema>;
 
 export const adminSidebarLayoutUpdateOutputSchema = adminSidebarLayoutGetOutputSchema;
