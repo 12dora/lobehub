@@ -31,6 +31,12 @@ export const ADMIN_MUTATION_ENTRIES_IDENTITY_ACCESS = {
     'Delete an identity provider draft.',
     { reauth: recentReauth },
   ),
+  'admin.identityProviders.disable': dangerousMutation(
+    'admin.identityProviders.disable',
+    'critical',
+    'Publish a signed tombstone and revoke a live identity provider after restart.',
+    { lastKnownGood: identityLkg, outbound: safeOutbound, reauth: recentReauth },
+  ),
   'admin.identityProviders.discover': validationMutation(
     'admin.identityProviders.discover',
     'Discover identity metadata through the guarded remote boundary.',

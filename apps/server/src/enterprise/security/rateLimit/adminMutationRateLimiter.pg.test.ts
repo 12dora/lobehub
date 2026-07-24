@@ -69,30 +69,50 @@ describe('SharedAdminMutationRateLimiter PostgreSQL authority', () => {
   });
 
   it('runs bounded opportunistic cleanup without expanding quota', async () => {
+    const cleanupBatchSize = 5;
     const config = {
       ...resolveAdminMutationRateLimitConfig({}),
-      cleanupBatchSize: 50,
+      cleanupBatchSize,
       cleanupMinIntervalMs: 0,
       limit: 3,
       retentionMs: 1,
-      windowMs: 30,
+      windowMs: 60_000,
     };
     const limiter = new SharedAdminMutationRateLimiter({ config });
 
-    // Seed many expired-ish scopes by consuming then waiting for window+retention.
-    for (let i = 0; i < 10; i++) {
-      await limiter.consume({
-        actorId: `stale-${i}`,
-        db,
-        procedure: 'admin.agents.create',
+    // Seed stale rows via SQL (deterministic age; no wall-clock wait).
+    const staleStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const staleCount = 10;
+    for (let i = 0; i < staleCount; i++) {
+      const digest = `${i.toString(16).padStart(2, '0')}${'c'.repeat(62)}`;
+      await db.insert(platformAdminMutationRateWindows).values({
+        count: 1,
+        scopeDigest: digest,
+        updatedAt: staleStart,
+        windowMs: 60_000,
+        windowStart: staleStart,
       });
     }
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect((await db.select().from(platformAdminMutationRateWindows)).length).toBe(staleCount);
 
-    // Fresh scope still enforced exactly; cleanup is best-effort side channel.
+    // Fresh scope consume triggers opportunistic cleanup (fire-and-forget).
     await expect(
       limiter.consume({ actorId: 'fresh', db, procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');
+
+    // Wait for async cleanup to delete a bounded batch of stale rows.
+    const isStaleDigest = (d: string) => /^[0-9a-f]{2}c{62}$/.test(d);
+    let staleRemaining = staleCount;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const rows = await db.select().from(platformAdminMutationRateWindows);
+      staleRemaining = rows.filter((r) => isStaleDigest(r.scopeDigest)).length;
+      if (staleRemaining < staleCount) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // First cleanup batch is bounded by cleanupBatchSize.
+    expect(staleRemaining).toBe(staleCount - cleanupBatchSize);
+
+    // Fresh scope still enforced exactly; cleanup must not expand quota.
     await expect(
       limiter.consume({ actorId: 'fresh', db, procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');

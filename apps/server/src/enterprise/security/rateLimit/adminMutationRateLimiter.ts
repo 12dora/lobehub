@@ -122,9 +122,9 @@ export class PostgresAdminMutationRateLimiter implements AdminMutationRateLimite
       void this.maybeCleanup(model);
       return result.allowed ? 'allowed' : 'limited';
     } catch (error) {
-      // Fail-open to 'unavailable' (a rate-limiter fault must never block an admin mutation), but
-      // log the error class so a persistent outage — which silently disables rate limiting — is
-      // diagnosable. Never log the scope/value.
+      // Return the internal 'unavailable' decision on limiter faults. Production middleware
+      // (adminMutationRateLimit) treats any decision other than 'allowed' as deny (fail-closed);
+      // this method itself does not grant the mutation. Log only the error class for diagnosis.
       console.error('[admin-mutation-rate] consume unavailable', {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
       });

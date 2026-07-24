@@ -122,7 +122,9 @@ export const defaultPinnedTransport: PinnedTransport = (
           const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           const remaining = maxResponseBytes - total;
 
-          if (buf.length >= remaining) {
+          // Overflow only: a chunk that exactly fills the budget is accepted
+          // without marking truncated; a later non-empty chunk is overflow.
+          if (buf.length > remaining) {
             if (remaining > 0) {
               chunks.push(buf.subarray(0, remaining));
               total = maxResponseBytes;

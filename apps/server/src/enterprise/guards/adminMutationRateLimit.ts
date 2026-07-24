@@ -113,6 +113,8 @@ export const withAdminMutationRateLimit = (options?: {
       db,
       procedure,
     });
+    // Fail-closed: 'limited' and internal 'unavailable' both deny the mutation.
+    // The limiter's 'unavailable' is never treated as allow at this production guard.
     if (decision !== 'allowed') {
       return denyRateLimited();
     }
