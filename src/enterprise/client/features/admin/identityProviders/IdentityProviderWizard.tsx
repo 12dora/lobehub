@@ -90,7 +90,8 @@ interface IdentityProviderWizardProps {
   onDirtyChange: (dirty: boolean) => void;
   onDiscard: () => void;
   onRefresh: () => Promise<unknown>;
-  onSaved: () => Promise<unknown>;
+  /** Called after save/publish/rollback; pass the mutation response so revision CAS stays fresh. */
+  onSaved: (saved?: PlatformIdentityProviderDraft) => Promise<unknown>;
   provider?: PlatformIdentityProviderDraft;
 }
 
@@ -274,25 +275,29 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             // Preserve persisted groupRoleMapping on edit; new drafts start empty.
             const policyDraft = { ...draft };
             if (provider) {
-              await adminIdentityProvidersService.update({
+              const updated = await adminIdentityProvidersService.update({
                 ...policyDraft,
                 expectedRevision: provider.revision,
                 id: provider.id,
                 reason,
                 secret: secretMutation,
               });
+              setSecret('');
+              setClearSecret(false);
+              setConflict(false);
+              await onSaved(updated);
             } else {
-              await adminIdentityProvidersService.create({
+              const created = await adminIdentityProvidersService.create({
                 ...policyDraft,
                 reason,
                 secret:
                   secretMutation.operation === 'keep' ? { operation: 'clear' } : secretMutation,
               });
+              setSecret('');
+              setClearSecret(false);
+              setConflict(false);
+              await onSaved(created);
             }
-            setSecret('');
-            setClearSecret(false);
-            setConflict(false);
-            await onSaved();
             toast.success(t('identityProviders.save.success'));
           });
         },
@@ -360,14 +365,15 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               requestId: crypto.randomUUID(),
             };
             if (rollback) {
-              await adminIdentityProvidersService.rollback({
+              const rolled = await adminIdentityProvidersService.rollback({
                 ...common,
                 targetRevision: rollbackTarget!,
               });
+              await onSaved(rolled);
             } else {
-              await adminIdentityProvidersService.publish(common);
+              const published = await adminIdentityProvidersService.publish(common);
+              await onSaved(published);
             }
-            await onSaved();
             toast.success(
               t(
                 rollback

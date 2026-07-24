@@ -16,6 +16,25 @@ import { SHARED_OAUTH_AUTO_REASON } from './auditReasonCodes';
 
 const log = debug('lobe-client:admin:connectors');
 
+/**
+ * Commit boundary for setSharedAuthorization: mutation success is authoritative;
+ * SWR refresh failure must not reject the overall operation.
+ * Exported for focused unit tests (production path uses the same helper).
+ */
+export const commitSharedOAuthThenRefresh = async (params: {
+  mutate: () => Promise<unknown>;
+  setSharedAuthorization: () => Promise<void>;
+}): Promise<{ committed: true; refreshFailed: boolean }> => {
+  await params.setSharedAuthorization();
+  try {
+    await params.mutate();
+    return { committed: true, refreshFailed: false };
+  } catch (refreshError) {
+    log('post-setSharedAuthorization refresh failed: %O', refreshError);
+    return { committed: true, refreshFailed: true };
+  }
+};
+
 interface SharedOAuthAuthorizationControlProps {
   /** CONNECTOR_READ — gates the governance fetch. */
   canRead?: boolean;
@@ -89,16 +108,17 @@ const SharedOAuthAuthorizationControl = memo<SharedOAuthAuthorizationControlProp
         onOk: async () => {
           setBusy(true);
           try {
-            // Commit boundary: mutation success is authoritative; cache refresh is best-effort.
-            await adminConnectorsService.setSharedAuthorization({
-              expectedRevision: data.revision,
-              ownerUserId: next,
-              reason: SHARED_OAUTH_AUTO_REASON,
+            const { refreshFailed } = await commitSharedOAuthThenRefresh({
+              mutate: () => mutate(),
+              setSharedAuthorization: async () => {
+                await adminConnectorsService.setSharedAuthorization({
+                  expectedRevision: data.revision,
+                  ownerUserId: next,
+                  reason: SHARED_OAUTH_AUTO_REASON,
+                });
+              },
             });
-            try {
-              await mutate();
-            } catch (refreshError) {
-              log('post-setSharedAuthorization refresh failed: %O', refreshError);
+            if (refreshFailed) {
               toast.success(
                 t('managedResources.sharedOAuth.savedRefreshFailed', {
                   defaultValue: 'Shared authorization updated, but the view could not refresh.',

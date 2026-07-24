@@ -11,14 +11,14 @@ import { useRefreshLock, type WriteToken } from './useRefreshLock';
  * draftToken + the assignments / versions / rollouts collections). Freshness now REQUIRES this
  * exact shape — a partial object can never unlock.
  */
-const complete = (revision: number, token: string): AdminAgentDetailOutput =>
+const complete = (revision: number, token: string, draftSequence = 0): AdminAgentDetailOutput =>
   ({
     assignments: [],
     draftToken: token.repeat(64),
     identity: {
       agentKey: 'agent-1',
       currentVersionId: null,
-      draftSequence: 0,
+      draftSequence,
       id: 'agent-1',
       isDefault: false,
       migrationRequired: false,
@@ -118,12 +118,26 @@ describe('useRefreshLock lifecycle (pre-write baseline + immediate lock)', () =>
     expect(result.current.refreshFailed).toBe(false);
   });
 
+  it('commitWrite unlocks when draftSequence advances at equal revision (assignment CAS)', async () => {
+    // Production assignment upsert/remove advances draftSequence + token without touching revision.
+    const { result } = mount(vi.fn().mockResolvedValue(complete(1, 'b', 1)));
+    const token = {};
+    act(() => {
+      result.current.beginWrite(token);
+    });
+    await act(async () => {
+      await result.current.commitWrite(token);
+    });
+    expect(result.current.isLocked()).toBe(false);
+    expect(result.current.refreshFailed).toBe(false);
+  });
+
   it.each<[string, () => Promise<AdminAgentDetailOutput | undefined>]>([
     ['undefined result', () => Promise.resolve(undefined)],
     ['partial detail (missing aggregate arrays)', () => Promise.resolve(partial(2, 'b'))],
     ['unchanged CAS', () => Promise.resolve(complete(1, 'a'))],
     ['revision rollback', () => Promise.resolve(complete(0, 'b'))],
-    ['token-only change (revision not advanced)', () => Promise.resolve(complete(1, 'b'))],
+    ['token-only change (neither sequence advanced)', () => Promise.resolve(complete(1, 'b'))],
     ['different Agent', () => Promise.resolve(otherAgent(2, 'b'))],
     ['rejected refresh', () => Promise.reject(new Error('network'))],
   ])('commitWrite stays LOCKED on %s', async (_label, mutate) => {
@@ -171,15 +185,23 @@ describe('isAgentDetailFresh (authoritative aggregate schema)', () => {
     expect(isAgentDetailFresh(complete(2, 'b'), baseline)).toBe(true);
   });
 
+  it('unlocks when draftSequence advances at equal published revision', () => {
+    expect(isAgentDetailFresh(complete(1, 'b', 1), baseline)).toBe(true);
+  });
+
   it.each<[string, AdminAgentDetailOutput | undefined]>([
     ['undefined', undefined],
     ['partial (missing aggregate arrays)', partial(2, 'b')],
     ['unchanged CAS', complete(1, 'a')],
     ['revision rollback', complete(0, 'b')],
-    ['token-only, revision not advanced', complete(1, 'b')],
+    ['token-only, neither sequence advanced', complete(1, 'b')],
     ['different Agent', otherAgent(2, 'b')],
   ])('rejects %s', (_label, result) => {
     expect(isAgentDetailFresh(result, baseline)).toBe(false);
+  });
+
+  it('rejects draftSequence rollback even when the token changes', () => {
+    expect(isAgentDetailFresh(complete(1, 'b', 1), complete(1, 'a', 5))).toBe(false);
   });
 
   it('rejects everything when there is no real baseline', () => {

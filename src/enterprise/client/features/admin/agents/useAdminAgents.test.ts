@@ -113,15 +113,29 @@ describe('Admin Agent hook adapter injection', () => {
     const version = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
     const listVersions = vi
       .spyOn(client, 'listVersions')
-      .mockResolvedValueOnce({ items: [version], nextCursor: 'next-page' })
       .mockResolvedValueOnce({
-        items: [{ ...version, id: 'version-inbox-2', version: '1.0.1' }],
+        // Older page-1 row first in opaque cursor order — aggregate must re-sort by createdAt.
+        items: [
+          { ...version, createdAt: new Date('2026-07-16T06:00:00.000Z'), id: 'version-inbox-1' },
+        ],
+        nextCursor: 'next-page',
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            ...version,
+            createdAt: new Date('2026-07-17T06:00:00.000Z'),
+            id: 'version-inbox-2',
+            version: '1.0.1',
+          },
+        ],
         nextCursor: null,
       });
 
     const detail = await fetchAdminAgentDetail('agent-inbox', client);
 
-    expect(detail.versions.map(({ id }) => id)).toEqual(['version-inbox-1', 'version-inbox-2']);
+    // Canonical aggregate order: newest createdAt first (not opaque page/id order).
+    expect(detail.versions.map(({ id }) => id)).toEqual(['version-inbox-2', 'version-inbox-1']);
     expect(listVersions).toHaveBeenNthCalledWith(1, {
       agentId: 'agent-inbox',
       cursor: undefined,

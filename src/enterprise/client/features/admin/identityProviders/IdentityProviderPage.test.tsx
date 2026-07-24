@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
     permissions: [] as string[],
     status: 'allowed' as const,
   },
+  listPublishedRevisions: vi.fn(),
   providers: {
     data: undefined as { items: unknown[]; nextCursor?: string | null } | undefined,
     error: undefined as unknown,
@@ -42,7 +43,10 @@ vi.mock('antd-style', () => ({
 }));
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  // Preserve defaultValue so action labels render when keys are missing.
+  useTranslation: () => ({
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  }),
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
@@ -51,6 +55,7 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 
 vi.mock('@/enterprise/client/services/adminIdentityProviders', () => ({
   adminIdentityProvidersService: {
+    listPublishedRevisions: (...args: unknown[]) => mocks.listPublishedRevisions(...args),
     prepareRestart: vi.fn(),
     requestRestart: vi.fn(),
   },
@@ -141,27 +146,44 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 
 vi.mock('../primitives/StatusBadge', () => ({ default: () => null }));
 
-// Minimal DataTable: renders one activatable button per row so we can assert row-open.
+// Minimal DataTable: row activate + action column cells for Disable/Delete assertions.
 vi.mock('../primitives/DataTable', () => ({
   default: ({
+    columns,
     cursorPagination,
     dataSource,
     onRowActivate,
   }: {
+    columns?: Array<{
+      key?: string;
+      render?: (
+        value: unknown,
+        item: { displayName: string; id: string; status?: string },
+      ) => ReactNode;
+    }>;
     cursorPagination?: {
       hasNext: boolean;
       hasPrevious: boolean;
       onNext: () => void;
       onPrevious: () => void;
     };
-    dataSource?: { displayName: string; id: string }[];
+    dataSource?: { displayName: string; id: string; status?: string }[];
     onRowActivate?: (item: { id: string }) => void;
   }) => (
     <div data-testid="provider-table">
       {(dataSource ?? []).map((item) => (
-        <button key={item.id} type="button" onClick={() => onRowActivate?.(item)}>
-          {item.displayName}
-        </button>
+        <div data-testid={`provider-row-${item.id}`} key={item.id}>
+          <button type="button" onClick={() => onRowActivate?.(item)}>
+            {item.displayName}
+          </button>
+          <div data-testid={`provider-actions-${item.id}`}>
+            {columns
+              ?.filter((column) => column.key === 'actions')
+              .map((column, index) => (
+                <div key={column.key ?? index}>{column.render?.(null, item)}</div>
+              ))}
+          </div>
+        </div>
       ))}
       {cursorPagination ? (
         <div data-testid="provider-pager">
@@ -193,6 +215,7 @@ const allIdentityPermissions = [
   PLATFORM_PERMISSIONS.IDENTITY_UPDATE,
   PLATFORM_PERMISSIONS.IDENTITY_TEST,
   PLATFORM_PERMISSIONS.IDENTITY_PUBLISH,
+  PLATFORM_PERMISSIONS.IDENTITY_DELETE,
   PLATFORM_PERMISSIONS.OIDC_PUBLISH,
 ];
 
@@ -204,17 +227,21 @@ const setupGuidanceError = {
 };
 
 const sampleProvider = {
+  activationRevision: null as number | null,
   buttonLabel: 'Sign in with work account',
   displayName: 'Corp SSO',
   id: 'idp-1',
   providerKey: 'corp',
-  status: 'draft',
+  revision: 1,
+  status: 'draft' as string,
   type: 'generic_oidc',
 };
 
 describe('IdentityProviderPage rendering rules', () => {
   beforeEach(() => {
     openModalMock.mockClear();
+    mocks.listPublishedRevisions.mockReset();
+    mocks.listPublishedRevisions.mockResolvedValue([]);
     mocks.admin.permissions = [...allIdentityPermissions];
     mocks.admin.status = 'allowed';
     mocks.providers.data = undefined;
@@ -224,6 +251,8 @@ describe('IdentityProviderPage rendering rules', () => {
     mocks.runtime.data = undefined;
     mocks.runtime.error = undefined;
     mocks.restartLifecycle.phase = 'idle';
+    cursorStack.cursor = undefined;
+    cursorStack.hasPrevious = false;
   });
 
   it('renders only setup guidance for deploy-config list errors (no create, no table)', () => {
@@ -232,11 +261,12 @@ describe('IdentityProviderPage rendering rules', () => {
     render(<IdentityProviderPage />);
 
     expect(screen.getByTestId('identity-provider-setup-guidance')).toBeTruthy();
+    expect(screen.queryByText('New')).toBeNull();
     expect(screen.queryByText('identityProviders.actions.create')).toBeNull();
     expect(screen.queryByTestId('provider-table')).toBeNull();
   });
 
-  it('renders the provider table and opens the create modal from "New"', () => {
+  it('renders the provider table and opens the create modal from "New"', async () => {
     mocks.providers.data = { items: [sampleProvider] };
 
     render(<IdentityProviderPage />);
@@ -247,9 +277,11 @@ describe('IdentityProviderPage rendering rules', () => {
 
     expect(openModalMock).toHaveBeenCalledTimes(1);
     expect(openModalMock.mock.calls[0][0].provider).toBeUndefined();
+    // Let history effect settle so later tests are not flaky when suites share env.
+    await waitFor(() => expect(mocks.listPublishedRevisions).toHaveBeenCalled());
   });
 
-  it('opens the wizard modal in edit mode when a row is activated', () => {
+  it('opens the wizard modal in edit mode when a row is activated', async () => {
     mocks.providers.data = { items: [sampleProvider] };
 
     render(<IdentityProviderPage />);
@@ -258,9 +290,10 @@ describe('IdentityProviderPage rendering rules', () => {
 
     expect(openModalMock).toHaveBeenCalledTimes(1);
     expect(openModalMock.mock.calls[0][0].provider).toMatchObject({ id: 'idp-1' });
+    await waitFor(() => expect(mocks.listPublishedRevisions).toHaveBeenCalled());
   });
 
-  it('passes the second page cursor so provider 101+ is administrable', () => {
+  it('passes the second page cursor so provider 101+ is administrable', async () => {
     const page2Provider = {
       ...sampleProvider,
       displayName: 'Provider 101',
@@ -294,5 +327,87 @@ describe('IdentityProviderPage rendering rules', () => {
     expect(screen.getByText('Provider 101')).toBeTruthy();
     expect((mocks.providers as { listCursor?: string }).listCursor).toBe('cursor-page-2');
     expect((screen.getByText('previous') as HTMLButtonElement).disabled).toBe(false);
+    await waitFor(() => expect(mocks.listPublishedRevisions).toHaveBeenCalled());
+  });
+
+  it('offers Delete for never-published drafts and Disable after publish→edit/clear', async () => {
+    // Phase 1: never-published draft (activationRevision null, empty revision history).
+    mocks.listPublishedRevisions.mockResolvedValue([]);
+    mocks.providers.data = {
+      items: [
+        {
+          ...sampleProvider,
+          activationRevision: null,
+          displayName: 'Never published',
+          id: 'idp-never',
+          revision: 0,
+          status: 'draft',
+        },
+      ],
+    };
+
+    const view = render(<IdentityProviderPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Delete')).toBeTruthy();
+    });
+    expect(screen.queryByText('Disable')).toBeNull();
+    expect(mocks.listPublishedRevisions).toHaveBeenCalledWith('idp-never');
+
+    // Phase 2: same provider after publish → edit/secret-clear. Head is draft with
+    // activationRevision=null, but published revision history still exists (live prior config).
+    view.unmount();
+    mocks.listPublishedRevisions.mockReset();
+    mocks.listPublishedRevisions.mockResolvedValue([
+      { publishedAt: new Date('2026-01-01T00:00:00Z'), revision: 1 },
+    ]);
+    mocks.providers.data = {
+      items: [
+        {
+          ...sampleProvider,
+          activationRevision: null,
+          displayName: 'Edited after publish',
+          id: 'idp-edited',
+          revision: 3,
+          status: 'draft',
+        },
+      ],
+    };
+
+    render(<IdentityProviderPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Disable')).toBeTruthy();
+    });
+    expect(screen.queryByText('Delete')).toBeNull();
+    expect(mocks.listPublishedRevisions).toHaveBeenCalledWith('idp-edited');
+  });
+
+  it('keeps Disable (not Delete) when published-history lookup fails', async () => {
+    mocks.listPublishedRevisions.mockRejectedValue(new Error('history unavailable'));
+    mocks.providers.data = {
+      items: [
+        {
+          ...sampleProvider,
+          activationRevision: null,
+          displayName: 'Compromised IdP',
+          id: 'idp-compromised',
+          revision: 4,
+          status: 'draft',
+        },
+      ],
+    };
+
+    render(<IdentityProviderPage />);
+
+    // Fail safe while/after failed lookup: revocation stays available; Delete withheld.
+    await waitFor(() => {
+      expect(mocks.listPublishedRevisions).toHaveBeenCalledWith('idp-compromised');
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('Disable')).toBeTruthy();
+    expect(screen.queryByText('Delete')).toBeNull();
   });
 });

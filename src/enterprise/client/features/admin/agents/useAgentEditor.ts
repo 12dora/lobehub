@@ -11,15 +11,30 @@ import {
   saveAdminAgentDraft,
 } from './localDraftStorage';
 import type { AdminAgentDetailOutput, AdminAgentDraft } from './types';
+import { selectDraftSourcePlatformAgentVersion } from './versionSelection';
 
-const nextVersion = (version: string | undefined) => {
-  const [major = '0', minor = '0', patch = '0'] = (version ?? '0.0.0').split('.');
-  return `${major}.${minor}.${Number(patch) + 1}`;
+/**
+ * Bump the patch of a SemVer-like label for the next immutable draft.
+ * Strips prerelease (`-…`) and build (`+…`) metadata so valid forms like
+ * `1.2.3+build.5` / `1.2.3-alpha.1` never produce `NaN` patch components.
+ */
+export const nextVersion = (version: string | undefined): string => {
+  const raw = (version ?? '0.0.0').trim();
+  // Core MAJOR.MINOR.PATCH only — drop prerelease / build per explicit draft policy.
+  const core = raw.split(/[-+]/, 1)[0] || '0.0.0';
+  const [majorText = '0', minorText = '0', patchText = '0'] = core.split('.');
+  const major = Number(majorText);
+  const minor = Number(minorText);
+  const patch = Number(patchText);
+  if (!Number.isFinite(major) || !Number.isFinite(minor) || !Number.isFinite(patch)) {
+    return '0.0.1';
+  }
+  return `${major}.${minor}.${patch + 1}`;
 };
 
 const toDraft = (snapshot: AdminAgentDetailOutput, defaultSystemRole = ''): AdminAgentDraft => {
-  const current = snapshot.versions.find(({ id }) => id === snapshot.identity.currentVersionId);
-  const version = snapshot.versions[0] ?? current;
+  // Newest created version (canonical order) — never opaque array position / versions[0].
+  const version = selectDraftSourcePlatformAgentVersion(snapshot);
   return version
     ? {
         config: structuredClone(version.config),

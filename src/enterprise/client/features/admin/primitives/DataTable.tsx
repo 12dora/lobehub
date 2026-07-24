@@ -17,6 +17,23 @@ import { useTranslation } from 'react-i18next';
 
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
 
+/**
+ * True when the event target is (or sits inside) a *nested* interactive control.
+ * The row itself often uses role="link" for keyboard a11y — that must still activate.
+ * Nested buttons/links/inputs must not also trigger row activation.
+ */
+const isInteractiveDescendantTarget = (
+  target: EventTarget | null,
+  currentTarget: EventTarget | null,
+): boolean => {
+  if (!(target instanceof Element) || !(currentTarget instanceof Element)) return false;
+  const interactive = target.closest(
+    'a, button, input, select, textarea, label, [role="button"], [role="link"], [role="menuitem"], [role="checkbox"], [role="switch"], [role="textbox"], [contenteditable="true"]',
+  );
+  if (!interactive || interactive === currentTarget) return false;
+  return currentTarget.contains(interactive);
+};
+
 const styles = createStaticStyles(({ css }) => ({
   cursorBar: css`
     display: flex;
@@ -341,12 +358,18 @@ function DataTableInner<T extends object>({
           onRowActivate
             ? (record) => ({
                 className: 'admin-table-row-clickable',
-                onClick: () => onRowActivate(record),
+                onClick: (event) => {
+                  if (event.defaultPrevented) return;
+                  if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
+                  onRowActivate(record);
+                },
                 onKeyDown: (event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    onRowActivate(record);
-                  }
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  if (event.defaultPrevented) return;
+                  // Nested controls own their keyboard activation; do not also navigate the row.
+                  if (isInteractiveDescendantTarget(event.target, event.currentTarget)) return;
+                  event.preventDefault();
+                  onRowActivate(record);
                 },
                 role: 'link',
                 tabIndex: 0,

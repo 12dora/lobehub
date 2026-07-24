@@ -56,24 +56,24 @@ const SkillDetailActions = memo<SkillDetailActionsProps>(
     return (
       <>
         <Button onClick={() => navigate('/admin/skills')}>{t('skillCatalog.detail.back')}</Button>
-        {canUpdate ? (
+        {canUpdate && !isArchived ? (
           <Button disabled={actionsDisabled} onClick={onCreateVersion}>
             {t('skillCatalog.version.create')}
           </Button>
         ) : null}
-        {canUpdate && identityDirty ? (
+        {canUpdate && !isArchived && identityDirty ? (
           <Button disabled={actionsDisabled} type="primary" onClick={onSaveIdentity}>
             {saveFailed
               ? t('skillCatalog.actions.save.retry')
               : t('skillCatalog.actions.save.label')}
           </Button>
         ) : null}
-        {canUpdate && selectedVersionId && !dirty ? (
+        {canUpdate && !isArchived && selectedVersionId && !dirty ? (
           <Button disabled={actionsDisabled} onClick={onValidate}>
             {t('skillCatalog.actions.validate.label')}
           </Button>
         ) : null}
-        {canPublish && selectedVersionId && canPublishSelected && !dirty ? (
+        {canPublish && !isArchived && selectedVersionId && canPublishSelected && !dirty ? (
           <Button disabled={actionsDisabled} type="primary" onClick={onPublish}>
             {t('skillCatalog.actions.publish.label')}
           </Button>

@@ -17,6 +17,12 @@ const mocks = vi.hoisted(() => ({
     emailDomainAllowlist: [] as string[],
     emailDomainAllowlistEnabled: false,
     openRegistration: true,
+    revision: 0,
+  } as {
+    emailDomainAllowlist: string[];
+    emailDomainAllowlistEnabled: boolean;
+    openRegistration: boolean;
+    revision: number;
   },
   mutate: vi.fn(),
   permissions: [] as string[],
@@ -35,7 +41,21 @@ vi.mock('antd-style', () => ({
 }));
 
 vi.mock('@lobehub/ui', () => ({
-  Alert: ({ message }: { message?: ReactNode }) => <div role="alert">{message}</div>,
+  Alert: ({
+    description,
+    extra,
+    message,
+  }: {
+    description?: ReactNode;
+    extra?: ReactNode;
+    message?: ReactNode;
+  }) => (
+    <div role="alert">
+      <div>{message}</div>
+      {description ? <div>{description}</div> : null}
+      {extra}
+    </div>
+  ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Text: ({ children, ...props }: any) => <span {...props}>{children}</span>,
   TextArea: (props: any) => <textarea {...props} />,
@@ -123,6 +143,7 @@ describe('GeneralSettingsPage unsaved guard', () => {
       emailDomainAllowlist: [],
       emailDomainAllowlistEnabled: false,
       openRegistration: true,
+      revision: 0,
     };
     mocks.blocker.state = 'unblocked';
     mocks.blocker.proceed.mockReset();

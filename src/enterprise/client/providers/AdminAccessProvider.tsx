@@ -71,9 +71,15 @@ export default function AdminAccessProvider({
   const [retryable, setRetryable] = useState(false);
   const fetchRef = useRef(fetchAccess);
   fetchRef.current = fetchAccess;
+  /** Monotonic generation: only the latest load() may commit results (out-of-order guard). */
+  const loadGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
 
   const load = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+
     if (!enabled) {
+      if (generation !== loadGenerationRef.current || !mountedRef.current) return;
       setStatus('forbidden');
       setPermissions([]);
       setRoles([]);
@@ -89,6 +95,8 @@ export default function AdminAccessProvider({
 
     try {
       const snapshot = await fetchRef.current();
+      // Drop stale responses: a newer refresh (or disable/unmount) superseded this request.
+      if (generation !== loadGenerationRef.current || !mountedRef.current) return;
       setAuthMethod(snapshot.authMethod ?? null);
       if (snapshot.hasAdminAccess) {
         setStatus('allowed');
@@ -100,6 +108,7 @@ export default function AdminAccessProvider({
         setRoles(snapshot.roles);
       }
     } catch (err) {
+      if (generation !== loadGenerationRef.current || !mountedRef.current) return;
       const nextError = err instanceof Error ? err : new Error(String(err));
       setError(nextError);
       setPermissions([]);
@@ -111,7 +120,13 @@ export default function AdminAccessProvider({
   }, [enabled]);
 
   useEffect(() => {
+    mountedRef.current = true;
     void load();
+    return () => {
+      mountedRef.current = false;
+      // Invalidate any in-flight load so its resolution cannot repaint after unmount/remount races.
+      loadGenerationRef.current += 1;
+    };
   }, [load]);
 
   const value = useMemo<AdminAccessContextValue>(

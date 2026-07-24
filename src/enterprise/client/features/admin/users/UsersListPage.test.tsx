@@ -165,6 +165,13 @@ vi.mock('../primitives/DataTable', () => ({
 vi.mock('@lobehub/ui', async () => {
   const React = await import('react');
   return {
+    Alert: ({ message, action, ...rest }: any) =>
+      React.createElement(
+        'div',
+        { 'role': 'status', 'data-testid': 'stale-alert', ...rest },
+        message,
+        action,
+      ),
     Avatar: () => null,
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
     SearchBar: ({ value, onInputChange, placeholder }: any) =>

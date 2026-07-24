@@ -75,18 +75,69 @@ const jsonForScript = (value: unknown): string =>
     (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, '0')}`,
   );
 
-const renderTerminalPage = (success: boolean): NextResponse => {
+type CallbackLocale = 'en-US' | 'zh-CN';
+
+const IDP_TEST_COPY = {
+  'en-US': {
+    fail: 'Test failed. You can close this window and try again.',
+    success: 'Test complete. You can close this window.',
+    title: 'Identity provider test',
+  },
+  'zh-CN': {
+    fail: '测试失败。您可以关闭此窗口后重试。',
+    success: '测试完成。您可以关闭此窗口。',
+    title: '身份提供商测试',
+  },
+} as const satisfies Record<CallbackLocale, { fail: string; success: string; title: string }>;
+
+/** Prefer zh-CN when Accept-Language ranks Chinese above English (or only Chinese). */
+export const resolveCallbackLocale = (acceptLanguage: string | null): CallbackLocale => {
+  if (!acceptLanguage) return 'en-US';
+  const ranked = acceptLanguage
+    .split(',')
+    .map((part, index) => {
+      const [tagRaw, ...params] = part.trim().split(';');
+      const tag = (tagRaw ?? '').trim().toLowerCase();
+      let q = 1;
+      for (const param of params) {
+        const match = /^\s*q\s*=\s*([0-9.]+)\s*$/i.exec(param);
+        if (match) q = Number(match[1]);
+      }
+      return { index, q: Number.isFinite(q) ? q : 0, tag };
+    })
+    .filter((entry) => entry.tag.length > 0)
+    .sort((a, b) => b.q - a.q || a.index - b.index);
+
+  for (const entry of ranked) {
+    if (entry.tag === '*' || entry.q <= 0) continue;
+    if (entry.tag.startsWith('zh')) return 'zh-CN';
+    if (entry.tag.startsWith('en')) return 'en-US';
+  }
+  return 'en-US';
+};
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+const renderTerminalPage = (success: boolean, locale: CallbackLocale): NextResponse => {
   let targetOrigin: string;
   try {
     targetOrigin = new URL(appEnv.APP_URL).origin;
   } catch {
     targetOrigin = 'null';
   }
+  const copy = IDP_TEST_COPY[locale];
+  const message = success ? copy.success : copy.fail;
   const payload = jsonForScript({ success, type: 'aihub-identity-provider-test' });
   const html = `<!doctype html>
-<html>
-  <head><meta charset="utf-8" /><title>Identity provider test</title></head>
-  <body><p>${success ? 'Test complete. You can close this window.' : 'Test failed. You can close this window and try again.'}</p>
+<html lang="${locale === 'zh-CN' ? 'zh-CN' : 'en'}">
+  <head><meta charset="utf-8" /><title>${escapeHtml(copy.title)}</title></head>
+  <body><p>${escapeHtml(message)}</p>
     <script>(function(){try{if(window.opener){window.opener.postMessage(${payload},${jsonForScript(targetOrigin)});}}catch(e){}setTimeout(function(){window.close();},300);}());</script>
   </body>
 </html>`;
@@ -106,35 +157,36 @@ export const handleIdentityProviderTestCallback = async (
   request: NextRequest,
   db: LobeChatDatabase,
 ): Promise<NextResponse> => {
+  const locale = resolveCallbackLocale(request.headers.get('accept-language'));
   if (!parseEnterpriseFeatureFlags(process.env).ENABLE_DATABASE_OIDC) {
-    return renderTerminalPage(false);
+    return renderTerminalPage(false, locale);
   }
   let effectiveOrigin: string;
   try {
     effectiveOrigin = resolveIdentityProviderCallbackOrigin(request, process.env);
   } catch {
-    return renderTerminalPage(false);
+    return renderTerminalPage(false, locale);
   }
   const code = request.nextUrl.searchParams.get('code');
   const state = request.nextUrl.searchParams.get('state');
   // RFC 9207: preserve the authorization-response `iss` for exact-match validation.
   const iss = request.nextUrl.searchParams.get('iss');
-  if (!state) return renderTerminalPage(false);
+  if (!state) return renderTerminalPage(false, locale);
 
   try {
     const service = createAdminIdentityProviderRuntime(db).test;
     if (request.nextUrl.searchParams.has('error') || !code) {
       await service.abandon(state, effectiveOrigin);
-      return renderTerminalPage(false);
+      return renderTerminalPage(false, locale);
     }
     const result = await service.callback({ code, effectiveOrigin, iss, state });
-    return renderTerminalPage(result.valid);
+    return renderTerminalPage(result.valid, locale);
   } catch (error) {
     // Neutral page for the browser; sanitized server log (name only) so a real callback failure
     // is not invisible in production.
     console.error('[identity-provider-test] callback failed', {
       errorClass: error instanceof Error ? error.name : 'UnknownError',
     });
-    return renderTerminalPage(false);
+    return renderTerminalPage(false, locale);
   }
 };

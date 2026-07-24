@@ -5,7 +5,8 @@ import { createWithEqualityFn } from 'zustand/traditional';
 
 import type { AdminBrandingDraft } from '@/server/enterprise/contracts/adminBranding';
 
-export type BrandingEditorState = 'conflict' | 'dirty' | 'idle' | 'publishing' | 'saving';
+export type BrandingEditorState =
+  'committedRefresh' | 'conflict' | 'dirty' | 'idle' | 'publishing' | 'saving';
 
 interface BrandingEditorStore {
   baseRevision: number;
@@ -19,6 +20,7 @@ interface BrandingEditorStore {
     draftToken: string;
     draftMatchesPublished: boolean;
   }) => void;
+  markCommittedRefresh: () => void;
   markConflict: () => void;
   patch: (patch: Partial<AdminBrandingDraft>) => void;
   reset: () => void;
@@ -38,11 +40,15 @@ export const useBrandingEditorStore = createWithEqualityFn<BrandingEditorStore>(
   (set) => ({
     ...initialState,
     hydrate: (params) => set({ ...params, editorState: 'idle' }),
+    markCommittedRefresh: () => set({ editorState: 'committedRefresh' }),
     markConflict: () => set({ editorState: 'conflict' }),
     patch: (patch) =>
       set((state) => ({
         draft: state.draft ? { ...state.draft, ...patch } : state.draft,
-        editorState: state.editorState === 'conflict' ? 'conflict' : 'dirty',
+        editorState:
+          state.editorState === 'conflict' || state.editorState === 'committedRefresh'
+            ? state.editorState
+            : 'dirty',
       })),
     reset: () => set(initialState),
     setEditorState: (editorState) => set({ editorState }),

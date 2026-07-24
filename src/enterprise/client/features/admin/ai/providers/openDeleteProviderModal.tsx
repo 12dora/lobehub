@@ -17,7 +17,11 @@ const t = (key: string) => String(i18n.t(key as never, { ns: 'admin' }));
 const DELETE_REASON = 'Provider hard-deleted from admin console';
 
 /**
- * Irreversible hard delete of a catalog provider (and all its models, secrets, revisions).
+ * Irreversible hard delete of a never-published catalog provider (revision === 0).
+ * Ever-published providers must be archived/disabled instead so runtime keeps a fail-closed
+ * tombstone (no BYOK fallback). The list UI hides this action when revision > 0; the server
+ * also rejects hard-delete of published providers.
+ *
  * Reuses the shared reason modal (confirm-only + reauth). `onDeleted` runs after a successful
  * commit — it must not throw (swallow refresh errors) or the modal will surface a false failure.
  *

@@ -49,11 +49,6 @@ const ProviderSecretPanel = memo<ProviderSecretPanelProps>(
             </Tag>
           </Flexbox>
           <Text type="secondary">{t('aiCatalog.editor.secret.neverReveal')}</Text>
-          {secret.fingerprint ? (
-            <Text code type="secondary">
-              {secret.fingerprint}
-            </Text>
-          ) : null}
         </Flexbox>
         {canUpdate ? (
           <Button disabled={disabled} onClick={onApply}>

@@ -271,9 +271,6 @@ describe('SkillListPage', () => {
     fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.status'), {
       target: { value: 'published' },
     });
-    fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.source'), {
-      target: { value: 'uploaded' },
-    });
     fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.distribution'), {
       target: { value: 'mandatory' },
     });
@@ -285,7 +282,6 @@ describe('SkillListPage', () => {
       expect(mocks.inputs.at(-1)).toMatchObject({
         distribution: 'mandatory',
         enabled: true,
-        source: 'uploaded',
         status: 'published',
       }),
     );
@@ -293,8 +289,9 @@ describe('SkillListPage', () => {
     fireEvent.click(screen.getByText('next'));
     await waitFor(() => expect(mocks.inputs.at(-1)).toMatchObject({ cursor: 'next-cursor' }));
 
-    fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.source'), {
-      target: { value: 'builtin' },
+    // Changing status resets cursor stack (filter fingerprint change).
+    fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.status'), {
+      target: { value: 'draft' },
     });
     await waitFor(() => expect((mocks.inputs.at(-1) as any).cursor).toBeUndefined());
 

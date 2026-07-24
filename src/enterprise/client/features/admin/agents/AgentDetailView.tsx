@@ -21,6 +21,10 @@ import type { AdminAgentDetailOutput } from './types';
 import { useAgentActions } from './useAgentActions';
 import type { useAgentEditor } from './useAgentEditor';
 import { useRefreshLock } from './useRefreshLock';
+import {
+  selectCurrentPlatformAgentVersion,
+  selectLatestPlatformAgentVersion,
+} from './versionSelection';
 
 interface AgentDetailViewProps {
   authMethod: AdminReauthAuthMethod | null;
@@ -49,9 +53,11 @@ const PERSIST_WARNING = new Set(['blocked', 'too_large', 'unavailable']);
  * authoritative aggregate — full identity + draftToken + the assignments / versions / rollouts
  * collections — against the same contract Zod schema used at the API boundary (not a handwritten
  * partial shape), AND then demonstrably advances the CAS past the frozen baseline for the SAME
- * Agent: revision STRICTLY greater AND the draftToken changed. A partial object with a valid
- * id/revision/token but missing aggregate arrays, a revision rollback, a token-only change, a
- * currentVersionId-only change, another Agent, or an undefined/incomplete detail are all rejected.
+ * Agent: either `revision` OR `draftSequence` STRICTLY greater (monotone), never decreased, AND
+ * the draftToken changed. Draft-only mutations (assignments, appendVersion, pinned rollout rollback)
+ * advance `draftSequence` without touching published `revision`; requiring revision alone permanently
+ * locks the detail page after those commits. A partial object, CAS rollback, token-only change with
+ * equal sequences, another Agent, or an undefined/incomplete detail are all rejected.
  */
 export const isAgentDetailFresh = (
   result: AdminAgentDetailOutput | undefined,
@@ -63,7 +69,14 @@ export const isAgentDetailFresh = (
   if (!baseline?.identity || typeof baseline.draftToken !== 'string') return false; // need a real baseline
   const fresh = parsed.data;
   if (fresh.identity.id !== baseline.identity.id) return false; // same Agent only
-  if (fresh.identity.revision <= baseline.identity.revision) return false; // strictly advanced (no rollback / equal)
+  // Neither CAS counter may go backwards.
+  if (fresh.identity.revision < baseline.identity.revision) return false;
+  if (fresh.identity.draftSequence < baseline.identity.draftSequence) return false;
+  // At least one counter must strictly advance (draft-only commits only bump draftSequence).
+  const advanced =
+    fresh.identity.revision > baseline.identity.revision ||
+    fresh.identity.draftSequence > baseline.identity.draftSequence;
+  if (!advanced) return false;
   return fresh.draftToken !== baseline.draftToken; // the CAS token must also have changed
 };
 
@@ -79,8 +92,8 @@ export const AgentDetailView = memo(
     snapshot,
   }: AgentDetailViewProps) => {
     const { t } = useTranslation('admin');
-    const current = snapshot.versions.find(({ id }) => id === snapshot.identity.currentVersionId);
-    const latest = snapshot.versions[0];
+    const current = selectCurrentPlatformAgentVersion(snapshot);
+    const latest = selectLatestPlatformAgentVersion(snapshot.versions);
     // Exact catalog validity of the draft dependencies, reported up by the DependencyEditor.
     // `ready` means the model/skill/connector refs still match the CURRENT published catalog.
     const [depValidity, setDepValidity] = useState<DependencyValidity>({

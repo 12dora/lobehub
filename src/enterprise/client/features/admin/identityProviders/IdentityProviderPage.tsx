@@ -11,13 +11,21 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { requestAdminReauth } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
+import { lambdaClient } from '@/libs/trpc/client';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { useCursorStack } from '../skills/useCursorPagedList';
 import { openReasonModal } from '../users/modals/openReasonModal';
-import { isIdentityProviderSetupGuidanceError, toIdentityProviderStatusBadge } from './controller';
+import {
+  isIdentityProviderDeletable,
+  isIdentityProviderDisableable,
+  isIdentityProviderSetupGuidanceError,
+  type PublishedHistorySignal,
+  resolvePublishedHistorySignal,
+  toIdentityProviderStatusBadge,
+} from './controller';
 import IdentityProviderSetupGuidance from './IdentityProviderSetupGuidance';
 import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
 import { identityProviderStyles as styles } from './styles';
@@ -33,6 +41,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const canTest = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_TEST);
   const canPublish = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_PUBLISH);
   const canDisable = canPublish;
+  const canDelete = permissions.includes(PLATFORM_PERMISSIONS.IDENTITY_DELETE);
   const canRestart = permissions.includes(PLATFORM_PERMISSIONS.OIDC_PUBLISH);
   const enabled = accessStatus === 'allowed' && canRead;
   const { cursor, goNext, goPrevious, hasPrevious } = useCursorStack('identity-providers');
@@ -40,6 +49,13 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const mutateProviders = providers.mutate;
   const runtimeEnabled = accessStatus === 'allowed' && canRestart;
   const [restartPolling, setRestartPolling] = useState(false);
+  /**
+   * Draft id → published-history tri-state.
+   * Missing / loading / lookup-error = unknown (never treated as no-history).
+   */
+  const [publishedHistoryById, setPublishedHistoryById] = useState<
+    Record<string, PublishedHistorySignal>
+  >({});
   const runtime = useAuthSnapshotStatus(runtimeEnabled, restartPolling);
   const restartLifecycle = useIdentityProviderRestartLifecycle({
     error: runtime.error,
@@ -54,6 +70,46 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   useEffect(() => {
     setRestartPolling(restartLifecycle.phase === 'accepted');
   }, [restartLifecycle.phase]);
+
+  // Resolve published-history for draft heads. Prior live configs remain tombstoneable
+  // after edit/secret-clear even though activationRevision is cleared on the draft head.
+  // Lookup failure/loading stays `unknown` — never conflated with never-published.
+  useEffect(() => {
+    const items = providers.data?.items ?? [];
+    const draftIds = items.filter((item) => item.status === 'draft').map((item) => item.id);
+    if (draftIds.length === 0) {
+      setPublishedHistoryById({});
+      return;
+    }
+    // Fail safe while resolving: keep Disable, withhold Delete until confirmed empty.
+    setPublishedHistoryById((prev) => {
+      const next: Record<string, PublishedHistorySignal> = {};
+      for (const id of draftIds) {
+        next[id] = prev[id] ?? 'unknown';
+      }
+      return next;
+    });
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        draftIds.map(async (id) => {
+          try {
+            const revisions = await adminIdentityProvidersService.listPublishedRevisions(id);
+            const signal: PublishedHistorySignal =
+              revisions.length > 0 ? 'has-history' : 'no-history';
+            return [id, signal] as const;
+          } catch {
+            // Lookup failed ≠ never published. Keep unknown so Disable stays available.
+            return [id, 'unknown' as const] as const;
+          }
+        }),
+      );
+      if (!cancelled) setPublishedHistoryById(Object.fromEntries(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [providers.data]);
 
   const openWizard = useCallback(
     (provider?: PlatformIdentityProviderDraft) => {
@@ -70,17 +126,34 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     [authMethod, canCreate, canPublish, canTest, canUpdate, refreshProviders],
   );
 
+  /**
+   * Disable (tombstone): live statuses, drafts with published history, or drafts whose
+   * history is unknown (loading/error — fail safe toward revocation).
+   * Confirmed never-published drafts must use Delete (backend rejects Disable).
+   */
+  const isDisableable = useCallback(
+    (provider: PlatformIdentityProviderDraft) =>
+      isIdentityProviderDisableable(
+        provider,
+        resolvePublishedHistorySignal(publishedHistoryById, provider.id),
+      ),
+    [publishedHistoryById],
+  );
+
+  /** Hard delete only when draft is confirmed never-published (not unknown). */
+  const isDeletable = useCallback(
+    (provider: PlatformIdentityProviderDraft) =>
+      isIdentityProviderDeletable(
+        provider,
+        resolvePublishedHistorySignal(publishedHistoryById, provider.id),
+      ),
+    [publishedHistoryById],
+  );
+
   const requestDisable = useCallback(
     (provider: PlatformIdentityProviderDraft) => {
       if (!canDisable) return;
-      if (
-        provider.status !== 'active' &&
-        provider.status !== 'pending_restart' &&
-        provider.status !== 'published' &&
-        provider.status !== 'error'
-      ) {
-        return;
-      }
+      if (!isDisableable(provider)) return;
       confirmModal({
         cancelText: t('identityProviders.disable.cancel', {
           defaultValue: 'Cancel',
@@ -111,9 +184,11 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                   reason,
                 });
                 await refreshProviders();
+                // Refresh restart status so the Restart action appears for the tombstone.
+                await runtime.mutate().catch(() => undefined);
                 toast.success(
                   t('identityProviders.disable.success', {
-                    defaultValue: 'Provider disabled',
+                    defaultValue: 'Provider disabled — restart required',
                   }),
                 );
               },
@@ -131,7 +206,65 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         },
       });
     },
-    [authMethod, canDisable, refreshProviders, t],
+    [authMethod, canDisable, isDisableable, refreshProviders, runtime, t],
+  );
+
+  const requestDelete = useCallback(
+    (provider: PlatformIdentityProviderDraft) => {
+      if (!canDelete) return;
+      if (!isDeletable(provider)) return;
+      confirmModal({
+        cancelText: t('identityProviders.delete.cancel', {
+          defaultValue: 'Cancel',
+        }),
+        content: t('identityProviders.delete.impact', {
+          defaultValue:
+            'This permanently deletes a never-published draft. Providers that have been published must be Disabled (tombstoned) instead.',
+        }),
+        okButtonProps: { danger: true },
+        okText: t('identityProviders.delete.confirm', { defaultValue: 'Delete draft' }),
+        title: t('identityProviders.delete.title', {
+          defaultValue: 'Delete identity provider draft',
+        }),
+        onOk: async () => {
+          try {
+            await requestAdminReauth({ authMethod });
+            openReasonModal({
+              authMethod,
+              buildPayload: (reason) => ({ reason }),
+              danger: true,
+              impact: t('identityProviders.delete.impact', {
+                defaultValue: 'This permanently deletes a never-published draft.',
+              }),
+              onSubmit: async (payload) => {
+                const { reason } = payload as { reason: string };
+                await lambdaClient.admin.identityProviders.delete.mutate({
+                  expectedRevision: provider.revision,
+                  id: provider.id,
+                  reason,
+                });
+                await refreshProviders();
+                toast.success(
+                  t('identityProviders.delete.success', {
+                    defaultValue: 'Draft deleted',
+                  }),
+                );
+              },
+              submitLabel: t('identityProviders.delete.confirm', {
+                defaultValue: 'Delete draft',
+              }),
+              targetLabel: provider.displayName,
+              title: t('identityProviders.delete.title', {
+                defaultValue: 'Delete identity provider draft',
+              }),
+            });
+          } catch {
+            toast.error(t('identityProviders.errors.generic', { defaultValue: 'Request failed' }));
+          }
+        },
+      });
+    },
+    [authMethod, canDelete, isDeletable, refreshProviders, t],
   );
 
   const requestRestart = () => {
@@ -283,31 +416,42 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
             rowKey="id"
             columns={[
               ...columns,
-              ...(canDisable
+              ...(canDisable || canDelete
                 ? [
                     {
                       key: 'actions',
                       title: t('identityProviders.columns.actions', { defaultValue: 'Actions' }),
-                      width: 120,
+                      width: 140,
                       render: (_: unknown, item: PlatformIdentityProviderDraft) => {
-                        const disableable =
-                          item.status === 'active' ||
-                          item.status === 'pending_restart' ||
-                          item.status === 'published' ||
-                          item.status === 'error';
-                        if (!disableable) return null;
-                        return (
-                          <Button
-                            danger
-                            size="small"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              requestDisable(item);
-                            }}
-                          >
-                            {t('identityProviders.actions.disable', { defaultValue: 'Disable' })}
-                          </Button>
-                        );
+                        if (canDisable && isDisableable(item)) {
+                          return (
+                            <Button
+                              danger
+                              size="small"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                requestDisable(item);
+                              }}
+                            >
+                              {t('identityProviders.actions.disable', { defaultValue: 'Disable' })}
+                            </Button>
+                          );
+                        }
+                        if (canDelete && isDeletable(item)) {
+                          return (
+                            <Button
+                              danger
+                              size="small"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                requestDelete(item);
+                              }}
+                            >
+                              {t('identityProviders.actions.delete', { defaultValue: 'Delete' })}
+                            </Button>
+                          );
+                        }
+                        return null;
                       },
                     } as TableColumnsType<PlatformIdentityProviderDraft>[number],
                   ]

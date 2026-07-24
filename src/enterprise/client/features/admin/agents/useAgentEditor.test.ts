@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadAdminAgentDraft } from './localDraftStorage';
 import type { AdminAgentDetailOutput } from './types';
-import { useAgentEditor } from './useAgentEditor';
+import { nextVersion, useAgentEditor } from './useAgentEditor';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('react-router', () => ({ useBlocker: () => ({ state: 'unblocked' }) }));
@@ -76,6 +76,19 @@ const versionlessSnapshot = (id: string): AdminAgentDetailOutput => ({
   },
   rollouts: [],
   versions: [],
+});
+
+describe('nextVersion (SemVer-safe patch bump)', () => {
+  it('bumps the patch of a plain SemVer triple', () => {
+    expect(nextVersion('1.2.3')).toBe('1.2.4');
+    expect(nextVersion(undefined)).toBe('0.0.1');
+  });
+
+  it('strips build metadata and prerelease so valid SemVer never yields NaN', () => {
+    expect(nextVersion('1.2.3+build.5')).toBe('1.2.4');
+    expect(nextVersion('1.2.3-alpha.1')).toBe('1.2.4');
+    expect(nextVersion('2.0.0-rc.1+meta.9')).toBe('2.0.1');
+  });
 });
 
 describe('useAgentEditor frozen recovery baseline', () => {

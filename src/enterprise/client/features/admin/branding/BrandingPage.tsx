@@ -110,6 +110,7 @@ const BrandingPage = memo(() => {
     draftToken,
     editorState,
     hydrate,
+    markCommittedRefresh,
     markConflict,
     patch,
     reset,
@@ -121,6 +122,9 @@ const BrandingPage = memo(() => {
   const observedServerSnapshot = useRef<string | null>(null);
   const dirty = editorState === 'dirty';
   const conflict = editorState === 'conflict';
+  const committedRefresh = editorState === 'committedRefresh';
+  /** Mutations stay locked on CAS conflict and after a committed publish whose refresh failed. */
+  const mutationLocked = conflict || committedRefresh;
 
   useEffect(() => {
     if (!data) return;
@@ -136,8 +140,8 @@ const BrandingPage = memo(() => {
     if (observedServerSnapshot.current === snapshotKey) return;
     observedServerSnapshot.current = snapshotKey;
     if (data.draftToken !== draftToken || data.baseRevision !== baseRevision) {
-      if (editorState === 'idle') hydrate(data);
-      else markConflict();
+      if (editorState === 'idle' || editorState === 'committedRefresh') hydrate(data);
+      else if (editorState !== 'conflict') markConflict();
     }
   }, [baseRevision, data, draft, draftToken, editorState, hydrate, markConflict]);
 
@@ -162,41 +166,48 @@ const BrandingPage = memo(() => {
     [reset],
   );
 
-  const labels = useMemo(
-    () =>
-      Object.fromEntries(
-        [
-          'assets',
-          'defaultAgentDisplayName',
-          'desktop',
-          'desktopIcon',
-          'desktopProductName',
-          'effectiveCurrent',
-          'email',
-          'emailFrom',
-          'emailSenderName',
-          'faviconUrl',
-          'homeUrl',
-          'iconUrl',
-          'identity',
-          'immediate',
-          'legalName',
-          'links',
-          'logoUrl',
-          'name',
-          'ogImageUrl',
-          'pageTitleTemplate',
-          'primaryColor',
-          'privacyUrl',
-          'rebuildRequired',
-          'shortName',
-          'supportUrl',
-          'termsUrl',
-          'upload',
-        ].map((key) => [key, t(`branding.fields.${key}` as never)]),
-      ),
-    [t],
-  );
+  const labels = useMemo(() => {
+    const defaults: Record<string, string> = {
+      theme: 'Theme',
+    };
+    return Object.fromEntries(
+      [
+        'assets',
+        'defaultAgentDisplayName',
+        'desktop',
+        'desktopIcon',
+        'desktopProductName',
+        'effectiveCurrent',
+        'email',
+        'emailFrom',
+        'emailSenderName',
+        'faviconUrl',
+        'homeUrl',
+        'iconUrl',
+        'identity',
+        'immediate',
+        'legalName',
+        'links',
+        'logoUrl',
+        'name',
+        'ogImageUrl',
+        'pageTitleTemplate',
+        'primaryColor',
+        'privacyUrl',
+        'rebuildRequired',
+        'shortName',
+        'supportUrl',
+        'termsUrl',
+        'theme',
+        'upload',
+      ].map((key) => [
+        key,
+        t(`branding.fields.${key}` as never, {
+          defaultValue: defaults[key],
+        }),
+      ]),
+    );
+  }, [t]);
 
   const refreshAuthoritative = useCallback(async () => {
     setActionError(null);
@@ -206,7 +217,7 @@ const BrandingPage = memo(() => {
   }, [hydrate, mutate]);
 
   const save = useCallback(() => {
-    if (!draft || !canUpdate || !dirty || conflict) return;
+    if (!draft || !canUpdate || !dirty || mutationLocked) return;
     openReasonModal({
       buildPayload: (reason) => ({
         draft,
@@ -239,20 +250,20 @@ const BrandingPage = memo(() => {
     });
   }, [
     canUpdate,
-    conflict,
     dirty,
     draft,
     draftToken,
     formatError,
     markConflict,
     mutate,
+    mutationLocked,
     setEditorState,
     syncServer,
     t,
   ]);
 
   const publish = useCallback(() => {
-    if (!draft || !canPublish || dirty || conflict) return;
+    if (!draft || !canPublish || dirty || mutationLocked) return;
     openReasonModal({
       authMethod: admin.authMethod,
       buildPayload: (reason) => ({
@@ -273,11 +284,20 @@ const BrandingPage = memo(() => {
           if (brandingRefresh.status === 'fulfilled' && brandingRefresh.value) {
             hydrate(brandingRefresh.value);
           } else {
-            setEditorState('idle');
+            // Publish already committed — lock mutations until an authoritative refresh lands.
+            markCommittedRefresh();
+            setActionError(
+              t('branding.refresh.committedFailed', {
+                defaultValue:
+                  'Branding was published, but refreshing the editor failed. Retry refresh before making more changes.',
+              }),
+            );
           }
         } catch (cause) {
+          const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
+          if (isConflict) markConflict();
+          else setEditorState('idle');
           setActionError(formatError(cause));
-          setEditorState('idle');
           throw cause;
         }
       },
@@ -289,13 +309,15 @@ const BrandingPage = memo(() => {
     admin.authMethod,
     baseRevision,
     canPublish,
-    conflict,
     dirty,
     draft,
     draftToken,
     formatError,
     hydrate,
+    markCommittedRefresh,
+    markConflict,
     mutate,
+    mutationLocked,
     platform,
     setEditorState,
     t,
@@ -303,7 +325,7 @@ const BrandingPage = memo(() => {
 
   const rollback = useCallback(
     (targetRevision: number) => {
-      if (!canPublish || !draft || dirty || conflict) return;
+      if (!canPublish || !draft || dirty || mutationLocked) return;
       openReasonModal({
         authMethod: admin.authMethod,
         buildPayload: (reason) => ({
@@ -340,7 +362,6 @@ const BrandingPage = memo(() => {
       admin.authMethod,
       baseRevision,
       canPublish,
-      conflict,
       dirty,
       draft,
       draftToken,
@@ -348,13 +369,14 @@ const BrandingPage = memo(() => {
       hydrate,
       markConflict,
       mutate,
+      mutationLocked,
       t,
     ],
   );
 
   const upload = useCallback(
     async (kind: AdminBrandingUploadAssetInput['kind'], file: File) => {
-      if (!canUpdate || !data?.storageConfigured) return;
+      if (!canUpdate || mutationLocked || !data?.storageConfigured) return;
       try {
         const bytesBase64 = await readFileBase64(file);
         openReasonModal({
@@ -397,7 +419,7 @@ const BrandingPage = memo(() => {
         setActionError(formatError(cause));
       }
     },
-    [canUpdate, data?.storageConfigured, draft, formatError, patch, t],
+    [canUpdate, data?.storageConfigured, draft, formatError, mutationLocked, patch, t],
   );
 
   if (isLoading || (!data && !error)) {
@@ -416,18 +438,18 @@ const BrandingPage = memo(() => {
   if (!data || !draft) return <Text>{t('branding.empty')}</Text>;
 
   const busy = editorState === 'saving' || editorState === 'publishing';
-  const pendingPublish = !dirty && !conflict && !draftMatchesPublished && Boolean(draft.name);
+  const pendingPublish = !dirty && !mutationLocked && !draftMatchesPublished && Boolean(draft.name);
   return (
     <AdminPageTemplate
       description={t('branding.description', { platformName: branding.name })}
       title={t('branding.title', { platformName: branding.name })}
       actions={
         <div className={styles.actions}>
-          <Button disabled={!canUpdate || !dirty || conflict || busy} onClick={save}>
+          <Button disabled={!canUpdate || !dirty || mutationLocked || busy} onClick={save}>
             {t('branding.actions.save')}
           </Button>
           <Button
-            disabled={!canPublish || dirty || conflict || busy || !draft.name}
+            disabled={!canPublish || dirty || mutationLocked || busy || !draft.name}
             type="primary"
             onClick={publish}
           >
@@ -437,7 +459,7 @@ const BrandingPage = memo(() => {
       }
       banner={
         <RevisionBanner
-          conflict={conflict}
+          conflict={conflict || committedRefresh}
           draftRevision={baseRevision}
           publishedRevision={data.published?.revision ?? null}
           status={
@@ -451,6 +473,20 @@ const BrandingPage = memo(() => {
         <Alert showIcon message={t('branding.storageUnavailable')} type="warning" />
       ) : null}
       {!canUpdate ? <Alert showIcon message={t('branding.readOnly')} type="info" /> : null}
+      {committedRefresh ? (
+        <Alert
+          showIcon
+          type="warning"
+          extra={
+            <Button onClick={() => void refreshAuthoritative()}>
+              {t('branding.refresh.retry', { defaultValue: 'Retry refresh' })}
+            </Button>
+          }
+          message={t('branding.refresh.committedTitle', {
+            defaultValue: 'Published — refresh required',
+          })}
+        />
+      ) : null}
       {pendingPublish ? (
         <Alert showIcon message={t('branding.status.pendingPublish')} type="info" />
       ) : null}
@@ -459,7 +495,7 @@ const BrandingPage = memo(() => {
       <div className={styles.content}>
         <div className={styles.editor}>
           <BrandingFields
-            disabled={!canUpdate || conflict || busy}
+            disabled={!canUpdate || mutationLocked || busy}
             draft={draft}
             effective={branding}
             labels={labels}
@@ -484,7 +520,11 @@ const BrandingPage = memo(() => {
                   danger
                   size="small"
                   disabled={
-                    !canPublish || dirty || conflict || busy || revision.revision === baseRevision
+                    !canPublish ||
+                    dirty ||
+                    mutationLocked ||
+                    busy ||
+                    revision.revision === baseRevision
                   }
                   onClick={() => rollback(revision.revision)}
                 >

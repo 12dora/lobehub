@@ -35,21 +35,22 @@ export const useHeteroAgentCloudConfig = (agentId: string): HeteroAgentCloudConf
     { enabled: needsCredCheck },
   );
 
+  // Resolve the vault key the agent points at (env ref) or the fixed default token key.
+  // Presence of CLAUDE_CODE_CRED_KEY alone is only a *reference* — not proof the secret still exists.
+  const referencedCredKey =
+    typeof heterogeneousProvider?.env?.CLAUDE_CODE_CRED_KEY === 'string' &&
+    heterogeneousProvider.env.CLAUDE_CODE_CRED_KEY.length > 0
+      ? heterogeneousProvider.env.CLAUDE_CODE_CRED_KEY
+      : CLAUDE_TOKEN_CRED_KEY;
+  const hasCredInVault = (credsData?.data ?? []).some((c) => c.key === referencedCredKey);
   // isConfigured is true when:
   // 1. Running on desktop (local execution, no cloud creds needed), or
   // 2. No heterogeneous provider on this agent, or
   // 3. Provider is not claude-code (e.g. codex — no cloud credential required), or
-  // 4. The agent env has a CLAUDE_CODE_CRED_KEY reference set, or
-  // 5. The CLAUDE_CODE_OAUTH_TOKEN credential actually exists in the vault
-  //    (handles the case where the credential was saved but the env ref wasn't written)
-  // 6. Credentials are still loading — treat as configured to avoid a flash of the
+  // 4. The referenced credential actually exists in the vault after the list settles, or
+  // 5. Credentials are still loading — treat as configured to avoid a flash of the
   //    "not configured" alert that immediately disappears once the query resolves
-  const hasCredInVault = (credsData?.data ?? []).some((c) => c.key === CLAUDE_TOKEN_CRED_KEY);
-  const isConfigured =
-    !needsCredCheck ||
-    !!heterogeneousProvider?.env?.CLAUDE_CODE_CRED_KEY ||
-    hasCredInVault ||
-    isCredsLoading;
+  const isConfigured = !needsCredCheck || hasCredInVault || isCredsLoading;
 
   const goToConfig = () => {
     if (agentId) {

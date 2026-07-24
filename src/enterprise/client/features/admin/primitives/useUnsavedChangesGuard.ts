@@ -1,7 +1,7 @@
 'use client';
 
-import { confirmModal } from '@lobehub/ui/base-ui';
-import { useEffect, useRef } from 'react';
+import { Button, createModal, ModalFooter } from '@lobehub/ui/base-ui';
+import { createElement, Fragment, useEffect, useRef } from 'react';
 import type { BlockerFunction } from 'react-router';
 import { useBlocker } from 'react-router';
 
@@ -51,8 +51,10 @@ export const createUnsavedNavigationDecision = (callbacks: {
 /**
  * Shared dirty-draft leave guard for admin editors:
  * - `beforeunload` while `enabled`
- * - `useBlocker` + base-ui `confirmModal` for SPA navigations
+ * - `useBlocker` + base-ui `createModal` for SPA navigations
  * - once-only modal resolution + destroy on unmount
+ * - Escape / close-icon / mask dismissals all take the cancel (stay) path so the
+ *   router blocker is never stranded in `blocked`
  */
 export const useUnsavedChangesGuard = ({
   enabled,
@@ -61,7 +63,7 @@ export const useUnsavedChangesGuard = ({
   onProceed,
   onCancel,
 }: UseUnsavedChangesGuardOptions): void => {
-  const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
+  const leaveModalRef = useRef<ReturnType<typeof createModal> | null>(null);
   const callbacksRef = useRef({ onCancel, onProceed });
   callbacksRef.current = { onCancel, onProceed };
   const messagesRef = useRef(messages);
@@ -89,13 +91,8 @@ export const useUnsavedChangesGuard = ({
       leaveModalRef.current = null;
       return;
     }
-    // base-ui `confirmModal` cannot report dismissals via the close icon / ESC / mask click
-    // (only the Stay/Leave buttons fire `onCancel`/`onOk`), so a dismissed prompt leaves the
-    // router blocker stuck in `blocked`. Rebuild the prompt on every fresh blocked navigation
-    // — each re-registers new `proceed`/`reset` handlers, so this effect only re-runs when a
-    // new navigation is attempted — instead of bailing out on a stale, already-closed
-    // instance. Otherwise the nav bar silently freezes: further clicks re-block but no modal
-    // ever reappears, and the pending navigation can never be resolved.
+    // Rebuild on every fresh blocked navigation so re-attempts re-open the prompt
+    // after a prior Stay/dismiss (the previous instance is destroyed first).
     leaveModalRef.current?.destroy();
 
     const currentMessages = messagesRef.current;
@@ -112,14 +109,53 @@ export const useUnsavedChangesGuard = ({
       },
     });
 
-    leaveModalRef.current = confirmModal({
-      cancelText: currentMessages.cancelText,
-      content: currentMessages.content,
-      okText: currentMessages.okText,
-      onCancel: decision.cancel,
-      onOk: decision.proceed,
+    // Use createModal (not confirmModal) so we can wire onOpenChange: base-ui
+    // confirmModal only fires onCancel/onOk for the footer buttons; Escape, the
+    // close icon, and mask clicks would otherwise leave the router blocked.
+    const instance = createModal({
+      content: createElement(
+        Fragment,
+        null,
+        createElement('div', { style: { padding: '12px 16px' } }, currentMessages.content),
+        createElement(
+          ModalFooter,
+          null,
+          createElement(
+            Button,
+            {
+              onClick: () => {
+                decision.cancel();
+                instance.close();
+              },
+            },
+            currentMessages.cancelText,
+          ),
+          createElement(
+            Button,
+            {
+              type: 'primary',
+              onClick: () => {
+                decision.proceed();
+                instance.close();
+              },
+            },
+            currentMessages.okText,
+          ),
+        ),
+      ),
+      maskClosable: false,
+      onOpenChange: (open) => {
+        if (open) return;
+        // Passive dismiss (Escape / close icon) or post-button close — resolveOnce
+        // makes a second cancel after proceed a no-op.
+        leaveModalRef.current = null;
+        decision.cancel();
+      },
+      styles: { content: { padding: 0 } },
       title: currentMessages.title,
+      width: 420,
     });
+    leaveModalRef.current = instance;
   }, [blockerProceed, blockerReset, blockerState]);
 
   useEffect(

@@ -110,7 +110,7 @@ const data = {
     models: [model],
     providerKey: 'provider',
     revision: 1,
-    secret: { configured: true, fingerprint: 'safe-fingerprint', updatedAt: null },
+    secret: { configured: true, updatedAt: null },
     settings: {},
     sort: 0,
     source: 'custom',

@@ -1,6 +1,6 @@
 'use client';
 
-import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Alert, Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 // INTENTIONAL: @lobehub/ui DatePicker is single-date only (no RangePicker export in the
 // installed wrapper). Keep antd RangePicker here until the shared wrapper adds range support.
@@ -120,6 +120,8 @@ const UsersListPage = memo(() => {
   const nextCursor = data?.nextCursor ?? null;
   const showLoading = isLoading && !data;
   const showError = Boolean(error) && !data;
+  /** Background revalidation failed while cached rows remain — warn, keep list usable. */
+  const showStaleWarning = Boolean(error) && Boolean(data);
   const hasFilters = [
     filters.query,
     filters.status,
@@ -336,6 +338,21 @@ const UsersListPage = memo(() => {
         />
       }
     >
+      {showStaleWarning ? (
+        <Alert
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="warning"
+          action={
+            <Button size="small" onClick={() => void mutate()}>
+              {t('primitives.dataTable.retry')}
+            </Button>
+          }
+          message={t('users.stale.refreshFailed', {
+            defaultValue: 'Showing cached data — the latest refresh failed.',
+          })}
+        />
+      ) : null}
       <DataTable<AdminUserListItem>
         virtual
         columns={columns}

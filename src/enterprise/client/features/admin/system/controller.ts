@@ -102,18 +102,31 @@ export const collectAdminSystemJobs = (pages: readonly AdminSystemJobs[]): Admin
   return jobs;
 };
 
+/**
+ * Confirm a committed job mutation against a refresh snapshot.
+ *
+ * The mutation response is the authoritative CAS result. List pages are a
+ * best-effort UI projection: when pagination shifts the row off currently
+ * loaded pages, treat the committed DTO itself as confirmed rather than
+ * leaving the row permanently "refresh pending".
+ */
 export const didAdminSystemJobRefreshConfirm = (
   pages: readonly AdminSystemJobs[] | undefined,
   committed: AdminSystemJob,
 ): boolean => {
+  if (committed.revision === null) return false;
   const refreshed =
     pages && collectAdminSystemJobs(pages).find((job) => job.jobId === committed.jobId);
-  return (
-    refreshed !== undefined &&
-    refreshed.revision === committed.revision &&
-    refreshed.status === committed.status
-  );
+  if (refreshed === undefined) {
+    // Job not on loaded pages (pagination drift) — mutation response stands.
+    return true;
+  }
+  return refreshed.revision === committed.revision && refreshed.status === committed.status;
 };
+
+/** True when the committed mutation DTO itself is a usable CAS snapshot. */
+export const isAdminSystemJobMutationAuthoritative = (committed: AdminSystemJob): boolean =>
+  committed.revision !== null && typeof committed.jobId === 'string' && committed.jobId.length > 0;
 
 export const isAdminSystemConflictError = (error: unknown): boolean =>
   mapEnterpriseError(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT;

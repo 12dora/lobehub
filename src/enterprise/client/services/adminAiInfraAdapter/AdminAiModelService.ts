@@ -12,7 +12,13 @@ import { lambdaClient } from '@/libs/trpc/client';
 import type { GetAiProviderModelListParams } from '@/services/aiModel';
 
 import { mapModelListItem } from './mappers';
-import { DEFAULT_REASON, getDetail, recordPublishOutcome, withReauth } from './shared';
+import {
+  DEFAULT_REASON,
+  getDetail,
+  isPlatformNotFoundError,
+  recordPublishOutcome,
+  withReauth,
+} from './shared';
 
 /**
  * Admin adapter for AI model mutations/list — same surface as user AiModelService.
@@ -66,8 +72,9 @@ export class AdminAiModelService {
     try {
       const detail = await getDetail(id);
       dbModels = detail.draft.models.map(mapModelListItem);
-    } catch {
-      // No platform row yet → built-ins only.
+    } catch (cause) {
+      // No platform row yet → built-ins only. Rethrow permission/network/server failures.
+      if (!isPlatformNotFoundError(cause)) throw cause;
     }
 
     const merged = mergeArrayById(builtinModels, dbModels) as AiProviderModelListItem[];
