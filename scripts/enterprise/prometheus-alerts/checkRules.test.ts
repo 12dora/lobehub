@@ -328,6 +328,233 @@ service:
       /services\.prometheus\.image must pin/i,
     );
   });
+
+  // Substring-bypass negative: target CONTAINS the expected path as a prefix/substring
+  // (`/etc/prometheus/rules-shadow` includes `/etc/prometheus/rules`). The old whole-string
+  // `includes('/etc/prometheus/rules')` matcher would ACCEPT this mount; exact-target
+  // matching correctly REJECTS it. Do not use unrelated paths like `/var/prometheus/rules`
+  // — those already fail under the old matcher and make the test rotten.
+  it('rejects rules mount when container target only substring-matches the expected path', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'enterprise-compose-wrong-target-'));
+    tempDirs.push(root);
+    const grafana = path.join(root, 'docker-compose/production/grafana');
+    mkdirSync(path.join(grafana, 'prometheus/rules'), { recursive: true });
+    mkdirSync(path.join(grafana, 'otel-collector'), { recursive: true });
+    writeFileSync(
+      path.join(grafana, 'docker-compose.yml'),
+      `
+services:
+  prometheus:
+    image: ${ENTERPRISE_PROMETHEUS_IMAGE}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # source + :ro correct; target is a superstring of /etc/prometheus/rules
+      - ./prometheus/rules:/etc/prometheus/rules-shadow:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=exemplar-storage'
+  otel-collector:
+    image: ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
+`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'prometheus/prometheus.yml'),
+      `rule_files:\n  - /etc/prometheus/rules/enterprise-platform-alerts.yml\n`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'otel-collector/collector-config.yaml'),
+      `
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:9090/api/v1/write
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]
+`,
+      'utf8',
+    );
+    expect(() => assertEnterprisePrometheusComposeWiring(root)).toThrow(
+      /must mount rules read-only/i,
+    );
+  });
+
+  // Compose ACCESS_MODE is a comma-separated list. Exact-target + `:ro` must still
+  // accept valid short-syntax mounts such as `:ro,Z` (SELinux) and `:z,ro` (token order).
+  it('accepts rules mount with comma-separated ACCESS_MODE containing ro (ro,Z and z,ro)', () => {
+    const collectorConfig = `
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:9090/api/v1/write
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]
+`;
+
+    for (const rulesMode of ['ro,Z', 'z,ro'] as const) {
+      const root = mkdtempSync(path.join(tmpdir(), `enterprise-compose-mode-${rulesMode}-`));
+      tempDirs.push(root);
+      const grafana = path.join(root, 'docker-compose/production/grafana');
+      mkdirSync(path.join(grafana, 'prometheus/rules'), { recursive: true });
+      mkdirSync(path.join(grafana, 'otel-collector'), { recursive: true });
+      writeFileSync(
+        path.join(grafana, 'docker-compose.yml'),
+        `
+services:
+  prometheus:
+    image: ${ENTERPRISE_PROMETHEUS_IMAGE}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:${rulesMode}
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=exemplar-storage'
+  otel-collector:
+    image: ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
+`,
+        'utf8',
+      );
+      writeFileSync(
+        path.join(grafana, 'prometheus/prometheus.yml'),
+        `rule_files:\n  - /etc/prometheus/rules/enterprise-platform-alerts.yml\n`,
+        'utf8',
+      );
+      writeFileSync(
+        path.join(grafana, 'otel-collector/collector-config.yaml'),
+        collectorConfig,
+        'utf8',
+      );
+      expect(() => assertEnterprisePrometheusComposeWiring(root)).not.toThrow();
+    }
+  });
+
+  // Missing-:ro negative: exact source/target but writable. The old substring matcher
+  // ignored access mode and would ACCEPT this; readOnly enforcement correctly REJECTS it.
+  it('rejects rules mount when :ro (read-only) mode is missing', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'enterprise-compose-missing-ro-'));
+    tempDirs.push(root);
+    const grafana = path.join(root, 'docker-compose/production/grafana');
+    mkdirSync(path.join(grafana, 'prometheus/rules'), { recursive: true });
+    mkdirSync(path.join(grafana, 'otel-collector'), { recursive: true });
+    writeFileSync(
+      path.join(grafana, 'docker-compose.yml'),
+      `
+services:
+  prometheus:
+    image: ${ENTERPRISE_PROMETHEUS_IMAGE}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # exact source/target but writable (no :ro)
+      - ./prometheus/rules:/etc/prometheus/rules
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=exemplar-storage'
+  otel-collector:
+    image: ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
+`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'prometheus/prometheus.yml'),
+      `rule_files:\n  - /etc/prometheus/rules/enterprise-platform-alerts.yml\n`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'otel-collector/collector-config.yaml'),
+      `
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:9090/api/v1/write
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]
+`,
+      'utf8',
+    );
+    expect(() => assertEnterprisePrometheusComposeWiring(root)).toThrow(
+      /must mount rules read-only/i,
+    );
+  });
+
+  it('rejects long-form volume when read_only is false', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'enterprise-compose-long-rw-'));
+    tempDirs.push(root);
+    const grafana = path.join(root, 'docker-compose/production/grafana');
+    mkdirSync(path.join(grafana, 'prometheus/rules'), { recursive: true });
+    mkdirSync(path.join(grafana, 'otel-collector'), { recursive: true });
+    writeFileSync(
+      path.join(grafana, 'docker-compose.yml'),
+      `
+services:
+  prometheus:
+    image: ${ENTERPRISE_PROMETHEUS_IMAGE}
+    volumes:
+      - type: bind
+        source: ./prometheus/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+      - type: bind
+        source: ./prometheus/rules
+        target: /etc/prometheus/rules
+        read_only: false
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=exemplar-storage'
+  otel-collector:
+    image: ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
+`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'prometheus/prometheus.yml'),
+      `rule_files:\n  - /etc/prometheus/rules/enterprise-platform-alerts.yml\n`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'otel-collector/collector-config.yaml'),
+      `
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:9090/api/v1/write
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]
+`,
+      'utf8',
+    );
+    expect(() => assertEnterprisePrometheusComposeWiring(root)).toThrow(
+      /must mount rules read-only/i,
+    );
+  });
 });
 
 describe('enterprise prometheus — compose wiring (hermetic)', () => {

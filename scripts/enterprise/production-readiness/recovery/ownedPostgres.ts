@@ -2,7 +2,7 @@
  * Owned ephemeral PostgreSQL for recovery drills (never shared phase0).
  * Connection strings never leave this module or enter evidence artifacts.
  */
-import { execFile, spawn } from 'node:child_process';
+import { type ChildProcess, execFile, spawn, type StdioOptions } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 
@@ -25,6 +25,160 @@ const COMMAND_TIMEOUT_MS = 60_000;
 const READY_TIMEOUT_MS = 90_000;
 const READY_POLL_MS = 500;
 const DUMP_TIMEOUT_MS = 120_000;
+/** Grace window between SIGTERM and SIGKILL on timeout escalation. */
+const KILL_GRACE_MS = 2_000;
+
+export type BoundedChildOutcome =
+  | { kind: 'error'; error: Error }
+  | { kind: 'exit'; code: number | null; signal: NodeJS.Signals | null; stdout: Buffer }
+  | { kind: 'timeout'; code: number | null; signal: NodeJS.Signals | null };
+
+export interface RunBoundedChildOptions {
+  args: readonly string[];
+  command: string;
+  /** Milliseconds after SIGTERM before SIGKILL (default 2000). */
+  killGraceMs?: number;
+  /** Optional hook after spawn (tests capture pid for reaped-after-settle asserts). */
+  onSpawn?: (child: ChildProcess) => void;
+  /** Optional stdin payload (enables pipe stdin). */
+  stdin?: Buffer;
+  /**
+   * stdio triple. Defaults:
+   * - with stdin: ['pipe','ignore','ignore']
+   * - without: ['ignore','pipe','pipe'] (collect stdout, drain/discard stderr)
+   */
+  stdio?: StdioOptions;
+  timeoutMs: number;
+}
+
+/**
+ * Spawn a child and settle the promise only after the process has closed.
+ *
+ * On timeout: SIGTERM → killGraceMs → SIGKILL, then await 'close'/'exit' before
+ * resolving `{ kind: 'timeout' }`. The child never outlives the settled promise.
+ */
+export const runBoundedChild = (options: RunBoundedChildOptions): Promise<BoundedChildOutcome> =>
+  new Promise((resolve) => {
+    const killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
+    const collectStdout =
+      options.stdio === undefined && options.stdin === undefined
+        ? true
+        : Array.isArray(options.stdio) && options.stdio[1] === 'pipe';
+    const stdio: StdioOptions =
+      options.stdio ??
+      (options.stdin !== undefined ? ['pipe', 'ignore', 'ignore'] : ['ignore', 'pipe', 'pipe']);
+
+    const child: ChildProcess = spawn(options.command, [...options.args], { stdio });
+    options.onSpawn?.(child);
+    const chunks: Buffer[] = [];
+    let settled = false;
+    let timedOut = false;
+    let stdinFatal: Error | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const settle = (outcome: BoundedChildOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve(outcome);
+    };
+
+    const escalateAndAwaitClose = () => {
+      timedOut = true;
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // already exited
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // already exited
+        }
+      }, killGraceMs);
+      // If already reaped, settle immediately as timeout.
+      if (child.exitCode !== null || child.signalCode !== null) {
+        settle({
+          code: child.exitCode,
+          kind: 'timeout',
+          signal: child.signalCode,
+        });
+      }
+      // Otherwise 'close' handler settles with timedOut=true.
+    };
+
+    const timer = setTimeout(() => {
+      escalateAndAwaitClose();
+    }, options.timeoutMs);
+
+    if (collectStdout && child.stdout) {
+      child.stdout.on('data', (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+    }
+    // Drain stderr when piped to avoid pipe-buffer deadlock; discard content (privacy).
+    if (child.stderr) {
+      child.stderr.on('data', () => undefined);
+    }
+
+    child.on('error', (error) => {
+      // Spawn failures (ENOENT, …) have no 'close' — settle immediately.
+      settle({ error, kind: 'error' });
+    });
+
+    child.on('close', (code, signal) => {
+      if (killTimer) clearTimeout(killTimer);
+      if (timedOut) {
+        settle({ code, kind: 'timeout', signal });
+        return;
+      }
+      if (stdinFatal) {
+        settle({ error: stdinFatal, kind: 'error' });
+        return;
+      }
+      settle({
+        code,
+        kind: 'exit',
+        signal,
+        stdout: Buffer.concat(chunks),
+      });
+    });
+
+    if (options.stdin !== undefined && child.stdin) {
+      const stdin = child.stdin;
+      stdin.on('error', (error) => {
+        // EPIPE when the child exits mid-write is common; 'close' reports the real exit.
+        if (settled || timedOut) return;
+        if ((error as NodeJS.ErrnoException).code === 'EPIPE') return;
+        // Record and terminate; settle only after 'close' so no orphan outlives the promise.
+        stdinFatal = error;
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+      });
+      try {
+        const writeOk = stdin.write(options.stdin);
+        if (writeOk) {
+          stdin.end();
+        } else {
+          stdin.once('drain', () => {
+            stdin.end();
+          });
+        }
+      } catch (error) {
+        stdinFatal = error instanceof Error ? error : new Error(String(error));
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+      }
+    }
+  });
 
 export interface OwnedPostgresHandle {
   /** Opaque identity digest for source/target inequality checks (not a connection string). */
@@ -191,113 +345,48 @@ export const createOwnedPostgres = async (): Promise<OwnedPostgresLifecycle> => 
       return fn(connectionString);
     },
     pgDumpCustom: async () => {
-      // Stream dump chunks — no fixed maxBuffer ceiling.
-      return new Promise<Buffer>((resolve, reject) => {
-        const child = spawn(
-          'docker',
-          ['exec', containerId, 'pg_dump', '-Fc', '-U', 'postgres', '-d', database],
-          { stdio: ['ignore', 'pipe', 'pipe'] },
-        );
-        const chunks: Buffer[] = [];
-        let settled = false;
-        const settle = (fn: () => void) => {
-          if (settled) return;
-          settled = true;
-          fn();
-        };
-        const timer = setTimeout(() => {
-          child.kill('SIGTERM');
-          setTimeout(() => {
-            try {
-              child.kill('SIGKILL');
-            } catch {
-              // already exited
-            }
-          }, 2_000);
-          settle(() => reject(safeError('OwnedPostgresDumpTimeout')));
-        }, DUMP_TIMEOUT_MS);
-        child.stdout.on('data', (chunk: Buffer) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
-        // Drain stderr to avoid pipe deadlock; discard content (privacy).
-        child.stderr.on('data', () => undefined);
-        child.on('error', (error) => {
-          clearTimeout(timer);
-          settle(() => reject(error));
-        });
-        child.on('close', (code) => {
-          clearTimeout(timer);
-          if (code !== 0) {
-            settle(() => reject(safeError('OwnedPostgresDumpFailed')));
-            return;
-          }
-          const buffer = Buffer.concat(chunks);
-          if (buffer.byteLength < 16) {
-            settle(() => reject(safeError('OwnedPostgresDumpEmpty')));
-            return;
-          }
-          settle(() => resolve(buffer));
-        });
+      // Stream dump chunks via runBoundedChild — no fixed maxBuffer ceiling.
+      // Timeout path awaits child close (SIGTERM→SIGKILL) before rejecting.
+      const outcome = await runBoundedChild({
+        args: ['exec', containerId, 'pg_dump', '-Fc', '-U', 'postgres', '-d', database],
+        command: 'docker',
+        killGraceMs: KILL_GRACE_MS,
+        timeoutMs: DUMP_TIMEOUT_MS,
       });
+      if (outcome.kind === 'timeout') throw safeError('OwnedPostgresDumpTimeout');
+      if (outcome.kind === 'error') throw outcome.error;
+      if (outcome.code !== 0) throw safeError('OwnedPostgresDumpFailed');
+      if (outcome.stdout.byteLength < 16) throw safeError('OwnedPostgresDumpEmpty');
+      return outcome.stdout;
     },
     pgRestoreCustom: async (dump: Buffer) => {
       if (!Buffer.isBuffer(dump) || dump.byteLength < 16) {
         throw safeError('OwnedPostgresRestoreInputInvalid');
       }
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(
-          'docker',
-          [
-            'exec',
-            '-i',
-            containerId,
-            'pg_restore',
-            '-U',
-            'postgres',
-            '-d',
-            database,
-            '--clean',
-            '--if-exists',
-          ],
-          // Ignore unused stdout/stderr to avoid pipe-buffer deadlock; stdin streams dump.
-          { stdio: ['pipe', 'ignore', 'ignore'] },
-        );
-        let settled = false;
-        const settle = (fn: () => void) => {
-          if (settled) return;
-          settled = true;
-          fn();
-        };
-        const timer = setTimeout(() => {
-          child.kill('SIGTERM');
-          setTimeout(() => {
-            try {
-              child.kill('SIGKILL');
-            } catch {
-              // already exited
-            }
-          }, 2_000);
-          settle(() => reject(safeError('OwnedPostgresRestoreTimeout')));
-        }, DUMP_TIMEOUT_MS);
-        child.on('error', (error) => {
-          clearTimeout(timer);
-          settle(() => reject(error));
-        });
-        child.on('close', (code) => {
-          clearTimeout(timer);
-          if (code === 0) settle(() => resolve());
-          else settle(() => reject(safeError('OwnedPostgresRestoreFailed')));
-        });
-        // Write with backpressure when possible.
-        const writeOk = child.stdin.write(dump);
-        if (writeOk) {
-          child.stdin.end();
-        } else {
-          child.stdin.once('drain', () => {
-            child.stdin.end();
-          });
-        }
+      // stdin streams dump; stdout/stderr ignored to avoid pipe-buffer deadlock.
+      // Timeout path awaits child close (SIGTERM→SIGKILL) before rejecting.
+      const outcome = await runBoundedChild({
+        args: [
+          'exec',
+          '-i',
+          containerId,
+          'pg_restore',
+          '-U',
+          'postgres',
+          '-d',
+          database,
+          '--clean',
+          '--if-exists',
+        ],
+        command: 'docker',
+        killGraceMs: KILL_GRACE_MS,
+        stdin: dump,
+        stdio: ['pipe', 'ignore', 'ignore'],
+        timeoutMs: DUMP_TIMEOUT_MS,
       });
+      if (outcome.kind === 'timeout') throw safeError('OwnedPostgresRestoreTimeout');
+      if (outcome.kind === 'error') throw outcome.error;
+      if (outcome.code !== 0) throw safeError('OwnedPostgresRestoreFailed');
     },
     withClient: async (fn) => {
       const client = await pool.connect();

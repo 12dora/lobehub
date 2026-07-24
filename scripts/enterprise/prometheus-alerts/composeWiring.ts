@@ -28,14 +28,28 @@ export interface ComposeWiringReport {
   rulesHostPathFragment: string;
 }
 
+type ComposeVolumeLong = {
+  read_only?: boolean;
+  source?: string;
+  target?: string;
+  type?: string;
+};
+
 type ComposeService = {
   command?: string | string[];
   image?: string;
-  volumes?: Array<string | { source?: string; target?: string; type?: string }>;
+  volumes?: Array<string | ComposeVolumeLong>;
 };
 
 type ComposeDocument = {
   services?: Record<string, ComposeService | undefined>;
+};
+
+/** Parsed bind mount with exact source/target and read-only mode. */
+type ParsedVolumeMount = {
+  readOnly: boolean;
+  source: string;
+  target: string;
 };
 
 const asStringArray = (command: string | string[] | undefined): string[] => {
@@ -45,18 +59,99 @@ const asStringArray = (command: string | string[] | undefined): string[] => {
   return String(command).split(/\s+/u).filter(Boolean);
 };
 
-const volumeEntries = (volumes: ComposeService['volumes']): string[] => {
-  if (!volumes) return [];
-  return volumes.map((entry) => {
-    if (typeof entry === 'string') return entry;
-    const source = entry.source ?? '';
-    const target = entry.target ?? '';
-    return `${source}:${target}`;
-  });
+/**
+ * Parse a Compose volume entry (short `src:target[:mode]` or long-form object).
+ * Returns null when the entry cannot be interpreted as a bind-style mount.
+ */
+const parseVolumeMount = (entry: string | ComposeVolumeLong): ParsedVolumeMount | null => {
+  if (typeof entry !== 'string') {
+    const source = entry.source?.trim() ?? '';
+    const target = entry.target?.trim() ?? '';
+    if (!source || !target) return null;
+    return {
+      readOnly: entry.read_only === true,
+      source,
+      target,
+    };
+  }
+
+  const raw = entry.trim();
+  if (!raw) return null;
+
+  // Short syntax: source:target[:ACCESS_MODE]. ACCESS_MODE is a comma-separated
+  // list (Compose): ro/rw plus SELinux z/Z, consistency cached/delegated/consistent,
+  // propagation private/rprivate/shared/…, etc. Split from the right so Windows-style
+  // drive sources still work if present.
+  const segments = raw.split(':');
+  if (segments.length < 2) return null;
+
+  const knownModeTokens = new Set([
+    'ro',
+    'rw',
+    'rro',
+    'z',
+    'Z',
+    'cached',
+    'delegated',
+    'consistent',
+    'private',
+    'rprivate',
+    'shared',
+    'rshared',
+    'slave',
+    'rslave',
+    'nocopy',
+  ]);
+  let modeTokens: string[] = [];
+  let target: string;
+  let source: string;
+
+  const last = segments.at(-1) ?? '';
+  const candidateTokens = last
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const lastIsAccessMode =
+    segments.length >= 3 &&
+    candidateTokens.length > 0 &&
+    candidateTokens.every((token) => knownModeTokens.has(token));
+
+  if (lastIsAccessMode) {
+    modeTokens = candidateTokens;
+    target = segments.at(-2) ?? '';
+    source = segments.slice(0, -2).join(':');
+  } else {
+    target = segments.at(-1) ?? '';
+    source = segments.slice(0, -1).join(':');
+  }
+
+  if (!source || !target) return null;
+  return {
+    // Read-only when any ACCESS_MODE token is ro/rro (e.g. `ro,Z` or `z,ro`).
+    readOnly: modeTokens.includes('ro') || modeTokens.includes('rro'),
+    source,
+    target,
+  };
 };
 
-const serviceHasMount = (service: ComposeService, needle: string): boolean =>
-  volumeEntries(service.volumes).some((volume) => volume === needle || volume.includes(needle));
+/**
+ * Exact mount match: source path, container target path, and read-only when required.
+ * Substring / wrong-target / missing `:ro` must not satisfy the gate.
+ */
+const serviceHasMount = (
+  service: ComposeService,
+  expected: { readOnly?: boolean; source: string; target: string },
+): boolean => {
+  const volumes = service.volumes ?? [];
+  return volumes.some((entry) => {
+    const parsed = parseVolumeMount(entry);
+    if (!parsed) return false;
+    if (parsed.source !== expected.source) return false;
+    if (parsed.target !== expected.target) return false;
+    if (expected.readOnly && !parsed.readOnly) return false;
+    return true;
+  });
+};
 
 /**
  * Assert compose + prometheus.yml + collector config wire the enterprise reference stack.
@@ -106,10 +201,11 @@ export const assertEnterprisePrometheusComposeWiring = (
 
   const rulesMount = `./prometheus/rules:${ENTERPRISE_ALERT_RULES_CONTAINER_DIR}:ro`;
   if (
-    !serviceHasMount(
-      prometheusService,
-      `./prometheus/rules:${ENTERPRISE_ALERT_RULES_CONTAINER_DIR}`,
-    )
+    !serviceHasMount(prometheusService, {
+      readOnly: true,
+      source: './prometheus/rules',
+      target: ENTERPRISE_ALERT_RULES_CONTAINER_DIR,
+    })
   ) {
     throw new Error(
       `services.prometheus must mount rules read-only as ${rulesMount} so Prometheus can load ${ENTERPRISE_ALERT_RULES_RELATIVE_PATH}`,
@@ -118,20 +214,22 @@ export const assertEnterprisePrometheusComposeWiring = (
 
   const configMount = `./prometheus/prometheus.yml:${ENTERPRISE_PROMETHEUS_CONFIG_CONTAINER_PATH}:ro`;
   if (
-    !serviceHasMount(
-      prometheusService,
-      `./prometheus/prometheus.yml:${ENTERPRISE_PROMETHEUS_CONFIG_CONTAINER_PATH}`,
-    )
+    !serviceHasMount(prometheusService, {
+      readOnly: true,
+      source: './prometheus/prometheus.yml',
+      target: ENTERPRISE_PROMETHEUS_CONFIG_CONTAINER_PATH,
+    })
   ) {
     throw new Error(`services.prometheus must mount prometheus.yml read-only as ${configMount}`);
   }
 
   const collectorMount = `./otel-collector/collector-config.yaml:${ENTERPRISE_OTEL_COLLECTOR_CONFIG_CONTAINER_PATH}:ro`;
   if (
-    !serviceHasMount(
-      collectorService,
-      `./otel-collector/collector-config.yaml:${ENTERPRISE_OTEL_COLLECTOR_CONFIG_CONTAINER_PATH}`,
-    )
+    !serviceHasMount(collectorService, {
+      readOnly: true,
+      source: './otel-collector/collector-config.yaml',
+      target: ENTERPRISE_OTEL_COLLECTOR_CONFIG_CONTAINER_PATH,
+    })
   ) {
     throw new Error(
       `services.otel-collector must mount collector config read-only as ${collectorMount}`,
