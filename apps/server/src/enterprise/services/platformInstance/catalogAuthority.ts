@@ -15,9 +15,18 @@ import {
   platformSkillVersions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
+import type { PlatformRevisionToken } from '@/server/enterprise/contracts/platformInstanceStatus';
 
-import type { AiCatalogTokenEntry, SkillCatalogTokenEntry } from './catalogTokens';
-import { buildAiCatalogRevisionToken, PlatformCatalogTokenInvariantError } from './catalogTokens';
+import type {
+  AiCatalogTokenEntry,
+  SkillCatalogBuiltinTokenEntry,
+  SkillCatalogTokenEntry,
+} from './catalogTokens';
+import {
+  buildAiCatalogRevisionToken,
+  buildSkillCatalogRevisionToken,
+  PlatformCatalogTokenInvariantError,
+} from './catalogTokens';
 
 type CatalogDatabase = LobeChatDatabase | Transaction;
 
@@ -221,3 +230,136 @@ export const loadCurrentSkillCatalogSnapshot = async (
   }
   return { builtinOverrideTombstones, items, tokenEntries };
 };
+
+/**
+ * Lightweight AI catalog token projection for system-health / domain-target polling.
+ * Selects only pointer IDs, revisions, stored checksums, status, and secret fingerprints —
+ * never revision payloads — and trusts stored checksums (full rehash stays on publish/runtime).
+ */
+export const loadCurrentAiCatalogTargetToken = async (
+  db: CatalogDatabase,
+): Promise<PlatformRevisionToken> => {
+  const rows = await db
+    .select({
+      checksum: platformResourceRevisions.checksum,
+      pointerRevision: platformAiProviders.revision,
+      providerId: platformAiProviders.id,
+      providerKey: platformAiProviders.providerKey,
+      revisionNumber: platformResourceRevisions.revision,
+      secretFingerprint: platformResourceRevisions.secretFingerprint,
+      status: platformResourceRevisions.status,
+    })
+    .from(platformAiProviders)
+    .leftJoin(
+      platformResourceRevisions,
+      and(
+        eq(platformResourceRevisions.resourceType, 'provider'),
+        eq(platformResourceRevisions.resourceId, platformAiProviders.id),
+        eq(platformResourceRevisions.revision, platformAiProviders.revision),
+      ),
+    )
+    .where(gt(platformAiProviders.revision, 0))
+    .orderBy(asc(platformAiProviders.providerKey), asc(platformAiProviders.id));
+
+  const tokenEntries: AiCatalogTokenEntry[] = [];
+  for (const row of rows) {
+    if (
+      !row.checksum ||
+      row.pointerRevision <= 0 ||
+      row.revisionNumber !== row.pointerRevision ||
+      (row.status !== 'published' && row.status !== 'archived') ||
+      !isChecksum(row.checksum)
+    ) {
+      throw new PlatformCatalogTokenInvariantError();
+    }
+    if (row.status === 'archived') continue;
+    tokenEntries.push({
+      checksum: row.checksum,
+      providerId: row.providerId,
+      providerKey: row.providerKey,
+      revision: row.pointerRevision,
+      secretFingerprint: row.secretFingerprint ?? null,
+    });
+  }
+  return buildAiCatalogRevisionToken(tokenEntries);
+};
+
+/**
+ * Lightweight skill catalog token entries for domain-target polling.
+ *
+ * Bounds I/O for the 3s system-health poll:
+ * - never selects version content / manifest / resources
+ * - never selects revision payloads (tombstone uses pointer columns only;
+ *   archive always publishes `builtinOverrideTombstone = allowBuiltinOverride`)
+ * - trusts stored version checksums (full rehash stays on publish/runtime)
+ */
+export const loadCurrentSkillCatalogTargetTokenEntries = async (
+  db: CatalogDatabase,
+): Promise<SkillCatalogTokenEntry[]> => {
+  const rows = await db
+    .select({
+      allowBuiltinOverride: platformSkills.allowBuiltinOverride,
+      checksum: platformSkillVersions.checksum,
+      currentVersionId: platformSkills.currentVersionId,
+      enabled: platformSkills.enabled,
+      pointerRevision: platformSkills.revision,
+      revisionNumber: platformResourceRevisions.revision,
+      skillId: platformSkills.id,
+      skillKey: platformSkills.skillKey,
+      status: platformResourceRevisions.status,
+      versionId: platformSkillVersions.id,
+    })
+    .from(platformSkills)
+    .leftJoin(
+      platformResourceRevisions,
+      and(
+        eq(platformResourceRevisions.resourceType, 'skill'),
+        eq(platformResourceRevisions.resourceId, platformSkills.id),
+        eq(platformResourceRevisions.revision, platformSkills.revision),
+      ),
+    )
+    .leftJoin(
+      platformSkillVersions,
+      and(
+        eq(platformSkillVersions.skillId, platformSkills.id),
+        eq(platformSkillVersions.id, platformSkills.currentVersionId),
+      ),
+    )
+    .where(gt(platformSkills.revision, 0))
+    .orderBy(asc(platformSkills.id));
+
+  const tokenEntries: SkillCatalogTokenEntry[] = [];
+  for (const row of rows) {
+    if (
+      !row.currentVersionId ||
+      !row.versionId ||
+      !row.checksum ||
+      row.revisionNumber !== row.pointerRevision ||
+      row.versionId !== row.currentVersionId ||
+      (row.status !== 'published' && row.status !== 'archived') ||
+      !isChecksum(row.checksum)
+    ) {
+      throw new PlatformCatalogTokenInvariantError();
+    }
+    // Archive publication sets payload.builtinOverrideTombstone = allowBuiltinOverride;
+    // pointer columns alone are enough for the health-poll token projection.
+    const tombstone = row.status === 'archived' && row.enabled && row.allowBuiltinOverride;
+    const active = row.status === 'published' && row.enabled;
+    if (!active && !tombstone) continue;
+    tokenEntries.push({
+      checksum: row.checksum,
+      currentVersionId: row.versionId,
+      revision: row.pointerRevision,
+      skillId: row.skillId,
+      skillKey: row.skillKey,
+      tombstone,
+    });
+  }
+  return tokenEntries;
+};
+
+/** Bounded skill-catalog target token (platform entries + caller-supplied builtins). */
+export const buildCurrentSkillCatalogTargetToken = (input: {
+  builtins: readonly SkillCatalogBuiltinTokenEntry[];
+  platform: readonly SkillCatalogTokenEntry[];
+}): PlatformRevisionToken => buildSkillCatalogRevisionToken(input);

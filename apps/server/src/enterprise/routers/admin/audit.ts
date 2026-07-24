@@ -240,7 +240,7 @@ const usersRouter = router({
       return service.getUserSummary({ actorUserId: ctx.userId!, userId: input.userId });
     }),
 
-  timeline: auditRead
+  timeline: auditConversationRead
     .input(adminAuditUsersTimelineInputSchema)
     .output(adminAuditUsersTimelineOutputSchema)
     .query(async ({ ctx, input }) => {

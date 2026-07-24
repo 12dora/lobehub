@@ -28,6 +28,7 @@ const sidebarLayoutBase = authedProcedure
  * Direct-save: `update` persists the whole document immediately (no draft/publish).
  * Gated on POLICY_* — it lives under the Managed Resources surface.
  *
+ * No CAS revision: platform_sidebar_layout has no revision column; lost-update is a known follow-up.
  * Config write + success audit share one DB transaction so an unavailable audit sink
  * cannot leave an unaudited committed change (fail closed).
  */

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
@@ -33,7 +34,8 @@ vi.mock('@/database/core/db-adaptor', () => ({
 }));
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
+  // Audit logs are append-only (row triggers); TRUNCATE is the test cleanup path.
+  await db.execute(sql.raw('TRUNCATE TABLE platform_audit_logs CASCADE'));
   await db.delete(platformGlobalCredentialSecrets);
   await db.delete(platformGlobalCredentialUploads);
   await db.delete(platformGlobalCredentials);

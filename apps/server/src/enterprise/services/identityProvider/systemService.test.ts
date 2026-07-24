@@ -20,6 +20,7 @@ import {
   registerIdentityProviderInstance,
   stopIdentityProviderHeartbeatForTest,
 } from './instanceRegistry';
+import { identityProviderLkgIdentity } from './lkg';
 import type { RestartController } from './restartController';
 import {
   commitIdentityProviderStartupSnapshot,
@@ -302,9 +303,10 @@ describe('IdentityProviderSystemService', () => {
 
   it('uses startup canonical selection for environment overrides and damaged shadows', async () => {
     await seedPendingTarget();
+    const emptyIdentity = identityProviderLkgIdentity([]);
     await expect(loadPublishedIdentityTarget(db, { AUTH_SSO_PROVIDERS: 'work' })).resolves.toEqual({
       environmentShadowed: [{ providerId: 'provider-work', providerKey: 'work' }],
-      identityRevision: null,
+      identityRevision: emptyIdentity,
       providers: [],
     });
 
@@ -317,7 +319,7 @@ describe('IdentityProviderSystemService', () => {
     });
     await expect(loadPublishedIdentityTarget(db, { AUTH_SSO_PROVIDERS: 'work' })).resolves.toEqual({
       environmentShadowed: [{ providerId: 'provider-work', providerKey: 'work' }],
-      identityRevision: null,
+      identityRevision: emptyIdentity,
       providers: [],
     });
     await expect(loadPublishedIdentityTarget(db, {})).rejects.toMatchObject({
@@ -473,7 +475,7 @@ describe('IdentityProviderSystemService', () => {
       ],
       pendingRestart: true,
       restart: { reason: 'environment_provider_shadowed', supported: false },
-      targetIdentityRevision: null,
+      targetIdentityRevision: identityProviderLkgIdentity([]),
     });
   });
 

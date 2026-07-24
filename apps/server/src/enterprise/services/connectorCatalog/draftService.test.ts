@@ -19,15 +19,24 @@ import {
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
 import type { ConnectorCatalogLifecycle, ConnectorCatalogSecretStore } from './catalogTypes';
+import {
+  recordConnectorConnectionTest,
+  resetConnectorConnectionTestStateForTest,
+  resolveConnectorConnectionTest,
+} from './connectionTestState';
 import { ConnectorCatalogDraftService } from './draftService';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 
 const db: LobeChatDatabase = await getTestDB();
 const redirectUri = 'https://aihub.example.test/oauth/callback';
 
-beforeEach(() => cleanupM09ServiceData(db));
+beforeEach(() => {
+  resetConnectorConnectionTestStateForTest();
+  return cleanupM09ServiceData(db);
+});
 afterEach(async () => {
   vi.restoreAllMocks();
+  resetConnectorConnectionTestStateForTest();
   await cleanupM09ServiceData(db);
 });
 
@@ -325,6 +334,21 @@ describe('ConnectorCatalogDraftService', () => {
       reason: 'create disposable connector',
       transport: 'http',
     });
+    recordConnectorConnectionTest(created.draft.id, {
+      errorCategory: null,
+      latencyMs: 1,
+      messageCode: 'connector.operation_succeeded',
+      status: 'success',
+      testedAt: new Date(),
+      testedDraftToken: created.draftToken,
+      testedRevision: created.draft.revision,
+    });
+    expect(
+      resolveConnectorConnectionTest(created.draft.id, {
+        draftToken: created.draftToken,
+        revision: created.draft.revision,
+      }),
+    ).toMatchObject({ status: 'success', stale: false });
     await expect(
       service.deleteDraft('admin-user', {
         expectedDraftToken: '0'.repeat(64),
@@ -333,6 +357,13 @@ describe('ConnectorCatalogDraftService', () => {
         reason: 'stale delete',
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    // Failed CAS delete must not clear the process-local connection-test entry.
+    expect(
+      resolveConnectorConnectionTest(created.draft.id, {
+        draftToken: created.draftToken,
+        revision: created.draft.revision,
+      }),
+    ).toMatchObject({ status: 'success', stale: false });
     await expect(
       service.deleteDraft('admin-user', {
         expectedDraftToken: created.draftToken,
@@ -342,5 +373,12 @@ describe('ConnectorCatalogDraftService', () => {
       }),
     ).resolves.toMatchObject({ auditId: expect.any(String) });
     expect(await db.select().from(platformConnectors)).toEqual([]);
+    // Successful delete clears the process-local connection-test map entry.
+    expect(
+      resolveConnectorConnectionTest(created.draft.id, {
+        draftToken: created.draftToken,
+        revision: created.draft.revision,
+      }),
+    ).toBeNull();
   });
 });

@@ -29,6 +29,7 @@ import { ADMIN_AUDIT_EXPORT_DOWNLOAD_URL_TTL_SECONDS } from '../../contracts/adm
 import { getEnterpriseErrorBody, throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { assertPlatformPermission, loadPlatformAuthContext } from '../../guards/platformPermission';
 import { appendAuditAccessLog, buildAuditFilterSummary } from './accessLog';
+import { assertConversationAccessEnabled } from './contentPolicy';
 import {
   buildAuditExportJobIdempotencyKey,
   PLATFORM_AUDIT_EXPORT_JOB_TYPE,
@@ -39,6 +40,7 @@ import {
   buildAuditExportStorageKey,
   verifyArtifactChecksum,
 } from './exportStorage';
+import { toPublicJobError } from './jobError';
 import { resolveAuditTimeWindow } from './timeWindow';
 
 const CONVERSATION_EXPORT_KINDS: readonly PlatformAuditExportKind[] = [
@@ -63,12 +65,13 @@ const isDeniedError = (error: unknown): boolean => {
 const accessLogResultForError = (error: unknown): 'denied' | 'failure' =>
   isDeniedError(error) ? 'denied' : 'failure';
 
-/** Public projection — never includes storageKey. */
+/** Public projection — never includes storageKey or raw/purge error payloads. */
 export const toExportPublic = (row: PlatformAuditExportItem) => ({
   artifactBytes: row.artifactBytes,
   artifactChecksum: row.artifactChecksum,
   createdAt: row.createdAt,
-  error: row.error,
+  // Strict code-only DTO (F3/F5/F6) — drop message / purgeStorageKey.
+  error: toPublicJobError(row.error as { code?: string } | null, 'EXPORT_FAILED'),
   expiresAt: row.expiresAt,
   filterSnapshot: row.filterSnapshot ?? {},
   finishedAt: row.finishedAt,
@@ -163,6 +166,20 @@ export class AdminAuditExportService {
   }
 
   /**
+   * Run work in a real DB transaction when `this.db` is a connection root.
+   * When already inside a Transaction, invoke the callback on that handle.
+   * Workers cannot claim jobs enqueued here until the outer TX commits.
+   */
+  private inTransaction = async <T>(
+    callback: (tx: LobeChatDatabase | Transaction) => Promise<T>,
+  ): Promise<T> => {
+    const database = this.db as LobeChatDatabase;
+    return typeof database.transaction === 'function'
+      ? database.transaction(callback)
+      : callback(this.db);
+  };
+
+  /**
    * Artifact storage for download / cancel only.
    * Injected storage is returned as-is; otherwise private S3 is created on first use.
    */
@@ -239,6 +256,10 @@ export class AdminAuditExportService {
       );
 
       const policy = await this.policyModel.getOrCreate();
+      // Conversation / timeline exports are conversation surfaces — honor the kill-switch.
+      if (isConversationExportKind(params.input.kind)) {
+        assertConversationAccessEnabled(policy.contentAccessMode);
+      }
       const window = resolveAuditTimeWindow({
         from: params.input.from,
         maxListWindowDays: policy.maxListWindowDays,
@@ -267,80 +288,59 @@ export class AdminAuditExportService {
         maxExportRows: policy.maxExportRows,
         revision: policy.revision,
       });
-      const created = await this.exportsModel.create({
-        filterSnapshot,
-        includesMessageBodies,
-        kind: params.input.kind,
-        requestedBy: params.actorUserId,
-      });
 
-      let linkedRow: PlatformAuditExportItem | null = null;
-      let enqueuedJobId: string | null = null;
-      try {
+      // Create + enqueue + required audit must commit together so workers cannot
+      // claim a job for a request that never recorded its success audit (F1).
+      const linkedRow = await this.inTransaction(async (tx) => {
+        const exportsTx = new PlatformAuditExportModel(tx);
+        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
+
+        const created = await exportsTx.create({
+          filterSnapshot,
+          includesMessageBodies,
+          kind: params.input.kind,
+          requestedBy: params.actorUserId,
+        });
+
         if (this.afterCreateExport) {
           await this.afterCreateExport({ exportId: created.id });
         }
 
-        const { job } = await this.jobsModel.enqueue({
+        const { job } = await jobsTx.enqueue({
           idempotencyKey: buildAuditExportJobIdempotencyKey(created.id),
           input: { exportId: created.id },
           maxAttempts: 3,
           requestedBy: params.actorUserId,
           type: PLATFORM_AUDIT_EXPORT_JOB_TYPE,
         });
-        enqueuedJobId = job.id;
 
         if (this.afterEnqueue) {
           await this.afterEnqueue({ exportId: created.id, jobId: job.id });
         }
 
-        const linked = await this.exportsModel.setJobId(created.id, job.id);
-        // Unsuccessful link (null / wrong jobId) is failure — never treat a
-        // pending row with jobId=null as success via get() fallback.
+        const linked = await exportsTx.setJobId(created.id, job.id);
         if (!linked || linked.jobId !== job.id) {
           throw new Error('EXPORT_JOB_LINK_FAILED');
         }
-        linkedRow = linked;
-      } catch (enqueueOrLinkError) {
-        // Never leave a permanently pending orphan with jobId = null.
-        // Safe public message only — never persist raw exception text.
-        await this.exportsModel.fail(created.id, {
-          code: 'ENQUEUE_FAILED',
-          message: 'export job enqueue or link failed',
-        });
-        if (enqueuedJobId) {
-          await this.jobsModel.cancel(enqueuedJobId).catch(() => undefined);
-        }
-        throw enqueueOrLinkError;
-      }
 
-      try {
-        await appendAuditAccessLog(this.db, {
+        await appendAuditAccessLog(tx, {
           action: 'admin.audit.exports.create',
           actorUserId: params.actorUserId,
           afterDiff: {
             includesMessageBodies,
-            kind: linkedRow.kind,
-            status: linkedRow.status,
+            kind: linked.kind,
+            status: linked.status,
           },
           filterSummary,
           reason: params.input.reason,
           required: true,
           result: 'success',
-          targetId: linkedRow.id,
+          targetId: linked.id,
           targetType: 'audit_export',
         });
-      } catch (auditError) {
-        // Enqueue/link succeeded; do not mislabel as ENQUEUE_FAILED.
-        await this.exportsModel.fail(created.id, {
-          code: 'AUDIT_APPEND_FAILED',
-          message: 'required audit access log append failed',
-        });
-        if (enqueuedJobId) {
-          await this.jobsModel.cancel(enqueuedJobId).catch(() => undefined);
-        }
-        throw auditError;
-      }
+
+        return linked;
+      });
 
       return toExportPublic(linkedRow);
     } catch (error) {
@@ -507,6 +507,12 @@ export class AdminAuditExportService {
         { actorPermissions: params.actorPermissions, actorUserId: params.actorUserId },
         row.kind,
       );
+
+      // Live kill-switch: conversation surfaces stay closed even for already-completed artifacts.
+      if (isConversationExportKind(row.kind)) {
+        const livePolicy = await this.policyModel.getOrCreate();
+        assertConversationAccessEnabled(livePolicy.contentAccessMode);
+      }
 
       if (row.status === 'expired' || (row.expiresAt && row.expiresAt.getTime() <= Date.now())) {
         if (row.status !== 'expired') {
@@ -690,32 +696,51 @@ export class AdminAuditExportService {
         });
       }
 
-      const cancelled = await this.exportsModel.cancel(existing.id);
-      if (existing.jobId) {
-        await this.jobsModel.cancel(existing.jobId);
-      }
+      // Domain cancel + job cancel + required audit in one TX (F5).
+      // Object delete is external — durable purge outbox survives failed S3 deletes (F6).
+      const storageKey = existing.storageKey ?? buildAuditExportStorageKey(existing.id);
 
-      // Best-effort object cleanup (may not exist yet)
-      await this.storage
-        .deleteObject(existing.storageKey ?? buildAuditExportStorageKey(existing.id))
-        .catch(() => undefined);
+      const row = await this.inTransaction(async (tx) => {
+        const exportsTx = new PlatformAuditExportModel(tx);
+        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
 
-      const row = cancelled ?? (await this.exportsModel.get(existing.id)) ?? existing;
+        const cancelled = await exportsTx.cancel(existing.id);
+        if (existing.jobId) {
+          await jobsTx.cancel(existing.jobId);
+        }
 
-      // Fail closed: never report a successful cancel without a durable audit record.
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.cancel',
-        actorUserId: params.actorUserId,
-        afterDiff: { status: row.status },
-        filterSummary,
-        reason: params.input.reason,
-        required: true,
-        result: 'success',
-        targetId: row.id,
-        targetType: 'audit_export',
+        // Durable outbox whenever a deterministic object key may exist.
+        await exportsTx.enqueueArtifactObjectPurge(existing.id, storageKey);
+
+        const next = cancelled ?? (await exportsTx.get(existing.id)) ?? existing;
+
+        await appendAuditAccessLog(tx, {
+          action: 'admin.audit.exports.cancel',
+          actorUserId: params.actorUserId,
+          afterDiff: { status: next.status },
+          filterSummary,
+          reason: params.input.reason,
+          required: true,
+          result: 'success',
+          targetId: next.id,
+          targetType: 'audit_export',
+        });
+
+        return next;
       });
 
-      return toExportPublic(row);
+      // Best-effort immediate delete; outbox remains if S3 fails (retention drains it).
+      try {
+        await this.storage.deleteObject(storageKey);
+        await this.exportsModel.completeArtifactObjectDelete(existing.id);
+      } catch {
+        // leave ARTIFACT_PURGE_PENDING outbox
+      }
+
+      // Reload after purge cleanup so the public projection never returns the
+      // internal purge payload that was written inside the cancel TX (F5).
+      const latest = (await this.exportsModel.get(existing.id)) ?? row;
+      return toExportPublic(latest);
     } catch (error) {
       if (
         getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND ||

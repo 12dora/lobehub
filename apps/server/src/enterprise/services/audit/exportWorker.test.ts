@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformJobModel } from '@/database/models/platform';
 import { messages, topics, users } from '@/database/schemas';
 import {
   platformAuditExports,
@@ -14,10 +15,13 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import {
   AdminAuditExportService,
+  AdminAuditRetentionService,
+  AuditExportLeaseLostError,
   buildAuditExportStorageKey,
   formatArtifactChecksum,
   InMemoryAuditExportArtifactStorage,
   processNextAuditExportJob,
+  processNextAuditRetentionJob,
   sha256Hex,
 } from './index';
 
@@ -675,5 +679,134 @@ describe('audit export worker', () => {
     expect(job?.status).not.toBe('succeeded');
     expect(job?.status).not.toBe('cancelled');
     expect(job?.leaseOwner).toBe('thief');
+  });
+
+  it('F6: dead-lettered export after upload still purges object (delete-fails-once)', async () => {
+    // Regression: claimNext dead-letters a final-attempt lease-expired worker
+    // without the export worker cleanup path. Cleanup intent recorded at upload
+    // + retention reconcile must still drain the private object.
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-f6-dead-letter',
+      result: 'success',
+      targetType: 'settings',
+    });
+
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'f6 dead letter after upload',
+        to: window.to,
+      },
+    });
+    const jobId = created.jobId!;
+    const storageKey = buildAuditExportStorageKey(created.id);
+
+    // Final attempt only: lease-expiry after claim must dead-letter (not reclaim).
+    await serverDB.update(platformJobs).set({ maxAttempts: 1 }).where(eq(platformJobs.id, jobId));
+
+    // Upload succeeds, then process dies (lease-loss path leaves domain running).
+    const crashed = await processNextAuditExportJob(serverDB, {
+      afterArtifactUpload: async () => {
+        throw new AuditExportLeaseLostError();
+      },
+      storage,
+      workerId: 'export-f6-crash',
+    });
+    expect(crashed.outcome).toBe('skipped');
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    // Upload-time purge intent is durable on the still-running domain row.
+    const [midRow] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(midRow?.status).toBe('running');
+    expect(midRow?.error?.purgeStorageKey).toBe(storageKey);
+
+    // Expire lease; claimNext dead-letters without invoking export cleanup.
+    await serverDB
+      .update(platformJobs)
+      .set({
+        leaseOwner: 'export-f6-crash',
+        leaseUntil: new Date(Date.now() - 60_000),
+        status: 'running',
+      })
+      .where(eq(platformJobs.id, jobId));
+
+    const jobs = new PlatformJobModel(serverDB);
+    const reclaimed = await jobs.claimNext({
+      types: ['platform.audit.export.v1'],
+      workerId: 'export-f6-reclaimer',
+    });
+    expect(reclaimed).toBeNull();
+
+    const [deadJob] = await serverDB.select().from(platformJobs).where(eq(platformJobs.id, jobId));
+    expect(deadJob?.status).toBe('dead');
+
+    // Domain still running — worker cleanup never ran.
+    const [stillRunning] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(stillRunning?.status).toBe('running');
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    // Retention: first object delete fails once, then succeeds (outbox retry).
+    let deletes = 0;
+    const flakyDeleteStorage = {
+      deleteObject: async (key: string) => {
+        deletes += 1;
+        if (deletes === 1) throw new Error('S3_TRANSIENT_DELETE');
+        storage.objects.delete(key);
+      },
+      getObjectBytes: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return Buffer.from(body);
+      },
+      getObjectMetadata: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return { contentLength: body.byteLength, contentType: 'application/x-ndjson' };
+      },
+      getSignedDownloadUrl: async () => 'https://audit-export.test/signed/x',
+      uploadArtifact: async () => {
+        throw new Error('upload not used');
+      },
+    };
+
+    const retention = new AdminAuditRetentionService(serverDB, { storage: flakyDeleteStorage });
+    await retention.run({
+      actorUserId: actor,
+      input: { reason: 'f6 purge dead-lettered export', scope: 'export_artifacts' },
+    });
+
+    // First retention attempt may fail on delete; drain retries until outbox clears.
+    for (let i = 0; i < 6; i++) {
+      const r = await processNextAuditRetentionJob(serverDB, {
+        storage: flakyDeleteStorage,
+        workerId: `ret-f6-${i}`,
+      });
+      if (!r.claimed && storage.objects.size === 0) break;
+    }
+
+    expect(deletes).toBeGreaterThanOrEqual(2);
+    expect(storage.objects.has(storageKey)).toBe(false);
+
+    const [finalRow] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(finalRow?.status).toBe('failed');
+    expect(finalRow?.storageKey).toBeNull();
+    expect(finalRow?.error?.purgeStorageKey).toBeFalsy();
+    expect(finalRow?.error?.code).toBe('EXPORT_FAILED');
   });
 });

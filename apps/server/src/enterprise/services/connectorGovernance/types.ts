@@ -85,6 +85,3 @@ export const DENIED_CONNECTOR_GOVERNANCE: ResolvedConnectorGovernance = {
   builtinToolPolicies: buildDenyAllBuiltinToolPolicies(),
   sharedAuthOwnerUserId: CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER,
 };
-
-/** @deprecated Prefer DENIED_CONNECTOR_GOVERNANCE — kept for import stability. */
-export const UNAVAILABLE_CONNECTOR_GOVERNANCE = DENIED_CONNECTOR_GOVERNANCE;

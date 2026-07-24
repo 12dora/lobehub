@@ -281,6 +281,32 @@ describe('resolveEffectiveSettings truth table', () => {
     expect(result.effectiveSettings.someFuture).toEqual({ nested: true });
   });
 
+  it('flag ON: registered legacy leaf is user intent when no override row exists', () => {
+    const result = resolveEffectiveSettings({
+      legacyUserSettings: { general: { fontSize: 18 } },
+      platformPolicyEnabled: true,
+      policies: {
+        'general.fontSize': { mode: 'default', schemaVersion: 1, value: 14, visibility: 'visible' },
+      },
+      overrides: {},
+    });
+    expect(result.effectiveValues['general.fontSize']).toBe(18);
+    expect(result.pathMeta['general.fontSize']?.source).toBe('user');
+  });
+
+  it('flag ON: explicit override wins over registered legacy leaf', () => {
+    const result = resolveEffectiveSettings({
+      legacyUserSettings: { general: { fontSize: 18 } },
+      overrides: { 'general.fontSize': { value: 12 } },
+      platformPolicyEnabled: true,
+      policies: {
+        'general.fontSize': { mode: 'default', schemaVersion: 1, value: 14, visibility: 'visible' },
+      },
+    });
+    expect(result.effectiveValues['general.fontSize']).toBe(12);
+    expect(result.pathMeta['general.fontSize']?.source).toBe('user');
+  });
+
   it('does not put secrets into pathMeta', () => {
     const result = resolveEffectiveSettings({
       legacyUserSettings: { keyVaults: { openai: { apiKey: 'sk-secret' } } },
@@ -344,15 +370,16 @@ describe('settingsRegistry', () => {
 });
 
 describe('buildSettingsCacheKey', () => {
-  it('includes registry, platform revision, user id, and override revision', () => {
+  it('includes registry, platform revision, user id, override revision, and legacy checksum', () => {
     expect(
       buildSettingsCacheKey({
+        legacyChecksum: 'abc',
         platformRevision: 2,
         registryVersion: 1,
         userId: 'u1',
         userOverrideRevision: 0,
       }),
-    ).toBe('settings:v1:p2:uu1:o0');
+    ).toBe('settings:v1:p2:uu1:o0:labc');
 
     // Deleting last override must still change token when revision bumps
     const before = buildSettingsCacheKey({
@@ -368,5 +395,22 @@ describe('buildSettingsCacheKey', () => {
       userOverrideRevision: 6,
     });
     expect(before).not.toBe(afterDeleteLast);
+
+    // Different legacy inputs must not share a cache key
+    const withMemory = buildSettingsCacheKey({
+      legacyChecksum: 'memory-only',
+      platformRevision: 2,
+      registryVersion: 1,
+      userId: 'u1',
+      userOverrideRevision: 0,
+    });
+    const withAgent = buildSettingsCacheKey({
+      legacyChecksum: 'agent-slice',
+      platformRevision: 2,
+      registryVersion: 1,
+      userId: 'u1',
+      userOverrideRevision: 0,
+    });
+    expect(withMemory).not.toBe(withAgent);
   });
 });

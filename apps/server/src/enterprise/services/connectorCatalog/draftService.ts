@@ -51,7 +51,10 @@ import type {
   ConnectorSecretSlot,
   ConnectorStoredSecret,
 } from './catalogTypes';
-import { resolveConnectorConnectionTest } from './connectionTestState';
+import {
+  clearConnectorConnectionTest,
+  resolveConnectorConnectionTest,
+} from './connectionTestState';
 import { PlatformConnectorContractError } from './errors';
 import { assertConnectorPersistentTextSafe } from './secretBoundary';
 import { cleanupConnectorSecretRefs } from './secretCleanup';
@@ -675,7 +678,7 @@ export class ConnectorCatalogDraftService {
     let safeReason: string | null = null;
     try {
       safeReason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
-      return await this.db.transaction(async (tx) => {
+      const result = await this.db.transaction(async (tx) => {
         const [locked] = await tx
           .select()
           .from(platformConnectors)
@@ -715,6 +718,9 @@ export class ConnectorCatalogDraftService {
         });
         return { auditId: audit.id };
       });
+      // Process-local test map is not transactional; clear only after commit.
+      clearConnectorConnectionTest(command.id);
+      return result;
     } catch (error) {
       await appendConnectorFailureAudit(
         this.db,

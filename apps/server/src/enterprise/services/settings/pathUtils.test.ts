@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { flattenLeaves, getByPath, setByPath, splitSettingPath } from './pathUtils';
+import { deleteByPath, flattenLeaves, getByPath, setByPath, splitSettingPath } from './pathUtils';
 
 describe('pathUtils', () => {
   it('splitSettingPath rejects invalid segments', () => {
@@ -19,6 +19,17 @@ describe('pathUtils', () => {
     expect(root.general.fontSize).toBe(14);
     expect(getByPath(next, 'general.fontSize')).toBe(18);
     expect(getByPath(next, 'general.telemetry')).toBe(true);
+  });
+
+  it('deleteByPath removes a leaf and prunes empty parents without mutating the root', () => {
+    const root = { general: { fontSize: 14, language: 'en-US' }, memory: { enabled: true } };
+    const next = deleteByPath(root, 'general.fontSize');
+    expect(root.general.fontSize).toBe(14);
+    expect(getByPath(next, 'general.fontSize')).toBeUndefined();
+    expect(getByPath(next, 'general.language')).toBe('en-US');
+
+    const emptyParent = deleteByPath({ general: { fontSize: 14 } }, 'general.fontSize');
+    expect(emptyParent.general).toBeUndefined();
   });
 
   it('flattenLeaves walks plain objects only', () => {

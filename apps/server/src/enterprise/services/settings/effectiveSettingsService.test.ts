@@ -129,41 +129,88 @@ describe('EffectiveSettingsService (flag ON)', () => {
     expect(getEffectiveSettingsCacheSizeForTest()).toBeLessThanOrEqual(512);
   });
 
-  it('uses absolute TTL — frequent hits do not renew expiry or pin stale legacy settings', async () => {
+  it('reflects a new legacy input immediately (no cross-slice cache bleed)', async () => {
     await publishDefault();
     const runtimeService = new EffectiveSettingsService(serverDB);
+
+    const first = await runtimeService.getEffectiveSettings({
+      legacyUserSettings: { general: { language: 'en-US' } },
+      userId: 'legacy-slice-user',
+    });
+    expect(first.effectiveSettings).toMatchObject({ general: { language: 'en-US' } });
+
+    const second = await runtimeService.getEffectiveSettings({
+      legacyUserSettings: { general: { language: 'zh-CN' } },
+      userId: 'legacy-slice-user',
+    });
+    expect(second.effectiveSettings).toMatchObject({ general: { language: 'zh-CN' } });
+  });
+
+  it('uses absolute TTL — frequent hits with identical input do not renew expiry', async () => {
+    await publishDefault();
+    const runtimeService = new EffectiveSettingsService(serverDB);
+    const listPublished = vi.spyOn(runtimeService['model'], 'listPublishedPolicies');
     vi.useFakeTimers();
     try {
       const t0 = Date.now();
       vi.setSystemTime(t0);
+      const legacy = { general: { language: 'en-US' } };
 
-      const first = await runtimeService.getEffectiveSettings({
-        legacyUserSettings: { general: { language: 'en-US' } },
+      await runtimeService.getEffectiveSettings({
+        legacyUserSettings: legacy,
         userId: 'ttl-user',
       });
-      expect(first.effectiveSettings).toMatchObject({ general: { language: 'en-US' } });
+      expect(listPublished).toHaveBeenCalledTimes(1);
 
-      // Hot-path reads within the original TTL window must not slide expiry.
-      // Cache key omits legacyUserSettings, so hits keep serving the first materialization.
+      // Hot-path reads within the original TTL window must not slide expiry or re-query.
       vi.setSystemTime(t0 + 3_000);
       for (let i = 0; i < 5; i++) {
         const hit = await runtimeService.getEffectiveSettings({
-          legacyUserSettings: { general: { language: 'zh-CN' } },
+          legacyUserSettings: legacy,
           userId: 'ttl-user',
         });
         expect(hit.effectiveSettings).toMatchObject({ general: { language: 'en-US' } });
       }
+      expect(listPublished).toHaveBeenCalledTimes(1);
 
       // Past the original insertion TTL, the entry must expire and re-materialize.
       vi.setSystemTime(t0 + 5_100);
-      const afterExpiry = await runtimeService.getEffectiveSettings({
-        legacyUserSettings: { general: { language: 'zh-CN' } },
+      await runtimeService.getEffectiveSettings({
+        legacyUserSettings: legacy,
         userId: 'ttl-user',
       });
-      expect(afterExpiry.effectiveSettings).toMatchObject({ general: { language: 'zh-CN' } });
+      expect(listPublished).toHaveBeenCalledTimes(2);
     } finally {
+      listPublished.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it('backfills registered legacy leaves into overrides when policy flag is on', async () => {
+    await publishDefault();
+    const { PlatformSettingsModel } = await import('@/database/models/platform');
+    const { UserModel } = await import('@/database/models/user');
+    const userModel = new UserModel(serverDB, 'u1');
+    await userModel.updateSetting({ general: { fontSize: 18 } });
+
+    const effective = await service.getEffectiveSettings({
+      legacyUserSettings: { general: { fontSize: 18 } },
+      userId: 'u1',
+    });
+    expect(effective.effectiveValues['general.fontSize']).toBe(18);
+    expect(effective.pathMeta['general.fontSize']?.source).toBe('user');
+
+    const overrideRows = await new PlatformSettingsModel(serverDB).listUserOverrides('u1');
+    expect(overrideRows.some((row) => row.path === 'general.fontSize' && row.value === 18)).toBe(
+      true,
+    );
+
+    // Second read is idempotent and still returns the preference.
+    const again = await service.getEffectiveSettings({
+      legacyUserSettings: { general: { fontSize: 18 } },
+      userId: 'u1',
+    });
+    expect(again.effectiveValues['general.fontSize']).toBe(18);
   });
 
   it('reports a database failure then recovers at the same target without replacing the error', async () => {

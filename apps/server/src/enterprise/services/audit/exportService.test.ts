@@ -135,7 +135,7 @@ describe('AdminAuditExportService', () => {
     expect(dl.artifactChecksum).toBe(checksum);
   });
 
-  it('marks export terminal and cancels job when enqueue fails after create', async () => {
+  it('rolls back export + job when create path fails inside the publication TX', async () => {
     const service = new AdminAuditExportService(serverDB, {
       afterCreateExport: async () => {
         throw new Error('INJECTED_ENQUEUE_PATH_FAILURE');
@@ -157,18 +157,15 @@ describe('AdminAuditExportService', () => {
       }),
     ).rejects.toBeTruthy();
 
+    // Atomic create+enqueue+audit: failure leaves no claimable job or export row.
     const rows = await serverDB.select().from(platformAuditExports);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.status).toBe('failed');
-    expect(rows[0]?.error?.code).toBe('ENQUEUE_FAILED');
-    expect(rows[0]?.jobId).toBeNull();
+    expect(rows).toHaveLength(0);
 
     const jobs = await serverDB.select().from(platformJobs);
-    // No job should remain runnable for the failed export.
-    expect(jobs.every((j) => j.status === 'cancelled' || j.status === 'dead')).toBe(true);
+    expect(jobs).toHaveLength(0);
   });
 
-  it('marks export terminal and cancels job when setJobId link fails after enqueue', async () => {
+  it('rolls back export + job when link fails after enqueue inside the publication TX', async () => {
     const service = new AdminAuditExportService(serverDB, {
       afterEnqueue: async () => {
         throw new Error('INJECTED_LINK_FAILURE');
@@ -191,13 +188,79 @@ describe('AdminAuditExportService', () => {
     ).rejects.toBeTruthy();
 
     const rows = await serverDB.select().from(platformAuditExports);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.status).toBe('failed');
-    expect(rows[0]?.error?.code).toBe('ENQUEUE_FAILED');
+    expect(rows).toHaveLength(0);
 
     const jobs = await serverDB.select().from(platformJobs);
-    expect(jobs.length).toBeGreaterThanOrEqual(1);
-    expect(jobs.every((j) => j.status === 'cancelled' || j.status === 'dead')).toBe(true);
+    expect(jobs).toHaveLength(0);
+  });
+
+  it('F1: required-audit failure leaves no claimable job for concurrent workers', async () => {
+    // Single-connection harness cannot open a second TX while create holds the
+    // publication lock; instead prove the same isolation invariant: if the
+    // required audit path aborts after enqueue, claimNext never observes a job.
+    const { PlatformJobModel } = await import('@/database/models/platform');
+    const { PLATFORM_AUDIT_EXPORT_JOB_TYPE } = await import('./exportConstants');
+
+    const service = new AdminAuditExportService(serverDB, {
+      afterEnqueue: async () => {
+        throw new Error('INJECTED_AUDIT_GATE_FAILURE');
+      },
+      storage,
+    });
+
+    await expect(
+      service.create({
+        actorPermissions: EXPORT_ONLY,
+        actorUserId: actor,
+        input: {
+          from: window.from,
+          includeMessageBodies: false,
+          kind: 'operation_logs',
+          reason: 'concurrent claim guard',
+          to: window.to,
+        },
+      }),
+    ).rejects.toBeTruthy();
+
+    const jobsModel = new PlatformJobModel(serverDB);
+    const claimed = await jobsModel.claimNext({
+      leaseMs: 60_000,
+      types: [PLATFORM_AUDIT_EXPORT_JOB_TYPE],
+      workerId: 'f1-claim-worker',
+    });
+    expect(claimed).toBeNull();
+    expect(await serverDB.select().from(platformJobs)).toHaveLength(0);
+  });
+
+  it('F5: cancel returns code-only public error (no purge outbox fields)', async () => {
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: EXPORT_ONLY,
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'cancel projection',
+        to: window.to,
+      },
+    });
+
+    const cancelled = await service.cancel({
+      actorPermissions: EXPORT_ONLY,
+      actorUserId: actor,
+      input: { id: created.id, reason: 'operator cancel' },
+    });
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled).not.toHaveProperty('storageKey');
+    // Strict DTO: error is null or { code } only — never message/purgeStorageKey.
+    if (cancelled.error != null) {
+      expect(Object.keys(cancelled.error).sort()).toEqual(['code']);
+      expect(typeof cancelled.error.code).toBe('string');
+    }
+    expect(JSON.stringify(cancelled)).not.toContain('purgeStorageKey');
+    expect(JSON.stringify(cancelled)).not.toContain('platform-audit-exports/');
   });
 
   it('rejects download when object is same-length but checksum-corrupted', async () => {

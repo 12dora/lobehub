@@ -22,7 +22,7 @@ import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { adminRouter } from '../admin';
-import { toSafeUsageRecord } from './stats';
+import { loadAllMonthUsage, toSafeUsageRecord } from './stats';
 
 const db: LobeChatDatabase = await getTestDB();
 const createRootCaller = createCallerFactory(adminRouter);
@@ -188,6 +188,57 @@ describe('admin.stats redacts sensitive metadata', () => {
     });
     expect(safe.metadata).toBeNull();
     expect(JSON.stringify(safe)).not.toContain(SECRET_PAYLOAD);
+  });
+});
+
+describe('admin.stats conversation title authorization', () => {
+  it('denies rankTopics for STATS_READ-only roles (F4)', async () => {
+    const caller = await callerFor(ids.reader);
+    await expect(caller.rankTopics()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('allows rankTopics when the actor also holds conversation audit read', async () => {
+    const caller = await callerFor(ids.superAdmin);
+    await expect(caller.rankTopics({ limit: 5 })).resolves.toEqual(expect.any(Array));
+  });
+});
+
+describe('admin.stats full-month truncation', () => {
+  it('throws when the page budget is exhausted with remaining rows (F8)', async () => {
+    let calls = 0;
+    const stub = {
+      findByMonthPage: async () => {
+        calls += 1;
+        return {
+          items: [
+            {
+              createdAt: new Date('2026-03-01T00:00:00.000Z'),
+              id: `stub-${calls}`,
+              model: 'm',
+              provider: 'p',
+              spend: 0,
+              totalInputTokens: 1,
+              totalOutputTokens: 1,
+              totalTokens: 2,
+              tps: 0,
+              ttft: 0,
+              type: 'chat',
+              updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+              userDisplay: 'u',
+              userId: 'u1',
+            },
+          ],
+          // Always claim more pages so loadAllMonthUsage hits the 200-page ceiling.
+          nextCursor: `cursor-${calls}`,
+        };
+      },
+      findByMonth: async () => [],
+    };
+
+    await expect(loadAllMonthUsage(stub as never, '2026-03')).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+    expect(calls).toBe(200);
   });
 });
 

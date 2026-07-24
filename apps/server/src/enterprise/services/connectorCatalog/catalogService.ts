@@ -180,6 +180,15 @@ export class ConnectorCatalogService {
   ) => {
     const detail = await this.getDraft(connectorId);
     try {
+      // applyImmediate / publishNow skip the admin test step — run the same live
+      // connection probe so server publish still requires a current success.
+      const connectionTest = await this.discovery.testConnection(actorUserId, {
+        id: connectorId,
+        reason,
+      });
+      if (connectionTest.status !== 'success') {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      }
       const published = await this.publish(actorUserId, {
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,

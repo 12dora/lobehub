@@ -14,6 +14,7 @@ import {
   PlatformGlobalCredentialNotFoundError,
   type PlatformGlobalCredentialPublicView,
   PlatformGlobalCredentialValidationError,
+  PlatformRevisionConflictError,
 } from '@/database/models/platform';
 import {
   PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES,
@@ -54,6 +55,8 @@ export interface PlatformGlobalCredentialSummaryDto {
   key: string;
   maskedPreview?: string;
   name: string;
+  /** Optimistic CAS generation; required on subsequent updates. */
+  revision: number;
   type: PlatformGlobalCredentialType;
   updatedAt: string;
 }
@@ -82,6 +85,7 @@ const toSummary = (
   key: row.key,
   maskedPreview: row.maskedPreview ?? (row.type === 'file' ? row.fileName : 'configured'),
   name: row.name,
+  revision: row.revision,
   type: row.type,
   updatedAt: toIso(row.updatedAt),
 });
@@ -114,6 +118,7 @@ export const filterNonEmptySecretValues = (
 export interface PlatformGlobalCredentialAdminServiceOptions {
   /**
    * Test/fault seams. Production callers leave this undefined.
+   * `beforeForUpdate` runs immediately before the row lock is taken.
    * `afterLockBeforeSecretMerge` runs after FOR UPDATE + current secret read,
    * before encrypt/write — used to force concurrent interleaving in tests.
    * `createAudit` substitutes the transaction-scoped audit service (rollback tests).
@@ -121,6 +126,7 @@ export interface PlatformGlobalCredentialAdminServiceOptions {
   createAudit?: (db: LobeChatDatabase | Transaction) => PlatformAuditService;
   lifecycle?: {
     afterLockBeforeSecretMerge?: (params: { id: number }) => Promise<void>;
+    beforeForUpdate?: (params: { id: number }) => Promise<void>;
   };
 }
 
@@ -318,20 +324,90 @@ export class PlatformGlobalCredentialAdminService {
   update = async (params: {
     actorUserId: string;
     description?: string;
+    expectedRevision: number;
+    /** Owner-bound staged upload for in-place file secret rotation. */
+    fileHashId?: string;
+    fileName?: string;
     id: number;
     name?: string;
     values?: Record<string, string>;
   }): Promise<PlatformGlobalCredentialSummaryDto> => {
     // Validate type/mask outside the lock when possible; secret merge must run
     // under FOR UPDATE so concurrent partial updates cannot lose disjoint keys.
+    if (params.values !== undefined && params.fileHashId !== undefined) {
+      throw new PlatformGlobalCredentialValidationError(
+        'Cannot update KV values and file material in the same request',
+      );
+    }
     if (params.values !== undefined) {
       assertNoMaskedSecretValues(params.values);
     }
 
     return this.withTxn(async ({ audit, model }) => {
+      await this.lifecycle?.beforeForUpdate?.({ id: params.id });
+
+      // File rotation: consume owner-bound staging under the same CAS/lock path.
+      if (params.fileHashId !== undefined) {
+        const existing = await model.getByIdForUpdate(params.id);
+        if (!existing) throw new PlatformGlobalCredentialNotFoundError();
+        if (existing.type !== 'file') {
+          throw new PlatformGlobalCredentialValidationError(
+            'fileHashId can only be used to rotate file credentials',
+          );
+        }
+
+        const updated = await model.updateFromStagedUpload({
+          createdBy: params.actorUserId,
+          expectedRevision: params.expectedRevision,
+          fileHashId: params.fileHashId,
+          id: params.id,
+          meta: {
+            description:
+              params.description !== undefined ? params.description : existing.description,
+            fileName: params.fileName,
+          },
+          name: params.name,
+        });
+
+        await audit.append({
+          action: 'admin.creds.update',
+          actorUserId: params.actorUserId,
+          afterDiff: {
+            fileName: updated.fileName,
+            fileSize: updated.fileSize,
+            id: updated.id,
+            name: updated.name,
+            revision: updated.revision,
+            rotatedSecret: true,
+          },
+          beforeDiff: {
+            id: existing.id,
+            name: existing.name,
+            revision: existing.revision,
+          },
+          reason: 'platform_global_credential_mutation',
+          result: 'success',
+          targetId: String(updated.id),
+          targetType: 'platform_global_credential',
+        });
+
+        return toSummary(updated);
+      }
+
       // Lock first so concurrent partial secret updates serialize before merge.
       const existing = await model.getByIdForUpdate(params.id);
       if (!existing) throw new PlatformGlobalCredentialNotFoundError();
+      if (existing.revision !== params.expectedRevision) {
+        throw new PlatformRevisionConflictError(
+          'Credential revision conflict: expectedRevision does not match current revision',
+          {
+            currentRevision: existing.revision,
+            expectedRevision: params.expectedRevision,
+            resourceId: String(params.id),
+            resourceType: 'platform_global_credential',
+          },
+        );
+      }
 
       let envelope:
         | {
@@ -366,6 +442,7 @@ export class PlatformGlobalCredentialAdminService {
 
       const updated = await model.update({
         envelope,
+        expectedRevision: params.expectedRevision,
         id: params.id,
         meta: {
           description: params.description !== undefined ? params.description : existing.description,
@@ -382,10 +459,11 @@ export class PlatformGlobalCredentialAdminService {
         afterDiff: {
           id: updated.id,
           name: updated.name,
+          revision: updated.revision,
           rotatedSecret: Boolean(envelope),
           valueKeyCount: valueKeys?.length,
         },
-        beforeDiff: { id: existing.id, name: existing.name },
+        beforeDiff: { id: existing.id, name: existing.name, revision: existing.revision },
         reason: 'platform_global_credential_mutation',
         result: 'success',
         targetId: String(updated.id),
@@ -524,4 +602,5 @@ export {
   PlatformGlobalCredentialFileTooLargeError,
   PlatformGlobalCredentialNotFoundError,
   PlatformGlobalCredentialValidationError,
+  PlatformRevisionConflictError,
 };

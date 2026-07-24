@@ -48,6 +48,7 @@ import type {
   ConnectorDraft,
   ConnectorResolvedSecret,
 } from './catalogTypes';
+import { resolveConnectorConnectionTest } from './connectionTestState';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorToolInsertValues, loadConnectorDraft } from './draftService';
 import { PlatformConnectorContractError } from './errors';
@@ -317,6 +318,21 @@ export class ConnectorCatalogPublicationService {
     if (detail.draftToken !== expectedDraftToken) throw new PlatformRevisionConflictError();
     parseConnectorToolsForWrite(detail.draft.tools);
     if (!detail.draft.enabled || !detail.draft.tools.some((tool) => tool.enabled)) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    }
+    // Same invariant as the admin UI: publish requires a non-stale successful
+    // connection test bound to the exact draft revision + token.
+    const connectionTest = resolveConnectorConnectionTest(connectorId, {
+      draftToken: detail.draftToken,
+      revision: detail.draft.revision,
+    });
+    if (
+      !connectionTest ||
+      connectionTest.status !== 'success' ||
+      connectionTest.stale ||
+      connectionTest.testedRevision !== detail.draft.revision ||
+      connectionTest.testedDraftToken !== detail.draftToken
+    ) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
     }
     const outboundProof = await this.outbound.preflight(detail.draft.endpoint);

@@ -25,7 +25,12 @@ import {
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { PlatformAuditService } from '../platformAudit';
-import { type AuditExportArtifactStorage, AuditExportPrivateS3Storage } from './exportStorage';
+import {
+  type AuditExportArtifactStorage,
+  AuditExportPrivateS3Storage,
+  buildAuditExportStorageKey,
+} from './exportStorage';
+import { mapRetentionFailureCode } from './jobError';
 import {
   AUDIT_RETENTION_BATCH_LIMIT,
   AUDIT_RETENTION_DEFAULT_LEASE_MS,
@@ -154,10 +159,38 @@ const buildHoldIndex = (holds: PlatformAuditLegalHoldItem[]): HoldIndex => {
   return index;
 };
 
-const loadHoldIndex = async (db: LobeChatDatabase): Promise<HoldIndex> => {
-  // Full active inventory (global + scoped) — findActiveScopes([]) only returns global.
-  const holds = await new PlatformAuditLegalHoldModel(db).listActive();
-  return buildHoldIndex(holds);
+/** Sentinel never equal to a real scope id — only makes Set.size > 0 for broad over-skip. */
+const HOLD_CLASS_SENTINEL = '\0hold-class';
+
+/**
+ * Build a hold index for a candidate batch via targeted scope lookup + class
+ * presence. Avoids reloading the entire active legal-hold table every batch (F11)
+ * while preserving conservative broad over-skip (class size checks).
+ */
+const loadHoldIndexForScopes = async (
+  db: LobeChatDatabase | Transaction,
+  scopes: Array<{ scopeId: string | null; scopeType: PlatformAuditLegalHoldItem['scopeType'] }>,
+): Promise<HoldIndex> => {
+  const model = new PlatformAuditLegalHoldModel(db);
+  // Fast path: if any global hold exists, everything is held.
+  const classes = await model.summarizeActiveHoldClasses();
+  if (classes.global) {
+    return {
+      global: true,
+      sessions: new Set(),
+      topics: new Set(),
+      users: new Set(),
+      workspaces: new Set(),
+    };
+  }
+  const holds = scopes.length > 0 ? await model.findActiveScopes(scopes) : [];
+  const index = buildHoldIndex(holds);
+  // Class presence for broad over-skip without materializing every hold row.
+  if (classes.hasUser) index.users.add(HOLD_CLASS_SENTINEL);
+  if (classes.hasTopic) index.topics.add(HOLD_CLASS_SENTINEL);
+  if (classes.hasSession) index.sessions.add(HOLD_CLASS_SENTINEL);
+  if (classes.hasWorkspace) index.workspaces.add(HOLD_CLASS_SENTINEL);
+  return index;
 };
 
 const isHoldTargetType = (targetType: string): boolean =>
@@ -346,7 +379,7 @@ const exportArtifactHeld = (
 };
 
 const appendWorkerOutcome = async (
-  db: LobeChatDatabase,
+  db: LobeChatDatabase | Transaction,
   params: {
     counts?: PlatformAuditRetentionCounts;
     mode: string;
@@ -424,7 +457,7 @@ export const processNextAuditRetentionJob = async (
   const parsedInput = parseAuditRetentionJobInput(claimed.input);
   if (!parsedInput) {
     await jobs.fail({
-      error: { code: 'INVALID_INPUT', message: 'runId missing from job input' },
+      error: { code: 'INVALID_INPUT' },
       jobId: claimed.id,
       terminal: true,
       workerId: options.workerId,
@@ -438,7 +471,7 @@ export const processNextAuditRetentionJob = async (
     const run = await runsModel.get(runId);
     if (!run) {
       await jobs.fail({
-        error: { code: 'NOT_FOUND', message: 'retention run missing' },
+        error: { code: 'NOT_FOUND' },
         jobId: claimed.id,
         terminal: true,
         workerId: options.workerId,
@@ -462,7 +495,7 @@ export const processNextAuditRetentionJob = async (
 
     if (run.status === 'failed') {
       await jobs.fail({
-        error: { code: 'RUN_TERMINAL', message: 'retention run already failed' },
+        error: { code: 'RUN_TERMINAL' },
         jobId: claimed.id,
         terminal: true,
         workerId: options.workerId,
@@ -636,6 +669,7 @@ export const processNextAuditRetentionJob = async (
         getKeyset: () => keyset,
         renewLease,
         repo,
+        runId,
         setKeyset: (c) => {
           keyset = c;
         },
@@ -651,43 +685,55 @@ export const processNextAuditRetentionJob = async (
       counts = { ...counts, sessionsDeleted: 0 };
     }
 
-    const completed = await runsModel.complete(runId, { counts });
-    if (!completed) {
-      // Explicit cancel race at completion — not lease loss.
-      await jobs.cancel(claimed.id);
-      return { claimed: true, jobId: claimed.id, outcome: 'cancelled', runId };
-    }
-
+    // Seam before terminal TX so lease-loss tests can steal ownership without
+    // leaving domain completed while the job/audit remain open (F5).
     if (options.afterDomainComplete) {
       await options.afterDomainComplete({ jobId: claimed.id, runId });
     }
 
-    const jobDone = await jobs.complete({
-      jobId: claimed.id,
-      resultSummary: {
+    // Domain complete + job succeed + required outcome audit in one TX (F5).
+    const terminal = await db.transaction(async (tx) => {
+      const runsTx = new PlatformAuditRetentionRunModel(tx);
+      const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
+
+      const completed = await runsTx.complete(runId, { counts });
+      if (!completed) {
+        return 'cancelled' as const;
+      }
+
+      const jobDone = await jobsTx.complete({
+        jobId: claimed.id,
+        resultSummary: {
+          counts,
+          mode: run.mode,
+          runId,
+          scope: run.scope,
+        },
+        workerId: options.workerId,
+      });
+      if (!jobDone) {
+        // Lease ownership lost — roll back domain complete with this TX.
+        throw new AuditRetentionLeaseLostError();
+      }
+
+      await appendWorkerOutcome(tx, {
         counts,
         mode: run.mode,
+        outcome: 'completed',
+        requestedBy: run.requestedBy,
+        required: true,
+        result: 'success',
         runId,
         scope: run.scope,
-      },
-      workerId: options.workerId,
-    });
-    if (!jobDone) {
-      // Domain already terminal-completed; lease ownership lost — do not report clean
-      // completion or cancel domain/job (reclaiming owner finishes platform job).
-      return { claimed: true, jobId: claimed.id, outcome: 'skipped', runId };
-    }
+      });
 
-    await appendWorkerOutcome(db, {
-      counts,
-      mode: run.mode,
-      outcome: 'completed',
-      requestedBy: run.requestedBy,
-      required: true,
-      result: 'success',
-      runId,
-      scope: run.scope,
+      return 'completed' as const;
     });
+
+    if (terminal === 'cancelled') {
+      await jobs.cancel(claimed.id);
+      return { claimed: true, jobId: claimed.id, outcome: 'cancelled', runId };
+    }
 
     return { claimed: true, jobId: claimed.id, outcome: 'completed', runId };
   } catch (error) {
@@ -697,36 +743,38 @@ export const processNextAuditRetentionJob = async (
     }
 
     if (error instanceof AuditRetentionCancelledError) {
-      await runsModel.cancel(runId);
-      await jobs.cancel(claimed.id);
-      const run = await runsModel.get(runId);
-      if (run) {
-        await appendWorkerOutcome(db, {
-          counts: run.counts,
-          mode: run.mode,
-          outcome: 'cancelled',
-          requestedBy: run.requestedBy,
-          required: true,
-          result: 'success',
-          runId,
-          scope: run.scope,
-        });
-      }
+      await db.transaction(async (tx) => {
+        const runsTx = new PlatformAuditRetentionRunModel(tx);
+        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
+        await runsTx.cancel(runId);
+        await jobsTx.cancel(claimed.id);
+        const cancelledRun = await runsTx.get(runId);
+        if (cancelledRun) {
+          await appendWorkerOutcome(tx, {
+            counts: cancelledRun.counts,
+            mode: cancelledRun.mode,
+            outcome: 'cancelled',
+            requestedBy: cancelledRun.requestedBy,
+            required: true,
+            result: 'success',
+            runId,
+            scope: cancelledRun.scope,
+          });
+        }
+      });
       return { claimed: true, jobId: claimed.id, outcome: 'cancelled', runId };
     }
 
+    // Bounded enum only — never Error.name / free-form message as public code (F3).
     const code =
       error instanceof AuditRetentionInvalidDataError
-        ? 'INVALID_RUN_DATA'
-        : error instanceof Error
-          ? error.name || 'RETENTION_FAILED'
-          : 'RETENTION_FAILED';
-    const message = error instanceof Error ? error.message.slice(0, 500) : 'retention failed';
+        ? 'INVALID_INPUT'
+        : mapRetentionFailureCode(error);
 
     if (isTerminalContractError(error)) {
-      await runsModel.fail(runId, { code, message });
+      await runsModel.fail(runId, { code });
       await jobs.fail({
-        error: { code, message },
+        error: { code },
         jobId: claimed.id,
         terminal: true,
         workerId: options.workerId,
@@ -749,13 +797,13 @@ export const processNextAuditRetentionJob = async (
 
     // Transient: requeue job (or dead when maxAttempts exhausted). Domain stays running.
     const failedJob = await jobs.fail({
-      error: { code, message },
+      error: { code },
       jobId: claimed.id,
       workerId: options.workerId,
     });
 
     if (failedJob?.status === 'dead') {
-      await runsModel.fail(runId, { code, message });
+      await runsModel.fail(runId, { code });
       const run = await runsModel.get(runId);
       if (run) {
         await appendWorkerOutcome(db, {
@@ -789,6 +837,8 @@ type ScopeProcessorParams = {
   getKeyset: () => string | undefined;
   renewLease: () => Promise<void>;
   repo: PlatformAuditRetentionRepository;
+  /** Domain run id — used for atomic delete attribution (export_artifacts / F7). */
+  runId?: string;
   setKeyset: (cursor: string | undefined) => void;
 };
 
@@ -811,7 +861,6 @@ const processOperationLogs = async (
   let counts = params.counts;
   for (;;) {
     await params.renewLease();
-    const holds = await loadHoldIndex(params.db);
     const page = await params.repo.listOperationLogCandidates({
       cursor: params.getKeyset(),
       cutoffAt: params.cutoffAt,
@@ -819,6 +868,29 @@ const processOperationLogs = async (
     });
 
     if (page.items.length === 0) break;
+
+    // Targeted hold lookup for this batch's actors / targets (F11).
+    const scopeRefs: Array<{
+      scopeId: string | null;
+      scopeType: PlatformAuditLegalHoldItem['scopeType'];
+    }> = [];
+    for (const row of page.items) {
+      if (row.actorUserId) scopeRefs.push({ scopeId: row.actorUserId, scopeType: 'user' });
+      if (row.targetId) {
+        if (isHoldTargetType(row.targetType)) {
+          scopeRefs.push({
+            scopeId: row.targetId,
+            scopeType: row.targetType as PlatformAuditLegalHoldItem['scopeType'],
+          });
+        } else {
+          // Unknown targetType over-skip: match the id under any hold class.
+          for (const scopeType of ['user', 'session', 'topic', 'workspace'] as const) {
+            scopeRefs.push({ scopeId: row.targetId, scopeType });
+          }
+        }
+      }
+    }
+    const holds = await loadHoldIndexForScopes(params.db, scopeRefs);
 
     const baseDelta: PlatformAuditRetentionCounts = {
       operationLogsScanned: page.items.length,
@@ -871,7 +943,6 @@ const processConversations = async (
 
   for (;;) {
     await params.renewLease();
-    const holds = await loadHoldIndex(params.db);
     const page = await params.repo.listTopicCandidates({
       cursor: params.getKeyset(),
       cutoffAt: params.cutoffAt,
@@ -881,6 +952,19 @@ const processConversations = async (
     if (page.items.length === 0) break;
 
     const msgCounts = await params.repo.countMessagesForTopics(page.items.map((t) => t.id));
+
+    // Targeted hold lookup for this batch's users / sessions / topics (F11).
+    const scopeRefs: Array<{
+      scopeId: string | null;
+      scopeType: PlatformAuditLegalHoldItem['scopeType'];
+    }> = [];
+    for (const topic of page.items) {
+      if (topic.userId) scopeRefs.push({ scopeId: topic.userId, scopeType: 'user' });
+      if (topic.sessionId) scopeRefs.push({ scopeId: topic.sessionId, scopeType: 'session' });
+      if (topic.workspaceId) scopeRefs.push({ scopeId: topic.workspaceId, scopeType: 'workspace' });
+      scopeRefs.push({ scopeId: topic.id, scopeType: 'topic' });
+    }
+    const holds = await loadHoldIndexForScopes(params.db, scopeRefs);
 
     const baseDelta: PlatformAuditRetentionCounts = {
       topicsScanned: page.items.length,
@@ -953,8 +1037,25 @@ const resolveExportArtifactHeldIds = async (
     kind: PlatformAuditExportKind;
   }>,
 ): Promise<Set<string>> => {
-  const holds = await new PlatformAuditLegalHoldModel(tx).listActive();
-  const index = buildHoldIndex(holds);
+  const scopeRefs: Array<{
+    scopeId: string | null;
+    scopeType: PlatformAuditLegalHoldItem['scopeType'];
+  }> = [];
+  for (const row of rows) {
+    const snap = row.filterSnapshot;
+    if (snap?.userId) scopeRefs.push({ scopeId: snap.userId, scopeType: 'user' });
+    if (snap?.actorUserId) scopeRefs.push({ scopeId: snap.actorUserId, scopeType: 'user' });
+    if (snap?.topicId) scopeRefs.push({ scopeId: snap.topicId, scopeType: 'topic' });
+    if (snap?.sessionId) scopeRefs.push({ scopeId: snap.sessionId, scopeType: 'session' });
+    if (snap?.workspaceId) scopeRefs.push({ scopeId: snap.workspaceId, scopeType: 'workspace' });
+    if (snap?.targetId && snap.targetType && isHoldTargetType(snap.targetType)) {
+      scopeRefs.push({
+        scopeId: snap.targetId,
+        scopeType: snap.targetType as PlatformAuditLegalHoldItem['scopeType'],
+      });
+    }
+  }
+  const index = await loadHoldIndexForScopes(tx, scopeRefs);
   const held = new Set<string>();
   for (const row of rows) {
     if (exportArtifactHeld(index, row.kind, row.filterSnapshot)) {
@@ -973,6 +1074,8 @@ const deleteAuthorizedExportArtifacts = async (params: {
   afterArtifactAuthorize?: ProcessNextAuditRetentionOptions['afterArtifactAuthorize'];
   ids: string[];
   repo: ScopeProcessorParams['repo'];
+  /** When set, attribute each successful delete / hold-skip onto the run in the same TX (F7). */
+  runId?: string;
   storage: AuditExportArtifactStorage;
 }): Promise<{ deleted: number; skippedHold: number }> => {
   if (params.ids.length === 0) return { deleted: 0, skippedHold: 0 };
@@ -994,6 +1097,22 @@ const deleteAuthorizedExportArtifacts = async (params: {
         await params.storage.deleteObject(storageKey);
       },
       ids: params.ids,
+      // Attribute accounting with outbox complete so a slow delete that outlives
+      // the job lease still records exportArtifactsDeleted (F7).
+      onObjectDeleted: params.runId
+        ? async (tx, _id) => {
+            await new PlatformAuditRetentionRunModel(tx).incrementCounts(params.runId!, {
+              exportArtifactsDeleted: 1,
+            });
+          }
+        : undefined,
+      onObjectDeferredHold: params.runId
+        ? async (tx, _id) => {
+            await new PlatformAuditRetentionRunModel(tx).incrementCounts(params.runId!, {
+              skippedLegalHold: 1,
+            });
+          }
+        : undefined,
       resolveHeldIds: resolveExportArtifactHeldIds,
     });
   } catch {
@@ -1025,6 +1144,12 @@ const processExportArtifacts = async (
     if (!params.storage) {
       throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
     }
+    // F6: claimNext may dead-letter a final-attempt export without worker cleanup.
+    // Promote running+dead-job rows into failed + purge outbox before draining.
+    await params.repo.reconcileDeadLetterExportArtifacts({
+      buildStorageKey: buildAuditExportStorageKey,
+      limit: AUDIT_RETENTION_BATCH_LIMIT,
+    });
     for (;;) {
       await params.renewLease();
       const pending = await params.repo.listPendingExportArtifactPurges({
@@ -1036,6 +1161,7 @@ const processExportArtifacts = async (
         afterArtifactAuthorize: params.afterArtifactAuthorize,
         ids: pending.map((p) => p.id),
         repo: params.repo,
+        // No runId — recovery drains are not attributed to this run.
         storage: params.storage,
       });
       // Integrity recovery only — skip count merge for foreign outboxes.
@@ -1046,7 +1172,6 @@ const processExportArtifacts = async (
 
   for (;;) {
     await params.renewLease();
-    const holds = await loadHoldIndex(params.db);
     const page = await params.repo.listExportArtifactCandidates({
       cursor: params.getKeyset(),
       cutoffAt: params.cutoffAt,
@@ -1054,6 +1179,27 @@ const processExportArtifacts = async (
     });
 
     if (page.items.length === 0) break;
+
+    // Targeted hold scopes from frozen filter snapshots (F11).
+    const scopeRefs: Array<{
+      scopeId: string | null;
+      scopeType: PlatformAuditLegalHoldItem['scopeType'];
+    }> = [];
+    for (const art of page.items) {
+      const snap = art.filterSnapshot;
+      if (snap?.userId) scopeRefs.push({ scopeId: snap.userId, scopeType: 'user' });
+      if (snap?.actorUserId) scopeRefs.push({ scopeId: snap.actorUserId, scopeType: 'user' });
+      if (snap?.topicId) scopeRefs.push({ scopeId: snap.topicId, scopeType: 'topic' });
+      if (snap?.sessionId) scopeRefs.push({ scopeId: snap.sessionId, scopeType: 'session' });
+      if (snap?.workspaceId) scopeRefs.push({ scopeId: snap.workspaceId, scopeType: 'workspace' });
+      if (snap?.targetId && snap.targetType && isHoldTargetType(snap.targetType)) {
+        scopeRefs.push({
+          scopeId: snap.targetId,
+          scopeType: snap.targetType as PlatformAuditLegalHoldItem['scopeType'],
+        });
+      }
+    }
+    const holds = await loadHoldIndexForScopes(params.db, scopeRefs);
 
     const delta: PlatformAuditRetentionCounts = {
       exportArtifactsScanned: page.items.length,
@@ -1090,7 +1236,7 @@ const processExportArtifacts = async (
         // Pre-filter free → claim skipped: count only those still held (not
         // concurrent eligibility races).
         const claimedSet = new Set(claimedIds);
-        const holdsNow = await loadHoldIndex(params.db);
+        const holdsNow = await loadHoldIndexForScopes(params.db, scopeRefs);
         for (const id of freeIds) {
           if (claimedSet.has(id)) continue;
           const art = page.items.find((r) => r.id === id);
@@ -1107,8 +1253,9 @@ const processExportArtifacts = async (
       }
     }
 
-    // Durable checkpoint BEFORE object destruction (counts + keyset cursor).
-    // Claimed rows already have a purge outbox; object delete follows.
+    // Durable checkpoint BEFORE object destruction: scanned / pre-filter hold
+    // skips + keyset cursor. Delete attribution lands atomically with outbox
+    // complete (F7) so a slow storage call that outlives the lease still counts.
     counts = await params.checkpointBatch(mergeCounts(counts, delta), nextKeyset);
     params.setKeyset(nextKeyset);
 
@@ -1117,27 +1264,42 @@ const processExportArtifacts = async (
         throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
       }
 
-      // Phase 2–3: hold recheck + object delete + complete outbox under one lock.
-      const result = await deleteAuthorizedExportArtifacts({
-        afterArtifactAuthorize: params.afterArtifactAuthorize,
-        ids: claimedIds,
-        repo: params.repo,
-        storage: params.storage,
-      });
+      // Phase 2–3: one object at a time with lease renew. Counts for deleted /
+      // deferred-hold are written inside the purge TX via runId (not a second
+      // job checkpoint that can fail after the object is already gone).
+      for (const id of claimedIds) {
+        await params.renewLease();
+        const result = await deleteAuthorizedExportArtifacts({
+          afterArtifactAuthorize: params.afterArtifactAuthorize,
+          ids: [id],
+          repo: params.repo,
+          runId: params.runId,
+          storage: params.storage,
+        });
 
-      // Persist deletion accounting after successful object work (cursor already advanced).
-      if (result.deleted > 0 || result.skippedHold > 0) {
-        counts = await params.checkpointBatch(
-          mergeCounts(counts, {
+        // Mirror in-memory counts for subsequent local merges / complete().
+        // Domain attribution already committed with outbox complete (F7).
+        if (result.deleted > 0 || result.skippedHold > 0) {
+          counts = mergeCounts(counts, {
             exportArtifactsDeleted: result.deleted,
             skippedLegalHold: result.skippedHold,
-          }),
-          nextKeyset,
-        );
+          });
+        }
+        // Heartbeat after each object; LeaseLost is safe — counts already durable.
+        await params.renewLease();
       }
     }
 
     if (!page.nextCursor) break;
+  }
+
+  // Re-read domain counts so complete() reflects atomic F7 increments even if
+  // in-memory state diverged after a partial lease-loss recovery path.
+  if (params.runId) {
+    const latest = await new PlatformAuditRetentionRunModel(params.db).get(params.runId);
+    if (latest?.counts) {
+      counts = { ...latest.counts };
+    }
   }
 
   return counts;

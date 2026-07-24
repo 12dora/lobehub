@@ -1,5 +1,8 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
+
+import { platformSkillVersions } from '@/database/schemas/platform';
 
 import { loadCurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
 import {
@@ -123,6 +126,36 @@ describe('SkillCatalogReadService projection / merge', () => {
           ],
         }),
     ).toThrow();
+  });
+
+  it('skips a corrupt published skill without taking down the rest of the catalog', async () => {
+    await publish({ skillKey: 'healthy.skill', version: '1.0.0' });
+    const broken = await publish({ skillKey: 'broken.skill', version: '1.0.0' });
+    // Stale sizeBytes after content normalization historically made serverResolvedSkillSchema
+    // throw mid-projection and disable the entire managed catalog.
+    await db
+      .update(platformSkillVersions)
+      .set({
+        resources: [
+          {
+            checksum: 'a'.repeat(64),
+            content: 'B\n',
+            mediaType: 'text/plain',
+            path: 'b.txt',
+            sizeBytes: 3,
+          },
+        ],
+      })
+      .where(sql`${platformSkillVersions.id} = ${broken.version.id}`);
+    invalidatePublishedSkillCatalogReadCache();
+    const catalog = await new SkillCatalogReadService(db).getPublishedCatalog();
+    expect(catalog.skills.map((skill) => skill.skillKey)).toEqual(['healthy.skill']);
+    await expect(
+      new SkillCatalogReadService(db).resolveForExecution('healthy.skill', '1.0.0'),
+    ).resolves.toMatchObject({ skillKey: 'healthy.skill' });
+    await expect(
+      new SkillCatalogReadService(db).resolveForExecution('broken.skill', '1.0.0'),
+    ).resolves.toBeUndefined();
   });
 
   it('rejects aggregate item growth only after the strict authority load completes', async () => {

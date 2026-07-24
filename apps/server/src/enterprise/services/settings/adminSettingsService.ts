@@ -424,6 +424,7 @@ export class AdminSettingsService {
         action: 'admin.settings.saveDraft',
         actorUserId: params.actorUserId,
         beforeDiff: null,
+        error,
         reason: params.reason,
       });
       throw error;
@@ -686,6 +687,7 @@ export class AdminSettingsService {
         action: 'admin.settings.publish',
         actorUserId: params.actorUserId,
         beforeDiff: { expectedRevision: params.expectedRevision },
+        error,
         reason: params.reason,
       });
       throw error;
@@ -728,10 +730,22 @@ export class AdminSettingsService {
           expectedRevision: params.expectedRevision,
           targetRevision: params.targetRevision,
         },
+        error,
         reason: params.reason,
       });
       throw error;
     }
+  };
+
+  /**
+   * Bounded, secret-safe failure category for operational diagnosis.
+   * Never includes raw exceptions, draft tokens, or setting values.
+   */
+  private publishFailureCategory = (error: unknown): string => {
+    if (error instanceof PlatformRevisionConflictError) return 'revision_conflict';
+    if (error instanceof SettingsDraftValidationError) return 'validation';
+    if (error instanceof SettingsDirtyDraftError) return 'dirty_draft';
+    return 'internal';
   };
 
   /**
@@ -742,13 +756,14 @@ export class AdminSettingsService {
     action: string;
     actorUserId: string;
     beforeDiff: Record<string, unknown> | null;
+    error?: unknown;
     reason: string;
   }): Promise<void> => {
     try {
       await this.auditAppend(this.db, {
         action: params.action,
         actorUserId: params.actorUserId,
-        afterDiff: null,
+        afterDiff: params.error ? { error: this.publishFailureCategory(params.error) } : null,
         beforeDiff: params.beforeDiff,
         reason: params.reason,
         result: 'failure',

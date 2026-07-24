@@ -37,8 +37,14 @@ const fakeDatabase = (result: unknown[] | Error) => {
   return { db, select: db.select as ReturnType<typeof vi.fn> };
 };
 
-const identityLoader = (identityRevision: string | null = CHECKSUM) =>
-  vi.fn(async () => ({ environmentShadowed: [], identityRevision, providers: [] }));
+/** Matches `loadPublishedIdentityTarget`: identityRevision is always a non-null checksum string. */
+const identityLoader = (identityRevision: string = CHECKSUM) =>
+  vi.fn(async () => ({
+    environmentShadowed: [] as { providerId: string; providerKey: string }[],
+    identityRevision,
+    // Empty providers is valid; never[] is assignable to the published-provider array type.
+    providers: [],
+  }));
 
 describe('PlatformDomainTargetResolver', () => {
   it('does zero database and identity work when every feature is disabled', async () => {
@@ -182,7 +188,8 @@ describe('PlatformDomainTargetResolver', () => {
 
   it('uses the OIDC published-target loader and permits the no-provider target', async () => {
     const { db, select } = fakeDatabase([]);
-    const loadIdentityTarget = identityLoader(null);
+    // Empty provider set still yields a non-null identityRevision (digest of []).
+    const loadIdentityTarget = identityLoader(CHECKSUM);
     const target = await new PlatformDomainTargetResolver(db, {
       env: ALL_FLAGS,
       loadIdentityTarget,
@@ -192,7 +199,7 @@ describe('PlatformDomainTargetResolver', () => {
       fallbackPolicy: 'lkg_then_break_glass',
       loadMode: 'restart_activated',
       status: 'available',
-      token: null,
+      token: { kind: 'immutable_id', value: CHECKSUM },
     });
     expect(loadIdentityTarget).toHaveBeenCalledOnce();
     expect(select).not.toHaveBeenCalled();

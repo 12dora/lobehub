@@ -531,6 +531,20 @@ export class SkillCatalogValidator {
           ),
         );
       }
+      // Independently verify size metadata against UTF-8 content so stale sizeBytes
+      // (e.g. pre-canonicalization) cannot pass publication and break catalog projection.
+      if (resource.content !== undefined) {
+        const sizeBytes = new TextEncoder().encode(resource.content).byteLength;
+        if (sizeBytes !== resource.sizeBytes) {
+          this.pushIssue(
+            issue(
+              'manifest_invalid',
+              ['resources', index, 'sizeBytes'],
+              'Resource sizeBytes must match UTF-8 content bytes',
+            ),
+          );
+        }
+      }
     }
 
     if (containsEnterpriseSecretMaterial(input.content)) {

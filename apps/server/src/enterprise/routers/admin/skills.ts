@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
@@ -42,6 +44,14 @@ import {
   createSkillService,
   mapSkillServiceError,
 } from './skillsSupport';
+
+/**
+ * Archive of never-published shells keeps revision 0 (authority-safe). Publish/rollback
+ * still require a positive revision via the shared publication schema.
+ */
+const adminSkillArchiveOutputSchema = adminSkillPublicationOutputSchema.extend({
+  revision: z.number().int().nonnegative(),
+});
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -122,7 +132,7 @@ export const adminSkillsRouter = router({
   archive: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SKILL_DELETE))
     .input(adminSkillArchiveInputSchema)
-    .output(adminSkillPublicationOutputSchema)
+    .output(adminSkillArchiveOutputSchema)
     .mutation(async ({ ctx, input }) => {
       assertSkillFeatureEnabled();
       await assertSkillDangerousReauth({

@@ -225,18 +225,11 @@ export class SkillCatalogReadService {
     const platformResolvedByKey = new Map<string, ResolvedSkill>();
     for (const item of platformItems) {
       if (builtins.has(item.skillKey) && !item.allowBuiltinOverride) continue;
-      platformSkills.push({
-        checksum: item.version.checksum,
-        description: item.description,
-        displayName: item.displayName,
-        distribution: item.distribution,
-        skillKey: item.skillKey,
-        source: item.source,
-        version: item.version.version,
-      });
-      platformResolvedByKey.set(
-        item.skillKey,
-        serverResolvedSkillSchema.parse({
+      // Per-item resilience: one corrupt published skill must not take down the entire
+      // managed catalog projection (availability DoS from stale sizeBytes/etc.).
+      let resolved: ResolvedSkill;
+      try {
+        resolved = serverResolvedSkillSchema.parse({
           allowBuiltinOverride: item.allowBuiltinOverride,
           checksum: item.version.checksum,
           content: item.version.content,
@@ -251,8 +244,20 @@ export class SkillCatalogReadService {
           source: item.source,
           version: item.version.version,
           versionId: item.version.id,
-        }),
-      );
+        });
+      } catch {
+        continue;
+      }
+      platformSkills.push({
+        checksum: item.version.checksum,
+        description: item.description,
+        displayName: item.displayName,
+        distribution: item.distribution,
+        skillKey: item.skillKey,
+        source: item.source,
+        version: item.version.version,
+      });
+      platformResolvedByKey.set(item.skillKey, resolved);
     }
 
     const merged = new Map<string, PublishedSkill>(builtins);

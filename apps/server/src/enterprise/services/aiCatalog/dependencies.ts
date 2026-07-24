@@ -10,21 +10,6 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { AiCatalogDependent } from './errors';
 
-const jsonContainsModelReference = (
-  value: unknown,
-  providerKey: string,
-  modelKey: string,
-): boolean => {
-  if (Array.isArray(value)) {
-    return value.some((item) => jsonContainsModelReference(item, providerKey, modelKey));
-  }
-  if (!isRecord(value)) return false;
-  if (value.provider === providerKey && value.model === modelKey) return true;
-  return Object.values(value).some((item) =>
-    jsonContainsModelReference(item, providerKey, modelKey),
-  );
-};
-
 const jsonContainsAnyModelReference = (
   value: unknown,
   providerKey: string,

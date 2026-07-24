@@ -8,11 +8,11 @@ import { DENIED_CONNECTOR_GOVERNANCE, type ResolvedConnectorGovernance } from '.
  * execution gate, shared OAuth identity substitution).
  *
  * Fail-closed on authorization-bearing fields: a governance read failure must
- * never restore per-user behavior while org policy may still deny tools or
- * mandate a shared OAuth identity. Prefer a process-local last-known-good
- * snapshot **only when its invalidation epoch is still current**; otherwise
- * return the deny-all policy shape that upstream consumers already enforce
- * (`active` + builtin APIs `disabled` + synthetic shared-auth owner).
+ * never restore a process-local last-known-good snapshot. LKG epochs are only
+ * invalidated best-effort; a same-epoch LKG can predate a committed restrictive
+ * publish whose invalidation was lost. Always return the deny-all shape that
+ * upstream consumers already enforce (`active` + builtin APIs `disabled` +
+ * synthetic shared-auth owner).
  */
 export const resolveConnectorGovernance = async (
   db: LobeChatDatabase,
@@ -20,8 +20,6 @@ export const resolveConnectorGovernance = async (
   try {
     return await governanceService.resolvePublishedConnectorGovernance(db);
   } catch {
-    const lastKnownGood = await governanceService.getLastKnownConnectorGovernanceIfCurrent(db);
-    if (lastKnownGood) return lastKnownGood;
     return DENIED_CONNECTOR_GOVERNANCE;
   }
 };

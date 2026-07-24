@@ -54,12 +54,4 @@ describe('platformRouter (read-only, flags default off)', () => {
       code: 'UNAUTHORIZED',
     });
   });
-
-  it('getAccessStatus grants authenticated users when platform admin is on', async () => {
-    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
-    const ctx = await createContextInner({ userId: 'platform-test-user' });
-    // getAccessStatus needs serverDB; without a real DB this would fail — keep flag-off
-    // public/snapshot coverage above and rely on accessStatus.test for DB-backed cases.
-    expect(typeof createCaller(ctx).getAccessStatus).toBe('function');
-  });
 });

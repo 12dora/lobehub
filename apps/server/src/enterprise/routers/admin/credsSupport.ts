@@ -11,6 +11,7 @@ import {
   PlatformGlobalCredentialNotFoundError,
   PlatformGlobalCredentialOauthUnsupportedError,
   PlatformGlobalCredentialValidationError,
+  PlatformRevisionConflictError,
 } from '../../services/platformGlobalCredentials/adminService';
 
 const FIXED_AUDIT_REASON = 'platform_global_credential_mutation';
@@ -31,6 +32,13 @@ export const mapCredsServiceError = (error: unknown): never => {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
       httpCode: 'NOT_FOUND',
+      message: error.message,
+    });
+  }
+  if (error instanceof PlatformRevisionConflictError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+      httpCode: 'CONFLICT',
       message: error.message,
     });
   }
@@ -87,5 +95,3 @@ export const assertDangerousReauth = async (params: {
     targetId: params.targetId,
     targetType: 'platform_global_credential',
   });
-
-export { FIXED_AUDIT_REASON };

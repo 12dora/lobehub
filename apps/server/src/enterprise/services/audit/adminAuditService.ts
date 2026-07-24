@@ -806,6 +806,7 @@ export class AdminAuditService {
     });
     try {
       const policy = await this.policyModel.getOrCreate();
+      assertConversationAccessEnabled(policy.contentAccessMode);
       const window = resolveAuditTimeWindow({
         from: params.input.from,
         maxListWindowDays: policy.maxListWindowDays,

@@ -298,8 +298,9 @@ export class AdminBrandingService {
     actorUserId: string,
     input: { reason: string; requestId: string },
   ): Promise<void> => {
-    await this.operations.fail(claim, operationErrorCategory(error));
-    await this.appendFailureAudit(action, actorUserId, input);
+    const errorCategory = operationErrorCategory(error);
+    await this.operations.fail(claim, errorCategory);
+    await this.appendFailureAudit(action, actorUserId, input, errorCategory);
   };
 
   private observePublish = (startedAt: number, error?: unknown): void => {
@@ -544,7 +545,7 @@ export class AdminBrandingService {
         await this.recordOperationFailure(
           claim,
           error,
-          'platform.branding.publish',
+          'admin.branding.publish',
           actorUserId,
           input,
         );
@@ -691,12 +692,14 @@ export class AdminBrandingService {
     action: string,
     actorUserId: string,
     input: { reason: string; requestId: string },
+    errorCategory?: PlatformBrandingOperationErrorCategory,
   ): Promise<void> => {
     try {
       await new PlatformAuditService(this.db).append({
         action,
         actorUserId,
-        afterDiff: null,
+        // Bounded secret-safe category only — never raw exceptions or draft values.
+        afterDiff: errorCategory ? { error: errorCategory } : null,
         beforeDiff: null,
         reason: input.reason,
         requestId: input.requestId,

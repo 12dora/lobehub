@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -7,9 +8,6 @@ import {
   platformAuditLogs,
   platformResourceRevisions,
   platformSettingPolicies,
-  platformSettingsBundle,
-  userSettingOverrideRevisions,
-  userSettingOverrides,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
@@ -35,13 +33,20 @@ const draft = (fontSize: number) => ({
   },
 });
 
+/** TRUNCATE bypasses append-only audit/revision immutability triggers (migration 0145). */
 const clearState = async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(userSettingOverrides);
-  await serverDB.delete(userSettingOverrideRevisions);
-  await serverDB.delete(platformSettingPolicies);
-  await serverDB.delete(platformSettingsBundle);
+  await serverDB.execute(
+    sql.raw(`
+      TRUNCATE TABLE
+        platform_audit_logs,
+        platform_resource_revisions,
+        user_setting_overrides,
+        user_setting_override_revisions,
+        platform_setting_policies,
+        platform_settings_bundle
+      CASCADE
+    `),
+  );
 };
 
 beforeEach(clearState);
@@ -91,7 +96,7 @@ describe('R5 settings draft CAS at publish / rollback lock', () => {
     expect(policies).toEqual([]);
     expect(invalidation.events).toEqual([]);
     expect(audits.some((row) => row.action === 'platform.settings.publish')).toBe(false);
-    expect(failure?.afterDiff).toBeNull();
+    expect(failure?.afterDiff).toEqual({ error: 'revision_conflict' });
     expect(JSON.stringify(failure)).not.toContain(confirmation.draftToken);
   });
 
@@ -316,7 +321,7 @@ describe('R5 settings draft CAS at publish / rollback lock', () => {
     expect(policy?.value).toBe(18);
     expect(invalidation.events).toEqual([]);
     expect(audits.some((row) => row.action === 'platform.settings.rollback')).toBe(false);
-    expect(failure?.afterDiff).toBeNull();
+    expect(failure?.afterDiff).toEqual({ error: 'revision_conflict' });
     expect(JSON.stringify(failure)).not.toContain(confirmation.draftToken);
   });
 });

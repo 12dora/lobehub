@@ -605,10 +605,10 @@ const parseFromUrl = async (rawUrl: string): Promise<AdminSkillParseImportSource
   // Deadline covers headers AND body consumption — never clear before the body is fully read.
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  // Pre-response path heuristics: prefer ZIP cap for package-looking URLs; text cap otherwise.
-  // Content-type-only ZIPs still get the ZIP post-hoc limit after headers.
-  const urlLooksLikeZip = url.pathname.endsWith('.zip') || url.pathname.includes('/download');
-  const fetchMaxBytes = urlLooksLikeZip ? MAX_IMPORT_ZIP_BYTES : MAX_CONTENT_BYTES;
+  // Fetch with the ZIP ceiling so extensionless / signed URLs serving application/zip
+  // are not truncated at the 1 MiB markdown cap before Content-Type is known. Text
+  // responses are still enforced at MAX_CONTENT_BYTES after classification.
+  const fetchMaxBytes = MAX_IMPORT_ZIP_BYTES;
   try {
     let response: Response;
     try {

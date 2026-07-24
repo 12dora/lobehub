@@ -20,7 +20,7 @@ import {
   PLATFORM_SECRET_REWRAP_JOB_TYPE,
 } from './contracts';
 import { PlatformSecretRewrapCoordinator } from './coordinator';
-import { PlatformSecretRewrapConflictError } from './errors';
+import { PlatformSecretRewrapConflictError, PlatformSecretRewrapProviderError } from './errors';
 
 const db: LobeChatDatabase = await getTestDB();
 const namespace = `secret-rotation-admin-${randomUUID()}`;
@@ -139,6 +139,40 @@ describe('PlatformSecretRotationAdminService', () => {
     const next = await start(randomUUID());
     expect(next.targetKeyId).toBe('vault:admin-b');
     expect(next.jobId).not.toBe(first.jobId);
+  });
+
+  it('allows get, list, and cancel when Vault configuration is unavailable', async () => {
+    const job = await start();
+    const vaultDown = () => {
+      throw new PlatformSecretRewrapProviderError('vault_unavailable');
+    };
+    // Default db-only factory; crypto factory always fails.
+    const recovery = new PlatformSecretRotationAdminService(db, vaultDown);
+
+    await expect(recovery.get(job.jobId)).resolves.toMatchObject({
+      jobId: job.jobId,
+      status: 'pending',
+    });
+    const listed = await recovery.list({ limit: 10 });
+    expect(listed.items.some((item) => item.jobId === job.jobId)).toBe(true);
+
+    await expect(
+      recovery.cancel(actorUserId, {
+        expectedRevision: job.revision,
+        expectedStatus: 'pending',
+        jobId: job.jobId,
+        reason: 'cancel during vault outage',
+        requestId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ status: 'cancelled' });
+
+    await expect(
+      recovery.start(actorUserId, {
+        reason: 'must still require vault',
+        requestId: randomUUID(),
+        targetKeyId: provider.activeKeyId,
+      }),
+    ).rejects.toBeInstanceOf(PlatformSecretRewrapProviderError);
   });
 
   it('protects pending, reserved, and running rows while terminal rows release retry capacity', async () => {

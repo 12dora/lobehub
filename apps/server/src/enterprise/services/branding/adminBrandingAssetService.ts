@@ -365,11 +365,10 @@ export class AdminBrandingAssetService {
       if (reservation.status === 'wait') throw new BrandingAssetUploadInProgressError();
     }
 
-    // Run cleanup only after the request lane has been accepted. A conflicting
-    // idempotency replay must have no database or storage side effects.
-    await this.sweep({ limit: DEFAULT_SWEEP_LIMIT });
-
     try {
+      // Sweep only after the request lane is accepted, and inside the compensated
+      // try so a cleanup discovery failure releases the uploading reservation.
+      await this.sweep({ limit: DEFAULT_SWEEP_LIMIT });
       await this.storage.upload({ asset, objectKey: reservation.asset.objectKey });
       const ready = await this.db.transaction(async (tx) => {
         await this.acquireRequestLock(tx, actorUserId, input.requestId);

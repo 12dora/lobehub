@@ -631,4 +631,48 @@ describe('PlatformAgentAdminService', () => {
       warnings: ['ASSIGNMENT_DISABLED'],
     });
   });
+
+  it('returns MANDATORY_AGENT_CANNOT_BE_HIDDEN for mandatory assignment preview', async () => {
+    mocks.getIdentity.mockResolvedValue(identity());
+    mocks.countAssignmentTargets.mockResolvedValue(8);
+
+    await expect(
+      new PlatformAgentAdminService(db).previewAssignment({
+        agentId: 'agent-id',
+        assignment: {
+          enabled: true,
+          mode: 'mandatory',
+          pinnedVersionId: null,
+          targetId: '__global__',
+          targetType: 'global',
+          versionPolicy: 'latest_published',
+        },
+      }),
+    ).resolves.toEqual({
+      estimatedUsers: 8,
+      warnings: ['MANDATORY_AGENT_CANNOT_BE_HIDDEN'],
+    });
+  });
+
+  it('returns both warnings for a disabled mandatory assignment preview', async () => {
+    mocks.getIdentity.mockResolvedValue(identity());
+    mocks.countAssignmentTargets.mockResolvedValue(3);
+
+    await expect(
+      new PlatformAgentAdminService(db).previewAssignment({
+        agentId: 'agent-id',
+        assignment: {
+          enabled: false,
+          mode: 'mandatory',
+          pinnedVersionId: null,
+          targetId: '__global__',
+          targetType: 'global',
+          versionPolicy: 'latest_published',
+        },
+      }),
+    ).resolves.toEqual({
+      estimatedUsers: 3,
+      warnings: ['ASSIGNMENT_DISABLED', 'MANDATORY_AGENT_CANNOT_BE_HIDDEN'],
+    });
+  });
 });
