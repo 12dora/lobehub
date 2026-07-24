@@ -34,6 +34,41 @@ describe('mapEnterpriseError (structured)', () => {
     expect(mapped?.details?.max).toBe(100);
   });
 
+  it('maps skill_import_* details.reason to skillCatalog.import.error.* (not raw code)', () => {
+    const mapped = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+          details: { reason: 'skill_import_timeout' },
+          message: 'skill_import_timeout',
+        },
+      },
+      message: 'skill_import_timeout',
+    });
+    expect(mapped?.code).toBe(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    expect(mapped?.i18nKey).toBe('skillCatalog.import.error.skill_import_timeout');
+    expect(mapped?.details?.reason).toBe('skill_import_timeout');
+  });
+
+  it('maps free-text skill_import_* messages to skill import locale keys', () => {
+    const mapped = mapEnterpriseError('skill_import_zip_too_large');
+    expect(mapped?.code).toBe(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    expect(mapped?.i18nKey).toBe('skillCatalog.import.error.skill_import_zip_too_large');
+    expect(mapped?.details?.reason).toBe('skill_import_zip_too_large');
+  });
+
+  it('keeps PLATFORM_INVALID_INPUT generic when reason is not skill_import_*', () => {
+    const mapped = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+          details: { reason: 'email_taken' },
+        },
+      },
+    });
+    expect(mapped?.i18nKey).toBe('enterprise.error.PLATFORM_INVALID_INPUT');
+  });
+
   it('reads cause.data body', () => {
     const mapped = mapEnterpriseError({
       cause: {
