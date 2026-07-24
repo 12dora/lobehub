@@ -18,6 +18,7 @@ import {
   stashIdentityProviderGroupRoleMapping,
 } from '@/server/enterprise/services/identityProvider/groupRoleMappingRuntime';
 import { verifyPlatformOidcIdToken } from '@/server/enterprise/services/identityProvider/idTokenVerifier';
+import { resolveIdentityProviderOutboundMode } from '@/server/enterprise/services/identityProvider/outboundMode';
 import type { PublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
 import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/services/identityProvider/tokenExchange';
 
@@ -182,7 +183,7 @@ export const enforcePlatformOidcGroupRoleMappingForUserAccounts = async (input: 
 export const buildPlatformIdentityProvider = (
   provider: RuntimeIdentityProvider,
   appUrl: string,
-  outbound = new SafeOutboundHttpClient({ mode: 'public-only' }),
+  outbound = new SafeOutboundHttpClient({ mode: resolveIdentityProviderOutboundMode() }),
   readOAuthState: typeof getOAuthState = getOAuthState,
 ): GenericOAuthConfig => {
   if (provider.oidcMetadata.issuer !== provider.issuer) {
