@@ -1,1 +1,0 @@
-CREATE INDEX IF NOT EXISTS "platform_jobs_secret_rewrap_failure_parent_domain_row_idx" ON "platform_jobs" USING btree (("input"->>'parentJobId'),("input"->>'domain'),("input"->>'rowId')) WHERE "platform_jobs"."type" = 'platform.secret.rewrap.failure.v1' AND "platform_jobs"."status" = 'failed';

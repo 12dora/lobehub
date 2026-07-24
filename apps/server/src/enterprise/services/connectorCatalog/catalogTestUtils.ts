@@ -22,7 +22,7 @@ import type {
 
 export const cleanupM09ServiceData = async (db: LobeChatDatabase): Promise<void> => {
   // Test harness only — not used on production request paths.
-  // Connection-test columns come from migration 0153_round2_connector_test_state.
+  // Connection-test columns come from the squashed schema baseline (originally migration 0153).
   // Collect connector ids before child rows go away so revision cleanup stays scoped.
   const connectorRows = await db.select({ id: platformConnectors.id }).from(platformConnectors);
   const connectorIds = connectorRows.map((row) => row.id);

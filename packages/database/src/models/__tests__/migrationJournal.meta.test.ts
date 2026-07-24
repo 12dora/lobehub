@@ -33,14 +33,15 @@ describe('drizzle migration journal ↔ meta snapshots', () => {
     });
   });
 
-  it('0118 SQL only creates platform_easyauth_grant_snapshots objects', () => {
-    const sql = readFileSync(
-      join(migrationsDir, '0118_add_platform_easyauth_snapshots.sql'),
-      'utf8',
-    );
-    expect(sql).toMatch(/platform_easyauth_grant_snapshots/);
-    expect(sql.toLowerCase()).not.toMatch(/drop table/);
-    expect(sql.toLowerCase()).not.toMatch(/drop index "user_connectors/);
-    expect(sql.toLowerCase()).not.toMatch(/alter table "(?!platform_easyauth)/);
+  it('is a single squashed baseline migration', () => {
+    // The 0117-0155 history was squashed into one baseline (DB is disposable/recreatable).
+    expect(journal.entries).toHaveLength(1);
+    expect(journal.entries[0].tag).toBe('0000_squash_baseline');
+    const sql = readFileSync(join(migrationsDir, '0000_squash_baseline.sql'), 'utf8');
+    // Baseline creates the platform foundation and installs the immutability guards.
+    expect(sql).toMatch(/platform_audit_logs/);
+    expect(sql).toMatch(/prevent_platform_audit_log_mutation/);
+    // No CREATE INDEX CONCURRENTLY inside the single transactional baseline.
+    expect(sql).not.toMatch(/index\s+concurrently/i);
   });
 });
