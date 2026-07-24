@@ -68,6 +68,22 @@ export const adminSecretRotationRetryInputSchema = mutationIntentSchema
   .strict();
 export const adminSecretRotationRetryOutputSchema = adminSecretRotationJobSchema;
 
+/**
+ * Restart a terminal cancelled/dead job as a new generation.
+ * Distinct from failed-ledger retry: cancelled/dead jobs have no failure ledger.
+ * `requestId` is the client-supplied generation/idempotency identifier for this restart.
+ * Server coordinator implementation is a separate batch.
+ */
+export const adminSecretRotationRestartInputSchema = mutationIntentSchema
+  .extend({
+    expectedRevision: revisionSchema,
+    expectedStatus: z.enum(['cancelled', 'dead']),
+    jobId: platformSecretRewrapJobIdSchema,
+  })
+  .strict();
+export const adminSecretRotationRestartOutputSchema = adminSecretRotationJobSchema;
+
 export type AdminSecretRotationCancelInput = z.input<typeof adminSecretRotationCancelInputSchema>;
+export type AdminSecretRotationRestartInput = z.input<typeof adminSecretRotationRestartInputSchema>;
 export type AdminSecretRotationRetryInput = z.input<typeof adminSecretRotationRetryInputSchema>;
 export type AdminSecretRotationStartInput = z.input<typeof adminSecretRotationStartInputSchema>;

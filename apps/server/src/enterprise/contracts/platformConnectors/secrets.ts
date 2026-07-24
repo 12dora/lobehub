@@ -40,7 +40,7 @@ export interface TrustedConnectorSecretContext {
   readonly source: 'server-secret-store';
 }
 
-export const trustedSecretContexts = new WeakMap<
+const trustedSecretContexts = new WeakMap<
   TrustedConnectorSecretContext,
   {
     connectorId: string;
@@ -49,7 +49,7 @@ export const trustedSecretContexts = new WeakMap<
   }
 >();
 
-export const KNOWN_SECRET_STRUCTURE_KEYS = new Set([
+const KNOWN_SECRET_STRUCTURE_KEYS = new Set([
   'accesstoken',
   'apikey',
   'bearertoken',
@@ -61,11 +61,11 @@ export const KNOWN_SECRET_STRUCTURE_KEYS = new Set([
   'sessiontoken',
   'username',
 ]);
-export const DYNAMIC_SECRET_CONTAINER_KEYS = new Set(['customheaders', 'headers']);
-export const normalizeSecretStructureKey = (key: string): string =>
+const DYNAMIC_SECRET_CONTAINER_KEYS = new Set(['customheaders', 'headers']);
+const normalizeSecretStructureKey = (key: string): string =>
   key.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
 
-export const collectSecretLeafValues = (
+const collectSecretLeafValues = (
   value: unknown,
   output: Set<string>,
   dynamicKeys = false,
@@ -96,7 +96,7 @@ export const collectConnectorSecretLeaves = (...secretSources: unknown[]): Set<s
   return leaves;
 };
 
-export const collectSecretSlots = (sources: ConnectorSecretSlotSources) => {
+const collectSecretSlots = (sources: ConnectorSecretSlotSources) => {
   const oauthClientSecret = collectConnectorSecretLeaves(sources.oauthClientSecret);
   const sharedSecret = collectConnectorSecretLeaves(sources.sharedSecret);
   return connectorSecretSlotLeavesSchema.parse({
@@ -230,7 +230,7 @@ export const assertReplacementLeavesComplete = (
   }
 };
 
-export const isConfiguredSlotConsistent = (configured: boolean, leaves: string[]): boolean =>
+const isConfiguredSlotConsistent = (configured: boolean, leaves: string[]): boolean =>
   configured ? leaves.length > 0 : leaves.length === 0;
 
 export const assertConfiguredCurrentSecretsLoaded = (

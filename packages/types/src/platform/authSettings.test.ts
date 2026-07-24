@@ -70,4 +70,28 @@ describe('platformAuthSettingsSchema', () => {
     });
     expect(result.emailDomainAllowlist).toEqual(['*.example.com', 'acme.io']);
   });
+
+  it('rejects enabled allowlisting with an empty domain list (fail closed)', () => {
+    const result = platformAuthSettingsSchema.safeParse({
+      emailDomainAllowlist: [],
+      emailDomainAllowlistEnabled: true,
+      openRegistration: true,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(
+        result.error.issues.some((issue) => issue.message === 'EMAIL_DOMAIN_ALLOWLIST_REQUIRED'),
+      ).toBe(true);
+    }
+  });
+
+  it('accepts disabled allowlisting with an empty domain list', () => {
+    const result = platformAuthSettingsSchema.parse({
+      emailDomainAllowlist: [],
+      emailDomainAllowlistEnabled: false,
+      openRegistration: true,
+    });
+    expect(result.emailDomainAllowlistEnabled).toBe(false);
+    expect(result.emailDomainAllowlist).toEqual([]);
+  });
 });

@@ -40,7 +40,17 @@ export const platformAuthSettingsSchema = z
     emailDomainAllowlistEnabled: z.boolean(),
     openRegistration: z.boolean(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    // Fail closed: enabled allowlisting with an empty list would match every email.
+    if (value.emailDomainAllowlistEnabled && value.emailDomainAllowlist.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'EMAIL_DOMAIN_ALLOWLIST_REQUIRED',
+        path: ['emailDomainAllowlist'],
+      });
+    }
+  });
 
 export const DEFAULT_PLATFORM_AUTH_SETTINGS: PlatformAuthSettings = {
   emailDomainAllowlist: [],

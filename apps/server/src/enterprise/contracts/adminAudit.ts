@@ -28,6 +28,8 @@ export {
   ADMIN_AUDIT_Q_MAX_LENGTH,
   ADMIN_AUDIT_REASON_MAX_LENGTH,
   adminAuditCursorSchema,
+  adminAuditJobErrorCodeSchema,
+  adminAuditJobErrorSchema,
   dateInputSchema,
   platformAuditContentAccessModeSchema,
   platformAuditLegalHoldScopeTypeSchema,

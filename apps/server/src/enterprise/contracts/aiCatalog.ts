@@ -62,6 +62,48 @@ const validateNonSecretJson = (root: unknown, ctx: z.RefinementCtx): void => {
 
     const { value, path, depth } = frame;
 
+    // Accept only JSON values: null, string, boolean, finite number, array, plain object.
+    // Reject undefined, non-finite numbers, and non-plain objects before size/secret checks
+    // so JSONB persistence cannot reshape accepted input.
+    if (value === null || typeof value === 'boolean') {
+      continue;
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'non-finite number is not allowed in JSON',
+          path,
+        });
+      }
+      continue;
+    }
+
+    if (typeof value === 'string') {
+      if (containsSensitiveMaterial(value)) {
+        ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
+      }
+      if (isCredentialBearingUrl(value)) {
+        ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
+      }
+      continue;
+    }
+
+    if (typeof value === 'undefined') {
+      ctx.addIssue({ code: 'custom', message: 'undefined is not allowed in JSON', path });
+      continue;
+    }
+
+    if (typeof value !== 'object') {
+      ctx.addIssue({
+        code: 'custom',
+        message: `JSON value type '${typeof value}' is not allowed`,
+        path,
+      });
+      continue;
+    }
+
     if (Array.isArray(value)) {
       // Depth limit applies to nested containers, not primitive leaves under a max-depth object.
       if (depth > BOUNDED_JSON_MAX_DEPTH) {
@@ -78,15 +120,13 @@ const validateNonSecretJson = (root: unknown, ctx: z.RefinementCtx): void => {
       continue;
     }
 
-    if (!value || typeof value !== 'object') {
-      if (typeof value === 'string') {
-        if (containsSensitiveMaterial(value)) {
-          ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
-        }
-        if (isCredentialBearingUrl(value)) {
-          ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
-        }
-      }
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'non-plain object is not allowed in JSON',
+        path,
+      });
       continue;
     }
 
@@ -143,6 +183,45 @@ export const aiConnectionTestStateSchema = z
   })
   .strict();
 
+/** Hard bounds for credential / connector HTTP header maps. */
+export const BOUNDED_HEADER_MAP_MAX_ENTRIES = 50;
+export const BOUNDED_HEADER_NAME_MAX = 200;
+export const BOUNDED_HEADER_VALUE_MAX = 8192;
+
+// Intentional: reject ASCII control chars in HTTP header maps (JSON-value safety).
+// eslint-disable-next-line no-control-regex -- control-char class is the validation target
+const headerControlCharPattern = /[\u0000-\u001F\u007F]/;
+
+const boundedHeaderNameSchema = z
+  .string()
+  .min(1)
+  .max(BOUNDED_HEADER_NAME_MAX)
+  .refine(
+    (value) => !headerControlCharPattern.test(value),
+    'header name must not contain control characters',
+  );
+
+const boundedHeaderValueSchema = z
+  .string()
+  .min(1)
+  .max(BOUNDED_HEADER_VALUE_MAX)
+  .refine(
+    (value) => !headerControlCharPattern.test(value),
+    'header value must not contain control characters',
+  );
+
+/** Shared header-map schema: entry cap, bounded non-empty names/values, no control chars. */
+export const boundedHeaderMapSchema = z
+  .record(boundedHeaderNameSchema, boundedHeaderValueSchema)
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > BOUNDED_HEADER_MAP_MAX_ENTRIES) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `header map exceeds max entry count of ${BOUNDED_HEADER_MAP_MAX_ENTRIES}`,
+      });
+    }
+  });
+
 const aiStructuredCredentialSchema = z
   .object({
     accessKeyId: z.string().min(1).max(32_768).optional(),
@@ -153,7 +232,7 @@ const aiStructuredCredentialSchema = z
     baseURLOrAccountID: z.string().min(1).max(4000).optional(),
     bearerToken: z.string().min(1).max(32_768).optional(),
     bearerTokenExpiresAt: z.string().min(1).max(200).optional(),
-    customHeaders: z.record(z.string(), z.string()).optional(),
+    customHeaders: boundedHeaderMapSchema.optional(),
     oauthAccessToken: z.string().min(1).max(32_768).optional(),
     password: z.string().min(1).max(32_768).optional(),
     region: z.string().min(1).max(200).optional(),
@@ -185,10 +264,10 @@ export const aiSecretMutationSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('clear') }).strict(),
 ]);
 
+/** Client-facing secret presence only — fingerprint stays server-internal (never projected). */
 export const aiSecretStateSchema = z
   .object({
     configured: z.boolean(),
-    fingerprint: z.string().min(1).nullable(),
     updatedAt: z.date().nullable(),
   })
   .strict();
