@@ -174,6 +174,8 @@ const LivePage = memo(() => {
   const prevHeadIdsRef = useRef<Set<string>>(new Set());
 
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
+  const [topicPageError, setTopicPageError] = useState<string | null>(null);
+  const [messagePageError, setMessagePageError] = useState<string | null>(null);
   const topicsValidatingRef = useRef(false);
   const messagesValidatingRef = useRef(false);
 
@@ -309,25 +311,53 @@ const LivePage = memo(() => {
     resetMessagePagination,
   ]);
 
-  // Update last-refreshed on every poll completion (validating edge), not only data ref change.
+  // Update last-refreshed only when every active feed finished successfully (F9).
+  // A successful topics poll must not advance the timestamp while messages failed.
   useEffect(() => {
-    if (topicsValidatingRef.current && !topics.isValidating) {
-      setLastRefreshedAt(new Date());
-    }
+    const topicsWasValidating = topicsValidatingRef.current;
+    const messagesWasValidating = messagesValidatingRef.current;
     topicsValidatingRef.current = Boolean(topics.isValidating);
-  }, [topics.isValidating]);
+    messagesValidatingRef.current = Boolean(messagesLive.isValidating);
 
-  useEffect(() => {
-    if (messagesValidatingRef.current && !messagesLive.isValidating) {
+    const topicsJustSettled = topicsWasValidating && !topics.isValidating;
+    const messagesJustSettled = messagesWasValidating && !messagesLive.isValidating;
+    if (!topicsJustSettled && !messagesJustSettled) return;
+
+    // Wait until all active feeds are idle.
+    if (topics.isValidating || messagesLive.isValidating) return;
+
+    // Topics feed is active only with a selected user; messages only with topic.
+    const topicsOk = !userId || (!topics.error && topics.data !== undefined);
+    const messagesOk =
+      !userId || !topicId || (!messagesLive.error && messagesLive.data !== undefined);
+
+    if (topicsOk && messagesOk) {
       setLastRefreshedAt(new Date());
     }
-    messagesValidatingRef.current = Boolean(messagesLive.isValidating);
-  }, [messagesLive.isValidating]);
+  }, [
+    messagesLive.data,
+    messagesLive.error,
+    messagesLive.isValidating,
+    topicId,
+    topics.data,
+    topics.error,
+    topics.isValidating,
+    userId,
+  ]);
 
   // Only conversation-domain FORBIDDEN means policy disabled (not policy.get failures).
   const isForbidden = useMemo(() => {
     return [topics.error, messagesLive.error, topicDetail.error].some(isForbiddenError);
   }, [messagesLive.error, topicDetail.error, topics.error]);
+
+  const feedError = useMemo(() => {
+    if (isForbidden) return null;
+    const err = topics.error ?? messagesLive.error ?? topicDetail.error;
+    if (!err) return null;
+    return t('audit.live.errors.loadFailed', {
+      defaultValue: 'Failed to refresh the live feed. Retry or check connectivity.',
+    });
+  }, [isForbidden, messagesLive.error, t, topicDetail.error, topics.error]);
 
   // Sync topic next cursor from head when no older pages accumulated.
   useEffect(() => {
@@ -371,6 +401,7 @@ const LivePage = memo(() => {
     const next = topicNextCursor;
     if (!next || !userId || loadingMoreTopics) return;
     setLoadingMoreTopics(true);
+    setTopicPageError(null);
     try {
       const page = await adminAuditService.listConversations({
         cursor: next,
@@ -379,10 +410,16 @@ const LivePage = memo(() => {
       });
       setTopicOlderPages((p) => [...p, page.items]);
       setTopicNextCursor(page.nextCursor);
+    } catch {
+      setTopicPageError(
+        t('audit.live.errors.loadMoreTopics', {
+          defaultValue: 'Failed to load more topics. Try again.',
+        }),
+      );
     } finally {
       setLoadingMoreTopics(false);
     }
-  }, [loadingMoreTopics, topicNextCursor, userId]);
+  }, [loadingMoreTopics, t, topicNextCursor, userId]);
 
   const loadOlderMessages = useCallback(async () => {
     const next = olderNextCursor;
@@ -390,6 +427,7 @@ const LivePage = memo(() => {
     if (!next || !userId || !topicId || loadingOlder || !canConversationRead || bodyHidden) return;
     const epoch = accessEpochRef.current;
     setLoadingOlder(true);
+    setMessagePageError(null);
     try {
       const page = await adminAuditService.listConversationMessages({
         cursor: next,
@@ -410,6 +448,12 @@ const LivePage = memo(() => {
       }
       setOlderPages((p) => [...p, page.items]);
       setOlderNextCursor(page.nextCursor);
+    } catch {
+      setMessagePageError(
+        t('audit.live.errors.loadMoreMessages', {
+          defaultValue: 'Failed to load older messages. Try again.',
+        }),
+      );
     } finally {
       setLoadingOlder(false);
     }
@@ -419,6 +463,7 @@ const LivePage = memo(() => {
     includeBody,
     loadingOlder,
     olderNextCursor,
+    t,
     topicId,
     userId,
   ]);
@@ -491,9 +536,19 @@ const LivePage = memo(() => {
               size="small"
               type="default"
               onClick={() => {
-                void topics.mutate();
-                void messagesLive.mutate();
-                setLastRefreshedAt(new Date());
+                void (async () => {
+                  try {
+                    // All active feeds must succeed before advancing the shared timestamp (F9).
+                    await Promise.all([
+                      topics.mutate(),
+                      messagesLive.mutate(),
+                      topicDetail.mutate(),
+                    ]);
+                    setLastRefreshedAt(new Date());
+                  } catch {
+                    // SWR error state surfaces via feedError; do not advance refresh time.
+                  }
+                })();
               }}
             >
               {t('audit.live.filters.refreshNow')}
@@ -502,6 +557,27 @@ const LivePage = memo(() => {
         </div>
       }
     >
+      {feedError ? (
+        <div className={styles.gapBanner} role="alert">
+          <Text>{feedError}</Text>
+          <Button
+            size="small"
+            type="primary"
+            onClick={() => {
+              void (async () => {
+                try {
+                  await Promise.all([topics.mutate(), messagesLive.mutate(), topicDetail.mutate()]);
+                  setLastRefreshedAt(new Date());
+                } catch {
+                  // Leave lastRefreshedAt unchanged; feedError stays until success.
+                }
+              })();
+            }}
+          >
+            {t('audit.live.errors.retry', { defaultValue: 'Retry' })}
+          </Button>
+        </div>
+      ) : null}
       {messagesAccessDenied ? (
         <div className={styles.emptyGuide} role="status">
           <Text type="secondary">{t('audit.live.empty.noConversationPermission')}</Text>
@@ -521,8 +597,24 @@ const LivePage = memo(() => {
               onLoadMore={() => void loadMoreTopics()}
               onSelect={setTopicId}
             />
+            {topicPageError ? (
+              <div className={styles.gapBanner} role="alert">
+                <Text>{topicPageError}</Text>
+                <Button size="small" type="primary" onClick={() => void loadMoreTopics()}>
+                  {t('audit.live.errors.retry', { defaultValue: 'Retry' })}
+                </Button>
+              </div>
+            ) : null}
           </div>
           <div className={styles.right}>
+            {messagePageError ? (
+              <div className={styles.gapBanner} role="alert">
+                <Text>{messagePageError}</Text>
+                <Button size="small" type="primary" onClick={() => void loadOlderMessages()}>
+                  {t('audit.live.errors.retry', { defaultValue: 'Retry' })}
+                </Button>
+              </div>
+            ) : null}
             {messageGap ? (
               <div className={styles.gapBanner} role="status">
                 <Text>{t('audit.live.messages.gapWarning')}</Text>

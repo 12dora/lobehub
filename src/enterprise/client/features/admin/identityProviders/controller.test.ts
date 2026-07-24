@@ -8,12 +8,15 @@ import {
   createIdentityProviderDraftFromTemplate,
   IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
   IdentityProviderTestPopupBlockedError,
+  isIdentityProviderDeletable,
+  isIdentityProviderDisableable,
   isIdentityProviderSetupGuidanceError,
   isIdentityProviderTestTerminal,
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRestartPhase,
   resolveIdentityProviderRevisionRefresh,
+  resolvePublishedHistorySignal,
   toIdentityProviderStatusBadge,
 } from './controller';
 
@@ -77,6 +80,34 @@ describe('identity provider editor controller', () => {
     expect(toIdentityProviderStatusBadge('disabled')).toBe('disabled');
     expect(toIdentityProviderStatusBadge('archived')).toBe('archived');
     expect(toIdentityProviderStatusBadge('weird')).toBe('unknown');
+  });
+
+  it('treats missing published-history as unknown (never no-history)', () => {
+    expect(resolvePublishedHistorySignal({}, 'idp-1')).toBe('unknown');
+    expect(resolvePublishedHistorySignal({ 'idp-1': 'has-history' }, 'idp-1')).toBe('has-history');
+    expect(resolvePublishedHistorySignal({ 'idp-1': 'no-history' }, 'idp-1')).toBe('no-history');
+  });
+
+  it('fail-safes Disable on unknown history and withholds Delete until confirmed empty', () => {
+    const draft = { status: 'draft' };
+    // publish → edit/clear leaves head as draft; prior revision may still be live.
+    expect(isIdentityProviderDisableable(draft, 'has-history')).toBe(true);
+    expect(isIdentityProviderDeletable(draft, 'has-history')).toBe(false);
+
+    // Never-published draft: Delete only.
+    expect(isIdentityProviderDisableable(draft, 'no-history')).toBe(false);
+    expect(isIdentityProviderDeletable(draft, 'no-history')).toBe(true);
+
+    // Lookup loading/failure must not hide revocation or offer backend-rejected Delete.
+    expect(isIdentityProviderDisableable(draft, 'unknown')).toBe(true);
+    expect(isIdentityProviderDeletable(draft, 'unknown')).toBe(false);
+
+    // Live statuses always disableable regardless of history map.
+    for (const status of ['active', 'pending_restart', 'published', 'error'] as const) {
+      expect(isIdentityProviderDisableable({ status }, 'no-history')).toBe(true);
+      expect(isIdentityProviderDeletable({ status }, 'no-history')).toBe(false);
+    }
+    expect(isIdentityProviderDisableable({ status: 'disabled' }, 'has-history')).toBe(false);
   });
 
   it('seeds create drafts from Authentik and generic OIDC templates', () => {

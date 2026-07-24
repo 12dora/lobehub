@@ -215,7 +215,30 @@ describe('useAdminSystemJobMutations refresh lock', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
-  it('locks a committed row until a matching refreshed CAS snapshot arrives', async () => {
+  it('succeeds when the mutation response is authoritative even if list pages omit the job', async () => {
+    const original = job();
+    const committed = job({
+      canCancel: false,
+      finishedAt: new Date('2026-07-20T00:00:03.000Z'),
+      revision: 2,
+      status: 'cancelled',
+    });
+    // Pagination shift: cancelled job no longer on loaded page one.
+    const onRefresh = vi
+      .fn<() => Promise<AdminSystemJobs[] | undefined>>()
+      .mockResolvedValue([page([job({ jobId: 'pjob_0000000000000099' })])]);
+    const client = service({ cancelJob: vi.fn().mockResolvedValue(committed) });
+    const { result } = renderHook(() =>
+      useAdminSystemJobMutations({ authMethod: null, onRefresh, service: client }),
+    );
+
+    await act(async () => {
+      expect(await result.current.cancel(original, 'planned cancellation')).toBe('succeeded');
+    });
+    expect(result.current.refreshPendingJobIds).toEqual([]);
+  });
+
+  it('locks a committed row when a loaded page still shows a stale CAS snapshot', async () => {
     const original = job();
     const committed = job({
       canCancel: false,

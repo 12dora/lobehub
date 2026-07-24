@@ -69,7 +69,8 @@ const SidebarLayoutControl = memo<SidebarLayoutControlProps>(({ canUpdate = fals
   const controlsDisabled = busy || !canUpdate;
 
   const persist = async (next: PlatformSidebarLayout) => {
-    if (!canUpdate) return;
+    // Direct-save: no expectedRevision — sidebar layout table has no CAS revision yet.
+    if (!canUpdate || !data) return;
     setSaving(true);
     try {
       const saved = await adminSidebarLayoutService.update(next);

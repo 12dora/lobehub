@@ -39,7 +39,7 @@ const snapshot = {
     models: [],
     providerKey: 'provider',
     revision: 3,
-    secret: { configured: true, fingerprint: 'safe-metadata', updatedAt: null },
+    secret: { configured: true, updatedAt: null },
     settings: {},
     sort: 0,
     source: 'custom',

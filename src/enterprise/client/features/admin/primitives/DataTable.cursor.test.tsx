@@ -96,4 +96,38 @@ describe('DataTable cursor pagination', () => {
     fireEvent.click(previous);
     expect(onPrevious).toHaveBeenCalledTimes(1);
   });
+
+  it('does not activate the row when a nested button is clicked or keyboard-activated', () => {
+    const onRowActivate = vi.fn();
+    const onNested = vi.fn();
+
+    render(
+      <DataTable<Row>
+        dataSource={[{ id: '1', name: 'A' }]}
+        pagination={false}
+        rowKey="id"
+        columns={[
+          {
+            dataIndex: 'name',
+            key: 'name',
+            title: 'Name',
+            render: () => (
+              <button type="button" onClick={onNested}>
+                nested-action
+              </button>
+            ),
+          },
+        ]}
+        onRowActivate={onRowActivate}
+      />,
+    );
+
+    const nested = screen.getByRole('button', { name: 'nested-action' });
+    fireEvent.click(nested);
+    expect(onNested).toHaveBeenCalledTimes(1);
+    expect(onRowActivate).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(nested, { key: 'Enter' });
+    expect(onRowActivate).not.toHaveBeenCalled();
+  });
 });

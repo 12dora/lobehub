@@ -278,6 +278,34 @@ describe('AdminAiProviderService adapter', () => {
     expect(mocks.applyImmediate).toHaveBeenCalled();
   });
 
+  it('getAiProviderById falls back to synthetic built-in only for PLATFORM_NOT_FOUND', async () => {
+    mocks.get.mockRejectedValueOnce({
+      data: { errorData: { code: 'PLATFORM_NOT_FOUND' } },
+    });
+    const synthetic = await service.getAiProviderById('openai');
+    expect(synthetic?.id).toBe('openai');
+    expect(synthetic?.enabled).toBe(false);
+  });
+
+  it('getAiProviderById rethrows non-not-found failures', async () => {
+    mocks.get.mockRejectedValueOnce({
+      data: { errorData: { code: 'PLATFORM_PERMISSION_DENIED' } },
+    });
+    await expect(service.getAiProviderById('openai')).rejects.toMatchObject({
+      data: { errorData: { code: 'PLATFORM_PERMISSION_DENIED' } },
+    });
+  });
+
+  it('toggleProviderEnabled does not create when get fails with non-not-found', async () => {
+    mocks.get.mockRejectedValueOnce({
+      data: { errorData: { code: 'PLATFORM_PERMISSION_DENIED' } },
+    });
+    await expect(service.toggleProviderEnabled('openai', true)).rejects.toMatchObject({
+      data: { errorData: { code: 'PLATFORM_PERMISSION_DENIED' } },
+    });
+    expect(mocks.applyImmediate).not.toHaveBeenCalled();
+  });
+
   it('toggle-off success path does not toast error', async () => {
     mocks.applyImmediate.mockResolvedValue({
       auditId: 'a-off',

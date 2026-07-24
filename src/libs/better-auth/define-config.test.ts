@@ -4,7 +4,6 @@ const mocks = vi.hoisted(() => ({
   betterAuth: vi.fn((options) => options),
   ensureDefaultPlatformUserRole: vi.fn(async () => undefined),
   enforcePlatformOidcGroupRoleMappingForUserAccounts: vi.fn(async () => undefined),
-  enforcePlatformOidcGroupRoleMappingOnLogin: vi.fn(async () => undefined),
   EnvHttpProxyAgent: vi.fn((options) => ({ options })),
   initUser: vi.fn(async () => undefined),
   setGlobalDispatcher: vi.fn(),
@@ -122,7 +121,6 @@ vi.mock('@/libs/better-auth/sso/platformIdentityProvider', () => ({
   buildPlatformIdentityProvider: vi.fn((provider) => ({ providerId: provider.providerKey })),
   enforcePlatformOidcGroupRoleMappingForUserAccounts:
     mocks.enforcePlatformOidcGroupRoleMappingForUserAccounts,
-  enforcePlatformOidcGroupRoleMappingOnLogin: mocks.enforcePlatformOidcGroupRoleMappingOnLogin,
 }));
 
 vi.mock('@/libs/better-auth/sso/platformIdentityProviderState', () => ({
@@ -321,7 +319,7 @@ describe('defineConfig', () => {
     expect(mocks.ensureDefaultPlatformUserRole).toHaveBeenCalledWith(serverDB, 'user_new_signup');
   });
 
-  it('enforces IdP group→role mapping on account create/update and session create', async () => {
+  it('enforces IdP group→role mapping on session.create.before (fail-closed)', async () => {
     const { defineConfig } = await import('./define-config');
     const { serverDB } = await import('@lobechat/database');
 
@@ -329,43 +327,48 @@ describe('defineConfig', () => {
 
     const options = mocks.betterAuth.mock.calls.at(-1)?.[0] as {
       databaseHooks: {
-        account: {
-          create: { after: (account: Record<string, unknown>) => Promise<void> };
-          update: { after: (account: Record<string, unknown>) => Promise<void> };
-        };
         session: {
-          create: { after: (session: Record<string, unknown>) => Promise<void> };
+          create: {
+            before: (
+              session: Record<string, unknown>,
+            ) => Promise<false | { data: Record<string, unknown> }>;
+          };
         };
       };
     };
 
-    const account = {
-      accountId: 'idp-subject-1',
-      providerId: 'corp-oidc',
-      userId: 'user_sso_1',
-    };
-    await options.databaseHooks.account.create.after(account);
-    expect(mocks.enforcePlatformOidcGroupRoleMappingOnLogin).toHaveBeenCalledWith({
-      accountId: 'idp-subject-1',
-      db: serverDB,
-      providerId: 'corp-oidc',
-      userId: 'user_sso_1',
-    });
-
-    mocks.enforcePlatformOidcGroupRoleMappingOnLogin.mockClear();
-    await options.databaseHooks.account.update.after(account);
-    expect(mocks.enforcePlatformOidcGroupRoleMappingOnLogin).toHaveBeenCalledWith({
-      accountId: 'idp-subject-1',
-      db: serverDB,
-      providerId: 'corp-oidc',
-      userId: 'user_sso_1',
-    });
-
-    await options.databaseHooks.session.create.after({ userId: 'user_sso_1' });
+    const allowed = await options.databaseHooks.session.create.before({ userId: 'user_sso_1' });
+    expect(allowed).toEqual({ data: { userId: 'user_sso_1' } });
     expect(mocks.enforcePlatformOidcGroupRoleMappingForUserAccounts).toHaveBeenCalledWith({
       accounts: [{ accountId: 'idp-subject-1', providerId: 'corp-oidc' }],
       db: serverDB,
       userId: 'user_sso_1',
     });
+  });
+
+  it('denies session creation when IdP group→role reconciliation fails', async () => {
+    const { defineConfig } = await import('./define-config');
+
+    mocks.enforcePlatformOidcGroupRoleMappingForUserAccounts.mockRejectedValueOnce(
+      new Error('simulated demotion outage'),
+    );
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0] as {
+      databaseHooks: {
+        session: {
+          create: {
+            before: (
+              session: Record<string, unknown>,
+            ) => Promise<false | { data: Record<string, unknown> }>;
+          };
+        };
+      };
+    };
+
+    await expect(
+      options.databaseHooks.session.create.before({ userId: 'user_sso_1' }),
+    ).resolves.toBe(false);
   });
 });

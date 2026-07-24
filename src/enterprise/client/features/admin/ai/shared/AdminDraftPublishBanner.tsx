@@ -1,7 +1,7 @@
 'use client';
 
 import { Alert, Flexbox, Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -58,10 +58,18 @@ const AdminDraftPublishBanner = memo<AdminDraftPublishBannerProps>(
       setRetrying(true);
       try {
         await onRetry();
+      } catch {
+        // Click path uses void handleRetry() — catch so rejections never become unhandled
+        // and surface a controlled toast instead of a silent spinner reset.
+        toast.error(
+          t('aiSettings.draftBanner.retryFailed', {
+            defaultValue: 'Publish retry failed. Try again or open advanced catalog management.',
+          }),
+        );
       } finally {
         setRetrying(false);
       }
-    }, [onRetry]);
+    }, [onRetry, t]);
 
     if (!open) return null;
 

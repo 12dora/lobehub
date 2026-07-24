@@ -192,7 +192,31 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
     if (!record) throw new Error('PLATFORM_AGENT_NOT_FOUND');
     return record;
   };
-  const nextToken = (revision: number) => checksum(revision.toString(16));
+  /**
+   * Draft token derived from the same identity fields as production `platformAgentDraftToken`
+   * (agentKey, currentVersionId, draftSequence, id, isDefault, migrationRequired, revision,
+   * status, systemKey). Not a cryptographic twin of the server SHA-256 — a stable mock digest
+   * that still satisfies the wire schema's 64-char hex constraint.
+   */
+  const draftTokenFromIdentity = (identity: AdminAgentDetailOutput['identity']) => {
+    const seed = [
+      identity.agentKey,
+      identity.currentVersionId ?? '',
+      String(identity.draftSequence),
+      identity.id,
+      identity.isDefault ? '1' : '0',
+      identity.migrationRequired ? '1' : '0',
+      String(identity.revision),
+      identity.status,
+      identity.systemKey ?? '',
+    ].join('|');
+    // Fold to a hex stream so the token remains schema-valid (`/^[a-f0-9]{64}$/`).
+    let hex = '';
+    for (let i = 0; i < seed.length; i += 1) {
+      hex += seed.charCodeAt(i).toString(16).padStart(2, '0');
+    }
+    return checksum(hex);
+  };
   const requireCas = (id: string, expectedRevision: number, expectedDraftToken: string) => {
     const record = requireRecord(id);
     if (record.identity.revision !== expectedRevision || record.draftToken !== expectedDraftToken) {
@@ -200,9 +224,26 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
     }
     return record;
   };
-  const advanceAgent = (record: AdminAgentDetailOutput) => {
-    record.identity = { ...record.identity, revision: record.identity.revision + 1 };
-    record.draftToken = nextToken(record.identity.revision);
+  /** Draft-only CAS: assignments / appendVersion / updateDraft — draftSequence only. */
+  const advanceDraft = (record: AdminAgentDetailOutput) => {
+    record.identity = {
+      ...record.identity,
+      draftSequence: record.identity.draftSequence + 1,
+    };
+    record.draftToken = draftTokenFromIdentity(record.identity);
+  };
+  /** Publication lifecycle CAS: publish / rollback / archive / setDefault — both counters. */
+  const advancePublication = (
+    record: AdminAgentDetailOutput,
+    patch: Partial<AdminAgentDetailOutput['identity']> = {},
+  ) => {
+    record.identity = {
+      ...record.identity,
+      ...patch,
+      draftSequence: record.identity.draftSequence + 1,
+      revision: record.identity.revision + 1,
+    };
+    record.draftToken = draftTokenFromIdentity(record.identity);
   };
   const requireRollout = (agentId: string, jobId: string) => {
     const rollout = requireRecord(agentId).rollouts.find((item) => item.jobId === jobId);
@@ -238,13 +279,8 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
         version: input.version,
       };
       record.versions.unshift(version);
-      record.identity = {
-        ...record.identity,
-        draftSequence: record.identity.draftSequence + 1,
-        revision: record.identity.revision + 1,
-        status: 'draft',
-      };
-      record.draftToken = nextToken(record.identity.revision);
+      // appendVersion is draft-only CAS in production (draftSequence++, revision unchanged).
+      advanceDraft(record);
       return adminPlatformAgentAppendVersionOutputSchema.parse({
         draftToken: record.draftToken,
         identity: record.identity,
@@ -260,22 +296,16 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       if (replacement && replacement.identity.status !== 'published') {
         throw new Error('PLATFORM_AGENT_DEFAULT_MUST_BE_PUBLISHED');
       }
-      record.identity = {
-        ...record.identity,
+      advancePublication(record, {
         isDefault: false,
-        revision: record.identity.revision + 1,
         status: 'archived',
         systemKey: null,
-      };
-      record.draftToken = nextToken(record.identity.revision);
+      });
       if (replacement) {
-        replacement.identity = {
-          ...replacement.identity,
+        advancePublication(replacement, {
           isDefault: true,
-          revision: replacement.identity.revision + 1,
           systemKey: PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
-        };
-        replacement.draftToken = nextToken(replacement.identity.revision);
+        });
       }
       return adminPlatformAgentArchiveOutputSchema.parse({
         draftToken: record.draftToken,
@@ -310,7 +340,7 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
         status: 'draft' as const,
         systemKey: input.systemKey ?? null,
       };
-      const draftToken = nextToken(0);
+      const draftToken = draftTokenFromIdentity(identity);
       records.set(id, { assignments: [], draftToken, identity, rollouts: [], versions: [] });
       return adminPlatformAgentCreateOutputSchema.parse({ draftToken, identity });
     },
@@ -368,27 +398,28 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       adminPlatformAgentVersionsListOutputSchema.parse(
         page(structuredClone(requireRecord(agentId).versions), cursor, limit),
       ),
-    previewAssignment: async ({ assignment }) =>
-      adminPlatformAgentAssignmentPreviewOutputSchema.parse({
+    previewAssignment: async ({ assignment }) => {
+      const warnings: Array<'ASSIGNMENT_DISABLED' | 'MANDATORY_AGENT_CANNOT_BE_HIDDEN'> = [];
+      if (!assignment.enabled) warnings.push('ASSIGNMENT_DISABLED');
+      if (assignment.mode === 'mandatory') warnings.push('MANDATORY_AGENT_CANNOT_BE_HIDDEN');
+      return adminPlatformAgentAssignmentPreviewOutputSchema.parse({
         estimatedUsers:
           assignment.targetType === 'global'
             ? 1200
             : assignment.targetType === 'global_role'
               ? 84
               : 1,
-        warnings: assignment.mode === 'mandatory' ? ['MANDATORY_AGENT_CANNOT_BE_HIDDEN'] : [],
-      }),
+        warnings,
+      });
+    },
     publish: async (input) => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       const version = record.versions.find(({ id }) => id === input.versionId);
       if (!version) throw new Error('PLATFORM_AGENT_VERSION_NOT_FOUND');
-      record.identity = {
-        ...record.identity,
+      advancePublication(record, {
         currentVersionId: version.id,
-        revision: record.identity.revision + 1,
         status: 'published',
-      };
-      record.draftToken = nextToken(record.identity.revision);
+      });
       return adminPlatformAgentPublishOutputSchema.parse({
         agentId: input.agentId,
         revision: record.identity.revision,
@@ -398,7 +429,7 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
     removeAssignment: async (input) => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       record.assignments = record.assignments.filter(({ id }) => id !== input.assignmentId);
-      advanceAgent(record);
+      advanceDraft(record);
       return adminPlatformAgentAssignmentRemoveOutputSchema.parse({ removed: true });
     },
     retryRollout: async (input) => {
@@ -417,13 +448,10 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       const version = record.versions.find(({ id }) => id === input.targetVersionId);
       if (!version) throw new Error('PLATFORM_AGENT_VERSION_NOT_FOUND');
-      record.identity = {
-        ...record.identity,
+      advancePublication(record, {
         currentVersionId: version.id,
-        revision: record.identity.revision + 1,
         status: 'published',
-      };
-      record.draftToken = nextToken(record.identity.revision);
+      });
       return adminPlatformAgentRollbackOutputSchema.parse({
         agentId: input.agentId,
         revision: record.identity.revision,
@@ -459,21 +487,15 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
         throw new Error('PLATFORM_AGENT_DEFAULT_MUST_BE_PUBLISHED');
       }
       if (current) {
-        current.identity = {
-          ...current.identity,
+        advancePublication(current, {
           isDefault: false,
-          revision: current.identity.revision + 1,
           systemKey: null,
-        };
-        current.draftToken = nextToken(current.identity.revision);
+        });
       }
-      next.identity = {
-        ...next.identity,
+      advancePublication(next, {
         isDefault: true,
-        revision: next.identity.revision + 1,
         systemKey: PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
-      };
-      next.draftToken = nextToken(next.identity.revision);
+      });
       return adminPlatformAgentSetDefaultInboxOutputSchema.parse({
         currentDefault: current
           ? { draftToken: current.draftToken, identity: current.identity }
@@ -501,13 +523,13 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
     },
     updateDraft: async (input) => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
+      // Production updateDraft is draftSequence-only CAS (revision unchanged).
       record.identity = {
         ...record.identity,
         isDefault: input.isDefault,
-        revision: record.identity.revision + 1,
         systemKey: input.systemKey,
       };
-      record.draftToken = nextToken(record.identity.revision);
+      advanceDraft(record);
       return adminPlatformAgentUpdateDraftOutputSchema.parse({
         draftToken: record.draftToken,
         identity: record.identity,
@@ -528,7 +550,7 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       const index = record.assignments.findIndex(({ id }) => id === assignment.id);
       if (index === -1) record.assignments.push(assignment);
       else record.assignments[index] = assignment;
-      advanceAgent(record);
+      advanceDraft(record);
       return adminPlatformAgentAssignmentUpsertOutputSchema.parse(assignment);
     },
     validateDependencies: async () =>

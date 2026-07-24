@@ -216,9 +216,9 @@ describe('BrandingPage interactions', () => {
     expect(screen.getByRole('button', { name: 'branding.actions.save' })).toBeDisabled();
   });
 
-  it('keeps a failed save retryable with the same canonical modal payload', async () => {
+  it('keeps a failed save retryable with the same canonical modal payload after a transient error', async () => {
     mocks.saveDraft
-      .mockRejectedValueOnce(new Error('PLATFORM_REVISION_CONFLICT'))
+      .mockRejectedValueOnce(new Error('NETWORK_UNAVAILABLE'))
       .mockResolvedValueOnce({ baseRevision: 2, draftToken: 'd'.repeat(64), ok: true });
     renderPage();
     fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
@@ -231,10 +231,31 @@ describe('BrandingPage interactions', () => {
     await act(async () => {
       await expect(modal.onSubmit(payload)).rejects.toThrow();
     });
-    expect(screen.getByText('enterprise.error.PLATFORM_REVISION_CONFLICT')).toBeInTheDocument();
+    // Transient failure returns to dirty — same payload is retryable.
+    expect(screen.getByRole('button', { name: 'branding.actions.save' })).not.toBeDisabled();
     await act(() => modal.onSubmit(payload));
     await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalledTimes(2));
     expect(screen.getByText('branding.status.draftSaved')).toBeInTheDocument();
+  });
+
+  it('enters conflict state on CAS save failure and disables mutations until refresh', async () => {
+    mocks.saveDraft.mockRejectedValueOnce(new Error('PLATFORM_REVISION_CONFLICT'));
+    renderPage();
+    fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
+      target: { value: 'Conflict Draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'branding.actions.save' }));
+    const modal = latestModal();
+    const payload = modal.buildPayload('conflict reason');
+
+    await act(async () => {
+      await expect(modal.onSubmit(payload)).rejects.toThrow();
+    });
+    expect(screen.getByText('enterprise.error.PLATFORM_REVISION_CONFLICT')).toBeInTheDocument();
+    expect(screen.getByText('primitives.revision.conflict')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'branding.actions.save' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'branding.actions.publish' })).toBeDisabled();
+    expect(screen.getByLabelText('branding.fields.name')).toBeDisabled();
   });
 
   it('rehydrates draft inputs after store reset with the same server snapshot', async () => {

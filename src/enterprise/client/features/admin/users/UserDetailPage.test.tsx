@@ -45,6 +45,13 @@ vi.mock('antd-style', () => ({
 vi.mock('@lobehub/ui', async () => {
   const React = await import('react');
   return {
+    Alert: ({ message, action, ...rest }: any) =>
+      React.createElement(
+        'div',
+        { 'role': 'status', 'data-testid': 'stale-alert', ...rest },
+        message,
+        action,
+      ),
     Avatar: () => null,
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
     Icon: () => null,
@@ -301,6 +308,31 @@ describe('UserDetailPage', () => {
     renderDetail();
     expect(screen.getByRole('alert')).toBeTruthy();
     expect(screen.getByText('primitives.dataTable.retry')).toBeTruthy();
+    fireEvent.click(screen.getByText('primitives.dataTable.retry'));
+    expect(mutateMock).toHaveBeenCalled();
+  });
+
+  it('shows stale warning and locks high-risk actions when revalidation fails with cached data', () => {
+    detailState = {
+      data: { ...baseUser },
+      error: new Error('revalidation failed'),
+      isLoading: false,
+    };
+    renderDetail();
+    expect(screen.getByTestId('stale-alert')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Showing cached data. High-risk actions are disabled until refresh succeeds.',
+      ),
+    ).toBeTruthy();
+    // High-risk overview actions must not be offered on stale security state.
+    expect(screen.queryByRole('button', { name: 'users.actions.ban' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'users.actions.delete' })).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.sessions' }));
+    expect(screen.queryByRole('button', { name: 'users.sessions.openRevoke' })).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'users.tabs.access' }));
+    expect(screen.queryByRole('button', { name: 'users.modals.revokeRole.confirm' })).toBeNull();
+    // Retry still available.
     fireEvent.click(screen.getByText('primitives.dataTable.retry'));
     expect(mutateMock).toHaveBeenCalled();
   });

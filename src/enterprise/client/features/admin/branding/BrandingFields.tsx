@@ -225,6 +225,43 @@ export const BrandingFields = memo<BrandingFieldsProps>(
           </div>
         </section>
         <section className={styles.group}>
+          <Text as="h2">{labels.desktop}</Text>
+          <span className={styles.meta}>{labels.rebuildRequired}</span>
+          <div className={styles.grid}>
+            <TextField
+              disabled={disabled}
+              label={labels.desktopProductName}
+              value={draft.desktop.productName}
+              onChange={(value) => onPatch({ desktop: { ...draft.desktop, productName: value } })}
+            />
+            <AssetField
+              disabled={disabled}
+              kind="desktopIcon"
+              label={labels.desktopIcon}
+              meta={labels.rebuildRequired}
+              storageConfigured={storageConfigured}
+              uploadLabel={labels.upload}
+              value={draft.desktop.iconUrl}
+              onChange={(value) => onPatch({ desktop: { ...draft.desktop, iconUrl: value } })}
+              onUpload={onUpload}
+            />
+          </div>
+        </section>
+        <section className={styles.group}>
+          <Text as="h2">{labels.theme ?? 'Theme'}</Text>
+          <div className={styles.grid}>
+            <TextField
+              disabled={disabled}
+              label={labels.primaryColor}
+              placeholder="#1677ff"
+              value={draft.themeDefaults.primaryColor}
+              onChange={(value) =>
+                onPatch({ themeDefaults: { ...draft.themeDefaults, primaryColor: value } })
+              }
+            />
+          </div>
+        </section>
+        <section className={styles.group}>
           <Text as="h2">{labels.links}</Text>
           <div className={styles.grid}>
             {field('homeUrl', 'url')}

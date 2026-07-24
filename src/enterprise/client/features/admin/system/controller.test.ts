@@ -131,11 +131,22 @@ describe('Admin System job collection', () => {
     expect(merged).toHaveLength(1);
   });
 
-  it('requires the refreshed row to match the committed revision and status', () => {
+  it('requires the refreshed row to match the committed revision and status when present', () => {
     const committed = job({ revision: 2, status: 'cancelled' });
     expect(didAdminSystemJobRefreshConfirm([page([committed])], committed)).toBe(true);
     expect(didAdminSystemJobRefreshConfirm([page([job()])], committed)).toBe(false);
-    expect(didAdminSystemJobRefreshConfirm([], committed)).toBe(false);
+  });
+
+  it('treats mutation as confirmed when pagination omits the committed job', () => {
+    const committed = job({ revision: 2, status: 'cancelled' });
+    // Empty / other-page load: job pushed off page one after cancel — still confirmed.
+    expect(didAdminSystemJobRefreshConfirm([], committed)).toBe(true);
+    expect(
+      didAdminSystemJobRefreshConfirm(
+        [page([job({ jobId: 'pjob_0000000000000099', revision: 1 })])],
+        committed,
+      ),
+    ).toBe(true);
   });
 });
 

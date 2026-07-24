@@ -14,8 +14,9 @@ interface PolicyStepProps {
 }
 
 /**
- * Policy step intentionally omits group-to-role mapping until runtime enforcement
- * exists. Publishing an unenforced map would create a false security guarantee.
+ * Group-to-role mapping is enforced at login via `reconcileIdentityProviderGroupRoles`.
+ * The editor UI remains deferred (separate product surface); drafts may still carry
+ * a persisted `groupRoleMapping` from the API without editing it here.
  */
 export const PolicyStep = memo<PolicyStepProps>(({ draft, patch }) => {
   const { t } = useTranslation('admin');

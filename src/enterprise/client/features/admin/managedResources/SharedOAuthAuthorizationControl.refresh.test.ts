@@ -1,22 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-/**
- * Documents the commit-boundary for setSharedAuthorization:
- * mutation success is authoritative; SWR refresh failure must not reject.
- * Mirrors the control's try/catch around mutate() after a successful write.
- */
-const commitSharedOAuthThenRefresh = async (params: {
-  mutate: () => Promise<unknown>;
-  setSharedAuthorization: () => Promise<void>;
-}): Promise<{ committed: true; refreshFailed: boolean }> => {
-  await params.setSharedAuthorization();
-  try {
-    await params.mutate();
-    return { committed: true, refreshFailed: false };
-  } catch {
-    return { committed: true, refreshFailed: true };
-  }
-};
+import { commitSharedOAuthThenRefresh } from './SharedOAuthAuthorizationControl';
 
 describe('shared OAuth post-commit refresh boundary', () => {
   it('resolves as committed when refresh rejects', async () => {

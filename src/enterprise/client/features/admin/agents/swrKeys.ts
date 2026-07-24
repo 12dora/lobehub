@@ -1,11 +1,6 @@
-import type { AdminAgentListInput } from './types';
-
 export const ADMIN_AGENT_LIST_KEY = 'enterprise.admin.agents.list';
 export const ADMIN_AGENT_GET_KEY = 'enterprise.admin.agents.get';
 export const ADMIN_AGENT_ROLLOUT_POLL_KEY = 'enterprise.admin.agents.rollout-poll';
-
-export const buildAdminAgentListKey = (input: AdminAgentListInput, enabled: boolean) =>
-  enabled ? ([ADMIN_AGENT_LIST_KEY, input] as const) : null;
 
 export const buildAdminAgentGetKey = (
   id: string | undefined,

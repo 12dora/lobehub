@@ -120,4 +120,51 @@ describe('AdminAccessProvider', () => {
     });
     expect(fetchAccess).not.toHaveBeenCalled();
   });
+
+  it('ignores out-of-order access responses (stale allowed does not clobber later forbidden)', async () => {
+    type Snapshot = {
+      hasAdminAccess: boolean;
+      permissions: string[];
+      roles: never[];
+    };
+    let resolveFirst!: (value: Snapshot) => void;
+    const first = new Promise<Snapshot>((resolve) => {
+      resolveFirst = resolve;
+    });
+    fetchAccess
+      .mockImplementationOnce(() => first)
+      .mockResolvedValueOnce({
+        hasAdminAccess: false,
+        permissions: [],
+        roles: [],
+      });
+
+    render(
+      <AdminAccessProvider fetchAccess={fetchAccess}>
+        <Probe />
+      </AdminAccessProvider>,
+    );
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'retry' }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status').textContent).toBe('forbidden');
+    });
+
+    await act(async () => {
+      resolveFirst({
+        hasAdminAccess: true,
+        permissions: ['platform_admin:access:all'],
+        roles: [],
+      });
+    });
+
+    // Stale first response must not restore allowed after a later forbidden result.
+    await waitFor(() => {
+      expect(screen.getByTestId('status').textContent).toBe('forbidden');
+    });
+    expect(screen.getByTestId('perms').textContent).toBe('');
+  });
 });

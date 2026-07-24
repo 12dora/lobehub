@@ -79,85 +79,99 @@ export const useFetchAdminUserAuditTrail = (
   );
 };
 
+const invalidateAdminUsersList = () =>
+  mutate((key) => Array.isArray(key) && key[0] === ADMIN_USERS_LIST_KEY);
+
+const invalidateAdminUserDetail = (userId: string) => mutate(buildAdminUsersDetailKey(userId));
+
+const invalidateAdminUserAudit = (userId: string) =>
+  mutate((key) => Array.isArray(key) && key[0] === ADMIN_USERS_AUDIT_KEY && key[1] === userId);
+
 export const refreshAdminUsersList = async () => {
-  await mutate((key) => Array.isArray(key) && key[0] === ADMIN_USERS_LIST_KEY);
+  await invalidateAdminUsersList();
 };
 
+/**
+ * Invalidate detail + audit caches independently.
+ * One rejection must not skip the other (post-commit consistency).
+ * Rethrows the first rejection so callers can surface a single warning.
+ */
 export const refreshAdminUserDetail = async (userId: string) => {
-  await mutate(buildAdminUsersDetailKey(userId));
-  await mutate(
-    (key) => Array.isArray(key) && key[0] === ADMIN_USERS_AUDIT_KEY && key[1] === userId,
-  );
+  const results = await Promise.allSettled([
+    invalidateAdminUserDetail(userId),
+    invalidateAdminUserAudit(userId),
+  ]);
+  const rejected = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (rejected) throw rejected.reason;
 };
 
 /**
  * Best-effort cache invalidation after a successful mutation.
  * Never rethrows — a refresh failure must not surface as a mutation failure
  * (would invite unsafe retries of irreversible commits). Surfaces a toast instead.
+ *
+ * Independent tasks run via Promise.allSettled so a single key failure still
+ * attempts list/detail/audit invalidations.
  */
-const softRefresh = async (task: () => Promise<unknown>) => {
-  try {
-    await task();
-  } catch (error) {
-    log('post-commit refresh failed: %O', error);
-    toast.warning(
-      String(
-        i18n.t('users.toast.savedRefreshFailed' as never, {
-          defaultValue: 'Saved, but the latest view could not be refreshed.',
-          ns: 'admin',
-        }),
-      ),
-    );
-  }
+const softRefresh = async (tasks: Array<() => Promise<unknown>>) => {
+  const results = await Promise.allSettled(tasks.map((task) => task()));
+  const rejected = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (!rejected) return;
+
+  log('post-commit refresh failed: %O', rejected.reason);
+  toast.warning(
+    String(
+      i18n.t('users.toast.savedRefreshFailed' as never, {
+        defaultValue: 'Saved, but the latest view could not be refreshed.',
+        ns: 'admin',
+      }),
+    ),
+  );
 };
+
+/** List + detail + audit invalidations for user-scoped mutations. */
+const softRefreshUserCaches = (userId: string) =>
+  softRefresh([
+    () => invalidateAdminUsersList(),
+    () => invalidateAdminUserDetail(userId),
+    () => invalidateAdminUserAudit(userId),
+  ]);
 
 export const useAdminUserMutations = () => {
   const createUser = useCallback(async (input: AdminUsersCreateInput) => {
     const result = await adminUsersService.create(input);
-    await softRefresh(() => refreshAdminUsersList());
+    await softRefresh([() => invalidateAdminUsersList()]);
     return result;
   }, []);
 
   const banUser = useCallback(async (input: AdminUsersBanInput) => {
     const result = await adminUsersService.ban(input);
-    await softRefresh(async () => {
-      await refreshAdminUsersList();
-      await refreshAdminUserDetail(input.userId);
-    });
+    await softRefreshUserCaches(input.userId);
     return result;
   }, []);
 
   const unbanUser = useCallback(async (input: AdminUsersUnbanInput) => {
     const result = await adminUsersService.unban(input);
-    await softRefresh(async () => {
-      await refreshAdminUsersList();
-      await refreshAdminUserDetail(input.userId);
-    });
+    await softRefreshUserCaches(input.userId);
     return result;
   }, []);
 
   const deleteUser = useCallback(async (input: AdminUsersDeleteInput) => {
     const result = await adminUsersService.deleteUser(input);
     // User row is gone — refresh the list; the detail key resolves to not-found.
-    await softRefresh(() => refreshAdminUsersList());
+    await softRefresh([() => invalidateAdminUsersList()]);
     return result;
   }, []);
 
   const revokeSessions = useCallback(async (input: AdminUsersRevokeSessionsInput) => {
     const result = await adminUsersService.revokeSessions(input);
-    await softRefresh(async () => {
-      await refreshAdminUsersList();
-      await refreshAdminUserDetail(input.userId);
-    });
+    await softRefreshUserCaches(input.userId);
     return result;
   }, []);
 
   const replaceGlobalRoles = useCallback(async (input: AdminUsersReplaceGlobalRolesInput) => {
     const result = await adminUsersService.replaceGlobalRoles(input);
-    await softRefresh(async () => {
-      await refreshAdminUsersList();
-      await refreshAdminUserDetail(input.userId);
-    });
+    await softRefreshUserCaches(input.userId);
     return result;
   }, []);
 

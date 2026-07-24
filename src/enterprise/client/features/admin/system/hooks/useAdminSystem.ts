@@ -15,6 +15,7 @@ import {
   hasActiveAdminSystemJobs,
   isAdminSystemConflictError,
   isAdminSystemInvalidInputError,
+  isAdminSystemJobMutationAuthoritative,
   resetAdminSystemJobPages,
   shouldPollAdminSystemJobs,
 } from '@/enterprise/client/features/admin/system/controller';
@@ -332,14 +333,33 @@ export const useAdminSystemJobMutations = ({
           return 'failed' as const;
         }
 
+        // Mutation response is the authoritative CAS result (by-id confirmation).
+        // List refresh is best-effort for UI; pagination drift must not lock the row.
+        if (!isAdminSystemJobMutationAuthoritative(committed)) {
+          refreshPendingRef.current.set(job.jobId, committed);
+          setRefreshPendingJobIds([...refreshPendingRef.current.keys()]);
+          return 'refresh_failed' as const;
+        }
         try {
           const pages = await onRefresh();
           if (!didAdminSystemJobRefreshConfirm(pages, committed)) {
+            // Stale row still visible on a loaded page with different CAS — keep pending.
             throw new Error('PLATFORM_COMMITTED_JOB_REFRESH_UNCONFIRMED');
           }
           return 'succeeded' as const;
         } catch (error) {
-          // The mutation committed, so block this row until a fresh CAS snapshot is confirmed.
+          // Network / hard refresh failure: retain pending so the operator can retry.
+          // Pagination omission is not a failure (handled in didAdminSystemJobRefreshConfirm).
+          if (
+            error instanceof Error &&
+            error.message === 'PLATFORM_COMMITTED_JOB_REFRESH_UNCONFIRMED'
+          ) {
+            refreshPendingRef.current.set(job.jobId, committed);
+            setRefreshPendingJobIds([...refreshPendingRef.current.keys()]);
+            console.error('[admin.system] job mutation committed but refresh failed', error);
+            return 'refresh_failed' as const;
+          }
+          // Refresh threw (network): still treat mutation as committed; flag for retry UI.
           refreshPendingRef.current.set(job.jobId, committed);
           setRefreshPendingJobIds([...refreshPendingRef.current.keys()]);
           console.error('[admin.system] job mutation committed but refresh failed', error);

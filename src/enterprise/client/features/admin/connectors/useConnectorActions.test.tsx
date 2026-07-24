@@ -8,6 +8,7 @@ import { useConnectorActions } from './useConnectorActions';
 import type { useConnectorEditor } from './useConnectorEditor';
 
 const mocks = vi.hoisted(() => ({
+  deleteDraft: vi.fn(async (..._args: unknown[]) => ({ auditId: 'audit-delete' })),
   mutate: vi.fn(async () => undefined as AdminConnectorGetOutput | undefined),
   navigate: vi.fn(),
   openReasonModal: vi.fn(),
@@ -15,6 +16,10 @@ const mocks = vi.hoisted(() => ({
   t: vi.fn((key: string) => key),
   test: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
+  updateDraft: vi.fn(async (..._args: unknown[]) => ({
+    auditId: 'audit-save',
+    draftToken: 'd'.repeat(64),
+  })),
 }));
 
 vi.mock('react-router', () => ({
@@ -35,7 +40,9 @@ vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () =>
 
 vi.mock('@/enterprise/client/services/adminConnectors', () => ({
   adminConnectorsService: {
+    deleteDraft: (...args: unknown[]) => mocks.deleteDraft(...args),
     test: (...args: unknown[]) => mocks.test(...args),
+    updateDraft: (...args: unknown[]) => mocks.updateDraft(...args),
   },
 }));
 
@@ -182,5 +189,79 @@ describe('useConnectorActions', () => {
         testPassed: true,
       }),
     ).toBe('publish');
+  });
+
+  it('save_treats_mutation_as_success_when_only_cache_refresh_rejects', async () => {
+    mocks.updateDraft.mockResolvedValueOnce({
+      auditId: 'audit-save',
+      draftToken: 'd'.repeat(64),
+    });
+    mocks.refreshAdminConnectorLists.mockRejectedValueOnce(new Error('swr revalidate failed'));
+    mocks.mutate.mockRejectedValueOnce(new Error('detail revalidate failed'));
+
+    const editor = idleEditor();
+    editor.dirty = true as never;
+    mocks.openReasonModal.mockImplementationOnce(({ onSubmit }) => {
+      void onSubmit({
+        displayName: 'Calendar',
+        expectedDraftToken: 'c'.repeat(64),
+        expectedRevision: 3,
+        id: 'connector-1',
+        reason: 'save draft',
+      });
+    });
+
+    const { result } = renderHook(() =>
+      useConnectorActions({
+        authMethod: null,
+        data: snapshot(),
+        editor,
+        mutate: mocks.mutate,
+        permissions: permissions(),
+      }),
+    );
+
+    await act(async () => {
+      result.current.onPrimaryAction('save');
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.updateDraft).toHaveBeenCalled();
+    expect(editor.markSaved).toHaveBeenCalled();
+    expect(editor.setSaveState).not.toHaveBeenCalledWith('failed');
+    expect(mocks.toast.success).toHaveBeenCalledWith('connectorCatalog.toast.saved');
+  });
+
+  it('delete_navigates_after_commit_when_list_refresh_rejects', async () => {
+    mocks.deleteDraft.mockResolvedValueOnce({ auditId: 'audit-delete' });
+    mocks.refreshAdminConnectorLists.mockRejectedValueOnce(new Error('list revalidate failed'));
+    mocks.openReasonModal.mockImplementationOnce(({ onSubmit }) => {
+      void onSubmit({ id: 'connector-1', reason: 'delete draft' });
+    });
+
+    const editor = idleEditor();
+    const { result } = renderHook(() =>
+      useConnectorActions({
+        authMethod: null,
+        data: snapshot(),
+        editor,
+        mutate: mocks.mutate,
+        permissions: permissions(),
+      }),
+    );
+
+    await act(async () => {
+      result.current.deleteDraft();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.deleteDraft).toHaveBeenCalled();
+    expect(mocks.toast.success).toHaveBeenCalledWith('connectorCatalog.toast.deleted');
+    expect(mocks.navigate).toHaveBeenCalledWith('/admin/connectors');
+    expect(editor.setActionError).not.toHaveBeenCalled();
   });
 });

@@ -382,6 +382,8 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       return;
     }
     const reason = t('managedResources.saveReason');
+    // Epoch at submit: post-publish SWR refresh must not clobber edits made while refresh is in flight.
+    const submittedEpoch = draftEpochRef.current;
     setSaveState('saving');
     setActionError(null);
     try {
@@ -404,6 +406,13 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       }
       try {
         const latest = await mutate();
+        // Abort applying refreshed draft if the admin edited while refresh was in flight.
+        if (shouldPreserveLocalDraftAfterSave(submittedEpoch, draftEpochRef.current)) {
+          setDirty(true);
+          setSaveState('dirty');
+          setActionError(t('managedResources.errors.savedWithLocalEdits'));
+          return;
+        }
         if (latest) {
           setDraft(latest.draft);
           setPublished(latest.published);

@@ -49,6 +49,11 @@ describe('mock Admin Agents contract adapter', () => {
       reason: 'add first exact version',
       version: '1.0.0',
     });
+    // appendVersion is draft-only: draftSequence advances, published revision does not.
+    expect(appended.identity.revision).toBe(created.identity.revision);
+    expect(appended.identity.draftSequence).toBe(created.identity.draftSequence + 1);
+    expect(appended.draftToken).not.toBe(created.draftToken);
+
     const published = await client.publish({
       agentId: created.identity.id,
       expectedDraftToken: appended.draftToken,
@@ -57,8 +62,11 @@ describe('mock Admin Agents contract adapter', () => {
       versionId: appended.version.id,
     });
     expect(published.versionId).toBe(appended.version.id);
+    expect(published.revision).toBe(appended.identity.revision + 1);
 
     let detail = await client.get({ id: created.identity.id });
+    const publishedRevision = detail.identity.revision;
+    const publishedDraftSequence = detail.identity.draftSequence;
     const assignment = await client.upsertAssignment({
       agentId: created.identity.id,
       enabled: true,
@@ -74,6 +82,11 @@ describe('mock Admin Agents contract adapter', () => {
     expect((await client.listAssignments({ agentId: created.identity.id })).items).toHaveLength(1);
 
     detail = await client.get({ id: created.identity.id });
+    // Assignment CAS matches production: draftSequence + token only (F1/F4).
+    expect(detail.identity.revision).toBe(publishedRevision);
+    expect(detail.identity.draftSequence).toBe(publishedDraftSequence + 1);
+    expect(detail.draftToken).not.toBe(appended.draftToken);
+
     await client.removeAssignment({
       agentId: created.identity.id,
       assignmentId: assignment.id,
@@ -84,6 +97,9 @@ describe('mock Admin Agents contract adapter', () => {
     expect((await client.listAssignments({ agentId: created.identity.id })).items).toHaveLength(0);
 
     detail = await client.get({ id: created.identity.id });
+    expect(detail.identity.revision).toBe(publishedRevision);
+    expect(detail.identity.draftSequence).toBe(publishedDraftSequence + 2);
+
     const rolledBack = await client.rollback({
       agentId: created.identity.id,
       expectedDraftToken: detail.draftToken,
@@ -92,6 +108,7 @@ describe('mock Admin Agents contract adapter', () => {
       targetVersionId: appended.version.id,
     });
     expect(rolledBack.versionId).toBe(appended.version.id);
+    expect(rolledBack.revision).toBe(publishedRevision + 1);
   });
 
   it('enforces job revision/status CAS across rollout transitions', async () => {

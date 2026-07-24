@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useState } from 'react';
@@ -91,12 +91,27 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
   }
 
   const items = data?.items ?? [];
+  const showStaleWarning = Boolean(error) && Boolean(data);
 
   return (
     <Flexbox gap={12}>
       <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
         {t('users.audit.title')}
       </Text>
+      {showStaleWarning ? (
+        <Alert
+          showIcon
+          type="warning"
+          action={
+            <Button size="small" onClick={() => void mutate()}>
+              {t('primitives.dataTable.retry')}
+            </Button>
+          }
+          message={t('users.stale.refreshFailed', {
+            defaultValue: 'Showing cached data — the latest refresh failed.',
+          })}
+        />
+      ) : null}
       {items.length === 0 ? (
         <Text type="secondary">{t('users.audit.empty')}</Text>
       ) : (

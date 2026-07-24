@@ -45,7 +45,9 @@ const SkillListPage = memo(() => {
   const query = searchParams.get('q') ?? '';
   const normalizedQuery = query.trim();
   const status = valueFrom(searchParams.get('status'), ['draft', 'published', 'archived']);
-  const source = valueFrom(searchParams.get('source'), ['builtin', 'uploaded']);
+  // Admin list is DB-backed only (all production creates use source:'uploaded').
+  // Built-in bundled skills are merged at runtime by the read service, not this list.
+  const source = valueFrom(searchParams.get('source'), ['uploaded'] as const);
   const distribution = valueFrom(searchParams.get('distribution'), [
     'mandatory',
     'default',
@@ -247,18 +249,6 @@ const SkillListPage = memo(() => {
               value,
             }))}
             onChange={(value) => patchFilter('status', value as string | undefined)}
-          />
-          <Select
-            allowClear
-            aria-label={t('skillCatalog.list.filters.source')}
-            placeholder={t('skillCatalog.list.filters.source')}
-            style={{ minWidth: 140 }}
-            value={source}
-            options={(['builtin', 'uploaded'] as const).map((value) => ({
-              label: t(`skillCatalog.source.${value}` as never),
-              value,
-            }))}
-            onChange={(value) => patchFilter('source', value as string | undefined)}
           />
           <Select
             allowClear

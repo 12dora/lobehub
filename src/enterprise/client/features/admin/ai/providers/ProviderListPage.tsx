@@ -134,37 +134,40 @@ const ProviderListPage = memo(() => {
               key: 'actions',
               title: t('aiCatalog.providers.columns.actions'),
               width: 96,
-              render: (_: unknown, item: AdminAiProviderListItem) => (
-                <Button
-                  danger
-                  size="small"
-                  type="text"
-                  onClick={(event) => {
-                    // Row is clickable (navigates to detail) — keep the delete click local.
-                    event.stopPropagation();
-                    void (async () => {
-                      try {
-                        // List rows omit draftToken; fetch CAS identity at click time.
-                        const detail = await adminAiCatalogService.getProvider({ id: item.id });
-                        openDeleteProviderModal({
-                          authMethod: authMethod ?? undefined,
-                          displayName: item.displayName,
-                          expectedDraftToken: detail.draftToken,
-                          expectedRevision: detail.draft.revision,
-                          providerId: item.id,
-                          onDeleted: () => {
-                            void mutate();
-                          },
-                        });
-                      } catch {
-                        toast.error(t('aiCatalog.errors.generic'));
-                      }
-                    })();
-                  }}
-                >
-                  {t('aiCatalog.providers.actions.delete')}
-                </Button>
-              ),
+              render: (_: unknown, item: AdminAiProviderListItem) =>
+                // Ever-published providers keep a fail-closed tombstone; only never-published
+                // drafts (revision === 0) may be hard-deleted. Use archive/disable instead.
+                item.revision > 0 ? null : (
+                  <Button
+                    danger
+                    size="small"
+                    type="text"
+                    onClick={(event) => {
+                      // Row is clickable (navigates to detail) — keep the delete click local.
+                      event.stopPropagation();
+                      void (async () => {
+                        try {
+                          // List rows omit draftToken; fetch CAS identity at click time.
+                          const detail = await adminAiCatalogService.getProvider({ id: item.id });
+                          openDeleteProviderModal({
+                            authMethod: authMethod ?? undefined,
+                            displayName: item.displayName,
+                            expectedDraftToken: detail.draftToken,
+                            expectedRevision: detail.draft.revision,
+                            providerId: item.id,
+                            onDeleted: () => {
+                              void mutate();
+                            },
+                          });
+                        } catch {
+                          toast.error(t('aiCatalog.errors.generic'));
+                        }
+                      })();
+                    }}
+                  >
+                    {t('aiCatalog.providers.actions.delete')}
+                  </Button>
+                ),
             },
           ]
         : []),

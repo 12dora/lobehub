@@ -1,5 +1,7 @@
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import type { AdminAiProviderGetOutput } from '@/enterprise/client/features/admin/ai/types';
 import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { lambdaClient } from '@/libs/trpc/client';
@@ -7,6 +9,13 @@ import type { CreateAiProviderParams } from '@/types/aiProvider';
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
 import { withAdminAiInfraErrorToast } from './errors';
+
+/**
+ * True only when the platform row is genuinely absent — not for permission, network,
+ * or feature-disable failures (those must surface as errors, not silent create/fallback).
+ */
+export const isPlatformNotFoundError = (cause: unknown): boolean =>
+  mapEnterpriseError(cause)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND;
 
 export const DEFAULT_REASON = 'admin provider settings auto-publish';
 
@@ -97,6 +106,8 @@ export const createGetOrCreateDetail = (
     try {
       return await getDetail(providerKeyOrId);
     } catch (cause) {
+      // Only PLATFORM_NOT_FOUND means "no row yet" — rethrow forbidden/network/server errors.
+      if (!isPlatformNotFoundError(cause)) throw cause;
       const card = findBuiltinProviderCard(providerKeyOrId);
       if (!card) throw cause;
       await createAiProvider({

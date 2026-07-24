@@ -25,6 +25,7 @@ import {
   DEFAULT_REASON,
   findBuiltinProviderCard,
   getDetail,
+  isPlatformNotFoundError,
   recordPublishOutcome,
   withReauth,
 } from './shared';
@@ -111,7 +112,9 @@ export class AdminAiProviderService {
     try {
       const detail = await getDetail(id);
       return mapProviderDetail(detail);
-    } catch {
+    } catch (cause) {
+      // Only absent platform rows fall back to a synthetic built-in; other failures rethrow.
+      if (!isPlatformNotFoundError(cause)) throw cause;
       // A known built-in without a DB row: return a synthetic detail from the catalog
       // so the form renders (empty credentials) instead of a perpetual skeleton.
       const card = findBuiltinProviderCard(id);

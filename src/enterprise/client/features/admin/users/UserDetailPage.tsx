@@ -1,6 +1,6 @@
 'use client';
 
-import { Avatar, Text } from '@lobehub/ui';
+import { Alert, Avatar, Text } from '@lobehub/ui';
 import { Button, Tabs } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useState } from 'react';
@@ -257,6 +257,10 @@ const UserDetailPage = memo(() => {
   }
 
   const titleName = displayUserName(data);
+  // Cached detail with a failed revalidation: warn and lock high-risk actions so
+  // operators cannot ban/delete/revoke/role-change on obsolete security state.
+  const dataStale = Boolean(error) && Boolean(data);
+  const allowHighRisk = !dataStale;
 
   return (
     <AdminPageTemplate
@@ -283,31 +287,48 @@ const UserDetailPage = memo(() => {
       }
     >
       <div className={styles.panel}>
+        {dataStale ? (
+          <Alert
+            showIcon
+            type="warning"
+            action={
+              <Button size="small" onClick={() => void mutate()}>
+                {t('primitives.dataTable.retry')}
+              </Button>
+            }
+            message={t('users.stale.refreshFailed', {
+              defaultValue:
+                'Showing cached data. High-risk actions are disabled until refresh succeeds.',
+            })}
+          />
+        ) : null}
         {tab === 'overview' ? (
           <OverviewTab
-            canBan={canBan}
-            canDelete={canDelete}
+            canBan={canBan && allowHighRisk}
+            canDelete={canDelete && allowHighRisk}
             user={data}
-            onBan={canBan ? openBan : undefined}
-            onDelete={canDelete ? openDelete : undefined}
-            onUnban={canBan ? openUnban : undefined}
+            onBan={canBan && allowHighRisk ? openBan : undefined}
+            onDelete={canDelete && allowHighRisk ? openDelete : undefined}
+            onUnban={canBan && allowHighRisk ? openUnban : undefined}
           />
         ) : null}
         {tab === 'access' ? (
           <AccessTab
-            canManageRoles={canManageRoles}
+            canManageRoles={canManageRoles && allowHighRisk}
             canRevokeRole={canRevokeRoleName}
             user={data}
-            onRevokeRole={canManageRoles ? openRevokeRole : undefined}
-            onUpdatePermissions={canManageRoles ? openUpdatePermissions : undefined}
+            onRevokeRole={canManageRoles && allowHighRisk ? openRevokeRole : undefined}
+            onUpdatePermissions={
+              canManageRoles && allowHighRisk ? openUpdatePermissions : undefined
+            }
           />
         ) : null}
         {tab === 'sessions' ? (
           <SessionsTab
-            canRevoke={canRevoke}
+            canRevoke={canRevoke && allowHighRisk}
             user={data}
-            onRevokeAll={canRevoke ? openRevokeAll : undefined}
-            onRevokeSession={canRevoke ? openRevokeSingle : undefined}
+            onRevokeAll={canRevoke && allowHighRisk ? openRevokeAll : undefined}
+            onRevokeSession={canRevoke && allowHighRisk ? openRevokeSingle : undefined}
           />
         ) : null}
         {tab === 'audit' ? (

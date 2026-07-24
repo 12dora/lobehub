@@ -49,22 +49,35 @@ const IdentityProviderWizardModalContent = memo<ContentProps>(
     const callbacks = useIdentityProviderCallbacks(true);
     const isEdit = Boolean(provider);
     // Share the page's SWR cache so a save/publish revalidation flows the new
-    // revision back into the wizard (avoids a stale-expectedRevision conflict).
+    // revision back into the wizard when the row is on the current page.
     const providers = useIdentityProviders(isEdit);
-    const liveProvider = isEdit
-      ? (providers.data?.items.find((item) => item.id === provider!.id) ?? provider)
+    // Canonical row for revision CAS: prefer mutation response, then list hit, then prop.
+    // List is page-scoped (first 100) so providers outside page 1 rely on mutation retention.
+    const [canonicalProvider, setCanonicalProvider] = useState<
+      PlatformIdentityProviderDraft | undefined
+    >(provider);
+    const listHit = isEdit
+      ? providers.data?.items.find((item) => item.id === provider!.id)
       : undefined;
+    const liveProvider =
+      isEdit && listHit && (!canonicalProvider || listHit.revision >= canonicalProvider.revision)
+        ? listHit
+        : (canonicalProvider ?? provider);
     const [seed, setSeed] = useState<IdentityProviderCreateDraftSeed | null>(null);
 
-    const handleSaved = useCallback(async () => {
-      await onChanged();
-      // Creating: the draft now exists in the table — reopen it to continue.
-      if (!isEdit) {
-        dirtyRef.current = false;
-        toast.success(t('identityProviders.save.draftSaved'));
-        close();
-      }
-    }, [close, dirtyRef, isEdit, onChanged, t]);
+    const handleSaved = useCallback(
+      async (saved?: PlatformIdentityProviderDraft) => {
+        if (saved) setCanonicalProvider(saved);
+        await onChanged();
+        // Creating: the draft now exists in the table — reopen it to continue.
+        if (!isEdit) {
+          dirtyRef.current = false;
+          toast.success(t('identityProviders.save.draftSaved'));
+          close();
+        }
+      },
+      [close, dirtyRef, isEdit, onChanged, t],
+    );
 
     if (!isEdit && !seed) {
       return (

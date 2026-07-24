@@ -3,13 +3,14 @@
 import { Alert, Flexbox, Text, TextArea } from '@lobehub/ui';
 import { Button, Switch, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BlockerFunction } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminAuthSettingsService } from '@/enterprise/client/services/adminAuthSettings';
 import {
@@ -19,6 +20,10 @@ import {
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
+import {
+  decideGeneralSettingsHydration,
+  fingerprintGeneralSettingsDraft,
+} from './generalSettingsHydration';
 import { useFetchAdminAuthSettings } from './useAdminAuthSettings';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -81,26 +86,93 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { data, error, isLoading, mutate } = useFetchAdminAuthSettings(canView);
 
   const [draft, setDraft] = useState<GeneralSettingsDraft | null>(null);
+  const [baseline, setBaseline] = useState<GeneralSettingsDraft | null>(null);
+  /** CAS token from last accepted server snapshot — required on update. */
+  const [baseRevision, setBaseRevision] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  /** Server snapshot advanced while local edits are dirty — keep draft, require refresh/discard. */
+  const [serverStale, setServerStale] = useState(false);
+  /** CAS mismatch on save — force refresh/discard before retrying. */
+  const [revisionConflict, setRevisionConflict] = useState(false);
+  const baselineFpRef = useRef<string | null>(null);
+  const draftFpRef = useRef<string | null>(null);
+
+  const toDraft = useCallback(
+    (source: {
+      emailDomainAllowlist: string[];
+      emailDomainAllowlistEnabled: boolean;
+      openRegistration: boolean;
+    }): GeneralSettingsDraft => ({
+      emailDomainAllowlistEnabled: source.emailDomainAllowlistEnabled,
+      emailDomainText: source.emailDomainAllowlist.join('\n'),
+      openRegistration: source.openRegistration,
+    }),
+    [],
+  );
+
+  // Keep refs in sync for the data-effect without re-subscribing on every keystroke.
+  useEffect(() => {
+    baselineFpRef.current = baseline
+      ? fingerprintGeneralSettingsDraft({
+          ...baseline,
+          emailDomainText: normalizeEmailDomainAllowlist(baseline.emailDomainText).join('\n'),
+        })
+      : null;
+  }, [baseline]);
+  useEffect(() => {
+    draftFpRef.current = draft
+      ? fingerprintGeneralSettingsDraft({
+          ...draft,
+          emailDomainText: normalizeEmailDomainAllowlist(draft.emailDomainText).join('\n'),
+        })
+      : null;
+  }, [draft]);
 
   useEffect(() => {
     if (!data) return;
-    setDraft({
-      emailDomainAllowlistEnabled: data.emailDomainAllowlistEnabled,
-      emailDomainText: data.emailDomainAllowlist.join('\n'),
-      openRegistration: data.openRegistration,
+    const nextRaw = toDraft(data);
+    const next = {
+      ...nextRaw,
+      emailDomainText: normalizeEmailDomainAllowlist(nextRaw.emailDomainText).join('\n'),
+    };
+    const decision = decideGeneralSettingsHydration({
+      baselineFp: baselineFpRef.current,
+      draftFp: draftFpRef.current,
+      next,
+      saving,
     });
-  }, [data]);
+    if (decision.action === 'accept') {
+      const accepted = {
+        ...decision.next,
+        // Preserve multi-line display form from server allowlist when accepting.
+        emailDomainText: toDraft(data).emailDomainText,
+      };
+      const fp = fingerprintGeneralSettingsDraft(next);
+      setBaseline(accepted);
+      setDraft(accepted);
+      setBaseRevision(data.revision);
+      setServerStale(false);
+      setRevisionConflict(false);
+      baselineFpRef.current = fp;
+      draftFpRef.current = fp;
+      return;
+    }
+    if (decision.markStale) setServerStale(true);
+  }, [data, saving, toDraft]);
 
   const dirty = useMemo(() => {
-    if (!data || !draft) return false;
+    if (!baseline || !draft) return false;
     return (
-      draft.openRegistration !== data.openRegistration ||
-      draft.emailDomainAllowlistEnabled !== data.emailDomainAllowlistEnabled ||
-      normalizeEmailDomainAllowlist(draft.emailDomainText).join('\n') !==
-        data.emailDomainAllowlist.join('\n')
+      fingerprintGeneralSettingsDraft({
+        ...draft,
+        emailDomainText: normalizeEmailDomainAllowlist(draft.emailDomainText).join('\n'),
+      }) !==
+      fingerprintGeneralSettingsDraft({
+        ...baseline,
+        emailDomainText: normalizeEmailDomainAllowlist(baseline.emailDomainText).join('\n'),
+      })
     );
-  }, [data, draft]);
+  }, [baseline, draft]);
 
   // Block real route exits and, when embedded under SecurityAuth tabs, same-path `?tab=`
   // switches that unmount this dirty page. Standalone navigation that only tweaks other
@@ -133,7 +205,11 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     setDraft((current) => (current ? { ...current, ...next } : current));
 
   const handleSave = async () => {
-    if (!draft || !canUpdate || saving) return;
+    if (!draft || !canUpdate || saving || serverStale || revisionConflict) return;
+    if (baseRevision === null) {
+      toast.error(t('generalSettings.saveError'));
+      return;
+    }
     const domains = normalizeEmailDomainAllowlist(draft.emailDomainText);
     const invalid = domains.find((entry) => !isValidEmailDomainPattern(entry));
     if (invalid) {
@@ -146,25 +222,79 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       const saved = await adminAuthSettingsService.update({
         emailDomainAllowlist: domains,
         emailDomainAllowlistEnabled: draft.emailDomainAllowlistEnabled,
+        expectedRevision: baseRevision,
         openRegistration: draft.openRegistration,
       });
       await mutate(saved, { revalidate: false });
-      setDraft({
-        emailDomainAllowlistEnabled: saved.emailDomainAllowlistEnabled,
-        emailDomainText: saved.emailDomainAllowlist.join('\n'),
-        openRegistration: saved.openRegistration,
+      const next = toDraft(saved);
+      const nextFp = fingerprintGeneralSettingsDraft({
+        ...next,
+        emailDomainText: normalizeEmailDomainAllowlist(next.emailDomainText).join('\n'),
       });
+      setBaseline(next);
+      setDraft(next);
+      setBaseRevision(saved.revision);
+      setServerStale(false);
+      setRevisionConflict(false);
+      baselineFpRef.current = nextFp;
+      draftFpRef.current = nextFp;
       toast.success(t('generalSettings.saved'));
-    } catch {
-      toast.error(t('generalSettings.saveError'));
+    } catch (cause) {
+      if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
+        setRevisionConflict(true);
+        toast.error(
+          t('generalSettings.conflict', {
+            defaultValue:
+              'Settings were changed elsewhere. Discard local changes and reload before saving again.',
+          }),
+        );
+        // Pull latest so discard has a current base; keep local draft until user confirms.
+        await mutate().catch(() => undefined);
+      } else {
+        toast.error(t('generalSettings.saveError'));
+      }
     } finally {
       setSaving(false);
     }
   };
 
+  const applyServerSnapshot = useCallback(
+    (source: {
+      emailDomainAllowlist: string[];
+      emailDomainAllowlistEnabled: boolean;
+      openRegistration: boolean;
+      revision: number;
+    }) => {
+      const next = toDraft(source);
+      const nextFp = fingerprintGeneralSettingsDraft({
+        ...next,
+        emailDomainText: normalizeEmailDomainAllowlist(next.emailDomainText).join('\n'),
+      });
+      setBaseline(next);
+      setDraft(next);
+      setBaseRevision(source.revision);
+      setServerStale(false);
+      setRevisionConflict(false);
+      baselineFpRef.current = nextFp;
+      draftFpRef.current = nextFp;
+    },
+    [toDraft],
+  );
+
+  const discardAndRefresh = () => {
+    void mutate()
+      .then((fresh) => {
+        if (fresh) applyServerSnapshot(fresh);
+        else if (data) applyServerSnapshot(data);
+      })
+      .catch(() => {
+        if (data) applyServerSnapshot(data);
+      });
+  };
+
   const renderLoaded = () => {
     if (!draft) return <Loading debugId="AdminGeneralSettings > Hydrate" />;
-    const disabled = !canUpdate;
+    const disabled = !canUpdate || serverStale || revisionConflict;
 
     return (
       <AdminPageTemplate
@@ -172,7 +302,40 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         hideTitle={embedded}
         title={t('generalSettings.title')}
       >
-        {disabled ? <Alert showIcon message={t('generalSettings.readOnly')} type="info" /> : null}
+        {disabled && !serverStale && !revisionConflict ? (
+          <Alert showIcon message={t('generalSettings.readOnly')} type="info" />
+        ) : null}
+        {serverStale || revisionConflict ? (
+          <Alert
+            showIcon
+            type="warning"
+            description={
+              revisionConflict
+                ? t('generalSettings.conflict.description', {
+                    defaultValue:
+                      'Another admin saved while you were editing (revision conflict). Discard local changes and reload to continue.',
+                  })
+                : t('generalSettings.stale.description', {
+                    defaultValue:
+                      'Server settings changed while you were editing. Discard local changes and reload to continue.',
+                  })
+            }
+            extra={
+              <Button onClick={discardAndRefresh}>
+                {t('generalSettings.stale.refresh', { defaultValue: 'Discard and refresh' })}
+              </Button>
+            }
+            message={
+              revisionConflict
+                ? t('generalSettings.conflict.title', {
+                    defaultValue: 'Revision conflict',
+                  })
+                : t('generalSettings.stale.title', {
+                    defaultValue: 'Settings updated on the server',
+                  })
+            }
+          />
+        ) : null}
 
         <section className={styles.card}>
           {/* Open registration */}
@@ -219,7 +382,7 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         {canUpdate ? (
           <div className={styles.footer}>
             <Button
-              disabled={!dirty}
+              disabled={!dirty || serverStale || revisionConflict || baseRevision === null}
               loading={saving}
               type="primary"
               onClick={() => void handleSave()}

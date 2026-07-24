@@ -137,8 +137,9 @@ const mapPlatformProfileToUser = (
 
 /**
  * Enforce stashed IdP group→platform role mapping at login time.
- * Call from Better Auth account/session databaseHooks after the local userId is known.
- * Non-blocking: reconcileIdentityProviderGroupRoles swallows apply failures.
+ * Call from Better Auth session.create.before (pre-session boundary) once userId is known.
+ * Fail-closed: reconcileIdentityProviderGroupRoles propagates apply failures so the
+ * session hook can abort creation (return false) rather than issue an elevated session.
  */
 export const enforcePlatformOidcGroupRoleMappingOnLogin = async (input: {
   /** Better Auth account.accountId = IdP subject */

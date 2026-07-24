@@ -38,7 +38,7 @@ const provider = {
   models: [],
   providerKey: 'example',
   revision: 3,
-  secret: { configured: true, fingerprint: 'sha256:abc', updatedAt: null },
+  secret: { configured: true, updatedAt: null },
   settings: { sdkType: 'openai' },
   sort: 0,
   source: 'custom',
@@ -150,7 +150,7 @@ describe('ai catalog controller', () => {
   it('excludes secret metadata from public draft fingerprint and payload', () => {
     const changedSecret = {
       ...provider,
-      secret: { configured: false, fingerprint: null, updatedAt: null },
+      secret: { configured: false, updatedAt: null },
     } satisfies AdminAiProviderDraft;
     expect(fingerprintAiProviderPublicDraft(changedSecret)).toBe(
       fingerprintAiProviderPublicDraft(provider),

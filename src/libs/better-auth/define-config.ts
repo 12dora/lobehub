@@ -28,7 +28,6 @@ import { initBetterAuthSSOProviders } from '@/libs/better-auth/sso';
 import {
   buildPlatformIdentityProvider,
   enforcePlatformOidcGroupRoleMappingForUserAccounts,
-  enforcePlatformOidcGroupRoleMappingOnLogin,
   type RuntimeIdentityProvider,
 } from '@/libs/better-auth/sso/platformIdentityProvider';
 import { platformIdentityProviderState } from '@/libs/better-auth/sso/platformIdentityProviderState';
@@ -254,58 +253,33 @@ export function defineConfig(
      * Ref: https://www.better-auth.com/docs/reference/options#databasehooks
      */
     databaseHooks: {
-      account: {
-        create: {
-          after: async (account) => {
-            // Platform OIDC login: map IdP groups → platform roles once userId is known.
-            try {
-              await enforcePlatformOidcGroupRoleMappingOnLogin({
-                accountId: account.accountId,
-                db: serverDB,
-                providerId: account.providerId,
-                userId: account.userId,
-              });
-            } catch {
-              // non-blocking — role mapping must not fail login
-            }
-          },
-        },
-        update: {
-          after: async (account) => {
-            // Returning OAuth login often updates tokens rather than creating a new account row.
-            try {
-              await enforcePlatformOidcGroupRoleMappingOnLogin({
-                accountId: account.accountId,
-                db: serverDB,
-                providerId: account.providerId,
-                userId: account.userId,
-              });
-            } catch {
-              // non-blocking
-            }
-          },
-        },
-      },
       session: {
         create: {
-          after: async (session) => {
-            // Safety net when account create/update did not fire (or order differed).
+          /**
+           * Pre-session boundary for IdP group→role mapping (identity/F2).
+           * Better Auth `create.after` runs after the row is committed (queueAfterTransactionHook),
+           * so a swallowed failure there can leave an authenticated over-privileged session.
+           * `create.before` returning false aborts session creation fail-closed.
+           */
+          before: async (session) => {
+            const linked = await serverDB
+              .select({
+                accountId: schema.account.accountId,
+                providerId: schema.account.providerId,
+              })
+              .from(schema.account)
+              .where(eq(schema.account.userId, session.userId));
             try {
-              const linked = await serverDB
-                .select({
-                  accountId: schema.account.accountId,
-                  providerId: schema.account.providerId,
-                })
-                .from(schema.account)
-                .where(eq(schema.account.userId, session.userId));
               await enforcePlatformOidcGroupRoleMappingForUserAccounts({
                 accounts: linked,
                 db: serverDB,
                 userId: session.userId,
               });
             } catch {
-              // non-blocking
+              // Configured mapping present but demotion/apply failed — deny the session.
+              return false;
             }
+            return { data: session };
           },
         },
       },

@@ -109,9 +109,12 @@ export const useConnectorActions = ({
       setBusyAction(action);
       editor.setActionError(null);
       try {
+        // Mutation commit is authoritative. Cache revalidation failures must not
+        // reclassify a successful server write as a failed action (false conflict
+        // on retry / stuck editor revision).
         await operation();
-        await Promise.all([mutate(), refreshAdminConnectorLists()]);
         toast.success(t(successKey as never));
+        await Promise.allSettled([mutate(), refreshAdminConnectorLists()]);
       } catch (cause) {
         const mapped = mapEnterpriseError(cause);
         if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') editor.setConflict(true);
@@ -223,15 +226,12 @@ export const useConnectorActions = ({
               testedDraftToken,
               testedRevision,
             });
-          } else {
-            setSessionTest(null);
-          }
-          await Promise.all([mutate(), refreshAdminConnectorLists()]);
-          if (result.status === 'success') {
             toast.success(t('connectorCatalog.toast.tested'));
           } else {
+            setSessionTest(null);
             editor.setActionError(t('connectorCatalog.errors.generic'));
           }
+          await Promise.allSettled([mutate(), refreshAdminConnectorLists()]);
         } catch (cause) {
           setSessionTest(null);
           const mapped = mapEnterpriseError(cause);
@@ -385,9 +385,10 @@ export const useConnectorActions = ({
             expectedDraftToken: data.draftToken,
             expectedRevision: data.baseRevision,
           });
-          await refreshAdminConnectorLists();
+          // Delete committed: navigate and toast even if list revalidation fails.
           toast.success(t('connectorCatalog.toast.deleted'));
           navigate('/admin/connectors');
+          await Promise.allSettled([refreshAdminConnectorLists()]);
         } catch (cause) {
           editor.setActionError(errorText(cause));
           throw cause;
