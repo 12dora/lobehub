@@ -4,6 +4,7 @@ import { customAlphabet } from 'nanoid/non-secure';
 import { getActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import { lambdaClient } from '@/libs/trpc/client';
 import { agentService } from '@/services/agent';
+import { parseAgentTemplateId } from '@/services/agentMarketplace';
 import { discoverService } from '@/services/discover';
 import { marketApiService } from '@/services/marketApi';
 import { useAgentStore } from '@/store/agent';
@@ -61,19 +62,73 @@ export const installMarketplaceAgents = async (
   const workspaceId = getActiveWorkspaceId();
   const visibility = workspaceId ? (options?.visibility ?? 'public') : undefined;
 
-  // Workspace-mode forks must be attributed to the workspace's Market org via
-  // `actAs` — the per-user trust token already carries workspaceId, so Market
-  // rejects forks without `x-lobe-owner-account-id` (403). Mirrors the lookup
-  // ForkAndChat does for the single-fork community flow.
-  //
-  // `autoProvision` lets owners install agents on a brand-new workspace before
-  // they've explicitly set a Community handle — server derives one from the
-  // workspace name. Non-owners fall through to the strict path and get
-  // PRECONDITION_FAILED, which the caller (e.g. onboarding) surfaces as a
-  // soft toast.
+  const requestedSources = sourceAgentIds.map((templateId) => {
+    const source = parseAgentTemplateId(templateId);
+    return {
+      ...source,
+      forkedFromIdentifier: source.sourceType === 'legacy' ? templateId : source.sourceId,
+      templateId,
+    };
+  });
+
+  // 1. Parallel dedupe — find which source ids are already installed
+  const existing = await Promise.all(
+    requestedSources.map(({ forkedFromIdentifier }) =>
+      agentService.getAgentByForkedFromIdentifier(forkedFromIdentifier),
+    ),
+  );
+  const skippedAgentIds: string[] = [];
+  const pendingSources: typeof requestedSources = [];
+  requestedSources.forEach((source, index) => {
+    if (existing[index]) skippedAgentIds.push(source.templateId);
+    else pendingSources.push(source);
+  });
+
+  // 2. Resolve each template from its explicit source. Legacy ids are
+  // namespaced by the fallback picker, so an identifier shared by both
+  // catalogs can never accidentally bypass a Market fork.
+  const detailResults = await Promise.allSettled(
+    pendingSources.map(({ sourceId, sourceType }) =>
+      discoverService.getAssistantDetail({
+        identifier: sourceId,
+        source: sourceType,
+      }),
+    ),
+  );
+
+  // 3. Prepare only items with valid detail.
+  type Prepared = {
+    detail: NonNullable<Awaited<ReturnType<typeof discoverService.getAssistantDetail>>>;
+    forkedFromIdentifier: string;
+    sourceId: string;
+    sourceType: 'legacy' | 'new';
+    templateId: string;
+  };
+  const prepared: Prepared[] = [];
+  detailResults.forEach((result, index) => {
+    const source = pendingSources[index];
+    if (result.status !== 'fulfilled') {
+      console.warn('Failed to fetch marketplace agent detail:', source.sourceId, result.reason);
+      return;
+    }
+    const detail = result.value;
+    if (!detail?.config) {
+      console.warn('Marketplace agent config is missing:', source.sourceId);
+      return;
+    }
+    prepared.push({
+      detail: detail as Prepared['detail'],
+      ...source,
+    });
+  });
+
+  const marketPrepared = prepared.filter((item) => item.sourceType === 'new');
+
+  // Workspace-mode Market forks must be attributed to the workspace's Market
+  // organization. Legacy-index copies are local and do not need that account.
   let actAs: number | undefined;
   let createdMarketProfile = false;
-  if (workspaceId) {
+  if (workspaceId && marketPrepared.length > 0) {
     const { marketAccountId, created } =
       await lambdaClient.workspace.ensureMarketOrganization.mutate({
         autoProvision: true,
@@ -82,72 +137,34 @@ export const installMarketplaceAgents = async (
     createdMarketProfile = created;
   }
 
-  // 1. Parallel dedupe — find which source ids are already forked
-  const existing = await Promise.all(
-    sourceAgentIds.map((id) => agentService.getAgentByForkedFromIdentifier(id)),
-  );
-  const skippedAgentIds: string[] = [];
-  const pendingSourceIds: string[] = [];
-  sourceAgentIds.forEach((id, i) => {
-    if (existing[i]) skippedAgentIds.push(id);
-    else pendingSourceIds.push(id);
-  });
-
-  // 2. Parallel fetch market detail for pending ids (best-effort per item)
-  const detailResults = await Promise.allSettled(
-    pendingSourceIds.map((id) =>
-      discoverService.getAssistantDetail({ identifier: id, source: 'new' }),
-    ),
-  );
-
-  // 3. Build batch fork input only for items with valid detail
-  type Prepared = {
-    detail: NonNullable<Awaited<ReturnType<typeof discoverService.getAssistantDetail>>>;
-    newIdentifier: string;
-    sourceId: string;
-  };
-  const prepared: Prepared[] = [];
-  detailResults.forEach((result, i) => {
-    const sourceId = pendingSourceIds[i];
-    if (result.status !== 'fulfilled') {
-      console.warn('Failed to fetch marketplace agent detail:', sourceId, result.reason);
-      return;
-    }
-    const detail = result.value;
-    if (!detail?.config) {
-      console.warn('Marketplace agent config is missing:', sourceId);
-      return;
-    }
-    prepared.push({
-      detail: detail as Prepared['detail'],
-      newIdentifier: generateMarketIdentifier(),
-      sourceId,
-    });
-  });
-
-  // 4. Single batch fork call
+  // 4. Fork authenticated Market templates in one batch. Public legacy
+  // templates are copied directly into the local library below.
   const forkOutcomes =
-    prepared.length === 0
+    marketPrepared.length === 0
       ? []
       : await marketApiService.forkAgent(
-          prepared.map((p) => ({
+          marketPrepared.map((item) => ({
             actAs,
-            identifier: p.newIdentifier,
-            name: p.detail.title,
-            sourceIdentifier: p.sourceId,
+            identifier: generateMarketIdentifier(),
+            name: item.detail.title,
+            sourceIdentifier: item.sourceId,
             status: 'published',
             visibility: 'public',
           })),
         );
+  const forkOutcomeBySource = new Map(
+    forkOutcomes.map((outcome) => [outcome.sourceIdentifier, outcome]),
+  );
 
-  // 5. Parallel local createAgent for successful forks
+  // 5. Create the local agents. Legacy templates intentionally omit
+  // marketIdentifier because no remote Market fork exists.
   const installResults = await Promise.allSettled(
-    forkOutcomes.map(async (outcome, i) => {
-      const { detail, sourceId } = prepared[i];
-      if (!outcome.success) {
-        throw new Error(outcome.error.message);
+    prepared.map(async ({ detail, forkedFromIdentifier, sourceId, sourceType, templateId }) => {
+      const forkOutcome = forkOutcomeBySource.get(sourceId);
+      if (sourceType === 'new' && !forkOutcome?.success) {
+        throw new Error(forkOutcome?.error.message || 'Marketplace fork failed');
       }
-      const fork = outcome.data;
+
       const result = await createAgent({
         config: {
           ...detail.config,
@@ -155,57 +172,61 @@ export const installMarketplaceAgents = async (
           backgroundColor: detail.backgroundColor,
           description: detail.description,
           editorData: detail.editorData,
-          marketIdentifier: fork.agent.identifier,
+          ...(forkOutcome?.success
+            ? { marketIdentifier: forkOutcome.data.agent.identifier }
+            : undefined),
           params: {
             ...detail.config.params,
-            forkedFromIdentifier: sourceId,
+            forkedFromIdentifier,
           },
           tags: detail.tags,
-          title: fork.agent.name,
+          title: forkOutcome?.success ? forkOutcome.data.agent.name : detail.title,
         },
         visibility,
       });
 
-      discoverService.reportAgentEvent({
-        event: 'add',
-        identifier: fork.agent.identifier,
-        source: getSourcePath(),
-      });
+      if (forkOutcome?.success) {
+        discoverService.reportAgentEvent({
+          event: 'add',
+          identifier: forkOutcome.data.agent.identifier,
+          source: getSourcePath(),
+        });
+      }
 
-      return { agentId: result.agentId, sourceId };
+      return { agentId: result.agentId, sourceId, templateId };
     }),
   );
 
   // 6. Build summaries — preserve the original per-source ordering
-  const installedBySource = new Map<string, string>();
+  const installedByTemplate = new Map<string, string>();
   installResults.forEach((r, i) => {
     if (r.status === 'fulfilled') {
-      installedBySource.set(r.value.sourceId, r.value.agentId);
+      installedByTemplate.set(r.value.templateId, r.value.agentId);
     } else {
       console.warn('Failed to install marketplace agent:', prepared[i]?.sourceId, r.reason);
     }
   });
 
-  const detailBySource = new Map<string, Prepared['detail']>();
-  prepared.forEach((p) => detailBySource.set(p.sourceId, p.detail));
+  const detailByTemplate = new Map<string, Prepared['detail']>();
+  prepared.forEach((p) => detailByTemplate.set(p.templateId, p.detail));
 
-  const summaries: InstallMarketplaceAgentSummary[] = sourceAgentIds.map((sourceId) => {
-    if (skippedAgentIds.includes(sourceId)) {
-      return { skipped: true, templateId: sourceId };
+  const summaries: InstallMarketplaceAgentSummary[] = sourceAgentIds.map((templateId) => {
+    if (skippedAgentIds.includes(templateId)) {
+      return { skipped: true, templateId };
     }
-    const detail = detailBySource.get(sourceId);
+    const detail = detailByTemplate.get(templateId);
     return {
       avatar: detail?.avatar,
       category: detail?.category,
       description: detail?.description || detail?.summary,
-      installedAgentId: installedBySource.get(sourceId),
+      installedAgentId: installedByTemplate.get(templateId),
       skipped: false,
-      templateId: sourceId,
+      templateId,
       title: detail?.title,
     };
   });
 
-  const installedAgentIds = Array.from(installedBySource.values());
+  const installedAgentIds = Array.from(installedByTemplate.values());
 
   if (installedAgentIds.length > 0) {
     await refreshAgentList();

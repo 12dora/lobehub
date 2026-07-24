@@ -188,9 +188,31 @@ export class UserSettingsActionImpl {
 
     this.#set({ settings: diffs }, false, 'optimistic_updateSettings');
 
+    // Persist only the top-level setting groups touched by this mutation.
+    // `diffs` is the complete local override state and can include unrelated
+    // credential-bearing groups (for example `languageModel`). Sending that
+    // entire object makes a harmless general-settings update fail the managed
+    // settings policy before it reaches the intended field.
+    const updates = Object.fromEntries(
+      Object.keys(changedFields)
+        .filter((key) => Object.hasOwn(diffs, key))
+        .map((key) => [key, diffs[key]]),
+    ) as PartialDeep<UserSettings>;
+
     const abortController = this.#get().internal_createSignal();
-    await userService.updateUserSettings(diffs, abortController.signal);
-    await this.#get().refreshUserState();
+    try {
+      await userService.updateUserSettings(updates, abortController.signal);
+      await this.#get().refreshUserState();
+    } catch (error) {
+      // Only the latest mutation owns the optimistic state. An older request can
+      // reject after internal_createSignal aborts it, but rolling that request
+      // back would overwrite the newer mutation that superseded it.
+      if (this.#get().updateSettingsSignal === abortController) {
+        this.#set({ settings: prevSetting }, false, 'rollback_updateSettings');
+      }
+
+      throw error;
+    }
   };
 
   updateDefaultAgent = async (defaultAgent: PartialDeep<LobeAgentSettings>): Promise<void> => {
