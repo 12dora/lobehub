@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { createMockAdminAgentsClient } from './mockAdminAgents';
 
+/**
+ * Long enough that a char-code hex stream of `agentKey` alone exceeds 64 hex chars (32 source
+ * chars), so a truncated mock digest would ignore later identity fields — still within the
+ * schema max of 128.
+ */
+const LONG_AGENT_KEY = `long-key-${'k'.repeat(40)}`;
+
 describe('mock Admin Agents contract adapter', () => {
   it('filters the catalog and exposes terminal rollout states through the paged endpoint', async () => {
     const client = createMockAdminAgentsClient();
@@ -109,6 +116,55 @@ describe('mock Admin Agents contract adapter', () => {
     });
     expect(rolledBack.versionId).toBe(appended.version.id);
     expect(rolledBack.revision).toBe(publishedRevision + 1);
+  });
+
+  it('draft-only writes change draftToken for long agent keys (full identity digest, F4)', async () => {
+    const client = createMockAdminAgentsClient();
+    const created = await client.create({
+      agentKey: LONG_AGENT_KEY,
+      isDefault: false,
+      reason: 'long-key draft token',
+      systemKey: null,
+    });
+    const tokenBefore = created.draftToken;
+    const revisionBefore = created.identity.revision;
+    const sequenceBefore = created.identity.draftSequence;
+    expect(tokenBefore).toMatch(/^[a-f0-9]{64}$/);
+
+    // Assignment CAS is draftSequence-only in production; the mock must advance the token too.
+    await client.upsertAssignment({
+      agentId: created.identity.id,
+      enabled: true,
+      expectedDraftToken: tokenBefore,
+      expectedRevision: revisionBefore,
+      mode: 'optional',
+      pinnedVersionId: null,
+      reason: 'long-key assignment',
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+
+    const afterAssignment = await client.get({ id: created.identity.id });
+    expect(afterAssignment.identity.revision).toBe(revisionBefore);
+    expect(afterAssignment.identity.draftSequence).toBe(sequenceBefore + 1);
+    // Truncating the identity hex to 64 chars would leave this token unchanged for long keys.
+    expect(afterAssignment.draftToken).not.toBe(tokenBefore);
+    expect(afterAssignment.draftToken).toMatch(/^[a-f0-9]{64}$/);
+
+    const tokenMid = afterAssignment.draftToken;
+    await client.updateDraft({
+      agentId: created.identity.id,
+      expectedDraftToken: tokenMid,
+      expectedRevision: revisionBefore,
+      isDefault: false,
+      reason: 'long-key draft patch',
+      systemKey: null,
+    });
+    const afterDraft = await client.get({ id: created.identity.id });
+    expect(afterDraft.identity.revision).toBe(revisionBefore);
+    expect(afterDraft.identity.draftSequence).toBe(sequenceBefore + 2);
+    expect(afterDraft.draftToken).not.toBe(tokenMid);
   });
 
   it('enforces job revision/status CAS across rollout transitions', async () => {

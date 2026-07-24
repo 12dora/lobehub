@@ -2,8 +2,10 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
 import { isAgentDetailFresh } from './AgentDetailView';
 import type { AdminAgentDetailOutput } from './types';
+import { fetchAdminAgentDetail } from './useAdminAgents';
 import { useRefreshLock, type WriteToken } from './useRefreshLock';
 
 /**
@@ -130,6 +132,58 @@ describe('useRefreshLock lifecycle (pre-write baseline + immediate lock)', () =>
     });
     expect(result.current.isLocked()).toBe(false);
     expect(result.current.refreshFailed).toBe(false);
+  });
+
+  it('real lock unlocks after mock assignment CAS on a long agent key (F4 full digest)', async () => {
+    // Goes through the mock service + fetchAdminAgentDetail + real useRefreshLock / isAgentDetailFresh
+    // chain — not a hand-built token. A truncated mock digest would keep the token equal and stay locked.
+    const client = createMockAdminAgentsClient();
+    // 32+ source chars of agentKey alone filled the old 64-hex truncation window.
+    const longKey = `refresh-long-${'k'.repeat(40)}`;
+    const created = await client.create({
+      agentKey: longKey,
+      isDefault: false,
+      reason: 'long-key lock chain',
+      systemKey: null,
+    });
+    const before = await fetchAdminAgentDetail(created.identity.id, client);
+    const tokenBefore = before.draftToken;
+    const revisionBefore = before.identity.revision;
+
+    await client.upsertAssignment({
+      agentId: created.identity.id,
+      enabled: true,
+      expectedDraftToken: tokenBefore,
+      expectedRevision: revisionBefore,
+      mode: 'optional',
+      pinnedVersionId: null,
+      reason: 'assignment after long-key create',
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+
+    const after = await fetchAdminAgentDetail(created.identity.id, client);
+    expect(after.identity.revision).toBe(revisionBefore);
+    expect(after.identity.draftSequence).toBe(before.identity.draftSequence + 1);
+    expect(after.draftToken).not.toBe(tokenBefore);
+    expect(isAgentDetailFresh(after, before)).toBe(true);
+
+    const mutate = vi.fn().mockResolvedValue(after);
+    const { result } = mount(mutate, () => before);
+    const writeToken: WriteToken = {};
+    act(() => {
+      expect(result.current.beginWrite(writeToken)).toBe(true);
+    });
+    act(() => {
+      result.current.markCommitted(writeToken);
+    });
+    await act(async () => {
+      await result.current.commitWrite(writeToken);
+    });
+    expect(result.current.isLocked()).toBe(false);
+    expect(result.current.refreshFailed).toBe(false);
+    expect(mutate).toHaveBeenCalled();
   });
 
   it.each<[string, () => Promise<AdminAgentDetailOutput | undefined>]>([
