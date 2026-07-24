@@ -442,4 +442,165 @@ describe('PlatformGlobalCredentialModel', () => {
       fileName: 'new.bin',
     });
   });
+
+  it('rejects expired staged file rotation and leaves the prior secret authoritative', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const actor = 'admin-expired-rot';
+    const created = await model.create({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-keep'),
+      key: 'file-expired-rot',
+      meta: { fileName: 'keep.bin', fileSize: 8, maskedPreview: 'keep.bin' },
+      name: 'Keep',
+      type: 'file',
+    });
+    const prior = await model.getActiveSecretEnvelope(created.id);
+    expect(prior?.ciphertext).toBe('aihub.secret.v1.test.file-keep');
+
+    const hash = '2'.repeat(64);
+    await model.stageUpload({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-expired-v2'),
+      expiresAt: new Date(Date.now() - 5_000),
+      fileHashId: hash,
+      fileName: 'next.bin',
+      fileSize: 12,
+      fileType: 'application/octet-stream',
+    });
+
+    await expect(
+      model.updateFromStagedUpload({
+        createdBy: actor,
+        expectedRevision: created.revision,
+        fileHashId: hash,
+        id: created.id,
+      }),
+    ).rejects.toBeInstanceOf(PlatformGlobalCredentialValidationError);
+
+    const head = await model.getById(created.id);
+    expect(head?.revision).toBe(created.revision);
+    expect(head?.fileName).toBe('keep.bin');
+    expect((await model.getActiveSecretEnvelope(created.id))?.fingerprint).toBe(prior?.fingerprint);
+    expect(await model.countSecrets(created.id)).toBe(1);
+  });
+
+  it('rolls back a mid-rotation failure so the prior credential remains authoritative', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const actor = 'admin-mid-rot';
+    const created = await model.create({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-prior'),
+      key: 'file-mid-rot',
+      meta: { fileName: 'prior.bin', fileSize: 8, maskedPreview: 'prior.bin' },
+      name: 'Prior',
+      type: 'file',
+    });
+    const prior = await model.getActiveSecretEnvelope(created.id);
+    const hash = '3'.repeat(64);
+    await model.stageUpload({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-next'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hash,
+      fileName: 'next.bin',
+      fileSize: 10,
+      fileType: 'application/octet-stream',
+    });
+
+    // Force failure AFTER real credential/secret/staging mutations so the TX
+    // must roll back (stale expectedRevision alone aborts before any write).
+    let mutationsReached = false;
+    await expect(
+      model.updateFromStagedUpload({
+        createdBy: actor,
+        expectedRevision: created.revision,
+        fileHashId: hash,
+        id: created.id,
+        testHooks: {
+          afterMutations: () => {
+            mutationsReached = true;
+            throw new Error('forced mid-rotation abort');
+          },
+        },
+      }),
+    ).rejects.toThrow(/forced mid-rotation abort/);
+    expect(mutationsReached).toBe(true);
+
+    const head = await model.getById(created.id);
+    expect(head?.revision).toBe(created.revision);
+    expect(head?.fileName).toBe('prior.bin');
+    expect((await model.getActiveSecretEnvelope(created.id))?.ciphertext).toBe(
+      'aihub.secret.v1.test.file-prior',
+    );
+    expect((await model.getActiveSecretEnvelope(created.id))?.fingerprint).toBe(prior?.fingerprint);
+    expect(await model.countSecrets(created.id)).toBe(1);
+    // Staged replacement is restored by rollback for a retry.
+    await expect(model.getStagedUpload(hash, actor)).resolves.toMatchObject({
+      fileName: 'next.bin',
+    });
+  });
+
+  it('allows only one concurrent same-revision file rotation to commit', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const actor = 'admin-cas-rot';
+    const created = await model.create({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-cas-v1'),
+      key: 'file-cas-rot',
+      meta: { fileName: 'v1.bin', fileSize: 8, maskedPreview: 'v1.bin' },
+      name: 'CAS',
+      type: 'file',
+    });
+    const hashA = '4'.repeat(64);
+    const hashB = '5'.repeat(64);
+    await model.stageUpload({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-cas-a'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hashA,
+      fileName: 'a.bin',
+      fileSize: 4,
+      fileType: 'application/octet-stream',
+    });
+    await model.stageUpload({
+      createdBy: actor,
+      envelope: fakeEnvelope('file-cas-b'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hashB,
+      fileName: 'b.bin',
+      fileSize: 4,
+      fileType: 'application/octet-stream',
+    });
+
+    const results = await Promise.allSettled([
+      model.updateFromStagedUpload({
+        createdBy: actor,
+        expectedRevision: created.revision,
+        fileHashId: hashA,
+        id: created.id,
+      }),
+      model.updateFromStagedUpload({
+        createdBy: actor,
+        expectedRevision: created.revision,
+        fileHashId: hashB,
+        id: created.id,
+      }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({ reason: expect.any(PlatformRevisionConflictError) });
+
+    const head = await model.getById(created.id);
+    expect(head?.revision).toBe(created.revision + 1);
+    expect(['a.bin', 'b.bin']).toContain(head?.fileName);
+    const winnerHash = head?.fileName === 'a.bin' ? hashA : hashB;
+    const loserHash = head?.fileName === 'a.bin' ? hashB : hashA;
+    await expect(model.getStagedUpload(winnerHash, actor)).resolves.toBeNull();
+    await expect(model.getStagedUpload(loserHash, actor)).resolves.not.toBeNull();
+    // Exactly one new secret revision; prior revoked, winner active.
+    expect(await model.countSecrets(created.id)).toBe(2);
+  });
 });

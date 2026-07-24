@@ -404,6 +404,9 @@ export class PlatformGlobalCredentialModel {
    * Rotate a file credential from an owner-bound staged upload under the same
    * row lock + optimistic CAS as {@link update}. Consumes the staging row only
    * after the new secret revision is inserted.
+   *
+   * Optional `testHooks` are production-no-ops used by concurrency / rollback
+   * regressions (barrier after lock, force-fail after mutations).
    */
   updateFromStagedUpload = async (params: {
     createdBy: string;
@@ -412,6 +415,15 @@ export class PlatformGlobalCredentialModel {
     id: number;
     meta?: PlatformGlobalCredentialMeta;
     name?: string;
+    /**
+     * Test-only seams. Never set from production call sites.
+     * - `afterCredentialLock`: after FOR UPDATE + revision CAS check, before writes.
+     * - `afterMutations`: after credential/secret/staging writes, before commit.
+     */
+    testHooks?: {
+      afterCredentialLock?: () => Promise<void> | void;
+      afterMutations?: () => Promise<void> | void;
+    };
   }): Promise<PlatformGlobalCredentialPublicView> => {
     this.assertActor(params.createdBy);
     this.assertFileHashId(params.fileHashId);
@@ -445,6 +457,11 @@ export class PlatformGlobalCredentialModel {
           },
         );
       }
+
+      // Deterministic concurrency barrier: first writer holds the row lock here
+      // while the second issues its FOR UPDATE (observe via pg_blocking_pids +
+      // ungranted transactionid wait on this backend's xid — not a granted tuple lock).
+      await params.testHooks?.afterCredentialLock?.();
 
       const [upload] = await tx
         .select()
@@ -534,6 +551,9 @@ export class PlatformGlobalCredentialModel {
             eq(platformGlobalCredentialUploads.createdBy, params.createdBy),
           ),
         );
+
+      // Force mid-rotation abort after real writes so TX rollback is exercised.
+      await params.testHooks?.afterMutations?.();
 
       return toPublicView(updated);
     });
