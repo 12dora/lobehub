@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Must mock authEnv before importing the module under test so getJwksKey() resolves.
 vi.mock('@/envs/auth', () => ({
@@ -152,7 +152,7 @@ describe('internalJwt', () => {
     });
   });
 
-  describe('platform Skill operation proof', () => {
+  describe('platform Skill operation proof (claim construction)', () => {
     const input = {
       agentId: 'agent-1',
       operationId: 'operation-1',
@@ -178,28 +178,6 @@ describe('internalJwt', () => {
       expect(setSubjectMock).toHaveBeenCalledWith('user-1');
       expect(setExpirationTimeMock).toHaveBeenCalledWith('4h');
     });
-
-    it('returns server-signed claims without accepting request scope as authority', async () => {
-      const { signPlatformSkillOperationProof, verifyPlatformSkillOperationProof } =
-        await import('../internalJwt');
-      await signPlatformSkillOperationProof(input);
-      jwtVerifyMock.mockResolvedValue({
-        payload: { ...SignJWTMock.mock.calls.at(-1)?.[0], sub: input.userId },
-      });
-
-      await expect(verifyPlatformSkillOperationProof('proof', input.userId)).resolves.toMatchObject(
-        {
-          agentId: input.agentId,
-          operationId: input.operationId,
-          refsHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-          revision: input.revision,
-          userId: input.userId,
-        },
-      );
-      await expect(
-        verifyPlatformSkillOperationProof('proof', 'other-user'),
-      ).resolves.toBeUndefined();
-    });
   });
 
   describe('signInternalJWT', () => {
@@ -212,5 +190,188 @@ describe('internalJwt', () => {
       expect(SignJWTMock).toHaveBeenCalledWith({ purpose: 'lobe-internal-call' });
       expect(setExpirationTimeMock).toHaveBeenCalledWith('30s');
     });
+  });
+});
+
+/**
+ * Real JOSE boundary: ephemeral RSA key, no mocks on SignJWT / jwtVerify.
+ * Isolated from the mock suite above via resetModules + doUnmock.
+ */
+describe('platform Skill operation proof (real JOSE)', () => {
+  const baseInput = {
+    agentId: 'agent-1',
+    operationId: 'operation-1',
+    refs: [{ checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' }],
+    revision: 'catalog-1',
+    userId: 'user-1',
+  };
+
+  let signPlatformSkillOperationProof: (input: typeof baseInput) => Promise<string>;
+  let verifyPlatformSkillOperationProof: (
+    token: string,
+    userId: string,
+  ) => Promise<
+    | {
+        agentId: string;
+        operationId: string;
+        refsHash: string;
+        revision: string;
+        userId: string;
+      }
+    | undefined
+  >;
+  let hashPlatformSkillOperationRefs: (
+    refs: Array<{ checksum: string; skillKey: string; version: string }>,
+  ) => string;
+
+  beforeAll(async () => {
+    vi.resetModules();
+    vi.doUnmock('jose');
+
+    const jose = await import('jose');
+    const { privateKey } = await jose.generateKeyPair('RS256', { extractable: true });
+    const jwk = await jose.exportJWK(privateKey);
+    jwk.alg = 'RS256';
+    jwk.kid = 'integration-kid';
+    jwk.use = 'sig';
+
+    vi.doMock('@/envs/auth', () => ({
+      authEnv: {
+        INTERNAL_JWT_EXPIRATION: '30s',
+        JWKS_KEY: JSON.stringify({ keys: [jwk] }),
+      },
+    }));
+
+    const mod = await import('../internalJwt');
+    signPlatformSkillOperationProof = mod.signPlatformSkillOperationProof;
+    verifyPlatformSkillOperationProof = mod.verifyPlatformSkillOperationProof;
+    hashPlatformSkillOperationRefs = mod.hashPlatformSkillOperationRefs;
+  });
+
+  afterAll(() => {
+    vi.useRealTimers();
+    vi.resetModules();
+  });
+
+  it('signs then verifies a real token with matching claims', async () => {
+    const token = await signPlatformSkillOperationProof(baseInput);
+    expect(token.split('.')).toHaveLength(3);
+
+    await expect(verifyPlatformSkillOperationProof(token, baseInput.userId)).resolves.toEqual({
+      agentId: baseInput.agentId,
+      operationId: baseInput.operationId,
+      refsHash: hashPlatformSkillOperationRefs(baseInput.refs),
+      revision: baseInput.revision,
+      userId: baseInput.userId,
+    });
+  });
+
+  it('rejects a tampered signature', async () => {
+    const token = await signPlatformSkillOperationProof(baseInput);
+    const parts = token.split('.');
+    const sig = parts[2]!;
+    // Flip one character in the signature segment without breaking base64url alphabet.
+    const flipped = sig.slice(0, -2) + (sig.at(-2) === 'A' ? 'B' : 'A') + sig.slice(-1);
+    const tampered = `${parts[0]}.${parts[1]}.${flipped}`;
+
+    await expect(
+      verifyPlatformSkillOperationProof(tampered, baseInput.userId),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects wrong subject and wrong purpose', async () => {
+    const token = await signPlatformSkillOperationProof(baseInput);
+    await expect(verifyPlatformSkillOperationProof(token, 'other-user')).resolves.toBeUndefined();
+
+    // Re-sign with a different purpose using the same JWKS (manual SignJWT).
+    const jose = await import('jose');
+    const jwks = JSON.parse((await import('@/envs/auth')).authEnv.JWKS_KEY!);
+    const key = await jose.importJWK(jwks.keys[0], 'RS256');
+    const wrongPurpose = await new jose.SignJWT({
+      agent_id: baseInput.agentId,
+      catalog_revision: baseInput.revision,
+      operation_id: baseInput.operationId,
+      purpose: 'hetero-operation',
+      refs_hash: hashPlatformSkillOperationRefs(baseInput.refs),
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'integration-kid' })
+      .setSubject(baseInput.userId)
+      .setIssuedAt()
+      .setExpirationTime('4h')
+      .sign(key);
+
+    await expect(
+      verifyPlatformSkillOperationProof(wrongPurpose, baseInput.userId),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects tokens missing each required claim', async () => {
+    const jose = await import('jose');
+    const jwks = JSON.parse((await import('@/envs/auth')).authEnv.JWKS_KEY!);
+    const key = await jose.importJWK(jwks.keys[0], 'RS256');
+    const refsHash = hashPlatformSkillOperationRefs(baseInput.refs);
+
+    const claimVariants = [
+      {
+        agent_id: baseInput.agentId,
+        catalog_revision: baseInput.revision,
+        operation_id: baseInput.operationId,
+        purpose: 'platform-skill-operation',
+      },
+      {
+        catalog_revision: baseInput.revision,
+        operation_id: baseInput.operationId,
+        purpose: 'platform-skill-operation',
+        refs_hash: refsHash,
+      },
+      {
+        agent_id: baseInput.agentId,
+        operation_id: baseInput.operationId,
+        purpose: 'platform-skill-operation',
+        refs_hash: refsHash,
+      },
+      {
+        agent_id: baseInput.agentId,
+        catalog_revision: baseInput.revision,
+        purpose: 'platform-skill-operation',
+        refs_hash: refsHash,
+      },
+    ] as const;
+
+    for (const claims of claimVariants) {
+      const token = await new jose.SignJWT({ ...claims })
+        .setProtectedHeader({ alg: 'RS256', kid: 'integration-kid' })
+        .setSubject(baseInput.userId)
+        .setIssuedAt()
+        .setExpirationTime('4h')
+        .sign(key);
+      await expect(
+        verifyPlatformSkillOperationProof(token, baseInput.userId),
+      ).resolves.toBeUndefined();
+    }
+  });
+
+  it('rejects an expired token', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const token = await signPlatformSkillOperationProof(baseInput);
+    // Advance past the 4h expiry.
+    vi.setSystemTime(new Date('2026-01-01T05:00:01.000Z'));
+    await expect(
+      verifyPlatformSkillOperationProof(token, baseInput.userId),
+    ).resolves.toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it('hashes refs order-independently and content-sensitively', () => {
+    const a = { checksum: 'a'.repeat(64), skillKey: 'alpha', version: '1.0.0' };
+    const b = { checksum: 'b'.repeat(64), skillKey: 'beta', version: '2.0.0' };
+    expect(hashPlatformSkillOperationRefs([a, b])).toBe(hashPlatformSkillOperationRefs([b, a]));
+    expect(hashPlatformSkillOperationRefs([a])).not.toBe(
+      hashPlatformSkillOperationRefs([{ ...a, checksum: 'c'.repeat(64) }]),
+    );
+    expect(hashPlatformSkillOperationRefs([a])).not.toBe(
+      hashPlatformSkillOperationRefs([{ ...a, version: '1.0.1' }]),
+    );
   });
 });
