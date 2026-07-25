@@ -471,4 +471,87 @@ describe('PlatformGlobalStatsModel', () => {
       vi.useRealTimers();
     });
   });
+
+  describe('month boundary half-open range (DB-008)', () => {
+    it('excludes exactly midnight of the next month from June usage', async () => {
+      const juneLastMs = new Date('2024-06-30T23:59:59.999Z');
+      const julyMidnight = new Date('2024-07-01T00:00:00.000Z');
+
+      await serverDB.insert(messages).values([
+        {
+          content: 'june-end',
+          createdAt: juneLastMs,
+          id: 'msg-june-end',
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant',
+          usage: { cost: 1, totalInputTokens: 1, totalOutputTokens: 1 },
+          userId: USER_A,
+        },
+        {
+          content: 'july-start',
+          createdAt: julyMidnight,
+          id: 'msg-july-start',
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant',
+          usage: { cost: 9, totalInputTokens: 9, totalOutputTokens: 9 },
+          userId: USER_A,
+        },
+      ]);
+
+      const juneRows = await globalStats.findByMonth('2024-06');
+      expect(juneRows.map((r) => r.id)).toEqual(['msg-june-end']);
+      expect(juneRows.map((r) => r.id)).not.toContain('msg-july-start');
+
+      const page = await globalStats.findByMonthPage('2024-06', { limit: 50 });
+      expect(page.items.map((r) => r.id)).toEqual(['msg-june-end']);
+
+      const bounded = await globalStats.findByMonthBounded('2024-06', 50);
+      expect(bounded.items.map((r) => r.id)).toEqual(['msg-june-end']);
+
+      const chart = await globalStats.findAndGroupByDay('2024-06');
+      expect(chart.some((d) => d.day === '2024-07-01')).toBe(false);
+      const june30 = chart.find((d) => d.day === '2024-06-30');
+      expect(june30?.totalRequests).toBe(1);
+    });
+  });
+
+  describe('rankAgents legacy virtual=NULL (DB-009)', () => {
+    it('includes virtual=false, virtual=null, and inbox; excludes virtual=true non-inbox', async () => {
+      await serverDB.insert(agents).values([
+        { id: 'ag-false', title: 'False', userId: USER_A, virtual: false },
+        { id: 'ag-null', title: 'Null', userId: USER_A, virtual: null },
+        { id: 'ag-true', title: 'True', userId: USER_A, virtual: true },
+        {
+          id: 'ag-inbox',
+          slug: 'inbox',
+          title: 'Inbox',
+          userId: USER_A,
+          virtual: true,
+        },
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'ag-false', id: 't-false', title: 'tf', userId: USER_A },
+        { agentId: 'ag-null', id: 't-null-1', title: 'tn1', userId: USER_A },
+        { agentId: 'ag-null', id: 't-null-2', title: 'tn2', userId: USER_A },
+        { agentId: 'ag-true', id: 't-true', title: 'tt', userId: USER_A },
+        { agentId: 'ag-inbox', id: 't-inbox', title: 'ti', userId: USER_A },
+      ]);
+
+      // countAgents: false + null (not pure virtual true) — same legacy population
+      expect(await globalStats.countAgents()).toBe(2);
+
+      const rank = await globalStats.rankAgents(10);
+      const ids = rank.map((r) => r.id);
+      expect(ids).toContain('ag-null');
+      expect(ids).toContain('ag-false');
+      expect(ids).toContain('ag-inbox');
+      expect(ids).not.toContain('ag-true');
+
+      // Highest topic count among non-virtual is ag-null (2 topics).
+      expect(rank[0]?.id).toBe('ag-null');
+      expect(rank[0]?.count).toBe(2);
+    });
+  });
 });

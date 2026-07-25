@@ -27,6 +27,7 @@ const AUDIT_ACCESS_ACTIONS: readonly AuditAccessAction[] = [
   'admin.audit.exports.download',
   'admin.audit.exports.get',
   'admin.audit.exports.list',
+  'admin.audit.exports.worker',
   'admin.audit.get',
   'admin.audit.legalHolds.create',
   'admin.audit.legalHolds.get',

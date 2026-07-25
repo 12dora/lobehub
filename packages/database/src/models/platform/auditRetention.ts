@@ -463,6 +463,8 @@ export class PlatformAuditRetentionRepository {
   purgeExportArtifactObjectsUnderHoldLock = async (params: {
     deleteObject: (storageKey: string) => Promise<void>;
     ids: string[];
+    /** HEAD probe for crash-after-delete convergence (DB-001). */
+    objectExists?: (storageKey: string) => Promise<boolean>;
     onObjectDeleted?: (tx: Transaction, id: string) => Promise<void>;
     onObjectDeferredHold?: (tx: Transaction, id: string) => Promise<void>;
     resolveHeldIds: (
@@ -478,6 +480,7 @@ export class PlatformAuditRetentionRepository {
     return exportsModel.purgeArtifactObjectsUnderHoldLock(params.ids, {
       db: this.db as LobeChatDatabase,
       deleteObject: params.deleteObject,
+      objectExists: params.objectExists,
       onObjectDeleted: params.onObjectDeleted,
       onObjectDeferredHold: params.onObjectDeferredHold,
       resolveHeldIds: params.resolveHeldIds,
@@ -486,6 +489,7 @@ export class PlatformAuditRetentionRepository {
 
   /**
    * Mark purge outboxes complete only after successful external object deletes.
+   * When a purgeToken is present on the row it is required for the finalize fence.
    * Returns the number of outbox rows cleared.
    */
   completeExportArtifactObjectDeletes = async (ids: string[]): Promise<number> => {
@@ -493,7 +497,19 @@ export class PlatformAuditRetentionRepository {
     const exportsModel = new PlatformAuditExportModel(this.db);
     let n = 0;
     for (const id of ids) {
-      if (await exportsModel.completeArtifactObjectDelete(id)) n += 1;
+      const row = await exportsModel.get(id);
+      const err = row?.error as
+        { purgeStorageKey?: string; purgeToken?: string } | null | undefined;
+      if (
+        await exportsModel.completeArtifactObjectDelete(
+          id,
+          this.db,
+          err?.purgeToken,
+          err?.purgeStorageKey,
+        )
+      ) {
+        n += 1;
+      }
     }
     return n;
   };

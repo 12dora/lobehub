@@ -1,0 +1,257 @@
+/**
+ * Finite server-emitted platform audit `action` / `targetType` catalogs.
+ *
+ * Emitters (`PlatformAuditService.append`, reauth `denied.action`, direct
+ * `platformAuditLogs` inserts) must use these tokens — never free-form strings.
+ * Locale coverage tests assert en-US + zh-CN labels for every entry.
+ */
+
+export const AUDIT_ACTIONS = [
+  'admin.agents.archive',
+  'admin.agents.assignments.create',
+  'admin.agents.assignments.remove',
+  'admin.agents.assignments.update',
+  'admin.agents.assignments.upsert',
+  'admin.agents.create',
+  'admin.agents.createVersion',
+  'admin.agents.delete',
+  'admin.agents.publish',
+  'admin.agents.rollback',
+  'admin.agents.rollouts.cancel',
+  'admin.agents.rollouts.retry',
+  'admin.agents.rollouts.rollback',
+  'admin.agents.rollouts.start',
+  'admin.agents.setDefaultInbox',
+  'admin.agents.updateDraft',
+  'admin.agents.validateDependencies',
+  'admin.aiModels.applyImmediate',
+  'admin.aiModels.batchToggle',
+  'admin.aiModels.batchUpdate',
+  'admin.aiModels.clear',
+  'admin.aiModels.create',
+  'admin.aiModels.deleteFromDraft',
+  'admin.aiModels.reorder',
+  'admin.aiModels.update',
+  'admin.aiProviders.applyImmediate',
+  'admin.aiProviders.archive',
+  'admin.aiProviders.createDraft',
+  'admin.aiProviders.delete',
+  'admin.aiProviders.publish',
+  'admin.aiProviders.publishNow',
+  'admin.aiProviders.rollback',
+  'admin.aiProviders.test',
+  'admin.aiProviders.updateDraft',
+  'admin.branding.publish',
+  'admin.branding.rollback',
+  'admin.branding.saveDraft',
+  'admin.branding.uploadAsset',
+  'admin.creds.createFile',
+  'admin.creds.createKV',
+  'admin.creds.createOAuth',
+  'admin.creds.delete',
+  'admin.creds.deleteByKey',
+  'admin.creds.update',
+  'admin.creds.uploadFile',
+  'admin.audit.conversations.get',
+  'admin.audit.conversations.list',
+  'admin.audit.conversations.messages',
+  'admin.audit.events.facets',
+  'admin.audit.events.get',
+  'admin.audit.events.list',
+  'admin.audit.events.stats',
+  'admin.audit.exports.cancel',
+  'admin.audit.exports.create',
+  'admin.audit.exports.download',
+  'admin.audit.exports.get',
+  'admin.audit.exports.list',
+  'admin.audit.exports.worker',
+  'admin.audit.get',
+  'admin.audit.legalHolds.create',
+  'admin.audit.legalHolds.get',
+  'admin.audit.legalHolds.list',
+  'admin.audit.legalHolds.release',
+  'admin.audit.list',
+  'admin.audit.policy.get',
+  'admin.audit.policy.update',
+  'admin.audit.retention.cancel',
+  'admin.audit.retention.dryRun',
+  'admin.audit.retention.getRun',
+  'admin.audit.retention.listRuns',
+  'admin.audit.retention.run',
+  'admin.audit.retention.status',
+  'admin.audit.retention.worker',
+  'admin.audit.users.search',
+  'admin.audit.users.summary',
+  'admin.audit.users.timeline',
+  'admin.authSettings.update',
+  'admin.connectors.applyImmediate',
+  'admin.connectors.archive',
+  'admin.connectors.createDraft',
+  'admin.connectors.deleteDraft',
+  'admin.connectors.discover',
+  'admin.connectors.publish',
+  'admin.connectors.publishNow',
+  'admin.connectors.revokeAllBindings',
+  'admin.connectors.rollback',
+  'admin.connectors.setSharedAuthorization',
+  'admin.connectors.test',
+  'admin.connectors.updateBuiltinToolPolicy',
+  'admin.connectors.updateDraft',
+  'admin.identityProviders.create',
+  'admin.identityProviders.delete',
+  'admin.identityProviders.disable',
+  'admin.identityProviders.disable.lkgAdvance',
+  'admin.identityProviders.discover',
+  'admin.identityProviders.publish',
+  'admin.identityProviders.publish.requestLease',
+  'admin.identityProviders.publish.requestReserved',
+  'admin.identityProviders.rollback',
+  'admin.identityProviders.rollback.requestLease',
+  'admin.identityProviders.rollback.requestReserved',
+  'admin.identityProviders.testStart',
+  'admin.identityProviders.testTerminal',
+  'admin.identityProviders.update',
+  'admin.identityProviders.validateNetwork',
+  'admin.managedResources.publish',
+  'admin.managedResources.saveDraft',
+  'admin.permission.denied',
+  'admin.roles.replaceUserGlobalRoles',
+  'admin.security.secretRotation.cancel',
+  'admin.security.secretRotation.restart',
+  'admin.security.secretRotation.retry',
+  'admin.security.secretRotation.start',
+  'admin.settings.applyImmediate',
+  'admin.settings.getDraft',
+  'admin.settings.publish',
+  'admin.settings.rollback',
+  'admin.settings.saveDraft',
+  'admin.settings.validateDraft',
+  'admin.sidebarLayout.update',
+  'admin.skills.applyImmediate',
+  'admin.skills.archive',
+  'admin.skills.create',
+  'admin.skills.createBuiltinOverride',
+  'admin.skills.createVersion',
+  'admin.skills.publish',
+  'admin.skills.publishNow',
+  'admin.skills.rollback',
+  'admin.skills.updateDraft',
+  'admin.skills.validate',
+  'admin.system.jobs.cancel',
+  'admin.system.jobs.retry',
+  'admin.system.prepareRestart',
+  'admin.system.requestRestart',
+  'admin.users.ban',
+  'admin.users.create',
+  'admin.users.delete',
+  'admin.users.get',
+  'admin.users.getAuditTrail',
+  'admin.users.list',
+  'admin.users.replaceGlobalRoles',
+  'admin.users.revokeSessions',
+  'admin.users.unban',
+  'connector.runtime.sharedCall',
+  'system.email.send',
+  'managedResource.legacyMutation',
+  'platform.managed_policy.publish',
+  'platform.provider.publish',
+  'platform.roles.replace',
+  'platform.settings.publish',
+  'platform.skill.publish',
+  'user.connectors.disconnect',
+  'user.connectors.oauthCallback',
+] as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+export const AUDIT_ACTION_SET: ReadonlySet<string> = new Set(AUDIT_ACTIONS);
+
+/** Named handles for high-churn emitters (prefer over string literals). */
+export const AUDIT_ACTION = {
+  IDENTITY_PROVIDERS_PUBLISH: 'admin.identityProviders.publish',
+  IDENTITY_PROVIDERS_ROLLBACK: 'admin.identityProviders.rollback',
+  IDENTITY_PROVIDERS_DISABLE: 'admin.identityProviders.disable',
+  IDENTITY_PROVIDERS_DISABLE_LKG_ADVANCE: 'admin.identityProviders.disable.lkgAdvance',
+  IDENTITY_PROVIDERS_PUBLISH_REQUEST_RESERVED: 'admin.identityProviders.publish.requestReserved',
+  IDENTITY_PROVIDERS_PUBLISH_REQUEST_LEASE: 'admin.identityProviders.publish.requestLease',
+  IDENTITY_PROVIDERS_ROLLBACK_REQUEST_RESERVED: 'admin.identityProviders.rollback.requestReserved',
+  IDENTITY_PROVIDERS_ROLLBACK_REQUEST_LEASE: 'admin.identityProviders.rollback.requestLease',
+  SYSTEM_JOBS_CANCEL: 'admin.system.jobs.cancel',
+  SYSTEM_JOBS_RETRY: 'admin.system.jobs.retry',
+  SYSTEM_PREPARE_RESTART: 'admin.system.prepareRestart',
+  SYSTEM_REQUEST_RESTART: 'admin.system.requestRestart',
+  PERMISSION_DENIED: 'admin.permission.denied',
+  MANAGED_RESOURCE_LEGACY_MUTATION: 'managedResource.legacyMutation',
+} as const satisfies Record<string, AuditAction>;
+
+export type AuditRequestBaseAction =
+  typeof AUDIT_ACTION.IDENTITY_PROVIDERS_PUBLISH | typeof AUDIT_ACTION.IDENTITY_PROVIDERS_ROLLBACK;
+
+export type AuditRequestKind = 'requestReserved' | 'requestLease';
+
+/**
+ * Derive idempotency reservation/lease audit actions from a base publish/rollback
+ * action. Callers must not concatenate `.requestReserved` / `.requestLease` ad hoc.
+ */
+export const deriveAuditRequestAction = (
+  base: AuditRequestBaseAction,
+  kind: AuditRequestKind,
+): AuditAction => {
+  const action = `${base}.${kind}` as AuditAction;
+  if (!AUDIT_ACTION_SET.has(action)) {
+    throw new Error(`audit action not catalogued: ${action}`);
+  }
+  return action;
+};
+
+export const isAuditRequestBaseAction = (value: string): value is AuditRequestBaseAction =>
+  value === AUDIT_ACTION.IDENTITY_PROVIDERS_PUBLISH ||
+  value === AUDIT_ACTION.IDENTITY_PROVIDERS_ROLLBACK;
+
+export const AUDIT_TARGET_TYPES = [
+  'agent',
+  'agent_dependency_validation',
+  'audit_event',
+  'audit_export',
+  'audit_policy',
+  'audit_retention_run',
+  'authSettings',
+  'branding',
+  'connector',
+  'connector_binding',
+  'connector_governance',
+  'email_delivery',
+  'identity_provider',
+  'identity_provider_test',
+  'identity_provider_validation',
+  'legal_hold',
+  'managed_policy',
+  'model',
+  'permission',
+  'platform_global_credential',
+  'platform_global_credential_upload',
+  'platform_job',
+  'provider',
+  'secret_rotation',
+  'settings',
+  'settings_validation',
+  'sidebarLayout',
+  'skill',
+  'system',
+  'topic',
+  'user',
+  'user_list',
+] as const;
+
+export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
+
+export const AUDIT_TARGET_TYPE_SET: ReadonlySet<string> = new Set(AUDIT_TARGET_TYPES);
+
+export const AUDIT_TARGET_TYPE = {
+  IDENTITY_PROVIDER: 'identity_provider',
+  PLATFORM_JOB: 'platform_job',
+  SYSTEM: 'system',
+  PERMISSION: 'permission',
+  LEGAL_HOLD: 'legal_hold',
+  USER: 'user',
+} as const satisfies Record<string, AuditTargetType>;

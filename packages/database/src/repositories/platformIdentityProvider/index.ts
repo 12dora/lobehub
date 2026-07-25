@@ -7,6 +7,7 @@ import {
   platformIdentityProviders,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { likeContains } from '../platformSearch';
 
 export type NewSafePlatformIdentityProvider = Omit<
   NewPlatformIdentityProvider,
@@ -114,9 +115,11 @@ export class PlatformIdentityProviderRepository {
     if (input.status) filters.push(eq(platformIdentityProviders.status, input.status));
     if (input.type) filters.push(eq(platformIdentityProviders.type, input.type));
     if (input.query) {
+      // Literal contains — escape LIKE metacharacters (DB-010).
+      const pattern = likeContains(input.query);
       const search = or(
-        ilike(platformIdentityProviders.providerKey, `%${input.query}%`),
-        ilike(platformIdentityProviders.displayName, `%${input.query}%`),
+        ilike(platformIdentityProviders.providerKey, pattern),
+        ilike(platformIdentityProviders.displayName, pattern),
       );
       if (search) filters.push(search);
     }

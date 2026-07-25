@@ -1,0 +1,261 @@
+/**
+ * Legal-hold resolution for audit retention worker (SAO-009).
+ */
+
+import {
+  type PlatformAuditExportFilterSnapshot,
+  type PlatformAuditExportKind,
+  type PlatformAuditLegalHoldItem,
+  PlatformAuditLegalHoldModel,
+  RETENTION_OP_LOG_HOLD_TARGET_TYPES,
+} from '@/database/models/platform';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
+
+export type HoldIndex = {
+  global: boolean;
+  sessions: Set<string>;
+  topics: Set<string>;
+  users: Set<string>;
+  workspaces: Set<string>;
+};
+
+export const buildHoldIndex = (holds: PlatformAuditLegalHoldItem[]): HoldIndex => {
+  const index: HoldIndex = {
+    global: false,
+    sessions: new Set(),
+    topics: new Set(),
+    users: new Set(),
+    workspaces: new Set(),
+  };
+  for (const h of holds) {
+    if (h.scopeType === 'global') {
+      index.global = true;
+      continue;
+    }
+    if (!h.scopeId) continue;
+    if (h.scopeType === 'user') index.users.add(h.scopeId);
+    else if (h.scopeType === 'session') index.sessions.add(h.scopeId);
+    else if (h.scopeType === 'topic') index.topics.add(h.scopeId);
+    else if (h.scopeType === 'workspace') index.workspaces.add(h.scopeId);
+  }
+  return index;
+};
+
+/** Sentinel never equal to a real scope id — only makes Set.size > 0 for broad over-skip. */
+export const HOLD_CLASS_SENTINEL = '\0hold-class';
+
+/**
+ * Build a hold index for a candidate batch via targeted scope lookup + class
+ * presence. Avoids reloading the entire active legal-hold table every batch (F11)
+ * while preserving conservative broad over-skip (class size checks).
+ */
+export const loadHoldIndexForScopes = async (
+  db: LobeChatDatabase | Transaction,
+  scopes: Array<{ scopeId: string | null; scopeType: PlatformAuditLegalHoldItem['scopeType'] }>,
+): Promise<HoldIndex> => {
+  const model = new PlatformAuditLegalHoldModel(db);
+  // Fast path: if any global hold exists, everything is held.
+  const classes = await model.summarizeActiveHoldClasses();
+  if (classes.global) {
+    return {
+      global: true,
+      sessions: new Set(),
+      topics: new Set(),
+      users: new Set(),
+      workspaces: new Set(),
+    };
+  }
+  const holds = scopes.length > 0 ? await model.findActiveScopes(scopes) : [];
+  const index = buildHoldIndex(holds);
+  // Class presence for broad over-skip without materializing every hold row.
+  if (classes.hasUser) index.users.add(HOLD_CLASS_SENTINEL);
+  if (classes.hasTopic) index.topics.add(HOLD_CLASS_SENTINEL);
+  if (classes.hasSession) index.sessions.add(HOLD_CLASS_SENTINEL);
+  if (classes.hasWorkspace) index.workspaces.add(HOLD_CLASS_SENTINEL);
+  return index;
+};
+
+export const isHoldTargetType = (targetType: string): boolean =>
+  (RETENTION_OP_LOG_HOLD_TARGET_TYPES as readonly string[]).includes(targetType);
+
+/**
+ * Over-skip: if any matching hold could protect the row, skip.
+ * Whitelisted targetType+targetId + actorUserId for user holds.
+ */
+export const operationLogHeld = (
+  index: HoldIndex,
+  row: {
+    actorUserId: string | null;
+    targetId: string | null;
+    targetType: string;
+  },
+): boolean => {
+  if (index.global) return true;
+  if (row.actorUserId && index.users.has(row.actorUserId)) return true;
+  if (row.targetId && isHoldTargetType(row.targetType)) {
+    if (row.targetType === 'user' && index.users.has(row.targetId)) return true;
+    if (row.targetType === 'session' && index.sessions.has(row.targetId)) return true;
+    if (row.targetType === 'topic' && index.topics.has(row.targetId)) return true;
+    if (row.targetType === 'workspace' && index.workspaces.has(row.targetId)) return true;
+  }
+  // Over-skip: unknown targetType with a targetId that matches any held id of any type.
+  if (
+    row.targetId &&
+    !isHoldTargetType(row.targetType) &&
+    (index.users.has(row.targetId) ||
+      index.sessions.has(row.targetId) ||
+      index.topics.has(row.targetId) ||
+      index.workspaces.has(row.targetId))
+  ) {
+    return true;
+  }
+  return false;
+};
+
+export const topicHeld = (
+  index: HoldIndex,
+  row: {
+    id: string;
+    sessionId: string | null;
+    userId: string;
+    workspaceId: string | null;
+  },
+): boolean => {
+  if (index.global) return true;
+  if (index.users.has(row.userId)) return true;
+  if (index.topics.has(row.id)) return true;
+  if (row.sessionId && index.sessions.has(row.sessionId)) return true;
+  if (row.workspaceId && index.workspaces.has(row.workspaceId)) return true;
+  return false;
+};
+
+export const hasAnyScopedHold = (index: HoldIndex): boolean =>
+  index.users.size > 0 ||
+  index.topics.size > 0 ||
+  index.sessions.size > 0 ||
+  index.workspaces.size > 0;
+
+/**
+ * Conservative legal-hold gate for derived export artifacts.
+ *
+ * Exports are frozen evidence packages. Prefer over-retention: if the frozen
+ * filter can include evidence under any active legal hold, skip purge.
+ *
+ * Policy branches on the actual export `kind` (`operation_logs` vs
+ * `conversations` / `user_timeline`), never on filter-field heuristics.
+ * (`q` is valid for operation-log exports and must not reclassify them.)
+ *
+ * Covered:
+ * - Exact scopes: userId, actorUserId(s), topicId, sessionId, workspaceId
+ * - Whitelisted / over-skip targetType+targetId (mirrors operationLogHeld)
+ * - Broad operation-log filters when any non-global hold exists
+ * - Broad conversation/user_timeline filters when topic/session/workspace holds
+ *   could still fall inside the export (userId/q without a tighter pin)
+ * - Partially narrowed filters that still cannot exclude remaining hold classes
+ */
+export const exportArtifactHeld = (
+  index: HoldIndex,
+  kind: PlatformAuditExportKind,
+  filterSnapshot: PlatformAuditExportFilterSnapshot | null | undefined,
+): boolean => {
+  if (index.global) return true;
+  if (!hasAnyScopedHold(index)) return false;
+
+  const f = filterSnapshot ?? {};
+
+  // Exact identity / scope fields frozen on the export.
+  if (f.userId && index.users.has(f.userId)) return true;
+  if (f.actorUserId && index.users.has(f.actorUserId)) return true;
+  if (f.actorUserIds?.some((id) => index.users.has(id))) return true;
+  if (f.topicId && index.topics.has(f.topicId)) return true;
+  if (f.sessionId && index.sessions.has(f.sessionId)) return true;
+  if (f.workspaceId && index.workspaces.has(f.workspaceId)) return true;
+
+  // Whitelisted targetType+targetId, plus over-skip for unknown/missing types.
+  if (f.targetId) {
+    const tt = f.targetType;
+    if (tt && isHoldTargetType(tt)) {
+      if (tt === 'user' && index.users.has(f.targetId)) return true;
+      if (tt === 'session' && index.sessions.has(f.targetId)) return true;
+      if (tt === 'topic' && index.topics.has(f.targetId)) return true;
+      if (tt === 'workspace' && index.workspaces.has(f.targetId)) return true;
+    } else if (
+      index.users.has(f.targetId) ||
+      index.sessions.has(f.targetId) ||
+      index.topics.has(f.targetId) ||
+      index.workspaces.has(f.targetId)
+    ) {
+      return true;
+    }
+  }
+
+  const hasActorPin = Boolean(f.actorUserId) || Boolean(f.actorUserIds?.length);
+  const hasTopicPin = Boolean(f.topicId);
+  const hasSessionPin = Boolean(f.sessionId);
+  const hasWorkspacePin = Boolean(f.workspaceId);
+  const hasAnyTargetPin = Boolean(f.targetId) && Boolean(f.targetType);
+  const hasHoldTargetPin =
+    Boolean(f.targetId) && Boolean(f.targetType) && isHoldTargetType(f.targetType!);
+
+  const isOperationLogs = kind === 'operation_logs';
+  const isConversationKind = kind === 'conversations' || kind === 'user_timeline';
+
+  // Broad operation-log filters (time/action/result/q, or empty): any scoped hold.
+  // Do not infer kind from `q` — it is a valid operation_logs filter field.
+  if (isOperationLogs && !hasActorPin && !hasAnyTargetPin) {
+    return true;
+  }
+
+  // Broad conversation / user_timeline: userId or title query without a tighter pin
+  // can include held topics, sessions, or workspaces under that user.
+  if (
+    isConversationKind &&
+    !hasTopicPin &&
+    !hasSessionPin &&
+    !hasWorkspacePin &&
+    (index.topics.size > 0 || index.sessions.size > 0 || index.workspaces.size > 0)
+  ) {
+    return true;
+  }
+
+  if (isOperationLogs) {
+    // Actor pin without hold-relevant target pin: held users can still appear as
+    // targets; held topics/sessions/workspaces can appear as targets.
+    if (hasActorPin && !hasHoldTargetPin) {
+      if (index.users.size > 0) return true;
+      if (index.topics.size > 0 || index.sessions.size > 0 || index.workspaces.size > 0) {
+        return true;
+      }
+    }
+    // Hold-relevant target pin without actor pin: held users can appear as actors.
+    if (hasHoldTargetPin && !hasActorPin && index.users.size > 0) {
+      return true;
+    }
+    // Non-hold target type (e.g. settings) without actor pin: held users as actors.
+    if (hasAnyTargetPin && !hasHoldTargetPin && !hasActorPin && index.users.size > 0) {
+      return true;
+    }
+  }
+
+  if (isConversationKind) {
+    // Exact topic pin does not prove session/workspace membership is free of holds.
+    if (hasTopicPin && (index.sessions.size > 0 || index.workspaces.size > 0)) {
+      return true;
+    }
+    // Exact session pin does not prove nested topics/workspaces are free of holds.
+    if (hasSessionPin && !hasTopicPin && (index.topics.size > 0 || index.workspaces.size > 0)) {
+      return true;
+    }
+    // Exact workspace pin does not prove nested topics/sessions are free of holds.
+    if (
+      hasWorkspacePin &&
+      !hasTopicPin &&
+      !hasSessionPin &&
+      (index.topics.size > 0 || index.sessions.size > 0)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+};

@@ -30,3 +30,6 @@ export const parseAuditExportJobInput = (
   }
   return { exportId: input.exportId };
 };
+
+/** Defense-in-depth ceiling on artifact bytes while streaming (F10). */
+export const AUDIT_EXPORT_MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;

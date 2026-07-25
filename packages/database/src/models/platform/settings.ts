@@ -19,6 +19,21 @@ import type { ResourcePointerAdapter } from './revision';
 
 export const PLATFORM_SETTINGS_BUNDLE_ID = 'global';
 
+/** Parse json_agg results that may already be arrays (drivers differ). */
+const parseJsonArray = <T>(value: T[] | string | null | undefined): T[] => {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
 export type SettingsDraftPolicyMap = Record<
   string,
   {
@@ -174,6 +189,195 @@ export class PlatformSettingsModel {
       .select()
       .from(platformSettingPolicies)
       .where(eq(platformSettingPolicies.status, 'published'));
+  };
+
+  /**
+   * Platform + user override revision tokens in one round-trip.
+   * Prefer this over separate `getBundle` + `getUserOverrideRevision` on the hot path.
+   */
+  getRevisionTokens = async (
+    userId: string | null,
+  ): Promise<{ platformRevision: number; userOverrideRevision: number }> => {
+    if (!userId) {
+      const bundle = await this.getBundle();
+      return { platformRevision: bundle?.revision ?? 0, userOverrideRevision: 0 };
+    }
+
+    const row = await this.executeOneRow<{
+      platform_revision: number | string;
+      user_override_revision: number | string;
+    }>(sql`
+      SELECT
+        COALESCE(
+          (
+            SELECT "revision"
+            FROM "platform_settings_bundle"
+            WHERE "id" = ${PLATFORM_SETTINGS_BUNDLE_ID}
+          ),
+          0
+        ) AS "platform_revision",
+        COALESCE(
+          (
+            SELECT "revision"
+            FROM "user_setting_override_revisions"
+            WHERE "user_id" = ${userId}
+          ),
+          0
+        ) AS "user_override_revision"
+    `);
+    return {
+      platformRevision: Number(row?.platform_revision ?? 0),
+      userOverrideRevision: Number(row?.user_override_revision ?? 0),
+    };
+  };
+
+  /**
+   * Causally consistent effective-settings snapshot in a single SQL statement.
+   *
+   * Independent SELECTs under READ COMMITTED can interleave with publish/override
+   * commits and pair old tokens with new rows (or vice versa). One statement sees a
+   * single snapshot, so tokens + published policies + overrides are always coherent
+   * without retry — and without doubling the hot-path query count.
+   *
+   * Pass `userId: null` for platform-layer-only (no override reads).
+   * `seedRevisions` / `maxAttempts` are accepted for API compatibility but unused:
+   * a single-statement read cannot exhaust or return a mixed snapshot.
+   */
+  readEffectiveSettingsSnapshot = async (params: {
+    maxAttempts?: number;
+    seedRevisions?: { platformRevision: number; userOverrideRevision: number };
+    userId: string | null;
+  }): Promise<{
+    overrideRows: UserSettingOverrideItem[];
+    platformRevision: number;
+    published: PlatformSettingPolicyItem[];
+    userOverrideRevision: number;
+  }> => {
+    // seedRevisions / maxAttempts intentionally unused — single-statement path.
+    void params.seedRevisions;
+    void params.maxAttempts;
+
+    if (!params.userId) {
+      const row = await this.executeOneRow<{
+        platform_revision: number | string;
+        published: PlatformSettingPolicyItem[] | string | null;
+      }>(sql`
+        SELECT
+          COALESCE(
+            (
+              SELECT "revision"
+              FROM "platform_settings_bundle"
+              WHERE "id" = ${PLATFORM_SETTINGS_BUNDLE_ID}
+            ),
+            0
+          ) AS "platform_revision",
+          COALESCE(
+            (
+              SELECT json_agg(row_to_json(p))
+              FROM (
+                SELECT
+                  "path",
+                  "mode",
+                  "visibility",
+                  "value",
+                  "schema_version" AS "schemaVersion",
+                  "revision",
+                  "status",
+                  "updated_by" AS "updatedBy",
+                  "created_at" AS "createdAt",
+                  "updated_at" AS "updatedAt"
+                FROM "platform_setting_policies"
+                WHERE "status" = 'published'
+              ) p
+            ),
+            '[]'::json
+          ) AS "published"
+      `);
+      return {
+        overrideRows: [],
+        platformRevision: Number(row?.platform_revision ?? 0),
+        published: parseJsonArray<PlatformSettingPolicyItem>(row?.published),
+        userOverrideRevision: 0,
+      };
+    }
+
+    const row = await this.executeOneRow<{
+      override_rows: UserSettingOverrideItem[] | string | null;
+      platform_revision: number | string;
+      published: PlatformSettingPolicyItem[] | string | null;
+      user_override_revision: number | string;
+    }>(sql`
+      SELECT
+        COALESCE(
+          (
+            SELECT "revision"
+            FROM "platform_settings_bundle"
+            WHERE "id" = ${PLATFORM_SETTINGS_BUNDLE_ID}
+          ),
+          0
+        ) AS "platform_revision",
+        COALESCE(
+          (
+            SELECT "revision"
+            FROM "user_setting_override_revisions"
+            WHERE "user_id" = ${params.userId}
+          ),
+          0
+        ) AS "user_override_revision",
+        COALESCE(
+          (
+            SELECT json_agg(row_to_json(p))
+            FROM (
+              SELECT
+                "path",
+                "mode",
+                "visibility",
+                "value",
+                "schema_version" AS "schemaVersion",
+                "revision",
+                "status",
+                "updated_by" AS "updatedBy",
+                "created_at" AS "createdAt",
+                "updated_at" AS "updatedAt"
+              FROM "platform_setting_policies"
+              WHERE "status" = 'published'
+            ) p
+          ),
+          '[]'::json
+        ) AS "published",
+        COALESCE(
+          (
+            SELECT json_agg(row_to_json(o))
+            FROM (
+              SELECT
+                "user_id" AS "userId",
+                "path",
+                "value",
+                "source",
+                "updated_at" AS "updatedAt"
+              FROM "user_setting_overrides"
+              WHERE "user_id" = ${params.userId}
+            ) o
+          ),
+          '[]'::json
+        ) AS "override_rows"
+    `);
+
+    return {
+      overrideRows: parseJsonArray<UserSettingOverrideItem>(row?.override_rows),
+      platformRevision: Number(row?.platform_revision ?? 0),
+      published: parseJsonArray<PlatformSettingPolicyItem>(row?.published),
+      userOverrideRevision: Number(row?.user_override_revision ?? 0),
+    };
+  };
+
+  /** Normalize drizzle/pg/pglite execute() row shapes to a single object. */
+  private executeOneRow = async <T extends Record<string, unknown>>(
+    query: ReturnType<typeof sql>,
+  ): Promise<T | undefined> => {
+    const result = await this.db.execute(query);
+    const rows = (result as unknown as { rows?: T[] }).rows ?? (result as unknown as T[]);
+    return Array.isArray(rows) ? rows[0] : undefined;
   };
 
   getPublishedPolicy = async (path: string): Promise<PlatformSettingPolicyItem | undefined> => {

@@ -255,14 +255,28 @@ export const platformAuditExports = pgTable(
 
     expiresAt: timestamptz('expires_at'),
     /**
-     * Terminal failure payload, or durable artifact-purge outbox:
-     * `{ code: 'ARTIFACT_PURGE_PENDING', purgeStorageKey }` while object delete is in flight.
+     * Terminal failure payload, publication fencing, or durable artifact-purge outbox.
+     * Purge is two-phase: `purgeStatus=pending` (claimed) → `deleting` (authorized under
+     * hold lock; external delete runs outside the TX) → cleared after object destroy.
+     * Publication fencing: `attemptToken` binds a running export to one worker attempt.
      */
     error: jsonb('error').$type<{
+      /** Fencing token for the active publication attempt (running only). */
+      attemptToken?: string;
       code?: string;
       message?: string;
+      /**
+       * Two-phase purge state. `deleting` means the external object destroy was
+       * authorized and may already have happened — legal holds must not activate
+       * against missing evidence until this row is reconciled.
+       */
+      purgeStatus?: 'pending' | 'deleting';
       /** Private storage key awaiting object-store purge (outbox; never a signed URL). */
       purgeStorageKey?: string;
+      /** All attempt keys pending purge (append-on-record; prevents orphaned attempts). */
+      purgeStorageKeys?: string[];
+      /** Immutable token for the current purge authorization epoch. */
+      purgeToken?: string;
     } | null>(),
 
     /** Actor who requested the export (required for accountability). */
@@ -278,6 +292,28 @@ export const platformAuditExports = pgTable(
     index('platform_audit_exports_kind_created_at_idx').on(t.kind, t.createdAt),
     index('platform_audit_exports_requested_by_idx').on(t.requestedBy),
     index('platform_audit_exports_expires_at_idx').on(t.expiresAt),
+    // Retention artifact candidates: coalesce(finished_at,created_at),id with storage present (DB-006).
+    index('platform_audit_exports_retention_sort_at_id_idx')
+      .using('btree', sql`coalesce(${t.finishedAt}, ${t.createdAt})`, t.id)
+      .where(sql`${t.storageKey} IS NOT NULL AND ${t.status} IN ('completed','expired')`),
+    // Purge outbox recovery: terminal rows with storage_key null + purge key(s) (DB-006).
+    // Predicate must imply listPendingArtifactPurges: single key OR purgeStorageKeys array.
+    index('platform_audit_exports_purge_outbox_updated_at_id_idx')
+      .on(t.updatedAt, t.id)
+      .where(
+        sql`${t.storageKey} IS NULL AND ${t.status} IN ('expired','failed','cancelled') AND (coalesce(${t.error}->>'purgeStorageKey','') <> '' OR jsonb_typeof(${t.error}->'purgeStorageKeys') = 'array')`,
+      ),
+    // w1-evidence: hot-path scan for legal-hold create (purgeStatus=deleting).
+    index('platform_audit_exports_purge_status_deleting_idx')
+      .on(t.id)
+      .where(sql`coalesce(${t.error}->>'purgeStatus', '') = 'deleting'`),
+    // w1-evidence: expression predicate aligned with listPending / complete delete
+    // (single key OR non-empty purgeStorageKeys array — w1 owns this predicate).
+    index('platform_audit_exports_purge_storage_key_expr_idx')
+      .using('btree', sql`coalesce(${t.error}->>'purgeStorageKey', '')`)
+      .where(
+        sql`coalesce(${t.error}->>'purgeStorageKey', '') <> '' OR (jsonb_typeof(${t.error}->'purgeStorageKeys') = 'array' AND jsonb_array_length(${t.error}->'purgeStorageKeys') > 0)`,
+      ),
     // Idempotency: at most one export row per platform job when linked.
     uniqueIndex('platform_audit_exports_job_id_unique')
       .on(t.jobId)

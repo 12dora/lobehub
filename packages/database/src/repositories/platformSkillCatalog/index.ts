@@ -501,6 +501,64 @@ export class PlatformSkillCatalogRepository {
   };
 
   /**
+   * Batch form of {@link resolveVersion} for explicit (skillKey, version) pairs.
+   * Skill dependency graph validation uses this to resolve a whole frontier in one query.
+   */
+  resolveVersionsExact = async (
+    references: readonly { skillKey: string; version: string }[],
+  ): Promise<Map<string, PlatformPublishedSkillRow>> => {
+    if (references.length === 0) return new Map();
+    const requestedPairs = references.map(({ skillKey, version }) =>
+      and(eq(platformSkills.skillKey, skillKey), eq(platformSkillVersions.version, version)),
+    );
+    const rows = await this.db
+      .select({
+        payload: platformResourceRevisions.payload,
+        revision: platformResourceRevisions.revision,
+        skillId: platformSkills.id,
+        // Join identity — must key the batch map by the *requested* skillKey so a
+        // renamed skill still hits the map and surfaces dependency_identity_mismatch
+        // (payload.skill.skillKey may diverge from the table identity).
+        skillKey: platformSkills.skillKey,
+        status: platformResourceRevisions.status,
+        version: platformSkillVersions,
+      })
+      .from(platformSkills)
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, platformSkills.id),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .innerJoin(
+        platformSkillVersions,
+        and(
+          eq(platformSkillVersions.skillId, platformSkills.id),
+          eq(
+            platformSkillVersions.id,
+            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
+          ),
+        ),
+      )
+      .where(or(...requestedPairs))
+      .orderBy(
+        asc(platformSkills.skillKey),
+        asc(platformSkillVersions.version),
+        desc(platformResourceRevisions.revision),
+      );
+
+    const exact = new Map<string, PlatformPublishedSkillRow>();
+    for (const row of rows) {
+      const payload = row.payload as unknown as PlatformPublishedSkillSnapshot;
+      const key = `${row.skillKey}\0${row.version.version}`;
+      if (!exact.has(key)) exact.set(key, { ...row, payload });
+    }
+    return exact;
+  };
+
+  /**
    * Batch form of {@link getPublishedExecutionVersionExact}. The Agent contract permits up to 100
    * Skill refs, so validation must not turn one request into 100 sequential roundtrips.
    */

@@ -1,4 +1,7 @@
 // @vitest-environment node
+import type { WriteStream } from 'node:fs';
+import { Writable } from 'node:stream';
+
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -27,6 +30,20 @@ import {
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const storage = new InMemoryAuditExportArtifactStorage();
+
+/** Resolve published attempt-unique storage key for an export (fencing SAO-002). */
+const publishedKey = async (exportId: string): Promise<string | undefined> => {
+  const [row] = await serverDB
+    .select({ storageKey: platformAuditExports.storageKey })
+    .from(platformAuditExports)
+    .where(eq(platformAuditExports.id, exportId))
+    .limit(1);
+  if (row?.storageKey) return row.storageKey;
+  for (const k of storage.objects.keys()) {
+    if (k.includes(exportId)) return k;
+  }
+  return undefined;
+};
 
 const actor = 'audit-export-worker-actor';
 const userA = 'audit-export-worker-user';
@@ -107,8 +124,9 @@ describe('audit export worker', () => {
     expect(got.artifactChecksum).toMatch(/^sha256:/);
     expect(got).not.toHaveProperty('storageKey');
 
-    const key = buildAuditExportStorageKey(created.id);
-    const body = storage.objects.get(key)?.toString('utf8') ?? '';
+    const key = await publishedKey(created.id);
+    expect(key).toBeTruthy();
+    const body = storage.objects.get(key!)?.toString('utf8') ?? '';
     const lines = body
       .trim()
       .split('\n')
@@ -172,8 +190,8 @@ describe('audit export worker', () => {
     });
     expect(result.outcome).toBe('completed');
 
-    const body =
-      storage.objects.get(buildAuditExportStorageKey(created.id))?.toString('utf8') ?? '';
+    const key = await publishedKey(created.id);
+    const body = storage.objects.get(key ?? '')?.toString('utf8') ?? '';
     const lines = body
       .trim()
       .split('\n')
@@ -277,8 +295,8 @@ describe('audit export worker', () => {
     });
     expect(result.outcome).toBe('completed');
 
-    const body =
-      storage.objects.get(buildAuditExportStorageKey(created.id))?.toString('utf8') ?? '';
+    const convKey = await publishedKey(created.id);
+    const body = storage.objects.get(convKey ?? '')?.toString('utf8') ?? '';
     const lines = body
       .trim()
       .split('\n')
@@ -539,11 +557,6 @@ describe('audit export worker', () => {
       deleteObject: async (key: string) => {
         storage.objects.delete(key);
       },
-      getObjectBytes: async (key: string) => {
-        const body = storage.objects.get(key);
-        if (!body) throw new Error(`Object not found: ${key}`);
-        return Buffer.from(body);
-      },
       getObjectMetadata: async (key: string) => {
         const body = storage.objects.get(key);
         if (!body) throw new Error(`Object not found: ${key}`);
@@ -642,7 +655,10 @@ describe('audit export worker', () => {
     expect(done.rowCount).toBe(1);
   });
 
-  it('final jobs.complete lease loss does not report clean completion or cancel export', async () => {
+  it('final terminal TX lease loss rolls back domain complete (no false success)', async () => {
+    // SAO-004: domain complete + job complete + audit are one TX. Stealing the
+    // lease before that TX causes jobs.complete to fail and the whole TX to
+    // roll back — domain stays running for reclaim (no cancelled artifact).
     await serverDB.insert(platformAuditLogs).values({
       action: 'admin.settings.publish',
       createdAt: new Date('2026-01-05T12:00:00.000Z'),
@@ -667,7 +683,7 @@ describe('audit export worker', () => {
 
     const result = await processNextAuditExportJob(serverDB, {
       afterDomainComplete: async () => {
-        // Steal lease after domain terminal complete, before jobs.complete ownership check.
+        // Steal lease before the atomic terminal TX (job complete ownership check).
         await serverDB
           .update(platformJobs)
           .set({
@@ -689,10 +705,10 @@ describe('audit export worker', () => {
       actorUserId: actor,
       id: created.id,
     });
-    // Domain completed; lease loss must not cancel or strip the artifact.
-    expect(got.status).toBe('completed');
+    // Domain not published; lease loss must not cancel or mark completed falsely.
+    expect(got.status).toBe('running');
     expect(got.status).not.toBe('cancelled');
-    expect(storage.objects.has(buildAuditExportStorageKey(created.id))).toBe(true);
+    expect(got.status).not.toBe('completed');
 
     const [job] = await serverDB.select().from(platformJobs).where(eq(platformJobs.id, jobId));
     expect(job?.status).toBe('running');
@@ -726,12 +742,18 @@ describe('audit export worker', () => {
       },
     });
     const jobId = created.jobId!;
-    const storageKey = buildAuditExportStorageKey(created.id);
 
     // Final attempt only: lease-expiry after claim must dead-letter (not reclaim).
     await serverDB.update(platformJobs).set({ maxAttempts: 1 }).where(eq(platformJobs.id, jobId));
 
     // Upload succeeds, then process dies (lease-loss path leaves domain running).
+    // Lease-loss best-effort deletes the attempt key; force deleteObject to fail so
+    // the object + durable purge intent remain for dead-letter reconcile.
+    const origDelete = storage.deleteObject.bind(storage);
+    storage.deleteObject = async () => {
+      throw new Error('STICKY_DELETE_FAIL');
+    };
+
     const crashed = await processNextAuditExportJob(serverDB, {
       afterArtifactUpload: async () => {
         throw new AuditExportLeaseLostError();
@@ -740,7 +762,7 @@ describe('audit export worker', () => {
       workerId: 'export-f6-crash',
     });
     expect(crashed.outcome).toBe('skipped');
-    expect(storage.objects.has(storageKey)).toBe(true);
+    storage.deleteObject = origDelete;
 
     // Upload-time purge intent is durable on the still-running domain row.
     const [midRow] = await serverDB
@@ -748,7 +770,10 @@ describe('audit export worker', () => {
       .from(platformAuditExports)
       .where(eq(platformAuditExports.id, created.id));
     expect(midRow?.status).toBe('running');
-    expect(midRow?.error?.purgeStorageKey).toBe(storageKey);
+    const storageKey = midRow?.error?.purgeStorageKey;
+    expect(storageKey).toBeTruthy();
+    if (!storageKey) throw new Error('expected purgeStorageKey after lease-loss upload');
+    expect(storage.objects.has(storageKey)).toBe(true);
 
     // Expire lease; claimNext dead-letters without invoking export cleanup.
     await serverDB
@@ -785,11 +810,6 @@ describe('audit export worker', () => {
         deletes += 1;
         if (deletes === 1) throw new Error('S3_TRANSIENT_DELETE');
         storage.objects.delete(key);
-      },
-      getObjectBytes: async (key: string) => {
-        const body = storage.objects.get(key);
-        if (!body) throw new Error(`Object not found: ${key}`);
-        return Buffer.from(body);
       },
       getObjectMetadata: async (key: string) => {
         const body = storage.objects.get(key);
@@ -838,11 +858,11 @@ describe('audit export worker', () => {
     expect(finalRow?.error?.code).toBe('EXPORT_FAILED');
   });
 
-  it('F10: streaming upload/hash — rejects Buffer path and forbids getObjectBytes', async () => {
+  it('F10: streaming upload/hash — rejects Buffer path and uses hashObject only', async () => {
     // Explicit small buffering threshold: full Buffer uploads are rejected outright.
     // Artifact is forced larger than createReadStream's default highWaterMark (64 KiB)
     // so a multi-chunk stream is observable; a reverted worker that does
-    // readFile()+upload(Buffer) / getObjectBytes() fails hard (no conditional skip).
+    // readFile()+upload(Buffer) fails hard (no conditional skip).
     const BUFFERING_THRESHOLD_BYTES = 4 * 1024;
     const STREAM_HIGH_WATER_MARK = 64 * 1024;
     // Payload alone exceeds both the mock threshold and the stream window.
@@ -865,10 +885,6 @@ describe('audit export worker', () => {
     const streamOnlyStorage = {
       deleteObject: async (key: string) => {
         objects.delete(key);
-      },
-      getObjectBytes: async (_key: string): Promise<Buffer> => {
-        // Download / post-upload verify must use hashObject streaming (F10).
-        throw new Error('GET_OBJECT_BYTES_FORBIDDEN: use hashObject streaming path');
       },
       getObjectMetadata: async (key: string) => {
         const body = objects.get(key);
@@ -954,29 +970,36 @@ describe('audit export worker', () => {
     });
     expect(result.outcome).toBe('completed');
     expect(streamUploadCount).toBe(1);
-    // Post-upload integrity must call hashObject (getObjectBytes throws).
+    // Post-upload integrity must call hashObject (stream path).
     expect(hashObjectCount).toBeGreaterThanOrEqual(1);
 
-    const key = buildAuditExportStorageKey(created.id);
+    const [pub] = await serverDB
+      .select({ storageKey: platformAuditExports.storageKey })
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    const key = pub?.storageKey;
+    expect(key).toBeTruthy();
+    if (!key) throw new Error('expected published storageKey');
     const body = objects.get(key);
     expect(body).toBeTruthy();
-    expect(body!.byteLength).toBeGreaterThan(BUFFERING_THRESHOLD_BYTES);
-    expect(body!.byteLength).toBeGreaterThan(STREAM_HIGH_WATER_MARK);
+    if (!body) throw new Error('expected artifact body');
+    expect(body.byteLength).toBeGreaterThan(BUFFERING_THRESHOLD_BYTES);
+    expect(body.byteLength).toBeGreaterThan(STREAM_HIGH_WATER_MARK);
     // Stream chunks must stay under the full artifact (createReadStream windows).
     // Unconditionally asserted — artifact is sized above highWaterMark so this
     // fails if the producer handed over one materialized Buffer-sized chunk.
     expect(peakStreamChunkBytes).toBeGreaterThan(0);
     expect(peakStreamChunkBytes).toBeLessThanOrEqual(STREAM_HIGH_WATER_MARK);
-    expect(peakStreamChunkBytes).toBeLessThan(body!.byteLength);
+    expect(peakStreamChunkBytes).toBeLessThan(body.byteLength);
 
-    const expectedChecksum = formatArtifactChecksum(sha256Hex(body!));
+    const expectedChecksum = formatArtifactChecksum(sha256Hex(body));
     const got = await service.get({
       actorPermissions: ['platform_audit:export:all'],
       actorUserId: actor,
       id: created.id,
     });
     expect(got.artifactChecksum).toBe(expectedChecksum);
-    expect(got.artifactBytes).toBe(body!.byteLength);
+    expect(got.artifactBytes).toBe(body.byteLength);
 
     // Stream-hash verification matches the stored checksum (same as one-shot).
     const hashed = await streamOnlyStorage.hashObject(key);
@@ -984,7 +1007,7 @@ describe('audit export worker', () => {
     expect(hashed.artifactBytes).toBe(body!.byteLength);
 
     const hashBeforeDownload = hashObjectCount;
-    // Download integrity also stream-hashes — getObjectBytes would throw.
+    // Download integrity also stream-hashes via hashObject.
     const dl = await service.download({
       actorPermissions: ['platform_audit:export:all'],
       actorUserId: actor,
@@ -1076,7 +1099,7 @@ describe('audit export worker', () => {
     expect(storage.objects.size).toBe(0);
 
     // Download: completed conversation artifact also fails closed under disabled policy.
-    const storageKey = buildAuditExportStorageKey(queued.id);
+    const storageKey = buildAuditExportStorageKey(queued.id); // explicit fixture key
     const body = Buffer.from('{"type":"manifest"}\n');
     storage.objects.set(storageKey, body);
     await serverDB
@@ -1100,6 +1123,256 @@ describe('audit export worker', () => {
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
+  it('SAO-003: artifact materialises immutable snapshot content (no live re-read)', async () => {
+    // Operation logs are append-only; prove freeze by exporting full content under
+    // RR materialisation and asserting the artifact embeds the snapshot-time body.
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      afterDiff: { body: 'frozen-snapshot-content' },
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-snapshot-freeze',
+      result: 'success',
+      targetType: 'settings',
+    });
+
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'snapshot freeze',
+        to: window.to,
+      },
+    });
+
+    const result = await processNextAuditExportJob(serverDB, {
+      storage,
+      workerId: 'export-snapshot-freeze',
+    });
+    expect(result.outcome).toBe('completed');
+
+    const key = await publishedKey(created.id);
+    const body = storage.objects.get(key ?? '')?.toString('utf8') ?? '';
+    expect(body).toContain('frozen-snapshot-content');
+    // Manifest records point-in-time watermark for the materialised package.
+    const lines = body
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines[0]).toMatchObject({ type: 'manifest', snapshotAt: expect.any(String) });
+    expect(lines.some((l) => l.type === 'operation_log' && l.id === 'op-snapshot-freeze')).toBe(
+      true,
+    );
+  });
+
+  it('SAO-004: completed export emits required worker audit outcome', async () => {
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-worker-audit',
+      result: 'success',
+      targetType: 'settings',
+    });
+
+    const service = new AdminAuditExportService(serverDB, { storage });
+    await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'worker audit',
+        to: window.to,
+      },
+    });
+
+    await processNextAuditExportJob(serverDB, {
+      storage,
+      workerId: 'export-worker-audit',
+    });
+
+    const outcomes = await serverDB
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.action, 'admin.audit.exports.worker'));
+    expect(outcomes.some((o) => o.result === 'success')).toBe(true);
+  });
+
+  it('SAO-006: stream error after write()=true follows bounded failure path (no unhandledRejection)', async () => {
+    // Arm the failure from the materialization page-fetch seam (not a wall-clock
+    // timer) so the error always lands while the worker still owns the stream.
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-stream-err',
+      result: 'success',
+      targetType: 'settings',
+    });
+
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'sao-006 stream error',
+        to: window.to,
+      },
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    let artifactStream: Writable | null = null;
+    let errorArmed = false;
+
+    try {
+      const result = await processNextAuditExportJob(serverDB, {
+        createArtifactWriteStream: () => {
+          const w = new Writable({
+            write(_chunk, _enc, cb) {
+              // Accept the write (return true path via cb without backpressure).
+              cb();
+            },
+          });
+          artifactStream = w;
+          return w as unknown as WriteStream;
+        },
+        onSnapshotPageFetch: () => {
+          // Explicit seam inside materialization — never race finished()/end().
+          if (!errorArmed && artifactStream) {
+            errorArmed = true;
+            artifactStream.emit(
+              'error',
+              Object.assign(new Error('EIO_DISK_FULL'), { code: 'EIO' }),
+            );
+          }
+        },
+        storage,
+        workerId: 'export-stream-err',
+      });
+
+      // Bounded worker failure path — never process death / unhandled rejection.
+      expect(['retry', 'failed']).toContain(result.outcome);
+      expect(result.claimed).toBe(true);
+      expect(errorArmed).toBe(true);
+      // Allow microtasks to flush any latent rejections.
+      await new Promise((r) => setImmediate(r));
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    void created;
+  });
+
+  it('SAO-005: snapshot query count scales with pages, not rows (op-log + conversation)', async () => {
+    // ≥3 pages of operation logs (batch limit 100 → 250 rows = 3 pages).
+    const opRows = Array.from({ length: 250 }, (_, i) => {
+      const minute = i % 60;
+      const hour = 10 + Math.floor(i / 60);
+      return {
+        action: 'admin.settings.publish' as const,
+        createdAt: new Date(
+          `2026-01-05T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00.000Z`,
+        ),
+        id: `op-qc-${i}`,
+        result: 'success' as const,
+        targetType: 'settings',
+      };
+    });
+    await serverDB.insert(platformAuditLogs).values(opRows);
+
+    await serverDB.insert(platformAuditPolicies).values({
+      contentAccessMode: 'content_allowed',
+      id: 'global',
+      messageBodyInExport: false,
+      revision: 0,
+    });
+
+    // ≥2 pages of conversation topics (200 topics) inside the export window.
+    await serverDB.insert(topics).values(
+      Array.from({ length: 200 }, (_, i) => ({
+        createdAt: new Date('2026-01-06T00:00:00.000Z'),
+        id: `topic-qc-${i}`,
+        title: `Topic ${i}`,
+        userId: userA,
+      })),
+    );
+
+    const { AUDIT_EXPORT_BATCH_LIMIT } = await import('./exportConstants');
+    const service = new AdminAuditExportService(serverDB, { storage });
+    await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'sao-005 query count op',
+        to: window.to,
+      },
+    });
+    const opModelCalls: Array<{ method: string; model: string }> = [];
+    const opResult = await processNextAuditExportJob(serverDB, {
+      onSnapshotModelCall: (info) => {
+        opModelCalls.push(info);
+      },
+      storage,
+      workerId: 'export-qc-op',
+    });
+    expect(opResult.outcome).toBe('completed');
+    // 250 rows / 100 batch = 3 list() pages — counting proxy tallies every model call.
+    const opListCalls = opModelCalls.filter((c) => c.method === 'list');
+    expect(opListCalls).toHaveLength(3);
+    // totalQueries <= ceil(rows / BATCH) + smallConstant (no per-row get).
+    const opPages = Math.ceil(250 / AUDIT_EXPORT_BATCH_LIMIT);
+    expect(opModelCalls.length).toBeLessThanOrEqual(opPages + 2);
+    // Reintroducing getTopic-style per-row calls would push this past the bound.
+    expect(opModelCalls.length).toBeLessThan(250);
+
+    await service.create({
+      actorPermissions: ['platform_audit:export:all', 'platform_audit:conversation_read:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'conversations',
+        reason: 'sao-005 query count conv',
+        to: window.to,
+        userId: userA,
+      },
+    });
+    const convModelCalls: Array<{ method: string; model: string }> = [];
+    const convResult = await processNextAuditExportJob(serverDB, {
+      onSnapshotModelCall: (info) => {
+        convModelCalls.push(info);
+      },
+      storage,
+      workerId: 'export-qc-conv',
+    });
+    expect(convResult.outcome).toBe('completed');
+    // 200 topics / 100 = 2 listTopics — zero per-topic getTopic.
+    const topicListCalls = convModelCalls.filter((c) => c.method === 'listTopics');
+    expect(topicListCalls).toHaveLength(2);
+    expect(convModelCalls.some((c) => c.method === 'getTopic')).toBe(false);
+    const topicPages = Math.ceil(200 / AUDIT_EXPORT_BATCH_LIMIT);
+    // includeBodies=false → only listTopics; +smallConstant for noise.
+    expect(convModelCalls.length).toBeLessThanOrEqual(topicPages + 2);
+    // Would go red if getTopic were re-added per row (200 extra calls).
+    expect(convModelCalls.length).toBeLessThan(200);
+  });
+
   // F12 concurrent same-key create/publish race (one export + one job) lives in
   // exportPublication.multiconn.pg.test.ts — PGlite cannot prove multi-connection publication dedup.
+  // SAO-001 cancel-vs-complete race + SAO-002 upload lease race also live there (true multi-conn).
 });
