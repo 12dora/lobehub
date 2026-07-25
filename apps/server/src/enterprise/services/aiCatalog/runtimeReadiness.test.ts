@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -11,12 +11,13 @@ import {
   platformAiModels,
   platformAiProviders,
   platformAiProviderSecrets,
-  platformAuditLogs,
   platformResourceRevisions,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { AiCatalogAdminService } from './adminService';
 import { AiCatalogExecutionResolver, clearAiCatalogRuntimeCache } from './runtimeAdapter';
 import { resolveAiCatalogRuntimeReadiness } from './runtimeReadiness';
@@ -32,10 +33,18 @@ const managedFlags: EnterpriseFeatureFlags = {
   ENABLE_PLATFORM_MANAGED_AI: true,
 };
 
+const FIXTURE_ACTOR_IDS = ['admin'] as const;
+/** Hand-inserted revision fixture not backed by a platform_ai_providers row. */
+const FIXTURE_PROVIDER_RESOURCE_IDS = ['embedding-provider'] as const;
+
 const cleanup = async () => {
   clearAiCatalogRuntimeCache();
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: FIXTURE_ACTOR_IDS });
+  const ownedProviders = await db.select({ id: platformAiProviders.id }).from(platformAiProviders);
+  await deletePlatformResourceRevisionsForTest(db, {
+    resourceIds: [...FIXTURE_PROVIDER_RESOURCE_IDS, ...ownedProviders.map((row) => row.id)],
+    resourceType: 'provider',
+  });
   await db.delete(platformAiProviderSecrets);
   await db.delete(platformAiModels);
   await db.delete(platformAiProviders);
@@ -168,20 +177,25 @@ describe('AI catalog runtime readiness', () => {
       id: provider.id,
       reason: 'publish v2',
     });
-    await db
-      .update(platformResourceRevisions)
-      .set({
-        payload: {
-          models: [{ enabled: true, modelKey: 'poisoned', type: 'chat' }],
-          provider: { enabled: true, providerKey: 'poisoned-history', settings: {} },
-        },
-      })
-      .where(
-        and(
-          eq(platformResourceRevisions.resourceId, provider.id),
-          eq(platformResourceRevisions.revision, 1),
-        ),
-      );
+    // Intentionally corrupt an older immutable revision to prove readiness uses head only.
+    // Production rejects UPDATE; tests disable user triggers for this fixture injection.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformResourceRevisions)
+        .set({
+          payload: {
+            models: [{ enabled: true, modelKey: 'poisoned', type: 'chat' }],
+            provider: { enabled: true, providerKey: 'poisoned-history', settings: {} },
+          },
+        })
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceId, provider.id),
+            eq(platformResourceRevisions.revision, 1),
+          ),
+        );
+    });
     clearAiCatalogRuntimeCache();
 
     await expect(

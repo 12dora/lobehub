@@ -22,17 +22,6 @@ const resolvedCache = new Map<
   number,
   { epoch: string; expiresAt: number; resolved: ResolvedConnectorGovernance }
 >();
-/**
- * Last successfully resolved snapshot per source (diagnostic / process cache).
- * Epoch is retained so helpers can reason about staleness. The public
- * `resolveConnectorGovernance` path never restores this on read failure —
- * same-epoch LKG can predate a committed restrictive publish whose invalidation
- * was lost.
- */
-const lastKnownGoodCache = new Map<
-  number,
-  { epoch: string; resolved: ResolvedConnectorGovernance }
->();
 const sourceIds = new WeakMap<object, number>();
 let nextSourceId = 1;
 
@@ -105,54 +94,18 @@ export const resolvePublishedConnectorGovernance = async (
     builtinToolPolicies: governance.published.builtinToolPolicies,
     sharedAuthOwnerUserId: active ? governance.published.sharedAuthorization.ownerUserId : null,
   };
-  // Only cache + LKG under a real invalidation epoch. Synthetic/missing epochs
-  // must not retain policy that later restrictive publishes cannot invalidate.
+  // Only cache under a real invalidation epoch. Synthetic/missing epochs must
+  // not retain policy that later restrictive publishes cannot invalidate.
   if (epoch) {
     resolvedCache.set(sourceId, {
       epoch,
       expiresAt: now + (options.cacheTtlMs ?? CACHE_TTL_MS),
       resolved,
     });
-    lastKnownGoodCache.set(sourceId, { epoch, resolved });
   }
   return resolved;
 };
 
-/** Process-local last-known-good snapshot (diagnostic; may be stale). */
-export const getLastKnownConnectorGovernance = (
-  db: LobeChatDatabase,
-): ResolvedConnectorGovernance | null => {
-  const sourceId = getSourceId(db as object);
-  return lastKnownGoodCache.get(sourceId)?.resolved ?? null;
-};
-
-/** Test/diagnostic: epoch that produced the retained LKG, if any. */
-export const getLastKnownConnectorGovernanceEpoch = (db: LobeChatDatabase): string | null => {
-  const sourceId = getSourceId(db as object);
-  return lastKnownGoodCache.get(sourceId)?.epoch ?? null;
-};
-
-/**
- * Return LKG only when its stored invalidation epoch still matches the live
- * epoch. Diagnostic helper — public resolve does not use this for fail-open.
- */
-export const getLastKnownConnectorGovernanceIfCurrent = async (
-  db: LobeChatDatabase,
-  options: ResolveConnectorGovernanceOptions = {},
-): Promise<ResolvedConnectorGovernance | null> => {
-  const sourceId = getSourceId(db as object);
-  const lkg = lastKnownGoodCache.get(sourceId);
-  if (!lkg || lkg.epoch === 'unavailable') return null;
-  try {
-    const epoch = await (options.getCacheEpoch ?? readCacheEpoch)();
-    if (!epoch || epoch === 'unavailable' || epoch !== lkg.epoch) return null;
-    return lkg.resolved;
-  } catch {
-    return null;
-  }
-};
-
 export const resetConnectorGovernanceCacheForTest = () => {
   resolvedCache.clear();
-  lastKnownGoodCache.clear();
 };

@@ -37,6 +37,7 @@ export const mapEnterpriseCodeToTrpc = (code: EnterpriseErrorCode): TRPC_ERROR_C
   if (code === 'ADMIN_RATE_LIMITED') return 'TOO_MANY_REQUESTS';
   if (code === 'ADMIN_REAUTH_REQUIRED') return 'UNAUTHORIZED';
   if (code === 'PLATFORM_REVISION_CONFLICT') return 'CONFLICT';
+  if (code === 'PLATFORM_RESOURCE_IN_USE') return 'CONFLICT';
   if (code === 'PLATFORM_NOT_FOUND') return 'NOT_FOUND';
   if (code === 'PLATFORM_AI_PROVIDER_DISABLED') return 'FORBIDDEN';
   if (code === 'PLATFORM_FEATURE_DISABLED') return 'FORBIDDEN';

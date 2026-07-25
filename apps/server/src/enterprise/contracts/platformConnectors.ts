@@ -19,6 +19,7 @@ export {
   connectorSafeMessageSchema,
   connectorScopesSchema,
   connectorSecretStateSchema,
+  connectorSharedCredentialReadSchema,
   connectorSharedCredentialSchema,
   connectorSharedSecretMutationSchema,
   connectorToolDraftSchema,

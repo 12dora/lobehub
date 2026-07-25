@@ -48,7 +48,10 @@ import {
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withCompoundPlatformPermission,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 import {
   aiSecretMutationRequiresReauth,
   assertDangerousReauth,
@@ -67,24 +70,24 @@ export const adminAiProvidersRouter = router({
    * Requires UPDATE+PUBLISH (or CREATE+PUBLISH for create mode). Rate-limit: 1 unit.
    */
   applyImmediate: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
+    .use(
+      withCompoundPlatformPermission({
+        fixed: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH],
+        select: (raw) => {
+          const mode = (raw as { mode?: string } | null)?.mode;
+          return mode === 'create'
+            ? PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE
+            : PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE;
+        },
+        selectable: [
+          PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+          PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+        ],
+      }),
+    )
     .input(adminAiProviderApplyImmediateInputSchema)
     .output(adminAiProviderApplyImmediateOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      // CREATE+PUBLISH or UPDATE+PUBLISH (PUBLISH already enforced by middleware).
-      const required =
-        input.mode === 'create'
-          ? PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE
-          : PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE;
-      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
-      if (!perms?.includes(required)) {
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-          details: { permission: required },
-          httpCode: 'FORBIDDEN',
-          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-        });
-      }
       // Publish always requires reauth; secret replace/clear also covered by the same gate.
       await assertDangerousReauth({
         action: 'admin.aiProviders.applyImmediate',
@@ -329,28 +332,32 @@ export const adminAiProvidersRouter = router({
 export const adminAiModelsRouter = router({
   /**
    * Model draft mutation(s) + immediate parent-provider publish (admin UI parity).
-   * Requires the operation's model permission + AI_PROVIDER_PUBLISH. Rate-limit: 1 unit.
+   * Combination rule (rate-limit: 1 unit):
+   * - fixed: AI_PROVIDER_PUBLISH + AI_MODEL_PUBLISH
+   * - selectable: CREATE / UPDATE / DELETE from input.operation
    */
   applyImmediate: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
+    .use(
+      withCompoundPlatformPermission({
+        fixed: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH, PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH],
+        select: (raw) => {
+          const operation = (raw as { operation?: string } | null)?.operation;
+          if (operation === 'create') return PLATFORM_PERMISSIONS.AI_MODEL_CREATE;
+          if (operation === 'delete' || operation === 'clear') {
+            return PLATFORM_PERMISSIONS.AI_MODEL_DELETE;
+          }
+          return PLATFORM_PERMISSIONS.AI_MODEL_UPDATE;
+        },
+        selectable: [
+          PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+          PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+          PLATFORM_PERMISSIONS.AI_MODEL_DELETE,
+        ],
+      }),
+    )
     .input(adminAiModelApplyImmediateInputSchema)
     .output(adminAiModelApplyImmediateOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      const opPermission =
-        input.operation === 'create'
-          ? PLATFORM_PERMISSIONS.AI_MODEL_CREATE
-          : input.operation === 'delete' || input.operation === 'clear'
-            ? PLATFORM_PERMISSIONS.AI_MODEL_DELETE
-            : PLATFORM_PERMISSIONS.AI_MODEL_UPDATE;
-      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
-      if (!perms?.includes(opPermission)) {
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-          details: { permission: opPermission },
-          httpCode: 'FORBIDDEN',
-          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-        });
-      }
       // Publish step requires reauth (aligned with admin.aiProviders.publish).
       await assertDangerousReauth({
         action: 'admin.aiModels.applyImmediate',

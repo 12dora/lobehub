@@ -10,14 +10,18 @@ import {
   platformAiModels,
   platformAiProviders,
   platformAiProviderSecrets,
-  platformAuditLogs,
-  platformResourceRevisions,
   platformSettingPolicies,
   platformSettingsBundle,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
+import {
+  PLATFORM_SETTINGS_RESOURCE_ID,
+  PLATFORM_SETTINGS_RESOURCE_TYPE,
+} from '@/types/platform/settings';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { PlatformDependencyTargetNotPublishedError } from '../platformDependencyLock';
 import { AdminSettingsService } from '../settings/adminSettingsService';
@@ -61,8 +65,18 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
     const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
     const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
     const cleanup = async () => {
-      await firstDb.delete(platformAuditLogs);
-      await firstDb.delete(platformResourceRevisions);
+      await deletePlatformAuditLogsForTest(firstDb, { actorUserIds: ['admin'] });
+      const ownedProviders = await firstDb
+        .select({ id: platformAiProviders.id })
+        .from(platformAiProviders);
+      await deletePlatformResourceRevisionsForTest(firstDb, {
+        resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+        resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+      });
+      await deletePlatformResourceRevisionsForTest(firstDb, {
+        resourceIds: ownedProviders.map((row) => row.id),
+        resourceType: 'provider',
+      });
       await firstDb.delete(platformSettingPolicies);
       await firstDb.delete(platformSettingsBundle);
       await firstDb.delete(platformAiProviderSecrets);
@@ -215,8 +229,18 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
     const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
     const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
     const cleanup = async () => {
-      await firstDb.delete(platformAuditLogs);
-      await firstDb.delete(platformResourceRevisions);
+      await deletePlatformAuditLogsForTest(firstDb, { actorUserIds: ['admin'] });
+      const ownedProviders = await firstDb
+        .select({ id: platformAiProviders.id })
+        .from(platformAiProviders);
+      await deletePlatformResourceRevisionsForTest(firstDb, {
+        resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+        resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+      });
+      await deletePlatformResourceRevisionsForTest(firstDb, {
+        resourceIds: ownedProviders.map((row) => row.id),
+        resourceType: 'provider',
+      });
       await firstDb.delete(platformSettingPolicies);
       await firstDb.delete(platformSettingsBundle);
       await firstDb.delete(platformAiProviderSecrets);

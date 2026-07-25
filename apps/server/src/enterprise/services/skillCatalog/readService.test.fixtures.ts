@@ -13,6 +13,7 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
+import { skillResourceContentChecksum } from '../../contracts/skillCatalog';
 import {
   aiCatalogAuthorityToken,
   invalidateSkillCatalogAuthorityToken,
@@ -94,13 +95,14 @@ export const publishReadServiceSkill = async (params: {
       });
   const content = `# ${params.version}`;
   const contentRef = params.contentRef === undefined ? 'opaque:skill-content-1' : params.contentRef;
+  const resourceContent = 'reference';
   const resources = [
     {
-      checksum: 'a'.repeat(64),
-      content: 'reference',
+      checksum: skillResourceContentChecksum(resourceContent),
+      content: resourceContent,
       mediaType: 'text/plain',
       path: 'references/source.txt',
-      sizeBytes: 9,
+      sizeBytes: new TextEncoder().encode(resourceContent).byteLength,
     },
   ];
   const version = await repository.createVersion({

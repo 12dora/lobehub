@@ -106,8 +106,10 @@ export const hasModelRuntimeEnvironmentFallback = (
     case ModelProvider.Github: {
       return Boolean(env.GITHUB_TOKEN);
     }
+    // SuperGrok is personal OAuth only — never treat SUPERGROK_API_KEY as platform readiness.
     case ModelProvider.GithubCopilot:
-    case ModelProvider.LobeHub: {
+    case ModelProvider.LobeHub:
+    case ModelProvider.SuperGrok: {
       return false;
     }
     case ModelProvider.Ollama: {
@@ -519,6 +521,37 @@ const isPlatformNotFoundError = (error: unknown): boolean => {
 };
 
 /**
+ * Map managed `enableResponseApi` to chat transport mode.
+ * Explicit true → Responses API; explicit false → Chat Completions; unset → SDK default.
+ * Shared by managed runtime init and connection probes so validation matches production.
+ */
+export const resolveManagedChatApiMode = (
+  enableResponseApi: unknown,
+): 'chatCompletion' | 'responses' | undefined => {
+  if (enableResponseApi === true) return 'responses';
+  if (enableResponseApi === false) return 'chatCompletion';
+  return undefined;
+};
+
+/**
+ * Inject published request-format into chat payloads when the caller has not already set apiMode.
+ * Only attaches a hook when the catalog config is an explicit boolean.
+ */
+export const createManagedRequestModeHooks = (
+  enableResponseApi: unknown,
+): ModelRuntimeHooks | undefined => {
+  const apiMode = resolveManagedChatApiMode(enableResponseApi);
+  if (!apiMode) return undefined;
+  return {
+    beforeChat: async (payload) => {
+      if (payload.apiMode === undefined) {
+        payload.apiMode = apiMode;
+      }
+    },
+  };
+};
+
+/**
  * User-owned (BYOK / self-built) provider path: reads the user's AiProvider row +
  * keyVaults. Never attaches platform allowlist hooks or platform secrets.
  */
@@ -598,9 +631,15 @@ export const initModelRuntimeFromDB = async (
       );
       const businessHooks = getBusinessModelRuntimeHooks(userId, provider, workspaceId);
       const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
+      const requestModeHooks = createManagedRequestModeHooks(
+        providerConfig.config?.enableResponseApi,
+      );
       const hooks = mergeModelRuntimeHooks(
         createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
-        mergeModelRuntimeHooks(businessHooks, tracingHooks),
+        mergeModelRuntimeHooks(
+          requestModeHooks,
+          mergeModelRuntimeHooks(businessHooks, tracingHooks),
+        ),
       );
       return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
     } catch (error) {
@@ -638,9 +677,10 @@ export const initPlatformExactModelRuntime = async (
   );
   const businessHooks = getBusinessModelRuntimeHooks(userId, ref.providerKey, workspaceId);
   const tracingHooks = createLLMGenerationTracingHook(userId, ref.providerKey, workspaceId);
+  const requestModeHooks = createManagedRequestModeHooks(providerConfig.config?.enableResponseApi);
   const hooks = mergeModelRuntimeHooks(
     createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
-    mergeModelRuntimeHooks(businessHooks, tracingHooks),
+    mergeModelRuntimeHooks(requestModeHooks, mergeModelRuntimeHooks(businessHooks, tracingHooks)),
   );
   return initModelRuntimeWithUserPayload(ref.providerKey, payload, { userId }, hooks);
 };

@@ -5,11 +5,18 @@ import path from 'node:path';
 
 import {
   type InlineSkillResource,
+  type ValidatedInlineSkillResource,
   validateInlineSkillOperationPayloads,
 } from './inlineSkillResources';
 
 const DEFAULT_WORKSPACE_TTL_MS = 15 * 60 * 1000;
-const activeWorkspaces = new Map<string, string>();
+
+interface ActiveWorkspaceEntry {
+  timer: ReturnType<typeof setTimeout>;
+  workspaceDir: string;
+}
+
+const activeWorkspaces = new Map<string, ActiveWorkspaceEntry>();
 
 export interface PrepareInlineSkillWorkspaceParams {
   checksum: string;
@@ -29,11 +36,34 @@ export interface PrepareInlineSkillWorkspaceResult {
 
 export interface InlineSkillWorkspaceDeps {
   cacheRoot?: string;
+  /** Injectable for tests — defaults to clearTimeout. */
+  cancelSchedule?: (timer: ReturnType<typeof setTimeout>) => void;
   now?: () => number;
+  /** Injectable for tests — defaults to recursive force-rm. */
+  removePath?: (target: string) => Promise<void>;
+  /** Injectable for tests — defaults to setTimeout. */
+  schedule?: (callback: () => void, ms: number) => ReturnType<typeof setTimeout>;
   ttlMs?: number;
 }
 
 const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
+
+/** SHA-256 of UTF-8 content — Node-only integrity check at the materialization boundary. */
+export const hashInlineSkillContent = (content: string) =>
+  createHash('sha256').update(content, 'utf8').digest('hex');
+
+/**
+ * Verify every resource's declared checksum matches its content bytes before any file is written.
+ * Kept out of the browser-safe validation module so that path never imports Node crypto.
+ */
+export const assertInlineSkillResourceChecksums = (resources: ValidatedInlineSkillResource[]) => {
+  for (const resource of resources) {
+    const digest = hashInlineSkillContent(resource.content);
+    if (digest !== resource.checksum) {
+      throw new Error(`Inline Skill resource integrity check failed: ${resource.path}`);
+    }
+  }
+};
 
 const assertOwnedDirectory = async (target: string) => {
   const metadata = await lstat(target);
@@ -63,11 +93,16 @@ const sweepExpiredWorkspaces = async (root: string, now: number, ttlMs: number) 
   );
 };
 
+const defaultRemovePath = (target: string) => rm(target, { force: true, recursive: true });
+
 export const prepareInlineSkillWorkspace = async (
   params: PrepareInlineSkillWorkspaceParams,
   deps: InlineSkillWorkspaceDeps = {},
 ): Promise<PrepareInlineSkillWorkspaceResult> => {
   let workspaceDir: string | undefined;
+  const removePath = deps.removePath ?? defaultRemovePath;
+  const schedule = deps.schedule ?? setTimeout;
+  const cancelSchedule = deps.cancelSchedule ?? clearTimeout;
   try {
     if (!params.operationId || params.operationId.length > 256) {
       throw new Error('A bounded operationId is required for inline Skill materialization');
@@ -76,6 +111,9 @@ export const prepareInlineSkillWorkspace = async (
       throw new Error('An exact Skill checksum is required for inline Skill materialization');
     }
     const [{ resources }] = validateInlineSkillOperationPayloads([params]);
+    // Real digest comparison happens only here (Node boundary), not in the browser-safe validator.
+    assertInlineSkillResourceChecksums(resources);
+
     const root = path.resolve(deps.cacheRoot ?? defaultInlineSkillWorkspaceRoot());
     await mkdir(root, { mode: 0o700, recursive: true });
     await assertOwnedDirectory(root);
@@ -106,22 +144,44 @@ export const prepareInlineSkillWorkspace = async (
     }
 
     const workspaceId = randomUUID();
-    activeWorkspaces.set(workspaceId, workspaceDir);
-    const timer = setTimeout(() => {
-      void cleanupInlineSkillWorkspace({ workspaceId });
+    const timer = schedule(() => {
+      void cleanupInlineSkillWorkspace({ workspaceId }, { removePath, cancelSchedule }).catch(
+        () => {
+          // TTL cleanup failures must not become unhandled rejections. Paths stay redacted.
+        },
+      );
     }, deps.ttlMs ?? DEFAULT_WORKSPACE_TTL_MS);
     timer.unref?.();
+    activeWorkspaces.set(workspaceId, { timer, workspaceDir });
     return { success: true, workspaceDir, workspaceId };
   } catch (error) {
-    if (workspaceDir) await rm(workspaceDir, { force: true, recursive: true });
+    if (workspaceDir) await removePath(workspaceDir).catch(() => undefined);
     return { error: (error as Error).message, success: false };
   }
 };
 
-export const cleanupInlineSkillWorkspace = async (params: { workspaceId: string }) => {
-  const workspaceDir = activeWorkspaces.get(params.workspaceId);
-  if (!workspaceDir) return { success: true };
+export const cleanupInlineSkillWorkspace = async (
+  params: { workspaceId: string },
+  deps: Pick<InlineSkillWorkspaceDeps, 'removePath' | 'cancelSchedule'> = {},
+) => {
+  const entry = activeWorkspaces.get(params.workspaceId);
+  if (!entry) return { success: true };
+
+  const removePath = deps.removePath ?? defaultRemovePath;
+  const cancelSchedule = deps.cancelSchedule ?? clearTimeout;
+
+  // Delete files first. Only drop map state + cancel the TTL timer after rm succeeds so a failed
+  // deletion remains retryable (gateway bounded retry, manual re-invoke, or later TTL).
+  await removePath(entry.workspaceDir);
   activeWorkspaces.delete(params.workspaceId);
-  await rm(workspaceDir, { force: true, recursive: true });
+  cancelSchedule(entry.timer);
   return { success: true };
+};
+
+/** Test-only: clear in-memory workspace registry between cases. */
+export const __resetInlineSkillWorkspacesForTests = () => {
+  for (const entry of activeWorkspaces.values()) {
+    clearTimeout(entry.timer);
+  }
+  activeWorkspaces.clear();
 };

@@ -6,17 +6,19 @@ import {
   extractRfc6052Ipv4,
   isMetadataHostname,
   isMetadataIp,
-  isPrivateIp,
   isPubliclyRoutableIp,
 } from './index';
 
 describe('policy helpers', () => {
-  it('classifies private and loopback addresses', () => {
-    expect(isPrivateIp('10.0.0.1')).toBe(true);
-    expect(isPrivateIp('192.168.1.1')).toBe(true);
-    expect(isPrivateIp('172.16.5.1')).toBe(true);
-    expect(isPrivateIp('127.0.0.1')).toBe(true);
-    expect(isPrivateIp('8.8.8.8')).toBe(false);
+  it('classifies private/loopback via public-only policy production path', async () => {
+    const { assertResolvedIpAllowed } = await import('./policy');
+    const publicOnly = { allowlist: [] as string[], mode: 'public-only' as const };
+    // Private/loopback addresses are rejected by the production public-only classifier.
+    expect(() => assertResolvedIpAllowed('10.0.0.1', publicOnly, false)).toThrow();
+    expect(() => assertResolvedIpAllowed('192.168.1.1', publicOnly, false)).toThrow();
+    expect(() => assertResolvedIpAllowed('172.16.5.1', publicOnly, false)).toThrow();
+    expect(() => assertResolvedIpAllowed('127.0.0.1', publicOnly, false)).toThrow();
+    expect(() => assertResolvedIpAllowed('8.8.8.8', publicOnly, false)).not.toThrow();
   });
 
   it('identifies cloud metadata IPs and hostnames', () => {

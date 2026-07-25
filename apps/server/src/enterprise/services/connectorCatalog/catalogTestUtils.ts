@@ -32,6 +32,7 @@ export const cleanupM09ServiceData = async (db: LobeChatDatabase): Promise<void>
   await db.delete(platformConnectorSecrets);
   await db.delete(platformConnectorTools);
   await db.delete(platformJobs).where(eq(platformJobs.type, 'connector.oauth.refresh.v1'));
+  await db.delete(platformJobs).where(eq(platformJobs.type, 'connector.secret.cleanup.v1'));
   await db.delete(platformConnectors);
   // Migration 0145: revisions reject row DELETE. Temporarily disable user triggers in
   // this session so we can remove only connector revision rows (not TRUNCATE the

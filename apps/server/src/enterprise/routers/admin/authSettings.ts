@@ -9,11 +9,15 @@ import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
-  EMAIL_DOMAIN_PATTERN,
   normalizeEmailDomainAllowlist,
   platformAuthSettingsSchema,
 } from '@/types/platform/authSettings';
 
+import {
+  adminAuthSettingsGetOutputSchema,
+  adminAuthSettingsUpdateInputSchema,
+  adminAuthSettingsUpdateOutputSchema,
+} from '../../contracts/adminAuthSettings';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
@@ -26,57 +30,25 @@ const authSettingsBase = authedProcedure
   .use(withAdminMutationRateLimit());
 
 /**
- * Local CAS schemas until the contracts batch promotes `revision` /
- * `expectedRevision` into shared `adminAuthSettings*` contracts.
- * Shared `platformAuthSettingsSchema` is `.strict()` so extra CAS keys cannot be
- * composed via `.and()`; define full local schemas here instead.
- */
-const domainEntrySchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .max(253)
-  .regex(EMAIL_DOMAIN_PATTERN, { message: 'INVALID_EMAIL_DOMAIN' });
-
-const authSettingsGetOutputSchema = z
-  .object({
-    emailDomainAllowlist: z.array(domainEntrySchema).max(200),
-    emailDomainAllowlistEnabled: z.boolean(),
-    openRegistration: z.boolean(),
-    revision: z.number().int().nonnegative(),
-  })
-  .strict();
-
-/** Full document + CAS token (matches previous full-document update contract). */
-const authSettingsUpdateInputSchema = z
-  .object({
-    emailDomainAllowlist: z.array(domainEntrySchema).max(200),
-    emailDomainAllowlistEnabled: z.boolean(),
-    expectedRevision: z.number().int().nonnegative(),
-    openRegistration: z.boolean(),
-  })
-  .strict();
-
-const authSettingsUpdateOutputSchema = authSettingsGetOutputSchema;
-
-/**
  * Platform authentication / registration settings (M15).
  * Direct-save: `update` persists the whole document immediately (no draft/publish).
  * Gated on IDENTITY_* — registration policy is identity/login-adjacent.
  *
  * Config write + success audit share one DB transaction so an unavailable audit sink
  * cannot leave an unaudited committed change (fail closed). CAS via `revision`.
+ *
+ * Input/output schemas are the shared `adminAuthSettings*` contracts (SR-007 / SCT-04).
  */
 export const adminAuthSettingsRouter = router({
   get: authSettingsBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_READ))
-    .output(authSettingsGetOutputSchema)
+    .output(adminAuthSettingsGetOutputSchema)
     .query(async ({ ctx }) => new PlatformAuthSettingsModel(ctx.serverDB).get()),
 
   update: authSettingsBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_UPDATE))
-    .input(authSettingsUpdateInputSchema)
-    .output(authSettingsUpdateOutputSchema)
+    .input(adminAuthSettingsUpdateInputSchema)
+    .output(adminAuthSettingsUpdateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       try {
         return await ctx.serverDB.transaction(async (tx) => {

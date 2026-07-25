@@ -14,6 +14,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import {
   getIdentityProviderProcessInstance,
   INSTANCE_CONVERGENCE_LOCK_NAMESPACE,
@@ -44,7 +45,10 @@ const cleanup = async () => {
   await db.delete(platformIdentityProviderRestartRequests);
   await db.delete(platformIdentityProviderInstances);
   await db.delete(platformIdentityProviders);
-  await db.delete(platformResourceRevisions);
+  await deletePlatformResourceRevisionsForTest(db, {
+    resourceIds: ['provider-work'],
+    resourceType: 'oidc',
+  });
   resetIdentityProviderStartupArtifactForTest();
   stopIdentityProviderHeartbeatForTest();
 };
@@ -154,7 +158,20 @@ describe.skipIf(!runPostgres)('identity provider convergence PostgreSQL races', 
         .finally(() => {
           settled = true;
         });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Wait until the status query is blocked on the convergence advisory lock.
+      const waiterDeadline = Date.now() + 5000;
+      let blocked = false;
+      while (Date.now() < waiterDeadline) {
+        const locks = await pool.query(
+          `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted LIMIT 1`,
+        );
+        if ((locks.rowCount ?? 0) > 0) {
+          blocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
       expect(settled).toBe(false);
       await client.query(
         `UPDATE platform_identity_provider_instances

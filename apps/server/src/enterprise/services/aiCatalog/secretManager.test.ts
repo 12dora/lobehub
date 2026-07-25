@@ -81,4 +81,41 @@ describe('AiCatalogSecretManager', () => {
     });
     expect(await manager.decrypt(merged.encryptedKeyVaults!)).toEqual({ apiKey: 'first-key' });
   });
+
+  it('accepts already-stored customHeaders whose names fail the write-time RFC token grammar', async () => {
+    // Pre-token-rule vaults could store space/colon/non-ASCII names. Decrypt and
+    // keep/merge must not hard-fail so admins can load and correct via mutation
+    // (detail API is presence-only — secret values are not projected).
+    const secrets = new PlatformSecretService({ keyProvider });
+    const legacyVault = {
+      apiKey: 'legacy-key',
+      customHeaders: {
+        'Bad Header': 'space-name',
+        'X-Key:Sub': 'colon-name',
+        'X-键': 'non-ascii-name',
+      },
+    };
+    const ciphertext = await secrets.encrypt(JSON.stringify(legacyVault));
+    const current = {
+      encryptedKeyVaults: ciphertext,
+      secretFingerprint: 'sha256:deadbeef',
+      secretKeyId: 'test-key',
+      secretKeyVersion: 1,
+      secretUpdatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    };
+
+    await expect(manager.decrypt(ciphertext)).resolves.toEqual(legacyVault);
+
+    const kept = await manager.applyMutation(current, { operation: 'keep' });
+    expect(await manager.decrypt(kept.encryptedKeyVaults!)).toEqual(legacyVault);
+
+    const merged = await manager.applyMutation(current, {
+      operation: 'merge',
+      value: { apiKey: 'rotated-key' },
+    });
+    expect(await manager.decrypt(merged.encryptedKeyVaults!)).toEqual({
+      ...legacyVault,
+      apiKey: 'rotated-key',
+    });
+  });
 });

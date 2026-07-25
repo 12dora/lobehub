@@ -24,6 +24,7 @@ import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit'
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import type { PlatformAuditService } from '../../services/platformAudit';
 import { PlatformSecretRotationAdminService } from '../../services/secretRewrap';
 import {
@@ -80,22 +81,21 @@ const assertMutationReauth = async (
     userId: string;
   },
   input: { reason: string; requestId: string },
-  action: string,
+  action: AuditAction,
   targetId: string,
 ): Promise<void> =>
   assertDangerousReauthWithAudit({
-    action,
-    actorUserId: ctx.userId,
-    auditFailureLog: '[admin.security.secretRotation] reauth denied audit unavailable',
-    // Legacy path only logged errorClass (no action).
-    auditFailureMeta: {},
     authenticatedAt: ctx.authenticatedAt,
     authMethod: ctx.authMethod,
-    reason: input.reason,
-    requestId: input.requestId,
     serverDB: ctx.serverDB,
-    targetId,
-    targetType: 'secret_rotation',
+    denied: {
+      action,
+      actorUserId: ctx.userId,
+      reason: input.reason,
+      requestId: input.requestId,
+      targetId,
+      targetType: 'secret_rotation',
+    },
   });
 
 const execute = async <T>(operation: () => Promise<T>): Promise<T> => {

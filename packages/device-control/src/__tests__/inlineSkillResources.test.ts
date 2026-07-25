@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -10,11 +11,12 @@ import { describe, expect, it } from 'vitest';
 const requireModule = createRequire(import.meta.url);
 const resolveModule = (id: string) => requireModule.resolve(id);
 
-const resource = (path: string, content = 'x') => ({
-  checksum: 'a'.repeat(64),
+/** Real SHA-256 — fixtures must not normalize the broken constant-hash contract. */
+const resource = (resourcePath: string, content = 'x') => ({
+  checksum: createHash('sha256').update(content, 'utf8').digest('hex'),
   content,
   mediaType: 'text/plain',
-  path,
+  path: resourcePath,
   sizeBytes: new TextEncoder().encode(content).byteLength,
 });
 

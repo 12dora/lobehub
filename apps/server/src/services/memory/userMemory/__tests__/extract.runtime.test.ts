@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
+import * as ModelRuntimeModule from '@/server/modules/ModelRuntime';
 
 import { makeTaskErrorItem, MemoryExtractionExecutor, resolveRuntimeAgentConfig } from '../extract';
 
@@ -75,15 +76,13 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       { model: 'allow-memory', provider: 'openai' },
       { openai: { apiKey: 'platform-memory-secret' } },
       {
-        managedExecutions: {
-          openai: {
-            allowedModels: [{ modelKey: 'allow-memory', type: 'chat' }],
-            config: {},
-            keyVaults: { apiKey: 'platform-memory-secret' },
-            providerKey: 'openai',
-            revision: 1,
-            runtimeProvider: 'openai',
-          },
+        managedExecution: {
+          allowedModels: [{ modelKey: 'allow-memory', type: 'chat' }],
+          config: {},
+          keyVaults: { apiKey: 'platform-memory-secret' },
+          providerKey: 'openai',
+          revision: 1,
+          runtimeProvider: 'openai',
         },
         userId: 'memory-user',
       },
@@ -640,6 +639,91 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
     });
 
     warnSpy.mockRestore();
+  });
+
+  it('binds each managed runtime to the provider that published its model (not a shared first-match map)', async () => {
+    // Regression for SPC-004: embedding preferences list provider-b first, but only provider-e
+    // publishes the embedding model. Gatekeeper correctly selects provider-b. The embedding
+    // runtime must still use provider-e — never the shared provider-b execution from gatekeeper.
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockImplementation(async (providerKey) => ({
+      allowedModels:
+        providerKey === 'provider-e'
+          ? [{ modelKey: 'embed-1', type: 'embedding' }]
+          : providerKey === 'provider-b'
+            ? [{ modelKey: 'gate-2', type: 'chat' }]
+            : [{ modelKey: 'layer-act', type: 'chat' }],
+      config: {},
+      keyVaults: { apiKey: `platform-secret-${providerKey}` },
+      providerKey,
+      revision: 1,
+      runtimeProvider: providerKey,
+    }));
+    const initWithPayload = vi
+      .spyOn(ModelRuntimeModule, 'initModelRuntimeWithUserPayload')
+      .mockReturnValue({} as ModelRuntime);
+
+    const executor = createExecutor({
+      // Embedding prefers provider-b first; only provider-e has the embedding model.
+      embeddingPreferredProviders: ['provider-b', 'provider-e'],
+    });
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        // gate model is NOT published on provider-e; embedding model is NOT on provider-b
+        ...['layer-act', 'layer-ctx', 'layer-exp', 'layer-id', 'layer-pref'].map((id) => ({
+          abilities: {},
+          enabled: true,
+          id,
+          providerId: 'provider-l',
+          type: 'chat' as const,
+        })),
+      ],
+      {
+        'provider-b': {},
+        'provider-e': {},
+        'provider-l': {},
+      },
+    );
+
+    try {
+      const memoryServiceConfig = (executor as any).resolveUserMemoryServiceConfig();
+      const keyVaults = await (executor as any).resolveRuntimeKeyVaults(
+        runtimeState,
+        memoryServiceConfig,
+      );
+      expect(keyVaults).toMatchObject({
+        'provider-b': { apiKey: 'platform-secret-provider-b' },
+        'provider-e': { apiKey: 'platform-secret-provider-e' },
+        'provider-l': { apiKey: 'platform-secret-provider-l' },
+      });
+
+      await (executor as any).getRuntime('memory-user', memoryServiceConfig, keyVaults);
+
+      // resolveRuntimeAgentConfig order: embeddings, gatekeeper, layerExtractor
+      const providerKeys = initWithPayload.mock.calls.map((call) => call[0]);
+      expect(providerKeys).toEqual(['provider-e', 'provider-b', 'provider-l']);
+      // provider-b exactly once (gatekeeper only) — the shared-map bug would init embeddings with it too.
+      expect(initWithPayload.mock.calls.filter((call) => call[0] === 'provider-b')).toHaveLength(1);
+      expect(initWithPayload.mock.calls.filter((call) => call[0] === 'provider-e')).toHaveLength(1);
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
   });
 });
 

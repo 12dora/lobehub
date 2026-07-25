@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -16,11 +17,8 @@ import {
   setEnterprisePlatformObserverForTest,
   setEnterpriseStructuredLoggerForTest,
 } from '../../observability';
-import {
-  InMemoryPlatformConfigInvalidationPublisher,
-  PlatformPublisherService,
-  PlatformRevisionConflictError,
-} from '../index';
+import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import { PlatformPublisherService, PlatformRevisionConflictError } from '../platformPublisher';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
@@ -29,15 +27,22 @@ const publisher = new PlatformPublisherService(serverDB, invalidation);
 let brandingId: string;
 let observations: EnterpriseObservabilityEvent[];
 
+/** TRUNCATE bypasses append-only / immutability DELETE triggers (migration 0145). */
+const resetPublisherTables = async () => {
+  await serverDB.execute(
+    sql.raw(
+      'TRUNCATE TABLE platform_audit_logs, platform_resource_revisions, platform_branding CASCADE',
+    ),
+  );
+};
+
 beforeEach(async () => {
   observations = [];
   setEnterprisePlatformObserverForTest({ record: (event) => observations.push(event) });
   setEnterpriseStructuredLoggerForTest(NOOP_ENTERPRISE_STRUCTURED_LOGGER);
   invalidation.events.length = 0;
   invalidation.versions.clear();
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(platformBranding);
+  await resetPublisherTables();
 
   const [row] = await serverDB
     .insert(platformBranding)
@@ -49,9 +54,7 @@ beforeEach(async () => {
 afterEach(async () => {
   setEnterprisePlatformObserverForTest(null);
   setEnterpriseStructuredLoggerForTest(null);
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
-  await serverDB.delete(platformBranding);
+  await resetPublisherTables();
 });
 
 describe('PlatformPublisherService', () => {

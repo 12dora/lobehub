@@ -14,6 +14,7 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminBrandingUploadAssetInput } from '../../contracts/adminBranding';
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import {
   AdminBrandingAssetService,
   BrandingIdempotencyConflictError,
@@ -41,7 +42,7 @@ const input = async (
 });
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: [actorUserId] });
   await db.delete(platformBrandingOperations);
   await db.delete(platformBrandingAssets);
   await db.delete(users).where(eq(users.id, actorUserId));

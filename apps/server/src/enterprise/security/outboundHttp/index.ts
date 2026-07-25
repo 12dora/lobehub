@@ -17,7 +17,6 @@ export {
   isLoopbackIp,
   isMetadataHostname,
   isMetadataIp,
-  isPrivateIp,
   isPubliclyRoutableIp,
   normalizeIp,
   type OutboundPolicy,

@@ -9,6 +9,7 @@ import { type SWRResponse } from 'swr';
 
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import { aiModelKeys } from '@/libs/swr/keys';
+import type { GetAiProviderModelListParams } from '@/services/aiModel';
 import { type AiInfraServices } from '@/store/aiInfra/services';
 import { type AiInfraStore } from '@/store/aiInfra/store';
 import { type StoreSetter } from '@/store/types';
@@ -30,11 +31,33 @@ export class AiModelActionImpl {
     this.#services = services;
   }
 
-  #modelListKey = (providerId: string | undefined) => {
-    const base = aiModelKeys.list(providerId);
+  #scopeKey = <T extends readonly unknown[]>(base: T) => {
     const scope = this.#services.swrScope ?? 'user';
     if (scope === 'user') return base;
     return [scope, ...base] as const;
+  };
+
+  #modelListKey = (providerId: string | undefined) => {
+    return this.#scopeKey(aiModelKeys.list(providerId));
+  };
+
+  /**
+   * Scope-aware SWR key for disabled-model infinite pages.
+   * Admin stores prefix with swrScope so user/admin caches never collide.
+   */
+  getDisabledModelsPageKey = (providerId: string, offset: number) => {
+    return this.#scopeKey(aiModelKeys.disabledModelsPage(providerId, offset));
+  };
+
+  /**
+   * Paged model list via the injected service boundary (user or admin adapter).
+   * DisabledModels must call this instead of the user singleton service.
+   */
+  getAiProviderModelPage = (
+    id: string,
+    params?: GetAiProviderModelListParams,
+  ): Promise<AiProviderModelListItem[]> => {
+    return this.#services.aiModel.getAiProviderModelList(id, params);
   };
 
   batchToggleAiModels = async (ids: string[], enabled: boolean): Promise<void> => {

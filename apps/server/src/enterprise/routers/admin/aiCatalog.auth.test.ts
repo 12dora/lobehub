@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -22,6 +22,8 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -38,8 +40,12 @@ vi.mock('@/database/core/db-adaptor', () => ({
 }));
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
+  const ownedProviders = await db.select({ id: platformAiProviders.id }).from(platformAiProviders);
+  await deletePlatformResourceRevisionsForTest(db, {
+    resourceIds: ownedProviders.map((row) => row.id),
+    resourceType: 'provider',
+  });
   await db.delete(platformAiModels);
   await db.delete(platformAiProviderSecrets);
   await db.delete(platformAiProviders);
@@ -360,7 +366,17 @@ describe('admin AI catalog permission and reauth gates', () => {
         reason: `stale reauth ${credential}`,
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceType, 'provider'),
+            eq(platformResourceRevisions.resourceId, provider.id),
+          ),
+        ),
+    ).toHaveLength(0);
     const audits = await db.select().from(platformAuditLogs);
     expect(audits).toContainEqual(
       expect.objectContaining({

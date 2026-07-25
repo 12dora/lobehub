@@ -10,6 +10,7 @@ import {
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import { AiCatalogNotFoundError } from './errors';
 
@@ -111,7 +112,7 @@ export const getLockedAiCatalogDraft = async (params: {
 
 export const appendAiCatalogFailureAudit = async (
   db: LobeChatDatabase,
-  params: { action: string; actorUserId: string; reason: string; targetId?: string },
+  params: { action: AuditAction; actorUserId: string; reason: string; targetId?: string },
 ): Promise<void> => {
   try {
     await new PlatformAuditService(db).append({

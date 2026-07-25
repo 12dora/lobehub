@@ -1,4 +1,3 @@
-import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -33,8 +32,10 @@ import {
 } from '../../contracts/platformConnectors';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
-import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withCompoundPlatformPermission,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 import { adminConnectorGovernanceProcedures } from './connectorsGovernance';
 import {
   assertAdminConnectorRuntimeDependency,
@@ -77,25 +78,22 @@ export const adminConnectorsRouter = router({
    * Requires UPDATE+PUBLISH (or CREATE+PUBLISH for create mode). Rate-limit: 1 unit.
    */
   applyImmediate: adminConnectorProcedure
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH))
+    .use(
+      withCompoundPlatformPermission({
+        fixed: [PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH],
+        select: (raw) => {
+          const mode = (raw as { mode?: string } | null)?.mode;
+          return mode === 'create'
+            ? PLATFORM_PERMISSIONS.CONNECTOR_CREATE
+            : PLATFORM_PERMISSIONS.CONNECTOR_UPDATE;
+        },
+        selectable: [PLATFORM_PERMISSIONS.CONNECTOR_CREATE, PLATFORM_PERMISSIONS.CONNECTOR_UPDATE],
+      }),
+    )
     .input(adminConnectorApplyImmediateInputSchema)
     .output(adminConnectorApplyImmediateOutputSchema)
     .mutation(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.applyImmediate', async () => {
-        const required =
-          input.mode === 'create'
-            ? PLATFORM_PERMISSIONS.CONNECTOR_CREATE
-            : PLATFORM_PERMISSIONS.CONNECTOR_UPDATE;
-        const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth
-          ?.permissions;
-        if (!perms?.includes(required)) {
-          return throwEnterpriseError({
-            code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-            details: { permission: required },
-            httpCode: 'FORBIDDEN',
-            message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-          });
-        }
         const targetId = input.mode === 'create' ? input.key : input.id;
         const secrets = replacementSecrets(input as Parameters<typeof replacementSecrets>[0]);
         const runtime = await resolveAdminConnectorMutationRuntime({

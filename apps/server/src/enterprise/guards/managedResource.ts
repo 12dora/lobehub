@@ -19,7 +19,7 @@ import {
   type ManagedResourceGuardMetric,
   type ManagedResourceGuardMetricSink,
 } from '../services/managedResourceGuardMetrics';
-import { PlatformAuditService } from '../services/platformAudit';
+import { type AppendPlatformAuditLogParams, PlatformAuditService } from '../services/platformAudit';
 import { throwEnterpriseError } from './enterpriseErrors';
 import {
   getManagedResourceMutationDefinition,
@@ -27,15 +27,7 @@ import {
 } from './managedResourceMutationRegistry';
 
 export interface EnforceManagedResourceMutationOptions {
-  auditAppend?: (params: {
-    action: string;
-    actorUserId: string | null;
-    afterDiff: Record<string, unknown>;
-    reason: null;
-    result: 'denied' | 'failure' | 'success';
-    targetId: string;
-    targetType: string;
-  }) => Promise<unknown>;
+  auditAppend?: (params: AppendPlatformAuditLogParams) => Promise<unknown>;
   flags?: EnterpriseFeatureFlags;
   metricSink?: ManagedResourceGuardMetricSink;
   readiness?: () => Promise<ManagedResourceReadinessMap>;

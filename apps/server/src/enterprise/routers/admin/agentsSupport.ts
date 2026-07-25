@@ -16,6 +16,7 @@ import {
   PlatformAgentRevisionConflictError,
   PlatformAgentUnavailableError,
 } from '../../services/agentCatalog';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 
 const log = debug('lobe-server:admin-agents');
 
@@ -87,7 +88,7 @@ export const mapAgentServiceError = (error: unknown): never => {
 };
 
 export const assertAgentDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -96,14 +97,14 @@ export const assertAgentDangerousReauth = async (params: {
   targetId: string;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    // Legacy agents path logged audit failures via debug only; keep silent here.
-    auditFailureLog: false,
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: params.reason,
     serverDB: params.serverDB,
-    targetId: params.targetId,
-    targetType: 'agent',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: params.reason,
+      targetId: params.targetId,
+      targetType: 'agent',
+    },
   });

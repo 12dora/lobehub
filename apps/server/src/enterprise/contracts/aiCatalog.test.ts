@@ -311,10 +311,16 @@ describe('AI catalog contracts', () => {
     ).toBe(true);
   });
 
-  it('bounds credential header maps by entry count, name/value length, and control chars', () => {
+  it('bounds credential header maps by entry count, RFC token names, and control chars (write-time only)', () => {
     expect(boundedHeaderMapSchema.safeParse({ Authorization: 'Bearer token-value' }).success).toBe(
       true,
     );
+    expect(boundedHeaderMapSchema.safeParse({ 'X-Request-ID': 'abc-123' }).success).toBe(true);
+    // Write rejects non-tokens; stored vaults are accepted on read via secretManager.decrypt.
+    expect(boundedHeaderMapSchema.safeParse({ 'Bad Header': 'x' }).success).toBe(false);
+    expect(boundedHeaderMapSchema.safeParse({ 'X-Key:Sub': 'v' }).success).toBe(false);
+    expect(boundedHeaderMapSchema.safeParse({ 'X-键': 'v' }).success).toBe(false);
+    expect(boundedHeaderMapSchema.safeParse({ 'X(Key)': 'v' }).success).toBe(false);
     expect(boundedHeaderMapSchema.safeParse({ 'X-Api\nKey': 'v' }).success).toBe(false);
     expect(boundedHeaderMapSchema.safeParse({ 'X-Key': 'a\u0000b' }).success).toBe(false);
     expect(

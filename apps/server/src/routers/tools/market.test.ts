@@ -20,6 +20,7 @@ const mockMarketSDK = vi.hoisted(() => ({
 const managedSkillMocks = vi.hoisted(() => ({
   AgentSkillModel: vi.fn(() => ({ findByName: vi.fn() })),
   AgentOperationModel: vi.fn(() => ({ findById: managedSkillMocks.findOperation })),
+  assertUserActive: vi.fn(),
   debugLog: vi.fn(),
   FileModel: vi.fn(() => ({ checkHash: vi.fn() })),
   findOperation: vi.fn(),
@@ -43,8 +44,22 @@ vi.mock('@/database/models/file', () => ({
   FileModel: managedSkillMocks.FileModel,
 }));
 
-vi.mock('@/server/enterprise/featureFlags', () => ({
-  parseEnterpriseFeatureFlags: managedSkillMocks.parseEnterpriseFeatureFlags,
+vi.mock('@/server/enterprise/featureFlags', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    parseEnterpriseFeatureFlags: managedSkillMocks.parseEnterpriseFeatureFlags,
+  };
+});
+
+vi.mock('@/libs/oidc-provider/access-control', () => ({
+  assertUserActive: managedSkillMocks.assertUserActive,
+  isOIDCUserInactiveError: (error: unknown) =>
+    Boolean(
+      error &&
+      typeof error === 'object' &&
+      (error as { name?: string }).name === 'OIDCUserInactiveError',
+    ),
 }));
 
 vi.mock('@/libs/trpc/utils/internalJwt', () => ({
@@ -104,6 +119,8 @@ vi.mock('debug', () => ({
 describe('tools marketRouter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    managedSkillMocks.assertUserActive.mockResolvedValue(undefined);
     managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
       ENABLE_PLATFORM_MANAGED_SKILLS: false,
     });
@@ -579,6 +596,206 @@ describe('tools marketRouter', () => {
       expect(managedSkillMocks.SkillCatalogReadService).not.toHaveBeenCalled();
     },
   );
+
+  it('rejects oversized activatedSkills before any catalog I/O (SR-002)', async () => {
+    const checksum = 'a'.repeat(64);
+    const resolvePinnedForExecution = vi.fn();
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    managedSkillMocks.SkillCatalogReadService.mockImplementation(
+      () => ({ resolvePinnedForExecution }) as never,
+    );
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'true',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    await expect(
+      caller.execInSandbox({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        params: {
+          activatedSkills: Array.from({ length: 101 }, (_, i) => ({ name: `skill-${i}` })),
+          command: 'true',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(resolvePinnedForExecution).not.toHaveBeenCalled();
+    expect(managedSkillMocks.SkillCatalogReadService).not.toHaveBeenCalled();
+    expect(mockCreateSandboxService).not.toHaveBeenCalled();
+  });
+
+  it('collapses duplicate activatedSkills by name before catalog I/O (SR-002 / R3)', async () => {
+    const checksum = 'a'.repeat(64);
+    const resolvePinnedForExecution = vi.fn().mockResolvedValue({
+      checksum,
+      content: '# ok',
+      contentRef: null,
+      resources: [],
+      skillKey: 'managed.skill',
+      version: '1.0.0',
+    });
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    managedSkillMocks.SkillCatalogReadService.mockImplementation(
+      () => ({ resolvePinnedForExecution }) as never,
+    );
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'true',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    mockSandboxCallTool.mockResolvedValue({ result: { exitCode: 0 }, success: true });
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    // Same name with and without id is a legitimate activation list (DB + filesystem skill).
+    await expect(
+      caller.execInSandbox({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        params: {
+          activatedSkills: [{ id: 'db-skill-1', name: 'managed.skill' }, { name: 'managed.skill' }],
+          command: 'true',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).resolves.toMatchObject({ success: true });
+    // Collapsed to one resolve — not a hard BAD_REQUEST kill of the step.
+    expect(resolvePinnedForExecution).toHaveBeenCalledTimes(1);
+  });
+
+  describe('active-user revocation on sandbox execution (SR-001 / SR-005)', () => {
+    // Wiring-only: assertUserActive is mocked (speed). Full banned/temp-ban/epoch matrix
+    // lives on resolvePlatformPinned with real DB rows (see agentSkills.resolvePlatformPinned.test.ts).
+    const inactiveError = () => {
+      const error = new Error('user inactive');
+      error.name = 'OIDCUserInactiveError';
+      return error;
+    };
+
+    const managedExecInput = {
+      agentId: 'agent-1',
+      operationId: 'operation-1',
+      params: {
+        activatedSkills: [{ name: 'managed.skill' }],
+        command: 'true',
+        operationId: 'operation-1',
+        platformSkillSnapshot: {
+          agentId: 'agent-1',
+          operationId: 'operation-1',
+          proof: 'signed-proof',
+          refs: [{ checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' }],
+          revision: 'catalog-r1',
+        },
+      },
+      toolName: 'execScript' as const,
+      topicId: 'topic-1',
+    };
+
+    it.each([['execInSandbox'] as const, ['callCodeInterpreterTool'] as const])(
+      'rejects an inactive principal on %s before proof/sandbox work (middleware wiring)',
+      async (procedure) => {
+        vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+        managedSkillMocks.assertUserActive.mockRejectedValue(inactiveError());
+        managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+          ENABLE_PLATFORM_MANAGED_SKILLS: true,
+        });
+        const caller = marketRouter.createCaller({
+          credentialIssuedAt: new Date('2020-01-01T00:00:00.000Z'),
+          serverDB: {},
+          userId: 'user-1',
+        } as any);
+
+        await expect(caller[procedure](managedExecInput)).rejects.toMatchObject({
+          code: 'UNAUTHORIZED',
+        });
+        expect(managedSkillMocks.assertUserActive).toHaveBeenCalled();
+        expect(managedSkillMocks.verifyProof).not.toHaveBeenCalled();
+        expect(managedSkillMocks.SkillCatalogReadService).not.toHaveBeenCalled();
+        expect(mockCreateSandboxService).not.toHaveBeenCalled();
+        expect(mockSandboxCallTool).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows an active principal when managed Skills are enabled', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+      managedSkillMocks.assertUserActive.mockResolvedValue(undefined);
+      managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+        ENABLE_PLATFORM_MANAGED_SKILLS: true,
+      });
+      const resolvePinnedForExecution = vi.fn().mockResolvedValue({
+        checksum: 'a'.repeat(64),
+        content: '# ok',
+        contentRef: null,
+        resources: [],
+        skillKey: 'managed.skill',
+        version: '1.0.0',
+      });
+      managedSkillMocks.SkillCatalogReadService.mockImplementation(
+        () => ({ resolvePinnedForExecution }) as never,
+      );
+      mockPreprocessLhCommand.mockResolvedValue({
+        command: 'true',
+        isLhCommand: false,
+        skipSkillLookup: false,
+      });
+      mockSandboxCallTool.mockResolvedValue({ result: { exitCode: 0 }, success: true });
+      const caller = marketRouter.createCaller({
+        credentialIssuedAt: new Date(),
+        serverDB: {},
+        userId: 'user-1',
+      } as any);
+
+      await expect(caller.execInSandbox(managedExecInput)).resolves.toMatchObject({
+        success: true,
+      });
+      expect(managedSkillMocks.assertUserActive).toHaveBeenCalled();
+      expect(resolvePinnedForExecution).toHaveBeenCalled();
+    });
+
+    it('skips active-user enforcement when the managed Skills flag is off', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '0');
+      mockPreprocessLhCommand.mockResolvedValue({
+        command: 'true',
+        isLhCommand: false,
+        skipSkillLookup: false,
+      });
+      mockSandboxCallTool.mockResolvedValue({ result: { exitCode: 0 }, success: true });
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await expect(
+        caller.execInSandbox({
+          params: { command: 'true' },
+          toolName: 'runCommand',
+          topicId: 'topic-1',
+        }),
+      ).resolves.toMatchObject({ success: true });
+      expect(managedSkillMocks.assertUserActive).not.toHaveBeenCalled();
+    });
+  });
 
   it('should fall back to static tools when live discovery fails', async () => {
     const caller = marketRouter.createCaller({ userId: 'user-1' } as any);

@@ -1,4 +1,12 @@
 import type { SkillItem, SkillListItem, SkillResourceContent } from '@lobechat/types';
+import {
+  indexPlatformSkillRefs,
+  PLATFORM_SKILL_ID_PREFIX,
+  PlatformSkillInFlightCache,
+  platformSkillRuntimeId,
+  toPlatformSkillListItem,
+  toPlatformSkillResourceContent,
+} from '@lobechat/types';
 
 import { getToolStoreState } from '@/store/tool';
 import type {
@@ -8,8 +16,6 @@ import type {
 
 import { agentSkillService } from './skill';
 
-const PLATFORM_SKILL_ID_PREFIX = 'platform-skill:';
-
 const getRuntimeCatalog = () => {
   const state = getToolStoreState();
   if (state.platformSkillRuntimeStatus === 'unmanaged') return undefined;
@@ -18,23 +24,6 @@ const getRuntimeCatalog = () => {
   }
   return state.platformSkillCatalog;
 };
-
-const runtimeId = (ref: { checksum: string; skillKey: string; version: string }) =>
-  `${PLATFORM_SKILL_ID_PREFIX}${ref.skillKey}@${ref.version}#${ref.checksum}`;
-
-const toOperationSkillListItem = (
-  ref: PlatformSkillPinnedRef,
-  metadata?: { description?: string | null; displayName?: string },
-): SkillListItem => ({
-  createdAt: new Date(0),
-  description: metadata?.description ?? '',
-  id: runtimeId(ref),
-  identifier: ref.skillKey,
-  manifest: { description: metadata?.description ?? '', name: ref.skillKey, version: ref.version },
-  name: metadata?.displayName ?? ref.skillKey,
-  source: 'user',
-  updatedAt: new Date(0),
-});
 
 const freezeCanonicalSkillItem = (skill: SkillItem): Readonly<SkillItem> => {
   if (skill.resources) {
@@ -72,7 +61,7 @@ const resolvePublished = async (identifier: string): Promise<SkillItem | undefin
     content: resolved.content,
     createdAt: new Date(0),
     description: resolved.description,
-    id: runtimeId(published),
+    id: platformSkillRuntimeId(published),
     identifier: published.skillKey,
     manifest: {
       description: resolved.description ?? '',
@@ -112,7 +101,7 @@ const resolveExactRef = async (
     content: resolved.content,
     createdAt: new Date(0),
     description: metadata?.description ?? resolved.description,
-    id: runtimeId(ref),
+    id: platformSkillRuntimeId(ref),
     identifier: ref.skillKey,
     manifest: {
       description: resolved.description ?? '',
@@ -139,7 +128,7 @@ export const clientSkillRuntimeService = {
     const data: SkillListItem[] = catalog.skills.map((skill) => ({
       createdAt: new Date(0),
       description: skill.description,
-      id: runtimeId(skill),
+      id: platformSkillRuntimeId(skill),
       identifier: skill.skillKey,
       manifest: {
         description: skill.description ?? '',
@@ -155,7 +144,7 @@ export const clientSkillRuntimeService = {
   findById: async (id: string): Promise<SkillItem | undefined> => {
     const catalog = getRuntimeCatalog();
     if (!catalog) return agentSkillService.getById(id);
-    const published = catalog.skills.find((skill) => runtimeId(skill) === id);
+    const published = catalog.skills.find((skill) => platformSkillRuntimeId(skill) === id);
     if (!published) throw new Error(`Managed Skill is not published: ${id}`);
     return resolvePublished(published.skillKey);
   },
@@ -166,21 +155,19 @@ export const clientSkillRuntimeService = {
   readResource: async (id: string, path: string): Promise<SkillResourceContent> => {
     const catalog = getRuntimeCatalog();
     if (!catalog) return agentSkillService.readResource(id, path);
-    const published = catalog.skills.find((skill) => runtimeId(skill) === id);
+    const published = catalog.skills.find((skill) => platformSkillRuntimeId(skill) === id);
     if (!published) throw new Error(`Managed Skill is not published: ${id}`);
     const resolved = await resolvePublished(published.skillKey);
     const resource = resolved?.resources?.[path];
-    if (resource?.content === undefined) {
+    const content = resource?.content;
+    if (content === undefined || !resource) {
       throw new Error(`Platform Skill resource is unavailable: ${path}`);
     }
-    return {
-      content: resource.content,
-      encoding: 'utf8',
+    return toPlatformSkillResourceContent(path, {
+      content,
       fileHash: resource.fileHash,
-      fileType: 'text/plain',
-      path,
       size: resource.size,
-    };
+    });
   },
 };
 
@@ -188,28 +175,26 @@ export const clientSkillRuntimeService = {
 export const createClientSkillRuntimeService = (snapshot?: PlatformSkillOperationSnapshot) => {
   if (!snapshot) return clientSkillRuntimeService;
   const frozen = structuredClone(snapshot);
-  const refsByKey = new Map(frozen.refs.map((ref) => [ref.skillKey, ref]));
-  const refsById = new Map(frozen.refs.map((ref) => [runtimeId(ref), ref]));
+  const { byId: refsById, byKey: refsByKey } = indexPlatformSkillRefs(frozen.refs);
   const metadataByKey = new Map(frozen.skills?.map((skill) => [skill.skillKey, skill]));
-  const cache = new Map<string, Promise<Readonly<SkillItem>>>();
+  // Successful values stay as settled promises; rejections are evicted by PlatformSkillInFlightCache.
+  const cache = new PlatformSkillInFlightCache<Readonly<SkillItem>>();
   const resolve = (ref: PlatformSkillPinnedRef) => {
-    const key = runtimeId(ref);
+    const key = platformSkillRuntimeId(ref);
     const existing = cache.get(key);
     if (existing) return existing.then((skill) => structuredClone(skill) as SkillItem);
-    if (cache.size >= 128) {
-      const oldest = cache.keys().next().value;
-      if (oldest) cache.delete(oldest);
-    }
-    const pending = resolveExactRef(ref, metadataByKey.get(ref.skillKey), frozen).then((skill) =>
-      freezeCanonicalSkillItem(structuredClone(skill)),
+    const pending = cache.set(
+      key,
+      resolveExactRef(ref, metadataByKey.get(ref.skillKey), frozen).then((skill) =>
+        freezeCanonicalSkillItem(structuredClone(skill)),
+      ),
     );
-    cache.set(key, pending);
     return pending.then((skill) => structuredClone(skill) as SkillItem);
   };
   return {
     findAll: async (): Promise<{ data: SkillListItem[]; total: number }> => {
       const data = [...refsByKey.values()].map((ref) =>
-        toOperationSkillListItem(ref, metadataByKey.get(ref.skillKey)),
+        toPlatformSkillListItem(ref, metadataByKey.get(ref.skillKey)),
       );
       return { data, total: data.length };
     },
@@ -226,17 +211,17 @@ export const createClientSkillRuntimeService = (snapshot?: PlatformSkillOperatio
       if (!ref) throw new Error(`Managed Skill is not published: ${id}`);
       const skill = await resolve(ref);
       const resource = skill.resources?.[path];
-      if (resource?.content === undefined) {
+      const content = resource?.content;
+      if (content === undefined || !resource) {
         throw new Error(`Platform Skill resource is unavailable: ${path}`);
       }
-      return {
-        content: resource.content,
-        encoding: 'utf8',
+      return toPlatformSkillResourceContent(path, {
+        content,
         fileHash: resource.fileHash,
-        fileType: 'text/plain',
-        path,
         size: resource.size,
-      };
+      });
     },
   };
 };
+
+export { PLATFORM_SKILL_ID_PREFIX, platformSkillRuntimeId };

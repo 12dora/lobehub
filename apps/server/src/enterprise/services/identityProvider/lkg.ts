@@ -255,9 +255,19 @@ const parseProvider = (value: unknown): IdentityProviderLkgProvider => {
   return row as unknown as IdentityProviderLkgProvider;
 };
 
+/**
+ * Upper bound for tombstone array length on untrusted decode only (DoS guard).
+ * Retention is NOT "keep at most 100 historical IDs" — every still-relevant
+ * revocation (removed provider not superseded by a newer live generation) is
+ * retained. Live providers remain capped separately at 100; tombstones track
+ * historical disables and must survive far beyond that count so a total-DB
+ * outage cannot resurrect a recently disabled provider (identity/SVC-ID-006).
+ */
+const PROVIDER_TOMBSTONE_DECODE_HARD_MAX = 10_000;
+
 const parseProviderTombstones = (value: unknown): IdentityProviderLkgProviderTombstone[] => {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 100) {
+  if (!Array.isArray(value) || value.length > PROVIDER_TOMBSTONE_DECODE_HARD_MAX) {
     throw new IdentityProviderLkgError('OIDC_LKG_PAYLOAD_INVALID');
   }
   const parsed = value.map((entry) => {
@@ -291,12 +301,18 @@ const normalizeProviderTombstones = (
 ): IdentityProviderLkgProviderTombstone[] => {
   const liveById = new Map(providers.map((provider) => [provider.providerId, provider]));
   // Live provider with a strictly newer generation supersedes its tombstone (re-enable).
-  return tombstones
+  const normalized = tombstones
     .filter((tombstone) => {
       const live = liveById.get(tombstone.providerId);
       return !live || live.generation <= tombstone.generation;
     })
     .sort((left, right) => left.providerId.localeCompare(right.providerId));
+  // Fail loudly at write/merge time — never produce a payload that decode would reject
+  // (which would drop the entire LKG and resurrect revoked providers).
+  if (normalized.length > PROVIDER_TOMBSTONE_DECODE_HARD_MAX) {
+    throw new IdentityProviderLkgError('OIDC_LKG_TOMBSTONE_LIMIT');
+  }
+  return normalized;
 };
 
 const mergeProviderTombstones = (

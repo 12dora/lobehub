@@ -214,7 +214,26 @@ describe('identity provider startup snapshot', () => {
           waiterEntered = true;
           return 'acquired';
         });
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // Wait until the waiter is actually blocked on the advisory lock (not a wall-clock guess).
+        const deadline = Date.now() + 5000;
+        let waiterBlocked = false;
+        while (Date.now() < deadline) {
+          const blocked = await adminPool.query(
+            `SELECT 1
+               FROM pg_locks
+              WHERE locktype = 'advisory'
+                AND NOT granted
+                AND pid <> $1
+              LIMIT 1`,
+            [ownerPid],
+          );
+          if ((blocked.rowCount ?? 0) > 0) {
+            waiterBlocked = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiterBlocked).toBe(true);
         expect(waiterEntered).toBe(false);
 
         await adminPool.query('SELECT pg_terminate_backend($1)', [ownerPid]);

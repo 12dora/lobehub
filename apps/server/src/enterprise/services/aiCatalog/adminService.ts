@@ -22,6 +22,7 @@ import {
   aiProviderDraftSchema,
 } from '../../contracts/aiCatalog';
 import type { PlatformSecretService } from '../../security/secret';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
@@ -33,7 +34,9 @@ import {
   type AiConnectionTestResult,
 } from './connectionTestService';
 import {
+  hasAiCatalogEnvironmentFallback,
   normalizeAiCatalogExecutionCredentials,
+  resolveAiCatalogRuntimeProvider,
   validateAiCatalogCredentialShape,
   validateAiCatalogRuntimeProvider,
 } from './credentialAdapter';
@@ -143,7 +146,7 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
     });
 
   protected appendFailureAudit = (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     targetId?: string;
@@ -657,7 +660,14 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
     }
 
     const hasEnabledModel = detail.draft.models.some((m) => m.enabled);
-    const hasCredentials = detail.draft.secret.configured;
+    const runtimeProvider = resolveAiCatalogRuntimeProvider(
+      detail.draft.providerKey,
+      detail.draft.settings,
+      detail.draft.source,
+    );
+    // Stored secret OR ModelRuntime env credentials (OPENAI_API_KEY, etc.) both satisfy readiness.
+    const hasCredentials =
+      detail.draft.secret.configured || hasAiCatalogEnvironmentFallback(runtimeProvider);
     if (!hasEnabledModel || !hasCredentials) {
       return {
         ok: false,

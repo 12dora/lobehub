@@ -9,7 +9,6 @@ import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   permissions,
-  platformAuditLogs,
   platformSidebarLayout,
   rolePermissions,
   roles,
@@ -21,6 +20,7 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -43,7 +43,7 @@ vi.mock('../../services/platformAudit', () => ({
 }));
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
   await db.delete(platformSidebarLayout);
   await db.delete(userRoles);
   await db.delete(rolePermissions);

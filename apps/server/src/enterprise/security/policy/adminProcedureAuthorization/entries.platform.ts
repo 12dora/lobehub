@@ -77,8 +77,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   {
     kind: 'mutation',
     path: 'admin.settings.applyImmediate',
-    // UPDATE via middleware; PUBLISH re-checked inside the procedure (W10-C).
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_UPDATE] },
+    // applyImmediate always publishes — both UPDATE and PUBLISH are required.
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.SETTINGS_UPDATE, PLATFORM_PERMISSIONS.SETTINGS_PUBLISH],
+    },
   },
   {
     kind: 'query',

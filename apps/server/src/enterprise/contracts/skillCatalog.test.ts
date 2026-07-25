@@ -18,6 +18,8 @@ import {
   publishedSkillCatalogSchema,
   serverResolvedSkillSchema,
   skillIdentityDraftSchema,
+  skillResourceContentChecksum,
+  skillResourceSchema,
   skillValidationIssueSchema,
 } from './skillCatalog';
 
@@ -41,9 +43,12 @@ const manifest = {
   toolDependencies: [{ optional: false, toolKey: 'builtin.search' }],
 };
 
+const REFERENCE_CONTENT = 'reference';
+const REFERENCE_CHECKSUM = skillResourceContentChecksum(REFERENCE_CONTENT);
+
 const resource = {
-  checksum: 'd'.repeat(64),
-  content: 'reference',
+  checksum: REFERENCE_CHECKSUM,
+  content: REFERENCE_CONTENT,
   mediaType: 'text/plain',
   path: 'references/source.txt',
   sizeBytes: 9,
@@ -473,6 +478,21 @@ describe('Skill catalog contracts', () => {
     ).toBe(true);
   });
 
+  it('binds resource checksum to UTF-8 content bytes (rejects wrong digests)', () => {
+    // Known-wrong digest previously accepted by syntax-only validation.
+    expect(
+      skillResourceSchema.safeParse({
+        ...resource,
+        checksum: 'd'.repeat(64),
+      }).success,
+    ).toBe(false);
+    const parsed = skillResourceSchema.parse(resource);
+    expect(parsed.checksum).toBe(REFERENCE_CHECKSUM);
+    expect(parsed.checksum).toBe(skillResourceContentChecksum(parsed.content!));
+    // Runtime projections expose checksum as fileHash — they must equal the digest.
+    expect(parsed.checksum).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('bounds immutable resources and permits only opaque content references', () => {
     const input = {
       ...concurrency,
@@ -491,6 +511,7 @@ describe('Skill catalog contracts', () => {
       { ...resource, path: 'nested\\windows.txt' },
       { ...resource, sizeBytes: 8 },
       { ...resource, contentRef: 'opaque:second-source' },
+      { ...resource, checksum: 'd'.repeat(64) },
     ]) {
       expect(
         adminSkillCreateVersionInputSchema.safeParse({ ...input, resources: [invalid] }).success,

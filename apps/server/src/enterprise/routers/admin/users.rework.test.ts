@@ -7,15 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
-import {
-  permissions,
-  platformAuditLogs,
-  rolePermissions,
-  roles,
-  session,
-  userRoles,
-  users,
-} from '@/database/schemas';
+import { permissions, rolePermissions, roles, session, userRoles, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
@@ -23,6 +15,7 @@ import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { adminUsersGetOutputSchema, adminUsersListOutputSchema } from '../../contracts/adminUsers';
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
@@ -50,7 +43,7 @@ const IDS = {
 
 const cleanup = async () => {
   await db.delete(session);
-  await db.delete(platformAuditLogs);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(IDS) });
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);
@@ -68,7 +61,7 @@ const grant = async (userId: string, roleName: string) => {
 
 beforeAll(async () => {
   db = await getTestDB();
-});
+}, 120_000);
 
 beforeEach(async () => {
   vi.unstubAllEnvs();

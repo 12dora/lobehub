@@ -17,7 +17,6 @@ import {
   type PlatformAgentEffectiveInputsFilter,
   PlatformAgentEffectiveResolver,
   projectFirstWinnersThenHide,
-  projectVisibleWinnersFromPage,
   sliceEffectiveInputsByKeyset,
 } from './effectiveResolver';
 import { PlatformAgentUnavailableError } from './errors';
@@ -383,20 +382,9 @@ describe('PlatformAgentEffectiveResolver', () => {
         priority: 1,
       }),
     ];
+    // Hide-then-dedupe would incorrectly keep the low-priority row — lock first-winner-then-hide.
     const visible = projectFirstWinnersThenHide(rows, new Set(['dup']));
     expect(visible).toEqual([]);
-    // Hide-then-dedupe would incorrectly keep the low-priority row — lock the correct order.
-    const winnerAgentIds = new Set<string>();
-    const winnerSystemKeys = new Set<string>();
-    const projected = projectVisibleWinnersFromPage(
-      rows,
-      new Set(['dup']),
-      winnerAgentIds,
-      winnerSystemKeys,
-      PLATFORM_AGENT_EFFECTIVE_LIST_MAX,
-    );
-    expect(projected).toHaveLength(0);
-    expect(winnerAgentIds.size).toBe(0);
   });
 
   it('getEffectiveAgent uses a targeted repository filter and never full-list projection', async () => {

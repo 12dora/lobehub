@@ -4,6 +4,7 @@ export * from './dependencyValidator';
 export * from './effectiveResolver';
 export * from './errors';
 export * from './materialization';
+export * from './platformAgentExecutionResolver';
 export * from './publication';
 export * from './rolloutService';
 export * from './rolloutWorker';

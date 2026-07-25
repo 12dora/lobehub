@@ -22,6 +22,7 @@ import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit'
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import {
   AdminBrandingService,
   BrandingAssetCleanupClaimedError,
@@ -137,7 +138,7 @@ const mapBrandingError = (error: unknown): never => {
 };
 
 const assertDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -146,16 +147,17 @@ const assertDangerousReauth = async (params: {
   serverDB: ConstructorParameters<typeof AdminBrandingService>[0];
 }): Promise<void> =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: false,
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: params.reason,
-    requestId: params.requestId,
     serverDB: params.serverDB,
-    targetId: 'global',
-    targetType: 'branding',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: params.reason,
+      requestId: params.requestId,
+      targetId: 'global',
+      targetType: 'branding',
+    },
   });
 
 export const adminBrandingRouter = router({

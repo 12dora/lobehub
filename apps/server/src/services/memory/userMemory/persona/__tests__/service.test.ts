@@ -3,13 +3,17 @@ import { type LobeChatDatabase } from '@lobechat/database';
 import { users, userSettings } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
 import { ModelRuntime } from '@lobechat/model-runtime';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { checksumPayload } from '@/database/models/platform';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import type * as AiInfraReposModule from '@/database/repositories/aiInfra';
-import { platformResourceRevisions } from '@/database/schemas';
+import { platformAiProviders, platformResourceRevisions } from '@/database/schemas/platform';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
+import { clearAiCatalogRuntimeCache } from '@/server/enterprise/services/aiCatalog/runtimeAdapter';
+import { deletePlatformResourceRevisionsForTest } from '@/server/enterprise/testing/deletePlatformResourceRevisions';
 import { resolveRuntimeAgentConfig } from '@/server/services/memory/userMemory/extract';
 
 import { UserPersonaService } from '../service';
@@ -79,10 +83,46 @@ vi.mock('@/server/services/memory/userMemory/extract', () => ({
 
 let db: LobeChatDatabase;
 const userId = 'user-persona-service';
+const PERSONA_PROVIDER_ID = 'persona-provider';
 const originalManagedAiFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+
+/** Catalog authority only surfaces revisions joined from a non-zero provider pointer. */
+const seedPublishedPersonaProvider = async (modelType: 'chat' | 'image') => {
+  const payload = {
+    models: [{ enabled: true, modelKey: 'gpt-mock', type: modelType }],
+    provider: {
+      displayName: 'OpenAI',
+      enabled: true,
+      providerKey: 'openai',
+      source: 'builtin',
+    },
+  };
+  await db.insert(platformAiProviders).values({
+    displayName: 'OpenAI',
+    enabled: true,
+    id: PERSONA_PROVIDER_ID,
+    providerKey: 'openai',
+    revision: 1,
+    status: 'published',
+  });
+  await db.insert(platformResourceRevisions).values({
+    checksum: checksumPayload(payload),
+    payload,
+    resourceId: PERSONA_PROVIDER_ID,
+    resourceType: 'provider',
+    revision: 1,
+    status: 'published',
+  });
+};
+
+// PGlite applies the migration baseline once — do not re-open getTestDB per test.
+beforeAll(async () => {
+  db = await getTestDB();
+}, 120_000);
 
 beforeEach(async () => {
   delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+  clearAiCatalogRuntimeCache();
   toolCall.mockClear();
   aiInfraMocks.getAiProviderRuntimeState.mockReset();
   vi.mocked(resolveRuntimeAgentConfig).mockClear();
@@ -101,10 +141,15 @@ beforeEach(async () => {
       openai: { keyVaults: { apiKey: 'vault-key', baseURL: 'https://vault.example.com' } },
     },
   });
-  db = await getTestDB();
 
-  await db.delete(platformResourceRevisions);
-  await db.delete(users);
+  // Suite owns a fixed provider revision fixture only (SG-07).
+  await deletePlatformResourceRevisionsForTest(db, {
+    resourceIds: [PERSONA_PROVIDER_ID],
+    resourceType: 'provider',
+  });
+  await db.delete(platformAiProviders).where(eq(platformAiProviders.id, PERSONA_PROVIDER_ID));
+  await db.delete(userSettings).where(eq(userSettings.id, userId));
+  await db.delete(users).where(eq(users.id, userId));
   await db.insert(users).values({ id: userId });
 });
 
@@ -139,22 +184,7 @@ describe('UserPersonaService', () => {
 
   it('passes a one-shot platform secret to the runtime without exposing it', async () => {
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
-    await db.insert(platformResourceRevisions).values({
-      checksum: 'persona-published-model',
-      payload: {
-        models: [{ enabled: true, modelKey: 'gpt-mock', type: 'chat' }],
-        provider: {
-          displayName: 'OpenAI',
-          enabled: true,
-          providerKey: 'openai',
-          source: 'builtin',
-        },
-      },
-      resourceId: 'persona-provider',
-      resourceType: 'provider',
-      revision: 1,
-      status: 'published',
-    });
+    await seedPublishedPersonaProvider('chat');
     const fakeSecret = 'platform-persona-secret-not-for-output';
     const secretFactory = vi
       .spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise')
@@ -207,22 +237,8 @@ describe('UserPersonaService', () => {
   it('rejects an unpublished persona model before secret resolution or SDK initialization', async () => {
     const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
-    await db.insert(platformResourceRevisions).values({
-      checksum: 'persona-wrong-type-model',
-      payload: {
-        models: [{ enabled: true, modelKey: 'gpt-mock', type: 'image' }],
-        provider: {
-          displayName: 'OpenAI',
-          enabled: true,
-          providerKey: 'openai',
-          source: 'builtin',
-        },
-      },
-      resourceId: 'persona-provider',
-      resourceType: 'provider',
-      revision: 1,
-      status: 'published',
-    });
+    // Published image-only catalog — chat persona model is not available.
+    await seedPublishedPersonaProvider('image');
     const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
     const execution = vi.spyOn(
       AiCatalogExecutionResolver.prototype,

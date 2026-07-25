@@ -183,11 +183,6 @@ export const loadPublishedIdentityProviderSelection = async (input: {
   };
 };
 
-export const loadCanonicalPublishedIdentityProviders = async (input: {
-  db: DatabaseExecutor;
-  environmentProviderIds: Set<string>;
-}) => (await loadPublishedIdentityProviderSelection(input)).selected;
-
 type DatabaseProviderRow = {
   checksum: string;
   generation: string;

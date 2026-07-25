@@ -153,7 +153,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_AUDIT_CONNECTORS = [
   {
     kind: 'mutation',
     path: 'admin.connectors.applyImmediate',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH] },
+    // PUBLISH always required; CREATE/UPDATE selected from input.mode.
+    permission: {
+      mode: 'compound',
+      permissions: [PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH],
+      selectable: [PLATFORM_PERMISSIONS.CONNECTOR_CREATE, PLATFORM_PERMISSIONS.CONNECTOR_UPDATE],
+    },
   },
   {
     kind: 'mutation',

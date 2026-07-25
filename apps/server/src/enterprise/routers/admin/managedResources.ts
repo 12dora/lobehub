@@ -46,18 +46,17 @@ const assertPublishReauth = async (params: {
   serverDB: LobeChatDatabase;
 }) =>
   assertDangerousReauthWithAudit({
-    action: 'admin.managedResources.publish',
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.managedResources.publish] reauth denied audit failed',
-    // Legacy path only logged errorClass (no action).
-    auditFailureMeta: {},
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    beforeDiff: null,
-    reason: params.reason,
     serverDB: params.serverDB,
-    targetId: MANAGED_POLICY_RESOURCE_ID,
-    targetType: MANAGED_POLICY_RESOURCE_TYPE,
+    denied: {
+      action: 'admin.managedResources.publish',
+      actorUserId: params.actorUserId,
+      beforeDiff: null,
+      reason: params.reason,
+      targetId: MANAGED_POLICY_RESOURCE_ID,
+      targetType: MANAGED_POLICY_RESOURCE_TYPE,
+    },
   });
 
 export const adminManagedResourcesRouter = router({

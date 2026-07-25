@@ -6,13 +6,15 @@ import { containsSensitiveMaterial } from '@/database/models/platform';
 import { platformAuditLogs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { PlatformAuditService } from '../platformAudit';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const audit = new PlatformAuditService(serverDB);
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
+  // Suite only writes as admin-1 — scope so TEST_SERVER_DB=1 does not wipe peers (SG-07).
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: ['admin-1'] });
 });
 
 describe('PlatformAuditService', () => {
@@ -48,12 +50,12 @@ describe('PlatformAuditService', () => {
 
   it('supports cursor pagination without unbounded export', async () => {
     await audit.append({
-      action: 'a',
+      action: 'platform.settings.publish',
       result: 'success',
       targetType: 'settings',
     });
     await audit.append({
-      action: 'b',
+      action: 'platform.roles.replace',
       result: 'success',
       targetType: 'settings',
     });

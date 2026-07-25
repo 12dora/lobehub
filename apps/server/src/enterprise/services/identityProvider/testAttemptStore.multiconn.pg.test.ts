@@ -49,6 +49,18 @@ run('IdentityProviderTestAttemptStore — true multi-connection PostgreSQL', () 
     pools.push(pool);
     return drizzle(pool, { schema }) as unknown as LobeChatDatabase;
   };
+  /** Poll pg_locks until a waiter is blocked (or deadline). Proves contention without wall-clock guesses. */
+  const waitForUngrantedLock = async (timeoutMs = 5000): Promise<boolean> => {
+    const admin = new Pool({ connectionString, max: 1 });
+    pools.push(admin);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const blocked = await admin.query(`SELECT 1 FROM pg_locks WHERE NOT granted LIMIT 1`);
+      if ((blocked.rowCount ?? 0) > 0) return true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return false;
+  };
   const cleanup = async () => {
     await db.delete(platformIdentityProviderTestAttempts);
     await db.delete(platformIdentityProviderSecrets);
@@ -122,12 +134,18 @@ run('IdentityProviderTestAttemptStore — true multi-connection PostgreSQL', () 
     });
     await callbackHasLock;
     const reaper = cleanupExpiredIdentityProviderTestAttempts(reaperDb, 500, now);
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // Reaper must remain unsettled while callback still holds the row lock.
+    let reaperSettled = false;
+    const reaperTracked = reaper.finally(() => {
+      reaperSettled = true;
+    });
+    expect(await waitForUngrantedLock()).toBe(true);
+    expect(reaperSettled).toBe(false);
 
     releaseCallback();
 
     await expect(callback).resolves.toBeUndefined();
-    await expect(reaper).resolves.toBe(0);
+    await expect(reaperTracked).resolves.toBe(0);
     await expect(db.select().from(platformIdentityProviderTestAttempts)).resolves.toEqual([
       expect.objectContaining({ status: 'succeeded' }),
     ]);
@@ -152,43 +170,74 @@ run('IdentityProviderTestAttemptStore — true multi-connection PostgreSQL', () 
       reserved,
       { claims: { sub: 'subject' }, issues: [], valid: true },
     );
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // Callback must remain unsettled while reaper holds the conflicting row lock.
+    let callbackSettled = false;
+    const callbackTracked = callback.finally(() => {
+      callbackSettled = true;
+    });
+    expect(await waitForUngrantedLock()).toBe(true);
+    expect(callbackSettled).toBe(false);
 
     releaseReaper();
 
     await expect(reaper).resolves.toBe(1);
-    await expect(callback).rejects.toMatchObject({ code: 'OIDC_TEST_PROVIDER_CHANGED' });
+    await expect(callbackTracked).rejects.toMatchObject({ code: 'OIDC_TEST_PROVIDER_CHANGED' });
     await expect(db.select().from(platformIdentityProviderTestAttempts)).resolves.toHaveLength(0);
   });
 
   it('serializes duplicate scheduled cleanup invocations with the advisory lock', async () => {
     await issueAndReserve();
+    // `entries` counts invocations of the cleanup body (post-advisory-lock).
+    // Under correct serialization the second body only runs after the first
+    // commits, so concurrent-counter peaks never see two overlapping bodies —
+    // use entries (not activeCleanups) to prove the second invocation ran.
+    let entries = 0;
     let activeCleanups = 0;
     let maxActiveCleanups = 0;
+    let firstCleanupEntered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => {
+      firstCleanupEntered = resolve;
+    });
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let sawSecondWaiter = false;
     const cleanupWithConcurrencyEvidence = async (tx: Transaction) => {
+      entries += 1;
       activeCleanups += 1;
       maxActiveCleanups = Math.max(maxActiveCleanups, activeCleanups);
       try {
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        if (entries === 1) {
+          firstCleanupEntered();
+          await firstMayFinish;
+        } else {
+          sawSecondWaiter = true;
+        }
         return await cleanupExpiredIdentityProviderTestAttempts(tx);
       } finally {
         activeCleanups -= 1;
       }
     };
 
-    const results = await Promise.all([
-      runIdentityProviderTestAttemptCleanup({
-        acquireDatabase: async () => independentDb(),
-        cleanup: cleanupWithConcurrencyEvidence,
-      }),
-      runIdentityProviderTestAttemptCleanup({
-        acquireDatabase: async () => independentDb(),
-        cleanup: cleanupWithConcurrencyEvidence,
-      }),
-    ]);
+    const first = runIdentityProviderTestAttemptCleanup({
+      acquireDatabase: async () => independentDb(),
+      cleanup: cleanupWithConcurrencyEvidence,
+    });
+    const second = runIdentityProviderTestAttemptCleanup({
+      acquireDatabase: async () => independentDb(),
+      cleanup: cleanupWithConcurrencyEvidence,
+    });
+    await firstEntered;
+    // Second must still be blocked on the advisory lock — only one cleanup body active.
+    expect(maxActiveCleanups).toBe(1);
+    expect(sawSecondWaiter).toBe(false);
+    releaseFirst();
+    const results = await Promise.all([first, second]);
 
     expect(results.toSorted()).toEqual([0, 1]);
     expect(maxActiveCleanups).toBe(1);
+    expect(sawSecondWaiter).toBe(true);
   });
 
   /**

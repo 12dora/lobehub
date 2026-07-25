@@ -21,8 +21,12 @@ import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withAllPlatformPermissions,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import { PlatformAuditService } from '../../services/platformAudit';
 import {
   AdminSettingsService,
@@ -38,7 +42,7 @@ const adminBase = authedProcedure
 
 /** B9-R2: feature-disabled → denied audit, zero mutation. */
 const assertSettingsFeature = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   serverDB: LobeChatDatabase;
 }) => {
@@ -74,15 +78,16 @@ const assertSettingsDangerousReauth = async (params: {
   serverDB: LobeChatDatabase;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.settings] reauth denied audit unavailable',
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: params.reason,
     serverDB: params.serverDB,
-    targetId: 'global',
-    targetType: 'settings',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: params.reason,
+      targetId: 'global',
+      targetType: 'settings',
+    },
   });
 
 /**
@@ -105,11 +110,17 @@ export const adminSettingsRouter = router({
 
   /**
    * Merge path values into the platform settings draft and publish immediately.
-   * Requires SETTINGS_UPDATE (middleware) + SETTINGS_PUBLISH (secondary).
+   * Requires both SETTINGS_UPDATE and SETTINGS_PUBLISH (single middleware gate —
+   * denials are audited as admin.permission.denied).
    * Auto-publishes; rejects when draft has unpublished diffs outside the patch.
    */
   applyImmediate: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SETTINGS_UPDATE))
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+        PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+      ]),
+    )
     .input(adminSettingsApplyImmediateInputSchema)
     .output(adminSettingsApplyImmediateOutputSchema)
     .mutation(async ({ ctx, input }) => {
@@ -118,16 +129,6 @@ export const adminSettingsRouter = router({
         actorUserId: ctx.userId!,
         serverDB: ctx.serverDB,
       });
-
-      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
-      if (!perms?.includes(PLATFORM_PERMISSIONS.SETTINGS_PUBLISH)) {
-        throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-          details: { permission: PLATFORM_PERMISSIONS.SETTINGS_PUBLISH },
-          httpCode: 'FORBIDDEN',
-          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-        });
-      }
 
       const reason =
         input.reason ??

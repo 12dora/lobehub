@@ -1,3 +1,5 @@
+import debug from 'debug';
+
 import {
   createPlatformSkillPointerAdapter,
   draftView,
@@ -9,6 +11,7 @@ import {
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
@@ -17,6 +20,8 @@ import { PlatformPublisherService } from '../platformPublisher';
 import { SkillCatalogNotFoundError, SkillCatalogValidationError } from './errors';
 import { invalidatePublishedSkillCatalogReadCache } from './readService';
 import { SkillCatalogValidationService } from './validationService';
+
+const log = debug('lobe-server:skill-catalog-publication');
 
 interface PublicationInput {
   expectedDraftToken: string;
@@ -53,20 +58,29 @@ export class SkillCatalogPublicationService {
   }
 
   private appendFailureAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     targetId: string;
-  }) => {
-    await new PlatformAuditService(this.db).append({
-      action: params.action,
-      actorUserId: params.actorUserId,
-      afterDiff: { error: 'skill_catalog_mutation_failed' },
-      reason: params.reason,
-      result: 'failure',
-      targetId: params.targetId,
-      targetType: 'skill',
-    });
+  }): Promise<void> => {
+    try {
+      await new PlatformAuditService(this.db).append({
+        action: params.action,
+        actorUserId: params.actorUserId,
+        afterDiff: { error: 'skill_catalog_mutation_failed' },
+        reason: params.reason,
+        result: 'failure',
+        targetId: params.targetId,
+        targetType: 'skill',
+      });
+    } catch (error) {
+      // Best-effort only: never mask the original domain error from publish/archive/rollback.
+      log(
+        'failure audit append failed skill=%s class=%s',
+        params.targetId,
+        error instanceof Error ? error.name : 'UnknownError',
+      );
+    }
   };
 
   private createPointer = (params: {

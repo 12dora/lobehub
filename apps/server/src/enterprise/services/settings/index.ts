@@ -34,6 +34,4 @@ export {
   getToolSlice,
   loadEffectiveUserSettings,
   resolveEffectiveUserInterventionConfig,
-  SETTINGS_RUNTIME_READ_REGISTRY,
-  type SettingsRuntimeReadId,
 } from './runtimeSettingsAdapter';

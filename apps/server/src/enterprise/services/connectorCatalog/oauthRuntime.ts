@@ -16,6 +16,13 @@ import { ConnectorOAuthOutboundAdapter } from './oauthOutboundAdapter';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 
 export interface ConnectorOAuthRuntimeDependencies {
+  /**
+   * **Test-only.** Invoked after a refresh lease is acquired and before the
+   * pre-outbound ownership heartbeat so tests can steal the lease without
+   * racing real timers. Production factories never set this; do not inject it
+   * into live runtimes (it can stall OAuth refresh).
+   */
+  __testAfterRefreshLeaseAcquire?: (lease: { jobId: string; owner: string }) => Promise<void>;
   callbackRedirectUri: string;
   clock?: () => Date;
   outbound: ConnectorOAuthOutboundAdapter;

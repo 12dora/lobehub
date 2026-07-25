@@ -6,6 +6,7 @@ import type { PlatformAiProviderItem } from '@/database/schemas/platform';
 import {
   buildPayloadFromKeyVaults,
   initModelRuntimeWithUserPayload,
+  resolveManagedChatApiMode,
 } from '@/server/modules/ModelRuntime';
 
 import type { aiConnectionTestResultSchema } from '../../contracts/aiCatalog';
@@ -80,15 +81,9 @@ const safeFailureMessage = (
 
 /**
  * Map managed `enableResponseApi` to the chat transport mode used by connection probes.
- * Explicit true → Responses API; explicit false → Chat Completions; unset → SDK default.
+ * Delegates to the shared managed-runtime helper so probes match production traffic.
  */
-export const resolveAiConnectionProbeApiMode = (
-  enableResponseApi: unknown,
-): 'chatCompletion' | 'responses' | undefined => {
-  if (enableResponseApi === true) return 'responses';
-  if (enableResponseApi === false) return 'chatCompletion';
-  return undefined;
-};
+export const resolveAiConnectionProbeApiMode = resolveManagedChatApiMode;
 
 /**
  * Production probe: real chat completion against the configured check model.

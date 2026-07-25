@@ -245,4 +245,23 @@ describe('AI catalog credential adapter', () => {
       ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
     },
   );
+
+  it('rejects SuperGrok as a platform-managed runtime (personal OAuth only)', () => {
+    expect(() => validateAiCatalogRuntimeProvider(ModelProvider.SuperGrok, {}, 'builtin')).toThrow(
+      'PLATFORM_CONFIG_VALIDATION_FAILED',
+    );
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.SuperGrok, { apiKey: 'sk-any' }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: { SUPERGROK_API_KEY: 'false-ready-key' },
+        keyVaults: { apiKey: 'sk-any' },
+        providerKey: ModelProvider.SuperGrok,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+  });
 });

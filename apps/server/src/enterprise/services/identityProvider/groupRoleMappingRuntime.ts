@@ -110,38 +110,17 @@ export const stashIdentityProviderGroupRoleMapping = (input: {
 };
 
 /**
- * Migrate a subject-only stash onto a real OAuth flow id once state is known.
- * Used when flow id becomes available after the initial mapProfile stash.
- */
-export const bindIdentityProviderGroupRoleMappingFlow = (input: {
-  flowId: string;
-  providerKey: string;
-  subject: string;
-}): void => {
-  if (!input.flowId || !input.providerKey || !input.subject) return;
-  const key = subjectKey(input.providerKey, input.subject);
-  if (pendingByFlowId.has(input.flowId)) return;
-  const subjectOnlyId = subjectOnlyFlowId(key);
-  const pending = pendingByFlowId.get(subjectOnlyId);
-  if (!pending) return;
-  pendingByFlowId.delete(subjectOnlyId);
-  unindexFlow(key, subjectOnlyId);
-  pendingByFlowId.set(input.flowId, pending);
-  indexFlowUnderSubject(key, input.flowId);
-};
-
-/**
  * Consume one pending mapping for login reconcile.
  *
- * When `flowId` is provided (OAuth state from the same request), consumes that
- * exact flow entry only — never the newest concurrent same-subject flow.
- * Without flowId (subject-only / non-OAuth), falls back to newest non-expired
- * entry for provider+subject so legacy mapProfile stashes still reconcile.
+ * Requires `flowId` (OAuth state from the same request) and consumes that exact
+ * flow entry only. Password / non-OAuth session creation must never apply IdP
+ * claims from an earlier OAuth request — the previous subject-only newest-take
+ * fallback re-granted roles after admin demotion within the stash TTL.
  */
 export const takeIdentityProviderGroupRoleMapping = (input: {
   /**
-   * OAuth `state` for THIS login. Prefer this at session.create so concurrent
-   * same-provider+same-subject flows cannot steal each other's mapping.
+   * OAuth `state` for THIS login. Required — concurrent same-provider+same-subject
+   * flows cannot steal each other's mapping, and non-OAuth sessions see no stash.
    */
   flowId?: string;
   providerKey: string;
@@ -150,40 +129,18 @@ export const takeIdentityProviderGroupRoleMapping = (input: {
   sweepPendingGroupRoleMappings();
   const key = subjectKey(input.providerKey, input.subject);
 
-  if (input.flowId?.trim()) {
-    const pending = pendingByFlowId.get(input.flowId);
-    if (!pending) return null;
-    // Refuse to consume a flow that belongs to a different provider/subject.
-    if (subjectKey(pending.providerKey, pending.subject) !== key) return null;
-    deleteFlowEntry(input.flowId);
-    if (pending.expiresAt < Date.now()) return null;
-    return {
-      expiresAt: pending.expiresAt,
-      groupRoleMapping: pending.groupRoleMapping,
-      groups: pending.groups,
-    };
-  }
+  if (!input.flowId?.trim()) return null;
 
-  const flowIds = subjectToFlowIds.get(key);
-  if (!flowIds || flowIds.size === 0) return null;
-
-  let bestFlowId: string | null = null;
-  let best: PendingGroupRoleMapping | null = null;
-  for (const flowId of flowIds) {
-    const candidate = pendingByFlowId.get(flowId);
-    if (!candidate) continue;
-    if (!best || candidate.stashedAt >= best.stashedAt) {
-      best = candidate;
-      bestFlowId = flowId;
-    }
-  }
-  if (!best || !bestFlowId) return null;
-  deleteFlowEntry(bestFlowId);
-  if (best.expiresAt < Date.now()) return null;
+  const pending = pendingByFlowId.get(input.flowId);
+  if (!pending) return null;
+  // Refuse to consume a flow that belongs to a different provider/subject.
+  if (subjectKey(pending.providerKey, pending.subject) !== key) return null;
+  deleteFlowEntry(input.flowId);
+  if (pending.expiresAt < Date.now()) return null;
   return {
-    expiresAt: best.expiresAt,
-    groupRoleMapping: best.groupRoleMapping,
-    groups: best.groups,
+    expiresAt: pending.expiresAt,
+    groupRoleMapping: pending.groupRoleMapping,
+    groups: pending.groups,
   };
 };
 
@@ -215,19 +172,6 @@ export const discardIdentityProviderGroupRoleMappingByFlow = (input: {
     return;
   }
   deleteFlowEntry(input.flowId);
-};
-
-/**
- * Drop every pending mapping for a provider. ONLY for genuinely provider-wide
- * events (e.g. provider disable/unload) — never for a single login failure.
- */
-export const discardIdentityProviderGroupRoleMappingsForProvider = (providerKey: string): void => {
-  const prefix = `${providerKey.toLowerCase()}:`;
-  for (const [flowId, pending] of pendingByFlowId.entries()) {
-    if (subjectKey(pending.providerKey, pending.subject).startsWith(prefix)) {
-      deleteFlowEntry(flowId);
-    }
-  }
 };
 
 /** Apply stashed mapping for a platform OIDC login (providerKey + subject). Fail-closed. */

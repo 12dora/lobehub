@@ -654,7 +654,7 @@ export class ConnectorCatalogDraftService {
               : null,
           ].filter((item): item is NonNullable<typeof item> => item !== null);
           if (orphans.length > 0) {
-            await cleanupConnectorSecretRefs(this.secrets, orphans);
+            await cleanupConnectorSecretRefs(this.secrets, orphans, { db: this.db });
           }
         }
         throw casError;

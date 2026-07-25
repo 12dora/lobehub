@@ -40,7 +40,10 @@ export interface SkillCatalogReadOptions {
   cacheTtlMs?: number;
   getCacheEpoch?: () => Promise<string>;
   loadCurrentSnapshot?: () => Promise<CurrentSkillCatalogSnapshot>;
-  model?: Pick<PlatformSkillCatalogModel, 'resolvePublishedVersion'>;
+  model?: Pick<
+    PlatformSkillCatalogModel,
+    'resolvePublishedVersion' | 'resolvePublishedVersionsExact'
+  >;
   now?: () => number;
   runtimeReporting?: {
     database: LobeChatDatabase;
@@ -135,7 +138,10 @@ export class SkillCatalogReadService {
   private readonly activeProjectionCache: DomainConfigCache<string>;
   private readonly builtinSkills: BuiltinSkillDefinition[];
   private readonly loadCurrentSnapshot: () => Promise<CurrentSkillCatalogSnapshot>;
-  private readonly model: Pick<PlatformSkillCatalogModel, 'resolvePublishedVersion'>;
+  private readonly model: Pick<
+    PlatformSkillCatalogModel,
+    'resolvePublishedVersion' | 'resolvePublishedVersionsExact'
+  >;
   private publishedExecutionIndex = new Map<string, ResolvedSkill>();
   private readonly projectionSource: string;
 
@@ -467,6 +473,89 @@ export class SkillCatalogReadService {
       });
     }
     return undefined;
+  };
+
+  /**
+   * Batch exact-version resolution for one dependency-graph frontier.
+   * Returns a map keyed by `skillKey\0version`. Missing refs map to undefined.
+   */
+  resolveForExecutionBatch = async (
+    refs: readonly { skillKey: string; version: string }[],
+  ): Promise<Map<string, ResolvedSkill | undefined>> => {
+    const out = new Map<string, ResolvedSkill | undefined>();
+    if (refs.length === 0) return out;
+
+    const unique = new Map<string, { skillKey: string; version: string }>();
+    for (const ref of refs) {
+      unique.set(`${ref.skillKey}\0${ref.version}`, ref);
+    }
+    const platformBatch =
+      typeof this.model.resolvePublishedVersionsExact === 'function'
+        ? await this.model.resolvePublishedVersionsExact([...unique.values()])
+        : new Map(
+            await Promise.all(
+              [...unique.values()].map(async (ref) => {
+                const platform = await this.model.resolvePublishedVersion(
+                  ref.skillKey,
+                  ref.version,
+                );
+                // Key as plain string so the Map union with resolvePublishedVersionsExact
+                // does not force callers to pass a template-literal branded key.
+                return [`${ref.skillKey}\0${ref.version}`, platform] as [string, typeof platform];
+              }),
+            ),
+          );
+
+    for (const [key, ref] of unique) {
+      const builtin = this.builtinSkills.find((item) => item.skillKey === ref.skillKey);
+      const platform = platformBatch.get(key);
+      if (platform && (!builtin || platform.allowBuiltinOverride)) {
+        out.set(
+          key,
+          serverResolvedSkillSchema.parse({
+            allowBuiltinOverride: platform.allowBuiltinOverride,
+            checksum: platform.version.checksum,
+            content: platform.version.content,
+            contentRef: platform.version.contentRef,
+            description: platform.description,
+            displayName: platform.displayName,
+            distribution: platform.distribution,
+            manifest: platform.version.manifest,
+            resources: platform.version.resources,
+            skillId: platform.skillId,
+            skillKey: platform.skillKey,
+            source: platform.source,
+            version: platform.version.version,
+            versionId: platform.version.id,
+          }),
+        );
+        continue;
+      }
+      if (builtin?.version === ref.version) {
+        out.set(
+          key,
+          serverResolvedSkillSchema.parse({
+            allowBuiltinOverride: false,
+            checksum: builtin.checksum,
+            content: builtin.content,
+            contentRef: builtin.contentRef ?? null,
+            description: builtin.description,
+            displayName: builtin.displayName,
+            distribution: builtin.distribution,
+            manifest: builtin.manifest,
+            resources: builtin.resources ?? [],
+            skillId: `builtin:${builtin.skillKey}`,
+            skillKey: builtin.skillKey,
+            source: 'builtin',
+            version: builtin.version,
+            versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
+          }),
+        );
+        continue;
+      }
+      out.set(key, undefined);
+    }
+    return out;
   };
 
   /**

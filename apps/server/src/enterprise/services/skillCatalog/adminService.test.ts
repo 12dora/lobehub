@@ -15,6 +15,7 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
+import { skillResourceContentChecksum } from '../../contracts/skillCatalog';
 import { SkillCatalogAdminService } from './adminService';
 import { SkillCatalogValidationError } from './errors';
 import { SkillCatalogReadService } from './readService';
@@ -86,13 +87,14 @@ const createVersion = async (
   selectedManifest: SkillManifest = manifest,
   options: { contentRef?: string | null } = {},
 ) => {
+  const resourceContent = 'reference';
   const resources = [
     {
-      checksum: 'a'.repeat(64),
-      content: 'reference',
+      checksum: skillResourceContentChecksum(resourceContent),
+      content: resourceContent,
       mediaType: 'text/plain',
       path: 'references/source.txt',
-      sizeBytes: 9,
+      sizeBytes: new TextEncoder().encode(resourceContent).byteLength,
     },
   ];
   const payload = {
@@ -210,13 +212,14 @@ describe('SkillCatalogAdminService', () => {
     const draft = await createDraft(service, 'empty.ref.blocked');
     const content = '# empty ref body';
     const contentRef = '';
+    const resourceContent = 'reference';
     const resources = [
       {
-        checksum: 'a'.repeat(64),
-        content: 'reference',
+        checksum: skillResourceContentChecksum(resourceContent),
+        content: resourceContent,
         mediaType: 'text/plain',
         path: 'references/source.txt',
-        sizeBytes: 9,
+        sizeBytes: new TextEncoder().encode(resourceContent).byteLength,
       },
     ];
     const version = await new PlatformSkillCatalogRepository(db).createVersion({

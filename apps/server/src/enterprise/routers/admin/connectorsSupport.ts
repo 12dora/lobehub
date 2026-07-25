@@ -15,6 +15,7 @@ import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import type { OutboundPolicySnapshot } from '../../security/outboundHttp';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import { ConnectorCatalogService } from '../../services/connectorCatalog/catalogService';
 import type {
   ConnectorCatalogCredentialProvider,
@@ -234,7 +235,7 @@ const sanitizeFactoryFailureReason = async (params: {
 };
 
 const appendFactoryFailureAudit = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   category: AdminConnectorFactoryFailureCategory;
   reason: string;
@@ -269,7 +270,7 @@ const inferRuntimeFactoryFailureCategory = (
     : 'secret_unavailable';
 
 export const resolveAdminConnectorMutationRuntime = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   createRuntime: () => AdminConnectorRuntime;
   reason: string;
@@ -289,7 +290,7 @@ export const resolveAdminConnectorMutationRuntime = async (params: {
 };
 
 export const assertAdminConnectorRuntimeDependency = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   category: Extract<
     AdminConnectorFactoryFailureCategory,
@@ -336,7 +337,9 @@ const connectorErrorHttpCode = (
   return 'BAD_REQUEST';
 };
 
-/** Transport boundary: only stable codes and error classes may leave this module. */
+/** Transport boundary: only stable codes and error classes may leave this module.
+ *  `action` is an operation path for error logs — not necessarily an audit-catalog token.
+ */
 export const executeAdminConnectorOperation = async <T>(
   action: string,
   operation: () => Promise<T>,
@@ -386,7 +389,7 @@ export const connectorSecretMutationRequiresReauth = (
 ): boolean => mutation?.operation === 'clear' || mutation?.operation === 'replace';
 
 export const assertConnectorDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -397,28 +400,29 @@ export const assertConnectorDangerousReauth = async (params: {
   targetId: string;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.connectors] reauth denied audit failed',
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    resolveDeniedReason: async () => {
-      try {
-        const current = await params.runtime.secrets.loadCurrentSecretSources(params.targetId);
-        return assertConnectorPersistentTextSafe(
-          params.reason,
-          collectConnectorSecretLeaves(
-            current.oauthClientSecret,
-            current.sharedSecret,
-            ...(params.replacementSecrets ?? []),
-          ),
-        );
-      } catch {
-        // A denied action must never persist a reason that could contain an unknown Secret.
-        return null;
-      }
-    },
     serverDB: params.serverDB,
-    targetId: params.targetId,
-    targetType: 'connector',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      resolveDeniedReason: async () => {
+        try {
+          const current = await params.runtime.secrets.loadCurrentSecretSources(params.targetId);
+          return assertConnectorPersistentTextSafe(
+            params.reason,
+            collectConnectorSecretLeaves(
+              current.oauthClientSecret,
+              current.sharedSecret,
+              ...(params.replacementSecrets ?? []),
+            ),
+          );
+        } catch {
+          // A denied action must never persist a reason that could contain an unknown Secret.
+          return null;
+        }
+      },
+      targetId: params.targetId,
+      targetType: 'connector',
+    },
   });

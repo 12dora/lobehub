@@ -4,6 +4,7 @@ import { resourcesTreePrompt } from '@lobechat/prompts';
 import type { AgentPluginEntry, AgentPluginMode, SkillItem } from '@lobechat/types';
 import { getPluginMode } from '@lobechat/types';
 import debug from 'debug';
+import pMap from 'p-map';
 
 import { isBuiltinSkillAvailableInCurrentEnv } from '@/helpers/toolAvailability';
 import { agentSkillService } from '@/services/skill';
@@ -12,6 +13,9 @@ import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 import { resolvePlatformSkillSelection } from '@/types/platform/skills';
 
 const log = debug('context-engine:resolveClientSkills');
+
+/** Bound concurrent exact-pin resolutions on the send path (avoids RPC storms). */
+export const PLATFORM_SKILL_RESOLVE_CONCURRENCY = 8;
 
 const freezePlatformSnapshot = (
   snapshot: PlatformSkillOperationSnapshot,
@@ -124,21 +128,45 @@ export const resolveClientSkills = async (
     ) {
       throw new Error('Managed Skill runtime catalog is unavailable');
     }
-    const platformMetas = await Promise.all(
-      platformCatalog.skills.map(async (skill) => {
-        const mode: AgentPluginMode = disabledIdSet.has(skill.skillKey)
-          ? 'disabled'
-          : pinnedIds.has(skill.skillKey)
-            ? 'pinned'
-            : 'auto';
-        const selection = resolvePlatformSkillSelection(skill.distribution, mode);
-        if (!selection.available) return undefined;
+    // Pre-filter availability once (linear), then resolve only activated entries
+    // with bounded concurrency so a large mandatory/default catalog cannot open
+    // thousands of RPCs on a single send.
+    type CatalogSkill = (typeof platformCatalog.skills)[number];
+    type PlatformMeta = {
+      activated?: boolean;
+      content?: string;
+      description: string;
+      identifier: string;
+      name: string;
+    };
 
-        const meta = {
+    const availableSkills: {
+      meta: PlatformMeta;
+      selection: { activated: boolean };
+      skill: CatalogSkill;
+    }[] = [];
+    for (const skill of platformCatalog.skills) {
+      const mode: AgentPluginMode = disabledIdSet.has(skill.skillKey)
+        ? 'disabled'
+        : pinnedIds.has(skill.skillKey)
+          ? 'pinned'
+          : 'auto';
+      const selection = resolvePlatformSkillSelection(skill.distribution, mode);
+      if (!selection.available) continue;
+      availableSkills.push({
+        meta: {
           description: skill.description ?? '',
           identifier: skill.skillKey,
           name: skill.displayName,
-        };
+        },
+        selection,
+        skill,
+      });
+    }
+
+    const platformMetas = await pMap(
+      availableSkills,
+      async ({ meta, selection, skill }) => {
         if (!selection.activated) return meta;
 
         // The authenticated legacy read projection is adapted server-side to
@@ -160,22 +188,27 @@ export const resolveClientSkills = async (
           throw new Error(`Published Skill ${skill.skillKey} could not be resolved exactly`);
         }
         return { ...meta, activated: true, content: buildPlatformSkillContent(resolved) };
-      }),
+      },
+      { concurrency: PLATFORM_SKILL_RESOLVE_CONCURRENCY },
     );
-    const skills = platformMetas.filter((skill) => skill !== undefined);
-    const skillEngine = new SkillEngine({ skills });
+
+    const includedKeys = new Set(platformMetas.map(({ identifier }) => identifier));
+    const includedCatalog = platformCatalog.skills.filter((skill) =>
+      includedKeys.has(skill.skillKey),
+    );
+    const skillEngine = new SkillEngine({ skills: platformMetas });
     const operation = skillEngine.generate(pluginIds ?? []);
     const snapshot = freezePlatformSnapshot({
       mandatorySkillIds: platformCatalog.skills.flatMap((skill) =>
         skill.distribution === 'mandatory' ? [skill.skillKey] : [],
       ),
-      refs: platformCatalog.skills
-        .filter((skill) => skills.some((candidate) => candidate.identifier === skill.skillKey))
-        .map(({ checksum, skillKey, version }) => ({ checksum, skillKey, version })),
+      refs: includedCatalog.map(({ checksum, skillKey, version }) => ({
+        checksum,
+        skillKey,
+        version,
+      })),
       revision: platformCatalog.revision,
-      skills: platformCatalog.skills.filter((skill) =>
-        skills.some((candidate) => candidate.identifier === skill.skillKey),
-      ),
+      skills: includedCatalog,
     });
     return {
       ...operation,

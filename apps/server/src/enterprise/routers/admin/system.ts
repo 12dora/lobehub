@@ -27,6 +27,7 @@ import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit'
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import { AUDIT_ACTION } from '../../services/audit/auditActionCatalog';
 import {
   IdentityProviderSystemError,
   IdentityProviderSystemService,
@@ -143,21 +144,20 @@ const assertRestartReauth = async (
     userId: string;
   },
   input: { reason: string; requestId: string },
-  action: 'admin.system.prepareRestart' | 'admin.system.requestRestart',
+  action: typeof AUDIT_ACTION.SYSTEM_PREPARE_RESTART | typeof AUDIT_ACTION.SYSTEM_REQUEST_RESTART,
 ): Promise<void> =>
   assertDangerousReauthWithAudit({
-    action,
-    actorUserId: ctx.userId,
-    auditFailureLog: '[admin.system] restart reauth denied audit unavailable',
-    // Legacy path only logged errorClass (no action).
-    auditFailureMeta: {},
     authenticatedAt: ctx.authenticatedAt,
     authMethod: ctx.authMethod,
-    reason: input.reason,
-    requestId: input.requestId,
     serverDB: ctx.serverDB,
-    targetId: 'identity_provider_runtime',
-    targetType: 'system',
+    denied: {
+      action,
+      actorUserId: ctx.userId,
+      reason: input.reason,
+      requestId: input.requestId,
+      targetId: 'identity_provider_runtime',
+      targetType: 'system',
+    },
   });
 
 const assertJobMutationReauth = async (
@@ -168,21 +168,20 @@ const assertJobMutationReauth = async (
     userId: string;
   },
   input: { jobId: string; reason: string; requestId: string },
-  action: 'admin.system.jobs.cancel' | 'admin.system.jobs.retry',
+  action: typeof AUDIT_ACTION.SYSTEM_JOBS_CANCEL | typeof AUDIT_ACTION.SYSTEM_JOBS_RETRY,
 ): Promise<void> =>
   assertDangerousReauthWithAudit({
-    action,
-    actorUserId: ctx.userId,
-    auditFailureLog: '[admin.system] job reauth denied audit unavailable',
-    // Legacy path only logged errorClass (no action).
-    auditFailureMeta: {},
     authenticatedAt: ctx.authenticatedAt,
     authMethod: ctx.authMethod,
-    reason: input.reason,
-    requestId: input.requestId,
     serverDB: ctx.serverDB,
-    targetId: input.jobId,
-    targetType: 'platform_job',
+    denied: {
+      action,
+      actorUserId: ctx.userId,
+      reason: input.reason,
+      requestId: input.requestId,
+      targetId: input.jobId,
+      targetType: 'platform_job',
+    },
   });
 
 export const adminSystemRouter = router({
@@ -199,7 +198,7 @@ export const adminSystemRouter = router({
           userId: ctx.userId!,
         },
         input,
-        'admin.system.jobs.cancel',
+        AUDIT_ACTION.SYSTEM_JOBS_CANCEL,
       );
       return executePlatformSystem(() =>
         new PlatformSystemAdminService(ctx.serverDB).cancelJob(ctx.userId!, input),
@@ -247,7 +246,7 @@ export const adminSystemRouter = router({
           userId: ctx.userId!,
         },
         input,
-        'admin.system.prepareRestart',
+        AUDIT_ACTION.SYSTEM_PREPARE_RESTART,
       );
       return execute(() => createSystemService(ctx.serverDB).prepareRestart(ctx.userId!, input));
     }),
@@ -264,7 +263,7 @@ export const adminSystemRouter = router({
           userId: ctx.userId!,
         },
         input,
-        'admin.system.requestRestart',
+        AUDIT_ACTION.SYSTEM_REQUEST_RESTART,
       );
       return execute(() => createSystemService(ctx.serverDB).requestRestart(ctx.userId!, input));
     }),
@@ -282,7 +281,7 @@ export const adminSystemRouter = router({
           userId: ctx.userId!,
         },
         input,
-        'admin.system.jobs.retry',
+        AUDIT_ACTION.SYSTEM_JOBS_RETRY,
       );
       return executePlatformSystem(() =>
         new PlatformSystemAdminService(ctx.serverDB).retryJob(ctx.userId!, input),

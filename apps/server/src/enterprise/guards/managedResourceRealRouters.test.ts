@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
@@ -10,10 +11,9 @@ import {
 import {
   agents,
   platformAuditLogs,
-  platformManagedResourcePolicies,
-  platformResourceRevisions,
   userConnectors,
   userConnectorTools,
+  userRoles,
   users,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -77,7 +77,7 @@ const {
   })),
   listConnectedAccounts: vi.fn(async (query: { userIds?: string[] }) => ({
     items:
-      query.userIds?.[0] === 'm06-real-ordinary'
+      query.userIds?.[0] === 'sg07-m06-real-ordinary'
         ? [
             {
               authConfig: { id: 'auth-gmail' },
@@ -132,9 +132,28 @@ vi.mock('@/server/services/oauthDeviceFlow/providers/githubCopilot', () => ({
   getOAuthService: () => ({ initiateDeviceCode }),
 }));
 
-const ordinary = 'm06-real-ordinary';
-const superAdmin = 'm06-real-super';
+/** Per-file fixture ids — never wipe the shared server test DB (SG-07). */
+const ordinary = 'sg07-m06-real-ordinary';
+const superAdmin = 'sg07-m06-real-super';
+const ORDINARY_AGENT = 'sg07-m06-ordinary-agent';
+const SUPER_AGENT = 'sg07-m06-super-agent';
 const context = (userId: string) => ({ serverDB: db, userId });
+
+const clearSuiteFixtures = async () => {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx
+      .delete(platformAuditLogs)
+      .where(inArray(platformAuditLogs.actorUserId, [ordinary, superAdmin]));
+  });
+  await db
+    .delete(userConnectorTools)
+    .where(inArray(userConnectorTools.userId, [ordinary, superAdmin]));
+  await db.delete(userConnectors).where(inArray(userConnectors.userId, [ordinary, superAdmin]));
+  await db.delete(agents).where(inArray(agents.id, [ORDINARY_AGENT, SUPER_AGENT]));
+  await db.delete(userRoles).where(inArray(userRoles.userId, [ordinary, superAdmin]));
+  await db.delete(users).where(inArray(users.id, [ordinary, superAdmin]));
+};
 
 beforeAll(async () => {
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_AI', '1');
@@ -142,14 +161,11 @@ beforeAll(async () => {
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
   db = await getTestDB();
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformManagedResourcePolicies);
-  await db.delete(users);
+  await clearSuiteFixtures();
   await db.insert(users).values([{ id: ordinary }, { id: superAdmin }]);
   await db.insert(agents).values([
-    { id: 'm06-ordinary-agent', slug: 'm06-ordinary-agent', userId: ordinary },
-    { id: 'm06-super-agent', slug: 'm06-super-agent', userId: superAdmin },
+    { id: ORDINARY_AGENT, slug: ORDINARY_AGENT, userId: ordinary },
+    { id: SUPER_AGENT, slug: SUPER_AGENT, userId: superAdmin },
   ]);
   await seedPlatformRoles(db);
   await assignGlobalPlatformRole(db, {
@@ -173,10 +189,7 @@ beforeAll(async () => {
 afterAll(async () => {
   clearManagedResourceReadinessForTest();
   vi.unstubAllEnvs();
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
-  await db.delete(platformManagedResourcePolicies);
-  await db.delete(users);
+  await clearSuiteFixtures();
 });
 
 describe('real legacy router callers under enforced policy', () => {
@@ -232,20 +245,20 @@ describe('real legacy router callers under enforced policy', () => {
         }),
       () =>
         agentDocumentRouter.createCaller(context(ordinary)).createSkillByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           content: '# Managed skill',
           skillName: 'managed-skill',
           targetNamespace: 'agent',
         }),
       () =>
         agentDocumentRouter.createCaller(context(ordinary)).writeDocumentByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           content: '# Managed skill',
           path: './lobe/skills/agent/skills/managed-skill/SKILL.md',
         }),
       () =>
         agentDocumentRouter.createCaller(context(ordinary)).convertDocumentToSkill({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           description: 'Managed skill',
           name: 'managed-skill',
           sourceAgentDocumentId: 'source-document',
@@ -253,13 +266,13 @@ describe('real legacy router callers under enforced policy', () => {
         }),
       () =>
         agentDocumentRouter.createCaller(context(ordinary)).updateSkillByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           content: '# Updated',
           path: './lobe/skills/agent/skills/managed-skill/SKILL.md',
         }),
       () =>
         agentDocumentRouter.createCaller(context(ordinary)).deleteSkillByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           path: './lobe/skills/agent/skills/managed-skill/SKILL.md',
         }),
     ];
@@ -447,7 +460,7 @@ describe('real legacy router callers under enforced policy', () => {
     ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'RESOURCE_MANAGED_BY_PLATFORM' });
     await expect(
       agentDocumentRouter.createCaller(context(superAdmin)).createSkillByPath({
-        agentId: 'm06-super-agent',
+        agentId: SUPER_AGENT,
         content: '# Super skill',
         skillName: 'super-skill',
         targetNamespace: 'agent',
@@ -459,14 +472,14 @@ describe('real legacy router callers under enforced policy', () => {
     const caller = agentDocumentRouter.createCaller(context(ordinary));
     await expect(
       caller.writeDocumentByPath({
-        agentId: 'm06-ordinary-agent',
+        agentId: ORDINARY_AGENT,
         content: '# Ordinary',
         path: './ordinary.md',
       }),
     ).resolves.toMatchObject({ path: './ordinary.md' });
     await expect(
       caller.renameDocumentByPath({
-        agentId: 'm06-ordinary-agent',
+        agentId: ORDINARY_AGENT,
         fromPath: './ordinary.md',
         toPath: './renamed.md',
       }),
@@ -476,31 +489,31 @@ describe('real legacy router callers under enforced policy', () => {
     for (const call of [
       () =>
         caller.renameDocumentByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           fromPath: './renamed.md',
           toPath: skillPath,
         }),
       () =>
         caller.renameDocumentByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           fromPath: skillPath,
           toPath: './renamed.md',
         }),
       () =>
         caller.copyDocumentByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           fromPath: './renamed.md',
           toPath: skillPath,
         }),
       () =>
         caller.copyDocumentByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           fromPath: skillPath,
           toPath: './copied.md',
         }),
       () =>
         caller.deleteDocumentByPath({
-          agentId: 'm06-ordinary-agent',
+          agentId: ORDINARY_AGENT,
           path: skillPath,
         }),
     ]) {

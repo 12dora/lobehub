@@ -9,7 +9,6 @@ import {
   PostgresAdminMutationRateLimiter,
   resetSharedAdminMutationRateLimiter,
   resolveAdminMutationRateLimitConfig,
-  SharedAdminMutationRateLimiter,
 } from './adminMutationRateLimiter';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -22,7 +21,7 @@ const cleanup = async () => {
 beforeEach(cleanup);
 afterEach(cleanup);
 
-describe('SharedAdminMutationRateLimiter PostgreSQL authority', () => {
+describe('PostgresAdminMutationRateLimiter PostgreSQL authority', () => {
   it('allows below the limit and denies at the boundary across independent instances', async () => {
     const config = {
       ...resolveAdminMutationRateLimitConfig({}),
@@ -30,8 +29,8 @@ describe('SharedAdminMutationRateLimiter PostgreSQL authority', () => {
       limit: 2,
       windowMs: 60_000,
     };
-    const first = new SharedAdminMutationRateLimiter({ config });
-    const second = new SharedAdminMutationRateLimiter({ config });
+    const first = new PostgresAdminMutationRateLimiter({ config });
+    const second = new PostgresAdminMutationRateLimiter({ config });
 
     await expect(
       first.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.create' }),
@@ -78,7 +77,7 @@ describe('SharedAdminMutationRateLimiter PostgreSQL authority', () => {
       retentionMs: 1,
       windowMs: 60_000,
     };
-    const limiter = new SharedAdminMutationRateLimiter({ config });
+    const limiter = new PostgresAdminMutationRateLimiter({ config });
 
     // Seed stale rows via SQL (deterministic age; no wall-clock wait).
     const staleStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);

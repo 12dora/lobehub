@@ -20,32 +20,6 @@ import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import { EffectiveSettingsService } from './effectiveSettingsService';
 import { settingsRegistry } from './registry';
 
-/**
- * Registered runtime read entry points that must use this adapter when the flag is ON.
- * Static tests also ban direct getUserSettingsDefaultAgentConfig / getUserSettings()
- * for policy-eligible slices outside allowlisted secret/market paths.
- */
-export const SETTINGS_RUNTIME_READ_REGISTRY = [
-  'userRouter.getUserState',
-  'userRouter.getEffectiveSettings',
-  'runtimeSettingsAdapter.loadEffectiveUserSettings',
-  'runtimeSettingsAdapter.getEffectiveDefaultAgentConfig',
-  'runtimeSettingsAdapter.getEffectiveSystemAgentConfig',
-  'runtimeSettingsAdapter.getEffectiveMemorySettings',
-  'runtimeSettingsAdapter.getDefaultAgentSlice',
-  'runtimeSettingsAdapter.getSystemAgentSlice',
-  'runtimeSettingsAdapter.getToolSlice',
-  'runtimeSettingsAdapter.resolveEffectiveUserInterventionConfig',
-  'AgentService.getBuiltinAgent',
-  'AgentService.getAgentConfig',
-  'AiAgentService.execAgent.approvalPolicy',
-  'memoryRuntime.memoryEffort',
-  'userMemoriesRouter.memoryEffort',
-  'SystemAgentService.getTaskModelConfig',
-] as const;
-
-export type SettingsRuntimeReadId = (typeof SETTINGS_RUNTIME_READ_REGISTRY)[number];
-
 export interface LoadEffectiveUserSettingsParams {
   db: LobeChatDatabase;
   /**

@@ -64,14 +64,12 @@ export class AgentSkillsActionImpl {
     catalog: PlatformPublishedSkillCatalog,
   ): void => {
     if (epoch !== this.#get().platformSkillCatalogRequestEpoch) return;
+    // Empty catalogs are valid (new managed orgs). `error` is reserved for
+    // request/validation failure via failPlatformSkillCatalogRequest.
     this.#set(
       {
         platformSkillCatalog: catalog,
-        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged
-          ? catalog.skills.length > 0
-            ? 'ready'
-            : 'error'
-          : 'unmanaged',
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged ? 'ready' : 'unmanaged',
       },
       false,
       n('completePlatformSkillCatalogRequest'),
@@ -187,10 +185,6 @@ export class AgentSkillsActionImpl {
   refreshAgentSkills = async (): Promise<void> => {
     const { data } = await agentSkillService.list();
     this.#set({ agentSkills: data }, false, n('refreshAgentSkills'));
-  };
-
-  setPlatformSkillCatalog = (catalog: PlatformPublishedSkillCatalog | null): void => {
-    this.#set({ platformSkillCatalog: catalog }, false, n('setPlatformSkillCatalog'));
   };
 
   updateAgentSkill = async (params: UpdateSkillInput): Promise<SkillItem | undefined> => {

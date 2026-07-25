@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
+
 import debug from 'debug';
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import {
@@ -22,6 +24,7 @@ import type {
   AdminPlatformAgentRolloutRollbackInput,
   AdminPlatformAgentRolloutStartInput,
 } from '../../contracts/platformAgents';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import {
   getPlatformConfigInvalidationPublisher,
@@ -142,6 +145,25 @@ const persistenceStatus = (
   status: 'cancelled' | 'completed' | 'dead' | 'failed' | 'pending' | 'running',
 ) => (status === 'completed' ? ('succeeded' as const) : status);
 
+/** Map one or more projection statuses to the platform_jobs rows they cover. */
+const persistenceStatusesForFilter = (
+  statuses: Array<'cancelled' | 'completed' | 'dead' | 'failed' | 'pending' | 'running'>,
+): PlatformJobItem['status'][] => {
+  const out = new Set<PlatformJobItem['status']>();
+  for (const status of statuses) {
+    if (status === 'pending') {
+      // Reserved jobs project as pending — include both so active filters stay complete.
+      out.add('pending');
+      out.add('reserved');
+    } else if (status === 'completed') {
+      out.add('succeeded');
+    } else {
+      out.add(status);
+    }
+  }
+  return [...out];
+};
+
 export interface PlatformAgentRolloutControlInput {
   action: 'cancel' | 'retry';
   agentId?: string;
@@ -246,6 +268,41 @@ export const projectPlatformAgentRollout = (job: PlatformJobItem) => {
   };
 };
 
+/**
+ * Active launch for the same assignment + target version. Callers hold the agent identity lock
+ * so concurrent starts serialize and collapse onto one in-flight job rather than minting a second.
+ * Terminal jobs are intentionally excluded so a later start can include newly eligible targets.
+ */
+const findActiveRollout = async (
+  tx: Transaction,
+  params: {
+    agentId: string;
+    assignmentId: string;
+    targetVersionChecksum: string;
+    targetVersionId: string;
+  },
+): Promise<PlatformJobItem | undefined> => {
+  const [existing] = await tx
+    .select()
+    .from(platformJobs)
+    .where(
+      and(
+        eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
+        inArray(platformJobs.status, ['pending', 'reserved', 'running']),
+        // Launch collapse only — an in-flight rollback shares agent/assignment/target
+        // version coords but must not absorb a fresh Start rollout (different cutoff).
+        sql`${platformJobs.input}->'snapshot'->>'rollbackOfJobId' IS NULL`,
+        sql`${platformJobs.input}->'snapshot'->>'agentId' = ${params.agentId}`,
+        sql`${platformJobs.input}->'snapshot'->>'assignmentId' = ${params.assignmentId}`,
+        sql`${platformJobs.input}->'snapshot'->>'targetVersionId' = ${params.targetVersionId}`,
+        sql`${platformJobs.input}->'snapshot'->>'targetVersionChecksum' = ${params.targetVersionChecksum}`,
+      ),
+    )
+    .orderBy(desc(platformJobs.createdAt))
+    .limit(1);
+  return existing;
+};
+
 const enqueueRollout = async (
   tx: Transaction,
   params: {
@@ -287,7 +344,7 @@ const enqueueRollout = async (
 const appendRolloutAudit = async (
   db: Transaction | LobeChatDatabase,
   params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     afterDiff: Record<string, unknown>;
     reason: string;
@@ -338,7 +395,7 @@ export class PlatformAgentRolloutService {
    * falsely described as atomic delivery.
    */
   private auditedMutation = async <T>(params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     run: (tx: Transaction) => Promise<T>;
@@ -423,6 +480,19 @@ export class PlatformAgentRolloutService {
           ...assignment,
           cutoff: targetCutoff,
         });
+        // Collapse concurrent starts for the same assignment/version onto the in-flight job.
+        // Once that job is terminal, a later start must mint a new launch (with a fresh cutoff)
+        // so newly eligible users are included.
+        const active = await findActiveRollout(tx, {
+          agentId: identity.id,
+          assignmentId: assignment.id,
+          targetVersionChecksum: target.checksum,
+          targetVersionId: target.id,
+        });
+        if (active) return active;
+        // Launch id keeps the unique (type, idempotency_key) constraint while allowing relaunch
+        // after terminal completion. Identity lock above serializes concurrent inserts.
+        const launchId = randomUUID();
         const idempotencyKey = [
           identity.id,
           assignment.id,
@@ -432,6 +502,7 @@ export class PlatformAgentRolloutService {
           assignment.targetId,
           target.id,
           target.checksum,
+          launchId,
         ].join(':');
         return enqueueRollout(tx, {
           idempotencyKey,
@@ -484,6 +555,10 @@ export class PlatformAgentRolloutService {
 
   list = async (input: AdminPlatformAgentRolloutListInput) => {
     const limit = input.limit ?? 50;
+    const statusFilter =
+      input.status && input.status.length > 0
+        ? inArray(platformJobs.status, persistenceStatusesForFilter(input.status))
+        : undefined;
     const rows = await this.db
       .select()
       .from(platformJobs)
@@ -491,6 +566,7 @@ export class PlatformAgentRolloutService {
         and(
           eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
           sql`${platformJobs.input}->'snapshot'->>'agentId' = ${input.agentId}`,
+          statusFilter,
           input.cursor ? lt(platformJobs.id, input.cursor) : undefined,
         ),
       )

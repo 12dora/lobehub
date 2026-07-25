@@ -173,4 +173,37 @@ describe('clientSkillRuntimeService', () => {
     });
     expect(resolvePinned).toHaveBeenCalledTimes(1);
   });
+
+  it('evicts a rejected resolution so a later lookup can succeed', async () => {
+    const runtime = createClientSkillRuntimeService({
+      mandatorySkillIds: [],
+      refs: [{ checksum: published.checksum, skillKey: published.skillKey, version: '1.0.0' }],
+      revision: 'catalog-v1',
+    });
+    const transient = new Error('transient network');
+    resolvePinned.mockRejectedValueOnce(transient).mockResolvedValueOnce({
+      checksum: published.checksum,
+      content: 'approved body',
+      description: published.description,
+      identifier: published.skillKey,
+      name: published.displayName,
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: '',
+          mediaType: 'text/plain',
+          path: 'empty.txt',
+          sizeBytes: 0,
+        },
+      ],
+      version: '1.0.0',
+    } as never);
+
+    await expect(runtime.findByName('approved.skill')).rejects.toBe(transient);
+    await expect(runtime.findByName('approved.skill')).resolves.toMatchObject({
+      content: 'approved body',
+      identifier: published.skillKey,
+    });
+    expect(resolvePinned).toHaveBeenCalledTimes(2);
+  });
 });

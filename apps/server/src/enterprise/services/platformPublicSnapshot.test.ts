@@ -2,11 +2,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_PLATFORM_PUBLIC_SNAPSHOT } from '@/types/platform/publicSnapshot';
 
-import {
-  buildPlatformPublicSnapshot,
-  getDisabledPlatformPublicSnapshot,
-} from './platformPublicSnapshot';
+import { buildPlatformPublicSnapshot } from './platformPublicSnapshot';
 
 const branding = {
   defaultAgentDisplayName: null,
@@ -30,7 +28,11 @@ const branding = {
 describe('buildPlatformPublicSnapshot', () => {
   it('returns disabled public snapshot when flags are off', () => {
     const snap = buildPlatformPublicSnapshot({ flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS } });
-    expect(snap).toEqual(getDisabledPlatformPublicSnapshot());
+    expect(snap).toEqual({
+      ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+      branding: null,
+      login: { ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT.login },
+    });
   });
 
   it('hides branding fields when runtime branding flag is off', () => {

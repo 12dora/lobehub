@@ -44,6 +44,28 @@ export class SkillCatalogValidationService {
           ? new Set(this.options.builtinSkills.map((skill) => skill.skillKey))
           : undefined),
       knownToolKeys: this.options.knownToolKeys ?? new Set(),
+      resolveSkillDependenciesBatch: async (refs) => {
+        const batch = await readService.resolveForExecutionBatch(refs);
+        const mapped = new Map<
+          string,
+          { manifest: SkillManifest; skillKey: string; version: string } | undefined
+        >();
+        for (const ref of refs) {
+          const key = `${ref.skillKey}@${ref.version}`;
+          const resolved = batch.get(`${ref.skillKey}\0${ref.version}`);
+          mapped.set(
+            key,
+            resolved
+              ? {
+                  manifest: resolved.manifest,
+                  skillKey: resolved.skillKey,
+                  version: resolved.version,
+                }
+              : undefined,
+          );
+        }
+        return mapped;
+      },
       resolveSkillDependency: async (skillKey, version) => {
         const resolved = await readService.resolveForExecution(skillKey, version);
         return resolved

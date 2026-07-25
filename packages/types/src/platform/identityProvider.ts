@@ -141,11 +141,23 @@ export interface PlatformIdentityProviderDraft {
   domainAllowlist: string[];
   enabled: boolean;
   groupRoleMapping: Record<string, string>;
+  /**
+   * Server-resolved: any published revision exists for this provider (including prior
+   * live snapshots after the mutable head forked back to draft). Present on list/get
+   * projections; mutation responses may omit it.
+   */
+  hasPublishedHistory?: boolean;
   icon: string | null;
   id: string;
   issuer: string | null;
   migrationRequired: boolean;
   providerKey: string;
+  /**
+   * Server-resolved: a successful safe-login test for the current revision is still
+   * valid (within publish TTL). Present on list/get so Publish readiness is not
+   * ephemeral wizard state only.
+   */
+  publishTestReady?: boolean;
   revision: number;
   scopes: string[];
   secret: PlatformIdentityProviderSecretState;

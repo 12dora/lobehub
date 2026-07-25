@@ -44,6 +44,12 @@ export interface PlatformAgentRolloutWorkerLifecycle {
     previousByUserId: ReadonlyMap<string, { checksum: string; versionId: string } | null>;
     userIds: string[];
   }) => Promise<ReadonlySet<string> | void>;
+  /** Delay seam before poison dead-mark CAS (invalid payload / snapshot conflict). */
+  beforeMarkClaimedDead?: (params: {
+    category: string;
+    jobId: string;
+    workerId: string;
+  }) => Promise<void>;
 }
 
 export interface ProcessPlatformAgentRolloutBatchOptions {
@@ -198,11 +204,15 @@ const deriveUniformPrevious = async (
     : { checksum: null, versionId: null };
 };
 
+/**
+ * Lease-guarded poison transition. Returns true only when this worker still owns a live lease
+ * and the row moved to `dead`; callers must not report `terminal: true` after a lost race.
+ */
 const markClaimedDead = async (
   db: LobeChatDatabase,
   params: { category: string; jobId: string; workerId: string },
-) => {
-  await db
+): Promise<boolean> => {
+  const [updated] = await db
     .update(platformJobs)
     .set({
       finishedAt: databaseNow,
@@ -219,7 +229,9 @@ const markClaimedDead = async (
         eq(platformJobs.leaseOwner, params.workerId),
         gt(platformJobs.leaseUntil, databaseNow),
       ),
-    );
+    )
+    .returning({ id: platformJobs.id });
+  return Boolean(updated);
 };
 
 const validateSnapshot = async (tx: Transaction, input: PlatformAgentRolloutJobInput) => {
@@ -274,12 +286,17 @@ export const processNextPlatformAgentRolloutBatch = async (
   try {
     claimedInput = parsePlatformAgentRolloutInput(claimed);
   } catch {
-    await markClaimedDead(db, {
+    await options.lifecycle?.beforeMarkClaimedDead?.({
       category: 'invalid_rollout_snapshot',
       jobId: claimed.id,
       workerId,
     });
-    return { claimed: true, jobId: claimed.id, terminal: true };
+    const markedDead = await markClaimedDead(db, {
+      category: 'invalid_rollout_snapshot',
+      jobId: claimed.id,
+      workerId,
+    });
+    return { claimed: true, jobId: claimed.id, terminal: markedDead };
   }
 
   try {
@@ -440,12 +457,17 @@ export const processNextPlatformAgentRolloutBatch = async (
       error instanceof PlatformAgentNotFoundError ||
       error instanceof PlatformAgentRevisionConflictError
     ) {
-      await markClaimedDead(db, {
+      await options.lifecycle?.beforeMarkClaimedDead?.({
         category: 'rollout_snapshot_changed',
         jobId: claimed.id,
         workerId,
       });
-      return { claimed: true, jobId: claimed.id, terminal: true };
+      const markedDead = await markClaimedDead(db, {
+        category: 'rollout_snapshot_changed',
+        jobId: claimed.id,
+        workerId,
+      });
+      return { claimed: true, jobId: claimed.id, terminal: markedDead };
     }
     throw error;
   }

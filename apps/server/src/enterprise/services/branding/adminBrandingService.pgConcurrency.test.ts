@@ -7,7 +7,6 @@ import { serverDBEnv } from '@/config/db';
 import { getTestDB } from '@/database/core/getTestDB';
 import * as schema from '@/database/schemas';
 import {
-  platformAuditLogs,
   platformBranding,
   platformBrandingAssets,
   platformBrandingOperations,
@@ -16,9 +15,15 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminBrandingDraft } from '../../contracts/adminBranding';
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { AdminBrandingAssetService } from './adminBrandingAssetService';
-import { AdminBrandingService, PlatformRevisionConflictError } from './adminBrandingService';
+import {
+  AdminBrandingService,
+  BRANDING_RESOURCE_ID,
+  PlatformRevisionConflictError,
+} from './adminBrandingService';
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 
@@ -61,9 +66,12 @@ describe.skipIf(!enabled)('AdminBrandingService advisory lock (PostgreSQL)', () 
       invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
     });
     const cleanup = async () => {
-      await firstDb.delete(platformAuditLogs);
+      await deletePlatformAuditLogsForTest(firstDb, { actorUserIds: ['admin'] });
       await firstDb.delete(platformBrandingOperations);
-      await firstDb.delete(platformResourceRevisions);
+      await deletePlatformResourceRevisionsForTest(firstDb, {
+        resourceIds: [BRANDING_RESOURCE_ID],
+        resourceType: 'branding',
+      });
       await firstDb.delete(platformBranding);
       await firstDb.delete(platformBrandingAssets);
     };

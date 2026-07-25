@@ -47,17 +47,20 @@ describe('identity provider groupRoleMapping runtime enforcement', () => {
       sub: 'idp-subject-eng-1',
     };
 
-    // Mirrors platformIdentityProvider.mapPlatformProfileToUser stash path.
+    // Mirrors getUserInfo single-stash path (real OAuth flow id).
+    const flowId = 'oauth-state-eng-1';
     stashIdentityProviderGroupRoleMapping({
+      flowId,
       groupRoleMapping,
       groups: extractIdentityProviderGroups(profileClaims),
       providerKey: 'corp-oidc',
       subject: 'idp-subject-eng-1',
     });
 
-    // Mirrors define-config account/session databaseHooks reconcile call.
+    // Mirrors define-config session databaseHooks reconcile call with OAuth state.
     await reconcileIdentityProviderGroupRoles({
       db,
+      flowId,
       providerKey: 'corp-oidc',
       subject: 'idp-subject-eng-1',
       userId,
@@ -73,12 +76,41 @@ describe('identity provider groupRoleMapping runtime enforcement', () => {
     // Stash is one-shot: second reconcile must not re-apply from empty pending.
     await reconcileIdentityProviderGroupRoles({
       db,
+      flowId,
       providerKey: 'corp-oidc',
       subject: 'idp-subject-eng-1',
       userId,
     });
     const still = (await rbac.getGlobalUserRoles(userId)).map((r) => r.name).sort();
     expect(still).toEqual(names);
+
+    // Password / non-OAuth session must never re-apply IdP claims without a flow id.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'leftover-oauth',
+      groupRoleMapping,
+      groups: extractIdentityProviderGroups(profileClaims),
+      providerKey: 'corp-oidc',
+      subject: 'idp-subject-eng-1',
+    });
+    await reconcileIdentityProviderGroupRoles({
+      db,
+      providerKey: 'corp-oidc',
+      subject: 'idp-subject-eng-1',
+      userId,
+    });
+    // Leftover flow entry remains unconsumed (no flow id on password path).
+    const {
+      pendingIdentityProviderGroupRoleMappingSizeForTest,
+      takeIdentityProviderGroupRoleMapping,
+    } = await import('./groupRoleMappingRuntime');
+    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(1);
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        flowId: 'leftover-oauth',
+        providerKey: 'corp-oidc',
+        subject: 'idp-subject-eng-1',
+      }),
+    ).not.toBeNull();
   });
 
   it('applyGroupRoleMappingToUser grants mapped roles directly (authorization primitive)', async () => {
@@ -183,45 +215,6 @@ describe('identity provider groupRoleMapping runtime enforcement', () => {
     vi.useRealTimers();
   });
 
-  it('provider-wide discard is reserved for unload/disable, not per-login failure', async () => {
-    // identity/F9: clear-all stays available for provider-wide events only.
-    const {
-      discardIdentityProviderGroupRoleMappingsForProvider,
-      pendingIdentityProviderGroupRoleMappingSizeForTest,
-      stashIdentityProviderGroupRoleMapping,
-      takeIdentityProviderGroupRoleMapping,
-    } = await import('./groupRoleMappingRuntime');
-
-    stashIdentityProviderGroupRoleMapping({
-      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
-      groups: ['eng'],
-      providerKey: 'corp-oidc',
-      subject: 'subject-a',
-    });
-    stashIdentityProviderGroupRoleMapping({
-      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
-      groups: ['eng'],
-      providerKey: 'corp-oidc',
-      subject: 'subject-b',
-    });
-    stashIdentityProviderGroupRoleMapping({
-      groupRoleMapping: { eng: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
-      groups: ['eng'],
-      providerKey: 'other-idp',
-      subject: 'subject-c',
-    });
-    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(3);
-
-    discardIdentityProviderGroupRoleMappingsForProvider('corp-oidc');
-    expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(1);
-    expect(
-      takeIdentityProviderGroupRoleMapping({ providerKey: 'corp-oidc', subject: 'subject-a' }),
-    ).toBeNull();
-    expect(
-      takeIdentityProviderGroupRoleMapping({ providerKey: 'other-idp', subject: 'subject-c' }),
-    ).not.toBeNull();
-  });
-
   it('flow-scoped discard removes only the failed login attempt (identity/F9)', async () => {
     const {
       discardIdentityProviderGroupRoleMappingByFlow,
@@ -253,12 +246,14 @@ describe('identity provider groupRoleMapping runtime enforcement', () => {
     expect(pendingIdentityProviderGroupRoleMappingSizeForTest()).toBe(1);
     expect(
       takeIdentityProviderGroupRoleMapping({
+        flowId: 'oauth-state-failed',
         providerKey: 'corp-oidc',
         subject: 'subject-failed',
       }),
     ).toBeNull();
     expect(
       takeIdentityProviderGroupRoleMapping({
+        flowId: 'oauth-state-ok',
         providerKey: 'corp-oidc',
         subject: 'subject-ok',
       }),

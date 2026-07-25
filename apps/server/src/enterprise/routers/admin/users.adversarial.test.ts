@@ -31,6 +31,7 @@ import {
   InMemoryPlatformConfigInvalidationPublisher,
   setPlatformConfigInvalidationPublisher,
 } from '../../services/platformConfigInvalidation';
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
@@ -66,7 +67,7 @@ const workspaceId = 'm04-ws';
 
 const cleanup = async () => {
   await db.delete(session);
-  await db.delete(platformAuditLogs);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(IDS) });
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);
@@ -85,7 +86,7 @@ const grantGlobalRole = async (userId: string, roleName: string) => {
 
 beforeAll(async () => {
   db = await getTestDB();
-});
+}, 120_000);
 
 beforeEach(async () => {
   vi.unstubAllEnvs();

@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+import {
+  PLATFORM_CONNECTOR_ERROR_CODE_VALUES,
+  type PlatformConnectorErrorCode,
+} from '@/const/platform/errorCodes';
+
 import { isCredentialBearingUrl } from '../../security/redaction';
 import {
   addConnectorToolListIssues,
@@ -8,6 +13,7 @@ import {
   connectorJsonObjectSchema,
   containsConnectorCredentialMaterial,
 } from '../../services/connectorCatalog/toolDefinitionValidator';
+import { httpHeaderNameSchema, httpHeaderValueSchema } from '../shared';
 
 export const connectorIdSchema = z.string().trim().min(1).max(128);
 export const connectorKeySchema = z
@@ -130,29 +136,9 @@ export const connectorBindingStatusSchema = z.enum([
   'error',
 ]);
 
-export const platformConnectorErrorCodeSchema = z.enum([
-  'PLATFORM_CONNECTOR_BINDING_NOT_FOUND',
-  'PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH',
-  'PLATFORM_CONNECTOR_CONFIRMATION_REQUIRED',
-  'PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED',
-  'PLATFORM_CONNECTOR_NOT_FOUND',
-  'PLATFORM_CONNECTOR_NOT_PUBLISHED',
-  'PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID',
-  'PLATFORM_CONNECTOR_OAUTH_STATE_EXPIRED',
-  'PLATFORM_CONNECTOR_OAUTH_STATE_INVALID',
-  'PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED',
-  'PLATFORM_CONNECTOR_RETURN_TO_INVALID',
-  'PLATFORM_CONNECTOR_RATE_LIMITED',
-  'PLATFORM_CONNECTOR_RESOURCE_MISMATCH',
-  'PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED',
-  'PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED',
-  'PLATFORM_CONNECTOR_SSRF_BLOCKED',
-  'PLATFORM_CONNECTOR_STDIO_UNSUPPORTED',
-  'PLATFORM_CONNECTOR_TOOL_DENIED',
-  'PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED',
-]);
+export const platformConnectorErrorCodeSchema = z.enum(PLATFORM_CONNECTOR_ERROR_CODE_VALUES);
 
-export type PlatformConnectorErrorCode = z.infer<typeof platformConnectorErrorCodeSchema>;
+export type { PlatformConnectorErrorCode };
 
 export class PlatformConnectorContractError extends Error {
   constructor(public readonly code: PlatformConnectorErrorCode) {
@@ -180,44 +166,74 @@ export const connectorScopesSchema = z
 /** Max header entries on connector shared credentials (aligned with AI catalog). */
 export const CONNECTOR_HEADER_MAP_MAX_ENTRIES = 50;
 
-// Intentional: reject ASCII control chars in connector HTTP header maps.
-// eslint-disable-next-line no-control-regex -- control-char class is the validation target
-const connectorHeaderControlCharPattern = /[\u0000-\u001F\u007F]/;
+/** Write-time: RFC 9110 field-name tokens (reject-on-write). */
+const connectorHeaderNameWriteSchema = httpHeaderNameSchema.max(200);
 
-const connectorHeaderNameSchema = z
+/**
+ * Read-time header names: control-char-only rule used before the RFC token
+ * grammar. Pre-token-rule vaults may store spaces, colons, or non-ASCII names.
+ * Read paths must accept those so admins can `replace` a corrected map (detail
+ * API is presence-only — secret values are not projected).
+ */
+const connectorHeaderNameReadSchema = z
   .string()
   .min(1)
   .max(200)
-  .refine(
-    (value) => !connectorHeaderControlCharPattern.test(value),
-    'header name must not contain control characters',
-  );
+  // eslint-disable-next-line no-control-regex -- control-char class is the validation target
+  .regex(/^[^\u0000-\u001F\u007F]+$/, 'header name must not contain control characters');
 
-const connectorHeaderValueSchema = z
-  .string()
-  .min(1)
-  .max(32_768)
-  .refine(
-    (value) => !connectorHeaderControlCharPattern.test(value),
-    'header value must not contain control characters',
-  );
+const connectorHeaderValueSchema = httpHeaderValueSchema.max(32_768);
 
-const connectorHeaderMapSchema = z
-  .record(connectorHeaderNameSchema, connectorHeaderValueSchema)
-  .superRefine((value, ctx) => {
-    if (Object.keys(value).length > CONNECTOR_HEADER_MAP_MAX_ENTRIES) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `header map exceeds max entry count of ${CONNECTOR_HEADER_MAP_MAX_ENTRIES}`,
-      });
-    }
-  });
+const refineConnectorHeaderMapEntries = (
+  value: Record<string, string>,
+  ctx: z.RefinementCtx,
+): void => {
+  if (Object.keys(value).length > CONNECTOR_HEADER_MAP_MAX_ENTRIES) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `header map exceeds max entry count of ${CONNECTOR_HEADER_MAP_MAX_ENTRIES}`,
+    });
+  }
+};
 
+/** Write-time header map (RFC 9110 names). Used by secret mutations. */
+const connectorHeaderMapWriteSchema = z
+  .record(connectorHeaderNameWriteSchema, connectorHeaderValueSchema)
+  .superRefine(refineConnectorHeaderMapEntries);
+
+/** Read-time header map (legacy control-char-only names). Used by catalog/runtime parse. */
+const connectorHeaderMapReadSchema = z
+  .record(connectorHeaderNameReadSchema, connectorHeaderValueSchema)
+  .superRefine(refineConnectorHeaderMapEntries);
+
+/**
+ * Write-time shared credential schema: RFC 9110 header-name tokens.
+ * Used by secret mutations (`connectorSharedSecretMutationSchema`) and admin
+ * connection-test input parsing. Admins repair legacy invalid names by
+ * `replace` with a corrected `headers` map (detail API is presence-only).
+ */
 export const connectorSharedCredentialSchema = z
   .object({
     apiKey: z.string().min(1).max(32_768).optional(),
     bearerToken: z.string().min(1).max(32_768).optional(),
-    headers: connectorHeaderMapSchema.optional(),
+    headers: connectorHeaderMapWriteSchema.optional(),
+    password: z.string().min(1).max(32_768).optional(),
+    username: z.string().min(1).max(1000).optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'credential object must not be empty');
+
+/**
+ * Read-time shared credential schema: lenient header names for already-stored
+ * secrets (accept-on-read / reject-on-write). Used by catalog snapshot,
+ * readiness, and runtime resolution so pre-token-rule credentials do not
+ * hard-fail every read with no repair path.
+ */
+export const connectorSharedCredentialReadSchema = z
+  .object({
+    apiKey: z.string().min(1).max(32_768).optional(),
+    bearerToken: z.string().min(1).max(32_768).optional(),
+    headers: connectorHeaderMapReadSchema.optional(),
     password: z.string().min(1).max(32_768).optional(),
     username: z.string().min(1).max(1000).optional(),
   })

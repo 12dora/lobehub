@@ -1,20 +1,28 @@
+import { createHash } from 'node:crypto';
 import { access, chmod, lstat, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import * as os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { cleanupInlineSkillWorkspace, prepareInlineSkillWorkspace } from '../inlineSkillWorkspace';
+import {
+  __resetInlineSkillWorkspacesForTests,
+  cleanupInlineSkillWorkspace,
+  hashInlineSkillContent,
+  prepareInlineSkillWorkspace,
+} from '../inlineSkillWorkspace';
 
 const roots: string[] = [];
 const checksum = 'a'.repeat(64);
+
 const resource = (resourcePath: string, content = 'print("ok")') => ({
-  checksum: 'b'.repeat(64),
+  checksum: hashInlineSkillContent(content),
   content,
   mediaType: 'text/x-python',
   path: resourcePath,
   sizeBytes: new TextEncoder().encode(content).byteLength,
 });
+
 const params = (resources = [resource('scripts/run.py')]) => ({
   checksum,
   operationId: 'operation-1',
@@ -31,6 +39,7 @@ const makeRoot = async () => {
 };
 
 afterEach(async () => {
+  __resetInlineSkillWorkspacesForTests();
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
@@ -52,6 +61,119 @@ describe('inline Skill operation workspace', () => {
 
     await cleanupInlineSkillWorkspace({ workspaceId: result.workspaceId! });
     await expect(access(result.workspaceDir!)).rejects.toThrow();
+  });
+
+  it('rejects same-size tampered content whose checksum does not match the bytes', async () => {
+    const root = await makeRoot();
+    const honest = 'print("ok")';
+    const tampered = 'print("no")'; // same byte length, different payload
+    expect(new TextEncoder().encode(honest).byteLength).toBe(
+      new TextEncoder().encode(tampered).byteLength,
+    );
+
+    const result = await prepareInlineSkillWorkspace(
+      params([
+        {
+          // Declare the honest digest while shipping tampered body.
+          checksum: hashInlineSkillContent(honest),
+          content: tampered,
+          mediaType: 'text/x-python',
+          path: 'scripts/run.py',
+          sizeBytes: new TextEncoder().encode(tampered).byteLength,
+        },
+      ]),
+      { cacheRoot: root },
+    );
+
+    expect(result).toMatchObject({
+      error: expect.stringContaining('integrity check failed'),
+      success: false,
+    });
+    // No workspace directory should survive a failed integrity check.
+    const entries = await import('node:fs/promises').then((fs) => fs.readdir(root));
+    expect(entries).toHaveLength(0);
+  });
+
+  it('keeps a failed deletion retryable and only drops map state after rm succeeds', async () => {
+    const root = await makeRoot();
+    const removePath = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('EBUSY'))
+      .mockImplementation(async (target: string) => {
+        await rm(target, { force: true, recursive: true });
+      });
+
+    const result = await prepareInlineSkillWorkspace(params(), {
+      cacheRoot: root,
+      removePath,
+    });
+    expect(result.success).toBe(true);
+
+    await expect(
+      cleanupInlineSkillWorkspace({ workspaceId: result.workspaceId! }, { removePath }),
+    ).rejects.toThrow('EBUSY');
+    // Workspace files must still exist so a retry can clean them up.
+    await expect(access(result.workspaceDir!)).resolves.toBeUndefined();
+
+    await expect(
+      cleanupInlineSkillWorkspace({ workspaceId: result.workspaceId! }, { removePath }),
+    ).resolves.toEqual({ success: true });
+    await expect(access(result.workspaceDir!)).rejects.toThrow();
+    expect(removePath).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels the TTL timer on successful manual cleanup', async () => {
+    const root = await makeRoot();
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    const cancelSchedule = vi.fn((timer: ReturnType<typeof setTimeout>) => {
+      clearTimeout(timer);
+    });
+    const schedule = vi.fn((callback: () => void, ms: number) => {
+      const timer = setTimeout(callback, ms);
+      timers.push(timer);
+      return timer;
+    });
+
+    const result = await prepareInlineSkillWorkspace(params(), {
+      cacheRoot: root,
+      cancelSchedule,
+      schedule,
+      ttlMs: 60_000,
+    });
+    expect(result.success).toBe(true);
+    expect(schedule).toHaveBeenCalledOnce();
+
+    await cleanupInlineSkillWorkspace({ workspaceId: result.workspaceId! }, { cancelSchedule });
+    expect(cancelSchedule).toHaveBeenCalledWith(timers[0]);
+  });
+
+  it('contains TTL cleanup failures without unhandled rejections', async () => {
+    const root = await makeRoot();
+    const removePath = vi.fn().mockRejectedValue(new Error('EPERM'));
+    let ttlCallback: (() => void) | undefined;
+    const schedule = vi.fn((callback: () => void) => {
+      ttlCallback = callback;
+      return setTimeout(() => undefined, 60_000) as ReturnType<typeof setTimeout>;
+    });
+
+    const result = await prepareInlineSkillWorkspace(params(), {
+      cacheRoot: root,
+      removePath,
+      schedule,
+      ttlMs: 1,
+    });
+    expect(result.success).toBe(true);
+    expect(ttlCallback).toBeTypeOf('function');
+
+    // Fire the scheduled TTL path; the rejection must be swallowed.
+    await expect(
+      (async () => {
+        ttlCallback!();
+        // Allow the fire-and-forget promise to settle.
+        await new Promise((resolve) => setImmediate(resolve));
+      })(),
+    ).resolves.toBeUndefined();
+    expect(removePath).toHaveBeenCalled();
   });
 
   it.each([
@@ -86,7 +208,7 @@ describe('inline Skill operation workspace', () => {
       ),
     ).resolves.toMatchObject({ success: false });
     await expect(
-      prepareInlineSkillWorkspace(params([resource('Straße.txt'), resource('STRASSE.txt')]), {
+      prepareInlineSkillWorkspace(params([resource('Strasse.txt'), resource('STRASSE.txt')]), {
         cacheRoot: root,
       }),
     ).resolves.toMatchObject({ success: false });
@@ -98,7 +220,9 @@ describe('inline Skill operation workspace', () => {
     await expect(
       prepareInlineSkillWorkspace(
         params([{ ...resource('payload.bin'), mediaType: 'application/octet-stream' }]),
-        { cacheRoot: root },
+        {
+          cacheRoot: root,
+        },
       ),
     ).resolves.toMatchObject({ success: false });
     await expect(
@@ -124,5 +248,11 @@ describe('inline Skill operation workspace', () => {
       prepareInlineSkillWorkspace(params(), { cacheRoot: linkedRoot }),
     ).resolves.toMatchObject({ success: false });
     expect((await lstat(target)).mode & 0o777).toBe(0o755);
+  });
+
+  it('exports a stable content digest helper used by fixtures', () => {
+    expect(hashInlineSkillContent('print("ok")')).toBe(
+      createHash('sha256').update('print("ok")', 'utf8').digest('hex'),
+    );
   });
 });

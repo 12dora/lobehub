@@ -7,6 +7,7 @@ import {
   isSensitiveKey,
   M07_REDACTION_OPTIONS,
 } from '../security/redaction';
+import { httpHeaderNameSchema, httpHeaderValueSchema } from './shared';
 
 const providerKeySchema = z
   .string()
@@ -188,29 +189,19 @@ export const BOUNDED_HEADER_MAP_MAX_ENTRIES = 50;
 export const BOUNDED_HEADER_NAME_MAX = 200;
 export const BOUNDED_HEADER_VALUE_MAX = 8192;
 
-// Intentional: reject ASCII control chars in HTTP header maps (JSON-value safety).
-// eslint-disable-next-line no-control-regex -- control-char class is the validation target
-const headerControlCharPattern = /[\u0000-\u001F\u007F]/;
+const boundedHeaderNameSchema = httpHeaderNameSchema.max(BOUNDED_HEADER_NAME_MAX);
+const boundedHeaderValueSchema = httpHeaderValueSchema.max(BOUNDED_HEADER_VALUE_MAX);
 
-const boundedHeaderNameSchema = z
-  .string()
-  .min(1)
-  .max(BOUNDED_HEADER_NAME_MAX)
-  .refine(
-    (value) => !headerControlCharPattern.test(value),
-    'header name must not contain control characters',
-  );
-
-const boundedHeaderValueSchema = z
-  .string()
-  .min(1)
-  .max(BOUNDED_HEADER_VALUE_MAX)
-  .refine(
-    (value) => !headerControlCharPattern.test(value),
-    'header value must not contain control characters',
-  );
-
-/** Shared header-map schema: entry cap, bounded non-empty names/values, no control chars. */
+/**
+ * Write-time header-map schema: entry cap, RFC 9110 field-name tokens, bounded
+ * values, no control chars. Used only by secret *mutations* (`aiSecretMutationSchema`).
+ *
+ * Already-persisted vaults are NOT revalidated with this grammar on read —
+ * `AiCatalogSecretManager.decrypt` accepts any string-keyed customHeaders map so
+ * admins can load and correct providers that predate the token rule via
+ * keep/merge/replace (accept-on-read, reject-on-write). Detail APIs remain
+ * presence-only — secret values are not projected for display.
+ */
 export const boundedHeaderMapSchema = z
   .record(boundedHeaderNameSchema, boundedHeaderValueSchema)
   .superRefine((value, ctx) => {
@@ -805,6 +796,8 @@ export const adminAiModelApplyImmediateInputSchema = z.discriminatedUnion('opera
     .strict(),
   modelApplyBase.extend({ operation: z.literal('clear') }).strict(),
 ]);
+
+export type AdminAiModelApplyImmediateInput = z.infer<typeof adminAiModelApplyImmediateInputSchema>;
 
 export type AiProviderDraft = z.infer<typeof aiProviderDraftSchema>;
 export type PublishedAiCatalog = z.infer<typeof publishedAiCatalogSchema>;

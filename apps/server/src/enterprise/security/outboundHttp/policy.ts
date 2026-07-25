@@ -264,30 +264,6 @@ export const isLoopbackIp = (ip: string): boolean => {
   return false;
 };
 
-export const isPrivateIp = (ip: string): boolean => {
-  const n = normalizeIp(ip);
-  if (!n) return false;
-  if (isLoopbackIp(n)) return true;
-
-  if (isIP(n) === 4) {
-    const parts = n.split('.').map(Number);
-    const [a, b] = parts;
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true; // link-local (non-metadata still private-ish)
-    if (a === 0) return true;
-    return false;
-  }
-
-  // IPv6 ULA fc00::/7, link-local fe80::/10
-  if (n.startsWith('fc') || n.startsWith('fd')) return true;
-  if (n.startsWith('fe8') || n.startsWith('fe9') || n.startsWith('fea') || n.startsWith('feb')) {
-    return true;
-  }
-  return false;
-};
-
 const ipv4ToInteger = (ip: string): number =>
   ip
     .split('.')

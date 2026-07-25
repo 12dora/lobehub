@@ -115,6 +115,69 @@ const throwInvalidGrant = (providerId: string): never => {
   });
 };
 
+/** Transient persistence retries before treating the rotation as stranded. */
+const PERSIST_MAX_ATTEMPTS = 3;
+const PERSIST_RETRY_DELAY_MS = 50;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Write rotated tokens durably. Never return a pair that exists only in memory:
+ * a consumed refresh token that is not in the DB strands every later request
+ * (and every other instance) with an irrecoverable invalid_grant.
+ */
+const persistRotatedKeyVaults = async (
+  params: EnsureFreshOAuthTokenParams,
+  nextKeyVaults: OAuthTokenKeyVaults,
+): Promise<OAuthTokenKeyVaults> => {
+  const { db, providerId, userId, workspaceId } = params;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= PERSIST_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await persistKeyVaults(db, userId, providerId, nextKeyVaults, workspaceId);
+      return nextKeyVaults;
+    } catch (error) {
+      lastError = error;
+      log(
+        'persist attempt %d/%d failed for %s:%s',
+        attempt,
+        PERSIST_MAX_ATTEMPTS,
+        userId,
+        providerId,
+      );
+      if (attempt < PERSIST_MAX_ATTEMPTS) await delay(PERSIST_RETRY_DELAY_MS * attempt);
+    }
+  }
+
+  // Another instance may have won a race and written the same (or newer) pair.
+  try {
+    const stored = await readStoredKeyVaults(db, userId, providerId, workspaceId);
+    if (
+      stored.oauthAccessToken &&
+      stored.oauthRefreshToken &&
+      stored.oauthRefreshToken !== params.keyVaults.oauthRefreshToken &&
+      !isExpiring(stored)
+    ) {
+      return stored;
+    }
+    if (
+      stored.oauthRefreshToken === nextKeyVaults.oauthRefreshToken &&
+      stored.oauthAccessToken === nextKeyVaults.oauthAccessToken
+    ) {
+      return stored;
+    }
+  } catch {
+    // Fall through to reconnect-required.
+  }
+
+  console.error(
+    `[oauth-token-refresh] failed to persist rotated tokens for ${providerId}; requiring re-connect:`,
+    lastError,
+  );
+  return throwInvalidGrant(providerId);
+};
+
 const refreshAndPersist = async (
   params: EnsureFreshOAuthTokenParams,
 ): Promise<OAuthTokenKeyVaults> => {
@@ -162,21 +225,10 @@ const refreshAndPersist = async (
     oauthTokenExpiresAt: expiresAt,
   };
 
-  // Persist BEFORE returning: on a multi-instance server, using a rotated
-  // token pair without writing it back would strand every other instance
-  // (and the next request on this one) with a consumed refresh token.
-  try {
-    await persistKeyVaults(db, userId, providerId, nextKeyVaults, workspaceId);
-  } catch (error) {
-    // The rotated pair only exists in memory now. Still serve this request —
-    // the next one will go through the invalid_grant self-heal path.
-    console.error(
-      `[oauth-token-refresh] failed to persist rotated tokens for ${providerId}:`,
-      error,
-    );
-  }
-
-  return nextKeyVaults;
+  // Persist BEFORE returning: a rotated pair that only exists in memory strands
+  // every other instance and the next request on this one (invalid_grant +
+  // re-read still sees the consumed token and cannot self-heal).
+  return persistRotatedKeyVaults(params, nextKeyVaults);
 };
 
 /**

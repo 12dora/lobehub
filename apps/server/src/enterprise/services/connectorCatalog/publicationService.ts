@@ -643,7 +643,7 @@ export class ConnectorCatalogPublicationService {
         secretFingerprint: proof.secretFingerprint,
       });
       invalidateConnectorPublishedIndex(this.db, command.id);
-      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
+      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendConnectorFailureAudit(
@@ -682,7 +682,7 @@ export class ConnectorCatalogPublicationService {
         targetRevision: command.targetRevision,
       });
       invalidateConnectorPublishedIndex(this.db, command.id);
-      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
+      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendConnectorFailureAudit(
@@ -730,7 +730,7 @@ export class ConnectorCatalogPublicationService {
         status: 'archived',
       });
       invalidateConnectorPublishedIndex(this.db, command.id);
-      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
+      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs, { db: this.db });
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendConnectorFailureAudit(
@@ -775,7 +775,7 @@ export class ConnectorCatalogPublicationService {
         });
         return { auditId: audit.id, ...revoked };
       });
-      await cleanupConnectorSecretRefs(this.secrets, result.cleanupRefs);
+      await cleanupConnectorSecretRefs(this.secrets, result.cleanupRefs, { db: this.db });
       await this.publishInvalidation(command.id, command.expectedRevision);
       return { auditId: result.auditId, revoked: result.revoked };
     } catch (error) {

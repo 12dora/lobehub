@@ -7,7 +7,6 @@ import {
   PostgresAdminMutationRateLimiter,
   resetSharedAdminMutationRateLimiter,
   resolveAdminMutationRateLimitConfig,
-  SharedAdminMutationRateLimiter,
 } from './adminMutationRateLimiter';
 
 describe('resolveAdminMutationRateLimitConfig', () => {
@@ -43,10 +42,6 @@ describe('PostgresAdminMutationRateLimiter', () => {
         },
       }).consume({ actorId: 'a', procedure: 'admin.x' }),
     ).resolves.toBe('unavailable');
-  });
-
-  it('SharedAdminMutationRateLimiter is a non-deprecated Postgres alias', () => {
-    expect(new SharedAdminMutationRateLimiter()).toBeInstanceOf(PostgresAdminMutationRateLimiter);
   });
 
   it('getSharedAdminMutationRateLimiter constructs PostgresAdminMutationRateLimiter', () => {

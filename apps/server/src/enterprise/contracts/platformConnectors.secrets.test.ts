@@ -9,6 +9,7 @@ import {
   collectConnectorSecretLeaves,
   connectorOAuthClientSecretMutationSchema,
   connectorSafeMessageSchema,
+  connectorSharedCredentialReadSchema,
   connectorSharedSecretMutationSchema,
   loadTrustedConnectorSecretContext,
   normalizeAdminConnectorCreateInput,
@@ -91,7 +92,7 @@ describe('platform connector contracts — secrets', () => {
     ).toBe(false);
   });
 
-  it('bounds connector credential header maps by entry count and control characters', () => {
+  it('bounds connector credential header maps by entry count, RFC token names (write), control chars', () => {
     expect(
       connectorSharedSecretMutationSchema.safeParse({
         operation: 'replace',
@@ -101,7 +102,47 @@ describe('platform connector contracts — secrets', () => {
     expect(
       connectorSharedSecretMutationSchema.safeParse({
         operation: 'replace',
+        value: { headers: { 'X-Request-ID': 'abc-123' } },
+      }).success,
+    ).toBe(true);
+    // Write rejects non-tokens; read schema still accepts pre-token-rule names.
+    expect(
+      connectorSharedSecretMutationSchema.safeParse({
+        operation: 'replace',
+        value: { headers: { 'Bad Header': 'x' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      connectorSharedSecretMutationSchema.safeParse({
+        operation: 'replace',
+        value: { headers: { 'X-Key:Sub': 'v' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      connectorSharedSecretMutationSchema.safeParse({
+        operation: 'replace',
+        value: { headers: { 'X-键': 'v' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      connectorSharedCredentialReadSchema.safeParse({
+        headers: {
+          'Bad Header': 'space-name',
+          'X-Key:Sub': 'colon-name',
+          'X-键': 'non-ascii-name',
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      connectorSharedSecretMutationSchema.safeParse({
+        operation: 'replace',
         value: { headers: { 'X-Api\nKey': 'v' } },
+      }).success,
+    ).toBe(false);
+    // Control chars still rejected on read (not just write).
+    expect(
+      connectorSharedCredentialReadSchema.safeParse({
+        headers: { 'X-Api\nKey': 'v' },
       }).success,
     ).toBe(false);
     const tooMany: Record<string, string> = {};

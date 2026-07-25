@@ -6,7 +6,18 @@ import {
 } from '@/database/models/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import type { AuditAction, AuditTargetType } from './audit/auditActionCatalog';
+
 export type { CreatePlatformAuditLogParams, ListPlatformAuditLogParams, PlatformAuditLogItem };
+
+/** Typed append payload: action/targetType must come from the server audit catalogs. */
+export type AppendPlatformAuditLogParams = Omit<
+  CreatePlatformAuditLogParams,
+  'action' | 'targetType'
+> & {
+  action: AuditAction;
+  targetType: AuditTargetType;
+};
 
 const redactFingerprintFields = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(redactFingerprintFields);
@@ -37,7 +48,18 @@ export class PlatformAuditService {
     this.model = new PlatformAuditLogModel(db);
   }
 
-  append = async (params: CreatePlatformAuditLogParams): Promise<PlatformAuditLogItem> => {
+  /**
+   * Centralized, sanitized observability when a denial-audit append fails.
+   * Callers must not invent per-router silence knobs or log schemas.
+   */
+  static logDeniedAuditAppendFailure = (error: unknown, action: string): void => {
+    console.error('[admin.reauth] reauth denied audit failed', {
+      action,
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+    });
+  };
+
+  append = async (params: AppendPlatformAuditLogParams): Promise<PlatformAuditLogItem> => {
     return this.model.append(params);
   };
 

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentSkillService } from '@/services/skill';
 import { getToolStoreState } from '@/store/tool';
 
-import { resolveClientSkills } from './skillEngineering';
+import { PLATFORM_SKILL_RESOLVE_CONCURRENCY, resolveClientSkills } from './skillEngineering';
 
 vi.mock('@/store/tool', () => ({
   getToolStoreState: vi.fn(),
@@ -336,6 +336,45 @@ describe('resolveClientSkills', () => {
         content: 'mandatory body',
       });
       expect(result.platformCatalog?.mandatorySkillIds).toEqual(['mandatory']);
+    });
+
+    it('bounds concurrent resolvePlatformPinned calls and stays linear on a large catalog', async () => {
+      // mandatory + auto is always activated → every entry needs an exact pin resolve.
+      const catalogSize = 10_000;
+      const skills = Array.from({ length: catalogSize }, (_, index) =>
+        catalogSkill(`mandatory-${index}`, 'mandatory'),
+      );
+      setToolState({
+        platformSkillCatalog: { revision: 'catalog-large', skills },
+        platformSkillRuntimeStatus: 'ready',
+      });
+
+      let inFlight = 0;
+      let peakInFlight = 0;
+      mockedResolvePlatformPinned.mockImplementation(async (ref) => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await Promise.resolve();
+        inFlight -= 1;
+        return {
+          checksum: ref.checksum,
+          content: `${ref.skillKey} body`,
+          description: `${ref.skillKey} description`,
+          identifier: ref.skillKey,
+          name: ref.skillKey,
+          resources: [],
+          version: ref.version,
+        } as any;
+      });
+
+      const result = await resolveClientSkills([]);
+
+      expect(result.skills).toHaveLength(catalogSize);
+      expect(result.platformCatalog?.refs).toHaveLength(catalogSize);
+      expect(result.platformCatalog?.skills).toHaveLength(catalogSize);
+      expect(mockedResolvePlatformPinned).toHaveBeenCalledTimes(catalogSize);
+      expect(peakInFlight).toBeLessThanOrEqual(PLATFORM_SKILL_RESOLVE_CONCURRENCY);
+      expect(PLATFORM_SKILL_RESOLVE_CONCURRENCY).toBeGreaterThan(0);
     });
   });
 });

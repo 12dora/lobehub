@@ -27,31 +27,44 @@ export const isValidEmailDomainPattern = (entry: string): boolean =>
   EMAIL_DOMAIN_PATTERN.test(entry.trim().toLowerCase());
 
 /** A single allowlist entry: a bare domain `example.com` or a wildcard `*.example.com`. */
-const domainEntrySchema = z
+export const domainEntrySchema = z
   .string()
   .trim()
   .toLowerCase()
   .max(253)
   .regex(EMAIL_DOMAIN_PATTERN, { message: 'INVALID_EMAIL_DOMAIN' });
 
-export const platformAuthSettingsSchema = z
-  .object({
-    emailDomainAllowlist: z.array(domainEntrySchema).max(200),
-    emailDomainAllowlistEnabled: z.boolean(),
-    openRegistration: z.boolean(),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    // Fail closed: enabled allowlisting with an empty list would match every email.
-    if (value.emailDomainAllowlistEnabled && value.emailDomainAllowlist.length === 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'EMAIL_DOMAIN_ALLOWLIST_REQUIRED',
-        path: ['emailDomainAllowlist'],
-      });
-    }
-  });
+/**
+ * Raw field shape shared by the document schema and admin router contracts.
+ * Domain validation has exactly one implementation — compose contracts from this.
+ */
+export const platformAuthSettingsFields = {
+  emailDomainAllowlist: z.array(domainEntrySchema).max(200),
+  emailDomainAllowlistEnabled: z.boolean(),
+  openRegistration: z.boolean(),
+};
 
+/**
+ * Fail closed: enabled allowlisting with an empty list would match every email.
+ * Shared refinement for document schema and admin input/output contracts.
+ */
+export const requireAllowlistWhenEnabled = (
+  value: { emailDomainAllowlist: string[]; emailDomainAllowlistEnabled: boolean },
+  ctx: z.RefinementCtx,
+) => {
+  if (value.emailDomainAllowlistEnabled && value.emailDomainAllowlist.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'EMAIL_DOMAIN_ALLOWLIST_REQUIRED',
+      path: ['emailDomainAllowlist'],
+    });
+  }
+};
+
+export const platformAuthSettingsSchema = z
+  .object(platformAuthSettingsFields)
+  .strict()
+  .superRefine(requireAllowlistWhenEnabled);
 export const DEFAULT_PLATFORM_AUTH_SETTINGS: PlatformAuthSettings = {
   emailDomainAllowlist: [],
   emailDomainAllowlistEnabled: false,

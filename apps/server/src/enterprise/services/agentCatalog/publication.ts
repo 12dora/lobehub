@@ -9,6 +9,7 @@ import type {
   AdminPlatformAgentRollbackInput,
 } from '../../contracts/platformAgents';
 import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import {
   getPlatformConfigInvalidationPublisher,
@@ -105,7 +106,7 @@ export class PlatformAgentPublicationService {
   };
 
   private appendFailureAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     targetId: string;

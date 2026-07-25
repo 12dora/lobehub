@@ -13,6 +13,7 @@ import {
 } from '@/types/platform/connectorGovernance';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import {
   getPlatformConfigInvalidationPublisher,
@@ -125,7 +126,7 @@ export class ConnectorGovernanceAdminService {
   };
 
   private publish = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     before: ConnectorGovernanceDoc;
     doc: ConnectorGovernanceDoc;
@@ -180,7 +181,7 @@ export class ConnectorGovernanceAdminService {
   };
 
   private appendFailureAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
   }): Promise<void> => {

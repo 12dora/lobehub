@@ -22,6 +22,7 @@ import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import {
   ConnectorGovernanceAdminService,
   ConnectorGovernanceOwnerNotFoundError,
@@ -32,7 +33,9 @@ const governanceProcedure = authedProcedure
   .use(withActiveUser())
   .use(withAdminMutationRateLimit());
 
-/** Transport boundary: only stable codes and error classes may leave this module. */
+/** Transport boundary: only stable codes and error classes may leave this module.
+ *  `action` is an operation path for error logs — not necessarily an audit-catalog token.
+ */
 const executeGovernanceOperation = async <T>(
   action: string,
   operation: () => Promise<T>,
@@ -66,7 +69,7 @@ const executeGovernanceOperation = async <T>(
 
 /** Dangerous-action reauth with a best-effort denied audit (no secret material involved). */
 const assertGovernanceDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -74,15 +77,16 @@ const assertGovernanceDangerousReauth = async (params: {
   serverDB: LobeChatDatabase;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.connectors.governance] reauth denied audit failed',
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: params.reason,
     serverDB: params.serverDB,
-    targetId: CONNECTOR_GOVERNANCE_RESOURCE_ID,
-    targetType: CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: params.reason,
+      targetId: CONNECTOR_GOVERNANCE_RESOURCE_ID,
+      targetType: CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
+    },
   });
 
 /** Governance procedures spread into `adminConnectorsRouter` (admin.connectors.*). */

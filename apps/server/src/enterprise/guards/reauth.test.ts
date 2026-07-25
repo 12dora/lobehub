@@ -9,11 +9,20 @@ const { appendMock } = vi.hoisted(() => ({
   appendMock: vi.fn(),
 }));
 
-vi.mock('../services/platformAudit', () => ({
-  PlatformAuditService: class PlatformAuditService {
-    append = (...args: unknown[]) => appendMock(...args);
-  },
-}));
+vi.mock('../services/platformAudit', async (importOriginal) => {
+  const actual = (await importOriginal()) as {
+    PlatformAuditService: {
+      logDeniedAuditAppendFailure: (error: unknown, action: string) => void;
+    };
+  };
+  return {
+    PlatformAuditService: class PlatformAuditService {
+      // Keep the real centralized log contract (asserted by tests below).
+      static logDeniedAuditAppendFailure = actual.PlatformAuditService.logDeniedAuditAppendFailure;
+      append = (...args: unknown[]) => appendMock(...args);
+    },
+  };
+});
 
 describe('assertRecentReauth', () => {
   it('allows recent better-auth / oidc / dev-mock', () => {
@@ -86,15 +95,17 @@ describe('assertDangerousReauthWithAudit', () => {
   it('passes through when reauth is fresh', async () => {
     await expect(
       assertDangerousReauthWithAudit({
-        action: 'admin.branding.publish',
-        actorUserId: 'user-1',
         authenticatedAt: new Date(),
         authMethod: 'better-auth',
-        reason: 'rotate logo',
-        requestId: 'req-1',
         serverDB,
-        targetId: 'global',
-        targetType: 'branding',
+        denied: {
+          action: 'admin.branding.publish',
+          actorUserId: 'user-1',
+          reason: 'rotate logo',
+          requestId: 'req-1',
+          targetId: 'global',
+          targetType: 'branding',
+        },
       }),
     ).resolves.toBeUndefined();
 
@@ -104,15 +115,17 @@ describe('assertDangerousReauthWithAudit', () => {
   it('appends denied audit with per-site target/action/requestId then rethrows', async () => {
     await expect(
       assertDangerousReauthWithAudit({
-        action: 'admin.system.jobs.cancel',
-        actorUserId: 'user-1',
         authenticatedAt: null,
         authMethod: 'better-auth',
-        reason: 'cancel stuck job',
-        requestId: 'req-cancel-1',
         serverDB,
-        targetId: 'job-42',
-        targetType: 'platform_job',
+        denied: {
+          action: 'admin.system.jobs.cancel',
+          actorUserId: 'user-1',
+          reason: 'cancel stuck job',
+          requestId: 'req-cancel-1',
+          targetId: 'job-42',
+          targetType: 'platform_job',
+        },
       }),
     ).rejects.toSatisfy((error) => {
       expect(getEnterpriseErrorBody(error)?.code).toBe(ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED);
@@ -136,30 +149,34 @@ describe('assertDangerousReauthWithAudit', () => {
 
     await expect(
       assertDangerousReauthWithAudit({
-        action: 'admin.aiCatalog.publish',
-        actorUserId: 'user-1',
         authenticatedAt: new Date(),
         authMethod: 'better-auth',
-        reason: 'ignored-when-fresh',
-        resolveDeniedReason,
         serverDB,
-        targetId: 'provider-1',
-        targetType: 'provider',
+        denied: {
+          action: 'admin.aiProviders.publish',
+          actorUserId: 'user-1',
+          reason: 'ignored-when-fresh',
+          resolveDeniedReason,
+          targetId: 'provider-1',
+          targetType: 'provider',
+        },
       }),
     ).resolves.toBeUndefined();
     expect(resolveDeniedReason).not.toHaveBeenCalled();
 
     await expect(
       assertDangerousReauthWithAudit({
-        action: 'admin.aiCatalog.publish',
-        actorUserId: 'user-1',
         authenticatedAt: null,
         authMethod: 'better-auth',
-        reason: 'ignored-when-resolver-present',
-        resolveDeniedReason,
         serverDB,
-        targetId: 'provider-1',
-        targetType: 'provider',
+        denied: {
+          action: 'admin.aiProviders.publish',
+          actorUserId: 'user-1',
+          reason: 'ignored-when-resolver-present',
+          resolveDeniedReason,
+          targetId: 'provider-1',
+          targetType: 'provider',
+        },
       }),
     ).rejects.toBeTruthy();
 
@@ -173,21 +190,22 @@ describe('assertDangerousReauthWithAudit', () => {
     );
   });
 
-  it('swallows audit failures and still rethrows the reauth error', async () => {
+  it('centralizes audit-failure logging and still rethrows the reauth error', async () => {
     appendMock.mockRejectedValue(new Error('db down'));
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     await expect(
       assertDangerousReauthWithAudit({
-        action: 'admin.settings.publish',
-        actorUserId: 'user-1',
-        auditFailureLog: '[admin.settings] reauth denied audit unavailable',
         authenticatedAt: null,
         authMethod: 'oidc',
-        reason: 'publish settings',
         serverDB,
-        targetId: 'global',
-        targetType: 'settings',
+        denied: {
+          action: 'admin.settings.publish',
+          actorUserId: 'user-1',
+          reason: 'publish settings',
+          targetId: 'global',
+          targetType: 'settings',
+        },
       }),
     ).rejects.toSatisfy((error) => {
       expect(getEnterpriseErrorBody(error)?.code).toBe(ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED);
@@ -195,7 +213,7 @@ describe('assertDangerousReauthWithAudit', () => {
     });
 
     expect(errorSpy).toHaveBeenCalledWith(
-      '[admin.settings] reauth denied audit unavailable',
+      '[admin.reauth] reauth denied audit failed',
       expect.objectContaining({
         action: 'admin.settings.publish',
         errorClass: 'Error',
@@ -203,51 +221,32 @@ describe('assertDangerousReauthWithAudit', () => {
     );
   });
 
-  it('can silence audit-failure logs (legacy branding path)', async () => {
+  it('never allows callers to silence audit-failure observability', async () => {
     appendMock.mockRejectedValue(new Error('db down'));
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     await expect(
       assertDangerousReauthWithAudit({
-        action: 'admin.branding.publish',
-        actorUserId: 'user-1',
-        auditFailureLog: false,
         authenticatedAt: null,
         authMethod: 'better-auth',
-        reason: 'publish branding',
-        requestId: 'req-branding',
         serverDB,
-        targetId: 'global',
-        targetType: 'branding',
-      }),
-    ).rejects.toBeTruthy();
-
-    expect(errorSpy).not.toHaveBeenCalled();
-  });
-
-  it('supports errorClass-only metadata when auditFailureMeta is empty', async () => {
-    appendMock.mockRejectedValue(new Error('db down'));
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    await expect(
-      assertDangerousReauthWithAudit({
-        action: 'admin.system.jobs.cancel',
-        actorUserId: 'user-1',
-        auditFailureLog: '[admin.system] job reauth denied audit unavailable',
-        auditFailureMeta: {},
-        authenticatedAt: null,
-        authMethod: 'better-auth',
-        reason: 'cancel job',
-        serverDB,
-        targetId: 'job-1',
-        targetType: 'platform_job',
+        denied: {
+          action: 'admin.branding.publish',
+          actorUserId: 'user-1',
+          reason: 'publish branding',
+          requestId: 'req-branding',
+          targetId: 'global',
+          targetType: 'branding',
+        },
       }),
     ).rejects.toBeTruthy();
 
     expect(errorSpy).toHaveBeenCalledWith(
-      '[admin.system] job reauth denied audit unavailable',
-      expect.objectContaining({ errorClass: 'Error' }),
+      '[admin.reauth] reauth denied audit failed',
+      expect.objectContaining({
+        action: 'admin.branding.publish',
+        errorClass: 'Error',
+      }),
     );
-    expect(errorSpy.mock.calls[0]?.[1]).not.toHaveProperty('action');
   });
 });

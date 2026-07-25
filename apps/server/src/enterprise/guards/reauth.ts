@@ -10,6 +10,7 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { AuthMethod } from '@/libs/trpc/lambda/context';
 
 import { ADMIN_REAUTH_MAX_AGE_MS } from '../contracts/adminUsers';
+import type { AuditAction, AuditTargetType } from '../services/audit/auditActionCatalog';
 import { PlatformAuditService } from '../services/platformAudit';
 import { throwEnterpriseError } from './enterpriseErrors';
 
@@ -53,28 +54,16 @@ export const assertRecentReauth = (
   }
 };
 
-export interface AssertDangerousReauthWithAuditParams {
-  action: string;
+/**
+ * Sanitized descriptor for the denied-audit row written when reauth fails.
+ * Secrets must never appear in `reason`; use `resolveDeniedReason` for lazy
+ * secret-safe evaluation only on the denial path.
+ */
+export interface DeniedAuditDescriptor {
+  action: AuditAction;
   actorUserId: string;
-  /**
-   * When the denied-audit write fails:
-   * - `false`: stay silent (legacy branding empty-catch / agents debug-only path)
-   * - `string`: exact first argument to `console.error` (preserve per-site wording)
-   * - omitted: `'[admin.reauth] reauth denied audit failed'`
-   */
-  auditFailureLog?: string | false;
-  /**
-   * Structured metadata merged into the `console.error` second arg (with
-   * `errorClass`). Defaults to `{ action }` so sites that historically logged
-   * action keep it; pass `{}` for errorClass-only sites.
-   * Ignored when `auditFailureLog === false`.
-   */
-  auditFailureMeta?: Record<string, unknown>;
-  authenticatedAt?: Date | null;
-  authMethod?: AuthMethod | null;
   /** Optional beforeDiff on the denied audit row (e.g. managed-resources). */
   beforeDiff?: Record<string, unknown> | null;
-  maxAgeMs?: number;
   /**
    * Static reason for the denied audit row. Prefer this when the reason is
    * already secret-safe; use `resolveDeniedReason` when scanning secrets only
@@ -87,18 +76,24 @@ export interface AssertDangerousReauthWithAuditParams {
    * over `reason` when provided (including when it resolves to null).
    */
   resolveDeniedReason?: () => string | null | undefined | Promise<string | null | undefined>;
-  serverDB: LobeChatDatabase | Transaction;
   targetId?: string | null;
-  targetType: string;
+  targetType: AuditTargetType;
+}
+
+export interface AssertDangerousReauthWithAuditParams {
+  authenticatedAt?: Date | null;
+  authMethod?: AuthMethod | null;
+  denied: DeniedAuditDescriptor;
+  maxAgeMs?: number;
+  serverDB: LobeChatDatabase | Transaction;
 }
 
 /**
  * Shared dangerous-mutation reauth gate: assert recent interactive reauth, and
  * on failure append a best-effort `denied` audit row then rethrow.
  *
- * Call sites supply their own `action` / `targetType` / `targetId` /
- * `requestId` / `authMethod` so semantics stay per-router. Audit append is
- * always best-effort and never suppresses the reauth error.
+ * Audit-append failure observability is centralized (no per-router silence or
+ * log-schema knobs). Call sites only supply the denial descriptor + auth signal.
  */
 export const assertDangerousReauthWithAudit = async (
   params: AssertDangerousReauthWithAuditParams,
@@ -112,32 +107,26 @@ export const assertDangerousReauthWithAudit = async (
       params.maxAgeMs,
     );
   } catch (error) {
+    const denied = params.denied;
     try {
       const reason =
-        params.resolveDeniedReason === undefined
-          ? (params.reason ?? null)
-          : ((await params.resolveDeniedReason()) ?? null);
+        denied.resolveDeniedReason === undefined
+          ? (denied.reason ?? null)
+          : ((await denied.resolveDeniedReason()) ?? null);
 
       await new PlatformAuditService(params.serverDB).append({
-        action: params.action,
-        actorUserId: params.actorUserId,
+        action: denied.action,
+        actorUserId: denied.actorUserId,
         afterDiff: { error: 'reauth_required' },
-        ...(params.beforeDiff !== undefined ? { beforeDiff: params.beforeDiff } : {}),
+        ...(denied.beforeDiff !== undefined ? { beforeDiff: denied.beforeDiff } : {}),
         reason,
-        ...(params.requestId !== undefined ? { requestId: params.requestId } : {}),
+        ...(denied.requestId !== undefined ? { requestId: denied.requestId } : {}),
         result: 'denied',
-        targetId: params.targetId ?? null,
-        targetType: params.targetType,
+        targetId: denied.targetId ?? null,
+        targetType: denied.targetType,
       });
     } catch (auditError) {
-      if (params.auditFailureLog !== false) {
-        const message = params.auditFailureLog ?? '[admin.reauth] reauth denied audit failed';
-        const meta = params.auditFailureMeta ?? { action: params.action };
-        console.error(message, {
-          ...meta,
-          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-        });
-      }
+      PlatformAuditService.logDeniedAuditAppendFailure(auditError, denied.action);
     }
     throw error;
   }

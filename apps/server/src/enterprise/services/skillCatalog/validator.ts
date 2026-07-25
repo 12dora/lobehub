@@ -12,7 +12,7 @@ import type {
   SkillValidationIssue,
   SkillValidationResult,
 } from '../../contracts/skillCatalog';
-import { skillManifestSchema } from '../../contracts/skillCatalog';
+import { skillManifestSchema, skillResourceContentChecksum } from '../../contracts/skillCatalog';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 
 const DEFAULT_MAX_CONTENT_BYTES = 1024 * 1024;
@@ -86,6 +86,13 @@ export interface SkillCatalogValidatorOptions {
   maxLocalizedEntries?: number;
   maxManifestBytes?: number;
   maxResolverCalls?: number;
+  /**
+   * Optional batch resolver for one dependency frontier. When provided, wide graphs
+   * resolve in O(depth) round-trips instead of O(nodes). Key format: `skillKey@version`.
+   */
+  resolveSkillDependenciesBatch?: (
+    refs: readonly { skillKey: string; version: string }[],
+  ) => Promise<Map<string, SkillDependencyDefinition | undefined>>;
   resolveSkillDependency?: (
     skillKey: string,
     version: string,
@@ -327,13 +334,13 @@ export class SkillCatalogValidator {
     version: string;
   }) => {
     const resolver = this.options.resolveSkillDependency;
+    const batchResolver = this.options.resolveSkillDependenciesBatch;
     const maxDepth = this.options.maxDependencyDepth ?? DEFAULT_MAX_DEPENDENCY_DEPTH;
     const maxEdges = this.options.maxDependencyEdges ?? DEFAULT_MAX_DEPENDENCY_EDGES;
     const maxNodes = this.options.maxDependencyNodes ?? DEFAULT_MAX_DEPENDENCY_NODES;
     const maxResolverCalls = this.options.maxResolverCalls ?? DEFAULT_MAX_RESOLVER_CALLS;
     const cache = new Map<string, SkillDependencyDefinition | undefined>();
     const expanded = new Set<string>();
-    const active = new Set<string>();
     let edges = 0;
     let resolverCalls = 0;
 
@@ -343,7 +350,7 @@ export class SkillCatalogValidator {
       );
     };
 
-    const resolve = async (
+    const resolveOne = async (
       skillKey: string,
       version: string,
       path: SkillValidationIssue['path'],
@@ -368,37 +375,148 @@ export class SkillCatalogValidator {
       }
     };
 
-    const walk = async (
-      node: { manifest: SkillManifest; skillKey: string; version: string },
-      nodePath: SkillValidationIssue['path'],
-      depth: number,
-    ): Promise<void> => {
-      const nodeKey = `${node.skillKey}@${node.version}`;
-      if (active.has(nodeKey)) {
-        this.pushIssue(issue('dependency_cycle', nodePath, 'Skill dependency graph has a cycle'));
-        return;
+    const resolveFrontier = async (
+      pending: Array<{ path: SkillValidationIssue['path']; skillKey: string; version: string }>,
+    ) => {
+      // De-duplicate by skillKey@version so diamond / multi-parent frontiers do not
+      // double-charge resolverCalls or maxNodes for the same ref.
+      const uncachedByKey = new Map<
+        string,
+        { path: SkillValidationIssue['path']; skillKey: string; version: string }
+      >();
+      for (const item of pending) {
+        const key = `${item.skillKey}@${item.version}`;
+        if (cache.has(key) || uncachedByKey.has(key)) continue;
+        uncachedByKey.set(key, item);
       }
-      if (expanded.has(nodeKey)) return;
-      if (depth > maxDepth) {
-        graphLimit(nodePath);
-        return;
-      }
-      active.add(nodeKey);
-      for (const [index, dependency] of node.manifest.skillDependencies.entries()) {
-        const dependencyPath = [...nodePath, 'skillDependencies', index];
-        edges += 1;
-        if (edges > maxEdges || dependencyPath.length > 30) {
-          graphLimit(dependencyPath.slice(0, 30));
-          break;
+      const uncached = [...uncachedByKey.values()];
+      if (uncached.length === 0) return;
+
+      if (batchResolver) {
+        const remainingSlots = Math.min(
+          maxResolverCalls - resolverCalls,
+          maxNodes - cache.size,
+          uncached.length,
+        );
+        if (remainingSlots <= 0) {
+          for (const item of uncached) graphLimit(item.path);
+          return;
         }
-        const dependencyKey = `${dependency.skillKey}@${dependency.version}`;
-        if (active.has(dependencyKey)) {
-          this.pushIssue(
-            issue('dependency_cycle', dependencyPath, 'Skill dependency graph has a cycle'),
+        const batch = uncached.slice(0, remainingSlots);
+        if (uncached.length > remainingSlots) {
+          for (const item of uncached.slice(remainingSlots)) graphLimit(item.path);
+        }
+        resolverCalls += batch.length;
+        try {
+          const resolved = await batchResolver(
+            batch.map(({ skillKey, version }) => ({ skillKey, version })),
           );
+          for (const item of batch) {
+            const key = `${item.skillKey}@${item.version}`;
+            if (!cache.has(key)) cache.set(key, resolved.get(key));
+          }
+        } catch {
+          for (const item of batch) {
+            this.pushIssue(
+              issue(
+                'dependency_resolver_error',
+                item.path,
+                'Skill dependency resolver failed safely',
+              ),
+            );
+            cache.set(`${item.skillKey}@${item.version}`, undefined);
+          }
+        }
+        return;
+      }
+
+      for (const item of uncached) {
+        await resolveOne(item.skillKey, item.version, item.path);
+      }
+    };
+
+    type FrontierNode = {
+      depth: number;
+      manifest: SkillManifest;
+      path: SkillValidationIssue['path'];
+      skillKey: string;
+      version: string;
+    };
+
+    /**
+     * Directed edges of the *declared* dependency graph. Record every declared
+     * edge even when the target is unresolved (publication validates a root
+     * that is not yet published — `resolve(root)` returns undefined). BFS with
+     * a global `expanded` set is complete for discovery/batching but incomplete
+     * for cycle detection; after traversal a gray-stack DFS over this edge set
+     * catches back-edges (including cycles that close on the unpublished root).
+     * Unresolved targets contribute no out-edges, so they cannot invent cycles.
+     */
+    type DeclaredEdge = {
+      fromKey: string;
+      path: SkillValidationIssue['path'];
+      toKey: string;
+    };
+    const declaredEdges: DeclaredEdge[] = [];
+
+    let frontier: FrontierNode[] = [
+      {
+        depth: 0,
+        manifest: root.manifest,
+        path: ['manifest'],
+        skillKey: root.skillKey,
+        version: root.version,
+      },
+    ];
+
+    while (frontier.length > 0) {
+      const nextFrontier: FrontierNode[] = [];
+      const pendingResolves: Array<{
+        path: SkillValidationIssue['path'];
+        skillKey: string;
+        version: string;
+      }> = [];
+      const edgeWork: Array<{
+        dependency: SkillManifest['skillDependencies'][number];
+        dependencyPath: SkillValidationIssue['path'];
+        node: FrontierNode;
+        nodeKey: string;
+      }> = [];
+
+      for (const node of frontier) {
+        const nodeKey = `${node.skillKey}@${node.version}`;
+        if (expanded.has(nodeKey)) continue;
+        if (node.depth > maxDepth) {
+          graphLimit(node.path);
           continue;
         }
-        const resolved = await resolve(dependency.skillKey, dependency.version, dependencyPath);
+        expanded.add(nodeKey);
+
+        for (const [index, dependency] of node.manifest.skillDependencies.entries()) {
+          const dependencyPath = [...node.path, 'skillDependencies', index];
+          edges += 1;
+          if (edges > maxEdges || dependencyPath.length > 30) {
+            graphLimit(dependencyPath.slice(0, 30));
+            break;
+          }
+          edgeWork.push({ dependency, dependencyPath, node, nodeKey });
+          pendingResolves.push({
+            path: dependencyPath,
+            skillKey: dependency.skillKey,
+            version: dependency.version,
+          });
+        }
+      }
+
+      await resolveFrontier(pendingResolves);
+
+      for (const { dependency, dependencyPath, node, nodeKey } of edgeWork) {
+        const dependencyKey = `${dependency.skillKey}@${dependency.version}`;
+        // Record the declared edge before resolve/identity/manifest guards so a
+        // cycle that closes on an unpublished (unresolvable) root is still seen.
+        // Mirrors pre-batch DFS: active.has(dependencyKey) ran before resolution.
+        declaredEdges.push({ fromKey: nodeKey, path: dependencyPath, toKey: dependencyKey });
+        const resolved = cache.get(dependencyKey);
         if (!resolved) {
           if (!dependency.optional) {
             this.pushIssue(
@@ -434,17 +552,49 @@ export class SkillCatalogValidator {
           }
           continue;
         }
-        await walk(
-          { manifest: parsed.data, skillKey: resolved.skillKey, version: resolved.version },
-          [...dependencyPath, 'resolvedManifest'],
-          depth + 1,
-        );
+        if (expanded.has(dependencyKey)) continue;
+        nextFrontier.push({
+          depth: node.depth + 1,
+          manifest: parsed.data,
+          path: [...dependencyPath, 'resolvedManifest'],
+          skillKey: resolved.skillKey,
+          version: resolved.version,
+        });
       }
-      active.delete(nodeKey);
-      expanded.add(nodeKey);
-    };
 
-    await walk(root, ['manifest'], 0);
+      frontier = nextFrontier;
+    }
+
+    // Exact cycle detection over the declared edge set (DFS gray-stack).
+    // Deterministic: adjacency lists preserve discovery order; first back-edge wins.
+    const adjacency = new Map<
+      string,
+      Array<{ path: SkillValidationIssue['path']; toKey: string }>
+    >();
+    for (const edge of declaredEdges) {
+      const list = adjacency.get(edge.fromKey);
+      if (list) list.push({ path: edge.path, toKey: edge.toKey });
+      else adjacency.set(edge.fromKey, [{ path: edge.path, toKey: edge.toKey }]);
+    }
+    const WHITE = 0;
+    const GRAY = 1;
+    const BLACK = 2;
+    const color = new Map<string, number>();
+    const visit = (nodeKey: string): boolean => {
+      color.set(nodeKey, GRAY);
+      for (const { path, toKey } of adjacency.get(nodeKey) ?? []) {
+        const state = color.get(toKey) ?? WHITE;
+        if (state === GRAY) {
+          this.pushIssue(issue('dependency_cycle', path, 'Skill dependency graph has a cycle'));
+          return true;
+        }
+        if (state === WHITE && visit(toKey)) return true;
+      }
+      color.set(nodeKey, BLACK);
+      return false;
+    };
+    const rootKey = `${root.skillKey}@${root.version}`;
+    if ((color.get(rootKey) ?? WHITE) === WHITE) visit(rootKey);
   };
 
   validate = async (input: SkillCatalogValidationInput): Promise<SkillValidationResult> => {
@@ -531,8 +681,8 @@ export class SkillCatalogValidator {
           ),
         );
       }
-      // Independently verify size metadata against UTF-8 content so stale sizeBytes
-      // (e.g. pre-canonicalization) cannot pass publication and break catalog projection.
+      // Independently verify size + checksum against UTF-8 content so stale metadata
+      // (e.g. pre-canonicalization / forged digests) cannot pass publication.
       if (resource.content !== undefined) {
         const sizeBytes = new TextEncoder().encode(resource.content).byteLength;
         if (sizeBytes !== resource.sizeBytes) {
@@ -541,6 +691,16 @@ export class SkillCatalogValidator {
               'manifest_invalid',
               ['resources', index, 'sizeBytes'],
               'Resource sizeBytes must match UTF-8 content bytes',
+            ),
+          );
+        }
+        const digest = skillResourceContentChecksum(resource.content);
+        if (digest !== resource.checksum) {
+          this.pushIssue(
+            issue(
+              'checksum_mismatch',
+              ['resources', index, 'checksum'],
+              'Resource checksum must match SHA-256 of UTF-8 content',
             ),
           );
         }

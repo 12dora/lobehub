@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -35,8 +34,10 @@ import {
 } from '../../contracts/skillCatalog';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
-import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withCompoundPlatformPermission,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 import { parseSkillImportSource } from './skillsImportParse';
 import {
   assertSkillDangerousReauth,
@@ -64,24 +65,22 @@ export const adminSkillsRouter = router({
    * Requires UPDATE+PUBLISH (or CREATE+PUBLISH / UPDATE+PUBLISH for createVersion). Rate-limit: 1 unit.
    */
   applyImmediate: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SKILL_PUBLISH))
+    .use(
+      withCompoundPlatformPermission({
+        fixed: [PLATFORM_PERMISSIONS.SKILL_PUBLISH],
+        select: (raw) => {
+          const mode = (raw as { mode?: string } | null)?.mode;
+          return mode === 'create'
+            ? PLATFORM_PERMISSIONS.SKILL_CREATE
+            : PLATFORM_PERMISSIONS.SKILL_UPDATE;
+        },
+        selectable: [PLATFORM_PERMISSIONS.SKILL_CREATE, PLATFORM_PERMISSIONS.SKILL_UPDATE],
+      }),
+    )
     .input(adminSkillApplyImmediateInputSchema)
     .output(adminSkillApplyImmediateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       assertSkillFeatureEnabled();
-      const required =
-        input.mode === 'create'
-          ? PLATFORM_PERMISSIONS.SKILL_CREATE
-          : PLATFORM_PERMISSIONS.SKILL_UPDATE;
-      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
-      if (!perms?.includes(required)) {
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-          details: { permission: required },
-          httpCode: 'FORBIDDEN',
-          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-        });
-      }
       await assertSkillDangerousReauth({
         action: 'admin.skills.applyImmediate',
         actorUserId: ctx.userId!,

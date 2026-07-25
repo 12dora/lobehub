@@ -26,6 +26,11 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeWithUserPayload: () => ({
     chat: chatMock,
   }),
+  resolveManagedChatApiMode: (enableResponseApi: unknown) => {
+    if (enableResponseApi === true) return 'responses';
+    if (enableResponseApi === false) return 'chatCompletion';
+    return undefined;
+  },
 }));
 
 const provider = {

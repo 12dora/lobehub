@@ -139,6 +139,31 @@ const convergenceStatus = (
   return 'converged';
 };
 
+/**
+ * Pure domain-convergence projection shared by getStatus and first-page inventory.
+ * Callers supply already-resolved targets + inventory counts — no database I/O here.
+ */
+export const projectDomainConvergence = (
+  targets: PlatformDomainTarget[],
+  platformCounts: Map<string, PlatformInstanceInventoryCounts>,
+  identityCounts: PlatformInstanceInventoryCounts,
+): PlatformDomainConvergence[] =>
+  PLATFORM_CONVERGENCE_DOMAINS.map((domain) => {
+    const target = targets.find((candidate) => candidate.domain === domain)!;
+    const counts =
+      domain === 'identity' ? identityCounts : (platformCounts.get(domain) ?? ZERO_COUNTS);
+    const status = convergenceStatus(target, counts);
+    return {
+      counts,
+      domain,
+      errorCategory: status === 'unavailable' ? target.errorCategory : null,
+      fallbackPolicy: target.fallbackPolicy,
+      loadMode: target.loadMode,
+      status,
+      targetToken: status === 'disabled' || status === 'not_applicable' ? null : target.token,
+    };
+  });
+
 const safeErrorCategory = (value: string | null): PlatformConvergenceErrorCategory | null => {
   switch (value) {
     case 'cache_unavailable':
@@ -456,21 +481,7 @@ export class PlatformInstanceStatusService {
     const identityTarget = targets.find(({ domain }) => domain === 'identity')!;
     const identity = await this.readIdentityInventory(tx, identityTarget, snapshotAt);
     const platformCounts = new Map(platform.counts.map((row) => [row.domain, row.counts]));
-    return PLATFORM_CONVERGENCE_DOMAINS.map((domain) => {
-      const target = targets.find((candidate) => candidate.domain === domain)!;
-      const counts =
-        domain === 'identity' ? identity.counts : (platformCounts.get(domain) ?? ZERO_COUNTS);
-      const status = convergenceStatus(target, counts);
-      return {
-        counts,
-        domain,
-        errorCategory: status === 'unavailable' ? target.errorCategory : null,
-        fallbackPolicy: target.fallbackPolicy,
-        loadMode: target.loadMode,
-        status,
-        targetToken: status === 'disabled' || status === 'not_applicable' ? null : target.token,
-      };
-    });
+    return projectDomainConvergence(targets, platformCounts, identity.counts);
   };
 
   getRevisionInventoryPage = async (input: {
@@ -540,21 +551,11 @@ export class PlatformInstanceStatusService {
       const identityTarget = targets.find(({ domain }) => domain === 'identity')!;
       const identity = await this.readIdentityInventory(tx, identityTarget, snapshotAt);
       const platformCounts = new Map(platform.counts.map((row) => [row.domain, row.counts]));
-      const domains: PlatformDomainConvergence[] = PLATFORM_CONVERGENCE_DOMAINS.map((domain) => {
-        const target = targets.find((candidate) => candidate.domain === domain)!;
-        const counts =
-          domain === 'identity' ? identity.counts : (platformCounts.get(domain) ?? ZERO_COUNTS);
-        const status = convergenceStatus(target, counts);
-        return {
-          counts,
-          domain,
-          errorCategory: status === 'unavailable' ? target.errorCategory : null,
-          fallbackPolicy: target.fallbackPolicy,
-          loadMode: target.loadMode,
-          status,
-          targetToken: status === 'disabled' || status === 'not_applicable' ? null : target.token,
-        };
-      });
+      const domains: PlatformDomainConvergence[] = projectDomainConvergence(
+        targets,
+        platformCounts,
+        identity.counts,
+      );
       const freshDiagnostics = sortDiagnostics([
         ...platform.freshCandidates.map((diagnostic) => platformDiagnostic(diagnostic, targets)),
         ...identity.freshCandidates,

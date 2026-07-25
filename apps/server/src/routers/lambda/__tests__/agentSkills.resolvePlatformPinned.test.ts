@@ -1,10 +1,22 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { getTestDB } from '@/database/core/getTestDB';
+import { users } from '@/database/schemas';
+import type { LobeChatDatabase } from '@/database/type';
 import type * as SkillCatalog from '@/server/enterprise/services/skillCatalog';
 import { SkillCatalogReadService } from '@/server/enterprise/services/skillCatalog';
 
 import { agentSkillsRouter } from '../agentSkills';
+
+const db: LobeChatDatabase = await getTestDB();
+
+const IDS = {
+  active: 'sr005-resolve-active',
+  banned: 'sr005-resolve-banned',
+  epoch: 'sr005-resolve-epoch',
+  tempBanned: 'sr005-resolve-temp-banned',
+} as const;
 
 const mocks = vi.hoisted(() => ({
   getPublishedCatalog: vi.fn(),
@@ -20,8 +32,9 @@ vi.mock('@/business/server/trpc-middlewares/workspaceAuth', async () => {
 });
 vi.mock('@/libs/trpc/lambda/middleware', () => ({
   serverDatabase: async (opts: any) =>
-    opts.next({ ctx: { ...opts.ctx, serverDB: opts.ctx.serverDB ?? {} } }),
+    opts.next({ ctx: { ...opts.ctx, serverDB: opts.ctx.serverDB ?? db } }),
 }));
+// Real assertUserActive — SR-005 matrix seeds banned / temp-ban / epoch rows in the test DB.
 vi.mock('@/libs/trpc/utils/internalJwt', () => ({
   hashPlatformSkillOperationRefs: vi.fn(() => 'refs-hash'),
   verifyPlatformSkillOperationProof: mocks.verifyProof,
@@ -29,9 +42,14 @@ vi.mock('@/libs/trpc/utils/internalJwt', () => ({
 vi.mock('@/database/models/agentOperation', () => ({
   AgentOperationModel: vi.fn(() => ({ findById: mocks.findOperation })),
 }));
-vi.mock('@/server/enterprise/featureFlags', () => ({
-  parseEnterpriseFeatureFlags: () => ({ ENABLE_PLATFORM_MANAGED_SKILLS: true }),
-}));
+vi.mock('@/server/enterprise/featureFlags', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    // Handler still sees managed Skills on; middleware uses getEnterpriseFeatureFlags(process.env).
+    parseEnterpriseFeatureFlags: () => ({ ENABLE_PLATFORM_MANAGED_SKILLS: true }),
+  };
+});
 vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
   resolvePublishedManagedResourcePolicies: mocks.resolvePolicies,
 }));
@@ -56,12 +74,31 @@ const ref = {
   version: '1.0.0',
 };
 
-const caller = () =>
-  agentSkillsRouter.createCaller({ serverDB: {}, userId: 'user-1', workspaceId: null } as never);
+const caller = (
+  userId: string = IDS.active,
+  extras?: { credentialIssuedAt?: Date; authMethod?: string },
+) =>
+  agentSkillsRouter.createCaller({
+    authMethod: extras?.authMethod ?? 'oidc',
+    credentialIssuedAt: extras?.credentialIssuedAt ?? new Date('2020-01-01T00:00:00.000Z'),
+    serverDB: db,
+    userId,
+    workspaceId: null,
+  } as never);
 
 describe('agentSkills.resolvePlatformPinned', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    await db.delete(users);
+    await db
+      .insert(users)
+      .values([
+        { id: IDS.active },
+        { banned: true, id: IDS.banned },
+        { banExpires: new Date(Date.now() + 3_600_000), banned: true, id: IDS.tempBanned },
+        { authInvalidatedAt: new Date('2021-01-01T00:00:00.000Z'), id: IDS.epoch },
+      ]);
     mocks.getPublishedCatalog.mockResolvedValue({ revision: 'current', skills: [ref] });
     mocks.findOperation.mockResolvedValue({
       agentId: 'agent-1',
@@ -74,7 +111,7 @@ describe('agentSkills.resolvePlatformPinned', () => {
       operationId: 'operation-1',
       refsHash: 'refs-hash',
       revision: 'historical-revision',
-      userId: 'user-1',
+      userId: IDS.active,
     });
     mocks.resolvePinnedForExecution.mockResolvedValue({
       allowBuiltinOverride: false,
@@ -92,6 +129,11 @@ describe('agentSkills.resolvePlatformPinned', () => {
       version: ref.version,
       versionId: 'version-1',
     });
+  });
+
+  afterEach(async () => {
+    await db.delete(users);
+    vi.unstubAllEnvs();
   });
 
   it('allows ui-only clients to read an exact current published ref', async () => {
@@ -128,7 +170,7 @@ describe('agentSkills.resolvePlatformPinned', () => {
       identifier: ref.skillKey,
       version: ref.version,
     });
-    expect(mocks.verifyProof).toHaveBeenCalledWith('signed-proof', 'user-1');
+    expect(mocks.verifyProof).toHaveBeenCalledWith('signed-proof', IDS.active);
     expect(mocks.getPublishedCatalog).not.toHaveBeenCalled();
     expect(mocks.resolvePolicies).not.toHaveBeenCalled();
   });
@@ -169,5 +211,50 @@ describe('agentSkills.resolvePlatformPinned', () => {
       }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(mocks.resolvePinnedForExecution).not.toHaveBeenCalled();
+  });
+
+  describe('active-user revocation (SR-001 / SR-005) — DB-backed principal matrix', () => {
+    const expectUnauthorizedWithoutSideEffects = async (userId: string) => {
+      await expect(caller(userId).resolvePlatformPinned({ ref })).rejects.toMatchObject({
+        code: 'UNAUTHORIZED',
+      });
+      expect(mocks.verifyProof).not.toHaveBeenCalled();
+      expect(mocks.resolvePinnedForExecution).not.toHaveBeenCalled();
+      expect(mocks.getPublishedCatalog).not.toHaveBeenCalled();
+      expect(SkillCatalogReadService).not.toHaveBeenCalled();
+    };
+
+    it('rejects a banned principal before proof/catalog work', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+      await expectUnauthorizedWithoutSideEffects(IDS.banned);
+    });
+
+    it('rejects a temporarily banned principal (banned + banExpires) before proof/catalog work', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+      await expectUnauthorizedWithoutSideEffects(IDS.tempBanned);
+    });
+
+    it('rejects an epoch-invalid principal (credentialIssuedAt < authInvalidatedAt) before proof/catalog work', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+      // Seeded authInvalidatedAt = 2021-01-01; credentialIssuedAt defaults to 2020-01-01.
+      await expectUnauthorizedWithoutSideEffects(IDS.epoch);
+    });
+
+    it('allows an active principal when managed Skills are enabled', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+
+      await expect(caller().resolvePlatformPinned({ ref })).resolves.toMatchObject({
+        identifier: ref.skillKey,
+      });
+      expect(mocks.resolvePinnedForExecution).toHaveBeenCalledWith(ref);
+    });
+
+    it('skips active-user enforcement when the managed Skills flag is off', async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '0');
+      // Banned principal would fail if middleware ran; flag-off is a no-op.
+      await expect(caller(IDS.banned).resolvePlatformPinned({ ref })).resolves.toMatchObject({
+        identifier: ref.skillKey,
+      });
+    });
   });
 });

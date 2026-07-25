@@ -1,5 +1,13 @@
 import type { PlatformSkillOperationSnapshot } from '@lobechat/context-engine';
 import type { SkillItem, SkillListItem, SkillResourceContent } from '@lobechat/types';
+import {
+  indexPlatformSkillRefs,
+  PLATFORM_SKILL_ID_PREFIX,
+  PLATFORM_SKILL_RESOLUTION_CACHE_LIMIT,
+  platformSkillRuntimeId,
+  toPlatformSkillListItem,
+  toPlatformSkillResourceContent,
+} from '@lobechat/types';
 
 import type { LobeChatDatabase } from '@/database/type';
 
@@ -7,21 +15,15 @@ import type { PlatformSkillPinnedRef } from '../../contracts/skillCatalog';
 import { getBuiltinSkillDefinitions } from './builtinAdapter';
 import { SkillCatalogReadService } from './readService';
 
-const PLATFORM_SKILL_ID_PREFIX = 'platform-skill:';
-const MAX_RESOLUTION_CACHE_ENTRIES = 128;
-
 type ResolvedPlatformSkill = NonNullable<
   Awaited<ReturnType<SkillCatalogReadService['resolvePinnedForExecution']>>
 >;
-
-const runtimeId = (ref: PlatformSkillPinnedRef) =>
-  `${PLATFORM_SKILL_ID_PREFIX}${ref.skillKey}@${ref.version}#${ref.checksum}`;
 
 const toSkillItem = (resolved: ResolvedPlatformSkill): SkillItem => ({
   content: resolved.content,
   createdAt: new Date(0),
   description: resolved.description,
-  id: runtimeId(resolved),
+  id: platformSkillRuntimeId(resolved),
   identifier: resolved.skillKey,
   manifest: {
     description: resolved.manifest.description,
@@ -43,24 +45,12 @@ const toSkillItem = (resolved: ResolvedPlatformSkill): SkillItem => ({
   updatedAt: new Date(0),
 });
 
-const toSkillListItem = (
-  ref: PlatformSkillPinnedRef,
-  metadata?: { description?: string | null; displayName?: string },
-): SkillListItem => ({
-  createdAt: new Date(0),
-  description: metadata?.description ?? '',
-  id: runtimeId(ref),
-  identifier: ref.skillKey,
-  manifest: { description: metadata?.description ?? '', name: ref.skillKey, version: ref.version },
-  name: metadata?.displayName ?? ref.skillKey,
-  source: 'user',
-  updatedAt: new Date(0),
-});
-
 /**
  * Operation-scoped resolver. Its bounded cache is keyed by catalog revision
- * and exact immutable reference; failed lookups are cached as fail-closed
- * misses for the remainder of the operation/tool runtime instance.
+ * and exact immutable reference. Failed lookups are cached as fail-closed
+ * misses for the remainder of the operation/tool runtime instance (server
+ * fail-closed policy). Successful values are cached; the shared protocol
+ * utilities centralize id/indexing/list projection with the client adapter.
  */
 export class PlatformSkillOperationResolver {
   private readonly cache = new Map<string, ResolvedPlatformSkill | undefined>();
@@ -84,8 +74,9 @@ export class PlatformSkillOperationResolver {
     if (clone.skills) Object.freeze(clone.skills);
     if (clone.mandatorySkillIds) Object.freeze(clone.mandatorySkillIds);
     this.snapshot = Object.freeze(clone) as PlatformSkillOperationSnapshot;
-    this.refsByKey = new Map(this.snapshot.refs.map((ref) => [ref.skillKey, ref]));
-    this.refsById = new Map(this.snapshot.refs.map((ref) => [runtimeId(ref), ref]));
+    const indexed = indexPlatformSkillRefs(this.snapshot.refs);
+    this.refsByKey = indexed.byKey;
+    this.refsById = indexed.byId;
     this.metadataByKey = new Map(
       this.snapshot.skills?.map((skill) => [skill.skillKey, skill] as const),
     );
@@ -93,7 +84,7 @@ export class PlatformSkillOperationResolver {
 
   findAll = async (): Promise<{ data: SkillListItem[]; total: number }> => {
     const data = [...this.refsByKey.values()].map((ref) =>
-      toSkillListItem(ref, this.metadataByKey.get(ref.skillKey)),
+      toPlatformSkillListItem(ref, this.metadataByKey.get(ref.skillKey)),
     );
     return { data, total: data.length };
   };
@@ -114,21 +105,19 @@ export class PlatformSkillOperationResolver {
     const resource = skill?.resources?.[path];
     // RR2-5: do not echo the requested resource path back in the error — it is an internal
     // Skill-package path and must not surface to the caller.
-    if (resource?.content === undefined) {
+    const content = resource?.content;
+    if (content === undefined || !resource) {
       throw new Error('A platform Skill resource is unavailable');
     }
-    return {
-      content: resource.content,
-      encoding: 'utf8',
+    return toPlatformSkillResourceContent(path, {
+      content,
       fileHash: resource.fileHash,
-      fileType: 'text/plain',
-      path,
       size: resource.size,
-    };
+    });
   };
 
   private resolve = async (ref: PlatformSkillPinnedRef): Promise<SkillItem | undefined> => {
-    const cacheKey = `${this.snapshot.revision}:${runtimeId(ref)}`;
+    const cacheKey = `${this.snapshot.revision}:${platformSkillRuntimeId(ref)}`;
     if (this.cache.has(cacheKey)) {
       const cached = this.cache.get(cacheKey);
       return cached ? toSkillItem(cached) : undefined;
@@ -139,7 +128,7 @@ export class PlatformSkillOperationResolver {
       resolved.resources.every(
         (resource) => resource.content !== undefined && resource.contentRef === undefined,
       );
-    if (this.cache.size >= MAX_RESOLUTION_CACHE_ENTRIES) {
+    if (this.cache.size >= PLATFORM_SKILL_RESOLUTION_CACHE_LIMIT) {
       const oldest = this.cache.keys().next().value;
       if (oldest) this.cache.delete(oldest);
     }

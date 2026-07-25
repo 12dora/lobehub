@@ -74,6 +74,75 @@ describe('PlatformAgentRolloutService control plane', () => {
     });
   });
 
+  it('filters list by projection status (pending includes reserved; completed maps succeeded)', async () => {
+    const service = new PlatformAgentRolloutService(db);
+    const started = await service.start('admin', await startInput());
+    expect(started.status).toBe('pending');
+
+    // Reserved rows project as pending — an active poll must still see them.
+    await db
+      .update(platformJobs)
+      .set({ status: 'reserved' })
+      .where(sql`${platformJobs.id} = ${started.jobId}`);
+    await expect(
+      service.list({ agentId: 'agent-support', limit: 50, status: ['pending', 'running'] }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ jobId: started.jobId, status: 'pending' })],
+      nextCursor: null,
+    });
+    await expect(
+      service.list({ agentId: 'agent-support', limit: 50, status: ['running'] }),
+    ).resolves.toMatchObject({ items: [], nextCursor: null });
+
+    // Succeeded rows project as completed — terminal filter must map accordingly.
+    await db
+      .update(platformJobs)
+      .set({ status: 'succeeded' })
+      .where(sql`${platformJobs.id} = ${started.jobId}`);
+    await expect(
+      service.list({ agentId: 'agent-support', limit: 50, status: ['completed'] }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ jobId: started.jobId, status: 'completed' })],
+      nextCursor: null,
+    });
+    // Active poll filter must not silently drop completed-as-missing without a list hit.
+    await expect(
+      service.list({ agentId: 'agent-support', limit: 50, status: ['pending', 'running'] }),
+    ).resolves.toMatchObject({ items: [], nextCursor: null });
+  });
+
+  it('starts a distinct launch after a terminal job so newly eligible targets are included', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const service = new PlatformAgentRolloutService(db);
+    const first = await service.start('admin', await startInput());
+    await expect(runPlatformAgentRolloutBatches(db, 10)).resolves.toBeGreaterThan(0);
+    await expect(
+      service.get({ agentId: 'agent-support', jobId: first.jobId }),
+    ).resolves.toMatchObject({ completed: 3, failed: 0, status: 'completed', total: 3 });
+
+    await db.insert(users).values({ id: 'user-c' });
+    const second = await service.start('admin', await startInput());
+    expect(second.jobId).not.toBe(first.jobId);
+    expect(second).toMatchObject({
+      assignmentId: 'assignment-global',
+      status: 'pending',
+      targetVersionId: 'version-2',
+      total: 4,
+    });
+    const jobs = await db
+      .select()
+      .from(platformJobs)
+      .where(sql`${platformJobs.type} = 'platform.agent.rollout.v1'`)
+      .orderBy(sql`${platformJobs.createdAt}`);
+    expect(jobs).toHaveLength(2);
+    expect(jobs[0]!.id).toBe(first.jobId);
+    expect(jobs[1]!.id).toBe(second.jobId);
+    const firstCutoff = parsePlatformAgentRolloutInput(jobs[0]!).snapshot.targetCutoff;
+    const secondCutoff = parsePlatformAgentRolloutInput(jobs[1]!).snapshot.targetCutoff;
+    expect(secondCutoff >= firstCutoff).toBe(true);
+    expect(jobs[0]!.idempotencyKey).not.toBe(jobs[1]!.idempotencyKey);
+  });
+
   it('uses status + JSON revision CAS for cancel/retry and rejects stale transitions', async () => {
     const service = new PlatformAgentRolloutService(db);
     const started = await service.start('admin', await startInput());
@@ -496,6 +565,58 @@ describe('PlatformAgentRolloutService control plane', () => {
       expect(await db.select().from(platformUserAgentMaterializations)).toHaveLength(0);
     },
   );
+
+  it('returns terminal:false when invalid-payload dead-mark loses the lease', async () => {
+    await db.insert(platformJobs).values({
+      idempotencyKey: 'invalid-payload-poison',
+      input: { not: 'a-valid-rollout-snapshot' },
+      maxAttempts: 5,
+      progressTotal: 0,
+      requestedBy: 'admin',
+      resultSummary: { failed: 0 },
+      status: 'pending',
+      type: 'platform.agent.rollout.v1',
+    });
+
+    await expect(
+      processNextPlatformAgentRolloutBatch(db, 'poison-invalid-worker', {
+        leaseMs: 25,
+        lifecycle: {
+          beforeMarkClaimedDead: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          },
+        },
+      }),
+    ).resolves.toEqual({ claimed: true, jobId: expect.any(String), terminal: false });
+
+    const [job] = await db.select().from(platformJobs);
+    expect(job.status).toBe('running');
+    expect(job.lastError).toBeNull();
+  });
+
+  it('returns terminal:false when snapshot-conflict dead-mark loses the lease', async () => {
+    const service = new PlatformAgentRolloutService(db);
+    const started = await service.start('admin', await startInput());
+    await db
+      .update(platformAgentAssignments)
+      .set({ enabled: false })
+      .where(sql`${platformAgentAssignments.id} = 'assignment-global'`);
+
+    await expect(
+      processNextPlatformAgentRolloutBatch(db, 'poison-snapshot-worker', {
+        leaseMs: 25,
+        lifecycle: {
+          beforeMarkClaimedDead: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          },
+        },
+      }),
+    ).resolves.toEqual({ claimed: true, jobId: started.jobId, terminal: false });
+
+    await expect(
+      service.get({ agentId: 'agent-support', jobId: started.jobId }),
+    ).resolves.toMatchObject({ status: 'running' });
+  });
 
   it('keeps cancellation terminal when a previously leased worker completes late', async () => {
     const service = new PlatformAgentRolloutService(db);

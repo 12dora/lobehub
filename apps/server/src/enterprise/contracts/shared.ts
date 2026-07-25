@@ -10,6 +10,28 @@ import { containsEnterpriseSecretMaterial } from '../security/redaction';
 export const SECRET_SAFE_TEXT_MAX = 2000;
 
 /**
+ * RFC 9110 field-name token grammar (HTTP header names).
+ * Rejects spaces, colons, parentheses, non-ASCII, and other separators that
+ * pass a control-char-only check but throw in `new Headers(...)` / fetch.
+ */
+export const HTTP_HEADER_NAME_TOKEN_PATTERN = /^[!#$%&'*+\-.^\w`|~]+$/;
+
+/** Shared HTTP header-name primitive (token grammar). Callers may chain `.max(n)`. */
+export const httpHeaderNameSchema = z
+  .string()
+  .min(1)
+  .regex(HTTP_HEADER_NAME_TOKEN_PATTERN, 'header name must be a valid HTTP field-name token');
+
+/** Shared HTTP header-value primitive (no control characters). Callers may chain `.max(n)`. */
+export const httpHeaderValueSchema = z
+  .string()
+  .min(1)
+  // Keep ZodString (not ZodEffects) so callers can chain `.max(n)` after import.
+  // Intentional: reject ASCII control chars in HTTP header *values*.
+  // eslint-disable-next-line no-control-regex -- control-char class is the validation target
+  .regex(/^[^\u0000-\u001F\u007F]+$/, 'header value must not contain control characters');
+
+/**
  * Required free-text audit reason / publication reason.
  * Rejects whitespace-only and credential-shaped material.
  */

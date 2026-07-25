@@ -14,7 +14,7 @@ import {
   adminConnectorOAuthConfigSchema,
   adminPublishedConnectorSchema,
   connectorCredentialModeSchema,
-  connectorSharedCredentialSchema,
+  connectorSharedCredentialReadSchema,
   managedConnectorSchema,
   trustedPublishedConnectorSchema,
   webConnectorTransportSchema,
@@ -453,7 +453,8 @@ export class ConnectorCatalogReadService {
         return trustedPublishedConnectorSchema.parse({
           ...base,
           credentialMode: 'shared_service_account',
-          credentials: connectorSharedCredentialSchema.parse(secret.value),
+          // Accept-on-read: legacy header names must not hard-fail published resolution.
+          credentials: connectorSharedCredentialReadSchema.parse(secret.value),
         });
       } catch (error) {
         throwStableConnectorSecretError(error);
