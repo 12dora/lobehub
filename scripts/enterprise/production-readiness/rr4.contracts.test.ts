@@ -10,6 +10,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { adaptFailureDrillEvidenceDir } from './adapters/failureDrills';
+import { assertDockerAvailableForIntegration, probeDockerAvailable } from './dockerAvailability';
 import {
   createSignedProvenance,
   digestSignedProvenanceEnvelope,
@@ -49,16 +50,8 @@ const makeTempDir = async (): Promise<string> => {
   return dir;
 };
 
-const dockerAvailable = async (): Promise<boolean> => {
-  try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    await promisify(execFile)('docker', ['info'], { timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
+const hasDocker = await probeDockerAvailable();
+assertDockerAvailableForIntegration(hasDocker);
 
 describe('RR4: dual provenance roles (source-backup vs recovery-result)', () => {
   it('source-backup and recovery-result are distinct; gate preflight requires result', () => {
@@ -264,90 +257,90 @@ describe('RR4: canonical table digests (no delimiter collision)', () => {
     );
   });
 
-  it('docker: real PG rows with delimiter collision produce different table digests', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await client.query(`CREATE TABLE IF NOT EXISTS coll_probe (a text, b text)`);
-        await client.query(`TRUNCATE coll_probe`);
-        await client.query(`INSERT INTO coll_probe (a, b) VALUES ('a|b', 'c')`);
-        const d1 = await digestAllRequiredTables(client, [
-          'coll_probe',
-        ] as unknown as readonly string[]);
-        // coll_probe not in inventory - force digest via canonicalize on query
-        const r1 = await client.query(`SELECT a, b FROM coll_probe`);
-        const cols = [
-          { dataType: 'text', name: 'a' },
-          { dataType: 'text', name: 'b' },
-        ];
-        const dig1 = sha256Of(canonicalizeTableRow(cols, r1.rows[0]!));
-        await client.query(`TRUNCATE coll_probe`);
-        await client.query(`INSERT INTO coll_probe (a, b) VALUES ('a', 'b|c')`);
-        const r2 = await client.query(`SELECT a, b FROM coll_probe`);
-        const dig2 = sha256Of(canonicalizeTableRow(cols, r2.rows[0]!));
-        expect(dig1).not.toBe(dig2);
-        void d1;
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+  it.skipIf(!hasDocker)(
+    'docker: real PG rows with delimiter collision produce different table digests',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await client.query(`CREATE TABLE IF NOT EXISTS coll_probe (a text, b text)`);
+          await client.query(`TRUNCATE coll_probe`);
+          await client.query(`INSERT INTO coll_probe (a, b) VALUES ('a|b', 'c')`);
+          const d1 = await digestAllRequiredTables(client, [
+            'coll_probe',
+          ] as unknown as readonly string[]);
+          // coll_probe not in inventory - force digest via canonicalize on query
+          const r1 = await client.query(`SELECT a, b FROM coll_probe`);
+          const cols = [
+            { dataType: 'text', name: 'a' },
+            { dataType: 'text', name: 'b' },
+          ];
+          const dig1 = sha256Of(canonicalizeTableRow(cols, r1.rows[0]!));
+          await client.query(`TRUNCATE coll_probe`);
+          await client.query(`INSERT INTO coll_probe (a, b) VALUES ('a', 'b|c')`);
+          const r2 = await client.query(`SELECT a, b FROM coll_probe`);
+          const dig2 = sha256Of(canonicalizeTableRow(cols, r2.rows[0]!));
+          expect(dig1).not.toBe(dig2);
+          void d1;
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });
 
 describe('RR4: publication pointers bind resource_type and domain versions', () => {
-  it('docker: same revision number wrong type is mismatch; agent version cross-owner fails', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const ok = await verifyPublicationPointers(client);
-        expect(ok.match).toBe(true);
+  it.skipIf(!hasDocker)(
+    'docker: same revision number wrong type is mismatch; agent version cross-owner fails',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const ok = await verifyPublicationPointers(client);
+          expect(ok.match).toBe(true);
 
-        // Delete connector revision and insert branding revision with same number/resource id misuse
-        await client.query(
-          `DELETE FROM platform_resource_revisions WHERE resource_type = 'connector' AND resource_id = $1`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+          // Delete connector revision and insert branding revision with same number/resource id misuse
+          await client.query(
+            `DELETE FROM platform_resource_revisions WHERE resource_type = 'connector' AND resource_id = $1`,
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('prev_branding_swap', 'branding', $1, 2, 'published', '{}'::jsonb, 'brand-ck')
            ON CONFLICT (id) DO NOTHING`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
-        // Connector still points at revision 2 — type is branding, not connector → mismatch
-        const swapped = await verifyPublicationPointers(client);
-        expect(swapped.match).toBe(false);
-        expect(swapped.detail).toMatch(/dangling-pointer|type/);
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
+          // Connector still points at revision 2 — type is branding, not connector → mismatch
+          const swapped = await verifyPublicationPointers(client);
+          expect(swapped.match).toBe(false);
+          expect(swapped.detail).toMatch(/dangling-pointer|type/);
 
-        // Restore fixture and cross-owner agent version
-        await seedRecoveryFixture(client);
-        await client.query(
-          `INSERT INTO platform_agent_versions (id, agent_id, version, checksum)
+          // Restore fixture and cross-owner agent version
+          await seedRecoveryFixture(client);
+          await client.query(
+            `INSERT INTO platform_agent_versions (id, agent_id, version, checksum)
            VALUES ('pagv_foreign', 'other-agent', '9.9.9', $1) ON CONFLICT (id) DO NOTHING`,
-          [sha256Of('foreign-agent')],
-        );
-        await client.query(
-          `UPDATE platform_agents SET current_version_id = 'pagv_foreign'
+            [sha256Of('foreign-agent')],
+          );
+          await client.query(
+            `UPDATE platform_agents SET current_version_id = 'pagv_foreign'
            WHERE id = $1`,
-          [RECOVERY_PROBE_IDS.agentId],
-        );
-        const cross = await verifyPublicationPointers(client);
-        expect(cross.match).toBe(false);
-        expect(cross.detail).toMatch(/version-owner-mismatch/);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+            [RECOVERY_PROBE_IDS.agentId],
+          );
+          const cross = await verifyPublicationPointers(client);
+          expect(cross.match).toBe(false);
+          expect(cross.detail).toMatch(/version-owner-mismatch/);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });
 
 describe('RR4: O05 mixed timestamps fail closed', () => {

@@ -158,9 +158,6 @@ export type ContainOwnedLockRaceContext = {
   quarantinePath: string;
 };
 
-/** @deprecated Alias for test-hook naming; same as ContainOwnedLockRaceContext. */
-export type UnlinkOwnedLockRaceContext = ContainOwnedLockRaceContext;
-
 export type ContainOwnedLockHooks = {
   /**
    * Invoked after full identity/token verification, with quarantine paths pre-chosen,
@@ -199,9 +196,6 @@ export type ContainOwnedLockHooks = {
   afterProofBeforeDispose?: (ctx: ContainOwnedLockRaceContext) => void;
 };
 
-/** @deprecated Alias — production API is containOwnedLockSentinelOrFail. */
-export type UnlinkOwnedLockHooks = ContainOwnedLockHooks;
-
 export type ContainOwnedLockResult = {
   /**
    * Always false. This protocol never pathname-unlinks lockPath.
@@ -219,9 +213,6 @@ export type ContainOwnedLockResult = {
    */
   status: 'contained';
 };
-
-/** @deprecated Use ContainOwnedLockResult (lockPathCleared removed — never claimed). */
-export type UnlinkOwnedLockResult = ContainOwnedLockResult;
 
 const identityMatches = (a: Stats, b: { dev: number | bigint; ino: number | bigint }): boolean =>
   a.dev === b.dev && a.ino === b.ino && a.isFile();

@@ -8,6 +8,7 @@ import { rm } from 'node:fs/promises';
 import type { PoolClient } from 'pg';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { assertDockerAvailableForIntegration, probeDockerAvailable } from './dockerAvailability';
 import {
   buildSourceManifestCore,
   createSignedProvenance,
@@ -33,16 +34,8 @@ afterEach(async () => {
   }
 });
 
-const dockerAvailable = async (): Promise<boolean> => {
-  try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    await promisify(execFile)('docker', ['info'], { timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
+const hasDocker = await probeDockerAvailable();
+assertDockerAvailableForIntegration(hasDocker);
 
 const restoreValidBranding = async (client: PoolClient): Promise<void> => {
   await client.query(`DELETE FROM platform_branding`);
@@ -115,6 +108,7 @@ describe('RR8: direct canonical serializer preserves code-unit key order', () =>
     const bundle = createTestTrustBundle(['production']);
     const payload = {
       artifactSha256: sha256Of('rr8-art'),
+      assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
       candidateSha: FIXTURE_CANDIDATE_SHA,
       environment: 'production' as const,
       gateId: 'path-boundaries' as const,
@@ -146,130 +140,130 @@ describe('RR8: direct canonical serializer preserves code-unit key order', () =>
 });
 
 describe('RR8: branding pre-publish vs corrupt; source-manifest refuse', () => {
-  it('docker: genuine pre-publish, valid published, corrupt states, manifest gate', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const valid = await verifyPublicationPointers(client);
-        expect(valid.match).toBe(true);
-        const publishedDigest = valid.pointerDigest;
+  it.skipIf(!hasDocker)(
+    'docker: genuine pre-publish, valid published, corrupt states, manifest gate',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const valid = await verifyPublicationPointers(client);
+          expect(valid.match).toBe(true);
+          const publishedDigest = valid.pointerDigest;
 
-        // Valid published source-manifest builds
-        const publishedManifest = await buildSourceManifestCore(client);
-        expect(publishedManifest.pointerDigest).toBe(publishedDigest);
+          // Valid published source-manifest builds
+          const publishedManifest = await buildSourceManifestCore(client);
+          expect(publishedManifest.pointerDigest).toBe(publishedDigest);
 
-        // --- wrong status on fixed row (corrupt, not pre-publish)
-        await client.query(
-          `UPDATE platform_branding SET status = 'draft' WHERE id = 'branding:published'`,
-        );
-        let r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/fixed-holder-status-mismatch/);
-        expect(r.pointerDigest).not.toBe(publishedDigest);
-        await expect(buildSourceManifestCore(client)).rejects.toThrow(
-          /source-manifest-refuses-invalid-publications/,
-        );
+          // --- wrong status on fixed row (corrupt, not pre-publish)
+          await client.query(
+            `UPDATE platform_branding SET status = 'draft' WHERE id = 'branding:published'`,
+          );
+          let r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/fixed-holder-status-mismatch/);
+          expect(r.pointerDigest).not.toBe(publishedDigest);
+          await expect(buildSourceManifestCore(client)).rejects.toThrow(
+            /source-manifest-refuses-invalid-publications/,
+          );
 
-        // --- revision 0
-        await client.query(
-          `UPDATE platform_branding
+          // --- revision 0
+          await client.query(
+            `UPDATE platform_branding
            SET status = 'published', revision = 0
            WHERE id = 'branding:published'`,
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/invalid-fixed-holder-revision/);
-        await expect(buildSourceManifestCore(client)).rejects.toThrow(
-          /source-manifest-refuses-invalid-publications/,
-        );
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/invalid-fixed-holder-revision/);
+          await expect(buildSourceManifestCore(client)).rejects.toThrow(
+            /source-manifest-refuses-invalid-publications/,
+          );
 
-        await restoreValidBranding(client);
-        expect((await verifyPublicationPointers(client)).match).toBe(true);
+          await restoreValidBranding(client);
+          expect((await verifyPublicationPointers(client)).match).toBe(true);
 
-        // --- dangling target
-        await client.query(
-          `UPDATE platform_branding SET revision = 99 WHERE id = 'branding:published'`,
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/dangling-fixed-pointer/);
-        await client.query(
-          `UPDATE platform_branding SET revision = 7 WHERE id = 'branding:published'`,
-        );
+          // --- dangling target
+          await client.query(
+            `UPDATE platform_branding SET revision = 99 WHERE id = 'branding:published'`,
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/dangling-fixed-pointer/);
+          await client.query(
+            `UPDATE platform_branding SET revision = 7 WHERE id = 'branding:published'`,
+          );
 
-        // --- missing holder with published branding history
-        await client.query(`DELETE FROM platform_branding WHERE id = 'branding:published'`);
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/missing-fixed-holder-with-revision-history/);
-        await expect(buildSourceManifestCore(client)).rejects.toThrow(
-          /source-manifest-refuses-invalid-publications/,
-        );
+          // --- missing holder with published branding history
+          await client.query(`DELETE FROM platform_branding WHERE id = 'branding:published'`);
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/missing-fixed-holder-with-revision-history/);
+          await expect(buildSourceManifestCore(client)).rejects.toThrow(
+            /source-manifest-refuses-invalid-publications/,
+          );
 
-        // --- genuine pre-publish: no holder AND zero branding/global history
-        await client.query(
-          `DELETE FROM platform_resource_revisions
+          // --- genuine pre-publish: no holder AND zero branding/global history
+          await client.query(
+            `DELETE FROM platform_resource_revisions
            WHERE resource_type = 'branding' AND resource_id = 'global'`,
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(true);
-        expect(r.pointerDigest).not.toBe(publishedDigest);
-        const noneManifest = await buildSourceManifestCore(client);
-        expect(noneManifest.pointerDigest).toBe(r.pointerDigest);
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(true);
+          expect(r.pointerDigest).not.toBe(publishedDigest);
+          const noneManifest = await buildSourceManifestCore(client);
+          expect(noneManifest.pointerDigest).toBe(r.pointerDigest);
 
-        // published history without holder fails again
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+          // published history without holder fails again
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('prev_brand_reclaim', 'branding', 'global', 7, 'published', '{}'::jsonb, $1)`,
-          [PROBE_PAYLOAD_CHECKSUM],
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/missing-fixed-holder-with-revision-history/);
+            [PROBE_PAYLOAD_CHECKSUM],
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/missing-fixed-holder-with-revision-history/);
 
-        // --- extra published holder row
-        await client.query(
-          `INSERT INTO platform_branding (id, display_name, status, revision)
+          // --- extra published holder row
+          await client.query(
+            `INSERT INTO platform_branding (id, display_name, status, revision)
            VALUES ('branding:published', 'Recovery Branding', 'published', 7)`,
-        );
-        await client.query(
-          `INSERT INTO platform_branding (id, display_name, status, revision)
+          );
+          await client.query(
+            `INSERT INTO platform_branding (id, display_name, status, revision)
            VALUES ('branding:legacy', 'Legacy', 'published', 1)`,
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/extra-published-holder/);
-        await client.query(`DELETE FROM platform_branding WHERE id = 'branding:legacy'`);
-        await client.query(
-          `DELETE FROM platform_resource_revisions WHERE id = 'prev_brand_reclaim'`,
-        );
-        await restoreValidBranding(client);
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/extra-published-holder/);
+          await client.query(`DELETE FROM platform_branding WHERE id = 'branding:legacy'`);
+          await client.query(
+            `DELETE FROM platform_resource_revisions WHERE id = 'prev_brand_reclaim'`,
+          );
+          await restoreValidBranding(client);
 
-        // --- wrong target owner
-        await client.query(
-          `UPDATE platform_resource_revisions
+          // --- wrong target owner
+          await client.query(
+            `UPDATE platform_resource_revisions
            SET resource_id = 'not-global'
            WHERE id = $1`,
-          [RECOVERY_PROBE_IDS.revisionId],
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/dangling-fixed-pointer|fixed-pointer-target-mismatch/);
+            [RECOVERY_PROBE_IDS.revisionId],
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/dangling-fixed-pointer|fixed-pointer-target-mismatch/);
 
-        await restoreValidBranding(client);
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(true);
-        const finalManifest = await buildSourceManifestCore(client);
-        expect(finalManifest.pointerDigest).toBe(r.pointerDigest);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 180_000);
+          await restoreValidBranding(client);
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(true);
+          const finalManifest = await buildSourceManifestCore(client);
+          expect(finalManifest.pointerDigest).toBe(r.pointerDigest);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    180_000,
+  );
 });

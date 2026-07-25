@@ -24,6 +24,13 @@ export const FAILURE_DRILL_SCENARIOS = [
       { expectedAssertions: 4, reportFile: 'postgres-identity-attempt.json' },
       { expectedAssertions: 5, reportFile: 'postgres-secret-rewrap.json' },
       { expectedAssertions: 1, reportFile: 'postgres-platform-instance.json' },
+      // SAO-008: audit export publication + retention lease multi-connection suites.
+      // Counts must match top-level `it(` / `it.skipIf(` in the wired multiconn files
+      // (enforced by runner.test.ts "expectedAssertions match wired test files").
+      { expectedAssertions: 5, reportFile: 'postgres-audit-export-publication.json' },
+      { expectedAssertions: 1, reportFile: 'postgres-audit-retention-lease.json' },
+      // SAI-005: AI catalog publication advisory-lock concurrency.
+      { expectedAssertions: 2, reportFile: 'postgres-ai-catalog-publication.json' },
     ],
     scenarioId: 'postgres-multiconnection',
   },
@@ -48,6 +55,18 @@ export const FAILURE_DRILL_SCENARIOS = [
     scenarioId: 'identity-startup-lock-release',
   },
   {
+    injection: 'postgres-lock-owner-termination',
+    recovery: 'postgres-advisory-lock-release',
+    reports: [
+      {
+        assertionTitles: ['blocks a real concurrent publish between startup recheck and LKG write'],
+        expectedAssertions: 1,
+        reportFile: 'identity-publish-startup-lock.json',
+      },
+    ],
+    scenarioId: 'identity-publish-startup-lock',
+  },
+  {
     injection: 'redis-version-key-loss',
     recovery: 'database-source-reload',
     reports: [
@@ -60,5 +79,20 @@ export const FAILURE_DRILL_SCENARIOS = [
       },
     ],
     scenarioId: 'redis-database-rebuild',
+  },
+  // SCE-09: three-process branding cache with owned Redis restart (fault proxy + child runtimes).
+  {
+    injection: 'redis-version-key-loss',
+    recovery: 'database-source-reload',
+    reports: [
+      {
+        assertionTitles: [
+          'keeps Postgres authoritative through one-process partition and Redis key loss',
+        ],
+        expectedAssertions: 1,
+        reportFile: 'redis-cluster-restart.json',
+      },
+    ],
+    scenarioId: 'redis-cluster-restart',
   },
 ] as const satisfies readonly FailureDrillScenario[];

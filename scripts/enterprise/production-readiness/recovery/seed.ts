@@ -181,6 +181,33 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
        id text PRIMARY KEY, provider_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_identity_provider_restart_requests (
        id text PRIMARY KEY, provider_id text)`,
+    // Audit-evidence / admin governance tables (SCE-05 two-sided inventory)
+    `CREATE TABLE IF NOT EXISTS platform_audit_exports (
+       id text PRIMARY KEY, status text)`,
+    `CREATE TABLE IF NOT EXISTS platform_audit_legal_holds (
+       id text PRIMARY KEY, status text)`,
+    `CREATE TABLE IF NOT EXISTS platform_audit_policies (
+       id text PRIMARY KEY, revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_audit_retention_runs (
+       id text PRIMARY KEY, status text)`,
+    `CREATE TABLE IF NOT EXISTS platform_global_credentials (
+       id text PRIMARY KEY, credential_key text)`,
+    `CREATE TABLE IF NOT EXISTS platform_global_credential_secrets (
+       id text PRIMARY KEY, credential_id text, fingerprint text)`,
+    `CREATE TABLE IF NOT EXISTS platform_global_credential_uploads (
+       id text PRIMARY KEY, credential_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_auth_settings (
+       id text PRIMARY KEY, revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_sidebar_layout (
+       id text PRIMARY KEY, revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_admin_mutation_rate_windows (
+       id text PRIMARY KEY, window_start timestamptz)`,
+    `CREATE TABLE IF NOT EXISTS platform_catalog_authority (
+       domain text PRIMARY KEY, generation integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_connector_governance (
+       id text PRIMARY KEY, revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_user_agent_materialization_tombstones (
+       id text PRIMARY KEY, agent_id text, user_id text)`,
   ];
 
   // Sanity: every inventory table must appear in CREATE statements.

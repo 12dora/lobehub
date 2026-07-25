@@ -278,6 +278,7 @@ test('skill catalog outage fails closed for legacy skill mutations', async ({ br
   let outage: SkillOutageHandle | undefined;
   const context = await browser.newContext({ baseURL: rt.appUrl });
   const blockedIdentifier = `blocked-skill-${s.namespace}`;
+  let bodyError: unknown;
   try {
     await signInContext(context, s.superAdmin, rt.appUrl);
     await expectSignedIn(context.request);
@@ -333,13 +334,36 @@ test('skill catalog outage fails closed for legacy skill mutations', async ({ br
     expect(readinessAfter.skills).toBe(true);
 
     log('skill catalog outage fail-closed + restore ok');
-  } finally {
-    if (outage) {
-      await outage.restore().catch((error) => {
-        console.error('[skill-outage] restore failed', error);
-      });
+  } catch (error) {
+    bodyError = error;
+  }
+
+  // Never swallow restore/context errors — teardown must fail the suite if fixtures remain.
+  // Throws live outside `finally` (eslint no-unsafe-finally).
+  const teardownErrors: unknown[] = [];
+  if (outage) {
+    try {
+      await outage.restore();
+    } catch (error) {
+      teardownErrors.push(error);
     }
+  }
+  try {
     await context.close();
+  } catch (error) {
+    teardownErrors.push(error);
+  }
+
+  if (bodyError && teardownErrors.length > 0) {
+    throw new AggregateError(
+      [bodyError, ...teardownErrors],
+      'skill-outage test body and teardown failed',
+    );
+  }
+  if (bodyError) throw bodyError;
+  if (teardownErrors.length === 1) throw teardownErrors[0];
+  if (teardownErrors.length > 1) {
+    throw new AggregateError(teardownErrors, 'skill-outage teardown failed');
   }
 });
 

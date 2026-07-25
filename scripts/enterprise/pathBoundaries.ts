@@ -71,9 +71,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/features/ChatInput/ControlBar/ApprovalMode.tsx',
   // M08: managed Skill settings mount the public catalog hook at read-only surfaces.
   'src/features/ChatInput/ActionBar/Tools/useControls.tsx',
-  'src/features/ProfileEditor/AgentTool.tsx',
-  'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
-  'src/routes/(main)/settings/skill/features/SkillDetail/PlatformSkillDetail.tsx',
+  // M08: agent tool editor managed-skill catalog / distribution seam (extracted from AgentTool).
+  'src/features/ProfileEditor/useManagedAgentSkills.ts',
   // M09: single ordinary-user managed Connector authorization client seam.
   'src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts',
   // M06: public managed-resource capability adapter; ordinary surfaces import this adapter only.
@@ -124,6 +123,13 @@ export interface EnterpriseImportAllowance {
 }
 
 export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
+  {
+    file: 'src/features/AdminToolScope/AdminBuiltinSkillDistribution.tsx',
+    importSpecifier: '@/enterprise/client/services/adminAiInfraAdapter/errors',
+    owner: 'M05',
+    reason:
+      'Reads the already-toasted marker so a failed builtin-distribution write does not surface two error toasts (XT-001/ASKC-03)',
+  },
   {
     file: 'src/layout/GlobalProvider/FaviconProvider.tsx',
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
@@ -276,10 +282,10 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason: 'Business default-inbox branding sync mounts the enterprise branding component',
   },
   {
-    file: 'src/routes/(main)/settings/memory/features/MemoryFormView.tsx',
+    file: 'src/features/SettingsForms/MemoryFormView.tsx',
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
     owner: 'M12',
-    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+    reason: 'Shared memory settings form consumer of useBranding; not a whole-file mount',
   },
   {
     file: 'src/routes/(main)/home/features/Recents/index.tsx',
@@ -323,6 +329,20 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
 export type EnterpriseTestImportAllowance = EnterpriseImportAllowance;
 
 export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
+  {
+    file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',
+    importSpecifier: '@/server/enterprise/testing/deletePlatformResourceRevisions',
+    owner: 'M05',
+    reason:
+      'Shared teardown helper: prevent_platform_resource_revision_mutation rejects every DELETE; cleanup uses SET LOCAL session_replication_role=replica (not a GUC) inside a transaction',
+  },
+  {
+    file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog/runtimeAdapter',
+    owner: 'M07',
+    reason:
+      'Test isolation: clearAiCatalogRuntimeCache between cases so recycled provider pointers cannot serve a prior managed-AI projection',
+  },
   {
     file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
     importSpecifier: '@/server/enterprise/security/secret',
@@ -702,16 +722,37 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     reason: 'Mocks/asserts runtime branding provider at consumer surface',
   },
   {
-    file: 'src/routes/(main)/settings/skill/features/PlatformSkillList.test.tsx',
-    importSpecifier: '@/enterprise/client/features/skills',
-    owner: 'M08',
-    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+    file: 'src/business/client/BusinessDesktopRoutes.registry.test.ts',
+    importSpecifier: '@/enterprise/client/boot/isPlatformAdminBootEnabled',
+    owner: 'M05',
+    reason:
+      'Mocks platform-admin boot flag so CS-05 late-register test can load desktopRoutes without real boot wiring',
   },
   {
-    file: 'src/routes/(main)/settings/skill/features/SkillDetail/PlatformSkillDetail.test.tsx',
+    file: 'src/business/client/BusinessDesktopRoutes.registry.test.ts',
+    importSpecifier: '@/enterprise/client/registry',
+    owner: 'M05',
+    reason:
+      'Imports internal enterpriseModuleRegistry to prove late register never reaches frozen desktopRoutes',
+  },
+  {
+    file: 'src/business/client/BusinessDesktopRoutes.registry.test.ts',
+    importSpecifier: '@/enterprise/client/routes/admin/createAdminRouteTree',
+    owner: 'M05',
+    reason:
+      'Stubs admin route-tree factory so resetModules does not load the full admin shell graph',
+  },
+  {
+    file: 'src/features/ProfileEditor/useManagedAgentSkills.test.ts',
     importSpecifier: '@/enterprise/client/features/skills',
     owner: 'M08',
-    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+    reason: 'Asserts managed skill runtime source selection used by the agent tool seam',
+  },
+  {
+    file: 'src/features/SettingsForms/formValueSync.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Mocks runtime branding at the shared memory settings form test',
   },
   // Pre-existing enterprise test consumers whose registration lagged (reconciled 2026-07-25).
   {

@@ -9,6 +9,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { BASELINE_COMMIT } from './constants';
 import {
+  assertDockerAvailableForIntegration,
+  dockerIntegrationRequired,
+  probeDockerAvailable,
+} from './dockerAvailability';
+import {
   assertBaselineNotCandidate,
   assertInventoryMatchesSchemas,
   isCorruptedDump,
@@ -34,16 +39,8 @@ afterEach(async () => {
   }
 });
 
-const dockerAvailable = async (): Promise<boolean> => {
-  try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    await promisify(execFile)('docker', ['info'], { timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
+const hasDocker = await probeDockerAvailable();
+assertDockerAvailableForIntegration(hasDocker);
 
 describe('backup restore contracts', () => {
   it('rejects identical source/target', () => {
@@ -105,107 +102,102 @@ describe('inventory drift guard', () => {
   });
 });
 
-describe('secret/publication mutation detection (docker)', () => {
-  it('detects secret ref rewiring and published revision deletion', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const beforeSecrets = await verifySecretReferenceDomains(client);
-        expect(beforeSecrets.match).toBe(true);
+describe.skipIf(!hasDocker && !dockerIntegrationRequired())(
+  'secret/publication mutation detection (docker)',
+  () => {
+    it('detects secret ref rewiring and published revision deletion', async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const beforeSecrets = await verifySecretReferenceDomains(client);
+          expect(beforeSecrets.match).toBe(true);
 
-        // Mutate all secret refs
-        await client.query(
-          `UPDATE platform_identity_providers SET secret_ref = 'kms://rewired/identity'`,
-        );
-        await client.query(
-          `UPDATE platform_connectors SET shared_secret_ref = 'kms://rewired/shared'`,
-        );
-        const afterRewire = await verifySecretReferenceDomains(client);
-        expect(afterRewire.aggregateDigest).not.toBe(beforeSecrets.aggregateDigest);
-        // identity match should fail because history ref differs from current
-        expect(afterRewire.match).toBe(false);
+          // Mutate all secret refs
+          await client.query(
+            `UPDATE platform_identity_providers SET secret_ref = 'kms://rewired/identity'`,
+          );
+          await client.query(
+            `UPDATE platform_connectors SET shared_secret_ref = 'kms://rewired/shared'`,
+          );
+          const afterRewire = await verifySecretReferenceDomains(client);
+          expect(afterRewire.aggregateDigest).not.toBe(beforeSecrets.aggregateDigest);
+          // identity match should fail because history ref differs from current
+          expect(afterRewire.match).toBe(false);
 
-        // Restore and delete published revision
-        await seedRecoveryFixture(client);
-        const beforeRev = await digestResourceRevisions(client);
-        await client.query(`DELETE FROM platform_resource_revisions WHERE status = 'published'`);
-        const afterRev = await digestResourceRevisions(client);
-        expect(compareDigests(beforeRev, afterRev)).toBe(false);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+          // Restore and delete published revision
+          await seedRecoveryFixture(client);
+          const beforeRev = await digestResourceRevisions(client);
+          await client.query(`DELETE FROM platform_resource_revisions WHERE status = 'published'`);
+          const afterRev = await digestResourceRevisions(client);
+          expect(compareDigests(beforeRev, afterRev)).toBe(false);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    }, 120_000);
 
-  it('full semantic digests catch non-id field mutations and pointer cross-resource swaps', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const { digestAllRequiredTables, digestAuditLogs, verifyPublicationPointers } =
-      await import('./recovery/invariants');
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const beforeTables = await digestAllRequiredTables(client);
-        const beforeAudits = await digestAuditLogs(client);
-        const beforePointers = await verifyPublicationPointers(client);
+    it('full semantic digests catch non-id field mutations and pointer cross-resource swaps', async () => {
+      const { digestAllRequiredTables, digestAuditLogs, verifyPublicationPointers } =
+        await import('./recovery/invariants');
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const beforeTables = await digestAllRequiredTables(client);
+          const beforeAudits = await digestAuditLogs(client);
+          const beforePointers = await verifyPublicationPointers(client);
 
-        // Non-id semantic field change on audit
-        await client.query(
-          `UPDATE platform_audit_logs SET result = 'failed' WHERE id = (SELECT id FROM platform_audit_logs LIMIT 1)`,
-        );
-        const afterAudits = await digestAuditLogs(client);
-        expect(afterAudits.digest).not.toBe(beforeAudits.digest);
+          // Non-id semantic field change on audit
+          await client.query(
+            `UPDATE platform_audit_logs SET result = 'failed' WHERE id = (SELECT id FROM platform_audit_logs LIMIT 1)`,
+          );
+          const afterAudits = await digestAuditLogs(client);
+          expect(afterAudits.digest).not.toBe(beforeAudits.digest);
 
-        // Non-id change on resource revisions checksum
-        await seedRecoveryFixture(client);
-        await client.query(
-          `UPDATE platform_resource_revisions SET checksum = 'mutated-checksum' WHERE id = (SELECT id FROM platform_resource_revisions LIMIT 1)`,
-        );
-        const afterTables = await digestAllRequiredTables(client);
-        const revTable = afterTables.find((t) => t.name === 'platform_resource_revisions');
-        const beforeRevTable = beforeTables.find((t) => t.name === 'platform_resource_revisions');
-        expect(revTable?.digest).not.toBe(beforeRevTable?.digest);
+          // Non-id change on resource revisions checksum
+          await seedRecoveryFixture(client);
+          await client.query(
+            `UPDATE platform_resource_revisions SET checksum = 'mutated-checksum' WHERE id = (SELECT id FROM platform_resource_revisions LIMIT 1)`,
+          );
+          const afterTables = await digestAllRequiredTables(client);
+          const revTable = afterTables.find((t) => t.name === 'platform_resource_revisions');
+          const beforeRevTable = beforeTables.find((t) => t.name === 'platform_resource_revisions');
+          expect(revTable?.digest).not.toBe(beforeRevTable?.digest);
 
-        // Pointer digest binds target revision checksum: mutate pointed checksum → digest drifts
-        await seedRecoveryFixture(client);
-        const pointersBefore = await verifyPublicationPointers(client);
-        await client.query(
-          `UPDATE platform_resource_revisions SET checksum = 'mutated-target-checksum'
+          // Pointer digest binds target revision checksum: mutate pointed checksum → digest drifts
+          await seedRecoveryFixture(client);
+          const pointersBefore = await verifyPublicationPointers(client);
+          await client.query(
+            `UPDATE platform_resource_revisions SET checksum = 'mutated-target-checksum'
            WHERE resource_id IN (SELECT id FROM platform_connectors WHERE published_revision IS NOT NULL LIMIT 1)
               OR revision IN (SELECT published_revision FROM platform_connectors WHERE published_revision IS NOT NULL LIMIT 1)`,
-        );
-        const pointersAfter = await verifyPublicationPointers(client);
-        expect(pointersAfter.pointerDigest).not.toBe(pointersBefore.pointerDigest);
-        expect(pointersBefore.match).toBe(true);
+          );
+          const pointersAfter = await verifyPublicationPointers(client);
+          expect(pointersAfter.pointerDigest).not.toBe(pointersBefore.pointerDigest);
+          expect(pointersBefore.match).toBe(true);
 
-        // Cross-resource same revision number must not satisfy wrong owner (dangling when owner missing)
-        await client.query(
-          `INSERT INTO platform_resource_revisions (id, resource_type, resource_id, revision, status, payload, checksum)
+          // Cross-resource same revision number must not satisfy wrong owner (dangling when owner missing)
+          await client.query(
+            `INSERT INTO platform_resource_revisions (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('prev_swap_only', 'connectors', 'other-resource-id', 99, 'published', '{}'::jsonb, 'swap-only')
            ON CONFLICT DO NOTHING`,
-        );
-        await client.query(
-          `UPDATE platform_connectors SET published_revision = 99
+          );
+          await client.query(
+            `UPDATE platform_connectors SET published_revision = 99
            WHERE id = (SELECT id FROM platform_connectors LIMIT 1)`,
-        );
-        // Owner resource_id for connector does not equal 'other-resource-id' → dangling-pointer
-        const swapped = await verifyPublicationPointers(client);
-        expect(swapped.match).toBe(false);
-        void beforePointers;
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
-});
+          );
+          // Owner resource_id for connector does not equal 'other-resource-id' → dangling-pointer
+          const swapped = await verifyPublicationPointers(client);
+          expect(swapped.match).toBe(false);
+          void beforePointers;
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    }, 120_000);
+  },
+);
 
 describe('privacy', () => {
   it('blocks ciphertext keys', () => {
