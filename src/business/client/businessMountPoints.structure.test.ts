@@ -41,9 +41,10 @@ const isThinMount = (source: string): boolean => {
 describe('business client mount-point thinness', () => {
   it('BusinessDesktopRoutes is a declarative re-export of enterprise routes', () => {
     const src = read(path.join(BUSINESS_CLIENT, 'BusinessDesktopRoutes.tsx'));
-    expect(src).toMatch(/EnterpriseDesktopRoutesWithoutMainLayout/);
+    expect(src).toMatch(/getEnterpriseDesktopRoutesWithoutMainLayout/);
+    expect(src).toMatch(/getBusinessDesktopRoutesWithoutMainLayout/);
     expect(src).not.toMatch(/createAdminRouteTree|AdminRootGate/);
-    expect(nonCommentLines(src).length).toBeLessThan(25);
+    expect(nonCommentLines(src).length).toBeLessThan(35);
   });
 
   it('BusinessMobileRoutes is a declarative re-export of enterprise mobile routes', () => {

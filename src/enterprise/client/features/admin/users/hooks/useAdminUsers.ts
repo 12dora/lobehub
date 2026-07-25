@@ -92,20 +92,6 @@ export const refreshAdminUsersList = async () => {
 };
 
 /**
- * Invalidate detail + audit caches independently.
- * One rejection must not skip the other (post-commit consistency).
- * Rethrows the first rejection so callers can surface a single warning.
- */
-export const refreshAdminUserDetail = async (userId: string) => {
-  const results = await Promise.allSettled([
-    invalidateAdminUserDetail(userId),
-    invalidateAdminUserAudit(userId),
-  ]);
-  const rejected = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-  if (rejected) throw rejected.reason;
-};
-
-/**
  * Best-effort cache invalidation after a successful mutation.
  * Never rethrows — a refresh failure must not surface as a mutation failure
  * (would invite unsafe retries of irreversible commits). Surfaces a toast instead.

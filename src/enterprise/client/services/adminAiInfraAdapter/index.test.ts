@@ -1,7 +1,8 @@
 import { toast } from '@lobehub/ui/base-ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AdminAiProviderService, resolveProviderRecord } from './index';
+import { AdminAiProviderService } from './index';
+import { getDetail } from './shared';
 
 const mocks = vi.hoisted(() => ({
   applyImmediate: vi.fn(),
@@ -159,6 +160,21 @@ describe('AdminAiProviderService adapter', () => {
     );
   });
 
+  it('explicit empty baseURL clears public config.endpoint while secret stays undefined', async () => {
+    await service.updateAiProviderConfig('prov', { keyVaults: { baseURL: '' } });
+    expect(mocks.applyImmediate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.not.objectContaining({ endpoint: expect.anything() }),
+        secret: undefined,
+      }),
+    );
+    const payload = mocks.applyImmediate.mock.calls[0]![0] as { config: Record<string, unknown> };
+    expect(payload.config).not.toHaveProperty('endpoint');
+    expect(payload.config).not.toEqual(
+      expect.objectContaining({ endpoint: 'https://keep.example' }),
+    );
+  });
+
   it('create maps baseURL to config.endpoint and apiKey to replace secret', async () => {
     await service.createAiProvider({
       id: 'custom-1',
@@ -175,15 +191,15 @@ describe('AdminAiProviderService adapter', () => {
     );
   });
 
-  it('resolves providerKey without list scan', async () => {
-    const record = await resolveProviderRecord('prov');
-    expect(record).toMatchObject({ id: 'uuid-p', providerKey: 'prov' });
+  it('getDetail resolves providerKey without list scan', async () => {
+    const detail = await getDetail('prov');
+    expect(detail.draft).toMatchObject({ id: 'uuid-p', providerKey: 'prov' });
     expect(mocks.get).toHaveBeenCalledWith({ providerKey: 'prov' });
     expect(mocks.list).not.toHaveBeenCalled();
   });
 
-  it('resolves platform UUID via id lookup', async () => {
-    await resolveProviderRecord('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  it('getDetail resolves platform UUID via id lookup', async () => {
+    await getDetail('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
     expect(mocks.get).toHaveBeenCalledWith({ id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
   });
 
@@ -247,6 +263,61 @@ describe('AdminAiProviderService adapter', () => {
     expect(mocks.getBatch).toHaveBeenCalledWith({ ids: ['uuid-1', 'uuid-2'] });
     expect(state.enabledAiProviders.map((p) => p.id)).toEqual(['p1', 'p2']);
     expect(state.enabledAiModels.some((m) => m.providerId === 'p1' && m.id === 'm1')).toBe(true);
+  });
+
+  it('getAiProviderRuntimeState rejects partial batch failures instead of empty models', async () => {
+    mocks.list.mockResolvedValue({
+      items: [
+        {
+          config: {},
+          displayName: 'P1',
+          enabled: true,
+          id: 'uuid-1',
+          providerKey: 'p1',
+          settings: {},
+          sort: 0,
+          source: 'custom',
+          status: 'published',
+        },
+        {
+          config: {},
+          displayName: 'P2',
+          enabled: true,
+          id: 'uuid-2',
+          providerKey: 'p2',
+          settings: {},
+          sort: 1,
+          source: 'custom',
+          status: 'published',
+        },
+      ],
+      nextCursor: null,
+    });
+    mocks.getBatch.mockResolvedValue({
+      failedIds: ['uuid-2'],
+      failedProviderKeys: ['p2'],
+      items: [
+        {
+          ...detailFixture,
+          draft: {
+            ...detailFixture.draft,
+            id: 'uuid-1',
+            models: detailFixture.draft.models,
+            providerKey: 'p1',
+          },
+        },
+      ],
+    });
+
+    await expect(service.getAiProviderRuntimeState()).rejects.toMatchObject({
+      data: {
+        errorData: {
+          code: 'PLATFORM_AI_PROVIDER_PARTIAL_LOAD',
+          details: { count: 2 },
+        },
+      },
+      message: 'PLATFORM_AI_PROVIDER_PARTIAL_LOAD',
+    });
   });
 
   it('updateAiProviderOrder resolves details once without list scan', async () => {

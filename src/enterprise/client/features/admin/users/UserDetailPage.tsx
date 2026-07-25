@@ -1,8 +1,9 @@
 'use client';
 
-import { Alert, Avatar, Text } from '@lobehub/ui';
+import { Alert, Avatar, Skeleton, Text } from '@lobehub/ui';
 import { Button, Tabs } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
@@ -71,6 +72,7 @@ const isNotFoundError = (error: unknown): boolean => {
 
 const UserDetailPage = memo(() => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const navigate = useNavigate();
   const { id: userId } = useParams<{ id: string }>();
   const { permissions, roles: actorRoles, authMethod } = useAdminAccess();
@@ -207,8 +209,8 @@ const UserDetailPage = memo(() => {
   if (isLoading && !data && !error) {
     return (
       <AdminPageTemplate title={t('users.detail.loading')}>
-        <div className={styles.state} role="status">
-          <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+        <div aria-label={t('primitives.dataTable.loading')} className={styles.state} role="status">
+          <Skeleton title active={!reduceMotion} paragraph={{ rows: 6 }} />
         </div>
       </AdminPageTemplate>
     );

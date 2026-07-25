@@ -1,6 +1,8 @@
 'use client';
 
 import { toast } from '@lobehub/ui/base-ui';
+import debug from 'debug';
+import type { TFunction } from 'i18next';
 import { type Dispatch, type MutableRefObject, type SetStateAction, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
@@ -28,35 +30,49 @@ import {
   projectPolicyEditorOwnedDraft,
 } from '../settingsPolicyController';
 import { runPostCommitRefresh } from '../settingsPolicyPostCommitRefresh';
+import {
+  type ResetPartialFailure,
+  runResetDefaultsConfirm,
+  runRetryResetRestore,
+  type SettingsPolicyResetTransition,
+} from '../settingsPolicyReset';
 import { refreshAdminSettingsDraft } from './useAdminSettings';
 
 type DraftSnapshot = AdminSettingsGetDraftOutput;
 
-export const useSettingsPolicyPersistence = (params: {
+const log = debug('lobe-client:admin:settings-policy');
+
+/**
+ * CAS + draft identity the persistence commands mutate against.
+ * Split from the 38-parameter god surface (ASI-003) so save/publish/reset share one view.
+ */
+export interface SettingsPolicyCasBindings {
   activeBaseRevision: number;
   activeDraftToken: string;
-  /** Trusted server auth method from getMyAccess — closed union for reauth APIs. */
-  authMethod: AdminReauthAuthMethod | undefined;
-  canPublish: boolean;
-  canUpdate: boolean;
   conflictState: ConflictState;
   data: DraftSnapshot | undefined;
-  dirty: boolean;
   dispatchConflict: Dispatch<ConflictEvent>;
-  draft: DraftMap;
   enterRevisionConflict: () => Promise<void>;
-  hydratedRef: MutableRefObject<boolean>;
-  impact: { pathsWithOverrides: number; totalOverrideRows: number } | null;
-  isServiceModelPublishedPath: (path: string) => boolean;
-  mutate: KeyedMutator<DraftSnapshot>;
-  originalBaseDraftRef: MutableRefObject<DraftMap>;
-  ownPublishedOverrideCount: number;
-  resetValidation: () => void;
   revisionConflict: boolean;
   setActiveBaseRevision: (revision: number) => void;
   setActiveDraftToken: (token: string) => void;
+}
+
+/** Local draft editor state + setters owned by the page/editor hook. */
+export interface SettingsPolicyDraftBindings {
+  dirty: boolean;
+  draft: DraftMap;
+  hydratedRef: MutableRefObject<boolean>;
+  isServiceModelPublishedPath: (path: string) => boolean;
+  originalBaseDraftRef: MutableRefObject<DraftMap>;
   setDirty: (dirty: boolean) => void;
   setDraft: Dispatch<SetStateAction<DraftMap>>;
+}
+
+/** Validation fingerprint + user-facing feedback surface. */
+export interface SettingsPolicyFeedbackBindings {
+  impact: { pathsWithOverrides: number; totalOverrideRows: number } | null;
+  resetValidation: () => void;
   setImpact: Dispatch<
     SetStateAction<{ pathsWithOverrides: number; totalOverrideRows: number } | null>
   >;
@@ -70,32 +86,88 @@ export const useSettingsPolicyPersistence = (params: {
   validatedBaseRevision: number | null;
   validatedDraftToken: string | null;
   validatedFingerprint: string | null;
-}) => {
+}
+
+export interface SettingsPolicyPersistenceParams {
+  authMethod: AdminReauthAuthMethod | undefined;
+  canPublish: boolean;
+  canUpdate: boolean;
+  cas: SettingsPolicyCasBindings;
+  draftEditor: SettingsPolicyDraftBindings;
+  feedback: SettingsPolicyFeedbackBindings;
+  mutate: KeyedMutator<DraftSnapshot>;
+  ownPublishedOverrideCount: number;
+  /** Partial reset failure — when set, all other mutations must stay locked. */
+  resetPartialFailure: ResetPartialFailure | null;
+  setResetPartialFailure: (value: ResetPartialFailure | null) => void;
+}
+
+const mapUserFacingError = (err: unknown, t: TFunction<'admin'>): string => {
+  const mapped = mapEnterpriseError(err);
+  const generic = t('settingsPolicy.errors.generic', {
+    defaultValue: 'The operation failed. Try again.',
+  });
+  // Never fall back to a wire code or raw exception text (XT-004 / ASI-010).
+  if (mapped?.i18nKey) return t(mapped.i18nKey as never, { defaultValue: generic });
+  return generic;
+};
+
+/** Map server validation issue codes to safe, path-interpolated copy — never issue.message. */
+const formatValidationIssue = (
+  issue: { code: string; path: string },
+  t: TFunction<'admin'>,
+): string => {
+  const path = issue.path || '';
+  const key = `settingsPolicy.validation.${issue.code}`;
+  return t(key as never, {
+    defaultValue: t('settingsPolicy.validation.generic', {
+      defaultValue: 'Invalid value at {{path}}',
+      path,
+    }),
+    path,
+  });
+};
+
+export const useSettingsPolicyPersistence = (params: SettingsPolicyPersistenceParams) => {
   const { t } = useTranslation('admin');
   const {
-    activeBaseRevision,
-    activeDraftToken,
     authMethod,
     canPublish,
     canUpdate,
+    cas,
+    draftEditor,
+    feedback,
+    mutate,
+    ownPublishedOverrideCount,
+    resetPartialFailure,
+    setResetPartialFailure,
+  } = params;
+
+  const {
+    activeBaseRevision,
+    activeDraftToken,
     conflictState,
     data,
-    dirty,
     dispatchConflict,
-    draft,
     enterRevisionConflict,
-    hydratedRef,
-    impact,
-    isServiceModelPublishedPath,
-    mutate,
-    originalBaseDraftRef,
-    ownPublishedOverrideCount,
-    resetValidation,
     revisionConflict,
     setActiveBaseRevision,
     setActiveDraftToken,
+  } = cas;
+
+  const {
+    dirty,
+    draft,
+    hydratedRef,
+    isServiceModelPublishedPath,
+    originalBaseDraftRef,
     setDirty,
     setDraft,
+  } = draftEditor;
+
+  const {
+    impact,
+    resetValidation,
     setImpact,
     setRefreshError,
     setSaveError,
@@ -107,7 +179,9 @@ export const useSettingsPolicyPersistence = (params: {
     validatedBaseRevision,
     validatedDraftToken,
     validatedFingerprint,
-  } = params;
+  } = feedback;
+
+  const mutationsLocked = Boolean(resetPartialFailure) || revisionConflict;
 
   const refreshAfterCommit = useCallback(async () => {
     const result = await runPostCommitRefresh({
@@ -131,6 +205,7 @@ export const useSettingsPolicyPersistence = (params: {
   }, [refreshAfterCommit]);
 
   const handleSaveDraft = useCallback(async () => {
+    if (mutationsLocked) return;
     if (
       !data ||
       !canUpdate ||
@@ -172,8 +247,11 @@ export const useSettingsPolicyPersistence = (params: {
         return;
       }
       setSaveState('failed');
-      setSaveError(
-        mapped ? t(mapped.i18nKey as never, { defaultValue: mapped.code }) : String(err),
+      setSaveError(mapUserFacingError(err, t));
+      toast.error(
+        t('settingsPolicy.errors.saveFailed', {
+          defaultValue: 'Could not save the draft. Try again.',
+        }),
       );
     }
   }, [
@@ -186,6 +264,7 @@ export const useSettingsPolicyPersistence = (params: {
     draft,
     enterRevisionConflict,
     isServiceModelPublishedPath,
+    mutationsLocked,
     originalBaseDraftRef,
     refreshAfterCommit,
     resetValidation,
@@ -201,6 +280,7 @@ export const useSettingsPolicyPersistence = (params: {
   ]);
 
   const handleValidate = useCallback(async () => {
+    if (mutationsLocked) return;
     if (
       dirty ||
       revisionConflict ||
@@ -221,17 +301,29 @@ export const useSettingsPolicyPersistence = (params: {
         setValidatedBaseRevision(activeBaseRevision);
       } else {
         resetValidation();
+        const firstIssue = result.issues[0];
+        const first = firstIssue
+          ? formatValidationIssue(firstIssue, t)
+          : t('settingsPolicy.validation.generic', {
+              defaultValue: 'Invalid value',
+              path: '',
+            });
         setValidationMsg(
           t('settingsPolicy.validateFail', {
             count: result.issues.length,
-            first: result.issues[0]?.message ?? '',
+            first,
           }),
         );
       }
     } catch (err) {
       resetValidation();
-      const mapped = mapEnterpriseError(err);
-      setValidationMsg(mapped ? mapped.code : String(err));
+      setValidationMsg(
+        t('settingsPolicy.validateRequestFailed', {
+          defaultValue: 'Could not validate the draft. Try again.',
+        }),
+      );
+      // Keep the technical cause out of the UI; log mapped label for diagnostics only.
+      log('validate request failed: %s %O', mapUserFacingError(err, t), err);
     }
   }, [
     activeBaseRevision,
@@ -240,6 +332,7 @@ export const useSettingsPolicyPersistence = (params: {
     data?.draftToken,
     dirty,
     draft,
+    mutationsLocked,
     resetValidation,
     revisionConflict,
     setImpact,
@@ -251,6 +344,7 @@ export const useSettingsPolicyPersistence = (params: {
   ]);
 
   const handlePublish = useCallback(() => {
+    if (mutationsLocked) return;
     if (
       !data ||
       !canPublish ||
@@ -303,6 +397,12 @@ export const useSettingsPolicyPersistence = (params: {
           setDirty(false);
           dispatchConflict({ type: 'CLEAR' });
           setRefreshError(null);
+          // Success is based on the mutation, not the later refresh (XT-008).
+          toast.success(
+            t('settingsPolicy.publishSuccess', {
+              defaultValue: 'Settings policy published.',
+            }),
+          );
           // Publish committed — refresh is retry-only so a failure never re-publishes.
           await refreshAfterCommit();
         } catch (err) {
@@ -329,6 +429,7 @@ export const useSettingsPolicyPersistence = (params: {
     draft,
     enterRevisionConflict,
     impact,
+    mutationsLocked,
     refreshAfterCommit,
     revisionConflict,
     setDirty,
@@ -340,10 +441,166 @@ export const useSettingsPolicyPersistence = (params: {
     validatedBaseRevision,
   ]);
 
+  /**
+   * Apply one reset/compensation transition. All coordinated setter bursts for
+   * reset live here so handlers only call `apply(transition)` once (ASI-003).
+   */
+  const applyResetTransition = useCallback(
+    (transition: SettingsPolicyResetTransition) => {
+      switch (transition.kind) {
+        case 'ADOPT_EMPTY_DRAFT': {
+          setActiveBaseRevision(transition.baseRevision);
+          setActiveDraftToken(transition.draftToken);
+          return;
+        }
+        case 'RESET_PUBLISHED': {
+          clearLocalDraft(transition.registryVersion, transition.priorBaseRevision);
+          clearConflictDraft();
+          setDraft({});
+          setDirty(false);
+          setSaveState('idle');
+          setSaveError(null);
+          setValidationMsg(null);
+          setImpact(null);
+          resetValidation();
+          setRefreshError(null);
+          setResetPartialFailure(null);
+          return;
+        }
+        case 'RESTORED': {
+          setDraft(transition.draft);
+          setDirty(false);
+          setActiveBaseRevision(transition.baseRevision);
+          setActiveDraftToken(transition.draftToken);
+          originalBaseDraftRef.current = transition.draft;
+          setSaveState('idle');
+          setSaveError(null);
+          setValidationMsg(null);
+          setImpact(null);
+          resetValidation();
+          setResetPartialFailure(null);
+          dispatchConflict({ type: 'CLEAR' });
+          return;
+        }
+        case 'RESET_PARTIAL_FAILURE': {
+          const { partial } = transition;
+          setResetPartialFailure(partial);
+          setActiveBaseRevision(partial.committedBaseRevision);
+          setActiveDraftToken(partial.committedDraftToken);
+          setDraft({});
+          setDirty(false);
+          setSaveState('failed');
+          setSaveError(partial.lastError);
+          return;
+        }
+        case 'OPERATION_FAILED': {
+          setSaveState('failed');
+          setSaveError(transition.error);
+          return;
+        }
+        case 'UPDATE_PARTIAL_LAST_ERROR': {
+          setResetPartialFailure({
+            ...transition.prior,
+            lastError: transition.lastError,
+          });
+          setSaveState('failed');
+          setSaveError(transition.lastError);
+          return;
+        }
+        case 'CLEAR_PARTIAL': {
+          setResetPartialFailure(null);
+          return;
+        }
+        default: {
+          const _exhaustive: never = transition;
+          return _exhaustive;
+        }
+      }
+    },
+    [
+      dispatchConflict,
+      originalBaseDraftRef,
+      resetValidation,
+      setActiveBaseRevision,
+      setActiveDraftToken,
+      setDirty,
+      setDraft,
+      setImpact,
+      setRefreshError,
+      setResetPartialFailure,
+      setSaveError,
+      setSaveState,
+      setValidationMsg,
+    ],
+  );
+
+  const isRevisionConflict = useCallback(
+    (err: unknown) => mapEnterpriseError(err)?.code === 'PLATFORM_REVISION_CONFLICT',
+    [],
+  );
+
+  const mapError = useCallback((err: unknown) => mapUserFacingError(err, t), [t]);
+
+  const toastResetError = useCallback(
+    (kind: 'resetFailed' | 'resetPartial' | 'restoreFailed') => {
+      if (kind === 'resetFailed') toast.error(t('settingsPolicy.resetFailed'));
+      else if (kind === 'resetPartial') toast.error(t('settingsPolicy.resetPartial.title'));
+      else toast.error(t('settingsPolicy.resetPartial.restoreFailed'));
+    },
+    [t],
+  );
+
+  const toastResetSuccess = useCallback(() => {
+    toast.success(
+      t('settingsPolicy.resetSuccess', {
+        defaultValue: 'Platform defaults restored.',
+      }),
+    );
+  }, [t]);
+
+  const retryResetRestore = useCallback(async () => {
+    if (!resetPartialFailure) return;
+    await runRetryResetRestore({
+      apply: applyResetTransition,
+      isRevisionConflict,
+      mapError,
+      onConflict: enterRevisionConflict,
+      onRefreshAfterCommit: refreshAfterCommit,
+      onToastError: toastResetError,
+      onToastSuccess: () => {
+        toast.success(t('settingsPolicy.resetPartial.retryRestore'));
+      },
+      partial: resetPartialFailure,
+      publishWithReauth: (run) => withAdminReauthRetry(run, { authMethod }),
+      service: adminSettingsService,
+    });
+  }, [
+    applyResetTransition,
+    authMethod,
+    enterRevisionConflict,
+    isRevisionConflict,
+    mapError,
+    refreshAfterCommit,
+    resetPartialFailure,
+    t,
+    toastResetError,
+  ]);
+
+  // Clear partial recovery only after a successful refresh — a failed refresh must keep
+  // the committed empty-draft token and Retry restore affordance (ASI-002 via dismiss path).
+  const dismissResetPartialByRefresh = useCallback(async () => {
+    const ok = await refreshAfterCommit();
+    if (!ok) return;
+    setResetPartialFailure(null);
+    setSaveState('idle');
+    setSaveError(null);
+  }, [refreshAfterCommit, setResetPartialFailure, setSaveError, setSaveState]);
+
   // Restore defaults: clear owned overrides and publish. Empty owned payload `{}` — server
   // policy-editor ownership preserves foreign service-model rows (do not send them from the client).
   const handleResetDefaults = useCallback(() => {
     if (
+      mutationsLocked ||
       !data ||
       !canPublish ||
       !canUpdate ||
@@ -357,74 +614,36 @@ export const useSettingsPolicyPersistence = (params: {
     }
     const registryVersion = data.registryVersion;
     const baseToken = activeDraftToken;
-    const baseRevision = activeBaseRevision;
+    const priorBaseRevision = activeBaseRevision;
     // Current (clean) draft — restored if saveDraft commits but publish fails.
     const priorDraft = draft;
-    const resetDraft = {} as DraftMap;
     openDangerConfirm({
       confirmText: t('settingsPolicy.resetDefaults'),
       content: t('settingsPolicy.resetDefaultsDesc'),
       onConfirm: async () => {
-        const reason = t('settingsPolicy.resetReason');
-        let saved: Awaited<ReturnType<typeof adminSettingsService.saveDraft>> | null = null;
-        try {
-          saved = await adminSettingsService.saveDraft({
-            draft: resetDraft,
-            expectedDraftToken: baseToken,
-            reason,
-          });
-          const frozen = Object.freeze({
-            expectedDraftToken: saved.draftToken,
-            expectedRevision: saved.baseRevision,
-            reason,
-          });
-          await withAdminReauthRetry(() => adminSettingsService.publish({ ...frozen }), {
-            authMethod,
-          });
-          // Published — do not attempt a restore in the catch below.
-          saved = null;
-          clearLocalDraft(registryVersion, baseRevision);
-          clearConflictDraft();
-          setDraft({});
-          setDirty(false);
-          setSaveState('idle');
-          setSaveError(null);
-          setValidationMsg(null);
-          setImpact(null);
-          resetValidation();
-          setRefreshError(null);
-          await refreshAfterCommit();
-        } catch (err) {
-          // saveDraft committed an empty draft but publish never landed — put the prior
-          // draft back so the server draft is not left cleared. Best-effort only.
-          if (saved) {
-            try {
-              await adminSettingsService.saveDraft({
-                draft: priorDraft,
-                expectedDraftToken: saved.draftToken,
-                reason: `${reason} (restore)`,
-              });
-            } catch {
-              /* best-effort restore */
-            }
-          }
-          const mapped = mapEnterpriseError(err);
-          if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
-            await enterRevisionConflict();
-            return;
-          }
-          setSaveState('failed');
-          setSaveError(
-            mapped ? t(mapped.i18nKey as never, { defaultValue: mapped.code }) : String(err),
-          );
-          toast.error(t('settingsPolicy.resetFailed'));
-        }
+        await runResetDefaultsConfirm({
+          apply: applyResetTransition,
+          baseToken,
+          isRevisionConflict,
+          mapError,
+          onConflict: enterRevisionConflict,
+          onRefreshAfterCommit: refreshAfterCommit,
+          onToastError: toastResetError,
+          onToastSuccess: toastResetSuccess,
+          priorBaseRevision,
+          priorDraft,
+          publishWithReauth: (run) => withAdminReauthRetry(run, { authMethod }),
+          reason: t('settingsPolicy.resetReason'),
+          registryVersion,
+          service: adminSettingsService,
+        });
       },
       title: t('settingsPolicy.resetDefaults'),
     });
   }, [
     activeBaseRevision,
     activeDraftToken,
+    applyResetTransition,
     authMethod,
     canPublish,
     canUpdate,
@@ -432,25 +651,24 @@ export const useSettingsPolicyPersistence = (params: {
     dirty,
     draft,
     enterRevisionConflict,
+    isRevisionConflict,
+    mapError,
+    mutationsLocked,
     ownPublishedOverrideCount,
     refreshAfterCommit,
-    resetValidation,
     revisionConflict,
-    setDirty,
-    setDraft,
-    setImpact,
-    setRefreshError,
-    setSaveError,
-    setSaveState,
-    setValidationMsg,
     t,
+    toastResetError,
+    toastResetSuccess,
   ]);
 
   return {
+    dismissResetPartialByRefresh,
     handlePublish,
     handleResetDefaults,
     handleSaveDraft,
     handleValidate,
     retryRefresh,
+    retryResetRestore,
   };
 };

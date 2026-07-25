@@ -3,11 +3,10 @@
 import { memo } from 'react';
 
 import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
+import { ImageFormView } from '@/features/SettingsForms';
 import { usePermission } from '@/hooks/usePermission';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/slices/settings/selectors';
-
-import ImageFormView from './ImageFormView';
 
 const ImageSettings = memo(() => {
   const { allowed: canManageServiceModel, reason } = usePermission('manage_settings');

@@ -7,8 +7,8 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
+import { MemoryFormView } from '@/features/SettingsForms';
 import { useSaveState } from '@/hooks/useSaveState';
-import MemoryFormView from '@/routes/(main)/settings/memory/features/MemoryFormView';
 
 import DirtyDraftAlert from './DirtyDraftAlert';
 import { usePlatformSettingsDefaults } from './usePlatformSettingsDefaults';

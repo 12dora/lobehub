@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
+import { useSyncExternalStore } from 'react';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -27,17 +28,22 @@ export type AdminPublishOutcome = {
 
 /**
  * Explicit service-owned store for the last applyImmediate/publishNow outcome.
- * Avoids a bare module-level `let` global while keeping a stable singleton API
- * for DraftPublishBanner (no React store dependency in the adapter layer).
+ * Observable via subscribe/getSnapshot so React can use useSyncExternalStore
+ * without coupling the adapter layer to a UI store framework.
  */
 class AdminPublishOutcomeStore {
   #outcome: AdminPublishOutcome | null = null;
+  #listeners = new Set<() => void>();
 
   clear = () => {
+    if (this.#outcome === null) return;
     this.#outcome = null;
+    this.#emit();
   };
 
   get = () => this.#outcome;
+
+  getSnapshot = () => this.#outcome;
 
   record = (providerKey: string, result: { published?: boolean; publishError?: string | null }) => {
     this.#outcome = {
@@ -45,13 +51,24 @@ class AdminPublishOutcomeStore {
       published: result.published !== false,
       publishError: result.publishError ?? null,
     };
+    this.#emit();
+  };
+
+  subscribe = (listener: () => void) => {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  };
+
+  #emit = () => {
+    for (const listener of this.#listeners) listener();
   };
 }
 
 /** Singleton store used by provider/model adapter writes and the draft banner. */
 export const adminPublishOutcomeStore = new AdminPublishOutcomeStore();
 
-export const getLastAdminPublishOutcome = () => adminPublishOutcomeStore.get();
 export const clearLastAdminPublishOutcome = () => {
   adminPublishOutcomeStore.clear();
 };
@@ -62,6 +79,17 @@ export const recordPublishOutcome = (
 ) => {
   adminPublishOutcomeStore.record(providerKey, result);
 };
+
+/**
+ * React-friendly subscription to the last admin publish outcome.
+ * Lives next to the store so DraftPublishBanner re-renders when record() fires.
+ */
+export const useAdminPublishOutcome = (): AdminPublishOutcome | null =>
+  useSyncExternalStore(
+    adminPublishOutcomeStore.subscribe,
+    adminPublishOutcomeStore.getSnapshot,
+    adminPublishOutcomeStore.getSnapshot,
+  );
 
 /** Platform UUIDs use standard hex-with-hyphens shape; everything else is treated as providerKey. */
 const PLATFORM_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -75,15 +103,6 @@ export const getDetail = async (providerKeyOrId: string): Promise<AdminAiProvide
     return lambdaClient.admin.aiProviders.get.query({ id: providerKeyOrId });
   }
   return lambdaClient.admin.aiProviders.get.query({ providerKey: providerKeyOrId });
-};
-
-/**
- * Backward-compatible helper: resolve the platform draft row (id + providerKey) without
- * paginating the entire provider list.
- */
-export const resolveProviderRecord = async (providerKeyOrId: string) => {
-  const detail = await getDetail(providerKeyOrId);
-  return detail.draft;
 };
 
 /** Known built-in provider card (client catalog) used to seed the platform DB lazily. */

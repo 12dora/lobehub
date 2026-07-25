@@ -32,8 +32,8 @@ vi.mock('@/hooks/useSaveState', () => ({
   useSaveState: () => ({ isSaving: false, markSaved: vi.fn(), markSaving: vi.fn() }),
 }));
 
-vi.mock('@/routes/(main)/settings/memory/features/MemoryFormView', () => ({
-  default: () => <div data-testid="memory-form" />,
+vi.mock('@/features/SettingsForms', () => ({
+  MemoryFormView: () => <div data-testid="memory-form" />,
 }));
 
 vi.mock('@/enterprise/client/features/admin/primitives/AdminPageTemplate', () => ({

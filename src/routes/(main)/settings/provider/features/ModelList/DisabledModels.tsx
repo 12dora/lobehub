@@ -7,8 +7,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWRInfinite from 'swr/infinite';
 
-import { aiModelKeys } from '@/libs/swr/keys';
-import { aiModelService } from '@/services/aiModel';
 import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { aiModelSelectors } from '@/store/aiInfra/selectors';
 import { useGlobalStore } from '@/store/global';
@@ -53,6 +51,9 @@ const DisabledModels = memo<DisabledModelsProps>(({ activeTab, providerId }) => 
 
   // initial render source: provider list already in store (typically built-in + user merged)
   const disabledModels = useAiInfraStore(aiModelSelectors.disabledAiProviderModelList, isEqual);
+  // Injected service boundary (user singleton or admin adapter) + scoped SWR keys
+  const getAiProviderModelPage = useAiInfraStore((s) => s.getAiProviderModelPage);
+  const getDisabledModelsPageKey = useAiInfraStore((s) => s.getDisabledModelsPageKey);
 
   const baseIds = useMemo(() => new Set(disabledModels.map((m) => m.id)), [disabledModels]);
 
@@ -76,9 +77,9 @@ const DisabledModels = memo<DisabledModelsProps>(({ activeTab, providerId }) => 
 
       // start fetching after the initial list from store
       const offset = disabledModels.length + pageIndex * PAGE_SIZE;
-      return aiModelKeys.disabledModelsPage(providerId, offset);
+      return getDisabledModelsPageKey(providerId, offset);
     },
-    [disabledModels.length, providerId, remoteEnabled],
+    [disabledModels.length, getDisabledModelsPageKey, providerId, remoteEnabled],
   );
 
   const {
@@ -87,11 +88,15 @@ const DisabledModels = memo<DisabledModelsProps>(({ activeTab, providerId }) => 
     isValidating,
     setSize,
     size,
-  } = useSWRInfinite<AiProviderModelListItem[]>(getKey, async ([, id, offset]) => {
-    return aiModelService.getAiProviderModelList(id as string, {
+  } = useSWRInfinite<AiProviderModelListItem[]>(getKey, async (key) => {
+    // Key is either ['aiModel:disabledModelsPage', id, offset]
+    // or [swrScope, 'aiModel:disabledModelsPage', id, offset]
+    const provider = key.at(-2) as string;
+    const offset = key.at(-1) as number;
+    return getAiProviderModelPage(provider, {
       enabled: false,
       limit: PAGE_SIZE,
-      offset: offset as number,
+      offset,
     });
   });
 

@@ -13,6 +13,7 @@ import {
   buildAdminAgentRolloutPollKey,
 } from './swrKeys';
 import type {
+  AdminAgentCollectionMeta,
   AdminAgentDetailOutput,
   AdminAgentListInput,
   AdminAgentListItem,
@@ -26,30 +27,52 @@ interface CursorPage<T> {
   nextCursor: string | null;
 }
 
+export interface CollectedPages<T> {
+  items: T[];
+  nextCursor: string | null;
+  /** True when the page ceiling stopped the drain while a next cursor remained. */
+  truncated: boolean;
+}
+
 /**
  * Hard cap on cursor-followed collection drains (detail aggregate + catalog preflights).
  * 20 pages × 100 items = 2,000 rows max per collection — enough for admin surfaces without
- * unbounded memory growth or a stuck cursor cycle.
+ * unbounded memory growth or a stuck cursor cycle. Callers MUST surface {@link CollectedPages.truncated}
+ * so operators never treat a partial array as complete.
  */
 export const ADMIN_AGENT_COLLECTION_PAGE_LIMIT = 20;
 
-const collectPages = async <T>(fetchPage: (cursor?: string) => Promise<CursorPage<T>>) => {
+const collectPages = async <T>(
+  fetchPage: (cursor?: string) => Promise<CursorPage<T>>,
+): Promise<CollectedPages<T>> => {
   const items: T[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
   let pages = 0;
+  let truncated = false;
+  /** Residual nextCursor when the drain stops early (page ceiling or cycle). */
+  let residualCursor: string | null | undefined;
   do {
     if (cursor) {
       // Cycle-safe: a repeating opaque cursor must not spin forever.
-      if (seenCursors.has(cursor)) break;
+      if (seenCursors.has(cursor)) {
+        truncated = true;
+        residualCursor = cursor;
+        break;
+      }
       seenCursors.add(cursor);
     }
     const page = await fetchPage(cursor);
     items.push(...page.items);
+    residualCursor = page.nextCursor ?? null;
     cursor = page.nextCursor ?? undefined;
     pages += 1;
-  } while (cursor && pages < ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
-  return items;
+    if (cursor && pages >= ADMIN_AGENT_COLLECTION_PAGE_LIMIT) {
+      truncated = true;
+      break;
+    }
+  } while (cursor);
+  return { items, nextCursor: truncated ? (residualCursor ?? null) : null, truncated };
 };
 
 /**
@@ -92,9 +115,22 @@ export const fetchAdminAgentDetail = async (
     // Skip the read entirely when the server capability is off, rather than touching a gated API.
     rolloutsEnabled
       ? collectPages((cursor) => client.listRollouts({ agentId: id, cursor, limit: 100 }))
-      : Promise.resolve([] as AdminAgentDetailOutput['rollouts']),
+      : Promise.resolve({
+          items: [] as AdminAgentDetailOutput['rollouts'],
+          nextCursor: null,
+          truncated: false,
+        }),
     collectPages((cursor) => client.listVersions({ agentId: id, cursor, limit: 100 })),
   ]);
+
+  const collectionMeta: AdminAgentCollectionMeta = {
+    assignmentsNextCursor: assignments.nextCursor,
+    assignmentsTruncated: assignments.truncated,
+    rolloutsNextCursor: rollouts.nextCursor,
+    rolloutsTruncated: rollouts.truncated,
+    versionsNextCursor: versions.nextCursor,
+    versionsTruncated: versions.truncated,
+  };
 
   // API boundary: validate the assembled aggregate against the authoritative contract schema — the
   // SAME schema the refresh gate uses to prove freshness. A malformed authoritative response is a
@@ -104,36 +140,62 @@ export const fetchAdminAgentDetail = async (
   // Repository pages are ordered by opaque id and MUST NOT be treated as creation order.
   return adminPlatformAgentDetailAggregateOutputSchema.parse({
     ...detail,
-    assignments,
-    rollouts,
-    versions: sortPlatformAgentVersionsDesc(versions),
+    assignments: assignments.items,
+    collectionMeta,
+    rollouts: rollouts.items,
+    versions: sortPlatformAgentVersionsDesc(versions.items),
   }) as AdminAgentDetailOutput;
 };
 
-const ACTIVE_ROLLOUT_POLL_LIMIT = 20;
 const isActiveRollout = ({ status }: AdminAgentDetailOutput['rollouts'][number]) =>
   status === 'pending' || status === 'running';
 
-export const selectActiveRolloutJobIds = (detail?: AdminAgentDetailOutput): string[] =>
-  [...new Set(detail?.rollouts.filter(isActiveRollout).map(({ jobId }) => jobId) ?? [])].slice(
-    0,
-    ACTIVE_ROLLOUT_POLL_LIMIT,
-  );
+/**
+ * Active rollout job ids present on the loaded detail. No silent slice — every loaded active job
+ * participates in the poll key so the UI never freezes a 21st job while updating the first 20.
+ */
+export const selectActiveRolloutJobIds = (detail?: AdminAgentDetailOutput): string[] => [
+  ...new Set(detail?.rollouts.filter(isActiveRollout).map(({ jobId }) => jobId) ?? []),
+];
 
+/**
+ * One list-status poll for an Agent's rollouts (page-walked, capped). Prefer this over N×getRollout
+ * so a single interval produces one bounded request chain and every returned job is merged.
+ * Server-side `status: ['pending','running']` keeps the walk off completed history.
+ * When the list drain truncates, remaining jobIds from the poll key are fetched individually so
+ * already-loaded active jobs never go stale silently.
+ */
 export const fetchActiveAdminAgentRollouts = async (
   agentId: string,
   jobIds: string[],
   client: AdminAgentsClient,
-) => Promise.all(jobIds.map((jobId) => client.getRollout({ agentId, jobId })));
+): Promise<AdminAgentDetailOutput['rollouts']> => {
+  const listed = await collectPages((cursor) =>
+    client.listRollouts({ agentId, cursor, limit: 100, status: ['pending', 'running'] }),
+  );
+  const byId = new Map(listed.items.map((rollout) => [rollout.jobId, rollout]));
+  // Cover every job the poll key already tracks that the list page-walk omitted.
+  const missing = jobIds.filter((jobId) => !byId.has(jobId));
+  if (missing.length > 0) {
+    const extras = await Promise.all(missing.map((jobId) => client.getRollout({ agentId, jobId })));
+    for (const rollout of extras) byId.set(rollout.jobId, rollout);
+  }
+  return [...byId.values()];
+};
 
 export const mergePolledRollouts = (
   detail: AdminAgentDetailOutput,
   polled: AdminAgentDetailOutput['rollouts'],
 ): AdminAgentDetailOutput => {
   const byJobId = new Map(polled.map((rollout) => [rollout.jobId, rollout]));
+  const merged = detail.rollouts.map((rollout) => byJobId.get(rollout.jobId) ?? rollout);
+  // Surface jobs the list poll discovered that were not on the original aggregate (e.g. just started).
+  for (const rollout of polled) {
+    if (!detail.rollouts.some((row) => row.jobId === rollout.jobId)) merged.push(rollout);
+  }
   return {
     ...detail,
-    rollouts: detail.rollouts.map((rollout) => byJobId.get(rollout.jobId) ?? rollout),
+    rollouts: merged,
   };
 };
 

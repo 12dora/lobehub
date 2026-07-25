@@ -73,27 +73,6 @@ export const resolveLiveBodyAccess = (params: {
 };
 
 /**
- * Mid-stream access transition: when permission/policy is revoked, purge retained
- * bodies and stop treating the prior authorized snapshot as still valid.
- */
-export const applyLiveAccessRevocation = <T extends WithOptionalContent>(params: {
-  messages: T[];
-  next: LiveBodyAccess;
-  previous: LiveBodyAccess;
-}): { access: LiveBodyAccess; messages: T[]; purged: boolean } => {
-  const revokedWhileStreaming =
-    (params.previous.includeBody && !params.next.includeBody) || params.next.mustPurgeCachedBodies;
-  if (revokedWhileStreaming || params.next.bodyHidden) {
-    return {
-      access: params.next,
-      messages: stripMessageBodies(params.messages),
-      purged: true,
-    };
-  }
-  return { access: params.next, messages: params.messages, purged: false };
-};
-
-/**
  * True when the scroll container is near the bottom (within threshold).
  * Used so live append only auto-scrolls when the operator is following the tail.
  */

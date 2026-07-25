@@ -38,6 +38,15 @@ vi.mock('@lobehub/ui', () => ({
   ),
   Block: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Input: ({ 'aria-label': label, value, onChange, ...props }: any) => (
+    <input
+      aria-label={label}
+      value={value ?? ''}
+      onChange={(event) => onChange?.(event)}
+      {...props}
+    />
+  ),
+  NeuralNetworkLoading: () => null,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
@@ -61,18 +70,22 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 
 const emptyDeps = (): AdminAgentDraftDependencies => ({ connectors: [], model: null, skills: [] });
 const idle = { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
+const page = <T,>(items: T[], truncated = false) => ({ items, truncated });
 
 beforeEach(() => {
   hooks.providers = { ...idle };
   hooks.skills = { ...idle, data: [] };
-  hooks.connectors = { ...idle, data: [] };
+  hooks.connectors = { ...idle, data: page([]) };
   hooks.source = { ...idle };
   hooks.connectorDetail = { ...idle };
   hooks.connectorRefDetails = { ...idle };
 });
 
 const currentModel = () => {
-  hooks.providers = { ...idle, data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }] };
+  hooks.providers = {
+    ...idle,
+    data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
+  };
   hooks.source = {
     ...idle,
     data: {
@@ -151,14 +164,14 @@ describe('DependencyEditor exact authoring', () => {
     expect(screen.getByText('agentCatalog.dependency.model.loadError')).toBeTruthy();
     r2.unmount();
 
-    hooks.providers = { ...idle, data: [] };
+    hooks.providers = { ...idle, data: page([]) };
     const r3 = renderEditor(emptyDeps());
     expect(screen.getByText('agentCatalog.dependency.model.empty')).toBeTruthy();
     r3.unmount();
 
     hooks.providers = {
       ...idle,
-      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
     };
     hooks.source = { ...idle, data: null };
     const r4 = renderEditor(emptyDeps());
@@ -172,7 +185,7 @@ describe('DependencyEditor exact authoring', () => {
   it('builds an exact model dependency from the resolved source on selection', () => {
     hooks.providers = {
       ...idle,
-      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
     };
     hooks.source = {
       ...idle,
@@ -204,8 +217,11 @@ describe('DependencyEditor exact authoring', () => {
   });
 
   it('adds an EXACT connector dependency (checksum + revision + tools) from the published catalog', () => {
-    hooks.providers = { ...idle, data: [] };
-    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.providers = { ...idle, data: page([]) };
+    hooks.connectors = {
+      ...idle,
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
+    };
     hooks.connectorDetail = {
       ...idle,
       data: {
@@ -269,7 +285,7 @@ describe('DependencyEditor exact authoring', () => {
     };
     hooks.providers = {
       ...idle,
-      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
     };
     hooks.source = {
       ...idle,
@@ -296,7 +312,7 @@ describe('DependencyEditor exact authoring', () => {
     };
     hooks.providers = {
       ...idle,
-      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
     };
     hooks.source = {
       ...idle,
@@ -371,10 +387,10 @@ describe('DependencyEditor exact authoring', () => {
   it('resets the provider selection when the Agent context changes', () => {
     hooks.providers = {
       ...idle,
-      data: [
+      data: page([
         { displayName: 'OpenAI', id: 'p1', providerKey: 'openai' },
         { displayName: 'Anthropic', id: 'p2', providerKey: 'anthropic' },
-      ],
+      ]),
     };
     hooks.source = { ...idle, data: null };
     const { rerender } = render(
@@ -518,10 +534,10 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
   });
 
   it('surfaces the connector LIST error with a retry (Add picker not offered from a stale list)', () => {
-    hooks.providers = { ...idle, data: [] };
+    hooks.providers = { ...idle, data: page([]) };
     hooks.connectors = {
       ...idle,
-      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
       error: new Error('x'),
     };
     renderEditor(emptyDeps(), vi.fn());
@@ -530,10 +546,10 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
   });
 
   it('shows a revalidating hint while the connector LIST revalidates with data retained', () => {
-    hooks.providers = { ...idle, data: [] };
+    hooks.providers = { ...idle, data: page([]) };
     hooks.connectors = {
       ...idle,
-      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
       isValidating: true,
     };
     renderEditor(emptyDeps(), vi.fn());
@@ -541,8 +557,11 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
   });
 
   it('will NOT author a connector while the current detail is revalidating (retained data)', () => {
-    hooks.providers = { ...idle, data: [] };
-    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.providers = { ...idle, data: page([]) };
+    hooks.connectors = {
+      ...idle,
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
+    };
     hooks.connectorDetail = { ...idle, data: connectorDetail, isValidating: true }; // retained + revalidating
     const onChange = vi.fn();
     renderEditor(emptyDeps(), onChange);
@@ -554,8 +573,11 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
   });
 
   it('will NOT author a connector while the current detail errors with retained data (retry offered)', () => {
-    hooks.providers = { ...idle, data: [] };
-    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.providers = { ...idle, data: page([]) };
+    hooks.connectors = {
+      ...idle,
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
+    };
     hooks.connectorDetail = { ...idle, data: connectorDetail, error: new Error('x') };
     const onChange = vi.fn();
     renderEditor(emptyDeps(), onChange);
@@ -569,8 +591,11 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
   });
 
   it('authors the connector only AFTER the current detail settles (no error, not revalidating)', () => {
-    hooks.providers = { ...idle, data: [] };
-    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.providers = { ...idle, data: page([]) };
+    hooks.connectors = {
+      ...idle,
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
+    };
     hooks.connectorDetail = { ...idle, data: connectorDetail }; // settled success
     const onChange = vi.fn();
     renderEditor(emptyDeps(), onChange);
@@ -613,7 +638,7 @@ describe('DependencyEditor requires ALL authorable catalogs fresh even with EMPT
 
   it('blocks save when the Connector list errors even though there are NO connector refs', async () => {
     const m = currentModel();
-    hooks.connectors = { ...idle, data: [], error: new Error('x') };
+    hooks.connectors = { ...idle, data: page([]), error: new Error('x') };
     const onValidity = vi.fn();
     renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
     await waitFor(() =>
@@ -625,7 +650,7 @@ describe('DependencyEditor requires ALL authorable catalogs fresh even with EMPT
     const m = currentModel();
     hooks.connectors = {
       ...idle,
-      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
       isValidating: true,
     };
     const onValidity = vi.fn();
@@ -638,7 +663,7 @@ describe('DependencyEditor requires ALL authorable catalogs fresh even with EMPT
   it('disables the provider selector while the provider list revalidates with retained data', () => {
     hooks.providers = {
       ...idle,
-      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
       isValidating: true,
     };
     renderEditor(emptyDeps());
@@ -651,7 +676,7 @@ describe('DependencyEditor requires ALL authorable catalogs fresh even with EMPT
   it('refuses a model change while the model source revalidates with retained data', () => {
     hooks.providers = {
       ...idle,
-      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
     };
     hooks.source = {
       ...idle,
@@ -711,7 +736,10 @@ describe('DependencyEditor requires ALL authorable catalogs fresh even with EMPT
 
 describe('DependencyEditor: a SELECTED connector requires a settled current detail for readiness', () => {
   const withList = () => {
-    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.connectors = {
+      ...idle,
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
+    };
   };
   const selectConnector = () =>
     fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
@@ -785,7 +813,7 @@ describe('DependencyEditor: a SELECTED connector requires a settled current deta
     currentModel();
     hooks.connectors = {
       ...idle,
-      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      data: page([{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
       isValidating: true,
     };
     renderEditor(emptyDeps());

@@ -148,5 +148,13 @@ export const createEnterpriseModuleRegistry = (): EnterpriseModuleRegistry => {
   };
 };
 
-/** Process-wide registry for client module plugins. */
+/**
+ * Process-wide registry for client module plugins (internal).
+ *
+ * **Not a public runtime plugin API.** `desktopRoutes` is built once at module
+ * evaluation from a registry snapshot; `register()` after that does not update
+ * the live router. Callers outside enterprise internals should not depend on
+ * register — park extension routes until a `createDesktopRoutes()` rebuild
+ * path exists (CS-05).
+ */
 export const enterpriseModuleRegistry = createEnterpriseModuleRegistry();

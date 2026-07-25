@@ -8,59 +8,80 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { CONFLICT_DRAFT_KEY } from './settingsPolicyController';
 import SettingsPolicyPage from './SettingsPolicyPage';
 
-const mocks = vi.hoisted(() => ({
-  blocker: { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' },
-  capability: true,
-  confirmModal: vi.fn((_options: { onCancel: () => void; onOk: () => void }) => ({
-    close: vi.fn(),
-    destroy: vi.fn(),
-  })),
-  data: undefined as any,
-  mutate: vi.fn(),
-  openDangerConfirm: vi.fn(),
-  openReasonModal: vi.fn(),
-  permissions: [] as string[],
-  publish: vi.fn(),
-  refreshAdminSettingsDraft: vi.fn(),
-  saveDraft: vi.fn(),
-  toastError: vi.fn(),
-  useBlocker: vi.fn((when: boolean | ((args: unknown) => boolean)) => {
-    const enabled = typeof when === 'function' ? true : Boolean(when);
-    return enabled && mocks.blocker.state === 'blocked'
-      ? mocks.blocker
-      : { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' };
-  }),
-  /** Spy only — the module mock below runs `fn` once. */
-  withAdminReauthRetry: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  const defaultT = (key: string, values?: Record<string, unknown>) =>
+    values ? `${key}:${Object.values(values).join('|')}` : key;
+  return {
+    blocker: { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' },
+    capability: true,
+    createModal: vi.fn((_options: { onOpenChange?: (open: boolean) => void }) => ({
+      close: vi.fn(),
+      destroy: vi.fn(),
+    })),
+    data: undefined as any,
+    defaultT,
+    mutate: vi.fn(),
+    openDangerConfirm: vi.fn(),
+    openReasonModal: vi.fn(),
+    permissions: [] as string[],
+    publish: vi.fn(),
+    refreshAdminSettingsDraft: vi.fn(),
+    saveDraft: vi.fn(),
+    /** Overridable translation mock (ASI-006 zh-CN search guard). */
+    t: defaultT as (key: string, values?: Record<string, unknown>) => string,
+    toastError: vi.fn(),
+    useBlocker: vi.fn((when: boolean | ((args: unknown) => boolean)) => {
+      const enabled = typeof when === 'function' ? true : Boolean(when);
+      return enabled && mocks.blocker.state === 'blocked'
+        ? mocks.blocker
+        : { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' };
+    }),
+    /** Spy only — the module mock below runs `fn` once. */
+    withAdminReauthRetry: vi.fn(),
+  };
+});
 
 vi.mock('antd-style', () => ({
   createStaticStyles: () => new Proxy({}, { get: (_target, property) => String(property) }),
   cssVar: {},
 }));
 
-vi.mock('@lobehub/ui', () => ({
-  Alert: ({
-    description,
-    extra,
-    message,
-  }: {
-    description?: ReactNode;
-    extra?: ReactNode;
-    message?: ReactNode;
-  }) => (
-    <div role="alert">
-      {message}
-      {description}
-      {extra}
-    </div>
-  ),
-  Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  Input: (props: any) => <input {...props} />,
-  Text: ({ as: Component = 'span', children, ...props }: any) => (
-    <Component {...props}>{children}</Component>
-  ),
-}));
+vi.mock('@lobehub/ui', () => {
+  const Skeleton = Object.assign(
+    ({ children, ...rest }: any) => (
+      <div data-testid="skeleton" {...rest}>
+        {children}
+      </div>
+    ),
+    {
+      Block: (props: any) => <div data-testid="skeleton-block" {...props} />,
+      Button: (props: any) => <div data-testid="skeleton-button" {...props} />,
+    },
+  );
+  return {
+    Alert: ({
+      description,
+      extra,
+      message,
+    }: {
+      description?: ReactNode;
+      extra?: ReactNode;
+      message?: ReactNode;
+    }) => (
+      <div role="alert">
+        {message}
+        {description}
+        {extra}
+      </div>
+    ),
+    Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+    Input: (props: any) => <input {...props} />,
+    Skeleton,
+    Text: ({ as: Component = 'span', children, ...props }: any) => (
+      <Component {...props}>{children}</Component>
+    ),
+  };
+});
 
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, loading, type: _type, ...props }: any) => (
@@ -82,7 +103,8 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       ))}
     </select>
   ),
-  confirmModal: mocks.confirmModal,
+  createModal: mocks.createModal,
+  ModalFooter: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   toast: { error: mocks.toastError, success: vi.fn() },
 }));
 
@@ -97,8 +119,7 @@ vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, values?: Record<string, unknown>) =>
-      values ? `${key}:${Object.values(values).join('|')}` : key,
+    t: (key: string, values?: Record<string, unknown>) => mocks.t(key, values),
   }),
 }));
 
@@ -213,6 +234,7 @@ describe('SettingsPolicyPage', () => {
     mocks.saveDraft.mockReset();
     mocks.toastError.mockReset();
     mocks.withAdminReauthRetry.mockClear();
+    mocks.t = mocks.defaultT;
     mocks.blocker.state = 'unblocked';
     mocks.blocker.proceed.mockReset();
     mocks.blocker.reset.mockReset();
@@ -588,8 +610,8 @@ describe('SettingsPolicyPage', () => {
     fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
       target: { value: 'local' },
     });
-    await waitFor(() => expect(mocks.confirmModal).toHaveBeenCalled());
-    act(() => mocks.confirmModal.mock.calls[0]![0].onCancel());
+    await waitFor(() => expect(mocks.createModal).toHaveBeenCalled());
+    act(() => mocks.createModal.mock.calls[0]![0].onOpenChange?.(false));
     expect(mocks.blocker.reset).toHaveBeenCalled();
   });
 
@@ -680,6 +702,144 @@ describe('SettingsPolicyPage', () => {
       expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle');
     });
     expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it('locks mutations with partial-failure recovery when publish and restore both fail (ASI-002)', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.saveDraft
+      // empty draft commits
+      .mockResolvedValueOnce({
+        baseRevision: 2,
+        draftToken: savedDraftToken,
+        ok: true,
+        registryVersion: 1,
+      })
+      // compensating restore fails
+      .mockRejectedValueOnce(new Error('restore interrupted'));
+    mocks.publish.mockRejectedValueOnce(new Error('publish failed'));
+
+    render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
+    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.resetPartial.title');
+    });
+    expect(
+      screen.getByRole('button', { name: 'settingsPolicy.resetPartial.retryRestore' }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'settingsPolicy.resetPartial.refresh' }),
+    ).toBeTruthy();
+    // Mutations locked: reset disabled; no primary publish action while locked.
+    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'settingsPolicy.publish' })).toBeNull();
+    // Committed empty-draft token was retained for restore CAS (second saveDraft used it).
+    expect(mocks.saveDraft.mock.calls[1]?.[0]).toMatchObject({
+      expectedDraftToken: savedDraftToken,
+    });
+  });
+
+  it('keeps partial recovery when dismiss refresh fails, then clears on success (dismiss path)', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    // Drive the ASI-002 double-failure setup into resetPartialFailure.
+    mocks.saveDraft
+      .mockResolvedValueOnce({
+        baseRevision: 2,
+        draftToken: savedDraftToken,
+        ok: true,
+        registryVersion: 1,
+      })
+      .mockRejectedValueOnce(new Error('restore interrupted'));
+    mocks.publish.mockRejectedValueOnce(new Error('publish failed'));
+
+    render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
+    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.resetPartial.title');
+    });
+
+    // Refresh fails on dismiss — recovery context must stay (do not clear partial).
+    mocks.mutate.mockRejectedValueOnce(new Error('refresh failed'));
+    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.resetPartial.refresh' }));
+
+    await waitFor(() => {
+      const alerts = screen.getAllByRole('alert');
+      expect(
+        alerts.some((el) => el.textContent?.includes('settingsPolicy.refresh.committedTitle')),
+      ).toBe(true);
+      expect(
+        alerts.some((el) => el.textContent?.includes('settingsPolicy.resetPartial.title')),
+      ).toBe(true);
+    });
+    expect(
+      screen.getByRole('button', { name: 'settingsPolicy.resetPartial.retryRestore' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
+
+    // Refresh succeeds on dismiss — clear the partial-failure alert.
+    mocks.mutate.mockResolvedValueOnce(makeData(2, 'old', savedDraftToken));
+    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.resetPartial.refresh' }));
+
+    await waitFor(() => {
+      expect(
+        screen
+          .queryAllByRole('alert')
+          .some((el) => el.textContent?.includes('settingsPolicy.resetPartial.title')),
+      ).toBe(false);
+    });
+    expect(
+      screen.queryByRole('button', { name: 'settingsPolicy.resetPartial.retryRestore' }),
+    ).toBeNull();
+  });
+
+  it('finds settings by translated Chinese title (ASI-006)', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    mocks.data = {
+      ...makeData(1),
+      registry: [
+        {
+          control: 'text',
+          descriptionKey: 'setting.fontSize.desc',
+          group: 'general',
+          path: 'general.fontSize',
+          schemaVersion: 1,
+          titleKey: 'setting.fontSize',
+        },
+      ],
+    };
+    // Map the title key to Chinese — key-equality mocks cannot catch this regression.
+    mocks.t = (key, values) => {
+      if (key === 'setting.fontSize') return '字体大小';
+      return mocks.defaultT(key, values);
+    };
+
+    render(<SettingsPolicyPage />);
+    // Row visible before search (translated label on the editor).
+    expect(await screen.findByLabelText('editor-字体大小')).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText('settingsPolicy.searchPlaceholder'), {
+      target: { value: '字体大小' },
+    });
+    expect(screen.getByLabelText('editor-字体大小')).toBeTruthy();
+    expect(screen.queryByText('settingsPolicy.noResults')).toBeNull();
+
+    // Unrelated Chinese query hides the row (search is actually filtering).
+    fireEvent.change(screen.getByPlaceholderText('settingsPolicy.searchPlaceholder'), {
+      target: { value: '不存在的设置' },
+    });
+    expect(screen.queryByLabelText('editor-字体大小')).toBeNull();
+    expect(screen.getByText('settingsPolicy.noResults')).toBeTruthy();
   });
 
   it('only guards the exit while the draft actually diverges from the published policy', async () => {

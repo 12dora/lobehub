@@ -2,7 +2,7 @@
 
 import { Flexbox, Text } from '@lobehub/ui';
 import { Input, Select, toast } from '@lobehub/ui/base-ui';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
@@ -17,7 +17,8 @@ import { adminPlatformAgentAppendVersionInputSchema } from '@/server/enterprise/
 import type { deriveAdminAgentPermissions } from './controller';
 import { toDependencySnapshot } from './dependencyCatalog';
 import type { AdminAgentDetailOutput, AdminPlatformAgentAppendVersionOutput } from './types';
-import { fetchPublishedAdminAgentReplacements, findDefaultAdminAgent } from './useAdminAgents';
+import { useAdminAgentReplacementCandidates } from './useAdminAgentReplacementCandidates';
+import { findDefaultAdminAgent } from './useAdminAgents';
 import type { useAgentEditor } from './useAgentEditor';
 import type { RefreshLock } from './useRefreshLock';
 
@@ -32,11 +33,9 @@ interface UseAgentActionsParams {
   snapshot: AdminAgentDetailOutput;
 }
 
-const REPLACEMENT_SEARCH_DEBOUNCE_MS = 250;
-
 /**
- * Searchable published-agent picker for archive-default replacement. Loads one page at a time
- * (initial + debounced server `query`) — never silently drains the catalog into options.
+ * Searchable published-agent picker for archive-default replacement. SWR owns fetch/cache/retry;
+ * only the selected replacement id is local component state.
  */
 const ArchiveReplacementField = ({
   disabled,
@@ -52,52 +51,16 @@ const ArchiveReplacementField = ({
   const { t } = useTranslation('admin');
   const [value, setValue] = useState<string>();
   const [search, setSearch] = useState('');
-  const [options, setOptions] = useState<{ label: string; value: string }[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [empty, setEmpty] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const requestIdRef = useRef(0);
+  const candidates = useAdminAgentReplacementCandidates(excludeAgentId, search, isDefault);
 
-  const loadCandidates = useCallback(
-    async (query?: string) => {
-      const requestId = ++requestIdRef.current;
-      setLoading(true);
-      try {
-        const items = await fetchPublishedAdminAgentReplacements(
-          excludeAgentId,
-          adminAgentsService,
-          {
-            limit: 50,
-            query: query?.trim() || undefined,
-          },
-        );
-        if (requestId !== requestIdRef.current) return;
-        setOptions(
-          items.map(({ displayName, identity }) => ({
-            label: displayName,
-            value: identity.id,
-          })),
-        );
-        setEmpty(items.length === 0);
-      } catch {
-        if (requestId !== requestIdRef.current) return;
-        setOptions([]);
-        setEmpty(true);
-        toast.error(t('agentCatalog.toast.actionFailed'));
-      } finally {
-        if (requestId === requestIdRef.current) setLoading(false);
-      }
-    },
-    [excludeAgentId, t],
+  const options = useMemo(
+    () =>
+      (candidates.data ?? []).map(({ displayName, identity }) => ({
+        label: displayName,
+        value: identity.id,
+      })),
+    [candidates.data],
   );
-
-  useEffect(() => {
-    if (!isDefault) return;
-    void loadCandidates();
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [isDefault, loadCandidates]);
 
   if (!isDefault) return null;
   return (
@@ -107,7 +70,7 @@ const ArchiveReplacementField = ({
         showSearch
         aria-label={t('agentCatalog.archive.replacement')}
         disabled={disabled}
-        loading={loading}
+        loading={Boolean(candidates.isLoading || candidates.isValidating)}
         options={options}
         placeholder={t('agentCatalog.archive.replacementPlaceholder')}
         value={value}
@@ -123,16 +86,10 @@ const ArchiveReplacementField = ({
         disabled={disabled}
         placeholder={t('agentCatalog.archive.replacementPlaceholder')}
         value={search}
-        onChange={(event) => {
-          const q = event.target.value;
-          setSearch(q);
-          if (debounceRef.current) clearTimeout(debounceRef.current);
-          debounceRef.current = setTimeout(() => {
-            void loadCandidates(q);
-          }, REPLACEMENT_SEARCH_DEBOUNCE_MS);
-        }}
+        onChange={(event) => setSearch(event.target.value)}
       />
-      {empty && !loading ? (
+      {candidates.error ? <Text type="danger">{t('agentCatalog.toast.actionFailed')}</Text> : null}
+      {!candidates.error && candidates.data && candidates.data.length === 0 ? (
         <Text type="danger">{t('agentCatalog.archive.noReplacement')}</Text>
       ) : null}
     </Flexbox>

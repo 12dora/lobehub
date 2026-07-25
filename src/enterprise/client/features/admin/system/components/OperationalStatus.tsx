@@ -2,6 +2,7 @@
 
 import { Icon, Tag } from '@lobehub/ui';
 import { AlertTriangle, CheckCircle2, CircleDashed, PauseCircle, XCircle } from 'lucide-react';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -40,11 +41,29 @@ export interface OperationalStatusProps {
 
 export const OperationalStatus = memo<OperationalStatusProps>(({ status }) => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const tone = STATUS_TONE[status] ?? 'default';
-  return (
+  const tag = (
     <Tag color={tone} icon={<Icon icon={STATUS_ICON[tone]} size={12} />} size="small">
       {t(`system.values.status.${status}` as never)}
     </Tag>
+  );
+
+  if (reduceMotion) return tag;
+
+  return (
+    <AnimatePresence initial={false} mode="wait">
+      <m.span
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.98 }}
+        initial={{ opacity: 0, scale: 0.98 }}
+        key={status}
+        style={{ display: 'inline-flex' }}
+        transition={{ duration: 0.12 }}
+      >
+        {tag}
+      </m.span>
+    </AnimatePresence>
   );
 });
 

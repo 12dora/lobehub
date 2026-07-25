@@ -1,8 +1,9 @@
 'use client';
 
-import { Alert, Text } from '@lobehub/ui';
+import { Alert, Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,6 +14,7 @@ import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterpriseP
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { adminBrandingService } from '@/enterprise/client/services/adminBranding';
 import type {
+  AdminBrandingDraft,
   AdminBrandingPublishInput,
   AdminBrandingRollbackInput,
   AdminBrandingSaveDraftInput,
@@ -26,6 +28,11 @@ import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { BrandingFields } from './BrandingFields';
 import { BrandingPreview } from './BrandingPreview';
+import {
+  clearBrandingLocalDraft,
+  loadBrandingLocalDraft,
+  saveBrandingLocalDraft,
+} from './localDraftStorage';
 import { useBrandingEditorStore } from './store';
 import { useFetchAdminBranding } from './useAdminBranding';
 
@@ -86,6 +93,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 const BrandingPage = memo(() => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const branding = useBranding();
   const formatError = useCallback(
     (cause: unknown): string => {
@@ -119,7 +127,9 @@ const BrandingPage = memo(() => {
   } = useBrandingEditorStore();
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [recoveryOffer, setRecoveryOffer] = useState<AdminBrandingDraft | null>(null);
   const observedServerSnapshot = useRef<string | null>(null);
+  const recoveryCheckedRevisionRef = useRef<number | null>(null);
   const dirty = editorState === 'dirty';
   const conflict = editorState === 'conflict';
   const committedRefresh = editorState === 'committedRefresh';
@@ -135,15 +145,41 @@ const BrandingPage = memo(() => {
     if (!draft) {
       observedServerSnapshot.current = snapshotKey;
       hydrate(data);
+      if (recoveryCheckedRevisionRef.current !== data.baseRevision) {
+        recoveryCheckedRevisionRef.current = data.baseRevision;
+        const local = loadBrandingLocalDraft(data.baseRevision);
+        if (
+          local &&
+          local.draftToken === data.draftToken &&
+          JSON.stringify(local.draft) !== JSON.stringify(data.draft)
+        ) {
+          setRecoveryOffer(local.draft);
+        } else {
+          setRecoveryOffer(null);
+        }
+      }
       return;
     }
     if (observedServerSnapshot.current === snapshotKey) return;
     observedServerSnapshot.current = snapshotKey;
     if (data.draftToken !== draftToken || data.baseRevision !== baseRevision) {
-      if (editorState === 'idle' || editorState === 'committedRefresh') hydrate(data);
-      else if (editorState !== 'conflict') markConflict();
+      if (editorState === 'idle' || editorState === 'committedRefresh') {
+        hydrate(data);
+        setRecoveryOffer(null);
+      } else if (editorState !== 'conflict') markConflict();
     }
   }, [baseRevision, data, draft, draftToken, editorState, hydrate, markConflict]);
+
+  // Persist non-secret dirty drafts for crash/reload recovery (store resets on unmount).
+  useEffect(() => {
+    if (!dirty || !draft || mutationLocked) return;
+    saveBrandingLocalDraft({
+      baseRevision,
+      draft,
+      draftToken,
+      savedAt: new Date().toISOString(),
+    });
+  }, [baseRevision, dirty, draft, draftToken, mutationLocked]);
 
   const unsavedMessages = useMemo(
     () => ({
@@ -253,7 +289,9 @@ const BrandingPage = memo(() => {
           const result = await adminBrandingService.saveDraft(
             payload as AdminBrandingSaveDraftInput,
           );
+          clearBrandingLocalDraft(baseRevision);
           syncServer(result);
+          setRecoveryOffer(null);
           setActionError(null);
           setActionNotice(t('branding.status.draftSaved'));
           void mutate();
@@ -270,6 +308,7 @@ const BrandingPage = memo(() => {
       title: t('branding.save.title'),
     });
   }, [
+    baseRevision,
     canUpdate,
     dirty,
     draft,
@@ -299,6 +338,8 @@ const BrandingPage = memo(() => {
         setEditorState('publishing');
         try {
           await adminBrandingService.publish(payload as AdminBrandingPublishInput);
+          clearBrandingLocalDraft(baseRevision);
+          setRecoveryOffer(null);
           setActionError(null);
           setActionNotice(t('branding.status.published'));
           const [brandingRefresh] = await Promise.allSettled([mutate(), platform.refresh()]);
@@ -444,7 +485,11 @@ const BrandingPage = memo(() => {
   );
 
   if (isLoading || (!data && !error)) {
-    return <Text role="status">{t('branding.loading')}</Text>;
+    return (
+      <div aria-label={t('branding.loading')} role="status">
+        <Skeleton title active={!reduceMotion} paragraph={{ rows: 8 }} />
+      </div>
+    );
   }
   if (error) {
     return (
@@ -492,6 +537,42 @@ const BrandingPage = memo(() => {
     >
       {!data.storageConfigured ? (
         <Alert showIcon message={t('branding.storageUnavailable')} type="warning" />
+      ) : null}
+      {recoveryOffer && !mutationLocked ? (
+        <Alert
+          showIcon
+          description={t('branding.recovery.description')}
+          message={t('branding.recovery.title')}
+          type="info"
+          extra={
+            <div className={styles.actions}>
+              <Button
+                type="primary"
+                onClick={() => {
+                  if (!recoveryOffer) return;
+                  hydrate({
+                    baseRevision,
+                    draft: recoveryOffer,
+                    draftMatchesPublished: false,
+                    draftToken,
+                  });
+                  setEditorState('dirty');
+                  setRecoveryOffer(null);
+                }}
+              >
+                {t('branding.recovery.restore')}
+              </Button>
+              <Button
+                onClick={() => {
+                  clearBrandingLocalDraft(baseRevision);
+                  setRecoveryOffer(null);
+                }}
+              >
+                {t('branding.recovery.discard')}
+              </Button>
+            </div>
+          }
+        />
       ) : null}
       {!canUpdate ? <Alert showIcon message={t('branding.readOnly')} type="info" /> : null}
       {committedRefresh ? (

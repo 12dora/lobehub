@@ -21,15 +21,46 @@ describe('audit timeWindow utils', () => {
     const middayWindow = getDefaultAuditTimeWindow(7, midday);
     expect(middayWindow.to.getTime() - middayWindow.from.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
 
-    // Already at local midnight: alignment does not lengthen the window.
-    const midnightLocal = new Date();
-    midnightLocal.setHours(0, 0, 0, 0);
+    // Fixed local midnight (constructed in local TZ, independent of "today").
+    // setHours(0,0,0,0) on a fixed calendar day — alignment must not lengthen past max.
+    const midnightLocal = new Date(2026, 2, 15, 0, 0, 0, 0); // 2026-03-15 local midnight
     const aligned = getDefaultAuditTimeWindow(7, midnightLocal);
-    expect(aligned.from.getHours()).toBe(0);
-    expect(aligned.from.getMinutes()).toBe(0);
+    expect(aligned.to.getTime()).toBe(midnightLocal.getTime());
     expect(aligned.to.getTime() - aligned.from.getTime()).toBeLessThanOrEqual(
       7 * 24 * 60 * 60 * 1000,
     );
+    // When alignment is kept, from is local midnight; when skipped, exact span is used.
+    // Either way the result stays within the duration cap.
+    expect(aligned.from.getTime()).toBeLessThanOrEqual(midnightLocal.getTime());
+  });
+
+  it('keeps the max-span cap across spring-forward (US DST start 2026-03-08)', () => {
+    // US Pacific spring-forward: 2026-03-08 02:00 → 03:00. A 7×24h subtraction from
+    // a post-transition local midnight can land off local midnight; the cap still holds.
+    const end = new Date(2026, 2, 15, 0, 0, 0, 0); // local midnight after spring-forward week
+    const window = getDefaultAuditTimeWindow(7, end);
+    expect(window.to.getTime() - window.from.getTime()).toBeLessThanOrEqual(
+      7 * 24 * 60 * 60 * 1000,
+    );
+    // Exact duration is either exactly 7d (no alignment) or shorter (aligned midnight).
+    expect(window.to.getTime() - window.from.getTime()).toBeGreaterThan(0);
+  });
+
+  it('keeps the max-span cap across fall-back (US DST end 2026-11-01)', () => {
+    // US Pacific fall-back: 2026-11-01 02:00 → 01:00. Exact 7×24h may not match local midnight.
+    const end = new Date(2026, 10, 8, 0, 0, 0, 0); // local midnight after fall-back week
+    const window = getDefaultAuditTimeWindow(7, end);
+    expect(window.to.getTime() - window.from.getTime()).toBeLessThanOrEqual(
+      7 * 24 * 60 * 60 * 1000,
+    );
+    expect(window.to.getTime() - window.from.getTime()).toBeGreaterThan(0);
+  });
+
+  it('never lengthens past the exact duration even when alignment would', () => {
+    // End not at midnight: alignment of (end - 7d) to local midnight is earlier than cap.
+    const end = new Date(2026, 5, 15, 15, 30, 0, 0);
+    const window = getDefaultAuditTimeWindow(7, end);
+    expect(window.to.getTime() - window.from.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
   });
 
   it('serializes and parses ISO dates safely', () => {

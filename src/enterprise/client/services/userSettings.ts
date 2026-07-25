@@ -1,8 +1,6 @@
 import { lambdaClient } from '@/libs/trpc/client';
 import type {
   UserSettingsGetEffectiveOutput,
-  UserSettingsPatchOverrideInput,
-  UserSettingsPatchOverrideOutput,
   UserSettingsResetOverrideInput,
   UserSettingsResetOverrideOutput,
 } from '@/server/enterprise/contracts/userSettings';
@@ -10,12 +8,6 @@ import type {
 class UserSettingsService {
   getEffective = async (): Promise<UserSettingsGetEffectiveOutput> => {
     return lambdaClient.user.getEffectiveSettings.query();
-  };
-
-  patchOverride = async (
-    input: UserSettingsPatchOverrideInput,
-  ): Promise<UserSettingsPatchOverrideOutput> => {
-    return lambdaClient.user.patchSettingOverride.mutate(input);
   };
 
   resetOverride = async (

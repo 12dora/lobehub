@@ -5,7 +5,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CREATE_USER_AUTO_REASON, CreateUserModalContent } from './CreateUserModal';
+import { CREATE_USER_AUTO_REASON } from '../auditReasonCodes';
+import { CreateUserModalContent } from './CreateUserModal';
 import { PASSWORD_CHARSET, PASSWORD_LENGTH } from './generatePassword';
 
 const mockClose = vi.fn();

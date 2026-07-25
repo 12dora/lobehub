@@ -7,6 +7,9 @@ import { MemoryRouter } from 'react-router';
 import { SWRConfig } from 'swr';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import AdminAccessProvider from '@/enterprise/client/providers/AdminAccessProvider';
+import type { AdminAccessSnapshot } from '@/enterprise/client/services/adminAuth';
 import { ServerConfigStoreProvider } from '@/store/serverConfig/Provider';
 
 import ConnectorSettingsPage from './ConnectorSettingsPage';
@@ -41,16 +44,35 @@ vi.mock('@/enterprise/client/services/adminSkills', () => ({
 
 vi.mock('@/enterprise/client/services/adminConnectors', () => ({
   adminConnectorsService: mocks.connectors,
-  clearLastAdminConnectorPublishOutcome: vi.fn(),
-  getLastAdminConnectorPublishOutcome: vi.fn(() => null),
-  setLastAdminConnectorPublishOutcome: vi.fn(),
 }));
+
+/** Explicit admin-access fixture — page tree uses useAdminAccess via useAdminGlobalToolScope. */
+const fetchAdminAccessFixture = async (): Promise<AdminAccessSnapshot> => ({
+  authMethod: 'better-auth',
+  hasAdminAccess: true,
+  permissions: [
+    PLATFORM_PERMISSIONS.ADMIN_ACCESS,
+    PLATFORM_PERMISSIONS.CONNECTOR_READ,
+    PLATFORM_PERMISSIONS.CONNECTOR_CREATE,
+    PLATFORM_PERMISSIONS.CONNECTOR_UPDATE,
+    PLATFORM_PERMISSIONS.CONNECTOR_DELETE,
+    PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH,
+    PLATFORM_PERMISSIONS.SKILL_READ,
+    PLATFORM_PERMISSIONS.SKILL_CREATE,
+    PLATFORM_PERMISSIONS.SKILL_UPDATE,
+    PLATFORM_PERMISSIONS.SKILL_DELETE,
+    PLATFORM_PERMISSIONS.SKILL_PUBLISH,
+  ],
+  roles: [{ displayName: 'ai_admin', name: 'ai_admin' }],
+});
 
 const AppProviders = ({ children }: { children: ReactNode }) => (
   <MotionProvider motion={motion}>
     <MemoryRouter initialEntries={['/admin/ai/connectors']}>
       <ServerConfigStoreProvider>
-        <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
+        <AdminAccessProvider fetchAccess={fetchAdminAccessFixture}>
+          <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
+        </AdminAccessProvider>
       </ServerConfigStoreProvider>
     </MemoryRouter>
   </MotionProvider>

@@ -7,15 +7,13 @@ const mocks = vi.hoisted(() => ({
     appendVersion: vi.fn(),
     archive: vi.fn(),
     create: vi.fn(),
+    delete: vi.fn(),
     get: vi.fn(),
-    getDependents: vi.fn(),
     list: vi.fn(),
     listVersions: vi.fn(),
     publish: vi.fn(),
     rollback: vi.fn(),
     setDefaultInbox: vi.fn(),
-    updateDraft: vi.fn(),
-    validateDependencies: vi.fn(),
   },
   assignments: {
     list: vi.fn(),
@@ -46,8 +44,8 @@ vi.mock('@/libs/trpc/client', () => ({
           upsert: { mutate: mocks.assignments.upsert },
         },
         create: { mutate: mocks.agents.create },
+        delete: { mutate: mocks.agents.delete },
         get: { query: mocks.agents.get },
-        getDependents: { query: mocks.agents.getDependents },
         list: { query: mocks.agents.list },
         listVersions: { query: mocks.agents.listVersions },
         publish: { mutate: mocks.agents.publish },
@@ -61,8 +59,6 @@ vi.mock('@/libs/trpc/client', () => ({
           start: { mutate: mocks.rollouts.start },
         },
         setDefaultInbox: { mutate: mocks.agents.setDefaultInbox },
-        updateDraft: { mutate: mocks.agents.updateDraft },
-        validateDependencies: { mutate: mocks.agents.validateDependencies },
       },
     },
   },
@@ -91,7 +87,6 @@ describe('production admin agents adapter (lambdaClient)', () => {
     const client = createLambdaAdminAgentsClient();
     mocks.agents.list.mockResolvedValue({ items: [], nextCursor: null });
     mocks.agents.get.mockResolvedValue({ identity: { id: 'agent-1' } });
-    mocks.agents.getDependents.mockResolvedValue({ items: [], nextCursor: null });
     mocks.agents.listVersions.mockResolvedValue({ items: [], nextCursor: null });
     mocks.assignments.list.mockResolvedValue({ items: [], nextCursor: null });
     mocks.assignments.preview.mockResolvedValue({ estimatedUsers: 3, warnings: [] });
@@ -99,7 +94,6 @@ describe('production admin agents adapter (lambdaClient)', () => {
     const listInput = { cursor: 'c1', limit: 100, query: 'q', status: 'published' as const };
     await client.list(listInput);
     await client.get({ id: 'agent-1' });
-    await client.getDependents({ agentId: 'agent-1', cursor: 'x', limit: 100 });
     await client.listVersions({ agentId: 'agent-1', cursor: undefined, limit: 100 });
     await client.listAssignments({ agentId: 'agent-1', cursor: undefined, limit: 100 });
     await client.previewAssignment({
@@ -116,11 +110,6 @@ describe('production admin agents adapter (lambdaClient)', () => {
 
     expect(mocks.agents.list).toHaveBeenCalledWith(listInput);
     expect(mocks.agents.get).toHaveBeenCalledWith({ id: 'agent-1' });
-    expect(mocks.agents.getDependents).toHaveBeenCalledWith({
-      agentId: 'agent-1',
-      cursor: 'x',
-      limit: 100,
-    });
     expect(mocks.assignments.list).toHaveBeenCalledOnce();
     expect(mocks.assignments.preview).toHaveBeenCalledOnce();
   });
@@ -135,8 +124,7 @@ describe('production admin agents adapter (lambdaClient)', () => {
       reason: 'create',
       systemKey: null,
     };
-    await client.create(createInput);
-    await client.appendVersion({
+    const appendInput = {
       agentId: 'agent-1',
       config: {} as never,
       dependencySnapshot: {} as never,
@@ -144,53 +132,87 @@ describe('production admin agents adapter (lambdaClient)', () => {
       expectedRevision: 1,
       reason: 'save',
       version: '1.0.0',
-    });
-    await client.updateDraft({
-      agentId: 'agent-1',
-      expectedDraftToken: 'a'.repeat(64),
-      expectedRevision: 1,
-      isDefault: false,
-      reason: 'draft',
-      systemKey: null,
-    });
-    await client.validateDependencies({ dependencySnapshot: {} as never });
-    await client.publish({
+    };
+    const publishInput = {
       agentId: 'agent-1',
       expectedDraftToken: 'a'.repeat(64),
       expectedRevision: 1,
       reason: 'publish',
       versionId: 'v1',
-    });
-    await client.rollback({
+    };
+    const rollbackInput = {
       agentId: 'agent-1',
       expectedDraftToken: 'a'.repeat(64),
       expectedRevision: 1,
       reason: 'rollback',
       targetVersionId: 'v1',
-    });
-    await client.archive({
+    };
+    const archiveInput = {
       agentId: 'agent-1',
       expectedDraftToken: 'a'.repeat(64),
       expectedRevision: 1,
       reason: 'archive',
       replacementAgentId: null,
-    });
-    await client.removeAssignment({
+    };
+    const removeAssignmentInput = {
       agentId: 'agent-1',
       assignmentId: 'assignment-1',
       expectedDraftToken: 'a'.repeat(64),
       expectedRevision: 1,
       reason: 'remove',
-    });
+    };
+    const deleteInput = {
+      agentId: 'agent-1',
+      expectedDraftToken: 'a'.repeat(64),
+      expectedRevision: 3,
+      reason: 'Platform assistant hard-deleted from admin console',
+    };
+    const setDefaultInboxInput = {
+      currentDefault: {
+        agentId: 'agent-old',
+        expectedDraftToken: 'b'.repeat(64),
+        expectedRevision: 2,
+      },
+      nextDefault: {
+        agentId: 'agent-1',
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 3,
+      },
+      reason: 'switch default',
+    };
+    const upsertAssignmentInput = {
+      agentId: 'agent-1',
+      assignmentId: 'assignment-1',
+      enabled: true,
+      expectedDraftToken: 'a'.repeat(64),
+      expectedRevision: 3,
+      mode: 'optional' as const,
+      pinnedVersionId: null,
+      reason: 'assign',
+      targetId: '__global__',
+      targetType: 'global' as const,
+      versionPolicy: 'latest_published' as const,
+    };
+
+    await client.create(createInput);
+    await client.appendVersion(appendInput);
+    await client.publish(publishInput);
+    await client.rollback(rollbackInput);
+    await client.archive(archiveInput);
+    await client.removeAssignment(removeAssignmentInput);
+    await client.delete(deleteInput);
+    await client.setDefaultInbox(setDefaultInboxInput);
+    await client.upsertAssignment(upsertAssignmentInput);
 
     expect(mocks.agents.create).toHaveBeenCalledWith(createInput);
-    expect(mocks.agents.appendVersion).toHaveBeenCalledOnce();
-    expect(mocks.agents.updateDraft).toHaveBeenCalledOnce();
-    expect(mocks.agents.validateDependencies).toHaveBeenCalledOnce();
-    expect(mocks.agents.publish).toHaveBeenCalledOnce();
-    expect(mocks.agents.rollback).toHaveBeenCalledOnce();
-    expect(mocks.agents.archive).toHaveBeenCalledOnce();
-    expect(mocks.assignments.remove).toHaveBeenCalledOnce();
+    expect(mocks.agents.appendVersion).toHaveBeenCalledWith(appendInput);
+    expect(mocks.agents.publish).toHaveBeenCalledWith(publishInput);
+    expect(mocks.agents.rollback).toHaveBeenCalledWith(rollbackInput);
+    expect(mocks.agents.archive).toHaveBeenCalledWith(archiveInput);
+    expect(mocks.assignments.remove).toHaveBeenCalledWith(removeAssignmentInput);
+    expect(mocks.agents.delete).toHaveBeenCalledWith(deleteInput);
+    expect(mocks.agents.setDefaultInbox).toHaveBeenCalledWith(setDefaultInboxInput);
+    expect(mocks.assignments.upsert).toHaveBeenCalledWith(upsertAssignmentInput);
   });
 
   it('propagates router/network errors unchanged instead of masking them as empty', async () => {

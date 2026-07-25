@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -278,19 +278,19 @@ describe('IdentityProviderPage rendering rules', () => {
   });
 
   it('renders the table and withholds create once a provider exists (single login method)', async () => {
-    mocks.providers.data = { items: [sampleProvider] };
+    mocks.providers.data = { items: [{ ...sampleProvider, hasPublishedHistory: false }] };
 
     render(<IdentityProviderPage />);
 
     expect(screen.getByTestId('provider-table')).toBeTruthy();
     // Single login method: no "New" once one exists — edit the existing row instead.
     expect(screen.queryByText('identityProviders.actions.create')).toBeNull();
-    // Let history effect settle so later tests are not flaky when suites share env.
-    await waitFor(() => expect(mocks.listPublishedRevisions).toHaveBeenCalled());
+    // Server batches history onto list items — no per-row listPublishedRevisions fan-out.
+    expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
   });
 
   it('opens the wizard modal in edit mode when a row is activated', async () => {
-    mocks.providers.data = { items: [sampleProvider] };
+    mocks.providers.data = { items: [{ ...sampleProvider, hasPublishedHistory: false }] };
 
     render(<IdentityProviderPage />);
 
@@ -298,7 +298,7 @@ describe('IdentityProviderPage rendering rules', () => {
 
     expect(openModalMock).toHaveBeenCalledTimes(1);
     expect(openModalMock.mock.calls[0][0].provider).toMatchObject({ id: 'idp-1' });
-    await waitFor(() => expect(mocks.listPublishedRevisions).toHaveBeenCalled());
+    expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
   });
 
   it('passes the second page cursor so provider 101+ is administrable', async () => {
@@ -335,18 +335,18 @@ describe('IdentityProviderPage rendering rules', () => {
     expect(screen.getByText('Provider 101')).toBeTruthy();
     expect((mocks.providers as { listCursor?: string }).listCursor).toBe('cursor-page-2');
     expect((screen.getByText('previous') as HTMLButtonElement).disabled).toBe(false);
-    await waitFor(() => expect(mocks.listPublishedRevisions).toHaveBeenCalled());
+    expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
   });
 
   it('offers Delete for never-published drafts and Disable after publish→edit/clear', async () => {
-    // Phase 1: never-published draft (activationRevision null, empty revision history).
-    mocks.listPublishedRevisions.mockResolvedValue([]);
+    // Phase 1: never-published draft (activationRevision null, server says no history).
     mocks.providers.data = {
       items: [
         {
           ...sampleProvider,
           activationRevision: null,
           displayName: 'Never published',
+          hasPublishedHistory: false,
           id: 'idp-never',
           revision: 0,
           status: 'draft',
@@ -357,24 +357,21 @@ describe('IdentityProviderPage rendering rules', () => {
     const view = render(<IdentityProviderPage />);
 
     await waitFor(() => {
-      expect(screen.getByText('Delete')).toBeTruthy();
+      expect(screen.getByText('identityProviders.actions.delete')).toBeTruthy();
     });
     expect(screen.queryByText('Disable')).toBeNull();
-    expect(mocks.listPublishedRevisions).toHaveBeenCalledWith('idp-never');
+    expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
 
     // Phase 2: same provider after publish → edit/secret-clear. Head is draft with
     // activationRevision=null, but published revision history still exists (live prior config).
     view.unmount();
-    mocks.listPublishedRevisions.mockReset();
-    mocks.listPublishedRevisions.mockResolvedValue([
-      { publishedAt: new Date('2026-01-01T00:00:00Z'), revision: 1 },
-    ]);
     mocks.providers.data = {
       items: [
         {
           ...sampleProvider,
           activationRevision: null,
           displayName: 'Edited after publish',
+          hasPublishedHistory: true,
           id: 'idp-edited',
           revision: 3,
           status: 'draft',
@@ -387,12 +384,12 @@ describe('IdentityProviderPage rendering rules', () => {
     await waitFor(() => {
       expect(screen.getByText('Disable')).toBeTruthy();
     });
-    expect(screen.queryByText('Delete')).toBeNull();
-    expect(mocks.listPublishedRevisions).toHaveBeenCalledWith('idp-edited');
+    expect(screen.queryByText('identityProviders.actions.delete')).toBeNull();
+    expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
   });
 
-  it('keeps Disable (not Delete) when published-history lookup fails', async () => {
-    mocks.listPublishedRevisions.mockRejectedValue(new Error('history unavailable'));
+  it('keeps Disable (not Delete) when published-history is unknown on the list item', async () => {
+    // Older payloads / missing field → unknown → fail safe toward revocation.
     mocks.providers.data = {
       items: [
         {
@@ -408,14 +405,29 @@ describe('IdentityProviderPage rendering rules', () => {
 
     render(<IdentityProviderPage />);
 
-    // Fail safe while/after failed lookup: revocation stays available; Delete withheld.
     await waitFor(() => {
-      expect(mocks.listPublishedRevisions).toHaveBeenCalledWith('idp-compromised');
+      expect(screen.getByText('Disable')).toBeTruthy();
     });
-    await act(async () => {
-      await Promise.resolve();
+    expect(screen.queryByText('identityProviders.actions.delete')).toBeNull();
+    expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
+  });
+
+  it('does not fan out per-row history requests for a full draft page', async () => {
+    const items = Array.from({ length: 100 }, (_, index) => ({
+      ...sampleProvider,
+      displayName: `Draft ${index}`,
+      hasPublishedHistory: index % 2 === 0,
+      id: `idp-${index}`,
+      providerKey: `draft-${index}`,
+      status: 'draft' as const,
+    }));
+    mocks.providers.data = { items, nextCursor: null };
+
+    render(<IdentityProviderPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('provider-table')).toBeTruthy();
     });
-    expect(screen.getByText('Disable')).toBeTruthy();
-    expect(screen.queryByText('Delete')).toBeNull();
+    expect(mocks.listPublishedRevisions).not.toHaveBeenCalled();
   });
 });

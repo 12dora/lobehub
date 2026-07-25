@@ -1,8 +1,9 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
+import { Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -91,6 +92,7 @@ export interface MessagePaneProps {
 const MessagePane = memo<MessagePaneProps>(
   ({ topic, userId, messages, bodyHidden, hasOlder, onLoadOlder, loading, loadingOlder }) => {
     const { t } = useTranslation('admin');
+    const reduceMotion = useReducedMotion();
     const scrollRef = useRef<HTMLDivElement>(null);
     const stickToBottomRef = useRef(true);
     const [showJump, setShowJump] = useState(false);
@@ -98,8 +100,49 @@ const MessagePane = memo<MessagePaneProps>(
     const wasLoadingOlderRef = useRef(false);
     const anchorScrollHeightRef = useRef(0);
     const anchorScrollTopRef = useRef(0);
+    // Track which message IDs may play an entrance animation (tail appends only).
+    // Updated during render (via useMemo) so a newly mounted m.div gets `initial` on first paint.
+    const knownIdsRef = useRef(new Set<string>());
+    const isFirstPaintRef = useRef(true);
+    const topicIdRef = useRef(topic?.id);
 
     const ordered = useMemo(() => sortMessagesChronological(messages), [messages]);
+
+    // Reset identity tracking when the selected topic changes (before enter-set computation).
+    if (topicIdRef.current !== topic?.id) {
+      topicIdRef.current = topic?.id;
+      knownIdsRef.current = new Set();
+      isFirstPaintRef.current = true;
+    }
+
+    // Decide entrance during render — framer captures `initial` once at mount (useConstant).
+    // Post-commit state updates are too late and leave the animation inert.
+    const enterIds = useMemo(() => {
+      const known = knownIdsRef.current;
+      const currentIds = ordered.map((msg) => msg.id);
+      const knownList = [...known];
+      const fresh = currentIds.filter((id) => !known.has(id));
+      const nextKnown = new Set(currentIds);
+
+      let nextEnter = new Set<string>();
+      if (
+        !reduceMotion &&
+        !loadingOlder &&
+        !isFirstPaintRef.current &&
+        knownList.length > 0 &&
+        fresh.length > 0
+      ) {
+        // Append-only: previous order is an exact prefix; all fresh ids form the contiguous tail.
+        const isAppend =
+          currentIds.length === knownList.length + fresh.length &&
+          knownList.every((id, i) => currentIds[i] === id);
+        if (isAppend) nextEnter = new Set(fresh);
+      }
+
+      knownIdsRef.current = nextKnown;
+      isFirstPaintRef.current = false;
+      return nextEnter;
+    }, [loadingOlder, ordered, reduceMotion]);
 
     const scrollToBottom = useCallback(() => {
       const el = scrollRef.current;
@@ -152,7 +195,7 @@ const MessagePane = memo<MessagePaneProps>(
     }, [loadingOlder, ordered.length, scrollToBottom]);
 
     useEffect(() => {
-      // Reset stickiness when topic changes
+      // Reset stickiness when topic changes (identity tracking resets during render above).
       stickToBottomRef.current = true;
       prevCountRef.current = 0;
       anchorScrollHeightRef.current = 0;
@@ -194,21 +237,44 @@ const MessagePane = memo<MessagePaneProps>(
             </div>
           ) : null}
           {loading && !ordered.length ? (
-            <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+            <div aria-label={t('primitives.dataTable.loading')} role="status">
+              <Skeleton active={!reduceMotion} paragraph={{ rows: 4 }} title={false} />
+            </div>
           ) : null}
-          {ordered.map((msg) => (
-            <MessageBubble bodyHidden={bodyHidden} key={msg.id} message={msg} />
-          ))}
+          <AnimatePresence initial={false}>
+            {ordered.map((msg) => {
+              const shouldEnter = enterIds.has(msg.id);
+              return (
+                <m.div
+                  animate={{ opacity: 1, y: 0 }}
+                  initial={shouldEnter ? { opacity: 0, y: 6 } : false}
+                  key={msg.id}
+                  transition={{ duration: reduceMotion || !shouldEnter ? 0 : 0.16 }}
+                >
+                  <MessageBubble bodyHidden={bodyHidden} message={msg} />
+                </m.div>
+              );
+            })}
+          </AnimatePresence>
           {!ordered.length && !loading ? (
             <Text type="secondary">{t('audit.live.messages.empty')}</Text>
           ) : null}
-          {showJump ? (
-            <div className={styles.jump}>
-              <Button size="small" type="primary" onClick={scrollToBottom}>
-                {t('audit.live.messages.jumpNew')}
-              </Button>
-            </div>
-          ) : null}
+          <AnimatePresence initial={false}>
+            {showJump ? (
+              <m.div
+                animate={{ opacity: 1, y: 0 }}
+                className={styles.jump}
+                exit={reduceMotion ? undefined : { opacity: 0, y: 6 }}
+                initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+                key="jump"
+                transition={{ duration: reduceMotion ? 0 : 0.14 }}
+              >
+                <Button size="small" type="primary" onClick={scrollToBottom}>
+                  {t('audit.live.messages.jumpNew')}
+                </Button>
+              </m.div>
+            ) : null}
+          </AnimatePresence>
         </div>
       </div>
     );

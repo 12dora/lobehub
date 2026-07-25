@@ -125,7 +125,7 @@ describe('usePublishedSkillCatalog', () => {
     expect(useToolStore.getState().platformSkillRuntimeStatus).toBe('error');
   });
 
-  it('keeps a managed empty catalog fail-closed', async () => {
+  it('treats a successful empty managed catalog as ready', async () => {
     useToolStore.setState({
       platformSkillRuntimeManaged: true,
       platformSkillRuntimeStatus: 'loading',
@@ -135,7 +135,10 @@ describe('usePublishedSkillCatalog', () => {
 
     await mocks.fetchers[0]();
 
-    expect(useToolStore.getState().platformSkillCatalog?.skills).toEqual([]);
-    expect(useToolStore.getState().platformSkillRuntimeStatus).toBe('error');
+    expect(useToolStore.getState().platformSkillCatalog).toEqual({
+      revision: 'catalog-empty',
+      skills: [],
+    });
+    expect(useToolStore.getState().platformSkillRuntimeStatus).toBe('ready');
   });
 });

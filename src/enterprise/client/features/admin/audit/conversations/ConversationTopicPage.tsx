@@ -1,8 +1,9 @@
 'use client';
 
-import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { Flexbox, Skeleton, Tag, Text } from '@lobehub/ui';
 import { Button, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
@@ -75,17 +76,27 @@ const renderBody = (content: string) => {
 
 const ConversationTopicPage = memo(() => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const navigate = useNavigate();
   const { userId = '', topicId = '' } = useParams<{ userId: string; topicId: string }>();
   const { permissions } = useAdminAccess();
-  const canRead = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ);
+  const canConversationRead = hasPermission(
+    permissions,
+    PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ,
+  );
+  // policy.get requires AUDIT_READ — optional; conversation evidence may still be available.
+  const canAuditRead = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
 
   const [includeBody, setIncludeBody] = useState(false);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const currentCursor = cursorStack.at(-1) ?? null;
 
-  const policy = useFetchAuditPolicy(canRead);
-  const detail = useFetchAuditConversation(userId, topicId, canRead && !!userId && !!topicId);
+  const policy = useFetchAuditPolicy(canAuditRead);
+  const detail = useFetchAuditConversation(
+    userId,
+    topicId,
+    canConversationRead && !!userId && !!topicId,
+  );
   const messages = useFetchAuditConversationMessages(
     {
       cursor: currentCursor,
@@ -94,22 +105,24 @@ const ConversationTopicPage = memo(() => {
       topicId,
       userId,
     },
-    canRead && !!userId && !!topicId,
+    canConversationRead && !!userId && !!topicId,
   );
 
+  // Only conversation evidence failures deny the page — not optional policy metadata.
   const isForbidden = useMemo(() => {
-    const errors = [detail.error, messages.error, policy.error];
+    const errors = [detail.error, messages.error];
     return errors.some((err) => {
       if (!err) return false;
       const data = (err as { data?: { code?: string } }).data;
       return data?.code === 'FORBIDDEN';
     });
-  }, [detail.error, messages.error, policy.error]);
+  }, [detail.error, messages.error]);
 
+  // Prefer contentAccessMode from conversation/messages (available with CONVERSATION_READ).
   const contentAccessMode =
     messages.data?.contentAccessMode ??
     detail.data?.contentAccessMode ??
-    policy.data?.contentAccessMode;
+    (canAuditRead ? policy.data?.contentAccessMode : undefined);
 
   const onToggleBody = useCallback(
     (checked: boolean) => {
@@ -187,7 +200,9 @@ const ConversationTopicPage = memo(() => {
 
       <div className={styles.stream}>
         {messages.isLoading && !messages.data ? (
-          <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+          <div aria-label={t('primitives.dataTable.loading')} role="status">
+            <Skeleton active={!reduceMotion} paragraph={{ rows: 5 }} title={false} />
+          </div>
         ) : null}
         {items.map((msg: AdminAuditConversationMessage) => (
           <div className={styles.message} key={msg.id}>

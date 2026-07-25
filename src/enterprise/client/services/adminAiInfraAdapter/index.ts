@@ -14,6 +14,7 @@ import type {
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
 import { adminAiModelService } from './AdminAiModelService';
+import { createAdminAiProviderPartialLoadError } from './errors';
 import {
   buildAdminRuntimeState,
   mapProviderDetail,
@@ -31,13 +32,13 @@ import {
 } from './shared';
 
 export { AdminAiModelService, adminAiModelService } from './AdminAiModelService';
-export { withAdminAiInfraErrorToast } from './errors';
-export type { AdminPublishOutcome } from './shared';
 export {
-  clearLastAdminPublishOutcome,
-  getLastAdminPublishOutcome,
-  resolveProviderRecord,
-} from './shared';
+  createAdminAiProviderPartialLoadError,
+  isAdminAiInfraErrorToasted,
+  withAdminAiInfraErrorToast,
+} from './errors';
+export type { AdminPublishOutcome } from './shared';
+export { clearLastAdminPublishOutcome, useAdminPublishOutcome } from './shared';
 
 /**
  * Admin adapter implementing the same surface as user AiProviderService.
@@ -54,7 +55,7 @@ export class AdminAiProviderService {
     const hasSecrets = Object.keys(secretParts).length > 0;
     const config = {
       ...((params.config ?? {}) as Record<string, unknown>),
-      ...(endpoint ? { endpoint } : {}),
+      ...(typeof endpoint === 'string' ? { endpoint } : {}),
     };
     return withReauth(async () => {
       const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
@@ -177,19 +178,16 @@ export class AdminAiProviderService {
     );
     const hasSecrets = Object.keys(secretParts).length > 0;
 
-    // Public endpoint: always merge into config when baseURL present (including clear? skip empty).
+    // Public endpoint tri-state: set string / clear null / absent undefined.
     const nextConfig: Record<string, unknown> = {
       ...detail.draft.config,
       ...value.config,
     };
-    if (endpoint !== undefined) {
+    if (typeof endpoint === 'string') {
       nextConfig.endpoint = endpoint;
-    } else if (
-      value.keyVaults &&
-      Object.prototype.hasOwnProperty.call(value.keyVaults, 'baseURL') &&
-      !value.keyVaults.baseURL
-    ) {
-      // Explicit empty baseURL — leave prior endpoint (do not wipe).
+    } else if (endpoint === null) {
+      // Explicit empty baseURL — remove stored endpoint so default applies.
+      delete nextConfig.endpoint;
     }
 
     // Credentials: merge only non-empty fields; never replace whole vault from form.
@@ -291,9 +289,8 @@ export class AdminAiProviderService {
     }
 
     const modelsByKey = new Map<string, AdminAiProviderGetOutput['draft']['models']>();
-    for (const provider of active) {
-      modelsByKey.set(provider.providerKey, []);
-    }
+    const failedIds: string[] = [];
+    const failedProviderKeys: string[] = [];
 
     if (active.length > 0) {
       // Chunk to honor getBatch max 100 ids.
@@ -302,10 +299,39 @@ export class AdminAiProviderService {
         const batch = await lambdaClient.admin.aiProviders.getBatch.query({
           ids: chunk.map((provider) => provider.id),
         });
+        const receivedIds = new Set(batch.items.map((detail) => detail.draft.id));
         for (const detail of batch.items) {
           modelsByKey.set(detail.draft.providerKey, detail.draft.models);
         }
-        // Missing details stay as empty model lists (same as previous catch-empty behavior).
+        if (Array.isArray(batch.failedIds)) failedIds.push(...batch.failedIds);
+        if (Array.isArray(batch.failedProviderKeys)) {
+          failedProviderKeys.push(...batch.failedProviderKeys);
+        }
+        // Any requested id neither returned nor listed as failed is also a partial failure —
+        // do not treat the missing row as an authoritative empty model catalog.
+        for (const provider of chunk) {
+          if (
+            !receivedIds.has(provider.id) &&
+            !batch.failedIds?.includes(provider.id) &&
+            !batch.failedProviderKeys?.includes(provider.providerKey)
+          ) {
+            failedIds.push(provider.id);
+            failedProviderKeys.push(provider.providerKey);
+          }
+        }
+      }
+    }
+
+    if (failedIds.length > 0 || failedProviderKeys.length > 0) {
+      // Prefer providerKeys for UX/details; fall back to ids when only ids failed.
+      const uniqueFailed = [...new Set([...failedProviderKeys, ...failedIds])];
+      throw createAdminAiProviderPartialLoadError(uniqueFailed);
+    }
+
+    // Only seed empty model arrays after confirming every provider detail loaded.
+    for (const provider of active) {
+      if (!modelsByKey.has(provider.providerKey)) {
+        modelsByKey.set(provider.providerKey, []);
       }
     }
 

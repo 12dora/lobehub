@@ -11,7 +11,6 @@ export const resolveInitialToolSelection = (params: {
   builtinTools: Array<{ hidden?: boolean; identifier: string }>;
   installedBuiltinIds: string[];
   managed: boolean;
-  platformSkills?: Array<{ skillKey: string }>;
   viewMode: SkillViewMode;
 }): SelectedTool | null => {
   if (params.viewMode === 'connector') {
@@ -22,12 +21,8 @@ export const resolveInitialToolSelection = (params: {
     return firstTool ? { identifier: firstTool.identifier, type: 'builtin' } : null;
   }
 
-  if (params.managed) {
-    const firstPlatformSkill = params.platformSkills?.[0];
-    return firstPlatformSkill
-      ? { identifier: firstPlatformSkill.skillKey, type: 'platform-skill' }
-      : null;
-  }
+  // Managed skill catalog browse is not shipped; fall through only for unmanaged.
+  if (params.managed) return null;
 
   const firstSkill = params.builtinSkills[0];
   return firstSkill ? { identifier: firstSkill.identifier, type: 'builtin-skill' } : null;

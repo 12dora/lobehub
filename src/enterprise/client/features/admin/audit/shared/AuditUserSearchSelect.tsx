@@ -49,7 +49,17 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
     // sets openOnInputClick:true, which otherwise pops an empty result box on focus.
     const [open, setOpen] = useState(false);
     const debounceRef = useRef<number | null>(null);
+    /** Monotonic request id — only the latest in-flight search may apply results. */
+    const requestIdRef = useRef(0);
+    const mountedRef = useRef(true);
     const usersById = useRef(new Map<string, AdminAuditUserSearchItem>());
+
+    useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+      };
+    }, []);
 
     useEffect(() => {
       if (valueLabel) setInputValue(valueLabel);
@@ -83,17 +93,22 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
       async (q: string) => {
         const trimmed = q.trim();
         if (!enabled) {
+          // Invalidate any in-flight search so a late response cannot overwrite this state.
+          requestIdRef.current += 1;
           setErrorHint(t('audit.shared.userSearchNoPermission'));
           setOptions(withTypedFallback([], trimmed));
           return;
         }
         if (trimmed.length < 1) {
+          requestIdRef.current += 1;
           setOptions([]);
           setErrorHint(null);
           return;
         }
+        const requestId = ++requestIdRef.current;
         try {
           const result = await adminAuditService.searchUsers({ limit: 20, q: trimmed });
+          if (!mountedRef.current || requestId !== requestIdRef.current) return;
           setErrorHint(null);
           for (const item of result.items) {
             usersById.current.set(item.id, item);
@@ -110,6 +125,7 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
           }));
           setOptions(withTypedFallback(mapped, trimmed));
         } catch {
+          if (!mountedRef.current || requestId !== requestIdRef.current) return;
           setErrorHint(t('audit.shared.userSearchFailed'));
           setOptions(withTypedFallback([], trimmed));
         }
@@ -130,6 +146,8 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
     useEffect(
       () => () => {
         if (debounceRef.current) window.clearTimeout(debounceRef.current);
+        // Invalidate in-flight responses on unmount.
+        requestIdRef.current += 1;
       },
       [],
     );
@@ -187,6 +205,8 @@ const AuditUserSearchSelect = memo<AuditUserSearchSelectProps>(
             const text = next ?? '';
             setInputValue(text);
             if (!text.trim()) {
+              requestIdRef.current += 1;
+              if (debounceRef.current) window.clearTimeout(debounceRef.current);
               onChange(undefined);
               setOptions([]);
               setErrorHint(null);

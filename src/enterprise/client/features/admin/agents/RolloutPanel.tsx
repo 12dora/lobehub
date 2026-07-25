@@ -3,14 +3,19 @@ import { Button, toast } from '@lobehub/ui/base-ui';
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  type AdminReauthAuthMethod,
+  isAdminReauthRequiredError,
+} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import type { deriveAdminAgentPermissions } from './controller';
-import { openAgentReasonModal } from './openAgentReasonModal';
 import type { AdminAgentDetailOutput } from './types';
 import type { RefreshLock, WriteToken } from './useRefreshLock';
 
 interface RolloutPanelProps {
+  authMethod: AdminReauthAuthMethod | null;
   /** Whether the adapter exposes a real Rollout backend (PR-052). Off ⇒ full-surface defer gate. */
   enabled: boolean;
   /**
@@ -18,25 +23,32 @@ interface RolloutPanelProps {
    * failed post-commit refresh locks publish/assignment writes on the stale snapshot.
    */
   lock: RefreshLock;
+  /** True when the detail aggregate hit the page ceiling for rollouts (more rows exist server-side). */
+  onLoadMoreRollouts?: () => Promise<void>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   pollError?: unknown;
   refresh: () => Promise<AdminAgentDetailOutput | undefined>;
   retryPoll?: () => Promise<unknown>;
+  rolloutsTruncated?: boolean;
   snapshot: AdminAgentDetailOutput;
 }
 
 export const RolloutPanel = ({
+  authMethod,
   enabled,
   lock,
+  onLoadMoreRollouts,
   permissions,
   pollError,
   refresh,
   retryPoll,
+  rolloutsTruncated = false,
   snapshot,
 }: RolloutPanelProps) => {
   const { t } = useTranslation('admin');
   const busyJobRef = useRef<string | null>(null);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   // Local refresh failure for cancel/retry (job-only CAS). Rollback uses the shared lock instead.
   const [localRefreshFailed, setLocalRefreshFailed] = useState(false);
   const retryLocalRefresh = async () => {
@@ -51,48 +63,79 @@ export const RolloutPanel = ({
   const mutateRollout = (
     rollout: AdminAgentDetailOutput['rollouts'][number],
     action: 'cancel' | 'retry' | 'rollback',
-  ) =>
-    openAgentReasonModal({
+  ) => {
+    // Gate concurrency before opening the modal — same pattern as useAgentActions. Do NOT check
+    // isLocked() inside onSubmit when a writeToken exists: reauth retry re-enters with the lock
+    // still held so beginWrite can apply its same-token re-entry rule.
+    if (lock.isLocked()) return;
+    // One token for this logical write — shared reauth retry re-enters with the same token.
+    const writeToken: WriteToken | null = action === 'rollback' ? {} : null;
+    openReasonModal({
+      authMethod: authMethod ?? undefined,
       danger: action === 'cancel' || action === 'rollback',
       description: t(`agentCatalog.rollout.${action}Description` as never),
-      onConfirm: async (reason) => {
-        if (busyJobRef.current || lock.isLocked()) return;
+      buildPayload: (reason) => {
+        if (action === 'rollback') {
+          return {
+            agentId: snapshot.identity.id,
+            expectedJobRevision: rollout.revision,
+            expectedStatus: 'completed' as const,
+            jobId: rollout.jobId,
+            reason,
+            targetVersionId: rollout.previousVersionId!,
+          };
+        }
+        if (action === 'cancel') {
+          return {
+            agentId: snapshot.identity.id,
+            expectedJobRevision: rollout.revision,
+            expectedStatus: rollout.status as 'pending' | 'running',
+            jobId: rollout.jobId,
+            reason,
+          };
+        }
+        return {
+          agentId: snapshot.identity.id,
+          expectedJobRevision: rollout.revision,
+          expectedStatus: rollout.status as 'cancelled' | 'dead' | 'failed',
+          jobId: rollout.jobId,
+          reason,
+        };
+      },
+      onPhaseChange: (phase) => {
+        // Reauth cancel / terminal idle → unlock rollback if the write never committed.
+        if (phase === 'idle' && writeToken) lock.abortWrite(writeToken);
+      },
+      onSubmit: async (input) => {
+        // busyJobRef resets in finally so it never blocks the reauth retry.
+        // isLocked is only consulted here when there is no write token (cancel/retry).
+        if (busyJobRef.current || (!writeToken && lock.isLocked())) {
+          throw new Error(t('agentCatalog.recovery.refreshFailed'));
+        }
         busyJobRef.current = rollout.jobId;
         setBusyJobId(rollout.jobId);
         setLocalRefreshFailed(false);
 
-        const writeToken: WriteToken | null = action === 'rollback' ? {} : null;
         if (writeToken && !lock.beginWrite(writeToken)) {
           busyJobRef.current = null;
           setBusyJobId(null);
           throw new Error(t('agentCatalog.recovery.refreshFailed'));
         }
 
-        const input = {
-          agentId: snapshot.identity.id,
-          expectedJobRevision: rollout.revision,
-          expectedStatus: rollout.status,
-          jobId: rollout.jobId,
-          reason,
-        };
         try {
           if (action === 'cancel') {
-            await adminAgentsService.cancelRollout({
-              ...input,
-              expectedStatus: input.expectedStatus as 'pending' | 'running',
-            });
+            await adminAgentsService.cancelRollout(
+              input as Parameters<typeof adminAgentsService.cancelRollout>[0],
+            );
           } else if (action === 'retry') {
-            await adminAgentsService.retryRollout({
-              ...input,
-              expectedStatus: input.expectedStatus as 'cancelled' | 'dead' | 'failed',
-            });
+            await adminAgentsService.retryRollout(
+              input as Parameters<typeof adminAgentsService.retryRollout>[0],
+            );
           } else {
             if (!rollout.previousVersionId) return;
-            await adminAgentsService.rollbackRollout({
-              ...input,
-              expectedStatus: 'completed',
-              targetVersionId: rollout.previousVersionId,
-            });
+            await adminAgentsService.rollbackRollout(
+              input as Parameters<typeof adminAgentsService.rollbackRollout>[0],
+            );
             // Identity CAS advanced server-side — commit through the shared freshness lock.
             if (writeToken) {
               lock.markCommitted(writeToken);
@@ -115,6 +158,7 @@ export const RolloutPanel = ({
           }
           toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
         } catch (cause) {
+          if (isAdminReauthRequiredError(cause)) throw cause; // retryable: keep frozen CAS payload
           if (writeToken) lock.abortWrite(writeToken);
           throw cause;
         } finally {
@@ -123,8 +167,10 @@ export const RolloutPanel = ({
         }
       },
       submitLabel: t(`agentCatalog.rollout.${action}` as never),
+      targetLabel: snapshot.identity.agentKey,
       title: t(`agentCatalog.rollout.${action}` as never),
     });
+  };
 
   if (!enabled)
     return (
@@ -148,6 +194,28 @@ export const RolloutPanel = ({
       <Text as="h3" fontSize={16} weight={600}>
         {t('agentCatalog.rollout.title')}
       </Text>
+      {rolloutsTruncated ? (
+        <Alert
+          showIcon
+          description={t('agentCatalog.collection.truncatedRollouts')}
+          message={t('agentCatalog.collection.truncated')}
+          type="warning"
+          action={
+            onLoadMoreRollouts ? (
+              <Button
+                loading={loadingMore}
+                size="small"
+                onClick={() => {
+                  setLoadingMore(true);
+                  void onLoadMoreRollouts().finally(() => setLoadingMore(false));
+                }}
+              >
+                {t('agentCatalog.collection.loadMore')}
+              </Button>
+            ) : undefined
+          }
+        />
+      ) : null}
       {pollError ? (
         <Alert
           showIcon

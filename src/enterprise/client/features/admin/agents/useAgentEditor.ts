@@ -8,9 +8,9 @@ import {
   clearAdminAgentDraft,
   type DraftPersistStatus,
   loadAdminAgentDraft,
-  saveAdminAgentDraft,
 } from './localDraftStorage';
 import type { AdminAgentDetailOutput, AdminAgentDraft } from './types';
+import { useAdminAgentDraftPersistence } from './useAdminAgentDraftPersistence';
 import { selectDraftSourcePlatformAgentVersion } from './versionSelection';
 
 /**
@@ -92,11 +92,12 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
   const [saveState, setSaveState] = useState<
     'dirty' | 'failed' | 'idle' | 'refreshFailed' | 'saved' | 'saving'
   >('idle');
-  const [persistState, setPersistState] = useState<DraftPersistStatus | null>(null);
   // Frozen origin CAS for the current draft. It is intentionally independent from the live SWR
   // snapshot: a background refresh must never silently rebase a dirty form or rewrite its recovery
   // envelope to a CAS the draft was not authored from.
   const [draftBaseline, setDraftBaseline] = useState<AgentDraftBaseline | null>(null);
+  // Seeded when a recovery draft is hydrated so the UI can show "saved" before the first edit.
+  const [hydratedPersistState, setHydratedPersistState] = useState<DraftPersistStatus | null>(null);
 
   useEffect(() => {
     // While the route identity is loading/transitioning, drop any previous agent's editor state so
@@ -108,7 +109,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
         setDirty(false);
         setConflict(false);
         setSaveState('idle');
-        setPersistState(null);
+        setHydratedPersistState(null);
       }
       return;
     }
@@ -141,19 +142,17 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
       ),
     );
     setSaveState(stored ? 'dirty' : 'idle');
-    setPersistState(stored ? 'saved' : null);
+    setHydratedPersistState(stored ? 'saved' : null);
   }, [defaultSystemRole, dirty, draft, draftBaseline, editable, snapshot]);
 
-  useEffect(() => {
-    if (!editable || !draftBaseline || !draft || !dirty) return;
-    const status = saveAdminAgentDraft(draftBaseline.agentId, {
-      draft,
-      draftToken: draftBaseline.draftToken,
-      revision: draftBaseline.revision,
-      savedAt: new Date().toISOString(),
-    });
-    setPersistState(status);
-  }, [dirty, draft, draftBaseline, editable]);
+  // Debounced / pagehide / unmount persistence — never O(draft) work on every keystroke.
+  const livePersistState = useAdminAgentDraftPersistence({
+    dirty,
+    draft,
+    draftBaseline,
+    editable,
+  });
+  const persistState = livePersistState ?? hydratedPersistState;
 
   const unsavedMessages = useMemo(
     () => ({
@@ -184,7 +183,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     setDirty(false);
     setConflict(false);
     setSaveState('idle');
-    setPersistState(null);
+    setHydratedPersistState(null);
   }, [defaultSystemRole, snapshot]);
 
   const markSaved = useCallback((baseline: AgentDraftBaseline) => {
@@ -197,7 +196,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     setDirty(false);
     setConflict(false);
     setSaveState('saved');
-    setPersistState(null);
+    setHydratedPersistState(null);
   }, []);
 
   return {

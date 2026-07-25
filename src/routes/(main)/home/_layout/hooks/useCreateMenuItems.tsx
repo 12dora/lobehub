@@ -19,6 +19,7 @@ import useSWRMutation from 'swr/mutation';
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import { useGroupTemplates } from '@/components/ChatGroupWizard/templates';
 import { DEFAULT_CHAT_GROUP_CHAT_CONFIG } from '@/const/settings';
+import { isAgentCreationAllowed } from '@/features/HomeSidebarPolicy';
 import { useManagedResource } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useCreateHeteroAgent } from '@/hooks/useCreateHeteroAgent';
@@ -33,8 +34,6 @@ import { useHomeStore } from '@/store/home';
 import { usePageStore } from '@/store/page';
 import { useUserStore } from '@/store/user';
 import { labPreferSelectors } from '@/store/user/selectors';
-
-import { isAgentCreationAllowed } from './agentCreationGuard';
 
 interface CreateAgentOptions {
   groupId?: string;

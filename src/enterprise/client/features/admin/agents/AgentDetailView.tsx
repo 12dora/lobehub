@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -24,6 +25,7 @@ import { useRefreshLock } from './useRefreshLock';
 import {
   selectCurrentPlatformAgentVersion,
   selectLatestPlatformAgentVersion,
+  sortPlatformAgentVersionsDesc,
 } from './versionSelection';
 
 interface AgentDetailViewProps {
@@ -117,6 +119,117 @@ export const AgentDetailView = memo(
       isFresh: isAgentDetailFresh,
     });
     const actions = useAgentActions({ authMethod, editor, lock, mutate, permissions, snapshot });
+
+    const loadMoreCollection = useCallback(
+      async (kind: 'assignments' | 'rollouts' | 'versions') => {
+        const meta = snapshot.collectionMeta;
+        if (!meta) return;
+        const cursorKey =
+          kind === 'assignments'
+            ? 'assignmentsNextCursor'
+            : kind === 'rollouts'
+              ? 'rolloutsNextCursor'
+              : 'versionsNextCursor';
+        const truncKey =
+          kind === 'assignments'
+            ? 'assignmentsTruncated'
+            : kind === 'rollouts'
+              ? 'rolloutsTruncated'
+              : 'versionsTruncated';
+        const cursor = meta[cursorKey];
+        if (!cursor) return;
+        const agentId = snapshot.identity.id;
+        // Separate awaits so each page.items type stays distinct (union would lose id/jobId).
+        if (kind === 'assignments') {
+          const page = await adminAgentsService.listAssignments({ agentId, cursor, limit: 100 });
+          await mutate(
+            (current): AdminAgentDetailOutput | undefined => {
+              if (!current) return current;
+              const baseMeta = current.collectionMeta ?? {
+                assignmentsNextCursor: null,
+                assignmentsTruncated: false,
+                rolloutsNextCursor: null,
+                rolloutsTruncated: false,
+                versionsNextCursor: null,
+                versionsTruncated: false,
+              };
+              const seen = new Set(current.assignments.map((row) => row.id));
+              const appended = page.items.filter((item) => !seen.has(item.id));
+              return {
+                ...current,
+                assignments: [...current.assignments, ...appended],
+                collectionMeta: {
+                  ...baseMeta,
+                  assignmentsNextCursor: page.nextCursor,
+                  assignmentsTruncated: page.nextCursor !== null,
+                },
+              };
+            },
+            { revalidate: false },
+          );
+          return;
+        }
+        if (kind === 'rollouts') {
+          const page = await adminAgentsService.listRollouts({ agentId, cursor, limit: 100 });
+          await mutate(
+            (current): AdminAgentDetailOutput | undefined => {
+              if (!current) return current;
+              const baseMeta = current.collectionMeta ?? {
+                assignmentsNextCursor: null,
+                assignmentsTruncated: false,
+                rolloutsNextCursor: null,
+                rolloutsTruncated: false,
+                versionsNextCursor: null,
+                versionsTruncated: false,
+              };
+              const seen = new Set(current.rollouts.map((row) => row.jobId));
+              const appended = page.items.filter((item) => !seen.has(item.jobId));
+              return {
+                ...current,
+                collectionMeta: {
+                  ...baseMeta,
+                  rolloutsNextCursor: page.nextCursor,
+                  rolloutsTruncated: page.nextCursor !== null,
+                },
+                rollouts: [...current.rollouts, ...appended],
+              };
+            },
+            { revalidate: false },
+          );
+          return;
+        }
+        const page = await adminAgentsService.listVersions({ agentId, cursor, limit: 100 });
+        await mutate(
+          (current): AdminAgentDetailOutput | undefined => {
+            if (!current) return current;
+            const baseMeta = current.collectionMeta ?? {
+              assignmentsNextCursor: null,
+              assignmentsTruncated: false,
+              rolloutsNextCursor: null,
+              rolloutsTruncated: false,
+              versionsNextCursor: null,
+              versionsTruncated: false,
+            };
+            const seen = new Set(current.versions.map((row) => row.id));
+            const appended = page.items.filter((item) => !seen.has(item.id));
+            return {
+              ...current,
+              collectionMeta: {
+                ...baseMeta,
+                versionsNextCursor: page.nextCursor,
+                versionsTruncated: page.nextCursor !== null,
+              },
+              versions: sortPlatformAgentVersionsDesc([
+                ...current.versions,
+                ...appended,
+              ] as AdminAgentDetailOutput['versions']),
+            };
+          },
+          { revalidate: false },
+        );
+      },
+      [mutate, snapshot.collectionMeta, snapshot.identity.id],
+    );
 
     return (
       <AdminPageTemplate
@@ -254,6 +367,21 @@ export const AgentDetailView = memo(
             <Text as="h3" fontSize={16} weight={600}>
               {t('agentCatalog.versions.title')}
             </Text>
+            {snapshot.collectionMeta?.versionsTruncated ? (
+              <Alert
+                showIcon
+                description={t('agentCatalog.collection.truncatedVersions')}
+                message={t('agentCatalog.collection.truncated')}
+                type="warning"
+                action={
+                  snapshot.collectionMeta.versionsNextCursor ? (
+                    <Button size="small" onClick={() => void loadMoreCollection('versions')}>
+                      {t('agentCatalog.collection.loadMore')}
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : null}
             {snapshot.versions.length === 0 ? (
               <Text type="secondary">{t('agentCatalog.versions.empty')}</Text>
             ) : null}
@@ -294,21 +422,34 @@ export const AgentDetailView = memo(
             ))}
           </Flexbox>
           <AssignmentPanel
+            assignmentsTruncated={Boolean(snapshot.collectionMeta?.assignmentsTruncated)}
             authMethod={authMethod}
             lock={lock}
             permissions={permissions}
             refresh={mutate}
             rolloutsEnabled={rolloutsEnabled}
             snapshot={snapshot}
+            onLoadMoreAssignments={
+              snapshot.collectionMeta?.assignmentsNextCursor
+                ? () => loadMoreCollection('assignments')
+                : undefined
+            }
           />
           <RolloutPanel
+            authMethod={authMethod}
             enabled={rolloutsEnabled}
             lock={lock}
             permissions={permissions}
             pollError={pollError}
             refresh={mutate}
             retryPoll={retryRolloutPoll}
+            rolloutsTruncated={Boolean(snapshot.collectionMeta?.rolloutsTruncated)}
             snapshot={snapshot}
+            onLoadMoreRollouts={
+              snapshot.collectionMeta?.rolloutsNextCursor
+                ? () => loadMoreCollection('rollouts')
+                : undefined
+            }
           />
         </Flexbox>
       </AdminPageTemplate>

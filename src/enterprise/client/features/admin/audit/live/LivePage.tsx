@@ -188,13 +188,12 @@ const LivePage = memo(() => {
   }, []);
 
   // Prefill from query when URL changes (e.g. evidence → live deep link).
+  // Always sync both params so removing userId/topicId clears stale state.
   useEffect(() => {
     const qUser = searchParams.get('userId') || undefined;
     const qTopic = searchParams.get('topicId') || undefined;
-    if (qUser) {
-      setUserId(qUser);
-      if (qTopic) setTopicId(qTopic);
-    }
+    setUserId(qUser);
+    setTopicId(qUser ? qTopic : undefined);
   }, [searchParams]);
 
   const resetTopicPagination = useCallback(() => {
@@ -512,7 +511,7 @@ const LivePage = memo(() => {
         <div className={styles.toolbar}>
           <div style={{ minWidth: 240, flex: '1 1 240px', maxWidth: 360 }}>
             <AuditUserSearchSelect
-              enabled={canConversationRead}
+              enabled={canAuditRead}
               placeholder={t('audit.live.filters.user')}
               style={{ width: '100%' }}
               value={userId}

@@ -77,11 +77,24 @@ describe('M08 Skill local draft storage', () => {
     expect(loadSkillLocalDraft('skill-1')).toBeNull();
   });
 
-  it('keeps invalid in-progress JSON in memory only', () => {
+  it('persists incomplete JSON drafts for crash recovery and reloads them intact', () => {
     const draft = editableDraft();
     draft.versionDraft = { ...draft.versionDraft!, manifestText: '{invalid' };
-    expect(saveSkillLocalDraft('skill-1', payload(draft))).toBe('invalid');
-    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+    expect(saveSkillLocalDraft('skill-1', payload(draft))).toBe('saved');
+
+    const restored = loadSkillLocalDraft('skill-1');
+    expect(restored?.draft.versionDraft?.manifestText).toBe('{invalid');
+
+    // Repair and re-save — recovery entry remains usable through the edit cycle.
+    const repaired = structuredClone(restored!.draft);
+    repaired.versionDraft = {
+      ...repaired.versionDraft!,
+      manifestText: JSON.stringify(manifest),
+    };
+    expect(saveSkillLocalDraft('skill-1', { ...restored!, draft: repaired })).toBe('saved');
+    expect(loadSkillLocalDraft('skill-1')?.draft.versionDraft?.manifestText).toBe(
+      JSON.stringify(manifest),
+    );
   });
 
   it.each([

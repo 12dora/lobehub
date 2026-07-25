@@ -39,9 +39,6 @@ vi.mock('@/enterprise/client/services/adminSkills', () => ({
 
 vi.mock('@/enterprise/client/services/adminConnectors', () => ({
   adminConnectorsService: mocks.connectors,
-  clearLastAdminConnectorPublishOutcome: vi.fn(),
-  getLastAdminConnectorPublishOutcome: vi.fn(() => null),
-  setLastAdminConnectorPublishOutcome: vi.fn(),
 }));
 
 vi.mock('react-i18next', async (importOriginal) => ({
@@ -263,6 +260,39 @@ describe('useAdminGlobalToolScope', () => {
         canUpdateConnector: false,
         canUpdateSkill: false,
       });
+    });
+  });
+
+  describe('view isolation (AI-05)', () => {
+    it('does not call skills service or surface skill errors in connector view', async () => {
+      accessMocks.permissions = ['platform_connector:read:all'];
+      mocks.skills.list.mockRejectedValue(new Error('PLATFORM_PERMISSION_DENIED: skill'));
+      mocks.connectors.list.mockResolvedValue({
+        items: [
+          {
+            description: null,
+            displayName: 'Jira',
+            enabled: true,
+            id: 'conn-1',
+            key: 'jira',
+            revision: 1,
+            sort: 0,
+            status: 'published',
+          },
+        ],
+        nextCursor: null,
+      });
+      mocks.connectors.getBatch.mockResolvedValue({
+        failedIds: [],
+        items: [connectorDetail()],
+      });
+
+      const { result } = renderScope('connector');
+      await waitFor(() => expect(result.current.listLoading).toBe(false));
+
+      expect(mocks.skills.list).not.toHaveBeenCalled();
+      expect(result.current.listError).toBeUndefined();
+      expect(result.current.connectors.some((c) => c.id === 'conn-1')).toBe(true);
     });
   });
 
@@ -626,8 +656,9 @@ describe('useAdminGlobalToolScope', () => {
 
       await expect(
         result.current.submitCustomConnector({ identifier: 'local-tool', transport: 'stdio' }),
-      ).rejects.toThrow(/HTTP MCP servers only/);
+      ).rejects.toThrow(/CONNECTOR_HTTP_ONLY/);
       expect(mocks.connectors.applyImmediate).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledWith('connectorCatalog.errors.generic');
     });
 
     it('creates with credentialMode none, discovers tools, then publishes them as allowed', async () => {
@@ -698,6 +729,97 @@ describe('useAdminGlobalToolScope', () => {
           toolKey: 'do_thing',
         }),
       ]);
+    });
+
+    it('warns and rejects when discovery fails after create (AI-06 / XT-001)', async () => {
+      mocks.connectors.applyImmediate.mockResolvedValueOnce({
+        draft: { id: 'conn-new' },
+        publishError: null,
+        published: true,
+      });
+      mocks.connectors.discover.mockRejectedValueOnce(new Error('endpoint unreachable'));
+
+      const { result } = renderScope('connector');
+      await waitFor(() => expect(mocks.connectors.list).toHaveBeenCalled());
+
+      await act(async () => {
+        await expect(
+          result.current.submitCustomConnector({
+            identifier: 'My Connector',
+            serverUrl: 'https://mcp.example.com/mcp',
+            transport: 'http',
+          }),
+        ).rejects.toThrow(/CONNECTOR_CREATE_DISCOVERY_FAILED/);
+      });
+
+      expect(toast.warning).toHaveBeenCalledWith(
+        expect.stringMatching(/createdDiscoveryFailed|discovery failed|advanced catalog/i),
+      );
+      // Create committed once; tools update never ran.
+      expect(mocks.connectors.applyImmediate).toHaveBeenCalledTimes(1);
+    });
+
+    it('warns and rejects when create returns published:false (AI-06)', async () => {
+      mocks.connectors.applyImmediate.mockResolvedValueOnce({
+        draft: { id: 'conn-soft' },
+        publishError: 'validation_failed',
+        published: false,
+      });
+
+      const { result } = renderScope('connector');
+      await waitFor(() => expect(mocks.connectors.list).toHaveBeenCalled());
+
+      await act(async () => {
+        await expect(
+          result.current.submitCustomConnector({
+            identifier: 'Soft Fail',
+            serverUrl: 'https://mcp.example.com/mcp',
+            transport: 'http',
+          }),
+        ).rejects.toThrow(/CONNECTOR_CREATE_INCOMPLETE/);
+      });
+
+      expect(toast.warning).toHaveBeenCalled();
+      expect(mocks.connectors.discover).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteConnector (XT-001)', () => {
+    it('toasts connectorCatalog.errors.generic once when unpublished deleteDraft rejects', async () => {
+      mocks.connectors.list.mockResolvedValue({
+        items: [{ id: 'conn-draft', key: 'draft-jira' }],
+        nextCursor: null,
+      });
+      mocks.connectors.getBatch.mockResolvedValue({
+        failedIds: [],
+        items: [
+          connectorDetail({
+            draft: {
+              ...connectorDetail().draft,
+              id: 'conn-draft',
+              key: 'draft-jira',
+              status: 'draft',
+            },
+            published: null,
+          }),
+        ],
+      });
+      mocks.connectors.deleteDraft.mockRejectedValueOnce(new Error('409 Conflict'));
+
+      const { result } = renderScope('connector');
+      await waitFor(() =>
+        expect(result.current.connectors.some((c) => c.id === 'conn-draft')).toBe(true),
+      );
+
+      await act(async () => {
+        await expect(result.current.deleteConnector('conn-draft')).rejects.toThrow(/409/);
+      });
+
+      expect(mocks.connectors.deleteDraft).toHaveBeenCalledTimes(1);
+      expect(mocks.connectors.archiveImmediate).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledWith('connectorCatalog.errors.generic');
+      expect(toast.success).not.toHaveBeenCalled();
     });
   });
 });

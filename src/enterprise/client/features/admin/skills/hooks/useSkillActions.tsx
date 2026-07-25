@@ -104,17 +104,25 @@ export const useSkillActions = ({
         result: Result,
       ) => boolean | Promise<boolean>;
     }) => {
+      // Server commit first; post-commit side effects never reverse a successful write.
       const result = await params.commit();
       writeGuard.lock();
-      await params.onCommitted?.(result);
+
       const verify = async () => {
         const latest = await refreshAdminSkill(data.draft.id);
         if (params.verify) return params.verify(latest, result);
         return Boolean(latest && fingerprintSkillSnapshot(latest) !== params.previousFingerprint);
       };
-      committedVerifierRef.current = verify;
+      // Recovery re-runs fallible post-commit work (e.g. catalog invalidation) + verify.
+      // Install before awaiting so a rejecting side effect still leaves a retry path.
+      const recover = async () => {
+        await params.onCommitted?.(result);
+        return verify();
+      };
+      committedVerifierRef.current = recover;
+
       try {
-        if (!(await verify())) throw new Error('Committed Skill snapshot has not advanced');
+        if (!(await recover())) throw new Error('Committed Skill snapshot has not advanced');
         committedVerifierRef.current = null;
         setRefreshFailed(false);
         editor.setActionError(null);

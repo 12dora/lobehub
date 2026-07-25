@@ -1,8 +1,9 @@
 'use client';
 
-import { Alert, Flexbox, Input, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Input, Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -52,6 +53,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const editor = useSettingsPolicyEditor();
   const {
     activeBaseRevision,
@@ -80,7 +82,10 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     refreshConflictServer,
     refreshError,
     registryByPath,
+    resetPartialFailure,
     retryRefresh,
+    retryResetRestore,
+    dismissResetPartialByRefresh,
     revisionConflict,
     saveError,
     saveState,
@@ -124,7 +129,15 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         }
       >
         <Text className={styles.error}>
-          {mapped ? t(mapped.i18nKey as never, { defaultValue: mapped.code }) : String(error)}
+          {mapped?.i18nKey
+            ? t(mapped.i18nKey as never, {
+                defaultValue: t('settingsPolicy.loadFailed', {
+                  defaultValue: 'Could not load settings policy. Retry to try again.',
+                }),
+              })
+            : t('settingsPolicy.loadFailed', {
+                defaultValue: 'Could not load settings policy. Retry to try again.',
+              })}
         </Text>
       </AdminPageTemplate>
     );
@@ -137,7 +150,9 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         hideTitle={embedded}
         title={t('settingsPolicy.title')}
       >
-        <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+        <div aria-label={t('primitives.dataTable.loading')} role="status">
+          <Skeleton title active={!reduceMotion} paragraph={{ rows: 8 }} />
+        </div>
       </AdminPageTemplate>
     );
   }
@@ -188,6 +203,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
               disabled={
                 dirty ||
                 revisionConflict ||
+                Boolean(resetPartialFailure) ||
                 activeBaseRevision !== data.baseRevision ||
                 activeDraftToken !== data.draftToken ||
                 ownPublishedOverrideCount === 0
@@ -201,6 +217,29 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       }
       banner={
         <>
+          {resetPartialFailure ? (
+            <Alert
+              showIcon
+              message={t('settingsPolicy.resetPartial.title')}
+              type="error"
+              description={
+                <>
+                  {t('settingsPolicy.resetPartial.description')}
+                  {resetPartialFailure.lastError ? ` ${resetPartialFailure.lastError}` : null}
+                </>
+              }
+              extra={
+                <Flexbox horizontal gap={8}>
+                  <Button onClick={() => void retryResetRestore()}>
+                    {t('settingsPolicy.resetPartial.retryRestore')}
+                  </Button>
+                  <Button onClick={() => void dismissResetPartialByRefresh()}>
+                    {t('settingsPolicy.resetPartial.refresh')}
+                  </Button>
+                </Flexbox>
+              }
+            />
+          ) : null}
           {refreshError ? (
             <Alert
               showIcon
@@ -214,7 +253,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
               }
             />
           ) : null}
-          {revisionConflict ? (
+          {revisionConflict && !resetPartialFailure ? (
             <SettingsPolicyConflictBanner
               canUpdate={canUpdate}
               conflictState={conflictState}

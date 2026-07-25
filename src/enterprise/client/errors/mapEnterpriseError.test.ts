@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import {
+  MANAGED_ERROR_CODES,
+  PLATFORM_CONNECTOR_ERROR_CODES,
+  PLATFORM_ERROR_CODES,
+} from '@/const/platform/errorCodes';
 
 import { mapEnterpriseError } from './mapEnterpriseError';
 
@@ -69,6 +73,32 @@ describe('mapEnterpriseError (structured)', () => {
     expect(mapped?.i18nKey).toBe('enterprise.error.PLATFORM_INVALID_INPUT');
   });
 
+  it('maps PLATFORM_RESOURCE_IN_USE + purge_in_progress to legal-hold-specific copy', () => {
+    const mapped = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE,
+          details: { reason: 'purge_in_progress' },
+        },
+      },
+    });
+    expect(mapped?.code).toBe(PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE);
+    expect(mapped?.action).toBe('retry');
+    expect(mapped?.i18nKey).toBe('audit.legalHold.errors.purgeInProgress');
+  });
+
+  it('keeps PLATFORM_RESOURCE_IN_USE generic without purge_in_progress reason', () => {
+    const mapped = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE,
+          details: { reason: 'agent_in_use' },
+        },
+      },
+    });
+    expect(mapped?.i18nKey).toBe('enterprise.error.PLATFORM_RESOURCE_IN_USE');
+  });
+
   it('reads cause.data body', () => {
     const mapped = mapEnterpriseError({
       cause: {
@@ -108,5 +138,30 @@ describe('mapEnterpriseError (structured)', () => {
 
   it('returns null for unknown errors', () => {
     expect(mapEnterpriseError(new Error('boom'))).toBeNull();
+  });
+
+  it('maps PLATFORM_CONNECTOR_NOT_FOUND free-text to specific connector copy', () => {
+    const mapped = mapEnterpriseError(PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_NOT_FOUND);
+    expect(mapped).toMatchObject({
+      action: 'retry',
+      code: PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_NOT_FOUND,
+      i18nKey: 'enterprise.error.PLATFORM_CONNECTOR_NOT_FOUND',
+    });
+  });
+
+  it('maps structured connector errorData bodies', () => {
+    const mapped = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED,
+        },
+      },
+      message: PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED,
+    });
+    expect(mapped?.code).toBe(
+      PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED,
+    );
+    expect(mapped?.action).toBe('contact_admin');
+    expect(mapped?.i18nKey).toBe('enterprise.error.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
   });
 });

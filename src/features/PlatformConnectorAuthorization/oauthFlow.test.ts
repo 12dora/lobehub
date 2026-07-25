@@ -123,4 +123,58 @@ describe('waitForManagedConnectorAuthorization', () => {
     await expect(result).resolves.toEqual({ binding: null, status: 'cancelled' });
     expect(getStatus).toHaveBeenCalledOnce();
   });
+
+  it('removes abort listeners after every normal poll sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      let listenerCount = 0;
+      const signal = {
+        get aborted() {
+          return controller.signal.aborted;
+        },
+        addEventListener(
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: boolean | AddEventListenerOptions,
+        ) {
+          if (type === 'abort') listenerCount += 1;
+          controller.signal.addEventListener(type, listener as EventListener, options);
+        },
+        removeEventListener(
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: boolean | EventListenerOptions,
+        ) {
+          if (type === 'abort') listenerCount = Math.max(0, listenerCount - 1);
+          controller.signal.removeEventListener(type, listener as EventListener, options);
+        },
+      } as AbortSignal;
+
+      let polls = 0;
+      const getStatus = vi.fn(async () => {
+        polls += 1;
+        return polls >= 4 ? attempt('completed', binding('connected')) : attempt('pending');
+      });
+
+      const wait = waitForManagedConnectorAuthorization({
+        getStatus,
+        popup: { closed: false },
+        signal,
+        pollIntervalMs: 1000,
+        timeoutMs: 10_000,
+      });
+
+      // Drive three sleep cycles (pending → pending → pending → completed).
+      for (let i = 0; i < 3; i += 1) {
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      await expect(wait).resolves.toMatchObject({ status: 'connected' });
+
+      // No leftover sleep/awaitWithAbort listeners after normal settlement.
+      expect(listenerCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

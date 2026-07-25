@@ -31,6 +31,18 @@ import {
   useAdminPublishedSkills,
 } from './useDependencyCatalog';
 
+const CATALOG_SEARCH_DEBOUNCE_MS = 250;
+
+/** Debounce a string for server-side catalog search keys without embedding timers in fields. */
+const useDebouncedQuery = (value: string, delay = CATALOG_SEARCH_DEBOUNCE_MS) => {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(handle);
+  }, [delay, value]);
+  return debounced;
+};
+
 export interface DependencyValidity {
   issues: string[];
   ready: boolean;
@@ -54,9 +66,23 @@ export const DependencyEditor = ({
   onChange,
   onValidityChange,
 }: DependencyEditorProps) => {
-  const providers = useAdminPublishedProviders(enabled);
+  const [providerSearch, setProviderSearch] = useState('');
+  const [connectorSearch, setConnectorSearch] = useState('');
+  const debouncedProviderQuery = useDebouncedQuery(providerSearch);
+  const debouncedConnectorQuery = useDebouncedQuery(connectorSearch);
+  // Hydration search: when an existing model ref's provider is not on the first unfiltered page,
+  // re-key once with the providerKey so the exact option resolves via server search.
+  const [providerHydrateQuery, setProviderHydrateQuery] = useState('');
+
+  const providers = useAdminPublishedProviders(
+    enabled,
+    providerHydrateQuery || debouncedProviderQuery,
+  );
   const skills = useAdminPublishedSkills(enabled);
-  const connectors = useAdminPublishedConnectors(enabled);
+  const connectors = useAdminPublishedConnectors(enabled, debouncedConnectorQuery);
+
+  const providerItems = providers.data?.items;
+  const connectorItems = connectors.data?.items;
 
   const [providerId, setProviderId] = useState<string | undefined>();
   const [connectorId, setConnectorId] = useState<string | undefined>();
@@ -68,16 +94,25 @@ export const DependencyEditor = ({
     agentRef.current = agentId;
     setProviderId(undefined);
     setConnectorId(undefined);
+    setProviderSearch('');
+    setConnectorSearch('');
+    setProviderHydrateQuery('');
   }, [agentId]);
 
   // Initialise the provider selection from an existing model ref (edit / recovery).
   useEffect(() => {
-    if (providerId || !dependencies.model || !providers.data) return;
-    const match = providers.data.find(
+    if (providerId || !dependencies.model || !providerItems) return;
+    const match = providerItems.find(
       (provider) => provider.providerKey === dependencies.model!.providerKey,
     );
-    if (match) setProviderId(match.id);
-  }, [dependencies.model, providerId, providers.data]);
+    if (match) {
+      setProviderId(match.id);
+      setProviderHydrateQuery('');
+      return;
+    }
+    // Not on the current search page — ask the server for this providerKey once.
+    if (!providerHydrateQuery) setProviderHydrateQuery(dependencies.model.providerKey);
+  }, [dependencies.model, providerHydrateQuery, providerId, providerItems]);
 
   const source = useAdminProviderModelSource(providerId);
   const connectorDetail = useAdminConnectorDetail(connectorId);
@@ -179,11 +214,11 @@ export const DependencyEditor = ({
 
   const connectorOptions = useMemo(
     () =>
-      (connectors.data ?? []).map((connector) => ({
+      (connectorItems ?? []).map((connector) => ({
         label: `${connector.displayName} (${connector.key})`,
         value: connector.id,
       })),
-    [connectors.data],
+    [connectorItems],
   );
   const addConnector = () => {
     // Fail closed: never author a connector ref from a loading/revalidating/errored detail snapshot.
@@ -202,8 +237,27 @@ export const DependencyEditor = ({
 
   const updateExistingConnector = (connectorKey: string) => {
     if (!connectorsListUsable) return;
-    const match = connectors.data?.find((option) => option.key === connectorKey);
+    const match = connectorItems?.find((option) => option.key === connectorKey);
     if (match) setConnectorId(match.id);
+    else setConnectorSearch(connectorKey);
+  };
+
+  // Adapter slices so field components keep a simple items[] shape while SWR holds CatalogSearchPage.
+  const providersSlice = {
+    data: providerItems,
+    error: providers.error,
+    isLoading: providers.isLoading,
+    isValidating: providers.isValidating,
+    mutate: providers.mutate,
+    truncated: Boolean(providers.data?.truncated),
+  };
+  const connectorsSlice = {
+    data: connectorItems,
+    error: connectors.error,
+    isLoading: connectors.isLoading,
+    isValidating: connectors.isValidating,
+    mutate: connectors.mutate,
+    truncated: Boolean(connectors.data?.truncated),
   };
 
   return (
@@ -213,12 +267,17 @@ export const DependencyEditor = ({
         editable={editable}
         model={model}
         providerId={providerId}
-        providers={providers}
+        providerSearch={providerSearch}
+        providers={providersSlice}
         providersUsable={providersUsable}
         source={source}
         sourceSettled={sourceSettled}
         onChooseModel={chooseModel}
         onChooseProvider={chooseProvider}
+        onProviderSearchChange={(next) => {
+          setProviderSearch(next);
+          setProviderHydrateQuery('');
+        }}
       />
       <SkillDependencyField
         editable={editable}
@@ -236,7 +295,8 @@ export const DependencyEditor = ({
         connectorId={connectorId}
         connectorOptions={connectorOptions}
         connectorRefDetails={connectorRefDetails}
-        connectors={connectors}
+        connectorSearch={connectorSearch}
+        connectors={connectorsSlice}
         connectorsListUsable={connectorsListUsable}
         connectorsSettled={connectorsSettled}
         editable={editable}
@@ -244,6 +304,7 @@ export const DependencyEditor = ({
         staleConnectors={staleConnectors}
         value={dependencies.connectors}
         onAdd={addConnector}
+        onConnectorSearchChange={setConnectorSearch}
         onRemove={(connectorKey) => onChange(withConnectorRemoved(dependencies, connectorKey))}
         onSelectConnector={setConnectorId}
         onUpdateExisting={updateExistingConnector}

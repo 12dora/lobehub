@@ -294,10 +294,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
                   autoComplete={'new-password'}
                   placeholder={
                     secretConfigured
-                      ? t('providerModels.config.apiKey.configuredPlaceholder', {
-                          defaultValue: 'Configured — enter a new value to replace',
-                          name,
-                        })
+                      ? t('providerModels.config.apiKey.configuredPlaceholder', { name })
                       : t('providerModels.config.apiKey.placeholder', { name })
                   }
                   suffix={

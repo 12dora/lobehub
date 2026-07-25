@@ -2,10 +2,6 @@ import {
   carriesLocalDraftSecretMaterial,
   utf8ByteLength,
 } from '@/enterprise/client/features/admin/primitives/localDraftSafety';
-import {
-  skillManifestSchema,
-  skillResourceSchema,
-} from '@/server/enterprise/contracts/skillCatalog';
 
 import type {
   EditableSkillDraft,
@@ -68,6 +64,8 @@ const normalizeVersionDraft = (value: unknown): EditableSkillVersionDraft | null
   if (value === null) return null;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const draft = value as Record<string, unknown>;
+  // Persist bounded raw manifest/resources text even when syntactically incomplete so
+  // crash recovery survives mid-edit JSON. Schema validation stays at submit time.
   if (
     !hasOnlyKeys(draft, ['content', 'contentRef', 'manifestText', 'resourcesText', 'version']) ||
     typeof draft.content !== 'string' ||
@@ -81,13 +79,6 @@ const normalizeVersionDraft = (value: unknown): EditableSkillVersionDraft | null
     typeof draft.version !== 'string' ||
     draft.version.length > 64
   ) {
-    return null;
-  }
-  try {
-    skillManifestSchema.parse(JSON.parse(draft.manifestText));
-    skillResourceSchema.array().max(100).parse(JSON.parse(draft.resourcesText));
-  } catch {
-    // Invalid in-progress JSON remains in memory, but never enters durable storage.
     return null;
   }
   return {

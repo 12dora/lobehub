@@ -46,6 +46,11 @@ export interface AdminToolScopeCapabilities {
  * untouched by construction.
  */
 export interface AdminToolScope {
+  /**
+   * Whether the signed-in admin may set org-wide distribution for this builtin.
+   * Create permission is required when no override row exists yet; update otherwise.
+   */
+  canSetBuiltinSkillDistribution: (identifier: string) => boolean;
   /** Platform SKILL_* / CONNECTOR_* capabilities from useAdminAccess. */
   capabilities: AdminToolScopeCapabilities;
   /** Extra warning/notice rendered above both settings views (e.g. per-user OAuth caveat). */

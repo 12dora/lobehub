@@ -417,13 +417,12 @@ const RetentionPage = memo(() => {
         onClose={() => setEditOpen(false)}
         onSubmit={async (input) => {
           try {
+            // updatePolicy soft-refreshes on success; do not rethrow refresh failures.
             await updatePolicy(input);
             setEditOpen(false);
-            await refreshAuditPolicy();
           } catch (err) {
-            // Always refresh so expectedRevision is no longer stale after conflict.
-            await refreshAuditPolicy();
-            // openReasonModal maps PLATFORM_REVISION_CONFLICT via getAdminUsersMutationErrorKey.
+            // Genuine mutation failure (e.g. revision conflict): resync expectedRevision.
+            await refreshAuditPolicy().catch(() => undefined);
             throw err;
           }
         }}

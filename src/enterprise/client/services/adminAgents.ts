@@ -24,7 +24,6 @@ export const createLambdaAdminAgentsClient = (): AdminAgentsClient => ({
   create: (input) => lambdaClient.admin.agents.create.mutate(input),
   delete: (input) => lambdaClient.admin.agents.delete.mutate(input),
   get: (input) => lambdaClient.admin.agents.get.query(input),
-  getDependents: (input) => lambdaClient.admin.agents.getDependents.query(input),
   getRollout: (input) => lambdaClient.admin.agents.rollouts.get.query(input),
   list: (input) => lambdaClient.admin.agents.list.query(input),
   listAssignments: (input) => lambdaClient.admin.agents.assignments.list.query(input),
@@ -38,9 +37,7 @@ export const createLambdaAdminAgentsClient = (): AdminAgentsClient => ({
   rollbackRollout: (input) => lambdaClient.admin.agents.rollouts.rollback.mutate(input),
   setDefaultInbox: (input) => lambdaClient.admin.agents.setDefaultInbox.mutate(input),
   startRollout: (input) => lambdaClient.admin.agents.rollouts.start.mutate(input),
-  updateDraft: (input) => lambdaClient.admin.agents.updateDraft.mutate(input),
   upsertAssignment: (input) => lambdaClient.admin.agents.assignments.upsert.mutate(input),
-  validateDependencies: (input) => lambdaClient.admin.agents.validateDependencies.mutate(input),
 });
 
 /**

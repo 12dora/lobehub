@@ -1,8 +1,9 @@
 'use client';
 
-import { Alert, Flexbox, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -29,6 +30,7 @@ interface AuditTabProps {
 
 const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const currentCursor = cursorStack.at(-1) ?? null;
 
@@ -76,7 +78,11 @@ const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
   }
 
   if (isLoading && !data) {
-    return <Text type="secondary">{t('primitives.dataTable.loading')}</Text>;
+    return (
+      <div aria-label={t('primitives.dataTable.loading')} role="status">
+        <Skeleton active={!reduceMotion} paragraph={{ rows: 4 }} title={false} />
+      </div>
+    );
   }
 
   if (error && !data) {

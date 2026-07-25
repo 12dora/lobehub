@@ -1,6 +1,6 @@
 import { adminStatsService } from '@/enterprise/client/services/adminStats';
+import { ADMIN_GLOBAL_STATS_SCOPE } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
-import { ADMIN_GLOBAL_STATS_SCOPE } from '@/routes/(main)/settings/stats/features/StatsDataSource';
 
 import { OVERVIEW_RANK_LIMIT, OVERVIEW_WINDOW_DAYS } from './constants';
 import { currentMonthKey, overviewWindowStartDate } from './utils';

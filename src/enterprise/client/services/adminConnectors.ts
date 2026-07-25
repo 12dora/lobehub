@@ -22,25 +22,6 @@ import type {
 } from '../features/admin/connectors/types';
 import { withAdminAiInfraErrorToast } from './adminAiInfraAdapter/errors';
 
-/** Last applyImmediate/publishNow outcome for draft banner (module-level; admin page only). */
-export type AdminConnectorPublishOutcome = {
-  connectorId: string;
-  published: boolean;
-  publishError?: string | null;
-};
-
-let lastConnectorPublishOutcome: AdminConnectorPublishOutcome | null = null;
-
-export const getLastAdminConnectorPublishOutcome = () => lastConnectorPublishOutcome;
-export const clearLastAdminConnectorPublishOutcome = () => {
-  lastConnectorPublishOutcome = null;
-};
-export const setLastAdminConnectorPublishOutcome = (
-  outcome: AdminConnectorPublishOutcome | null,
-) => {
-  lastConnectorPublishOutcome = outcome;
-};
-
 const withToastAndReauth = <T>(fn: () => Promise<T>): Promise<T> =>
   withAdminAiInfraErrorToast(() => withAdminReauthRetry(fn));
 
@@ -55,8 +36,9 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
   createDraft = async (input: AdminConnectorCreateDraftInput) =>
     lambdaClient.admin.connectors.createDraft.mutate(input);
 
+  /** Settings-page draft delete with reauth + toast (parity with archiveImmediate). */
   deleteDraft = async (input: AdminConnectorDeleteDraftInput) =>
-    lambdaClient.admin.connectors.deleteDraft.mutate(input);
+    withToastAndReauth(() => lambdaClient.admin.connectors.deleteDraft.mutate(input));
 
   discover = async (input: AdminConnectorDiscoverInput) =>
     lambdaClient.admin.connectors.discover.mutate(input);
@@ -106,28 +88,12 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
   applyImmediate = async (
     input: AdminConnectorApplyImmediateInput,
   ): Promise<AdminConnectorApplyImmediateOutput> =>
-    withToastAndReauth(async () => {
-      const result = await lambdaClient.admin.connectors.applyImmediate.mutate(input);
-      setLastAdminConnectorPublishOutcome({
-        connectorId: result.draft.id,
-        published: result.published,
-        publishError: result.publishError,
-      });
-      return result;
-    });
+    withToastAndReauth(() => lambdaClient.admin.connectors.applyImmediate.mutate(input));
 
   publishNow = async (
     input: AdminConnectorPublishNowInput,
   ): Promise<AdminConnectorApplyImmediateOutput> =>
-    withToastAndReauth(async () => {
-      const result = await lambdaClient.admin.connectors.publishNow.mutate(input);
-      setLastAdminConnectorPublishOutcome({
-        connectorId: result.draft.id,
-        published: result.published,
-        publishError: result.publishError,
-      });
-      return result;
-    });
+    withToastAndReauth(() => lambdaClient.admin.connectors.publishNow.mutate(input));
 }
 
 export const adminConnectorsService = new AdminConnectorsService();

@@ -6,13 +6,13 @@ import { memo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import InlineTable from '@/components/InlineTable';
+import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
 import { parseAsInteger, useQueryParam } from '@/hooks/useQueryParam';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatDate, formatNumber } from '@/utils/format';
 
 import { type UsageChartProps } from '../../types';
-import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
   const { t } = useTranslation('auth');

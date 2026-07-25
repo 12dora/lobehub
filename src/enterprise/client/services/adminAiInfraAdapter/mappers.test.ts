@@ -81,10 +81,21 @@ describe('adminAiInfraAdapter mappers', () => {
       });
     });
 
-    it('empty form vault yields no secret mutation payload fields', () => {
+    it('empty form vault yields clear endpoint (null) and no secret mutation', () => {
       expect(splitFormKeyVaults({ apiKey: '', baseURL: '' })).toEqual({
+        endpoint: null,
+        secretParts: {},
+      });
+    });
+
+    it('absent keyVaults leaves endpoint undefined (no clear)', () => {
+      expect(splitFormKeyVaults(undefined)).toEqual({
         endpoint: undefined,
         secretParts: {},
+      });
+      expect(splitFormKeyVaults({ apiKey: 'only' })).toEqual({
+        endpoint: undefined,
+        secretParts: { apiKey: 'only' },
       });
     });
   });

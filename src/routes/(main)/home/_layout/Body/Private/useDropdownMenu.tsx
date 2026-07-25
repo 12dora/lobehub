@@ -6,8 +6,8 @@ import { useTranslation } from 'react-i18next';
 
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import { useSidebarLayoutPolicy } from '@/enterprise/client/hooks/useSidebarLayoutPolicy';
+import { stripSidebarLayoutMenuItems } from '@/features/HomeSidebarPolicy';
 import { openCustomizeSidebarModal } from '@/routes/(main)/home/_layout/Body/CustomizeSidebarModal';
-import { stripSidebarLayoutMenuItems } from '@/routes/(main)/home/_layout/Body/sidebarMenuGating';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { reorderSidebarItems } from '@/store/global/selectors/systemStatus';

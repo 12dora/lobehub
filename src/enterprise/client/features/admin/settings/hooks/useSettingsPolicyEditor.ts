@@ -21,6 +21,7 @@ import {
   resolvePrimaryAction,
   SERVICE_MODEL_MANAGED_PATHS,
 } from '../settingsPolicyController';
+import type { ResetPartialFailure } from '../settingsPolicyReset';
 import { useFetchAdminSettingsDraft } from './useAdminSettings';
 import { useSettingsPolicyConflict } from './useSettingsPolicyConflict';
 import { useSettingsPolicyPersistence } from './useSettingsPolicyPersistence';
@@ -57,6 +58,7 @@ export const useSettingsPolicyEditor = () => {
   const [dirty, setDirty] = useState(false);
   const [activeBaseRevision, setActiveBaseRevision] = useState(0);
   const [activeDraftToken, setActiveDraftToken] = useState('');
+  const [resetPartialFailure, setResetPartialFailure] = useState<ResetPartialFailure | null>(null);
   const [conflictState, dispatchConflict] = useReducer(
     reduceConflict,
     undefined,
@@ -69,6 +71,8 @@ export const useSettingsPolicyEditor = () => {
     conflictState.phase === 'awaitingServer' ||
     conflictState.phase === 'latestUnavailable' ||
     conflictState.phase === 'conflict';
+  /** Partial reset failure locks all mutations until restore or refresh. */
+  const mutationLocked = Boolean(resetPartialFailure) || revisionConflict;
 
   const draftFingerprint = useMemo(() => fingerprintDraft(draft), [draft]);
   const preview = useMemo(
@@ -89,7 +93,7 @@ export const useSettingsPolicyEditor = () => {
     canUpdate,
     dirty,
     draftFingerprint,
-    revisionConflict,
+    revisionConflict: mutationLocked,
     saveState,
     validatedForFingerprint: validatedFingerprint,
   });
@@ -211,18 +215,30 @@ export const useSettingsPolicyEditor = () => {
     [data?.publishedPolicies, isServiceModelPublishedPath],
   );
 
+  // Search matches machine path/keys AND the localized title/description/group labels
+  // users actually see (zh-CN "字体大小" must find titleKey setting.fontSize).
   const filteredEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (data?.registry ?? []).filter((entry) => {
       if (isServiceModelManaged(entry)) return false;
       if (!q) return true;
+      const title = String(t(entry.titleKey as never, { defaultValue: entry.path })).toLowerCase();
+      const description = String(
+        t(entry.descriptionKey as never, { defaultValue: '' }),
+      ).toLowerCase();
+      const groupLabel = String(
+        t(`settingsPolicy.groups.${entry.group}` as never, { defaultValue: entry.group }),
+      ).toLowerCase();
       return (
         entry.path.toLowerCase().includes(q) ||
         entry.titleKey.toLowerCase().includes(q) ||
-        entry.group.toLowerCase().includes(q)
+        entry.group.toLowerCase().includes(q) ||
+        title.includes(q) ||
+        description.includes(q) ||
+        groupLabel.includes(q)
       );
     });
-  }, [data?.registry, search]);
+  }, [data?.registry, search, t]);
 
   const getPolicy = useCallback(
     (path: string): DraftPolicy => {
@@ -242,7 +258,7 @@ export const useSettingsPolicyEditor = () => {
 
   const updatePolicy = useCallback(
     (path: string, patch: Partial<DraftPolicy>) => {
-      if (!canUpdate) return;
+      if (!canUpdate || resetPartialFailure) return;
       setDraft((prev) => {
         const base = prev[path] ?? getPolicy(path);
         return { ...prev, [path]: { ...base, ...patch } };
@@ -254,7 +270,7 @@ export const useSettingsPolicyEditor = () => {
       setImpact(null);
       resetValidation();
     },
-    [canUpdate, getPolicy, resetValidation],
+    [canUpdate, getPolicy, resetPartialFailure, resetValidation],
   );
 
   const { enterRevisionConflict, handleDiscardConflict, handleRebase, refreshConflictServer } =
@@ -278,31 +294,41 @@ export const useSettingsPolicyEditor = () => {
       setValidationMsg,
     });
 
-  const { handlePublish, handleResetDefaults, handleSaveDraft, handleValidate, retryRefresh } =
-    useSettingsPolicyPersistence({
+  const {
+    dismissResetPartialByRefresh,
+    handlePublish,
+    handleResetDefaults,
+    handleSaveDraft,
+    handleValidate,
+    retryRefresh,
+    retryResetRestore,
+  } = useSettingsPolicyPersistence({
+    authMethod,
+    canPublish,
+    canUpdate,
+    cas: {
       activeBaseRevision,
       activeDraftToken,
-      authMethod,
-      canPublish,
-      canUpdate,
       conflictState,
       data,
-      dirty,
       dispatchConflict,
-      draft,
       enterRevisionConflict,
-      hydratedRef,
-      impact,
-      isServiceModelPublishedPath,
-      mutate,
-      originalBaseDraftRef,
-      ownPublishedOverrideCount,
-      resetValidation,
       revisionConflict,
       setActiveBaseRevision,
       setActiveDraftToken,
+    },
+    draftEditor: {
+      dirty,
+      draft,
+      hydratedRef,
+      isServiceModelPublishedPath,
+      originalBaseDraftRef,
       setDirty,
       setDraft,
+    },
+    feedback: {
+      impact,
+      resetValidation,
       setImpact,
       setRefreshError,
       setSaveError,
@@ -314,7 +340,12 @@ export const useSettingsPolicyEditor = () => {
       validatedBaseRevision,
       validatedDraftToken,
       validatedFingerprint,
-    });
+    },
+    mutate,
+    ownPublishedOverrideCount,
+    resetPartialFailure,
+    setResetPartialFailure,
+  });
 
   return {
     activeBaseRevision,
@@ -343,8 +374,11 @@ export const useSettingsPolicyEditor = () => {
     refreshConflictServer,
     refreshError,
     registryByPath,
+    resetPartialFailure,
     retryRefresh,
-    revisionConflict,
+    retryResetRestore,
+    dismissResetPartialByRefresh,
+    revisionConflict: mutationLocked,
     saveError,
     saveState,
     search,

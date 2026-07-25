@@ -2,12 +2,14 @@
 
 import { Alert, Skeleton } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
+import { useReducedMotion } from 'motion/react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { formatIntergerNumber } from '@/utils/format';
 
 import { OVERVIEW_WINDOW_DAYS } from './constants';
+import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
 import { useOverviewKpis } from './useOverviewStats';
 
@@ -17,16 +19,23 @@ interface KpiTileProps {
   value?: number;
 }
 
-const KpiTile = memo<KpiTileProps>(({ label, value, loading }) => (
-  <div className={styles.kpiTile}>
-    {loading ? (
-      <Skeleton.Button active size="small" style={{ height: 28, width: 72 }} />
-    ) : (
-      <span className={styles.kpiValue}>{formatIntergerNumber(value)}</span>
-    )}
-    <span className={styles.kpiLabel}>{label}</span>
-  </div>
-));
+const KpiTile = memo<KpiTileProps>(({ label, value, loading }) => {
+  const reduceMotion = useReducedMotion();
+  const stateKey = loading ? 'loading' : 'value';
+
+  return (
+    <div className={styles.kpiTile}>
+      <OverviewCardState stateKey={stateKey}>
+        {loading ? (
+          <Skeleton.Button active={!reduceMotion} size="small" style={{ height: 28, width: 72 }} />
+        ) : (
+          <span className={styles.kpiValue}>{formatIntergerNumber(value)}</span>
+        )}
+      </OverviewCardState>
+      <span className={styles.kpiLabel}>{label}</span>
+    </div>
+  );
+});
 
 KpiTile.displayName = 'AdminOverviewKpiTile';
 

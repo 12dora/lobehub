@@ -163,7 +163,7 @@ describe('useAdminAgentListPagination', () => {
     expect(infinite.captured.getKey(0, null)).toBeNull();
   });
 
-  it('exposes refresh as the bound useSWRInfinite mutate (not a global predicate)', async () => {
+  it('exposes refresh that delegates to the bound useSWRInfinite mutate (not a global predicate)', async () => {
     const mutate = vi.fn().mockResolvedValue([{ items: [item('a')], nextCursor: null }]);
     infinite.impl.mockReturnValue({
       data: [{ items: [item('a')], nextCursor: null }],
@@ -174,8 +174,9 @@ describe('useAdminAgentListPagination', () => {
       size: 1,
     });
     const { result } = renderHook(() => useAdminAgentListPagination({}, true));
-    // Same function reference as the infinite hook mutator — list create/delete must call this.
-    expect(result.current.refresh).toBe(mutate);
+    // refresh wraps swr.mutate (async () => { await swr.mutate() }) so it is not the same
+    // reference — assert delegation rather than identity (pre-existing HEAD behaviour).
+    expect(result.current.refresh).not.toBe(mutate);
     await result.current.refresh();
     expect(mutate).toHaveBeenCalledOnce();
   });

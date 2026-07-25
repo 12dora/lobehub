@@ -2,7 +2,6 @@
 
 import { Flexbox, Icon, Text } from '@lobehub/ui';
 import { Button, Select, toast } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
 import debug from 'debug';
 import { MonitorCog } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -18,35 +17,11 @@ import {
 import type { PlatformSidebarLayout, SidebarLayoutMode } from '@/types/platform/sidebarLayout';
 
 import { useFetchAdminSidebarLayout } from './hooks/useAdminSidebarLayout';
+import { managedResourcePolicyCardStyles, POLICY_MODE_SELECT_WIDTH } from './policyCardStyles';
 
 const log = debug('lobe-client:admin:sidebar-layout');
 
 const MODE_VALUES = ['user', 'platform'] as const satisfies readonly SidebarLayoutMode[];
-
-// Card/row styles mirror the sibling resource boxes on ManagedResourcesPolicyPage
-// so the "侧边栏排序" box renders as a compact grid card, not a full-width strip.
-const styles = createStaticStyles(({ css }) => ({
-  card: css`
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-
-    padding: 16px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadiusLG};
-
-    background: ${cssVar.colorBgContainer};
-  `,
-  row: css`
-    display: flex;
-    flex-wrap: nowrap;
-    gap: 12px;
-    align-items: center;
-    justify-content: space-between;
-
-    min-width: 0;
-  `,
-}));
 
 interface SidebarLayoutControlProps {
   /** POLICY_UPDATE — gates mode changes and configure. */
@@ -193,8 +168,8 @@ const SidebarLayoutControl = memo<SidebarLayoutControlProps>(({ canUpdate = fals
   };
 
   return (
-    <section className={styles.card}>
-      <div className={styles.row}>
+    <section className={managedResourcePolicyCardStyles.card}>
+      <div className={managedResourcePolicyCardStyles.row}>
         <Text
           strong
           ellipsis={{ tooltip: true, tooltipWhenOverflow: true }}
@@ -238,8 +213,7 @@ const SidebarLayoutControl = memo<SidebarLayoutControlProps>(({ canUpdate = fals
             ) : null}
             <Select
               disabled={controlsDisabled || !data}
-              // Unified policy-mode select width — keep in sync with the resource + settings boxes.
-              style={{ flexShrink: 0, width: 180 }}
+              style={{ flexShrink: 0, width: POLICY_MODE_SELECT_WIDTH }}
               // Never invent a mode from missing data — leave empty until load succeeds.
               value={data?.mode}
               options={MODE_VALUES.map((m) => ({

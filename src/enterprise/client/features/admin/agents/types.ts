@@ -108,9 +108,21 @@ export type AdminAgentListItem = AdminPlatformAgentListOutput['items'][number];
 export type AdminAgentListOutput = AdminPlatformAgentListOutput;
 export type AdminAgentAssignmentPreviewOutput = AdminPlatformAgentAssignmentPreviewOutput;
 
+/** Completeness of the client-drained subcollections on a detail aggregate. */
+export interface AdminAgentCollectionMeta {
+  assignmentsNextCursor: string | null;
+  assignmentsTruncated: boolean;
+  rolloutsNextCursor: string | null;
+  rolloutsTruncated: boolean;
+  versionsNextCursor: string | null;
+  versionsTruncated: boolean;
+}
+
 /** Client-only aggregate assembled from the independently paged endpoint outputs. */
 export interface AdminAgentDetailOutput extends AdminPlatformAgentGetOutput {
   assignments: AdminPlatformAgentAssignmentListOutput['items'];
+  /** Present when the aggregate drain reports whether any subcollection was truncated. */
+  collectionMeta?: AdminAgentCollectionMeta;
   rollouts: AdminPlatformAgentRolloutListOutput['items'];
   versions: AdminPlatformAgentVersionsListOutput['items'];
 }
@@ -157,9 +169,6 @@ export interface AdminAgentsClient {
   create: (input: AdminPlatformAgentCreateInput) => Promise<AdminPlatformAgentCreateOutput>;
   delete: (input: AdminPlatformAgentDeleteInput) => Promise<AdminPlatformAgentDeleteOutput>;
   get: (input: AdminPlatformAgentGetInput) => Promise<AdminPlatformAgentGetOutput>;
-  getDependents: (
-    input: AdminPlatformAgentDependentsInput,
-  ) => Promise<AdminPlatformAgentDependentsOutput>;
   getRollout: (
     input: AdminPlatformAgentRolloutGetInput,
   ) => Promise<AdminPlatformAgentRolloutGetOutput>;
@@ -193,13 +202,7 @@ export interface AdminAgentsClient {
   startRollout: (
     input: AdminPlatformAgentRolloutStartInput,
   ) => Promise<AdminPlatformAgentRolloutStartOutput>;
-  updateDraft: (
-    input: AdminPlatformAgentUpdateDraftInput,
-  ) => Promise<AdminPlatformAgentUpdateDraftOutput>;
   upsertAssignment: (
     input: AdminPlatformAgentAssignmentUpsertInput,
   ) => Promise<AdminPlatformAgentAssignmentUpsertOutput>;
-  validateDependencies: (
-    input: AdminPlatformAgentValidateDependenciesInput,
-  ) => Promise<AdminPlatformAgentValidateDependenciesOutput>;
 }

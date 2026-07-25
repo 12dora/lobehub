@@ -3,7 +3,7 @@
 import { Alert, Empty, Flexbox, Input, Text } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useSearchParams } from 'react-router';
 
@@ -36,6 +36,7 @@ const PlatformConnectorAuthorization = memo(() => {
   const [searchDraft, setSearchDraft] = useState(query);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const previousQueryRef = useRef(query);
   const cursor = cursorStack.at(-1) ?? null;
   const input = useMemo<UserConnectorListInput>(
     () => ({ cursor: cursor ?? undefined, limit, query: query || undefined }),
@@ -44,6 +45,15 @@ const PlatformConnectorAuthorization = memo(() => {
   const { data, error, isLoading, mutate } = useFetchManagedConnectors(input);
   const { authorize, busyAction, busyConnectorId, cancelAuthorization, disconnect, feedback } =
     useConnectorAuthorizationActions();
+
+  // Keep the visible search draft aligned with URL-driven navigation (back/forward).
+  // Active typing still updates local draft until commit; external query changes reset it.
+  useEffect(() => {
+    if (previousQueryRef.current === query) return;
+    previousQueryRef.current = query;
+    setSearchDraft(query);
+    setCursorStack([]);
+  }, [query]);
 
   const commitSearch = () => {
     const next = new URLSearchParams(searchParams);

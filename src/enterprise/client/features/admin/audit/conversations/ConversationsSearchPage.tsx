@@ -42,7 +42,12 @@ const ConversationsSearchPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { permissions } = useAdminAccess();
-  const canRead = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ);
+  const canConversationRead = hasPermission(
+    permissions,
+    PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ,
+  );
+  // users.search requires AUDIT_READ; conversation-only actors fall back to free-form ID entry.
+  const canAuditRead = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
   const [picked, setPicked] = useState<AdminAuditUserSearchItem | undefined>();
 
   const onSelect = useCallback(
@@ -53,7 +58,7 @@ const ConversationsSearchPage = memo(() => {
     [navigate],
   );
 
-  if (!canRead) {
+  if (!canConversationRead) {
     return (
       <AdminPageTemplate title={t('audit.conversations.page.title')}>
         <Empty description={t('audit.noPermission')} />
@@ -73,7 +78,7 @@ const ConversationsSearchPage = memo(() => {
         <Text type="secondary">{t('audit.conversations.search.hint')}</Text>
         <div className={styles.search}>
           <AuditUserSearchSelect
-            enabled={canRead}
+            enabled={canAuditRead}
             placeholder={t('audit.conversations.search.placeholder')}
             style={{ width: '100%' }}
             value={picked?.id}

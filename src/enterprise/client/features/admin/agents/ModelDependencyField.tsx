@@ -1,7 +1,7 @@
 'use client';
 
 import type { PlatformAgentModelDependencyRef } from '@lobechat/types';
-import { Alert, Block, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Alert, Block, Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
 import { useTranslation } from 'react-i18next';
 
@@ -21,6 +21,7 @@ interface SwrSlice<T> {
   isLoading?: boolean;
   isValidating?: boolean;
   mutate: () => Promise<unknown>;
+  truncated?: boolean;
 }
 
 export interface ModelDependencyFieldProps {
@@ -29,8 +30,10 @@ export interface ModelDependencyFieldProps {
   model: PlatformAgentModelDependencyRef | null;
   onChooseModel: (modelKey: string | undefined) => void;
   onChooseProvider: (providerId: string | undefined) => void;
+  onProviderSearchChange: (query: string) => void;
   providerId: string | undefined;
   providers: SwrSlice<PublishedProviderSummary[]>;
+  providerSearch: string;
   providersUsable: boolean;
   source: SwrSlice<ResolvedProviderModelSource | null>;
   sourceSettled: boolean;
@@ -42,7 +45,9 @@ export const ModelDependencyField = ({
   model,
   onChooseModel,
   onChooseProvider,
+  onProviderSearchChange,
   providerId,
+  providerSearch,
   providers,
   providersUsable,
   source,
@@ -73,6 +78,14 @@ export const ModelDependencyField = ({
         <Flexbox gap={12}>
           <Flexbox gap={6}>
             <FieldLabel>{t('agentCatalog.dependency.model.provider')}</FieldLabel>
+            <Input
+              allowClear
+              aria-label={t('agentCatalog.dependency.model.providerSearch')}
+              disabled={!editable}
+              placeholder={t('agentCatalog.dependency.model.providerSearchPlaceholder')}
+              value={providerSearch}
+              onChange={(event) => onProviderSearchChange(event.target.value)}
+            />
             <Select
               aria-label={t('agentCatalog.dependency.model.provider')}
               disabled={!editable || !providersUsable}
@@ -84,6 +97,9 @@ export const ModelDependencyField = ({
               }))}
               onChange={(value) => onChooseProvider(value as string | undefined)}
             />
+            {providers.truncated ? (
+              <Text type="secondary">{t('agentCatalog.dependency.catalogTruncated')}</Text>
+            ) : null}
             {providers.isValidating && providers.data ? <RevalidatingHint /> : null}
           </Flexbox>
 

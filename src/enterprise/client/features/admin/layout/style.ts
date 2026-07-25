@@ -60,43 +60,6 @@ export const adminShellStyles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgLayout};
   `,
-  navItem: css`
-    display: block;
-
-    padding-block: 8px;
-    padding-inline: 12px;
-    border-radius: ${cssVar.borderRadius}px;
-
-    font-size: 13px;
-    color: ${cssVar.colorTextSecondary};
-    text-decoration: none;
-
-    transition:
-      background 0.15s ease,
-      color 0.15s ease;
-
-    &:hover {
-      color: ${cssVar.colorText};
-      background: ${cssVar.colorFillTertiary};
-    }
-
-    &:focus-visible {
-      outline: 2px solid ${cssVar.colorPrimary};
-      outline-offset: 2px;
-    }
-
-    &[data-active='true'] {
-      font-weight: 600;
-      color: ${cssVar.colorText};
-      background: ${cssVar.colorFillSecondary};
-    }
-  `,
-  navSection: css`
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    margin-block-end: 8px;
-  `,
   root: css`
     display: flex;
 
@@ -121,16 +84,6 @@ export const adminShellStyles = createStaticStyles(({ css }) => ({
     border-inline-end: 1px solid ${cssVar.colorBorderSecondary};
 
     background: ${cssVar.colorBgContainer};
-  `,
-  sideNavLabel: css`
-    padding-block: 8px 4px;
-    padding-inline: 12px;
-
-    font-size: 11px;
-    font-weight: 600;
-    color: ${cssVar.colorTextTertiary};
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   `,
   stateCenter: css`
     display: flex;

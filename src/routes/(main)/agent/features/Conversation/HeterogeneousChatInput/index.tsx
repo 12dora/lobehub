@@ -204,13 +204,9 @@ const HeterogeneousChatInput = memo(() => {
     if (cloudCredStatus === 'loading' || isCloudCredLoading) {
       return (
         <GuardBanner
+          hint={t('heteroAgent.cloudCredLoading.desc')}
+          title={t('heteroAgent.cloudCredLoading.title')}
           type={'info'}
-          hint={t('heteroAgent.cloudCredLoading.desc', {
-            defaultValue: 'Verifying vault credentials before enabling the input.',
-          })}
-          title={t('heteroAgent.cloudCredLoading.title', {
-            defaultValue: 'Checking cloud credentials…',
-          })}
         />
       );
     }
@@ -218,24 +214,19 @@ const HeterogeneousChatInput = memo(() => {
     if (cloudCredStatus === 'error' || isCloudCredError) {
       return (
         <GuardBanner
+          hint={t('heteroAgent.cloudCredError.desc')}
+          title={t('heteroAgent.cloudCredError.title')}
           type={'error'}
           action={
             <Flexbox horizontal gap={4}>
               <Button size={'small'} variant={'filled'} onClick={refetchCloudCreds}>
-                {t('heteroAgent.cloudCredError.retry', { defaultValue: 'Retry' })}
+                {t('heteroAgent.cloudCredError.retry')}
               </Button>
               <Button size={'small'} type={'primary'} onClick={goToConfig}>
                 {t('heteroAgent.cloudNotConfigured.action')}
               </Button>
             </Flexbox>
           }
-          hint={t('heteroAgent.cloudCredError.desc', {
-            defaultValue:
-              'The credential list could not be loaded. Retry or open agent settings to configure credentials.',
-          })}
-          title={t('heteroAgent.cloudCredError.title', {
-            defaultValue: 'Could not verify cloud credentials',
-          })}
         />
       );
     }

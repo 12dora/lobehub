@@ -24,6 +24,11 @@ import {
   decideGeneralSettingsHydration,
   fingerprintGeneralSettingsDraft,
 } from './generalSettingsHydration';
+import {
+  clearGeneralSettingsLocalDraft,
+  loadGeneralSettingsLocalDraft,
+  saveGeneralSettingsLocalDraft,
+} from './localDraftStorage';
 import { useFetchAdminAuthSettings } from './useAdminAuthSettings';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -94,8 +99,11 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const [serverStale, setServerStale] = useState(false);
   /** CAS mismatch on save — force refresh/discard before retrying. */
   const [revisionConflict, setRevisionConflict] = useState(false);
+  /** Pending local recovery offer (revision-keyed, non-secret). */
+  const [recoveryOffer, setRecoveryOffer] = useState<GeneralSettingsDraft | null>(null);
   const baselineFpRef = useRef<string | null>(null);
   const draftFpRef = useRef<string | null>(null);
+  const recoveryCheckedRevisionRef = useRef<number | null>(null);
 
   const toDraft = useCallback(
     (source: {
@@ -155,6 +163,20 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       setRevisionConflict(false);
       baselineFpRef.current = fp;
       draftFpRef.current = fp;
+
+      // Offer revision-keyed recovery once per server revision after hydrate.
+      if (recoveryCheckedRevisionRef.current !== data.revision) {
+        recoveryCheckedRevisionRef.current = data.revision;
+        const local = loadGeneralSettingsLocalDraft(data.revision);
+        if (
+          local &&
+          fingerprintGeneralSettingsDraft(local.draft) !== fingerprintGeneralSettingsDraft(accepted)
+        ) {
+          setRecoveryOffer(local.draft);
+        } else {
+          setRecoveryOffer(null);
+        }
+      }
       return;
     }
     if (decision.markStale) setServerStale(true);
@@ -173,6 +195,16 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       })
     );
   }, [baseline, draft]);
+
+  // Persist non-secret dirty drafts for crash/reload recovery.
+  useEffect(() => {
+    if (!dirty || !draft || baseRevision === null || serverStale || revisionConflict) return;
+    saveGeneralSettingsLocalDraft({
+      baseRevision,
+      draft,
+      savedAt: new Date().toISOString(),
+    });
+  }, [baseRevision, dirty, draft, revisionConflict, serverStale]);
 
   // Block real route exits and, when embedded under SecurityAuth tabs, same-path `?tab=`
   // switches that unmount this dirty page. Standalone navigation that only tweaks other
@@ -238,16 +270,14 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       setRevisionConflict(false);
       baselineFpRef.current = nextFp;
       draftFpRef.current = nextFp;
+      clearGeneralSettingsLocalDraft(baseRevision);
+      if (saved.revision !== baseRevision) clearGeneralSettingsLocalDraft(saved.revision);
+      setRecoveryOffer(null);
       toast.success(t('generalSettings.saved'));
     } catch (cause) {
       if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') {
         setRevisionConflict(true);
-        toast.error(
-          t('generalSettings.conflict', {
-            defaultValue:
-              'Settings were changed elsewhere. Discard local changes and reload before saving again.',
-          }),
-        );
+        toast.error(t('generalSettings.conflict'));
         // Pull latest so discard has a current base; keep local draft until user confirms.
         await mutate().catch(() => undefined);
       } else {
@@ -281,15 +311,42 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     [toDraft],
   );
 
+  /**
+   * Discard local edits only after an authoritative refresh succeeds.
+   * On rejection / empty result keep the draft + conflict locks — never adopt a
+   * stale pre-conflict SWR snapshot that would clear CAS state against an old revision.
+   */
   const discardAndRefresh = () => {
     void mutate()
       .then((fresh) => {
-        if (fresh) applyServerSnapshot(fresh);
-        else if (data) applyServerSnapshot(data);
+        if (fresh) {
+          if (baseRevision !== null) clearGeneralSettingsLocalDraft(baseRevision);
+          setRecoveryOffer(null);
+          applyServerSnapshot(fresh);
+          return;
+        }
+        // Keep serverStale / revisionConflict and the alert + Retry affordance (XT-006).
+        toast.error(t('generalSettings.stale.refreshFailed'));
       })
       .catch(() => {
-        if (data) applyServerSnapshot(data);
+        toast.error(t('generalSettings.stale.refreshFailed'));
       });
+  };
+
+  const acceptRecovery = () => {
+    if (!recoveryOffer) return;
+    setDraft(recoveryOffer);
+    const fp = fingerprintGeneralSettingsDraft({
+      ...recoveryOffer,
+      emailDomainText: normalizeEmailDomainAllowlist(recoveryOffer.emailDomainText).join('\n'),
+    });
+    draftFpRef.current = fp;
+    setRecoveryOffer(null);
+  };
+
+  const discardRecovery = () => {
+    if (baseRevision !== null) clearGeneralSettingsLocalDraft(baseRevision);
+    setRecoveryOffer(null);
   };
 
   const renderLoaded = () => {
@@ -305,34 +362,38 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         {disabled && !serverStale && !revisionConflict ? (
           <Alert showIcon message={t('generalSettings.readOnly')} type="info" />
         ) : null}
+        {recoveryOffer && !serverStale && !revisionConflict ? (
+          <Alert
+            showIcon
+            description={t('generalSettings.recovery.description')}
+            message={t('generalSettings.recovery.title')}
+            type="info"
+            extra={
+              <Flexbox horizontal gap={8}>
+                <Button type="primary" onClick={acceptRecovery}>
+                  {t('generalSettings.recovery.restore')}
+                </Button>
+                <Button onClick={discardRecovery}>{t('generalSettings.recovery.discard')}</Button>
+              </Flexbox>
+            }
+          />
+        ) : null}
         {serverStale || revisionConflict ? (
           <Alert
             showIcon
             type="warning"
             description={
               revisionConflict
-                ? t('generalSettings.conflict.description', {
-                    defaultValue:
-                      'Another admin saved while you were editing (revision conflict). Discard local changes and reload to continue.',
-                  })
-                : t('generalSettings.stale.description', {
-                    defaultValue:
-                      'Server settings changed while you were editing. Discard local changes and reload to continue.',
-                  })
+                ? t('generalSettings.conflict.description')
+                : t('generalSettings.stale.description')
             }
             extra={
-              <Button onClick={discardAndRefresh}>
-                {t('generalSettings.stale.refresh', { defaultValue: 'Discard and refresh' })}
-              </Button>
+              <Button onClick={discardAndRefresh}>{t('generalSettings.stale.refresh')}</Button>
             }
             message={
               revisionConflict
-                ? t('generalSettings.conflict.title', {
-                    defaultValue: 'Revision conflict',
-                  })
-                : t('generalSettings.stale.title', {
-                    defaultValue: 'Settings updated on the server',
-                  })
+                ? t('generalSettings.conflict.title')
+                : t('generalSettings.stale.title')
             }
           />
         ) : null}
