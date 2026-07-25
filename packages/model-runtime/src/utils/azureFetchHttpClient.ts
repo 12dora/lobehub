@@ -4,6 +4,12 @@
  * AzureAI never uses the default Node HTTP stack when a custom fetch is supplied.
  */
 import type { FetchLike } from './boundFetch';
+import {
+  bodyForHttpMethod,
+  composeAbortSignal,
+  normalizeFetchBody,
+  responseHeadersToRecord,
+} from './fetchTransport';
 
 /** Azure HttpHeaders is Iterable<[string, string]> with toJSON — not DOM Headers.forEach. */
 interface AzureRequestHeaders {
@@ -90,30 +96,6 @@ const createHeadersBag = (initial?: Record<string, string>): AzureResponseHeader
   };
 };
 
-const bodyToInit = async (body: unknown): Promise<BodyInit | undefined> => {
-  if (body == null) return undefined;
-  if (typeof body === 'string') return body;
-  if (body instanceof Uint8Array) return new Uint8Array(body);
-  if (typeof Blob !== 'undefined' && body instanceof Blob) return body;
-  if (typeof FormData !== 'undefined' && body instanceof FormData) return body;
-  if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) return body;
-  if (typeof body === 'object' && body !== null && Symbol.asyncIterator in body) {
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of body as AsyncIterable<unknown>) {
-      chunks.push(chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk)));
-    }
-    const total = chunks.reduce((sum, part) => sum + part.byteLength, 0);
-    const merged = new Uint8Array(total);
-    let offset = 0;
-    for (const part of chunks) {
-      merged.set(part, offset);
-      offset += part.byteLength;
-    }
-    return merged;
-  }
-  return new TextEncoder().encode(String(body));
-};
-
 /**
  * Build an Azure HttpClient that routes every hop through `fetchImpl`.
  */
@@ -126,42 +108,25 @@ export const createAzureFetchHttpClient = (fetchImpl: FetchLike): AzureHttpClien
     }
 
     const headers = headersToRecord(request.headers);
-
-    const controller = new AbortController();
-    const external = request.abortSignal;
-    const onAbort = () => controller.abort();
-    if (external) {
-      external.addEventListener('abort', onAbort, { once: true });
-    }
-
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const timeoutMs = request.timeout ?? 0;
-    if (timeoutMs > 0) {
-      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    }
+    const { cleanup, signal } = composeAbortSignal(request.abortSignal, request.timeout);
 
     try {
-      const body = await bodyToInit(request.body);
+      const body = bodyForHttpMethod(request.method, await normalizeFetchBody(request.body));
       const response = await fetchImpl(request.url, {
-        body: body && request.method !== 'GET' && request.method !== 'HEAD' ? body : undefined,
+        body,
         headers,
         method: request.method,
-        signal: controller.signal,
+        signal,
       });
       const text = await response.text();
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
-      });
       return {
         bodyAsText: text,
-        headers: createHeadersBag(responseHeaders),
+        headers: createHeadersBag(responseHeadersToRecord(response.headers)),
         request,
         status: response.status,
       };
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (external) external.removeEventListener('abort', onAbort);
+      cleanup();
     }
   },
 });

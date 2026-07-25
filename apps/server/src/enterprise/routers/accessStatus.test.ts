@@ -84,4 +84,26 @@ describe('platform.getAccessStatus', () => {
     const caps = await createCaller(ctx).getCapabilities();
     expect(caps.adminAccess).toBe(true);
   });
+
+  it('getCapabilities remains read-only across repeated calls (SR-003)', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
+    const role = await db.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN), isNull(t.workspaceId)),
+    });
+    await db.insert(userRoles).values({ roleId: role!.id, userId, workspaceId: null });
+
+    const publish = await import('../services/connectorCatalog/runtimeEffectiveState');
+    const spy = vi.spyOn(publish, 'publishConnectorRuntimeCapabilityState');
+
+    const ctx = { ...(await createContextInner({ userId })), serverDB: db } as never;
+    const caller = createCaller(ctx);
+    const first = await caller.getCapabilities();
+    const second = await caller.getCapabilities();
+    expect(second).toEqual(first);
+    // Capability reads must not publish/advance connector runtime state.
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
 });

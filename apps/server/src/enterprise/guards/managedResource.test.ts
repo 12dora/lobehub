@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -18,18 +18,13 @@ import {
   createUnmanagedResourcePolicyMap,
   PlatformManagedResourcePolicyModel,
 } from '@/database/models/platform';
-import {
-  aiProviders,
-  platformAuditLogs,
-  platformManagedResourcePolicies,
-  users,
-} from '@/database/schemas';
+import { aiProviders, platformAuditLogs, userRoles, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { trpc } from '@/libs/trpc/lambda/init';
 import type { ManagedResourcePolicyItem } from '@/types/platform/managedResources';
 
-import { InMemoryManagedResourceGuardMetricSink } from '../services/managedResourceGuardMetrics';
+import { InMemoryManagedResourceGuardMetricSink } from '../services/__test-support__/managedResourceGuardMetricSink';
 import {
   clearManagedResourceReadinessForTest,
   registerManagedResourceReadiness,
@@ -116,15 +111,34 @@ const materialize = async (
   await model.materializePublished({ policies, revision });
 };
 
-/** Append-only audit rows cannot be DELETE'd; TRUNCATE bypasses the row trigger. */
+/** Suite-owned principals — never wipe shared users/tables (SG-07). */
+const FIXTURE_USER_IDS = [
+  'sg07-mrg-actor-observe',
+  'sg07-mrg-actor-outage',
+  'sg07-mrg-actor-ready',
+  'sg07-mrg-direct-user',
+  'sg07-mrg-legacy-user',
+  'sg07-mrg-ordinary-user',
+  'sg07-mrg-super-admin',
+] as const;
+
+const clearFixtureAudits = async () => {
+  await serverDB.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    // Scope only to this suite's fixture actors — never delete by action alone
+    // (concurrent managedResourceRealRouters tests also emit managedResource.legacyMutation).
+    await tx
+      .delete(platformAuditLogs)
+      .where(inArray(platformAuditLogs.actorUserId, [...FIXTURE_USER_IDS]));
+  });
+};
+
+/** Scoped cleanup: fixture audits + fixture rows only. Policies are re-materialized per test. */
 const clearGuardTables = async () => {
-  await serverDB.execute(sql`
-    TRUNCATE TABLE
-      ${platformAuditLogs},
-      ${platformManagedResourcePolicies},
-      ${users}
-    RESTART IDENTITY CASCADE
-  `);
+  await clearFixtureAudits();
+  await serverDB.delete(aiProviders).where(inArray(aiProviders.userId, [...FIXTURE_USER_IDS]));
+  await serverDB.delete(userRoles).where(inArray(userRoles.userId, [...FIXTURE_USER_IDS]));
+  await serverDB.delete(users).where(inArray(users.id, [...FIXTURE_USER_IDS]));
 };
 
 beforeEach(async () => {
@@ -165,7 +179,7 @@ describe('ManagedResourceGuard policy matrix', () => {
 
     it(`${resource}: observe and ui-only allow while recording sanitized would-deny`, async () => {
       for (const mode of ['observe', 'ui-only'] as const) {
-        await serverDB.execute(sql`TRUNCATE TABLE ${platformAuditLogs} RESTART IDENTITY CASCADE`);
+        await clearFixtureAudits();
         await materialize(resource, { enforcementMode: mode, managed: true });
         const sink = new InMemoryManagedResourceGuardMetricSink();
         await expect(
@@ -176,17 +190,20 @@ describe('ManagedResourceGuard policy matrix', () => {
               metricSink: sink,
               readiness: readinessFor(resource, false),
             },
-            principal: { userId: 'actor-observe' },
+            principal: { userId: 'sg07-mrg-actor-observe' },
             procedure: guardedProcedure[resource],
           }),
         ).resolves.toBeUndefined();
 
         expect(Object.values(sink.snapshot())).toEqual([1]);
-        const audits = await serverDB.select().from(platformAuditLogs);
+        const audits = await serverDB
+          .select()
+          .from(platformAuditLogs)
+          .where(eq(platformAuditLogs.actorUserId, 'sg07-mrg-actor-observe'));
         expect(audits).toHaveLength(1);
         expect(audits[0]).toMatchObject({
           action: 'managedResource.legacyMutation',
-          actorUserId: 'actor-observe',
+          actorUserId: 'sg07-mrg-actor-observe',
           reason: null,
           result: 'failure',
           targetId: guardedProcedure[resource],
@@ -208,7 +225,7 @@ describe('ManagedResourceGuard policy matrix', () => {
             metricSink: sink,
             readiness: readinessFor(resource, false),
           },
-          principal: { userId: 'actor-outage' },
+          principal: { userId: 'sg07-mrg-actor-outage' },
           procedure: guardedProcedure[resource],
         });
 
@@ -224,9 +241,12 @@ describe('ManagedResourceGuard policy matrix', () => {
       } else {
         expect(outageKey).toContain('catalog_not_ready');
       }
-      const outageAudits = await serverDB.select().from(platformAuditLogs);
+      const outageAudits = await serverDB
+        .select()
+        .from(platformAuditLogs)
+        .where(eq(platformAuditLogs.actorUserId, 'sg07-mrg-actor-outage'));
       expect(outageAudits.at(-1)).toMatchObject({
-        actorUserId: 'actor-outage',
+        actorUserId: 'sg07-mrg-actor-outage',
         result: 'denied',
         targetId: guardedProcedure[resource],
       });
@@ -239,7 +259,7 @@ describe('ManagedResourceGuard policy matrix', () => {
             metricSink: sink,
             readiness: readinessFor(resource, true),
           },
-          principal: { userId: 'actor-ready' },
+          principal: { userId: 'sg07-mrg-actor-ready' },
           procedure: guardedProcedure[resource],
         });
         expect.unreachable('enforced mutation should be denied');
@@ -258,7 +278,7 @@ describe('ManagedResourceGuard catalog outage regression', () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
     await materialize('skills', { enforcementMode: 'enforced', managed: true });
     registerManagedResourceReadiness('skills', () => false);
-    const caller = directRouter.createCaller({ userId: 'direct-user' });
+    const caller = directRouter.createCaller({ userId: 'sg07-mrg-direct-user' });
 
     try {
       await caller.skillWrite();
@@ -271,9 +291,15 @@ describe('ManagedResourceGuard catalog outage regression', () => {
     }
 
     expect(legacySkillMutation).not.toHaveBeenCalled();
-    expect(await serverDB.select().from(platformAuditLogs)).toEqual([
+    expect(
+      await serverDB
+        .select()
+        .from(platformAuditLogs)
+        .where(eq(platformAuditLogs.actorUserId, 'sg07-mrg-direct-user')),
+    ).toEqual([
       expect.objectContaining({
         action: 'managedResource.legacyMutation',
+        actorUserId: 'sg07-mrg-direct-user',
         result: 'denied',
         targetId: 'agentSkills.update',
         targetType: 'managed_policy',
@@ -296,7 +322,7 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
     const model = new PlatformManagedResourcePolicyModel(serverDB);
     await model.ensureRows();
     await model.materializePublished({ policies, revision: 1 });
-    const caller = directRouter.createCaller({ userId: 'direct-user' });
+    const caller = directRouter.createCaller({ userId: 'sg07-mrg-direct-user' });
 
     for (const call of [
       () => caller.agentWrite(),
@@ -319,12 +345,15 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
         patch: { isEnabled: false },
       }),
     ).resolves.toBe(true);
-    const audits = await serverDB.select().from(platformAuditLogs);
+    const audits = await serverDB
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.actorUserId, 'sg07-mrg-direct-user'));
     expect(audits).toHaveLength(6);
     expect(audits).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          actorUserId: 'direct-user',
+          actorUserId: 'sg07-mrg-direct-user',
           reason: null,
           result: 'denied',
           targetId: 'connector.delete',
@@ -463,11 +492,11 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
   });
 
   it('draft never takes effect, and publishing managed=false restores mutations without data loss', async () => {
-    await serverDB.insert(users).values({ id: 'legacy-user' });
+    await serverDB.insert(users).values({ id: 'sg07-mrg-legacy-user' });
     await serverDB.insert(aiProviders).values({
       id: 'legacy-provider',
       name: 'Legacy provider',
-      userId: 'legacy-user',
+      userId: 'sg07-mrg-legacy-user',
     });
     const model = new PlatformManagedResourcePolicyModel(serverDB);
     await model.ensureRows();
@@ -505,21 +534,28 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
         procedure: 'aiProvider.createAiProvider',
       }),
     ).resolves.toBeUndefined();
-    expect(await serverDB.select().from(aiProviders)).toContainEqual(
-      expect.objectContaining({ id: 'legacy-provider', userId: 'legacy-user' }),
+    expect(
+      await serverDB
+        .select()
+        .from(aiProviders)
+        .where(eq(aiProviders.userId, 'sg07-mrg-legacy-user')),
+    ).toContainEqual(
+      expect.objectContaining({ id: 'legacy-provider', userId: 'sg07-mrg-legacy-user' }),
     );
   });
 
   it('ordinary and super-admin principals receive the same denial for all five resources', async () => {
-    await serverDB.insert(users).values([{ id: 'ordinary-user' }, { id: 'super-admin' }]);
+    await serverDB
+      .insert(users)
+      .values([{ id: 'sg07-mrg-ordinary-user' }, { id: 'sg07-mrg-super-admin' }]);
     await seedPlatformRoles(serverDB);
     await assignGlobalPlatformRole(serverDB, {
       roleName: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
-      userId: 'ordinary-user',
+      userId: 'sg07-mrg-ordinary-user',
     });
     await assignGlobalPlatformRole(serverDB, {
       roleName: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
-      userId: 'super-admin',
+      userId: 'sg07-mrg-super-admin',
     });
     let revision = 1;
     for (const resource of MANAGED_RESOURCE_KINDS) {
@@ -528,7 +564,7 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
         flags: flagsFor(resource, true),
         readiness: readinessFor(resource, true),
       };
-      for (const userId of ['ordinary-user', 'super-admin']) {
+      for (const userId of ['sg07-mrg-ordinary-user', 'sg07-mrg-super-admin']) {
         await expect(
           enforceManagedResourceMutation({
             db: serverDB,

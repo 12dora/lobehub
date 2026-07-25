@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
@@ -18,7 +19,13 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import type { AuthMethod } from '@/libs/trpc/lambda/context';
 import { createContextInner } from '@/libs/trpc/lambda/context';
+import {
+  MANAGED_POLICY_RESOURCE_ID,
+  MANAGED_POLICY_RESOURCE_TYPE,
+} from '@/types/platform/managedResources';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
@@ -35,8 +42,11 @@ const ids = {
 };
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
+  await deletePlatformResourceRevisionsForTest(db, {
+    resourceIds: [MANAGED_POLICY_RESOURCE_ID],
+    resourceType: MANAGED_POLICY_RESOURCE_TYPE,
+  });
   await db.delete(platformManagedResourcePolicies);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
@@ -56,9 +66,10 @@ const context = async (
   serverDB: db,
 });
 
+// PGlite applies the full migration baseline on first getTestDB() — allow headroom.
 beforeAll(async () => {
   db = await getTestDB();
-});
+}, 120_000);
 
 beforeEach(async () => {
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
@@ -152,7 +163,17 @@ describe('admin.managedResources permission contract', () => {
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
 
-    expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceType, MANAGED_POLICY_RESOURCE_TYPE),
+            eq(platformResourceRevisions.resourceId, MANAGED_POLICY_RESOURCE_ID),
+          ),
+        ),
+    ).toHaveLength(0);
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({
         action: 'admin.managedResources.publish',

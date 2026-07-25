@@ -23,24 +23,31 @@ const resolveTo =
     entries.map((e) => ({ address: e.address, family: e.family ?? 4 }));
 
 describe('SafeOutboundHttpClient', () => {
-  it('returns AbortError promptly when aborted during DNS resolution', async () => {
+  it('returns AbortError when aborted during DNS resolution (before DNS resolves)', async () => {
     const controller = new AbortController();
+    let releaseDns!: () => void;
+    const dnsGate = new Promise<void>((resolve) => {
+      releaseDns = resolve;
+    });
+    let dnsResolved = false;
     const client = new SafeOutboundHttpClient({
       mode: 'allow-private',
       resolve: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        await dnsGate;
+        dnsResolved = true;
         return [{ address: '1.1.1.1', family: 4 }];
       },
-      timeoutMs: 500,
+      timeoutMs: 5_000,
     });
-    const startedAt = Date.now();
     const pending = client.streamFetch('https://slow-dns.example/events', {
       signal: controller.signal,
     });
-    setTimeout(() => controller.abort(), 10);
+    // Abort while DNS is still gated — must reject before the resolver completes.
+    controller.abort();
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    expect(Date.now() - startedAt).toBeLessThan(100);
+    expect(dnsResolved).toBe(false);
+    releaseDns();
   });
 
   it('streams SSE incrementally and propagates AbortSignal to the pinned socket', async () => {

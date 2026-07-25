@@ -5,6 +5,7 @@ import {
   ENTERPRISE_ERROR_CODES,
   isEnterpriseErrorCode,
   MANAGED_ERROR_CODES,
+  PLATFORM_CONNECTOR_ERROR_CODES,
   PLATFORM_ERROR_CODES,
 } from './errorCodes';
 
@@ -40,6 +41,16 @@ describe('enterprise error codes', () => {
     expect(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM).toBe('RESOURCE_MANAGED_BY_PLATFORM');
     expect(MANAGED_ERROR_CODES.MANAGED_AGENT_BATCH_LIMIT).toBe('MANAGED_AGENT_BATCH_LIMIT');
     expect(isEnterpriseErrorCode('MANAGED_AGENT_BATCH_LIMIT')).toBe(true);
+  });
+
+  it('registers every connector domain code in the enterprise catalog', () => {
+    for (const code of Object.values(PLATFORM_CONNECTOR_ERROR_CODES)) {
+      expect(isEnterpriseErrorCode(code)).toBe(true);
+      expect(ENTERPRISE_ERROR_CODES[code as keyof typeof ENTERPRISE_ERROR_CODES]).toBe(code);
+    }
+    expect(isEnterpriseErrorCode(PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_NOT_FOUND)).toBe(
+      true,
+    );
   });
 
   it('type-guards known codes only', () => {

@@ -2,21 +2,14 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { verifyPassword } from 'better-auth/crypto';
+import { eq, inArray, or } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import { RbacModel } from '@/database/models/rbac';
 import * as schema from '@/database/schemas';
-import {
-  account,
-  permissions,
-  rolePermissions,
-  roles,
-  session,
-  userRoles,
-  users,
-} from '@/database/schemas';
+import { account, session, userRoles, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
@@ -32,9 +25,18 @@ vi.mock('@/envs/auth', () => ({
 }));
 
 const db: LobeChatDatabase = await getTestDB();
-const userId = 'bootstrap-user';
+/** Per-suite fixture id — never wipe shared RBAC catalog or unrelated users (SG-07). */
+const userId = 'sg07-bootstrap-user';
 const STRONG_PASSWORD = 'break-glass-secret-password';
-const USER_EMAIL = 'admin@example.com';
+const USER_EMAIL = 'sg07-admin@example.com';
+const FIXTURE_EMAILS = [
+  USER_EMAIL,
+  'break@localhost',
+  'weak@localhost',
+  'long@localhost',
+  'disabled@localhost',
+  'generated@localhost',
+] as const;
 
 /** Minimal Better Auth instance against the test DB — real `/sign-in/email` path. */
 const createSignInAuth = (database: LobeChatDatabase) =>
@@ -76,13 +78,17 @@ const signInWithEmailPassword = async (email: string, password: string) => {
 };
 
 const cleanup = async () => {
-  await db.delete(userRoles);
-  await db.delete(rolePermissions);
-  await db.delete(roles);
-  await db.delete(permissions);
-  await db.delete(session);
-  await db.delete(account);
-  await db.delete(users);
+  const fixtureUsers = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(or(eq(users.id, userId), inArray(users.email, [...FIXTURE_EMAILS])));
+  const ids = fixtureUsers.map((row) => row.id);
+  if (ids.length === 0) return;
+  // Delete only rows owned by this suite — leave shared roles/permissions intact.
+  await db.delete(userRoles).where(inArray(userRoles.userId, ids));
+  await db.delete(session).where(inArray(session.userId, ids));
+  await db.delete(account).where(inArray(account.userId, ids));
+  await db.delete(users).where(inArray(users.id, ids));
 };
 
 beforeEach(async () => {
@@ -103,9 +109,10 @@ afterEach(async () => {
 
 describe('bootstrapSuperAdmin', () => {
   it('is idempotent and grants super_admin', async () => {
-    const first = await bootstrapSuperAdmin(db, { password: STRONG_PASSWORD, userId });
+    const first = await bootstrapSuperAdmin(db, { userId });
     expect(first.roleAssigned).toBe(true);
     expect(first.alreadySuperAdmin).toBe(false);
+    expect(first.credentialRepaired).toBe(false);
 
     const second = await bootstrapSuperAdmin(db, { userId });
     expect(second.roleAssigned).toBe(false);
@@ -119,19 +126,38 @@ describe('bootstrapSuperAdmin', () => {
   it('can resolve user by email', async () => {
     const result = await bootstrapSuperAdmin(db, {
       email: USER_EMAIL,
-      password: STRONG_PASSWORD,
     });
     expect(result.userId).toBe(userId);
   });
 
+  it('promotes OIDC-only user without requiring a credential account', async () => {
+    // OIDC users have no Better Auth credential; email/password may be disabled instance-wide.
+    const { authEnv } = await import('@/envs/auth');
+    (authEnv as { AUTH_DISABLE_EMAIL_PASSWORD: boolean }).AUTH_DISABLE_EMAIL_PASSWORD = true;
+
+    const result = await bootstrapSuperAdmin(db, { userId });
+    expect(result.roleAssigned).toBe(true);
+    expect(result.credentialRepaired).toBe(false);
+    expect(result.createdUser).toBe(false);
+
+    const rbac = new RbacModel(db, userId);
+    expect(await rbac.isGlobalSuperAdmin(userId)).toBe(true);
+
+    const credential = await db.query.account.findFirst({
+      where: (t, { and, eq }) => and(eq(t.userId, userId), eq(t.providerId, 'credential')),
+    });
+    expect(credential).toBeUndefined();
+  });
+
   it('repairs legacy super-admin user that has role but no credential account', async () => {
-    // Simulate the previously broken bootstrap: user + role, zero credential accounts.
-    const first = await bootstrapSuperAdmin(db, { password: STRONG_PASSWORD, userId });
+    // Role-only bootstrap, then explicit break-glass credential repair.
+    const first = await bootstrapSuperAdmin(db, { userId });
     expect(first.roleAssigned).toBe(true);
-    await db.delete(account);
+    expect(first.credentialRepaired).toBe(false);
 
     const repaired = await bootstrapSuperAdmin(db, {
       password: STRONG_PASSWORD,
+      repairCredential: true,
       userId,
     });
     expect(repaired.credentialRepaired).toBe(true);
@@ -151,6 +177,7 @@ describe('bootstrapSuperAdmin', () => {
     // Second run is idempotent — does not rotate the password or re-insert.
     const again = await bootstrapSuperAdmin(db, {
       password: 'different-password-not-applied',
+      repairCredential: true,
       userId,
     });
     expect(again.credentialRepaired).toBe(false);
@@ -160,10 +187,11 @@ describe('bootstrapSuperAdmin', () => {
   });
 
   it('repaired existing-user credential can sign in via Better Auth /sign-in/email', async () => {
-    // Existing user, no role, no credential — bootstrap must grant role + credential atomically,
+    // Existing user, no role, no credential — explicit repair grants role + credential atomically,
     // then the operator must be able to sign in with the break-glass password.
     const result = await bootstrapSuperAdmin(db, {
       password: STRONG_PASSWORD,
+      repairCredential: true,
       userId,
     });
     expect(result.roleAssigned).toBe(true);
@@ -182,10 +210,11 @@ describe('bootstrapSuperAdmin', () => {
     expect(bad.body?.token).toBeUndefined();
   });
 
-  it('does not grant super_admin when existing-user password validation fails', async () => {
+  it('does not grant super_admin when credential repair password validation fails', async () => {
     await expect(
       bootstrapSuperAdmin(db, {
         password: 'short',
+        repairCredential: true,
         userId,
       }),
     ).rejects.toThrow(/8–64/);
@@ -198,13 +227,14 @@ describe('bootstrapSuperAdmin', () => {
     expect(credential).toBeUndefined();
   });
 
-  it('does not grant super_admin when credential repair is refused (auth disabled)', async () => {
+  it('refuses explicit credential repair when email/password auth is disabled', async () => {
     const { authEnv } = await import('@/envs/auth');
     (authEnv as { AUTH_DISABLE_EMAIL_PASSWORD: boolean }).AUTH_DISABLE_EMAIL_PASSWORD = true;
 
     await expect(
       bootstrapSuperAdmin(db, {
         password: STRONG_PASSWORD,
+        repairCredential: true,
         userId,
       }),
     ).rejects.toThrow(/AUTH_DISABLE_EMAIL_PASSWORD/);
@@ -214,10 +244,9 @@ describe('bootstrapSuperAdmin', () => {
   });
 
   it('generates a one-time password when repairing credentialless bootstrap user', async () => {
-    await bootstrapSuperAdmin(db, { password: STRONG_PASSWORD, userId });
-    await db.delete(account);
+    await bootstrapSuperAdmin(db, { userId });
 
-    const repaired = await bootstrapSuperAdmin(db, { userId });
+    const repaired = await bootstrapSuperAdmin(db, { repairCredential: true, userId });
     expect(repaired.credentialRepaired).toBe(true);
     expect(repaired.oneTimePassword).toBeTruthy();
 
@@ -239,8 +268,7 @@ describe('bootstrapSuperAdmin', () => {
   });
 
   it('creates break-glass user with credential that Better Auth can verify', async () => {
-    await db.delete(account);
-    await db.delete(users);
+    await cleanup();
     // Leading/trailing spaces must be preserved (not trimmed) for privileged secrets.
     const passwordWithSpaces = `  ${STRONG_PASSWORD}  `;
     const result = await bootstrapSuperAdmin(db, {
@@ -271,8 +299,7 @@ describe('bootstrapSuperAdmin', () => {
   });
 
   it('rejects weak or overlong supplied passwords', async () => {
-    await db.delete(account);
-    await db.delete(users);
+    await cleanup();
     await expect(
       bootstrapSuperAdmin(db, {
         allowCreate: true,
@@ -293,8 +320,7 @@ describe('bootstrapSuperAdmin', () => {
   });
 
   it('refuses break-glass create when email/password auth is disabled', async () => {
-    await db.delete(account);
-    await db.delete(users);
+    await cleanup();
     const { authEnv } = await import('@/envs/auth');
     (authEnv as { AUTH_DISABLE_EMAIL_PASSWORD: boolean }).AUTH_DISABLE_EMAIL_PASSWORD = true;
     await expect(
@@ -308,8 +334,7 @@ describe('bootstrapSuperAdmin', () => {
   });
 
   it('generates a one-time password when create password is omitted', async () => {
-    await db.delete(account);
-    await db.delete(users);
+    await cleanup();
     const result = await bootstrapSuperAdmin(db, {
       allowCreate: true,
       email: 'generated@localhost',

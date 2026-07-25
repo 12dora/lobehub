@@ -3,10 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { getAllowedScopesForAction, isPlatformPermissionCode, SYSTEM_DEFAULT_ROLES } from './rbac';
 
 describe('rbac platform scope rules (M02)', () => {
-  it('exposes platform system role names on SYSTEM_DEFAULT_ROLES', () => {
+  it('keeps SYSTEM_DEFAULT_ROLES limited to legacy super_admin (platform roles are separate)', () => {
     expect(SYSTEM_DEFAULT_ROLES.SUPER_ADMIN).toBe('super_admin');
-    expect(SYSTEM_DEFAULT_ROLES.USER_ADMIN).toBe('user_admin');
-    expect(SYSTEM_DEFAULT_ROLES.AI_ADMIN).toBe('ai_admin');
+    expect(Object.keys(SYSTEM_DEFAULT_ROLES)).toEqual(['SUPER_ADMIN']);
   });
 
   it('treats platform_ codes as ALL-only via isPlatformPermissionCode', () => {

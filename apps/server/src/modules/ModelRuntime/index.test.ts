@@ -31,8 +31,11 @@ import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatal
 
 import {
   buildPayloadFromKeyVaults,
+  hasModelRuntimeEnvironmentFallback,
   initModelRuntimeFromDB,
   initModelRuntimeWithUserPayload,
+  initPlatformExactModelRuntime,
+  resolveManagedChatApiMode,
 } from './index';
 
 interface InspectableBedrockRuntime {
@@ -789,6 +792,129 @@ describe('initModelRuntimeFromDB managed model guard', () => {
       if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
       else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
     }
+  });
+
+  it.each([
+    { enableResponseApi: true, expected: 'responses' as const },
+    { enableResponseApi: false, expected: 'chatCompletion' as const },
+  ])(
+    'injects apiMode=$expected from published enableResponseApi=$enableResponseApi',
+    async ({ enableResponseApi, expected }) => {
+      const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+        {} as PlatformSecretService,
+      );
+      vi.spyOn(
+        AiCatalogExecutionResolver.prototype,
+        'resolveProviderExecutionConfig',
+      ).mockResolvedValue({
+        allowedModels: [{ modelKey: 'allow-chat', type: 'chat' }],
+        config: { enableResponseApi },
+        keyVaults: { apiKey: 'managed-runtime-secret' },
+        providerKey: 'openai',
+        revision: 1,
+        runtimeProvider: 'openai',
+      });
+
+      try {
+        const runtime = await initModelRuntimeFromDB({} as never, 'user-1', 'openai');
+        const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+        runtime['_runtime'] = { chat: providerChat } as never;
+
+        await runtime.chat({ messages: [], model: 'allow-chat' });
+        expect(providerChat).toHaveBeenCalledWith(
+          expect.objectContaining({ apiMode: expected, model: 'allow-chat' }),
+          expect.anything(),
+        );
+
+        // Caller-supplied apiMode wins over the managed default.
+        providerChat.mockClear();
+        await runtime.chat({
+          apiMode: 'chatCompletion',
+          messages: [],
+          model: 'allow-chat',
+        });
+        expect(providerChat).toHaveBeenCalledWith(
+          expect.objectContaining({ apiMode: 'chatCompletion' }),
+          expect.anything(),
+        );
+      } finally {
+        vi.restoreAllMocks();
+        if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+        else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      }
+    },
+  );
+
+  it('injects apiMode on exact-revision managed execution', async () => {
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfigAtRevision',
+    ).mockResolvedValue({
+      allowedModels: [{ modelKey: 'pin-chat', type: 'chat' }],
+      config: { enableResponseApi: true },
+      keyVaults: { apiKey: 'exact-revision-secret' },
+      providerKey: 'openai',
+      revision: 7,
+      runtimeProvider: 'openai',
+    });
+
+    try {
+      const runtime = await initPlatformExactModelRuntime({} as never, 'user-1', {
+        modelKey: 'pin-chat',
+        providerChecksum: 'checksum',
+        providerKey: 'openai',
+        providerRevision: 7,
+      });
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      runtime['_runtime'] = { chat: providerChat } as never;
+
+      await runtime.chat({ messages: [], model: 'pin-chat' });
+      expect(providerChat).toHaveBeenCalledWith(
+        expect.objectContaining({ apiMode: 'responses', model: 'pin-chat' }),
+        expect.anything(),
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe('resolveManagedChatApiMode', () => {
+  it('maps explicit booleans and leaves unset undefined', () => {
+    expect(resolveManagedChatApiMode(true)).toBe('responses');
+    expect(resolveManagedChatApiMode(false)).toBe('chatCompletion');
+    expect(resolveManagedChatApiMode(undefined)).toBeUndefined();
+    expect(resolveManagedChatApiMode(null)).toBeUndefined();
+  });
+});
+
+describe('hasModelRuntimeEnvironmentFallback SuperGrok', () => {
+  it('never treats SUPERGROK_API_KEY as a valid environment fallback', () => {
+    expect(
+      hasModelRuntimeEnvironmentFallback(ModelProvider.SuperGrok, {
+        SUPERGROK_API_KEY: 'would-have-been-false-ready',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('buildPayloadFromKeyVaults SuperGrok contract', () => {
+  it('only accepts oauthAccessToken — plain apiKey does not become a usable bearer', () => {
+    expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.SuperGrok)).toEqual({
+      apiKey: undefined,
+      runtimeProvider: ModelProvider.SuperGrok,
+    });
+    expect(
+      buildPayloadFromKeyVaults({ oauthAccessToken: 'oauth-token-value' }, ModelProvider.SuperGrok),
+    ).toEqual({
+      apiKey: 'oauth-token-value',
+      runtimeProvider: ModelProvider.SuperGrok,
+    });
   });
 });
 

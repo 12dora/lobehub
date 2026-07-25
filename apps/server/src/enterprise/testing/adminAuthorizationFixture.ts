@@ -5,11 +5,13 @@ import { eq, inArray, or } from 'drizzle-orm';
 
 import { PLATFORM_SYSTEM_ROLES, type PlatformSystemRoleName } from '@/const/platform/roles';
 import { RbacModel } from '@/database/models/rbac';
-import { platformAuditLogs, userRoles, users, workspaces } from '@/database/schemas';
+import { userRoles, users, workspaces } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { seedWorkspaceRoles } from '@/database/utils/seedWorkspaceRoles';
 import { createContextInner } from '@/libs/trpc/lambda/context';
+
+import { deletePlatformAuditLogsForTest } from './deletePlatformAuditLogs';
 
 export interface AdminAuthorizationFixtureOptions {
   namespace?: string;
@@ -83,12 +85,15 @@ export const createAdminAuthorizationFixture = (options: AdminAuthorizationFixtu
     ];
 
   const cleanup = async (db: LobeChatDatabase): Promise<void> => {
-    await db.delete(platformAuditLogs).where(inArray(platformAuditLogs.actorUserId, actorIds));
-    await db
-      .delete(userRoles)
-      .where(or(inArray(userRoles.userId, actorIds), eq(userRoles.workspaceId, workspaceId)));
-    await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
-    await db.delete(users).where(inArray(users.id, actorIds));
+    // Append-only audit logs need the test GUC opt-in; scope to this fixture's actors (SG-07).
+    await deletePlatformAuditLogsForTest(db, { actorUserIds: actorIds });
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(userRoles)
+        .where(or(inArray(userRoles.userId, actorIds), eq(userRoles.workspaceId, workspaceId)));
+      await tx.delete(workspaces).where(eq(workspaces.id, workspaceId));
+      await tx.delete(users).where(inArray(users.id, actorIds));
+    });
   };
 
   const setup = async (db: LobeChatDatabase): Promise<void> => {

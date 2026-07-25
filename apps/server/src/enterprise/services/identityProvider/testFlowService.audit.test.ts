@@ -15,7 +15,7 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { SafeOutboundHttpClient } from '@/server/enterprise/security/outboundHttp';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
-import { type CreatePlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
+import { type AppendPlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import { IdentityProviderSecretStore } from './secretStore';
 import { IdentityProviderTestFlowService } from './testFlowService';
@@ -39,7 +39,8 @@ const metadata = {
   subjectTypesSupported: ['public'],
   tokenEndpoint: `${issuer}/token`,
   tokenEndpointAuthMethodsSupported: ['client_secret_basic'],
-  userinfoEndpoint: null,
+  // Production login requires userinfo; the connection test must match that contract.
+  userinfoEndpoint: `${issuer}/userinfo`,
 };
 
 const cleanup = async () => {
@@ -57,7 +58,7 @@ afterEach(cleanup);
 
 type AuditAppender = (
   executor: LobeChatDatabase | Transaction,
-  input: CreatePlatformAuditLogParams,
+  input: AppendPlatformAuditLogParams,
 ) => Promise<void>;
 
 const createFlowFixture = async (auditAppender?: AuditAppender) => {
@@ -76,7 +77,17 @@ const createFlowFixture = async (auditAppender?: AuditAppender) => {
   let idToken = '';
   const outbound = {
     fetch: vi.fn(async (url: string | URL) => {
-      const body = url.toString().endsWith('/token') ? { id_token: idToken } : { keys: [jwk] };
+      const href = url.toString();
+      let body: Record<string, unknown>;
+      if (href.endsWith('/token')) {
+        body = { access_token: 'access-token-for-test', id_token: idToken, token_type: 'Bearer' };
+      } else if (href.endsWith('/userinfo')) {
+        // Only prove subject continuity. Profile claims come from the ID token so
+        // claim-rejection fixtures (missing name/email) still fail as before.
+        body = { sub: 'subject-1' };
+      } else {
+        body = { keys: [jwk] };
+      }
       return {
         headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => body,
@@ -128,6 +139,138 @@ const createFlowFixture = async (auditAppender?: AuditAppender) => {
 };
 
 describe('IdentityProviderTestFlowService audit and provider binding', () => {
+  it('rejects ID-token-only token responses that production login cannot use', async () => {
+    const [created] = await db
+      .insert(platformIdentityProviders)
+      .values({ clientId: 'client-id', displayName: 'Work', issuer, providerKey: 'work-id-only' })
+      .returning();
+    await new IdentityProviderSecretStore(db, secretService).persistClientSecret({
+      expectedRevision: created.revision,
+      providerId: created.id,
+      value: 'client-secret',
+    });
+    const { privateKey, publicKey } = await generateKeyPair('RS256');
+    const jwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'key-1', use: 'sig' };
+    let idToken = '';
+    const outbound = {
+      fetch: vi.fn(async (url: string | URL) => {
+        // Intentionally omit access_token — production getUserInfo rejects this shape.
+        const body = url.toString().endsWith('/token') ? { id_token: idToken } : { keys: [jwk] };
+        return {
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => body,
+          ok: true,
+          truncated: false,
+        };
+      }),
+    } as unknown as SafeOutboundHttpClient;
+    const flow = new IdentityProviderTestFlowService(
+      db,
+      secretService,
+      {
+        discover: vi.fn().mockResolvedValue(metadata),
+      } as unknown as IdentityProviderDiscoveryValidator,
+      outbound,
+    );
+    const started = await flow.start({
+      expectedRevision: 1,
+      id: created.id,
+      reason: 'verify production token shape',
+      redirectUri: 'https://app.example.test/oauth/identity-provider/test/callback',
+      sessionId: 'session-id-only',
+      userId: 'admin-id-only',
+    });
+    const nonce = new URL(started.authorizationUrl).searchParams.get('nonce')!;
+    const state = new URL(started.authorizationUrl).searchParams.get('state')!;
+    const now = Math.floor(Date.now() / 1000);
+    idToken = await new SignJWT({
+      aud: 'client-id',
+      email: 'ada@example.test',
+      exp: now + 300,
+      iat: now,
+      iss: issuer,
+      name: 'Ada',
+      nonce,
+      sub: 'subject-1',
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'key-1' })
+      .sign(privateKey);
+    await expect(
+      flow.callback({
+        code: 'code',
+        effectiveOrigin: 'https://app.example.test',
+        state,
+      }),
+    ).rejects.toThrow('OIDC_TEST_ACCESS_TOKEN_REQUIRED');
+  });
+
+  it('rejects discovery without userinfo_endpoint (production requires userinfo)', async () => {
+    const noUserinfo = { ...metadata, userinfoEndpoint: null };
+    const [created] = await db
+      .insert(platformIdentityProviders)
+      .values({ clientId: 'client-id', displayName: 'Work', issuer, providerKey: 'work-no-ui' })
+      .returning();
+    await new IdentityProviderSecretStore(db, secretService).persistClientSecret({
+      expectedRevision: created.revision,
+      providerId: created.id,
+      value: 'client-secret',
+    });
+    const { privateKey, publicKey } = await generateKeyPair('RS256');
+    const jwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'key-1', use: 'sig' };
+    let idToken = '';
+    const outbound = {
+      fetch: vi.fn(async (url: string | URL) => {
+        const body = url.toString().endsWith('/token')
+          ? { access_token: 'access', id_token: idToken, token_type: 'Bearer' }
+          : { keys: [jwk] };
+        return {
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => body,
+          ok: true,
+          truncated: false,
+        };
+      }),
+    } as unknown as SafeOutboundHttpClient;
+    const flow = new IdentityProviderTestFlowService(
+      db,
+      secretService,
+      {
+        discover: vi.fn().mockResolvedValue(noUserinfo),
+      } as unknown as IdentityProviderDiscoveryValidator,
+      outbound,
+    );
+    const started = await flow.start({
+      expectedRevision: 1,
+      id: created.id,
+      reason: 'userinfo endpoint required',
+      redirectUri: 'https://app.example.test/oauth/identity-provider/test/callback',
+      sessionId: 'session-no-ui',
+      userId: 'admin-no-ui',
+    });
+    const nonce = new URL(started.authorizationUrl).searchParams.get('nonce')!;
+    const state = new URL(started.authorizationUrl).searchParams.get('state')!;
+    const now = Math.floor(Date.now() / 1000);
+    idToken = await new SignJWT({
+      aud: 'client-id',
+      email: 'ada@example.test',
+      exp: now + 300,
+      iat: now,
+      iss: issuer,
+      name: 'Ada',
+      nonce,
+      sub: 'subject-1',
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'key-1' })
+      .sign(privateKey);
+    await expect(
+      flow.callback({
+        code: 'code',
+        effectiveOrigin: 'https://app.example.test',
+        state,
+      }),
+    ).rejects.toThrow('OIDC_TEST_USERINFO_REQUIRED');
+  });
+
   it('enforces RFC 9207 iss on test callback when discovery advertises support', async () => {
     const rfcMetadata = {
       ...metadata,
@@ -148,7 +291,19 @@ describe('IdentityProviderTestFlowService audit and provider binding', () => {
     let idToken = '';
     const outbound = {
       fetch: vi.fn(async (url: string | URL) => {
-        const body = url.toString().endsWith('/token') ? { id_token: idToken } : { keys: [jwk] };
+        const href = url.toString();
+        let body: Record<string, unknown>;
+        if (href.endsWith('/token')) {
+          body = {
+            access_token: 'access-token-for-test',
+            id_token: idToken,
+            token_type: 'Bearer',
+          };
+        } else if (href.endsWith('/userinfo')) {
+          body = { sub: 'subject-1' };
+        } else {
+          body = { keys: [jwk] };
+        }
         return {
           headers: new Headers({ 'content-type': 'application/json' }),
           json: async () => body,

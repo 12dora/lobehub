@@ -47,6 +47,13 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
 const OPENAI_COMPATIBLE_KEYS = new Set(['apiKey', 'baseURL']);
 const SUPPORTED_RUNTIME_PROVIDERS = new Set<string>(Object.values(ModelProvider));
 
+/**
+ * Providers that exist in ModelProvider but have no platform-managed credential lifecycle.
+ * SuperGrok is personal OAuth only (refresh tokens bound to a user); platform catalog cannot
+ * store or refresh oauthAccessToken, and apiKey / SUPERGROK_API_KEY are not valid for it.
+ */
+const PLATFORM_UNSUPPORTED_RUNTIME_PROVIDERS = new Set<string>([ModelProvider.SuperGrok]);
+
 export const resolveAiCatalogRuntimeProvider = (
   providerKey: string,
   settings: PlatformAiProviderSettings,
@@ -54,6 +61,11 @@ export const resolveAiCatalogRuntimeProvider = (
 ): string => resolveModelRuntimeProvider(providerKey, settings.sdkType, source);
 
 const assertSupportedRuntimeProvider = (runtimeProvider: string): void => {
+  if (PLATFORM_UNSUPPORTED_RUNTIME_PROVIDERS.has(runtimeProvider)) {
+    throw new AiCatalogValidationError([
+      'SuperGrok is personal OAuth only and cannot be managed as a platform provider',
+    ]);
+  }
   if (!SUPPORTED_RUNTIME_PROVIDERS.has(runtimeProvider)) {
     throw new AiCatalogValidationError(['Unsupported provider runtime']);
   }
@@ -220,9 +232,6 @@ const SECRET_CREDENTIAL_STRING_KEYS = new Set([
  * with exact/token-aware rules ({@link credentialAppearsInPublicText}).
  */
 export const MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH = 8;
-
-/** @deprecated Use {@link MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH}. */
-export const MIN_CREDENTIAL_LEAF_LENGTH = MIN_CREDENTIAL_SUBSTRING_MATCH_LENGTH;
 
 /** Header names whose values are treated as secret material (case-insensitive). */
 const SECRET_CUSTOM_HEADER_NAMES = new Set([

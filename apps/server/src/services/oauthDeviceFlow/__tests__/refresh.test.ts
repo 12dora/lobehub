@@ -61,7 +61,7 @@ const tokenResponse = (body: object, ok = true) => ({
 
 describe('ensureFreshOAuthToken', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it('returns keyVaults untouched when not connected via OAuth', async () => {
@@ -205,12 +205,97 @@ describe('ensureFreshOAuthToken', () => {
     expect(c).toBe(a);
   });
 
-  it('still returns fresh tokens when persisting fails', async () => {
+  it('rejects with InvalidProviderAPIKey when persisting the rotated pair fails', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockFetch.mockResolvedValueOnce(
       tokenResponse({ access_token: 'new-access', refresh_token: 'new-refresh' }),
     );
-    mockUpdateConfig.mockRejectedValueOnce(new Error('db down'));
+    // Exhaust transient retries — never return a token pair that only exists in memory.
+    mockUpdateConfig
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'));
+    mockGetAiProviderById.mockResolvedValueOnce({
+      keyVaults: {
+        oauthAccessToken: 'old-access',
+        oauthRefreshToken: 'old-refresh',
+        oauthTokenExpiresAt: String(Date.now() - 1000),
+      },
+    });
+
+    await expect(
+      ensureFreshOAuthToken(
+        makeParams({
+          oauthAccessToken: 'old-access',
+          oauthRefreshToken: 'old-refresh',
+          oauthTokenExpiresAt: String(Date.now() - 1000),
+        }),
+      ),
+    ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.InvalidProviderAPIKey });
+
+    expect(mockUpdateConfig).toHaveBeenCalledTimes(3);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it('serves the durable rotated pair on a following request after a successful persist', async () => {
+    mockUpdateConfig.mockResolvedValue(undefined);
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse({
+        access_token: 'new-access',
+        expires_in: 3600,
+        refresh_token: 'new-refresh',
+      }),
+    );
+
+    const params = makeParams({
+      oauthAccessToken: 'old-access',
+      oauthRefreshToken: 'old-refresh',
+      oauthTokenExpiresAt: String(Date.now() - 1000),
+    });
+
+    const first = await ensureFreshOAuthToken(params);
+    expect(first.oauthAccessToken).toBe('new-access');
+    expect(first.oauthRefreshToken).toBe('new-refresh');
+    expect(mockUpdateConfig).toHaveBeenCalledOnce();
+
+    // Second request observes the stored rotated pair and does not re-hit the provider.
+    mockFetch.mockClear();
+    mockUpdateConfig.mockClear();
+
+    const second = await ensureFreshOAuthToken({
+      ...params,
+      keyVaults: {
+        oauthAccessToken: first.oauthAccessToken,
+        oauthRefreshToken: first.oauthRefreshToken,
+        oauthTokenExpiresAt: first.oauthTokenExpiresAt,
+      },
+    });
+
+    expect(second.oauthAccessToken).toBe('new-access');
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockUpdateConfig).not.toHaveBeenCalled();
+  });
+
+  it('recovers from a transient persist failure when a concurrent writer stored the pair', async () => {
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse({
+        access_token: 'new-access',
+        expires_in: 3600,
+        refresh_token: 'new-refresh',
+      }),
+    );
+    mockUpdateConfig
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'));
+    mockGetAiProviderById.mockResolvedValueOnce({
+      keyVaults: {
+        oauthAccessToken: 'new-access',
+        oauthRefreshToken: 'new-refresh',
+        oauthTokenExpiresAt: String(Date.now() + 30 * 60 * 1000),
+      },
+    });
 
     const result = await ensureFreshOAuthToken(
       makeParams({
@@ -221,8 +306,7 @@ describe('ensureFreshOAuthToken', () => {
     );
 
     expect(result.oauthAccessToken).toBe('new-access');
-    expect(consoleError).toHaveBeenCalled();
-    consoleError.mockRestore();
+    expect(result.oauthRefreshToken).toBe('new-refresh');
   });
 
   describe('invalid_grant self-healing', () => {

@@ -112,6 +112,8 @@ export const identityProviderDraftSchema = z
     domainAllowlist: z.array(z.string().trim().min(1).max(253)).max(256),
     enabled: z.boolean(),
     groupRoleMapping: z.record(z.string().min(1).max(256), z.string().min(1).max(128)),
+    /** Present on list/get when the server batched lifecycle metadata. */
+    hasPublishedHistory: z.boolean().optional(),
     icon: z.string().max(4096).nullable(),
     id: z.string().min(1).max(128),
     issuer: z.string().url().max(4096).nullable(),
@@ -121,6 +123,8 @@ export const identityProviderDraftSchema = z
       .min(1)
       .max(128)
       .regex(/^[a-z0-9][a-z0-9._-]*$/),
+    /** Present on list/get when the server resolved current-revision test readiness. */
+    publishTestReady: z.boolean().optional(),
     revision: z.number().int().nonnegative(),
     scopes: identityProviderScopesSchema,
     secret: identityProviderSecretStateSchema,

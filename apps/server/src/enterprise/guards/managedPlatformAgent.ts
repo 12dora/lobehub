@@ -110,6 +110,70 @@ export const assertAgentsNotPlatformManaged = async (params: {
 /** Extracts the agent id(s) a mutation targets from its raw tRPC input. */
 export type ManagedLocalAgentIdPicker = (input: unknown) => Array<string | null | undefined>;
 
+/**
+ * Stable picker kind attached as frozen middleware metadata so registry tests can
+ * reconcile the live router surface without relying on function identity alone.
+ */
+export type ManagedLocalAgentPickerKind =
+  'agentId' | 'agentIds' | 'documentAgentIds' | 'id' | 'custom';
+
+export interface ManagedLocalAgentGuardMetadata {
+  kind: 'managedLocalAgent';
+  picker: ManagedLocalAgentPickerKind;
+}
+
+interface TrpcProcedureWithMiddleware {
+  _def?: {
+    middlewares?: readonly unknown[];
+    type?: unknown;
+  };
+}
+
+const MANAGED_LOCAL_AGENT_GUARD_METADATA = Symbol('managedLocalAgentGuardMetadata');
+
+const attachManagedLocalAgentGuardMetadata = (
+  middleware: unknown,
+  picker: ManagedLocalAgentPickerKind,
+): void => {
+  if (typeof middleware !== 'function') {
+    throw new TypeError('Managed local agent guard middleware must be a function');
+  }
+  Object.defineProperty(middleware, MANAGED_LOCAL_AGENT_GUARD_METADATA, {
+    configurable: false,
+    enumerable: false,
+    value: Object.freeze({
+      kind: 'managedLocalAgent',
+      picker,
+    } satisfies ManagedLocalAgentGuardMetadata),
+    writable: false,
+  });
+};
+
+/**
+ * Read server-only managed-local-agent guard metadata from a final procedure's middleware chain.
+ * Symbol is private and non-enumerable so it cannot become API output.
+ */
+export const getManagedLocalAgentGuardMetadata = (
+  procedure: unknown,
+): readonly ManagedLocalAgentGuardMetadata[] => {
+  if (typeof procedure !== 'function') return [];
+  const middlewares = (procedure as TrpcProcedureWithMiddleware)._def?.middlewares;
+  if (!Array.isArray(middlewares)) return [];
+  return middlewares.flatMap((middleware) => {
+    if (typeof middleware !== 'function') return [];
+    const descriptor = Object.getOwnPropertyDescriptor(
+      middleware,
+      MANAGED_LOCAL_AGENT_GUARD_METADATA,
+    );
+    if (!descriptor) return [];
+    return [descriptor.value as ManagedLocalAgentGuardMetadata];
+  });
+};
+
+/** True when the procedure is a mutation that carries the managed-local-agent guard. */
+export const procedureHasManagedLocalAgentGuard = (procedure: unknown): boolean =>
+  getManagedLocalAgentGuardMetadata(procedure).length > 0;
+
 /** The common shapes: `{ agentId }`, `{ agentIds: [] }`, and `{ id }` (agent-router alias). */
 const asRecord = (input: unknown): Record<string, unknown> =>
   input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
@@ -118,20 +182,38 @@ const asRecord = (input: unknown): Record<string, unknown> =>
 export const pickAgentId: ManagedLocalAgentIdPicker = (input) => [
   asRecord(input).agentId as string,
 ];
+Object.defineProperty(pickAgentId, 'managedLocalAgentPickerKind', {
+  value: 'agentId' satisfies ManagedLocalAgentPickerKind,
+});
 
 /** `{ id }` picker — the agent router's alias for the target agent (publish / visibility / pin). */
 export const pickId: ManagedLocalAgentIdPicker = (input) => [asRecord(input).id as string];
+Object.defineProperty(pickId, 'managedLocalAgentPickerKind', {
+  value: 'id' satisfies ManagedLocalAgentPickerKind,
+});
 
 /** `{ agentIds: string[] }` picker — batch group membership writes. */
 export const pickAgentIds: ManagedLocalAgentIdPicker = (input) => {
   const value = asRecord(input).agentIds;
   return Array.isArray(value) ? (value as string[]) : [];
 };
+Object.defineProperty(pickAgentIds, 'managedLocalAgentPickerKind', {
+  value: 'agentIds' satisfies ManagedLocalAgentPickerKind,
+});
 
 /** `{ agentId?, sourceAgentId?, targetAgentId? }` picker — covers every agent-document write. */
 export const pickDocumentAgentIds: ManagedLocalAgentIdPicker = (input) => {
   const record = asRecord(input);
   return [record.agentId as string, record.sourceAgentId as string, record.targetAgentId as string];
+};
+Object.defineProperty(pickDocumentAgentIds, 'managedLocalAgentPickerKind', {
+  value: 'documentAgentIds' satisfies ManagedLocalAgentPickerKind,
+});
+
+const resolvePickerKind = (pick: ManagedLocalAgentIdPicker): ManagedLocalAgentPickerKind => {
+  const kind = (pick as { managedLocalAgentPickerKind?: ManagedLocalAgentPickerKind })
+    .managedLocalAgentPickerKind;
+  return kind ?? 'custom';
 };
 
 /**
@@ -144,9 +226,10 @@ export const pickDocumentAgentIds: ManagedLocalAgentIdPicker = (input) => {
  * - Flag off (`ENABLE_PLATFORM_MANAGED_AGENTS`) → no-op: ordinary local Agents are completely
  *   unaffected and the legacy path has zero platform access.
  * - Owner-scoped: a foreign / non-materialized id resolves to null and passes through untouched.
+ * - Attaches frozen non-enumerable metadata so registry tests can reconcile the guarded surface.
  */
-export const withManagedLocalAgentGuard = (pick: ManagedLocalAgentIdPicker) =>
-  trpc.middleware(async ({ ctx, getRawInput, next }) => {
+export const withManagedLocalAgentGuard = (pick: ManagedLocalAgentIdPicker) => {
+  const middleware = trpc.middleware(async ({ ctx, getRawInput, next }) => {
     if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return next();
     const db = (ctx as { serverDB?: LobeChatDatabase }).serverDB;
     if (!db) throw new Error('withManagedLocalAgentGuard requires serverDatabase middleware');
@@ -161,3 +244,69 @@ export const withManagedLocalAgentGuard = (pick: ManagedLocalAgentIdPicker) =>
     await assertAgentsNotPlatformManaged({ agentIds, db, userId, workspaceId });
     return next();
   });
+
+  attachManagedLocalAgentGuardMetadata(middleware._middlewares.at(-1), resolvePickerKind(pick));
+  return middleware;
+};
+
+/**
+ * Canonical inventory of agent-scoped ordinary mutations that MUST carry
+ * {@link withManagedLocalAgentGuard}. Bidirectional registry tests compare this set
+ * against live router procedures and attached middleware metadata.
+ *
+ * agentDocument writes inherit the guard from `agentDocumentProcedureWrite`.
+ */
+export const MANAGED_LOCAL_AGENT_GUARDED_MUTATIONS = Object.freeze([
+  // agent
+  'agent.removeAgent',
+  'agent.updateAgentConfig',
+  'agent.updateAgentPinned',
+  'agent.setAgentVisibility',
+  'agent.publishAgentToWorkspace',
+  'agent.duplicateAgent',
+  'agent.createAgentFiles',
+  'agent.createAgentKnowledgeBase',
+  'agent.deleteAgentFile',
+  'agent.deleteAgentKnowledgeBase',
+  'agent.toggleFile',
+  'agent.toggleKnowledgeBase',
+  'agent.transferAgent',
+  'agent.acquireAgentLock',
+  'agent.releaseAgentLock',
+  // agentGroup
+  'agentGroup.addAgentsToGroup',
+  'agentGroup.removeAgentsFromGroup',
+  'agentGroup.updateAgentInGroup',
+  // home
+  'home.updateAgentSessionGroupId',
+  // agentDocument (via agentDocumentProcedureWrite)
+  'agentDocument.upsertDocument',
+  'agentDocument.deleteDocument',
+  'agentDocument.deleteAllDocuments',
+  'agentDocument.initializeFromTemplate',
+  'agentDocument.cloneDocuments',
+  'agentDocument.writeDocumentByPath',
+  'agentDocument.createSkillByPath',
+  'agentDocument.convertDocumentToSkill',
+  'agentDocument.generateSkillMeta',
+  'agentDocument.updateSkillByPath',
+  'agentDocument.deleteSkillByPath',
+  'agentDocument.mkdirDocumentByPath',
+  'agentDocument.renameDocumentByPath',
+  'agentDocument.copyDocumentByPath',
+  'agentDocument.deleteDocumentByPath',
+  'agentDocument.restoreDocumentFromTrashByPath',
+  'agentDocument.deleteDocumentPermanentlyByPath',
+  'agentDocument.associateDocument',
+  'agentDocument.createDocument',
+  'agentDocument.createForTopic',
+  'agentDocument.modifyNodes',
+  'agentDocument.replaceDocumentContent',
+  'agentDocument.removeDocument',
+  'agentDocument.copyDocument',
+  'agentDocument.renameDocument',
+  'agentDocument.updateLoadRule',
+] as const);
+
+export type ManagedLocalAgentGuardedMutation =
+  (typeof MANAGED_LOCAL_AGENT_GUARDED_MUTATIONS)[number];

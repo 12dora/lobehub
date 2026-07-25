@@ -122,8 +122,19 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   {
     kind: 'mutation',
     path: 'admin.aiModels.applyImmediate',
-    // PUBLISH via middleware; CREATE/UPDATE re-checked inside the procedure (W10-P).
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
+    // Provider + model publish always required; CREATE/UPDATE/DELETE from input.operation.
+    permission: {
+      mode: 'compound',
+      permissions: [
+        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+        PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH,
+      ],
+      selectable: [
+        PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+        PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+        PLATFORM_PERMISSIONS.AI_MODEL_DELETE,
+      ],
+    },
   },
   {
     kind: 'mutation',
@@ -178,8 +189,15 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   {
     kind: 'mutation',
     path: 'admin.aiProviders.applyImmediate',
-    // PUBLISH via middleware; CREATE/UPDATE re-checked inside the procedure (W10-P).
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
+    // PUBLISH always required; CREATE/UPDATE selected from input.mode.
+    permission: {
+      mode: 'compound',
+      permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH],
+      selectable: [
+        PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+      ],
+    },
   },
   {
     kind: 'mutation',
@@ -244,7 +262,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   {
     kind: 'mutation',
     path: 'admin.skills.applyImmediate',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_PUBLISH] },
+    // PUBLISH always required; CREATE/UPDATE selected from input.mode.
+    permission: {
+      mode: 'compound',
+      permissions: [PLATFORM_PERMISSIONS.SKILL_PUBLISH],
+      selectable: [PLATFORM_PERMISSIONS.SKILL_CREATE, PLATFORM_PERMISSIONS.SKILL_UPDATE],
+    },
   },
   {
     kind: 'mutation',

@@ -32,6 +32,7 @@ import {
   projectAdminBrandingPublished,
 } from '../../contracts/adminBranding';
 import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import {
   getPlatformConfigInvalidationPublisher,
@@ -294,7 +295,7 @@ export class AdminBrandingService {
   private recordOperationFailure = async (
     claim: BrandingOperationClaim,
     error: unknown,
-    action: string,
+    action: AuditAction,
     actorUserId: string,
     input: { reason: string; requestId: string },
   ): Promise<void> => {
@@ -689,7 +690,7 @@ export class AdminBrandingService {
   };
 
   private appendFailureAudit = async (
-    action: string,
+    action: AuditAction,
     actorUserId: string,
     input: { reason: string; requestId: string },
     errorCategory?: PlatformBrandingOperationErrorCategory,

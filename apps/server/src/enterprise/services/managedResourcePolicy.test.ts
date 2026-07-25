@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -9,7 +10,13 @@ import {
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
+import {
+  MANAGED_POLICY_RESOURCE_ID,
+  MANAGED_POLICY_RESOURCE_TYPE,
+} from '@/types/platform/managedResources';
 
+import { deletePlatformAuditLogsForTest } from '../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../testing/deletePlatformResourceRevisions';
 import {
   ManagedResourceCatalogNotReadyError,
   ManagedResourcePolicyService,
@@ -41,15 +48,35 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+const FIXTURE_ACTOR_IDS = ['admin-1', 'admin-2'] as const;
+
+const deleteOwnedRevisions = () =>
+  deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: [MANAGED_POLICY_RESOURCE_ID],
+    resourceType: MANAGED_POLICY_RESOURCE_TYPE,
+  });
+
+/** Scope whole-table revision assertions to this suite's managed-policy resource (SG-07). */
+const ownedRevisions = () =>
+  serverDB
+    .select()
+    .from(platformResourceRevisions)
+    .where(
+      and(
+        eq(platformResourceRevisions.resourceType, MANAGED_POLICY_RESOURCE_TYPE),
+        eq(platformResourceRevisions.resourceId, MANAGED_POLICY_RESOURCE_ID),
+      ),
+    );
+
 beforeEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: FIXTURE_ACTOR_IDS });
+  await deleteOwnedRevisions();
   await serverDB.delete(platformManagedResourcePolicies);
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: FIXTURE_ACTOR_IDS });
+  await deleteOwnedRevisions();
   await serverDB.delete(platformManagedResourcePolicies);
 });
 
@@ -123,7 +150,7 @@ describe('ManagedResourcePolicyService', () => {
       }),
     ).rejects.toBeInstanceOf(ManagedResourceCatalogNotReadyError);
 
-    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect(await ownedRevisions()).toHaveLength(0);
     expect((await service.get()).published.aiProviders.managed).toBe(false);
     expect(invalidation.events).toHaveLength(0);
   });
@@ -187,7 +214,7 @@ describe('ManagedResourcePolicyService', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     expect((await service.get()).baseRevision).toBe(1);
-    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(1);
+    expect(await ownedRevisions()).toHaveLength(1);
   });
 
   it('rolls back revision and effective rows when materialization transaction faults', async () => {
@@ -223,7 +250,7 @@ describe('ManagedResourcePolicyService', () => {
     const current = await service.get();
     expect(current.baseRevision).toBe(0);
     expect(current.published.skills.managed).toBe(false);
-    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect(await ownedRevisions()).toHaveLength(0);
     expect(invalidation.events).toHaveLength(0);
     expect(await serverDB.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({
@@ -316,7 +343,7 @@ describe('ManagedResourcePolicyService', () => {
 
     await expect(save).resolves.toMatchObject({ ok: true });
     await publishRejection;
-    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect(await ownedRevisions()).toHaveLength(0);
     expect((await publisher.get()).published).toEqual(createUnmanagedResourcePolicyMap());
     expect(await serverDB.select().from(platformAuditLogs)).toEqual(
       expect.arrayContaining([
@@ -377,7 +404,7 @@ describe('ManagedResourcePolicyService', () => {
 
     await expect(firstPublish).resolves.toMatchObject({ revision: 1 });
     await secondPublishRejection;
-    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(1);
+    expect(await ownedRevisions()).toHaveLength(1);
     const rows = await serverDB.select().from(platformManagedResourcePolicies);
     expect(rows).toHaveLength(5);
     expect(new Set(rows.map((row) => row.revision))).toEqual(new Set([1]));

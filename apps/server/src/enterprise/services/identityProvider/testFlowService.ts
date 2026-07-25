@@ -13,7 +13,8 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import type { PlatformSecretService } from '../../security/secret';
-import { type CreatePlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
+import type { AuditAction } from '../audit/auditActionCatalog';
+import { type AppendPlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
 import { buildIdentityProviderClaimPreview } from './claimValidation';
 import {
   assertAuthorizationResponseIssuer,
@@ -32,7 +33,7 @@ export { createClientSecretBasicAuthorization } from './tokenExchange';
 
 type AuditAppender = (
   db: LobeChatDatabase | Transaction,
-  input: CreatePlatformAuditLogParams,
+  input: AppendPlatformAuditLogParams,
 ) => Promise<void>;
 
 const appendPlatformAudit: AuditAppender = async (db, input) => {
@@ -136,7 +137,7 @@ export class IdentityProviderTestFlowService {
   private appendAudit = async (
     db: LobeChatDatabase | Transaction,
     input: {
-      action: string;
+      action: AuditAction;
       actorUserId: string;
       category?: string;
       reason: string;
@@ -156,7 +157,7 @@ export class IdentityProviderTestFlowService {
   };
 
   private appendFailureAudit = async (input: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     error: unknown;
     reason: string;
@@ -361,6 +362,15 @@ export class IdentityProviderTestFlowService {
         pkceVerifier: attempt.pkceVerifier,
         redirectUri: attempt.redirectUri,
       });
+      // Match production login contract (platformIdentityProvider.getUserInfo): both a
+      // non-empty access token and a userinfo endpoint are mandatory. An ID-token-only
+      // response must not mark the attempt successful — publication trusts this gate.
+      if (!token.access_token) {
+        throw new Error('OIDC_TEST_ACCESS_TOKEN_REQUIRED');
+      }
+      if (!metadata.userinfoEndpoint) {
+        throw new Error('OIDC_TEST_USERINFO_REQUIRED');
+      }
       const idClaims = await verifyIdentityProviderIdToken({
         clientId: provider.clientId,
         idToken: token.id_token,
@@ -368,23 +378,20 @@ export class IdentityProviderTestFlowService {
         nonceHash: attempt.nonceHash,
         outbound: this.outbound,
       });
-      let claims: Record<string, unknown> = { ...idClaims };
-      if (metadata.userinfoEndpoint && token.access_token) {
-        const userinfo = z.record(z.string(), z.unknown()).parse(
-          await safeJson(
-            await this.outbound.fetch(metadata.userinfoEndpoint, {
-              headers: { Authorization: `Bearer ${token.access_token}` },
-              maxRedirects: 0,
-              maxResponseBytes: TOKEN_MAX_BYTES,
-              method: 'GET',
-              secretBearing: true,
-              timeoutMs: TOKEN_TIMEOUT_MS,
-            }),
-          ),
-        );
-        if (userinfo.sub !== idClaims.sub) throw new Error('OIDC_TEST_SUBJECT_MISMATCH');
-        claims = { ...idClaims, ...userinfo };
-      }
+      const userinfo = z.record(z.string(), z.unknown()).parse(
+        await safeJson(
+          await this.outbound.fetch(metadata.userinfoEndpoint, {
+            headers: { Authorization: `Bearer ${token.access_token}` },
+            maxRedirects: 0,
+            maxResponseBytes: TOKEN_MAX_BYTES,
+            method: 'GET',
+            secretBearing: true,
+            timeoutMs: TOKEN_TIMEOUT_MS,
+          }),
+        ),
+      );
+      if (userinfo.sub !== idClaims.sub) throw new Error('OIDC_TEST_SUBJECT_MISMATCH');
+      const claims: Record<string, unknown> = { ...idClaims, ...userinfo };
       const preview = buildIdentityProviderClaimPreview(
         claims,
         provider.claimMapping,

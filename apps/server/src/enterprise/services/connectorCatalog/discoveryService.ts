@@ -178,38 +178,20 @@ export class ConnectorCatalogDiscoveryService {
     const command = adminConnectorTestInputSchema.parse(input);
     const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
     const startedAt = Date.now();
+
+    // Probe classification only — draft load, preflight, and remote discovery.
+    // Success-state persistence and audit delivery are outside this catch so an
+    // audit outage cannot rewrite a healthy probe as a network failure.
+    let detail: Awaited<ReturnType<typeof loadConnectorDraft>>;
+    let output: ReturnType<typeof adminConnectorTestOutputSchema.parse>;
     try {
-      const detail = await loadConnectorDraft(this.db, command.id);
+      detail = await loadConnectorDraft(this.db, command.id);
       await this.discoverRemoteTools(detail.draft);
-      const output = adminConnectorTestOutputSchema.parse({
+      output = adminConnectorTestOutputSchema.parse({
         ...fixedConnectorOperationResult('success', null),
         latencyMs: Math.max(0, Date.now() - startedAt),
         testedAt: new Date(),
       });
-      // Durable revision/token-bound success so any instance can publish after refetch.
-      await recordConnectorConnectionTest(this.db, command.id, {
-        errorCategory: null,
-        latencyMs: output.latencyMs,
-        messageCode: output.messageCode,
-        status: 'success',
-        testedAt: output.testedAt,
-        testedDraftToken: detail.draftToken,
-        testedRevision: detail.draft.revision,
-      });
-      await new PlatformAuditService(this.db).append({
-        action: 'admin.connectors.test',
-        actorUserId,
-        afterDiff: {
-          ...output,
-          testedDraftToken: detail.draftToken,
-          testedRevision: detail.draft.revision,
-        },
-        reason,
-        result: 'success',
-        targetId: command.id,
-        targetType: 'connector',
-      });
-      return output;
     } catch (error) {
       if (
         error instanceof PlatformConnectorContractError &&
@@ -232,39 +214,79 @@ export class ConnectorCatalogDiscoveryService {
         error.code === 'PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED'
           ? 'invalid_config'
           : 'network';
-      const detail = await loadConnectorDraft(this.db, command.id).catch(() => null);
-      const output = adminConnectorTestOutputSchema.parse({
+      const failureDetail = await loadConnectorDraft(this.db, command.id).catch(() => null);
+      const failureOutput = adminConnectorTestOutputSchema.parse({
         ...fixedConnectorOperationResult('failure', errorCategory),
         latencyMs: null,
         testedAt: new Date(),
       });
-      if (detail) {
+      if (failureDetail) {
         await recordConnectorConnectionTest(this.db, command.id, {
-          errorCategory: output.errorCategory,
+          errorCategory: failureOutput.errorCategory,
           latencyMs: null,
-          messageCode: output.messageCode,
+          messageCode: failureOutput.messageCode,
           status: 'failure',
-          testedAt: output.testedAt,
-          testedDraftToken: detail.draftToken,
-          testedRevision: detail.draft.revision,
+          testedAt: failureOutput.testedAt,
+          testedDraftToken: failureDetail.draftToken,
+          testedRevision: failureDetail.draft.revision,
         });
       }
+      try {
+        await new PlatformAuditService(this.db).append({
+          action: 'admin.connectors.test',
+          actorUserId,
+          afterDiff: failureDetail
+            ? {
+                ...failureOutput,
+                testedDraftToken: failureDetail.draftToken,
+                testedRevision: failureDetail.draft.revision,
+              }
+            : failureOutput,
+          reason,
+          result: 'failure',
+          targetId: command.id,
+          targetType: 'connector',
+        });
+      } catch (auditError) {
+        console.error('[connectorCatalog] failure-test audit append failed', {
+          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+          targetId: command.id,
+        });
+      }
+      return failureOutput;
+    }
+
+    // Durable revision/token-bound success so any instance can publish after refetch.
+    await recordConnectorConnectionTest(this.db, command.id, {
+      errorCategory: null,
+      latencyMs: output.latencyMs,
+      messageCode: output.messageCode,
+      status: 'success',
+      testedAt: output.testedAt,
+      testedDraftToken: detail.draftToken,
+      testedRevision: detail.draft.revision,
+    });
+    try {
       await new PlatformAuditService(this.db).append({
         action: 'admin.connectors.test',
         actorUserId,
-        afterDiff: detail
-          ? {
-              ...output,
-              testedDraftToken: detail.draftToken,
-              testedRevision: detail.draft.revision,
-            }
-          : output,
+        afterDiff: {
+          ...output,
+          testedDraftToken: detail.draftToken,
+          testedRevision: detail.draft.revision,
+        },
         reason,
-        result: 'failure',
+        result: 'success',
         targetId: command.id,
         targetType: 'connector',
       });
-      return output;
+    } catch (auditError) {
+      // Probe + durable success state already committed — do not reclassify as network.
+      console.error('[connectorCatalog] success-test audit append failed', {
+        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+        targetId: command.id,
+      });
     }
+    return output;
   };
 }

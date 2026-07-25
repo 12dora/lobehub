@@ -17,6 +17,7 @@ import {
 import { resolvePlatformSkillPinnedInputSchema } from '@/server/enterprise/contracts/skillCatalog';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import { withActiveUserWhenManaged } from '@/server/enterprise/routers/managedActiveUser';
 import { resolvePublishedManagedResourcePolicies } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getBuiltinSkillDefinitions,
@@ -30,6 +31,9 @@ import {
   SkillResourceError,
   SkillResourceService,
 } from '@/server/services/skill';
+
+/** Active-user revocation for managed Skill surfaces (flag-off = no-op). */
+const managedSkillsActive = withActiveUserWhenManaged('ENABLE_PLATFORM_MANAGED_SKILLS');
 
 // ===== Error Handling =====
 
@@ -329,6 +333,7 @@ export const agentSkillsRouter = router({
    */
   resolvePlatformPinned: wsCompatProcedure
     .use(serverDatabase)
+    .use(managedSkillsActive)
     .input(resolvePlatformSkillPinnedInputSchema)
     .output(platformSkillExecutionProjectionSchema)
     .query(async ({ ctx, input }) => {

@@ -7,7 +7,6 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { getTestDB } from '@/database/core/getTestDB';
 import * as schema from '@/database/schemas';
 import {
-  platformAuditLogs,
   platformBranding,
   platformBrandingAssets,
   platformBrandingOperations,
@@ -16,9 +15,15 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminBrandingDraft } from '../../contracts/adminBranding';
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { AdminBrandingAssetService } from './adminBrandingAssetService';
-import { AdminBrandingService, BrandingDraftValidationError } from './adminBrandingService';
+import {
+  AdminBrandingService,
+  BRANDING_RESOURCE_ID,
+  BrandingDraftValidationError,
+} from './adminBrandingService';
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 const INTERLEAVING_PROBE_MS = 100;
@@ -66,9 +71,12 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
     const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
     const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
     const cleanup = async () => {
-      await firstDb.delete(platformAuditLogs);
+      await deletePlatformAuditLogsForTest(firstDb, { actorUserIds: ['admin-cleanup-race'] });
       await firstDb.delete(platformBrandingOperations);
-      await firstDb.delete(platformResourceRevisions);
+      await deletePlatformResourceRevisionsForTest(firstDb, {
+        resourceIds: [BRANDING_RESOURCE_ID],
+        resourceType: 'branding',
+      });
       await firstDb.delete(platformBranding);
       await firstDb.delete(platformBrandingAssets);
     };

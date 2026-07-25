@@ -3,8 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
-  platformAuditLogs,
-  platformResourceRevisions,
   platformSettingPolicies,
   platformSettingsBundle,
   userSettingOverrideRevisions,
@@ -12,9 +10,18 @@ import {
 } from '@/database/schemas/platform';
 import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
+import {
+  PLATFORM_SETTINGS_RESOURCE_ID,
+  PLATFORM_SETTINGS_RESOURCE_TYPE,
+} from '@/types/platform/settings';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { AdminSettingsService } from './adminSettingsService';
-import { EffectiveSettingsService } from './effectiveSettingsService';
+import {
+  EffectiveSettingsService,
+  resetEffectiveSettingsCacheForTest,
+} from './effectiveSettingsService';
 import { resolveEffectiveUserInterventionConfig } from './runtimeSettingsAdapter';
 
 const { policyState } = vi.hoisted(() => ({ policyState: { enabled: true } }));
@@ -33,11 +40,18 @@ vi.mock('../../featureFlags', async (importOriginal) => {
 });
 
 const serverDB: LobeChatDatabase = await getTestDB();
+const FIXTURE_ACTOR_IDS = ['admin'] as const;
 
 beforeEach(async () => {
   policyState.enabled = true;
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  // Drop process-local policy caches so revision numbers recycled after cleanup
+  // cannot serve a previous test's published policies (e.g. locked → default).
+  resetEffectiveSettingsCacheForTest();
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: FIXTURE_ACTOR_IDS });
+  await deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+    resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+  });
   await serverDB.delete(userSettingOverrides);
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
@@ -49,8 +63,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  resetEffectiveSettingsCacheForTest();
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: FIXTURE_ACTOR_IDS });
+  await deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+    resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+  });
   await serverDB.delete(userSettingOverrides);
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);

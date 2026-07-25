@@ -1,22 +1,17 @@
-import { createHash, randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
+import { randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
 
 import { isPlainRecord } from '@lobechat/utils/object';
-import { and, eq, sql } from 'drizzle-orm';
-import { z } from 'zod';
+import type { z } from 'zod';
 
-import { PlatformJobModel } from '@/database/models/platform/job';
 import {
   PlatformConnectorCatalogRepository,
   PlatformUserConnectorBindingRepository,
 } from '@/database/repositories/platformConnectorCatalog';
-import { platformJobs, type PlatformUserConnectorBindingItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
-  connectorBindingSchema,
   connectorOAuthCallbackInputSchema,
   connectorOAuthTokenResponseSchema,
-  connectorScopesSchema,
   userConnectorDisconnectInputSchema,
   userConnectorDisconnectOutputSchema,
   userConnectorGetAuthorizationStatusInputSchema,
@@ -28,26 +23,23 @@ import {
 } from '../../contracts/platformConnectors';
 import { PlatformAuditService } from '../platformAudit';
 import { ConnectorCatalogReadService, resolveConnectorSecretVersion } from './catalogSnapshot';
+import { ConnectorOAuthRefreshCoordinator } from './connectorOAuthRefreshCoordinator';
 import { PlatformConnectorContractError } from './errors';
+import {
+  appendOAuthAuditBestEffort,
+  assertExactAuthorizationEndpoint,
+  assertStoredSecret,
+  bestEffortRevokeSecret,
+  createPkceChallenge,
+  hashOAuthValue,
+  parseGrantedScopes,
+  toBindingProjection,
+} from './oauthHelpers';
 import type { ConnectorOAuthRuntimeDependencies } from './oauthRuntime';
 import { MANAGED_CONNECTOR_OAUTH_STATE_PREFIX } from './oauthRuntime';
 import { cleanupConnectorSecretRefs } from './secretCleanup';
 
 const AUTHORIZATION_TTL_MS = 9 * 60 * 1000;
-const OAUTH_REFRESH_JOB_TYPE = 'connector.oauth.refresh.v1';
-/** Short lease before outbound I/O; heartbeats renew while work is in flight. */
-const OAUTH_REFRESH_LEASE_INTERVAL = sql<Date>`statement_timestamp() + interval '2 minutes'`;
-/**
- * Extended lease once outbound token refresh has started — covers slow IdP
- * round-trips without allowing concurrent reclaim of an in-flight rotation.
- */
-const OAUTH_REFRESH_OUTBOUND_LEASE_INTERVAL = sql<Date>`statement_timestamp() + interval '10 minutes'`;
-const storedOAuthTokenSchema = z
-  .object({
-    accessToken: z.string().min(1).max(32_768),
-    refreshToken: z.string().min(1).max(32_768).optional(),
-  })
-  .strict();
 
 type ListManagedInput = z.input<typeof userConnectorListManagedInputSchema>;
 type StartAuthorizationInput = z.input<typeof userConnectorStartAuthorizationInputSchema>;
@@ -55,102 +47,11 @@ type GetAuthorizationStatusInput = z.input<typeof userConnectorGetAuthorizationS
 type DisconnectInput = z.input<typeof userConnectorDisconnectInputSchema>;
 type CallbackInput = z.input<typeof connectorOAuthCallbackInputSchema>;
 
-const toBindingProjection = (binding: PlatformUserConnectorBindingItem | undefined) =>
-  binding
-    ? connectorBindingSchema.parse({
-        connectedAt: binding.connectedAt,
-        expiresAt: binding.expiresAt,
-        id: binding.id,
-        lastErrorCategory: binding.lastErrorCategory,
-        scopes: binding.scopes,
-        status: binding.status,
-        updatedAt: binding.updatedAt,
-      })
-    : null;
-
-const hash = (value: string): string => createHash('sha256').update(value).digest('hex');
-
-const createPkceChallenge = (verifier: string): string =>
-  createHash('sha256').update(verifier).digest('base64url');
-
-const assertStoredSecret = (value: { fingerprint: string; ref: string }) => {
-  if (
-    value.fingerprint.length === 0 ||
-    (!value.ref.startsWith('vault://') && !value.ref.startsWith('kms://'))
-  ) {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-  }
-  return value;
-};
-
-const assertExactAuthorizationEndpoint = (value: string): URL => {
-  const url = new URL(value);
-  const reserved = [
-    'client_id',
-    'code_challenge',
-    'code_challenge_method',
-    'redirect_uri',
-    'response_type',
-    'scope',
-    'state',
-  ];
-  if (url.hash || reserved.some((key) => url.searchParams.has(key))) {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID');
-  }
-  return url;
-};
-
-const parseGrantedScopes = (scope: string | undefined, requested: string[]): string[] => {
-  if (!scope) return [...requested];
-  const scopes = connectorScopesSchema.parse(scope.split(/\s+/u).filter(Boolean));
-  const requestedSet = new Set(requested);
-  if (scopes.some((candidate) => !requestedSet.has(candidate))) {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
-  }
-  return scopes;
-};
-
-const bestEffortRevokeSecret = (
-  dependencies: ConnectorOAuthRuntimeDependencies,
-  connectorId: string,
-  slot: 'oauthBindingToken' | 'oauthPkceVerifier',
-  ref: string | null | undefined,
-): Promise<void> =>
-  ref
-    ? cleanupConnectorSecretRefs(dependencies.secrets, [{ connectorId, ref, slot }])
-    : Promise.resolve();
-
-const appendOAuthAuditBestEffort = async (
-  db: LobeChatDatabase,
-  params: {
-    action: string;
-    actorUserId: string;
-    status: string;
-    targetId: string;
-  },
-): Promise<void> => {
-  try {
-    await new PlatformAuditService(db).append({
-      action: params.action,
-      actorUserId: params.actorUserId,
-      afterDiff: { status: params.status },
-      reason: null,
-      result: 'success',
-      targetId: params.targetId,
-      targetType: 'connector_binding',
-    });
-  } catch (error) {
-    console.error('[connectorOAuth] audit append failed', {
-      action: params.action,
-      errorClass: error instanceof Error ? error.name : 'UnknownError',
-    });
-  }
-};
-
 export class UserConnectorOAuthService {
   private readonly bindings: PlatformUserConnectorBindingRepository;
   private readonly catalog: PlatformConnectorCatalogRepository;
   private readonly read: ConnectorCatalogReadService;
+  private readonly refreshCoordinator: ConnectorOAuthRefreshCoordinator;
 
   constructor(
     private readonly db: LobeChatDatabase,
@@ -160,6 +61,7 @@ export class UserConnectorOAuthService {
     this.bindings = new PlatformUserConnectorBindingRepository(db, userId);
     this.catalog = new PlatformConnectorCatalogRepository(db);
     this.read = new ConnectorCatalogReadService(db, dependencies.secrets);
+    this.refreshCoordinator = new ConnectorOAuthRefreshCoordinator(db, userId, dependencies);
   }
 
   listManaged = async (input: ListManagedInput) => {
@@ -280,7 +182,7 @@ export class UserConnectorOAuthService {
         redirectUri: oauth.redirectUri,
         returnTo: command.returnTo,
         scopes: oauth.scopes,
-        stateHash: hash(state),
+        stateHash: hashOAuthValue(state),
         stateId,
       });
     } catch (error) {
@@ -289,12 +191,13 @@ export class UserConnectorOAuthService {
         connector.id,
         'oauthPkceVerifier',
         storedVerifier.ref,
+        this.db,
       );
       throw error;
     }
     await Promise.all(
       prepared.pkceVerifierRefs.map((ref) =>
-        bestEffortRevokeSecret(this.dependencies, connector.id, 'oauthPkceVerifier', ref),
+        bestEffortRevokeSecret(this.dependencies, connector.id, 'oauthPkceVerifier', ref, this.db),
       ),
     );
     authorizationUrl.searchParams.set('client_id', oauth.clientId);
@@ -311,292 +214,9 @@ export class UserConnectorOAuthService {
     });
   };
 
-  /** Server-only refresh path; the old valid binding remains untouched on every failure. */
-  refreshBinding = async (connectorId: string, publishedRevision?: number): Promise<void> => {
-    const [snapshot, binding] = await Promise.all([
-      publishedRevision === undefined
-        ? this.read.getSnapshot(connectorId)
-        : this.read.getSnapshotRevision(connectorId, publishedRevision),
-      this.bindings.getBinding(connectorId),
-    ]);
-    const connector = snapshot.payload.connector;
-    const oauth = connector.oauthConfig;
-    if (
-      !binding ||
-      binding.status !== 'connected' ||
-      binding.publishedRevision !== snapshot.provenance.revision ||
-      !binding.oauthTokenRef ||
-      !oauth ||
-      connector.credentialMode !== 'per_user_oauth'
-    ) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_NOT_FOUND');
-    }
-    await this.dependencies.outbound.preflightToken(oauth.tokenEndpoint);
-    const currentSecret = await this.dependencies.secrets.resolveSecretRef({
-      connectorId,
-      ref: binding.oauthTokenRef,
-      slot: 'oauthBindingToken',
-    });
-    const currentToken = storedOAuthTokenSchema.safeParse(currentSecret?.value);
-    if (!currentSecret || currentSecret.ref !== binding.oauthTokenRef || !currentToken.success) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-    }
-    if (!currentToken.data.refreshToken) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-    }
-    const clientSecret = connector.oauthClientSecretConfigured
-      ? await resolveConnectorSecretVersion(
-          this.dependencies.secrets,
-          connector.id,
-          'oauthClientSecret',
-          connector.oauthClientSecretFingerprint,
-        )
-      : null;
-    const clientSecretValue = clientSecret?.value;
-    if (clientSecretValue !== undefined && typeof clientSecretValue !== 'string') {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-    }
-    const refreshLease = await this.acquireRefreshLease(binding);
-    let completed = false;
-    try {
-      // Mark outboundStarted + extend lease before IdP I/O so concurrent callers
-      // cannot reclaim mid-rotation; a crash after this point is fail-closed via TTL.
-      await this.heartbeatRefreshLease(refreshLease, { outbound: true });
-      const response = await this.dependencies.outbound.refresh({
-        clientId: oauth.clientId,
-        clientSecret: clientSecretValue,
-        refreshToken: currentToken.data.refreshToken,
-        tokenEndpoint: oauth.tokenEndpoint,
-      });
-      // Renew after outbound returns to cover the persistence / CAS window.
-      await this.heartbeatRefreshLease(refreshLease, { outbound: true });
-      const token = connectorOAuthTokenResponseSchema.safeParse(response.body);
-      if (!token.success) {
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID');
-      }
-      const scopes = parseGrantedScopes(token.data.scope, binding.scopes);
-      if (scopes.some((scope) => !oauth.scopes.includes(scope))) {
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
-      }
-      const storedToken = assertStoredSecret(
-        await this.dependencies.secrets.persistSecret({
-          connectorId,
-          slot: 'oauthBindingToken',
-          value: {
-            accessToken: token.data.access_token,
-            refreshToken: token.data.refresh_token ?? currentToken.data.refreshToken,
-          },
-        }),
-      );
-      const updatedAt = (this.dependencies.clock ?? (() => new Date()))();
-      const updated = await this.bindings.updateBindingCas(connectorId, binding.revision, {
-        expiresAt:
-          token.data.expires_in === undefined
-            ? binding.expiresAt
-            : new Date(updatedAt.getTime() + token.data.expires_in * 1000),
-        oauthTokenRef: storedToken.ref,
-        scopes,
-        tokenFingerprint: storedToken.fingerprint,
-      });
-      if (!updated) {
-        await bestEffortRevokeSecret(
-          this.dependencies,
-          connectorId,
-          'oauthBindingToken',
-          storedToken.ref,
-        );
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
-      }
-      await new PlatformJobModel(this.db).complete({
-        jobId: refreshLease.jobId,
-        resultSummary: { bindingRevision: updated.revision },
-        workerId: refreshLease.owner,
-      });
-      completed = true;
-      await bestEffortRevokeSecret(
-        this.dependencies,
-        connectorId,
-        'oauthBindingToken',
-        binding.oauthTokenRef,
-      );
-    } finally {
-      // Process crash is covered by finite leaseUntil + reclaim. This finally
-      // releases the lease on any in-process failure so a held lease cannot
-      // livelock the binding revision.
-      if (!completed) {
-        await this.releaseRefreshLeaseBestEffort(refreshLease, 'CONNECTOR_OAUTH_REFRESH_FAILED');
-      }
-    }
-  };
-
-  /**
-   * Terminalise a refresh lease even when the standard job.fail() CAS misses
-   * (expired lease). Idempotent: terminal rows and foreign owners are no-ops.
-   */
-  private releaseRefreshLeaseBestEffort = async (
-    lease: { jobId: string; owner: string },
-    code: string,
-  ): Promise<void> => {
-    try {
-      const failed = await new PlatformJobModel(this.db).fail({
-        error: { code },
-        jobId: lease.jobId,
-        terminal: true,
-        workerId: lease.owner,
-      });
-      if (failed) return;
-      // fail() no-ops when lease already expired — force-clear ownership so the
-      // binding revision can be reclaimed without waiting for another cycle.
-      const databaseNow = sql<Date>`statement_timestamp()`;
-      await this.db
-        .update(platformJobs)
-        .set({
-          finishedAt: databaseNow,
-          lastError: { code },
-          leaseOwner: null,
-          leaseUntil: null,
-          status: 'failed',
-          updatedAt: databaseNow,
-        })
-        .where(
-          and(
-            eq(platformJobs.id, lease.jobId),
-            eq(platformJobs.leaseOwner, lease.owner),
-            eq(platformJobs.status, 'running'),
-          ),
-        );
-    } catch {
-      // Best-effort only; finite leaseUntil remains the crash-recovery backstop.
-    }
-  };
-
-  private heartbeatRefreshLease = async (
-    lease: { jobId: string; owner: string },
-    options: { outbound: boolean } = { outbound: false },
-  ): Promise<void> => {
-    const databaseNow = sql<Date>`statement_timestamp()`;
-    await this.db
-      .update(platformJobs)
-      .set({
-        heartbeatAt: databaseNow,
-        // Outbound I/O uses the longer lease so slow IdPs cannot be reclaimed mid-flight.
-        leaseUntil: options.outbound
-          ? OAUTH_REFRESH_OUTBOUND_LEASE_INTERVAL
-          : OAUTH_REFRESH_LEASE_INTERVAL,
-        // Mark that outbound work may be in flight so reclaim refuses blind retry.
-        input: options.outbound
-          ? sql`jsonb_set(coalesce(${platformJobs.input}, '{}'::jsonb), '{outboundStarted}', 'true'::jsonb, true)`
-          : platformJobs.input,
-        updatedAt: databaseNow,
-      })
-      .where(
-        and(
-          eq(platformJobs.id, lease.jobId),
-          eq(platformJobs.leaseOwner, lease.owner),
-          eq(platformJobs.status, 'running'),
-        ),
-      );
-  };
-
-  private acquireRefreshLease = async (
-    binding: PlatformUserConnectorBindingItem,
-  ): Promise<{ jobId: string; owner: string }> => {
-    const owner = randomUUID();
-    const databaseNow = sql<Date>`statement_timestamp()`;
-    // Finite lease so a crashed worker can be reclaimed after expiry instead of
-    // permanently stranding the binding refresh path on an abandoned `running` row.
-    // Heartbeats renew leaseUntil while the holder is still executing outbound work.
-    const databaseLeaseUntil = OAUTH_REFRESH_LEASE_INTERVAL;
-    const idempotencyKey = hash(`${binding.id}:${binding.revision}`);
-    const [created] = await this.db
-      .insert(platformJobs)
-      .values({
-        attempt: 1,
-        heartbeatAt: databaseNow,
-        idempotencyKey,
-        input: {
-          bindingId: binding.id,
-          bindingRevision: binding.revision,
-          connectorId: binding.connectorId,
-          outboundStarted: false,
-          userId: binding.userId,
-        },
-        leaseOwner: owner,
-        leaseUntil: databaseLeaseUntil,
-        requestedBy: binding.userId,
-        startedAt: databaseNow,
-        status: 'running',
-        type: OAUTH_REFRESH_JOB_TYPE,
-      })
-      .onConflictDoNothing({ target: [platformJobs.type, platformJobs.idempotencyKey] })
-      .returning({ id: platformJobs.id });
-    if (created) return { jobId: created.id, owner };
-
-    // Ambiguous outbound: lease expired after token endpoint may have rotated.
-    // Mark dead and never reclaim for a blind refresh-token retry (fail closed).
-    const [ambiguous] = await this.db
-      .update(platformJobs)
-      .set({
-        lastError: { code: 'CONNECTOR_OAUTH_REFRESH_AMBIGUOUS_OUTBOUND' },
-        status: 'dead',
-        updatedAt: databaseNow,
-      })
-      .where(
-        and(
-          eq(platformJobs.type, OAUTH_REFRESH_JOB_TYPE),
-          eq(platformJobs.idempotencyKey, idempotencyKey),
-          eq(platformJobs.status, 'running'),
-          sql`${platformJobs.leaseUntil} IS NOT NULL`,
-          sql`${platformJobs.leaseUntil} < statement_timestamp()`,
-          sql`coalesce((${platformJobs.input}->>'outboundStarted')::boolean, false) = true`,
-        ),
-      )
-      .returning({ id: platformJobs.id });
-    if (ambiguous) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
-    }
-
-    const [reclaimed] = await this.db
-      .update(platformJobs)
-      .set({
-        attempt: sql`${platformJobs.attempt} + 1`,
-        heartbeatAt: databaseNow,
-        input: sql`jsonb_set(coalesce(${platformJobs.input}, '{}'::jsonb), '{outboundStarted}', 'false'::jsonb, true)`,
-        lastError: null,
-        leaseOwner: owner,
-        leaseUntil: databaseLeaseUntil,
-        status: 'running',
-        updatedAt: databaseNow,
-      })
-      .where(
-        and(
-          eq(platformJobs.type, OAUTH_REFRESH_JOB_TYPE),
-          eq(platformJobs.idempotencyKey, idempotencyKey),
-          // Terminal non-ambiguous jobs, or abandoned running leases that never
-          // started outbound (safe reclaim without double-rotate risk).
-          sql`(
-            (
-              ${platformJobs.status} IN ('dead', 'failed')
-              AND coalesce(${platformJobs.lastError}->>'code', '')
-                <> 'CONNECTOR_OAUTH_REFRESH_AMBIGUOUS_OUTBOUND'
-            )
-            OR (
-              ${platformJobs.status} = 'running'
-              AND ${platformJobs.leaseUntil} IS NOT NULL
-              AND ${platformJobs.leaseUntil} < statement_timestamp()
-              AND coalesce((${platformJobs.input}->>'outboundStarted')::boolean, false) = false
-              AND (
-                ${platformJobs.heartbeatAt} IS NULL
-                OR ${platformJobs.heartbeatAt} < statement_timestamp() - interval '2 minutes'
-              )
-            )
-          )`,
-        ),
-      )
-      .returning({ id: platformJobs.id });
-    if (reclaimed) return { jobId: reclaimed.id, owner };
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
-  };
+  /** Server-only refresh path; delegates to the lease/CAS coordinator. */
+  refreshBinding = async (connectorId: string, publishedRevision?: number): Promise<void> =>
+    this.refreshCoordinator.refreshBinding(connectorId, publishedRevision);
 
   disconnect = async (input: DisconnectInput) => {
     const command = userConnectorDisconnectInputSchema.parse(input);
@@ -622,9 +242,16 @@ export class UserConnectorOAuthService {
         command.connectorId,
         'oauthBindingToken',
         result?.previousTokenRef,
+        this.db,
       ),
       ...(result?.pkceVerifierRefs ?? []).map((ref) =>
-        bestEffortRevokeSecret(this.dependencies, command.connectorId, 'oauthPkceVerifier', ref),
+        bestEffortRevokeSecret(
+          this.dependencies,
+          command.connectorId,
+          'oauthPkceVerifier',
+          ref,
+          this.db,
+        ),
       ),
     ]);
     return userConnectorDisconnectOutputSchema.parse({ disconnected: true });
@@ -644,7 +271,7 @@ export class ConnectorOAuthCallbackService {
   }
 
   abandonAuthorization = async (rawState: string): Promise<void> => {
-    const stateHash = hash(rawState);
+    const stateHash = hashOAuthValue(rawState);
     const reservation = await this.catalog.reserveOAuthState(stateHash);
     if (reservation.status === 'expired') {
       await cleanupConnectorSecretRefs(
@@ -652,8 +279,9 @@ export class ConnectorOAuthCallbackService {
         reservation.pkceVerifierRefs.map((ref) => ({
           connectorId: reservation.connectorId,
           ref,
-          slot: 'oauthPkceVerifier',
+          slot: 'oauthPkceVerifier' as const,
         })),
+        { db: this.db },
       );
       return;
     }
@@ -668,13 +296,14 @@ export class ConnectorOAuthCallbackService {
         terminated.connectorId,
         'oauthPkceVerifier',
         terminated.pkceVerifierRef,
+        this.db,
       );
     }
   };
 
   callback = async (input: CallbackInput): Promise<{ returnTo?: string }> => {
     const command = connectorOAuthCallbackInputSchema.parse(input);
-    const stateHash = hash(command.state);
+    const stateHash = hashOAuthValue(command.state);
     const reservation = await this.catalog.reserveOAuthState(stateHash);
     if (reservation.status === 'expired') {
       await Promise.all(
@@ -684,6 +313,7 @@ export class ConnectorOAuthCallbackService {
             reservation.connectorId,
             'oauthPkceVerifier',
             ref,
+            this.db,
           ),
         ),
       );
@@ -800,12 +430,14 @@ export class ConnectorOAuthCallbackService {
           connector.id,
           'oauthBindingToken',
           finalized.previousTokenRef,
+          this.db,
         ),
         bestEffortRevokeSecret(
           this.dependencies,
           connector.id,
           'oauthPkceVerifier',
           state.pkceVerifierRef,
+          this.db,
         ),
       ]);
       await appendOAuthAuditBestEffort(this.db, {
@@ -821,6 +453,7 @@ export class ConnectorOAuthCallbackService {
         state.connectorId,
         'oauthBindingToken',
         unboundTokenRef,
+        this.db,
       );
       if (exchangeAttempted) {
         try {
@@ -839,6 +472,7 @@ export class ConnectorOAuthCallbackService {
           state.connectorId,
           'oauthPkceVerifier',
           state.pkceVerifierRef,
+          this.db,
         );
       } else {
         await this.catalog.releaseOAuthStateReservation(stateHash, reservation.reservedAt);
@@ -848,3 +482,6 @@ export class ConnectorOAuthCallbackService {
     }
   };
 }
+
+// Re-export coordinator for targeted unit tests without changing public service paths.
+export { ConnectorOAuthRefreshCoordinator } from './connectorOAuthRefreshCoordinator';

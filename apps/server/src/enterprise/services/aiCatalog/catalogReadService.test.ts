@@ -10,13 +10,20 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { AiCatalogReadService } from './catalogReadService';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const service = new AiCatalogReadService(serverDB);
 
 const cleanup = async () => {
-  await serverDB.delete(platformResourceRevisions);
+  const ownedProviders = await serverDB
+    .select({ id: platformAiProviders.id })
+    .from(platformAiProviders);
+  await deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: ownedProviders.map((row) => row.id),
+    resourceType: 'provider',
+  });
   await serverDB.delete(platformAiModels);
   await serverDB.delete(platformAiProviders);
 };

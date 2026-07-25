@@ -7,7 +7,7 @@ import type { PlatformUserConnectorBindingItem } from '@/database/schemas/platfo
 
 import {
   collectConnectorSecretLeaves,
-  connectorSharedCredentialSchema,
+  connectorSharedCredentialReadSchema,
 } from '../../contracts/platformConnectors';
 import { redactDeep } from '../../security/redaction';
 import { resolveConnectorSecretVersion } from './catalogSnapshot';
@@ -232,7 +232,8 @@ export class PlatformConnectorRuntimeAdapter {
           'sharedSecret',
           connector.sharedSecretFingerprint,
         );
-        const credential = connectorSharedCredentialSchema.parse(secret.value);
+        // Accept-on-read: legacy header names parse so admins can still repair via replace.
+        const credential = connectorSharedCredentialReadSchema.parse(secret.value);
         headers = sharedCredentialHeaders(credential);
         // Canonical collector treats dynamic header *keys* and values as secret leaves.
         taintedValues.push(
@@ -539,7 +540,7 @@ const parseArguments = (value: string | Record<string, unknown>): Record<string,
 };
 
 const sharedCredentialHeaders = (
-  credential: z.infer<typeof connectorSharedCredentialSchema>,
+  credential: z.infer<typeof connectorSharedCredentialReadSchema>,
 ): Record<string, string> => ({
   ...credential.headers,
   ...(credential.apiKey ? { Authorization: `Bearer ${credential.apiKey}` } : {}),

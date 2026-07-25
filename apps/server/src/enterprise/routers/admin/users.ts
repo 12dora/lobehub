@@ -41,6 +41,7 @@ import {
   AdminUserService,
   InvalidRetainedSessionError,
 } from '../../services/adminUserService';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import { LastSuperAdminError } from '../../services/platformRbac';
 
 const adminBase = authedProcedure
@@ -118,7 +119,7 @@ const mapServiceError = (error: unknown): never => {
  * (no `ctx as never` erasure).
  */
 const assertUsersDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -127,20 +128,16 @@ const assertUsersDangerousReauth = async (params: {
   targetId?: string;
 }): Promise<void> =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[platform-audit] append failed',
-    auditFailureMeta: {
-      action: params.action,
-      result: 'denied',
-      targetType: 'user',
-    },
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: params.reason ?? null,
     serverDB: params.serverDB,
-    targetId: params.targetId ?? null,
-    targetType: 'user',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: params.reason ?? null,
+      targetId: params.targetId ?? null,
+      targetType: 'user',
+    },
   });
 
 export const adminUsersRouter = router({

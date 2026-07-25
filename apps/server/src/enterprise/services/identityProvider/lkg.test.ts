@@ -454,6 +454,137 @@ describe('identity provider LKG', () => {
     });
   });
 
+  it('retains more than 100 distinct provider tombstones for total-DB outage selection', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    // Seed empty live set; each iteration uses a strictly monotonic generation so
+    // write + tombstone advance cannot be rejected as a downgrade.
+    const empty: IdentityProviderLkgPayload = {
+      createdAt: new Date().toISOString(),
+      domain: 'platform-oidc-lkg',
+      generation: '2026-01-01T00:00:00.000Z:seed',
+      identityRevision: identityProviderLkgIdentity([]),
+      providerTombstones: [],
+      providers: [],
+      version: IDENTITY_PROVIDER_LKG_VERSION,
+    };
+    await writeIdentityProviderLkg({ env, payload: empty, secrets: secrets() });
+
+    for (let i = 0; i < 101; i += 1) {
+      const providerId = `provider-hist-${String(i).padStart(3, '0')}`;
+      // Generations must be strictly monotonic across the whole loop (string compare).
+      const liveGeneration = `gen-${String(i * 2).padStart(4, '0')}-live`;
+      const tombstoneGeneration = `gen-${String(i * 2 + 1).padStart(4, '0')}-tomb`;
+      const base = payload(new Date().toISOString(), i + 1, {
+        providerId,
+        providerKey: `key-${i}`,
+      });
+      const providers = base.providers.map((provider) => ({
+        ...provider,
+        generation: liveGeneration,
+      }));
+      const live: IdentityProviderLkgPayload = {
+        ...base,
+        generation: liveGeneration,
+        identityRevision: identityProviderLkgIdentity(providers),
+        providers,
+      };
+      await expect(
+        writeIdentityProviderLkg({ env, payload: live, secrets: secrets() }),
+      ).resolves.toBe('written');
+      const result = await advanceIdentityProviderLkgAfterTombstone({
+        env,
+        removedProviderId: providerId,
+        secrets: secrets(),
+        tombstoneGeneration,
+      });
+      expect(result).toBe('written');
+    }
+
+    const advanced = await readIdentityProviderLkg({ env, secrets: secrets() });
+    expect(advanced?.providers).toEqual([]);
+    expect(advanced?.providerTombstones?.length).toBe(101);
+    const lastId = 'provider-hist-100';
+    expect(advanced?.providerTombstones?.some((t) => t.providerId === lastId)).toBe(true);
+    // Pre-tombstone snapshot of the 101st provider cannot resurrect under total-DB outage.
+    const resurrectGeneration = 'gen-0200-live'; // same generation as the live write before its tombstone
+    const resurrectBase = payload(new Date().toISOString(), 101, {
+      providerId: lastId,
+      providerKey: 'key-100',
+    });
+    const resurrectProviders = resurrectBase.providers.map((provider) => ({
+      ...provider,
+      generation: resurrectGeneration,
+    }));
+    const resurrect: IdentityProviderLkgPayload = {
+      ...resurrectBase,
+      generation: resurrectGeneration,
+      identityRevision: identityProviderLkgIdentity(resurrectProviders),
+      providers: resurrectProviders,
+    };
+    await expect(
+      writeIdentityProviderLkg({ env, payload: resurrect, secrets: secrets() }),
+    ).resolves.toBe('rejected');
+  }, 60_000);
+
+  it('fails loudly when a write would exceed the tombstone decode hard max', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    const base = payload(new Date().toISOString(), 1);
+    const tooMany = Array.from({ length: 10_001 }, (_, i) => ({
+      generation: `gen-tomb-${String(i).padStart(5, '0')}`,
+      providerId: `provider-overflow-${i}`,
+    }));
+    const bloated: IdentityProviderLkgPayload = {
+      ...base,
+      generation: 'gen-overflow',
+      identityRevision: identityProviderLkgIdentity(base.providers),
+      providerTombstones: tooMany,
+      providers: base.providers,
+    };
+    // parseProviderTombstones rejects length > 10k at decode/parse (PAYLOAD_INVALID).
+    await expect(
+      writeIdentityProviderLkg({ env, payload: bloated, secrets: secrets() }),
+    ).rejects.toMatchObject({
+      code: 'OIDC_LKG_PAYLOAD_INVALID',
+    });
+  });
+
+  it('rejects merge that crosses the tombstone hard max with OIDC_LKG_TOMBSTONE_LIMIT', async () => {
+    // Direct write of 10_001 hits PAYLOAD_INVALID in parse. Cover the merge branch:
+    // existing on-disk 10_000 + one new tombstone → normalizeProviderTombstones throws.
+    const envPath = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: envPath };
+    const base = payload(new Date().toISOString(), 1);
+    const atLimit = Array.from({ length: 10_000 }, (_, i) => ({
+      generation: `gen-at-limit-${String(i).padStart(5, '0')}`,
+      providerId: `provider-limit-${i}`,
+    }));
+    const full: IdentityProviderLkgPayload = {
+      ...base,
+      generation: 'gen-at-limit',
+      identityRevision: identityProviderLkgIdentity(base.providers),
+      providerTombstones: atLimit,
+      providers: base.providers,
+    };
+    await expect(
+      writeIdentityProviderLkg({ env, payload: full, secrets: secrets() }),
+    ).resolves.toBe('written');
+
+    const overflow: IdentityProviderLkgPayload = {
+      ...base,
+      generation: 'gen-overflow-merge',
+      identityRevision: identityProviderLkgIdentity(base.providers),
+      providerTombstones: [{ generation: 'gen-extra-00001', providerId: 'provider-limit-extra' }],
+      providers: base.providers,
+    };
+    await expect(
+      writeIdentityProviderLkg({ env, payload: overflow, secrets: secrets() }),
+    ).rejects.toMatchObject({
+      code: 'OIDC_LKG_TOMBSTONE_LIMIT',
+    });
+  });
+
   it('serializes old/new writes and cannot downgrade after interleaving', async () => {
     const path = await createPath();
     const env = { PLATFORM_OIDC_LKG_PATH: path };

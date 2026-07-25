@@ -124,7 +124,3 @@ export const getEmptyPlatformAiRuntimeState = (): AiProviderRuntimeState => ({
   enabledVideoAiProviders: [],
   runtimeConfig: {},
 });
-
-export const resetPlatformAiRuntimeForTest = (): void => {
-  implementation = null;
-};

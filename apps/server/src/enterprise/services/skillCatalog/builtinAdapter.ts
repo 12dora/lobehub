@@ -1,9 +1,13 @@
 import { builtinSkills } from '@lobechat/builtin-skills';
 import type { BuiltinSkill } from '@lobechat/types';
 
-import { checksumPayload, platformSkillVersionChecksum } from '@/database/models/platform';
+import { platformSkillVersionChecksum } from '@/database/models/platform';
 
-import type { SkillManifest, SkillResource } from '../../contracts/skillCatalog';
+import {
+  type SkillManifest,
+  type SkillResource,
+  skillResourceContentChecksum,
+} from '../../contracts/skillCatalog';
 import { type BuiltinSkillDefinition, builtinSkillDefinitionsSchema } from './readService';
 
 const manifestForBuiltin = (skill: BuiltinSkill): SkillManifest => ({
@@ -25,7 +29,9 @@ const resourcesForBuiltin = (skill: BuiltinSkill): SkillResource[] =>
     if (typeof resource.content !== 'string') return [];
     return [
       {
-        checksum: checksumPayload({ content: resource.content }),
+        // Must match skillResourceSchema binding (SHA-256 of UTF-8 content), not
+        // checksumPayload({ content }) which hashes canonical JSON.
+        checksum: skillResourceContentChecksum(resource.content),
         content: resource.content,
         mediaType: 'text/plain',
         path,

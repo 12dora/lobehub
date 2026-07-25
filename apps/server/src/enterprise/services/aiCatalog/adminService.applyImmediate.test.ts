@@ -92,6 +92,47 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     expect(result.revision).toBeGreaterThan(0);
   });
 
+  it('publishes via applyImmediate when credentials come only from ModelRuntime environment', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'environment-only-apply-key');
+    let probeCount = 0;
+    const service = createService(async () => {
+      probeCount += 1;
+    });
+    const created = await service.createProviderDraft('admin', {
+      source: 'custom',
+      checkModel: 'chat',
+      displayName: 'Env apply',
+      enabled: true,
+      providerKey: 'env-apply',
+      reason: 'create',
+      // No stored secret — OPENAI_API_KEY satisfies readiness via environment fallback.
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    expect(detail.draft.secret.configured).toBe(false);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    detail = await service.getDetail(created.id);
+    const result = await service.applyProviderImmediate('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      mode: 'update',
+      reason: 'nudge env publish',
+    });
+    expect(result.published).toBe(true);
+    expect(result.revision).toBeGreaterThan(0);
+    // Success path sets publishError: null (not undefined) — see tryPublishImmediate.
+    expect(result.publishError).toBeNull();
+    expect(probeCount).toBe(1);
+  });
+
   it('soft-returns published:false when connection test fails on first publish', async () => {
     const service = createService(async () => {
       throw new Error('network down');

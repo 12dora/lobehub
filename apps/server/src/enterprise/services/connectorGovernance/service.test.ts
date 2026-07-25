@@ -24,7 +24,6 @@ import { ConnectorGovernanceAdminService } from './adminService';
 import { resolveConnectorGovernance } from './resolve';
 import * as governanceService from './service';
 import {
-  getLastKnownConnectorGovernance,
   resetConnectorGovernanceCacheForTest,
   resolvePublishedConnectorGovernance,
 } from './service';
@@ -160,7 +159,7 @@ describe('resolvePublishedConnectorGovernance', () => {
     ).resolves.toMatchObject({ sharedAuthOwnerUserId: 'gov-owner' });
   });
 
-  it('governance_read_failure_always_denies_including_same_epoch_lkg', async () => {
+  it('governance_read_failure_always_denies_without_lkg_fail_open', async () => {
     const { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER, DENIED_CONNECTOR_GOVERNANCE } =
       await import('./types');
     const broken = { transaction: () => {} } as unknown as LobeChatDatabase;
@@ -176,44 +175,24 @@ describe('resolvePublishedConnectorGovernance', () => {
     expect(sampleDisabled).toBe(true);
     expect(denied).toEqual(DENIED_CONNECTOR_GOVERNANCE);
 
-    // Successful resolve still seeds process-local LKG for diagnostics/cache.
+    // Successful resolve still warms the TTL cache (not a fail-open LKG path).
     await publishEnforcedConnectorPolicy();
     await publishGovernanceDoc();
     const epoch = 'gov-epoch-1';
-    const lkg = await resolvePublishedConnectorGovernance(db, {
+    const resolved = await resolvePublishedConnectorGovernance(db, {
       env: flagOn,
       getCacheEpoch: async () => epoch,
     });
-    expect(lkg).toMatchObject({
+    expect(resolved).toMatchObject({
       active: true,
       builtinToolPolicies: { 'lobe-task': { createTask: 'disabled' } },
       sharedAuthOwnerUserId: 'gov-owner',
     });
-    expect(getLastKnownConnectorGovernance(db)).toEqual(lkg);
-    expect(governanceService.getLastKnownConnectorGovernanceEpoch(db)).toBe(epoch);
 
-    // Same epoch → LKG helper still reports eligibility (internal/diagnostic).
-    await expect(
-      governanceService.getLastKnownConnectorGovernanceIfCurrent(db, {
-        getCacheEpoch: async () => epoch,
-      }),
-    ).resolves.toEqual(lkg);
-
-    // After policy invalidation (epoch advanced), LKG helper must not return it.
-    await expect(
-      governanceService.getLastKnownConnectorGovernanceIfCurrent(db, {
-        getCacheEpoch: async () => 'gov-epoch-2-after-restrict',
-      }),
-    ).resolves.toBeNull();
-
-    // Public resolve path never restores LKG — including same-epoch — because a
-    // restrictive commit can stick in DB while invalidation (epoch bump) is lost.
+    // Public resolve path never restores a last-known-good snapshot on failure.
     vi.spyOn(governanceService, 'resolvePublishedConnectorGovernance').mockRejectedValue(
       new Error('simulated governance read failure'),
     );
-    await expect(resolveConnectorGovernance(db)).resolves.toEqual(DENIED_CONNECTOR_GOVERNANCE);
-    // Even when LKG is same-epoch and would have been "current", deny.
-    vi.spyOn(governanceService, 'getLastKnownConnectorGovernanceIfCurrent').mockResolvedValue(lkg);
     await expect(resolveConnectorGovernance(db)).resolves.toEqual(DENIED_CONNECTOR_GOVERNANCE);
     vi.restoreAllMocks();
   });

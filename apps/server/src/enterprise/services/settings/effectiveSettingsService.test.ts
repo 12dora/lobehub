@@ -150,6 +150,7 @@ describe('EffectiveSettingsService (flag ON)', () => {
     await publishDefault();
     const runtimeService = new EffectiveSettingsService(serverDB);
     const listPublished = vi.spyOn(runtimeService['model'], 'listPublishedPolicies');
+    const getRevisionTokens = vi.spyOn(runtimeService['model'], 'getRevisionTokens');
     vi.useFakeTimers();
     try {
       const t0 = Date.now();
@@ -161,8 +162,9 @@ describe('EffectiveSettingsService (flag ON)', () => {
         userId: 'ttl-user',
       });
       expect(listPublished).toHaveBeenCalledTimes(1);
+      const tokensAfterFirst = getRevisionTokens.mock.calls.length;
 
-      // Hot-path reads within the original TTL window must not slide expiry or re-query.
+      // Hot-path reads within the original TTL window must not slide expiry or re-query policies.
       vi.setSystemTime(t0 + 3_000);
       for (let i = 0; i < 5; i++) {
         const hit = await runtimeService.getEffectiveSettings({
@@ -172,16 +174,21 @@ describe('EffectiveSettingsService (flag ON)', () => {
         expect(hit.effectiveSettings).toMatchObject({ general: { language: 'en-US' } });
       }
       expect(listPublished).toHaveBeenCalledTimes(1);
+      // Soft hits only re-probe revision tokens (one call each), never re-list policies.
+      expect(getRevisionTokens.mock.calls.length).toBe(tokensAfterFirst + 5);
 
-      // Past the original insertion TTL, the entry must expire and re-materialize.
+      // Past the original insertion TTL, soft entry expires and we re-materialize.
+      // Published policies stay process-cached by platform revision (no second list).
       vi.setSystemTime(t0 + 5_100);
       await runtimeService.getEffectiveSettings({
         legacyUserSettings: legacy,
         userId: 'ttl-user',
       });
-      expect(listPublished).toHaveBeenCalledTimes(2);
+      expect(listPublished).toHaveBeenCalledTimes(1);
+      expect(getRevisionTokens.mock.calls.length).toBe(tokensAfterFirst + 6);
     } finally {
       listPublished.mockRestore();
+      getRevisionTokens.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -220,14 +227,14 @@ describe('EffectiveSettingsService (flag ON)', () => {
     });
     const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>();
     const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
-    const getBundle = vi
-      .spyOn(runtimeService['model'], 'getBundle')
+    const getRevisionTokens = vi
+      .spyOn(runtimeService['model'], 'getRevisionTokens')
       .mockRejectedValueOnce(original);
 
     await expect(runtimeService.getEffectiveSettings({ userId: 'recovery-user' })).rejects.toBe(
       original,
     );
-    getBundle.mockRestore();
+    getRevisionTokens.mockRestore();
     await runtimeService.getEffectiveSettings({ userId: 'recovery-user' });
 
     expect(runtimeReporter.mock.calls.map(([, state]) => state)).toEqual([
@@ -241,34 +248,37 @@ describe('EffectiveSettingsService (flag ON)', () => {
     ]);
   });
 
-  it('reports failures across both user-override materialization reads', async () => {
+  it('reports failures across probe and policy materialization reads', async () => {
     await publishDefault();
     const revisionError = Object.assign(new Error('raw override revision detail'), {
       code: 'ECONNREFUSED',
     });
-    const rowsError = Object.assign(new Error('raw override rows detail'), {
+    const policiesError = Object.assign(new Error('raw policies detail'), {
       code: 'ECONNREFUSED',
     });
     const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>();
     const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
     await runtimeService.getEffectiveSettings({ userId: 'override-user' });
 
-    const getUserOverrideRevision = vi
-      .spyOn(runtimeService['model'], 'getUserOverrideRevision')
+    // Probe is a single getRevisionTokens call; force that path unavailable.
+    const getRevisionTokens = vi
+      .spyOn(runtimeService['model'], 'getRevisionTokens')
       .mockRejectedValueOnce(revisionError);
     await expect(runtimeService.getEffectiveSettings({ userId: 'override-user' })).rejects.toBe(
       revisionError,
     );
-    getUserOverrideRevision.mockRestore();
+    getRevisionTokens.mockRestore();
     await runtimeService.getEffectiveSettings({ userId: 'override-user' });
 
-    const listUserOverrides = vi
-      .spyOn(runtimeService['model'], 'listUserOverrides')
-      .mockRejectedValueOnce(rowsError);
+    // Force a cold policy load for a new user by clearing process caches first.
+    resetEffectiveSettingsCacheForTest();
+    const listPublished = vi
+      .spyOn(runtimeService['model'], 'listPublishedPolicies')
+      .mockRejectedValueOnce(policiesError);
     await expect(
       runtimeService.getEffectiveSettings({ userId: 'override-rows-user' }),
-    ).rejects.toBe(rowsError);
-    listUserOverrides.mockRestore();
+    ).rejects.toBe(policiesError);
+    listPublished.mockRestore();
     await runtimeService.getEffectiveSettings({ userId: 'override-rows-user' });
 
     expect(runtimeReporter.mock.calls.map(([, state]) => state)).toEqual([
@@ -290,7 +300,7 @@ describe('EffectiveSettingsService (flag ON)', () => {
     ]);
   });
 
-  it('preserves an override read error when its reporter also fails', async () => {
+  it('preserves a policy read error when its reporter also fails', async () => {
     await publishDefault();
     const original = new Error('raw override database detail');
     const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>(() => {
@@ -298,8 +308,9 @@ describe('EffectiveSettingsService (flag ON)', () => {
     });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
-    const listUserOverrides = vi
-      .spyOn(runtimeService['model'], 'listUserOverrides')
+    resetEffectiveSettingsCacheForTest();
+    const listPublished = vi
+      .spyOn(runtimeService['model'], 'listPublishedPolicies')
       .mockRejectedValueOnce(original);
 
     await expect(
@@ -308,7 +319,7 @@ describe('EffectiveSettingsService (flag ON)', () => {
 
     expect(consoleError).toHaveBeenCalledWith('[platform-instance-runtime] reporter unavailable');
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw failure reporter detail');
-    listUserOverrides.mockRestore();
+    listPublished.mockRestore();
     consoleError.mockRestore();
   });
 
@@ -333,6 +344,101 @@ describe('EffectiveSettingsService (flag ON)', () => {
     const effective = await service.getEffectiveSettings({ userId: 'u1' });
     expect(effective.effectiveValues['general.fontSize']).toBe(18);
     expect(effective.pathMeta['general.fontSize']?.source).toBe('platform');
+  });
+
+  it('single-statement snapshot stays coherent across concurrent publish', async () => {
+    await publishDefault();
+    const runtimeService = new EffectiveSettingsService(serverDB);
+
+    // Overlap many materializations with a real publish; each result must be
+    // entirely pre-commit (rev 1 / 18) or entirely post-commit (rev 2 / 22).
+    const reads = Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        runtimeService.getEffectiveSettings({ userId: `race-pub-${i}` }),
+      ),
+    );
+
+    const draft = await admin.getDraft();
+    await admin.saveDraft({
+      actorUserId: 'admin',
+      draft: {
+        'general.fontSize': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 22,
+          visibility: 'visible',
+        },
+      },
+      expectedDraftToken: draft.draftToken,
+      reason: 'race draft',
+    });
+    await admin.publish({
+      actorUserId: 'admin',
+      expectedDraftToken: (await admin.getDraft()).draftToken,
+      expectedRevision: 1,
+      reason: 'race publish',
+    });
+
+    const results = await reads;
+    for (const effective of results) {
+      if (effective.platformRevision === 1) {
+        expect(effective.effectiveValues['general.fontSize']).toBe(18);
+      } else {
+        expect(effective.platformRevision).toBe(2);
+        expect(effective.effectiveValues['general.fontSize']).toBe(22);
+      }
+    }
+  });
+
+  it('single-statement snapshot stays coherent across concurrent override patch', async () => {
+    await publishDefault();
+    const runtimeService = new EffectiveSettingsService(serverDB);
+
+    const reads = Promise.all(
+      Array.from({ length: 8 }, () => runtimeService.getEffectiveSettings({ userId: 'u1' })),
+    );
+    await service.patchSettingOverride({
+      path: 'general.fontSize',
+      userId: 'u1',
+      value: 20,
+    });
+    const results = await reads;
+
+    for (const effective of results) {
+      if (effective.userOverrideRevision === 0) {
+        expect(effective.effectiveValues['general.fontSize']).toBe(18);
+        expect(effective.pathMeta['general.fontSize']?.source).toBe('platform');
+      } else {
+        expect(effective.userOverrideRevision).toBeGreaterThan(0);
+        expect(effective.effectiveValues['general.fontSize']).toBe(20);
+        expect(effective.pathMeta['general.fontSize']?.source).toBe('user');
+      }
+    }
+  });
+
+  it('falls back to a coherent snapshot when optimistic bracketing exhausts', async () => {
+    await publishDefault();
+    const runtimeService = new EffectiveSettingsService(serverDB);
+    const model = runtimeService['model'];
+    let listCalls = 0;
+    const originalList = model.listPublishedPolicies.bind(model);
+    // Force every optimistic policy load to advance the platform revision so the
+    // closing token read never matches. After 5 attempts the service falls back to
+    // a single-statement snapshot (unmocked) and must still return a usable result.
+    vi.spyOn(model, 'listPublishedPolicies').mockImplementation(async () => {
+      listCalls += 1;
+      await serverDB.execute(
+        sql.raw(`UPDATE platform_settings_bundle SET revision = revision + 1 WHERE id = 'global'`),
+      );
+      return originalList();
+    });
+
+    const effective = await runtimeService.getEffectiveSettings({ userId: 'exhaust-user' });
+    expect(listCalls).toBeGreaterThanOrEqual(5);
+    expect(effective.platformRevision).toBeGreaterThan(0);
+    expect(effective.effectiveValues['general.fontSize']).toBe(18);
+    expect(effective.pathMeta['general.fontSize']?.source).toBe('platform');
+    vi.restoreAllMocks();
   });
 
   it('explicit equal-to-default override is user source', async () => {

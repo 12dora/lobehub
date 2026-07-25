@@ -2,13 +2,14 @@ import { getServerDB } from '@/database/core/db-adaptor';
 import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { connectorSharedCredentialSchema } from '../../contracts/platformConnectors';
+import { connectorSharedCredentialReadSchema } from '../../contracts/platformConnectors';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { registerManagedResourceReadiness } from '../managedResourceReadiness';
 import { ConnectorCatalogReadService, resolveConnectorSecretVersion } from './catalogSnapshot';
 import type { ConnectorOAuthRuntimeDependencies, ConnectorOAuthRuntimeEnv } from './oauthRuntime';
 import { getConnectorOAuthRuntime } from './oauthRuntime';
 import { isConnectorRuntimeAuditReconcilerConfigured } from './runtimeAuditWorker';
+import { isConnectorSecretCleanupReconcilerConfigured } from './secretCleanupWorker';
 
 let registered = false;
 const READINESS_PAGE_SIZE = 100;
@@ -41,8 +42,10 @@ export const resolveConnectorCatalogRuntimeReadiness = async (
   if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) return false;
   // Fail closed on serverless when neither the persistent poller nor an
   // external reconciler contract is configured — otherwise shared-credential
-  // terminal audits can strand as pending indefinitely after a delivery blip.
+  // terminal audits can strand as pending indefinitely after a delivery blip,
+  // and exact-ref secret cleanup jobs never drain (silent queue stall).
   if (!isConnectorRuntimeAuditReconcilerConfigured(env)) return false;
+  if (!isConnectorSecretCleanupReconcilerConfigured(env)) return false;
   const db = params.db ?? ((await getServerDB()) as LobeChatDatabase);
   const runtime = params.runtime ?? getConnectorOAuthRuntime(db, env);
   if (!runtime.secrets.assertReady) return false;
@@ -86,7 +89,8 @@ export const resolveConnectorCatalogRuntimeReadiness = async (
           'sharedSecret',
           connector.sharedSecretFingerprint,
         );
-        connectorSharedCredentialSchema.parse(secret.value);
+        // Accept-on-read: legacy header names must not mark readiness broken.
+        connectorSharedCredentialReadSchema.parse(secret.value);
       } else if (
         connector.credentialMode === 'per_user_oauth' &&
         connector.oauthClientSecretConfigured

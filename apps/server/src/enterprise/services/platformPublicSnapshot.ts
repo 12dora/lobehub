@@ -52,9 +52,3 @@ export const buildPlatformPublicSnapshot = (
     platformName: branding?.name ?? null,
   });
 };
-
-export const getDisabledPlatformPublicSnapshot = (): PlatformPublicSnapshot => ({
-  ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
-  branding: null,
-  login: { ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT.login },
-});

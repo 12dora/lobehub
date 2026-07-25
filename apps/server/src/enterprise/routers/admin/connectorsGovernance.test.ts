@@ -25,6 +25,7 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -45,7 +46,7 @@ vi.mock('@/database/core/db-adaptor', () => ({
 const cleanup = async () => {
   await db.delete(platformConnectorGovernance);
   await db.delete(platformManagedResourcePolicies);
-  await db.delete(platformAuditLogs);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);

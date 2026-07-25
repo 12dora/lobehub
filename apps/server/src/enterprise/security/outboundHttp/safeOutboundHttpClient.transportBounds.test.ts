@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SafeOutboundHttpClient } from './index';
 
@@ -56,10 +56,9 @@ describe('defaultPinnedTransport body / deadline bounds (MAJOR-1)', () => {
       expect(result.body.length).toBeLessThanOrEqual(maxResponseBytes);
       expect(result.body.length).toBe(maxResponseBytes);
       expect(result.truncated).toBe(true);
-      // Connection should have been torn down (abort/close before full write).
-      // Give the event loop a tick for 'close'/'aborted'.
-      await new Promise((r) => setTimeout(r, 50));
-      expect(clientAborted || result.truncated).toBe(true);
+      // Connection teardown is observed via the server's aborted/close handlers —
+      // not inferred from result.truncated (which is already known true above).
+      await vi.waitFor(() => expect(clientAborted).toBe(true));
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));

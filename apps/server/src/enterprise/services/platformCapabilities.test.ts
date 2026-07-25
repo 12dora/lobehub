@@ -2,17 +2,19 @@
 import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { DISABLED_PLATFORM_CAPABILITIES } from '@/types/platform/capabilities';
 
-import {
-  buildPlatformCapabilities,
-  findForbiddenCapabilityKeys,
-  getDisabledPlatformCapabilities,
-} from './platformCapabilities';
+import { findForbiddenCapabilityKeys } from './__test-support__/capabilityTestHelpers';
+import { buildPlatformCapabilities } from './platformCapabilities';
 
 describe('buildPlatformCapabilities', () => {
   it('returns fully disabled snapshot when flags are default-off', () => {
     const caps = buildPlatformCapabilities({ flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS } });
-    expect(caps).toEqual(getDisabledPlatformCapabilities());
+    expect(caps).toEqual({
+      ...DISABLED_PLATFORM_CAPABILITIES,
+      features: { ...DISABLED_PLATFORM_CAPABILITIES.features },
+      managedResources: { ...DISABLED_PLATFORM_CAPABILITIES.managedResources },
+    });
     expect(caps.adminAccess).toBe(false);
     expect(Object.values(caps.managedResources).every((v) => !v)).toBe(true);
   });
@@ -28,7 +30,7 @@ describe('buildPlatformCapabilities', () => {
     expect(caps.features.platformAdmin).toBe(true);
     expect(caps.managedResources.aiProviders).toBe(false);
     expect(caps.managedResources.aiModels).toBe(false);
-    // M00: no RBAC yet — adminAccess stays false unless explicitly granted
+    // adminAccess requires explicit permission-derived grant, not the flag alone
     expect(caps.adminAccess).toBe(false);
   });
 

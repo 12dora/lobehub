@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { WORKSPACE_SYSTEM_ROLES } from '@lobechat/const/rbac';
-import { inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -64,13 +64,17 @@ vi.mock('@/database/core/db-adaptor', () => ({
 
 const cleanup = async () => {
   await cleanupM09ServiceData(db);
-  await db.delete(platformAuditLogs);
-  await db.delete(userRoles);
-  await db.delete(rolePermissions);
-  await db.delete(roles);
-  await db.delete(permissions);
-  await db.delete(workspaces);
-  await db.delete(users).where(sql`${users.id} LIKE 'm09-admin-%'`);
+  // Retention/test delete opt-in — production append-only trigger rejects bare DELETE.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('lobe.allow_platform_audit_log_delete', 'on', true)`);
+    await tx.delete(platformAuditLogs);
+    await tx.delete(userRoles);
+    await tx.delete(rolePermissions);
+    await tx.delete(roles);
+    await tx.delete(permissions);
+    await tx.delete(workspaces);
+    await tx.delete(users).where(sql`${users.id} LIKE 'm09-admin-%'`);
+  });
 };
 
 const grantPermissions = async (userId: string, name: string, codes: string[]) => {
@@ -608,6 +612,23 @@ describe('admin.connectors.applyImmediate', () => {
         transport: 'http',
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // Secondary CREATE denial must emit the same audited permission-denied event.
+    const [denied] = await db
+      .select()
+      .from(platformAuditLogs)
+      .where(
+        and(
+          eq(platformAuditLogs.action, 'admin.permission.denied'),
+          eq(platformAuditLogs.actorUserId, ids.publisher),
+        ),
+      )
+      .orderBy(desc(platformAuditLogs.createdAt))
+      .limit(1);
+    expect(denied).toMatchObject({ result: 'denied', targetType: 'permission' });
+    expect(denied?.afterDiff).toMatchObject({
+      permission: PLATFORM_PERMISSIONS.CONNECTOR_CREATE,
+    });
   });
 
   it('rejects stale reauth before mutating', async () => {

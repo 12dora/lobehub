@@ -110,68 +110,6 @@ export interface PlatformAgentDependencySnapshot {
   skills: PlatformAgentSkillDependencyRef[];
 }
 
-export interface PlatformAgentIdentityDraft {
-  agentKey: string;
-  currentVersionId: string | null;
-  draftSequence: number;
-  id: string;
-  isDefault: boolean;
-  migrationRequired: boolean;
-  revision: number;
-  status: 'archived' | 'draft' | 'published';
-  systemKey: PlatformAgentSystemKey | null;
-}
-
-export interface PlatformAgentImmutableVersion {
-  agentId: string;
-  checksum: string;
-  config: PlatformAgentVersionConfig;
-  createdAt: Date;
-  createdBy: string | null;
-  dependencySnapshot: PlatformAgentDependencySnapshot;
-  id: string;
-  version: string;
-}
-
-/** Public user projection. It deliberately excludes assignment target and mutation reason. */
-export interface PlatformEffectiveAgent {
-  agentKey: string;
-  checksum: string;
-  config: PlatformAgentVersionConfig;
-  distribution: PlatformAgentAssignmentMode;
-  mutable: false;
-  platformAgentId: string;
-  source: 'platform';
-  systemKey: PlatformAgentSystemKey | null;
-  version: string;
-  versionId: string;
-}
-
-export type PlatformAgentRolloutStatus =
-  'cancelled' | 'completed' | 'dead' | 'failed' | 'pending' | 'running';
-
-/** Secret-free admin projection over the M01 rollout job. */
-export interface PlatformAgentRolloutProjection {
-  assignmentId: string;
-  completed: number;
-  cursor: string | null;
-  failed: number;
-  jobId: string;
-  previousVersionId: string | null;
-  revision: number;
-  status: PlatformAgentRolloutStatus;
-  targetVersionId: string;
-  total: number;
-  updatedAt: Date;
-}
-
-export interface PlatformUserAgentMaterialization {
-  materializedAgentId: string | null;
-  platformAgentId: string;
-  platformAgentVersionId: string;
-  userId: string;
-}
-
 /**
  * Secret-free pin persisted on an operation so resume / retry / queued steps replay the EXACT
  * version the operation started on, instead of re-resolving latest (M10 PR-049 · REWORK-2).

@@ -39,6 +39,7 @@ import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import { IdentityProviderValidationError } from '../../services/identityProvider/discoveryValidator';
 import { IdentityProviderPublicationService } from '../../services/identityProvider/publicationService';
 import { IdentityProviderSecretStore } from '../../services/identityProvider/secretStore';
@@ -190,7 +191,7 @@ const requireSanitizedIdentityReason = async (input: {
 };
 
 const assertIdentityDangerousReauth = async (input: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -201,15 +202,16 @@ const assertIdentityDangerousReauth = async (input: {
   targetId: string;
 }) =>
   assertDangerousReauthWithAudit({
-    action: input.action,
-    actorUserId: input.actorUserId,
-    auditFailureLog: '[admin.identityProviders] reauth denied audit unavailable',
     authenticatedAt: input.authenticatedAt,
     authMethod: input.authMethod,
-    resolveDeniedReason: () => sanitizeIdentityReason(input),
     serverDB: input.serverDB,
-    targetId: input.targetId,
-    targetType: 'identity_provider',
+    denied: {
+      action: input.action,
+      actorUserId: input.actorUserId,
+      resolveDeniedReason: () => sanitizeIdentityReason(input),
+      targetId: input.targetId,
+      targetType: 'identity_provider',
+    },
   });
 
 /** The flag middleware intentionally precedes DB/user/RBAC middleware: flag-off is a zero-I/O path. */

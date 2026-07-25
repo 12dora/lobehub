@@ -64,4 +64,22 @@ describe('AgentSkillsActionImpl managed catalog state', () => {
       platformSkillRuntimeStatus: 'ready',
     });
   });
+
+  it('marks a successfully fetched empty managed catalog as ready', () => {
+    const { action, getState } = createHarness({
+      platformSkillCatalog: null,
+      platformSkillRuntimeStatus: 'loading',
+    });
+    const epoch = action.beginPlatformSkillCatalogRequest();
+
+    action.completePlatformSkillCatalogRequest(epoch, {
+      revision: 'catalog-empty',
+      skills: [],
+    });
+
+    expect(getState()).toMatchObject({
+      platformSkillCatalog: { revision: 'catalog-empty', skills: [] },
+      platformSkillRuntimeStatus: 'ready',
+    });
+  });
 });

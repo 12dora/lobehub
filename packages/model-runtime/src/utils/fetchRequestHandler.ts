@@ -8,6 +8,12 @@
 import type { Readable } from 'node:stream';
 
 import type { FetchLike } from './boundFetch';
+import {
+  bodyForHttpMethod,
+  composeAbortSignal,
+  normalizeFetchBody,
+  responseHeadersToRecord,
+} from './fetchTransport';
 
 export interface AwsSdkHttpRequest {
   body?: unknown;
@@ -44,28 +50,6 @@ const buildUrl = (request: AwsSdkHttpRequest): string => {
   return qs ? `${base}?${qs}` : base;
 };
 
-const bodyToInit = async (body: unknown): Promise<BodyInit | undefined> => {
-  if (body == null) return undefined;
-  if (typeof body === 'string') return body;
-  if (body instanceof Uint8Array) return new Uint8Array(body);
-  if (Buffer.isBuffer(body)) return new Uint8Array(body);
-  if (typeof body === 'object' && body !== null && Symbol.asyncIterator in body) {
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of body as AsyncIterable<unknown>) {
-      chunks.push(chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk)));
-    }
-    const total = chunks.reduce((sum, part) => sum + part.byteLength, 0);
-    const merged = new Uint8Array(total);
-    let offset = 0;
-    for (const part of chunks) {
-      merged.set(part, offset);
-      offset += part.byteLength;
-    }
-    return merged;
-  }
-  return new TextEncoder().encode(String(body));
-};
-
 export interface AwsSdkHttpHandlerOptions {
   abortSignal?: AbortSignal;
   requestTimeout?: number;
@@ -91,49 +75,36 @@ export const createFetchRequestHandler = (fetchImpl: FetchLike) => {
 
       const url = buildUrl(request);
       const headers: Record<string, string> = { ...request.headers };
-      const body = await bodyToInit(request.body);
-
-      const controller = new AbortController();
-      const onAbort = () => controller.abort();
-      options?.abortSignal?.addEventListener('abort', onAbort, { once: true });
-
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      if (typeof options?.requestTimeout === 'number' && options.requestTimeout > 0) {
-        timeoutId = setTimeout(() => controller.abort(), options.requestTimeout);
-      }
+      const body = bodyForHttpMethod(request.method, await normalizeFetchBody(request.body));
+      const { cleanup, signal } = composeAbortSignal(options?.abortSignal, options?.requestTimeout);
 
       try {
         const response = await fetchImpl(url, {
-          body: body && request.method !== 'GET' && request.method !== 'HEAD' ? body : undefined,
+          body,
           headers,
           method: request.method,
-          signal: controller.signal,
+          signal,
         });
         const arrayBuffer = await response.arrayBuffer();
-        const responseHeaders: Record<string, string> = {};
-        response.headers.forEach((value, key) => {
-          responseHeaders[key] = value;
-        });
         // Dynamic import: static `import { Readable } from 'node:stream'` fails SPA
         // production builds (rolldown node-stub has no Readable named export).
         const { Readable } = await import('node:stream');
         return {
           response: {
             body: Readable.from([Buffer.from(arrayBuffer)]),
-            headers: responseHeaders,
+            headers: responseHeadersToRecord(response.headers),
             statusCode: response.status,
           },
         };
       } catch (error) {
-        if (controller.signal.aborted) {
+        if (signal.aborted) {
           const aborted = new Error('Request aborted') as Error & { name: string };
           aborted.name = 'AbortError';
           throw aborted;
         }
         throw error;
       } finally {
-        if (timeoutId) clearTimeout(timeoutId);
-        options?.abortSignal?.removeEventListener('abort', onAbort);
+        cleanup();
       }
     },
     httpHandlerConfigs: () => ({}),

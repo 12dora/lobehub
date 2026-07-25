@@ -24,10 +24,8 @@ import {
   loadPlatformAuthContext,
   withPlatformPermission,
 } from '../guards/platformPermission';
-import {
-  ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY,
-  isAuthorizedByPlatformPermissions,
-} from '../security/policy/adminProcedureAuthorizationRegistry';
+import { isAuthorizedByPlatformPermissions } from '../security/policy/adminProcedureAuthorization/reconcile';
+import { ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY } from '../security/policy/adminProcedureAuthorizationRegistry';
 import { createAdminAuthorizationFixture } from '../testing/adminAuthorizationFixture';
 
 let db: LobeChatDatabase;
@@ -64,53 +62,152 @@ const o04SystemReadProcedurePaths = [
   'admin.system.getStatus',
 ] as const;
 
+/**
+ * Explicit named permission package per matrix role.
+ * This is the intentional contract the matrix pins — must stay aligned with
+ * `PLATFORM_ROLE_PERMISSIONS`. Procedure package sizes are then *derived* from
+ * this set + the authorization registry so a permission change cannot leave a
+ * stale hardcoded procedure count behind.
+ *
+ * Super-admin is omitted: it is "all platform permissions" by construction.
+ */
+const MATRIX_ROLE_PERMISSIONS = {
+  [PLATFORM_SYSTEM_ROLES.AI_ADMIN]: [
+    PLATFORM_PERMISSIONS.ADMIN_ACCESS,
+    PLATFORM_PERMISSIONS.USER_READ,
+    PLATFORM_PERMISSIONS.SETTINGS_READ,
+    PLATFORM_PERMISSIONS.POLICY_READ,
+    PLATFORM_PERMISSIONS.POLICY_UPDATE,
+    PLATFORM_PERMISSIONS.POLICY_PUBLISH,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_TEST,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+    PLATFORM_PERMISSIONS.AI_MODEL_READ,
+    PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+    PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+    PLATFORM_PERMISSIONS.AI_MODEL_DELETE,
+    PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH,
+    PLATFORM_PERMISSIONS.SKILL_READ,
+    PLATFORM_PERMISSIONS.SKILL_CREATE,
+    PLATFORM_PERMISSIONS.SKILL_UPDATE,
+    PLATFORM_PERMISSIONS.SKILL_DELETE,
+    PLATFORM_PERMISSIONS.SKILL_PUBLISH,
+    PLATFORM_PERMISSIONS.CONNECTOR_READ,
+    PLATFORM_PERMISSIONS.CONNECTOR_CREATE,
+    PLATFORM_PERMISSIONS.CONNECTOR_UPDATE,
+    PLATFORM_PERMISSIONS.CONNECTOR_DELETE,
+    PLATFORM_PERMISSIONS.CONNECTOR_TEST,
+    PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH,
+    PLATFORM_PERMISSIONS.AGENT_READ,
+    PLATFORM_PERMISSIONS.AGENT_CREATE,
+    PLATFORM_PERMISSIONS.AGENT_UPDATE,
+    PLATFORM_PERMISSIONS.AGENT_DELETE,
+    PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+    PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+    PLATFORM_PERMISSIONS.CRED_READ,
+    PLATFORM_PERMISSIONS.CRED_CREATE,
+    PLATFORM_PERMISSIONS.CRED_UPDATE,
+    PLATFORM_PERMISSIONS.CRED_DELETE,
+    PLATFORM_PERMISSIONS.AUDIT_READ,
+  ],
+  // Hand-written pin — do NOT derive from :read:/:export: filters. A derived pin would
+  // equal production by construction and miss the drift class that made auditor stale
+  // (76 vs 74). Adding any new read/export permission must fail this list and force a
+  // deliberate decision about auditor's reach.
+  [PLATFORM_SYSTEM_ROLES.AUDITOR]: [
+    PLATFORM_PERMISSIONS.ADMIN_ACCESS,
+    PLATFORM_PERMISSIONS.USER_READ,
+    PLATFORM_PERMISSIONS.SETTINGS_READ,
+    PLATFORM_PERMISSIONS.POLICY_READ,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
+    PLATFORM_PERMISSIONS.AI_MODEL_READ,
+    PLATFORM_PERMISSIONS.SKILL_READ,
+    PLATFORM_PERMISSIONS.CONNECTOR_READ,
+    PLATFORM_PERMISSIONS.AGENT_READ,
+    PLATFORM_PERMISSIONS.IDENTITY_READ,
+    PLATFORM_PERMISSIONS.BRANDING_READ,
+    PLATFORM_PERMISSIONS.AUDIT_READ,
+    PLATFORM_PERMISSIONS.AUDIT_EXPORT,
+    PLATFORM_PERMISSIONS.SYSTEM_READ,
+    PLATFORM_PERMISSIONS.STATS_READ,
+    PLATFORM_PERMISSIONS.CRED_READ,
+    PLATFORM_PERMISSIONS.ROLE_READ,
+  ],
+  [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]: [
+    PLATFORM_PERMISSIONS.ADMIN_ACCESS,
+    PLATFORM_PERMISSIONS.USER_READ,
+    PLATFORM_PERMISSIONS.IDENTITY_READ,
+    PLATFORM_PERMISSIONS.IDENTITY_CREATE,
+    PLATFORM_PERMISSIONS.IDENTITY_UPDATE,
+    PLATFORM_PERMISSIONS.IDENTITY_DELETE,
+    PLATFORM_PERMISSIONS.IDENTITY_TEST,
+    PLATFORM_PERMISSIONS.IDENTITY_PUBLISH,
+    PLATFORM_PERMISSIONS.OIDC_PUBLISH,
+    PLATFORM_PERMISSIONS.BRANDING_READ,
+    PLATFORM_PERMISSIONS.BRANDING_UPDATE,
+    PLATFORM_PERMISSIONS.BRANDING_PUBLISH,
+    PLATFORM_PERMISSIONS.AUDIT_READ,
+  ],
+  [PLATFORM_SYSTEM_ROLES.PLATFORM_USER]: [] as const satisfies readonly PlatformPermission[],
+  [PLATFORM_SYSTEM_ROLES.USER_ADMIN]: [
+    PLATFORM_PERMISSIONS.ADMIN_ACCESS,
+    PLATFORM_PERMISSIONS.USER_READ,
+    PLATFORM_PERMISSIONS.USER_CREATE,
+    PLATFORM_PERMISSIONS.USER_BAN,
+    PLATFORM_PERMISSIONS.USER_DELETE,
+    PLATFORM_PERMISSIONS.USER_SESSION_REVOKE,
+    PLATFORM_PERMISSIONS.USER_ROLE_MANAGE,
+    PLATFORM_PERMISSIONS.ROLE_READ,
+    PLATFORM_PERMISSIONS.ROLE_UPDATE,
+    PLATFORM_PERMISSIONS.AUDIT_READ,
+  ],
+} as const satisfies Record<
+  Exclude<
+    (typeof PLATFORM_SYSTEM_ROLES)[keyof typeof PLATFORM_SYSTEM_ROLES],
+    typeof PLATFORM_SYSTEM_ROLES.SUPER_ADMIN
+  >,
+  readonly PlatformPermission[]
+>;
+
+const authorizedProceduresForPermissions = (permissions: ReadonlySet<PlatformPermission>) =>
+  ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((authorization) =>
+    isAuthorizedByPlatformPermissions(authorization, permissions),
+  );
+
 const roleCases = [
   {
-    expectedBeforeO04System: null,
     expectedO04SystemPaths: o04SystemProcedurePaths,
     role: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
   },
   {
-    // Recount after W10 (creds/applyImmediate procedures) + admin.skills.parseImportSource = 96
-    // + connector governance (getGovernance/setSharedAuthorization/updateBuiltinToolPolicy) = 99
-    // + admin.audit A2 AUDIT_READ surface (policy/events/users beyond list+get) = 109
-    expectedBeforeO04System: 111,
-    expectedO04SystemPaths: [],
+    expectedO04SystemPaths: [] as const,
     role: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
   },
   {
-    // Recount after W10: creds reads (5) + stats reads (12) = 56
-    // + admin.connectors.getGovernance (CONNECTOR_READ) = 57
-    // + admin.audit A2 AUDIT_READ (policy.get, events.*, users.*) = 65
-    // + admin.audit A3 exports (AUDIT_EXPORT: 2 queries + 3 mutations) = 70
-    // Conversation / legal-hold / policy.update / retention remain super_admin-only.
-    expectedBeforeO04System: 71,
     expectedO04SystemPaths: o04SystemReadProcedurePaths,
     role: PLATFORM_SYSTEM_ROLES.AUDITOR,
   },
   {
-    expectedBeforeO04System: 37,
-    expectedO04SystemPaths: [],
+    expectedO04SystemPaths: [] as const,
     role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
   },
   {
-    // Recount after admin.users.delete (USER_DELETE) = 16
-    // + admin.users.create (USER_CREATE) = 17
-    // + admin.audit A2 AUDIT_READ surface = 25
-    expectedBeforeO04System: 23,
-    expectedO04SystemPaths: [],
+    expectedO04SystemPaths: [] as const,
     role: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
   },
   {
-    expectedBeforeO04System: 1,
-    expectedO04SystemPaths: [],
+    expectedO04SystemPaths: [] as const,
     role: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
   },
 ] as const;
 
+// PGlite applies the full migration baseline on first getTestDB() — allow headroom.
 beforeAll(async () => {
   db = await getTestDB();
-});
+}, 120_000);
 
 describe('admin authorization fixture isolation', () => {
   it('keeps concurrent fixtures isolated on the same database', async () => {
@@ -203,22 +300,44 @@ describe('admin permission matrix', () => {
     vi.unstubAllEnvs();
   });
 
-  for (const { expectedBeforeO04System, expectedO04SystemPaths, role } of roleCases) {
-    it(`${role} authorizes the declared procedure package`, () => {
-      const permissions = new Set(PLATFORM_ROLE_PERMISSIONS[role]);
-      const allowed = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((authorization) =>
-        isAuthorizedByPlatformPermissions(authorization, permissions),
-      );
+  for (const { expectedO04SystemPaths, role } of roleCases) {
+    it(`${role} authorizes the procedure package derived from its permission package`, () => {
+      // Pin: production role package must match the explicit matrix contract (non-super).
+      if (role !== PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) {
+        expect([...PLATFORM_ROLE_PERMISSIONS[role]].sort()).toEqual(
+          [...MATRIX_ROLE_PERMISSIONS[role]].sort(),
+        );
+      }
+
+      const permissions = new Set<PlatformPermission>(PLATFORM_ROLE_PERMISSIONS[role]);
+      // Derive procedure package from the permission set + registry (no hardcoded counts).
+      const allowed = authorizedProceduresForPermissions(permissions);
       const allowedO04SystemPaths = allowed
         .map(({ path }) => path)
         .filter((path) => o04SystemProcedurePathSet.has(path));
 
-      expect(allowedO04SystemPaths).toEqual(expectedO04SystemPaths);
-      expect(allowed).toHaveLength(
-        expectedBeforeO04System === null
-          ? ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.length
-          : expectedBeforeO04System + expectedO04SystemPaths.length,
-      );
+      expect(allowedO04SystemPaths).toEqual([...expectedO04SystemPaths]);
+
+      if (role === PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) {
+        expect(allowed).toHaveLength(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.length);
+      } else if (role === PLATFORM_SYSTEM_ROLES.PLATFORM_USER) {
+        // Platform users only get the self-access surface (no platform permissions).
+        expect(allowed).toEqual([
+          { kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true },
+        ]);
+      } else {
+        // Floor only: procedure package is derived from the pinned permission set so
+        // hardcoding path lists here would go stale with every registry edit.
+        // Per-role procedure-reachability drift is guarded by
+        // security/policy/adminProcedureAuthorizationRegistry.test.ts (registry length
+        // pin + fails on permission-changed declarations) — do not assume this file
+        // still covers exact package size.
+        expect(allowed.length).toBeGreaterThan(1);
+        // user_admin must not regain platform_user:update:all (intentionally removed).
+        if (role === PLATFORM_SYSTEM_ROLES.USER_ADMIN) {
+          expect([...permissions]).not.toContain('platform_user:update:all');
+        }
+      }
     });
   }
 

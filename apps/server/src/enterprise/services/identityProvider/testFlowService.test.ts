@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
+
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
 
 import type { SafeOutboundHttpClient } from '../../security/outboundHttp';
-import { hashIdentityProviderTestValue } from './testAttemptStore';
 import {
   assertIdentityProviderAttemptCallbackOrigin,
   buildIdentityProviderClaimPreview,
@@ -11,6 +12,10 @@ import {
   summarizeIdentityProviderClaimPreview,
   verifyIdentityProviderIdToken,
 } from './testFlowService';
+
+/** Test-local SHA-256 helper matching production attempt-store digests. */
+const hashIdentityProviderTestValue = (value: string): string =>
+  createHash('sha256').update(value).digest('hex');
 
 describe('buildIdentityProviderClaimPreview', () => {
   it('returns only the fixed allowlist and structured required-claim issues', () => {

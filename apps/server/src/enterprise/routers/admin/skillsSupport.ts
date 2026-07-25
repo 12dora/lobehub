@@ -12,6 +12,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import {
   getBuiltinSkillDefinitions,
   SkillCatalogAdminService,
@@ -81,7 +82,7 @@ export const mapSkillServiceError = (error: unknown): never => {
 };
 
 export const assertSkillDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -90,15 +91,14 @@ export const assertSkillDangerousReauth = async (params: {
   targetId: string;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.skills] reauth denied audit failed',
-    // Legacy path only logged errorClass (no action).
-    auditFailureMeta: {},
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: params.reason,
     serverDB: params.serverDB,
-    targetId: params.targetId,
-    targetType: 'skill',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: params.reason,
+      targetId: params.targetId,
+      targetType: 'skill',
+    },
   });

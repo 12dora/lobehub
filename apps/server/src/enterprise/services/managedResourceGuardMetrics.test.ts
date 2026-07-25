@@ -6,10 +6,8 @@ import {
   setEnterprisePlatformObserverForTest,
   setEnterpriseStructuredLoggerForTest,
 } from '../observability';
-import {
-  EnterpriseManagedResourceGuardMetricSink,
-  InMemoryManagedResourceGuardMetricSink,
-} from './managedResourceGuardMetrics';
+import { InMemoryManagedResourceGuardMetricSink } from './__test-support__/managedResourceGuardMetricSink';
+import { EnterpriseManagedResourceGuardMetricSink } from './managedResourceGuardMetrics';
 
 afterEach(() => {
   setEnterprisePlatformObserverForTest(null);

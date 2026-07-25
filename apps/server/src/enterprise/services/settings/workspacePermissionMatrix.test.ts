@@ -6,8 +6,6 @@ import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformSettingsModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
 import {
-  platformAuditLogs,
-  platformResourceRevisions,
   platformSettingPolicies,
   platformSettingsBundle,
   userSettingOverrideRevisions,
@@ -19,6 +17,13 @@ import { workspaces } from '@/database/schemas/workspace';
 import type { LobeChatDatabase } from '@/database/type';
 import { assignWorkspaceRoleToUser, seedWorkspaceRoles } from '@/database/utils/seedWorkspaceRoles';
 import { userRouter } from '@/server/routers/lambda/user';
+import {
+  PLATFORM_SETTINGS_RESOURCE_ID,
+  PLATFORM_SETTINGS_RESOURCE_TYPE,
+} from '@/types/platform/settings';
+
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 
 vi.mock('../../featureFlags', async (importOriginal) => {
   const actual = (await importOriginal()) as {
@@ -56,8 +61,11 @@ type Actor = keyof typeof actorIds;
 const actors = Object.keys(actorIds) as Actor[];
 
 const cleanup = async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: Object.values(actorIds) });
+  await deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+    resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+  });
   await serverDB.delete(userSettingOverrides);
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);

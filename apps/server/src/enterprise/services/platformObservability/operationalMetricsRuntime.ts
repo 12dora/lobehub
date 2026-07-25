@@ -24,6 +24,10 @@ import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../o
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 
 export const OPERATIONAL_METRICS_COLLECTION_INTERVAL_MS = 60_000;
+/** Initial backoff after a failed database acquisition / first collect (SAO-007). */
+export const OPERATIONAL_METRICS_STARTUP_RETRY_BASE_MS = 5_000;
+/** Cap for exponential startup retry so recovery stays bounded. */
+export const OPERATIONAL_METRICS_STARTUP_RETRY_MAX_MS = 60_000;
 
 const log = debug('lobe-server:enterprise-operational-metrics');
 
@@ -37,7 +41,11 @@ interface OperationalMetricsProcessState {
   generation: number;
   metricSink: OperationalMetricSink | null;
   retired: boolean;
+  /** One-shot startup retry timer (distinct from the recurring collection timer). */
+  retryTimer: OperationalMetricsTimer | null;
   startPromise: Promise<boolean> | null;
+  /** Consecutive failed startup attempts (resets on successful timer install). */
+  startupFailures: number;
   timer: OperationalMetricsTimer | null;
 }
 
@@ -51,7 +59,9 @@ const createProcessState = (): OperationalMetricsProcessState => ({
   generation: (operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsGeneration ?? 0) + 1,
   metricSink: null,
   retired: false,
+  retryTimer: null,
   startPromise: null,
+  startupFailures: 0,
   timer: null,
 });
 
@@ -97,8 +107,27 @@ export interface OperationalMetricsRuntimeOptions {
   }) => void;
   metricSink?: OperationalMetricSink;
   now?: () => number;
+  /** Recurring collection timer (setInterval semantics). */
   schedule?: (callback: () => void, delay: number) => OperationalMetricsTimer;
+  /**
+   * One-shot startup retry timer (setTimeout semantics). Defaults to setTimeout.
+   * Distinct from {@link schedule} so tests can assert retry vs interval separately.
+   */
+  scheduleRetry?: (callback: () => void, delay: number) => OperationalMetricsTimer;
 }
+
+/** Exponential backoff with ±20% jitter; capped at OPERATIONAL_METRICS_STARTUP_RETRY_MAX_MS. */
+export const computeOperationalMetricsStartupRetryDelayMs = (
+  failures: number,
+  random: () => number = Math.random,
+): number => {
+  const exp = Math.min(
+    OPERATIONAL_METRICS_STARTUP_RETRY_MAX_MS,
+    OPERATIONAL_METRICS_STARTUP_RETRY_BASE_MS * 2 ** Math.max(0, failures - 1),
+  );
+  const jitter = exp * 0.2 * (random() * 2 - 1);
+  return Math.max(OPERATIONAL_METRICS_STARTUP_RETRY_BASE_MS / 2, Math.round(exp + jitter));
+};
 
 const isBuildRuntime = (env: Record<string, string | undefined>): boolean =>
   env.NEXT_PHASE === 'phase-production-build' || env.npm_lifecycle_event === 'build';
@@ -139,6 +168,11 @@ const defaultSchedule = (callback: () => void, delay: number): OperationalMetric
   return { clear: () => clearInterval(timer), unref: () => timer.unref() };
 };
 
+const defaultScheduleRetry = (callback: () => void, delay: number): OperationalMetricsTimer => {
+  const timer = setTimeout(callback, delay);
+  return { clear: () => clearTimeout(timer), unref: () => timer.unref() };
+};
+
 export const ensureOperationalMetricsRuntimeStarted = async (
   options: OperationalMetricsRuntimeOptions = {},
 ): Promise<boolean> => {
@@ -148,6 +182,20 @@ export const ensureOperationalMetricsRuntimeStarted = async (
   const state = processState();
   if (state.timer) return true;
   if (state.startPromise) return state.startPromise;
+
+  const scheduleRetry = options.scheduleRetry ?? defaultScheduleRetry;
+
+  const armStartupRetry = (): void => {
+    if (!isCurrentGeneration(state) || state.timer || state.retryTimer) return;
+    state.startupFailures += 1;
+    const delayMs = computeOperationalMetricsStartupRetryDelayMs(state.startupFailures);
+    state.retryTimer = scheduleRetry(() => {
+      state.retryTimer = null;
+      if (!isCurrentGeneration(state) || state.timer) return;
+      void ensureOperationalMetricsRuntimeStarted(options);
+    }, delayMs);
+    state.retryTimer.unref?.();
+  };
 
   const start = async (): Promise<boolean> => {
     const collectors: EnterpriseOperationalCollector[] = ['job_backlog'];
@@ -175,6 +223,9 @@ export const ensureOperationalMetricsRuntimeStarted = async (
         });
         reportFailure({ collector, errorClass });
       }
+      // Schedule bounded retry so a transient DB outage at boot does not permanently
+      // disable operational gauges for the process lifetime (SAO-007).
+      armStartupRetry();
       return false;
     }
     if (!isCurrentGeneration(state)) return false;
@@ -253,6 +304,10 @@ export const ensureOperationalMetricsRuntimeStarted = async (
 
     await collect();
     if (!isCurrentGeneration(state)) return false;
+    // Clear any pending startup retry and install the recurring collector.
+    state.retryTimer?.clear?.();
+    state.retryTimer = null;
+    state.startupFailures = 0;
     state.timer = (options.schedule ?? defaultSchedule)(
       () => void collect(),
       OPERATIONAL_METRICS_COLLECTION_INTERVAL_MS,
@@ -277,6 +332,8 @@ export const stopOperationalMetricsRuntime = (): void => {
   state.retired = true;
   state.timer?.clear?.();
   state.timer = null;
+  state.retryTimer?.clear?.();
+  state.retryTimer = null;
   state.metricSink?.activate([]);
   if (operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState === state) {
     delete operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState;

@@ -9,10 +9,10 @@ import { authedProcedure, createCallerFactory, router } from '@/libs/trpc/lambda
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
+  PostgresAdminMutationRateLimiter,
   resetSharedAdminMutationRateLimiter,
   resolveAdminMutationRateLimitConfig,
   setSharedAdminMutationRateLimiter,
-  SharedAdminMutationRateLimiter,
 } from '../security/rateLimit/adminMutationRateLimiter';
 import { withAdminMutationRateLimit } from './adminMutationRateLimit';
 import { getEnterpriseErrorBody } from './enterpriseErrors';
@@ -31,7 +31,7 @@ describe('withAdminMutationRateLimit production wiring (PostgreSQL)', () => {
     await db.delete(platformAdminMutationRateWindows);
     resetSharedAdminMutationRateLimiter();
     setSharedAdminMutationRateLimiter(
-      new SharedAdminMutationRateLimiter({
+      new PostgresAdminMutationRateLimiter({
         config: {
           ...resolveAdminMutationRateLimitConfig({}),
           limit: 2,

@@ -25,6 +25,7 @@ import type {
   ImmutableSkillVersion,
   SkillValidationResult,
 } from '../../contracts/skillCatalog';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import {
@@ -185,7 +186,7 @@ export class SkillCatalogAdminService {
     new PlatformSkillCatalogModel(db, this.modelOptions);
 
   private appendAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     afterDiff?: Record<string, unknown>;
     db?: LobeChatDatabase | Transaction;
@@ -205,7 +206,7 @@ export class SkillCatalogAdminService {
   };
 
   private appendFailureAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     targetId: string;
@@ -224,7 +225,7 @@ export class SkillCatalogAdminService {
   };
 
   private atomicMutation = async <T>(params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     run: (tx: Transaction) => Promise<T>;
@@ -246,36 +247,6 @@ export class SkillCatalogAdminService {
         });
         return result;
       });
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        reason: params.reason,
-        targetId: params.targetId(),
-      });
-      throw error;
-    }
-  };
-
-  private mutation = async <T>(params: {
-    action: string;
-    actorUserId: string;
-    reason: string;
-    run: () => Promise<T>;
-    summarize: (result: T) => Record<string, unknown>;
-    targetId: (result?: T) => string;
-  }): Promise<T> => {
-    try {
-      const result = await params.run();
-      await this.appendAudit({
-        action: params.action,
-        actorUserId: params.actorUserId,
-        afterDiff: params.summarize(result),
-        reason: params.reason,
-        result: 'success',
-        targetId: params.targetId(result),
-      });
-      return result;
     } catch (error) {
       await this.appendFailureAudit({
         action: params.action,

@@ -392,10 +392,17 @@ describe('operational metrics runtime', () => {
     );
   });
 
-  it('activates readiness but starts no timer when the database cannot initialize', async () => {
+  it('schedules bounded startup retry when the database cannot initialize (SAO-007)', async () => {
     const sink = metricSink();
     const logFailure = vi.fn();
-    const schedule = vi.fn();
+    const schedule = vi.fn((_callback: () => void, _intervalMs: number) => ({
+      clear: vi.fn(),
+      unref: vi.fn(),
+    }));
+    const scheduleRetry = vi.fn((_callback: () => void, _delayMs: number) => ({
+      clear: vi.fn(),
+      unref: vi.fn(),
+    }));
 
     await expect(
       ensureOperationalMetricsRuntimeStarted({
@@ -404,16 +411,70 @@ describe('operational metrics runtime', () => {
         logFailure,
         metricSink: sink,
         schedule,
+        scheduleRetry,
       }),
     ).resolves.toBe(false);
 
     expect(sink.activate).toHaveBeenCalledWith(['job_backlog']);
     expect(sink.setJobBacklog).not.toHaveBeenCalled();
+    // Recurring interval is NOT installed until acquisition succeeds.
     expect(schedule).not.toHaveBeenCalled();
+    // One-shot retry IS armed so a later successful acquisition can start collection.
+    expect(scheduleRetry).toHaveBeenCalledTimes(1);
+    expect(scheduleRetry.mock.calls[0]?.[1]).toBeGreaterThanOrEqual(2_500);
     expect(logFailure).toHaveBeenCalledWith({
       collector: 'job_backlog',
       errorClass: 'UnexpectedError',
     });
     expect(JSON.stringify(logFailure.mock.calls)).not.toContain('raw-connection-detail');
+  });
+
+  it('activates recurring collection after a rejected first acquisition then success (SAO-007)', async () => {
+    const sink = metricSink();
+    const getDatabase = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('raw-connection-detail'))
+      .mockResolvedValueOnce(db);
+    const schedule = vi.fn((_callback: () => void, _intervalMs: number) => ({
+      clear: vi.fn(),
+      unref: vi.fn(),
+    }));
+    let retryCallback: (() => void) | undefined;
+    const scheduleRetry = vi.fn((callback: () => void, _delayMs: number) => {
+      retryCallback = callback;
+      return { clear: vi.fn(), unref: vi.fn() };
+    });
+    const createJobModel = vi.fn(() => ({
+      getBacklogSnapshot: vi.fn(async () => backlogSnapshot()),
+    }));
+
+    await expect(
+      ensureOperationalMetricsRuntimeStarted({
+        createJobModel,
+        env: productionEnv(),
+        getDatabase,
+        metricSink: sink,
+        schedule,
+        scheduleRetry,
+      }),
+    ).resolves.toBe(false);
+
+    expect(schedule).not.toHaveBeenCalled();
+    expect(scheduleRetry).toHaveBeenCalledTimes(1);
+    expect(retryCallback).toBeTypeOf('function');
+
+    await expect(
+      // Fire the armed retry (simulates backoff timer).
+      (async () => {
+        retryCallback?.();
+        // Allow the re-entrant start promise to settle.
+        await vi.waitFor(() => expect(schedule).toHaveBeenCalledTimes(1));
+      })(),
+    ).resolves.toBeUndefined();
+
+    expect(getDatabase).toHaveBeenCalledTimes(2);
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(schedule.mock.calls[0]?.[1]).toBe(OPERATIONAL_METRICS_COLLECTION_INTERVAL_MS);
+    expect(sink.setJobBacklog).toHaveBeenCalledTimes(1);
   });
 });

@@ -12,6 +12,5 @@ export type {
 export {
   ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY,
   type AdminAuthorizationReconciliationInput,
-  isAuthorizedByPlatformPermissions,
   reconcileAdminProcedureAuthorization,
 } from './adminProcedureAuthorization';

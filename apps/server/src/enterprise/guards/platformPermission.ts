@@ -18,11 +18,22 @@ export interface PlatformAuthContext {
   requestId?: string;
 }
 
-export type PlatformPermissionMode = 'all' | 'any';
+/**
+ * - `all` — every listed permission required
+ * - `any` — at least one listed permission required
+ * - `compound` — every entry in `permissions` plus one input-selected entry from
+ *   `selectable` (see {@link withCompoundPlatformPermission})
+ */
+export type PlatformPermissionMode = 'all' | 'any' | 'compound';
 
 export interface PlatformPermissionMetadata {
   mode: PlatformPermissionMode;
   permissions: readonly PlatformPermission[];
+  /**
+   * For `mode: 'compound'`: the input-selected secondary permission is one of these.
+   * Required together with every entry in `permissions`.
+   */
+  selectable?: readonly PlatformPermission[];
 }
 
 interface TrpcProcedureWithMiddleware {
@@ -47,6 +58,7 @@ const attachPlatformPermissionMetadata = (
     value: Object.freeze({
       mode: metadata.mode,
       permissions: Object.freeze([...metadata.permissions]),
+      ...(metadata.selectable ? { selectable: Object.freeze([...metadata.selectable]) } : {}),
     }),
     writable: false,
   });
@@ -115,10 +127,6 @@ export const assertPlatformPermission = (
   }
 };
 
-/**
- * tRPC middleware: require a single platform permission on a global role.
- * Flag-gated: when ENABLE_PLATFORM_ADMIN is off → ADMIN_FEATURE_DISABLED.
- */
 /** Sanitized permission-denied audit (R2-03) — never logs raw input or secrets. */
 const auditPermissionDenied = async (params: {
   actorUserId: string;
@@ -146,8 +154,35 @@ const auditPermissionDenied = async (params: {
   }
 };
 
-export const withPlatformPermission = (code: PlatformPermission) => {
-  const middleware = trpc.middleware(async ({ ctx, next, path }) => {
+const denyPermission = async (params: {
+  actorUserId: string;
+  db: LobeChatDatabase;
+  path?: string;
+  permission: string;
+}): Promise<never> => {
+  await auditPermissionDenied(params);
+  return throwEnterpriseError({
+    code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+    details: { permission: params.permission },
+    httpCode: 'FORBIDDEN',
+    message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+  });
+};
+
+type PermissionPredicate = (params: {
+  getRawInput: () => Promise<unknown>;
+  platformAuth: PlatformAuthContext;
+}) => Promise<{ deniedPermission: string } | { ok: true }>;
+
+/**
+ * Single implementation for platform permission middleware constructors.
+ * Owns actor validation, feature gate, auth context load, denial audit, and metadata.
+ */
+const withPlatformPermissions = (params: {
+  metadata: PlatformPermissionMetadata;
+  predicate: PermissionPredicate;
+}) => {
+  const middleware = trpc.middleware(async ({ ctx, getRawInput, next, path }) => {
     const rawUserId = ctx.userId;
     if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
       return throwEnterpriseError({
@@ -169,18 +204,14 @@ export const withPlatformPermission = (code: PlatformPermission) => {
       db,
       userId: rawUserId,
     });
-    if (!platformAuth.permissions.includes(code)) {
-      await auditPermissionDenied({
+
+    const result = await params.predicate({ getRawInput, platformAuth });
+    if (!('ok' in result)) {
+      return denyPermission({
         actorUserId: rawUserId,
         db,
         path,
-        permission: code,
-      });
-      throwEnterpriseError({
-        code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-        details: { permission: code },
-        httpCode: 'FORBIDDEN',
-        message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        permission: result.deniedPermission,
       });
     }
 
@@ -191,120 +222,88 @@ export const withPlatformPermission = (code: PlatformPermission) => {
     });
   });
 
-  attachPlatformPermissionMetadata(middleware._middlewares.at(-1), {
-    mode: 'all',
-    permissions: [code],
-  });
+  attachPlatformPermissionMetadata(middleware._middlewares.at(-1), params.metadata);
   return middleware;
 };
 
-export const withAnyPlatformPermission = (codes: readonly PlatformPermission[]) => {
-  const middleware = trpc.middleware(async ({ ctx, next, path }) => {
-    const rawUserId = ctx.userId;
-    if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
-      return throwEnterpriseError({
-        code: ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED,
-        httpCode: 'UNAUTHORIZED',
-        message: 'UNAUTHORIZED',
-      });
-    }
-
-    if (!isPlatformAdminFeatureEnabled()) {
-      return throwEnterpriseError({
-        code: ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED,
-        httpCode: 'FORBIDDEN',
-      });
-    }
-
-    const db = resolveServerDb(ctx as { serverDB?: LobeChatDatabase });
-    const platformAuth = await loadPlatformAuthContext({
-      db,
-      userId: rawUserId,
-    });
-    if (!codes.some((code) => platformAuth.permissions.includes(code))) {
-      await auditPermissionDenied({
-        actorUserId: rawUserId,
-        db,
-        path,
-        permission: codes.join('|'),
-      });
-      throwEnterpriseError({
-        code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-        details: { permission: codes.join('|') },
-        httpCode: 'FORBIDDEN',
-        message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-      });
-    }
-
-    return next({
-      ctx: {
-        platformAuth,
-      },
-    });
+/**
+ * tRPC middleware: require a single platform permission on a global role.
+ * Flag-gated: when ENABLE_PLATFORM_ADMIN is off → ADMIN_FEATURE_DISABLED.
+ */
+export const withPlatformPermission = (code: PlatformPermission) =>
+  withPlatformPermissions({
+    metadata: { mode: 'all', permissions: [code] },
+    predicate: async ({ platformAuth }) =>
+      platformAuth.permissions.includes(code) ? { ok: true } : { deniedPermission: code },
   });
-
-  attachPlatformPermissionMetadata(middleware._middlewares.at(-1), {
-    mode: 'any',
-    permissions: codes,
-  });
-  return middleware;
-};
 
 /**
  * tRPC middleware: require every listed platform permission (mode: all).
  * Prefer this over stacking `withPlatformPermission` — reconcile expects exactly one gate.
  */
-export const withAllPlatformPermissions = (codes: readonly PlatformPermission[]) => {
-  const middleware = trpc.middleware(async ({ ctx, next, path }) => {
-    const rawUserId = ctx.userId;
-    if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
-      return throwEnterpriseError({
-        code: ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED,
-        httpCode: 'UNAUTHORIZED',
-        message: 'UNAUTHORIZED',
-      });
-    }
-
-    if (!isPlatformAdminFeatureEnabled()) {
-      return throwEnterpriseError({
-        code: ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED,
-        httpCode: 'FORBIDDEN',
-      });
-    }
-
-    const db = resolveServerDb(ctx as { serverDB?: LobeChatDatabase });
-    const platformAuth = await loadPlatformAuthContext({
-      db,
-      userId: rawUserId,
-    });
-    const missing = codes.find((code) => !platformAuth.permissions.includes(code));
-    if (missing) {
-      await auditPermissionDenied({
-        actorUserId: rawUserId,
-        db,
-        path,
-        permission: missing,
-      });
-      throwEnterpriseError({
-        code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-        details: { permission: missing },
-        httpCode: 'FORBIDDEN',
-        message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
-      });
-    }
-
-    return next({
-      ctx: {
-        platformAuth,
-      },
-    });
+export const withAllPlatformPermissions = (codes: readonly PlatformPermission[]) =>
+  withPlatformPermissions({
+    metadata: { mode: 'all', permissions: codes },
+    predicate: async ({ platformAuth }) => {
+      const missing = codes.find((code) => !platformAuth.permissions.includes(code));
+      return missing ? { deniedPermission: missing } : { ok: true };
+    },
   });
 
-  attachPlatformPermissionMetadata(middleware._middlewares.at(-1), {
-    mode: 'all',
-    permissions: codes,
+export interface CompoundPlatformPermissionOptions {
+  /**
+   * Permissions always required (typically `*_PUBLISH`).
+   * Checked first; the first missing one is the denial detail.
+   */
+  fixed: readonly PlatformPermission[];
+  /**
+   * Select the secondary operation permission from the already-parsed procedure input.
+   * Invoked only after fixed permissions pass.
+   */
+  select: (input: unknown) => PlatformPermission;
+  /**
+   * Closed set of permissions `select` may return — stored in authorization metadata.
+   */
+  selectable: readonly PlatformPermission[];
+}
+
+/**
+ * Input-aware compound gate: requires every `fixed` permission plus one
+ * input-selected secondary permission. Both denials emit `admin.permission.denied`.
+ *
+ * Used by applyImmediate surfaces (AI providers/models, connectors, skills) where
+ * PUBLISH is always required and CREATE/UPDATE/DELETE depends on the mutation mode.
+ */
+export const withCompoundPlatformPermission = (options: CompoundPlatformPermissionOptions) => {
+  if (options.fixed.length === 0) {
+    throw new TypeError('withCompoundPlatformPermission requires at least one fixed permission');
+  }
+  if (options.selectable.length === 0) {
+    throw new TypeError('withCompoundPlatformPermission requires a non-empty selectable set');
+  }
+
+  return withPlatformPermissions({
+    metadata: {
+      mode: 'compound',
+      permissions: options.fixed,
+      selectable: options.selectable,
+    },
+    predicate: async ({ getRawInput, platformAuth }) => {
+      const missingFixed = options.fixed.find((code) => !platformAuth.permissions.includes(code));
+      if (missingFixed) return { deniedPermission: missingFixed };
+
+      const input = await getRawInput();
+      const selected = options.select(input);
+      if (!options.selectable.includes(selected)) {
+        // Closed set: a selector bug must not expand the authorization surface.
+        return { deniedPermission: selected };
+      }
+      if (!platformAuth.permissions.includes(selected)) {
+        return { deniedPermission: selected };
+      }
+      return { ok: true };
+    },
   });
-  return middleware;
 };
 
 /**

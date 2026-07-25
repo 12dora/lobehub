@@ -6,7 +6,7 @@ import {
   connectorPlatformToolPolicySchema,
   connectorScopesSchema,
   connectorSha256Schema,
-  connectorSharedCredentialSchema,
+  connectorSharedCredentialReadSchema,
   connectorToolDraftListSchema,
   connectorToolKeySchema,
   httpUrlSchema,
@@ -93,7 +93,8 @@ export const connectorRuntimeResolutionSchema = z.discriminatedUnion('credential
   connectorRuntimeResolutionBaseSchema
     .extend({
       credentialMode: z.literal('shared_service_account'),
-      credentials: connectorSharedCredentialSchema,
+      // Accept-on-read: already-stored secrets may predate the RFC token grammar.
+      credentials: connectorSharedCredentialReadSchema,
     })
     .strict(),
   connectorRuntimeResolutionBaseSchema
@@ -124,7 +125,8 @@ export const trustedPublishedConnectorSchema = z.discriminatedUnion('credentialM
   trustedPublishedConnectorBaseSchema
     .extend({
       credentialMode: z.literal('shared_service_account'),
-      credentials: connectorSharedCredentialSchema,
+      // Accept-on-read: already-stored secrets may predate the RFC token grammar.
+      credentials: connectorSharedCredentialReadSchema,
     })
     .strict(),
   trustedPublishedConnectorBaseSchema

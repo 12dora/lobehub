@@ -7,6 +7,7 @@ import type {
   AdminSecretRotationRetryInput,
   AdminSecretRotationStartInput,
 } from '../../contracts/adminSecretRotation';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import { PlatformSecretRewrapCoordinator } from './coordinator';
 import {
@@ -87,7 +88,7 @@ export class PlatformSecretRotationAdminService {
     this.dbOnlyCoordinatorFactory();
 
   private auditedMutation = async <T>(params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     /** When false, use the DB-only coordinator (no Vault requirement). Default true. */

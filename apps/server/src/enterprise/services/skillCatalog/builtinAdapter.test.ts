@@ -2,6 +2,7 @@
 import type { BuiltinSkill } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
+import { skillResourceContentChecksum } from '../../contracts/skillCatalog';
 import { adaptBuiltinSkillDefinitions, getBuiltinSkillDefinitions } from './builtinAdapter';
 
 vi.mock('@lobechat/builtin-skills', () => ({
@@ -45,7 +46,12 @@ describe('adaptBuiltinSkillDefinitions', () => {
       version: '0.0.0',
     });
     expect(definitions[0]?.resources).toEqual([
-      expect.objectContaining({ content: 'guide', path: 'references/guide.md', sizeBytes: 5 }),
+      expect.objectContaining({
+        checksum: skillResourceContentChecksum('guide'),
+        content: 'guide',
+        path: 'references/guide.md',
+        sizeBytes: 5,
+      }),
     ]);
     expect(definitions[0]?.checksum).toMatch(/^[a-f\d]{64}$/);
   });

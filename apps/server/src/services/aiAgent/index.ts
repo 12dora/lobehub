@@ -7,7 +7,6 @@ import type {
 import { GeneralChatAgent, GraphAgent } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
-import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { LobeAgentIdentifier, LobeAgentManifest } from '@lobechat/builtin-tool-lobe-agent';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
@@ -19,10 +18,9 @@ import {
   injectSelfFeedbackIntentTool,
   shouldExposeSelfFeedbackIntentTool,
 } from '@lobechat/builtin-tool-self-iteration';
-import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TaskIdentifier } from '@lobechat/builtin-tool-task';
 import { builtinTools, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
-import { INBOX_SESSION_ID, LOADING_FLAT } from '@lobechat/const';
+import { LOADING_FLAT } from '@lobechat/const';
 import type {
   AgentGroupConfig,
   AgentManagementContext,
@@ -51,7 +49,6 @@ import type {
   LobeAgentAgencyConfig,
   LobeAgentConfig,
   MessagePluginItem,
-  PlatformAgentConnectorDependencyRef,
   PlatformAgentSkillDependencyRef,
   PlatformOperationModelPin,
   PlatformOperationPin,
@@ -62,8 +59,6 @@ import type {
 } from '@lobechat/types';
 import {
   buildHeteroExecArgs,
-  decodePlatformAgentListId,
-  fingerprintResumeToolCall,
   getActivePluginIds,
   getDisabledPluginIds,
   getWorkingDirEffectivePath,
@@ -93,7 +88,6 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
-import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import { toolsEnv } from '@/envs/tools';
 import {
   type ExecutionPlan,
@@ -109,13 +103,11 @@ import { patchBuiltinManifestWithGovernance } from '@/libs/mcp/patchManifestGove
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import {
-  PlatformAgentDependencyValidationError,
   PlatformAgentEffectiveResolver,
-  PlatformAgentMaterializationError,
+  type PlatformAgentExecutionPlan,
+  PlatformAgentExecutionResolver,
   PlatformAgentMaterializationService,
-  PlatformAgentNotFoundError,
   type PlatformAgentOperationHandle,
-  PlatformDefaultInboxService,
   validateExactPlatformAgentDependencies,
 } from '@/server/enterprise/services/agentCatalog';
 import {
@@ -199,7 +191,6 @@ import {
 import { isWorkspaceCacheFresh, upsertWorkspaceScan } from './workspaceInitCache';
 
 const log = debug('lobe-server:ai-agent-service');
-const PLATFORM_AUDITED_BUILTIN_TOOL_IDS = [LobeActivatorIdentifier, SkillsIdentifier] as const;
 
 const createGraphAwareAgentFactory =
   (
@@ -1005,26 +996,26 @@ export class AiAgentService {
   }
 
   /**
-   * Resolve a platform Agent chat entry into a runtime config (M10 PR-049 · C).
-   *
-   * Authorization is server-side only: `beginOperation` re-resolves the caller's owner-scoped
-   * effective entitlement — the client-supplied `platformAgentId` is never trusted as proof — and
-   * captures the exact pinned version snapshot exactly once. The returned config is built solely
-   * from that snapshot, with `id` bound to a materialized real user-owned Agent for attribution.
-   *
-   * Not entitled (no effective assignment / archived) → NOT_FOUND, indistinguishable from a missing
-   * ordinary agent so we never leak whether the platform Agent exists. A fail-closed materialization
-   * error (missing exact version / checksum mismatch / malformed refs) surfaces as a redacted 500.
+   * Thin adapter to the fork-owned PlatformAgentExecutionResolver.
+   * Platform identity, entitlement, resume-pin binding, materialization, and managed
+   * runtime policy live under enterprise/services/agentCatalog — keep this service as
+   * the upstream exec seam only.
    */
-  /**
-   * Resolve the platform Agent an operation should run, from the request identity (REWORK-2).
-   *
-   * Returns the platformAgentId when the identity is either the encoded platform list item OR a
-   * plain local Agent id that THIS user materialized from a platform Agent — both must go back
-   * through owner-scoped entitlement. The materialized-id reverse lookup is owner-scoped and gated
-   * on the managed flag, so flag-off keeps zero platform access and ordinary local ids fall through.
-   * Returns null for an ordinary agent / slug.
-   */
+  private createPlatformExecutionResolver() {
+    return new PlatformAgentExecutionResolver({
+      agentModel: this.agentModel,
+      agentOperationModel: this.agentOperationModel,
+      // Barrel-imported constructors / functions so vi.mock('@/server/enterprise/services/agentCatalog') applies.
+      createEffectiveResolver: (db) => new PlatformAgentEffectiveResolver(db),
+      createMaterializationService: (db, userId) =>
+        new PlatformAgentMaterializationService(db, userId),
+      db: this.db,
+      messageModel: this.messageModel,
+      userId: this.userId,
+      validateDependencies: validateExactPlatformAgentDependencies,
+    });
+  }
+
   private async resolvePlatformAgentId(
     identifier: string,
     agentId: string | undefined,
@@ -1035,172 +1026,14 @@ export class AiAgentService {
       toolCallId: string;
       topicId: string | null;
     },
-  ): Promise<{
-    capturedResumePin?: PlatformOperationPin;
-    existingAgentId?: string;
-    handle?: PlatformAgentOperationHandle;
-    platformAgentId: string;
-  } | null> {
-    const encoded = decodePlatformAgentListId(identifier);
-    if (encoded) return { platformAgentId: encoded };
-    if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return null;
-
-    // The builtin inbox is a dedicated, non-copy identity. Resolve it before ordinary reverse
-    // materialization so a stale mapping from an older default can never select the runtime.
-    let inboxAgentId: string | undefined;
-    if (identifier === INBOX_SESSION_ID) {
-      inboxAgentId = (await this.agentModel.getBuiltinAgent(INBOX_SESSION_ID))?.id;
-    } else if (agentId) {
-      const candidate = await this.agentModel.getAgentConfigById(agentId);
-      if (candidate?.slug === INBOX_SESSION_ID) inboxAgentId = candidate.id;
-    }
-    if (inboxAgentId) {
-      if (pausedResume) {
-        const pin = await this.resolveResumePlatformPin(
-          pausedResume.anchorMessageId,
-          pausedResume.kind,
-          pausedResume.toolCallId,
-          undefined,
-          pausedResume.topicId,
-          pausedResume.threadId,
-        );
-        if (!pin) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-        }
-        return {
-          capturedResumePin: pin,
-          existingAgentId: inboxAgentId,
-          platformAgentId: pin.platformAgentId,
-        };
-      }
-
-      const handle = await new PlatformDefaultInboxService(this.db, this.userId).capture();
-      if (!handle) return null;
-      return { existingAgentId: inboxAgentId, handle, platformAgentId: handle.platformAgentId };
-    }
-
-    if (agentId) {
-      const materializedPlatformAgentId = await new PlatformAgentCatalogRepository(
-        this.db,
-      ).getPlatformAgentIdByMaterializedAgentId(this.userId, agentId);
-      if (materializedPlatformAgentId) return { platformAgentId: materializedPlatformAgentId };
-    }
-    return null;
+  ) {
+    return this.createPlatformExecutionResolver().resolveIdentity(
+      identifier,
+      agentId,
+      pausedResume,
+    );
   }
 
-  /** Map a platform config-resolution failure to a stable, redacted TRPCError. */
-  private mapPlatformConfigError(
-    error: unknown,
-    platformAgentId: string | undefined,
-    identifier: string,
-  ): never {
-    if (error instanceof PlatformAgentNotFoundError) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-    }
-    if (error instanceof PlatformAgentDependencyValidationError) {
-      log('execAgent: platform dependency validation failed for %s', platformAgentId);
-      throw new TRPCError({
-        code: 'PRECONDITION_FAILED',
-        message: 'Platform agent dependencies are unavailable',
-      });
-    }
-    if (error instanceof PlatformAgentMaterializationError) {
-      log('execAgent: platform materialization failed for %s: %O', platformAgentId, error);
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to start platform agent',
-      });
-    }
-    // An already-curated stable TRPCError (e.g. a fail-closed NOT_FOUND from the resume path) passes
-    // through unchanged. Anything else — a raw driver / SQL error escaping the dependency-validation
-    // transaction, a Skill/Connector snapshot detail — is redacted to the stable materialization
-    // error (RR2-5) so no SQL text / constraint / identifier / secret reaches the client.
-    if (error instanceof TRPCError) throw error;
-    log('execAgent: unexpected platform config error for %s: %O', platformAgentId, error);
-    throw new TRPCError({
-      code: 'INTERNAL_SERVER_ERROR',
-      message: 'Failed to start platform agent',
-    });
-  }
-
-  /**
-   * Validate the operation's pinned, immutable dependency snapshot against the published catalog via
-   * the existing M07/M08/M09 exact validator (REWORK-4): fail-closed at the pinned revision — no
-   * latest fallback, no silently-dropped Skill/Connector — surfacing only redacted issue codes.
-   */
-  private async assertPlatformOperationDependencies(
-    dependencySnapshot: Parameters<typeof validateExactPlatformAgentDependencies>[1],
-  ): Promise<void> {
-    await validateExactPlatformAgentDependencies(this.db, dependencySnapshot);
-  }
-
-  /**
-   * Resolve the secret-free pin of the EXACT parent operation a resume continues, via a
-   * SERVER-CONTROLLED, complete provenance binding (M10 PR-049 · RR3-1/RR4-1) — the
-   * client-writable `message.metadata.operationId` AND the client-writable `message.parentId` are
-   * BOTH untrusted.
-   *
-   * The anchor message is loaded owner-scoped (a foreign / non-existent message → null → fail
-   * closed) only to confirm the caller owns it; the operation is then matched by kind against a
-   * SERVER-owned id under its OWN kind — an APPROVAL / TOOL-RESULT anchor against the pending
-   * tool-message provenance the runtime recorded at pause. No
-   * `parentId` hop, so a client-forged tool message (spoofed parentId) can never bind, and the two
-   * kinds can't cross. ONLY approval / tool-result are paused resumes; a bare regeneration / continue
-   * (`parentMessageId` without an approval/tool-result body) never reaches here — it starts a fresh
-   * operation on current entitlement (RR5-5).
-   */
-  private async resolveResumePlatformPin(
-    anchorMessageId: string | null,
-    anchorKind: ResumeInteractionKind,
-    toolCallId: string,
-    platformAgentId: string | undefined,
-    topicId: string | null,
-    threadId: string | null,
-  ): Promise<PlatformOperationPin | null> {
-    if (!anchorMessageId) return null;
-    const anchor = await this.messageModel.findById(anchorMessageId);
-    if (!anchor) return null;
-    const plugin = await this.messageModel.findMessagePlugin(anchor.id);
-    if (
-      !plugin ||
-      plugin.toolCallId !== toolCallId ||
-      plugin.intervention?.kind !== anchorKind ||
-      typeof plugin.apiName !== 'string' ||
-      typeof plugin.arguments !== 'string' ||
-      typeof plugin.identifier !== 'string'
-    ) {
-      return null;
-    }
-    const fingerprint = await fingerprintResumeToolCall({
-      apiName: plugin.apiName,
-      arguments: plugin.arguments,
-      identifier: plugin.identifier,
-      toolCallId,
-      type: plugin.type,
-    });
-    return this.agentOperationModel.findResumablePlatformOperationPin({
-      anchorKind,
-      anchorMessageId: anchor.id,
-      fingerprint,
-      platformAgentId,
-      threadId,
-      toolCallId,
-      topicId,
-    });
-  }
-
-  /**
-   * Resolve a platform Agent chat entry into a runtime config + the secret-free operation pin.
-   *
-   * NEW operation: `beginOperation` re-resolves owner-scoped Effective entitlement ONCE and captures
-   * the exact pinned version; the returned pin is persisted so later steps replay it.
-   *
-   * RESUME / retry / queued (a continuation of an existing topic/thread turn): replay the persisted,
-   * owner-scoped pin via `materializeFromPin` — NO `beginOperation`, no latest resolve — so an
-   * in-flight v1 operation stays on v1 after v2 is published. A persisted pin for a different
-   * platform Agent, a missing exact version, or a checksum mismatch (tampered metadata / advanced
-   * pointer) fails closed.
-   */
   private async resolvePlatformAgentConfig(
     platformAgentId: string,
     identifier: string,
@@ -1208,128 +1041,18 @@ export class AiAgentService {
       capturedHandle?: PlatformAgentOperationHandle;
       capturedResumePin?: PlatformOperationPin;
       existingAgentId?: string;
-      /**
-       * Set ONLY for a paused (approval / tool-result) resume — the sole case that replays a parked
-       * operation's pin (RR5-5). A bare regeneration / continue leaves it undefined and takes the
-       * fresh-operation path below.
-       */
       pausedResumeKind?: ResumeInteractionKind;
       resumeAnchorMessageId: string | null;
       resumeToolCallId?: string;
       threadId: string | null;
       topicId: string | null;
     },
-  ): Promise<{
-    config: AgentConfigWithId;
-    connectorRefs: PlatformAgentConnectorDependencyRef[];
-    modelPin: PlatformOperationModelPin;
-    pin: PlatformOperationPin;
-    skillRefs: PlatformAgentSkillDependencyRef[];
-  }> {
-    const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
-
-    if (resumeContext.pausedResumeKind) {
-      // RR3-1/RR5-5: a PAUSED (approval / tool-result) resume MUST replay the pin of its EXACT parent
-      // operation, matched by the SERVER-CONTROLLED pending tool-message provenance (never
-      // client-writable message metadata) and jointly scoped to owner/workspace/topic/thread/
-      // platformAgent + a paused, resumable status. No such bound pin (fabricated / cross-owner /
-      // wrong turn / wrong kind / terminal op) → fail closed. We NEVER fall through to a fresh
-      // `beginOperation` (latest) on a paused resume. A bare regeneration / continue never enters
-      // this branch — it takes the fresh-operation path below on CURRENT entitlement.
-      const pin =
-        resumeContext.capturedResumePin ??
-        (await this.resolveResumePlatformPin(
-          resumeContext.resumeAnchorMessageId,
-          resumeContext.pausedResumeKind,
-          resumeContext.resumeToolCallId ?? '',
-          platformAgentId,
-          resumeContext.topicId,
-          resumeContext.threadId,
-        ));
-      if (!pin || pin.platformAgentId !== platformAgentId) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-      }
-      // Re-check LIVE entitlement so a revoked / no-longer-assigned user fails closed even for a
-      // genuinely paused turn — WITHOUT resolving latest (the pinned version is still what runs).
-      // Every historical pin — including a pin captured while resolving the builtin inbox — must
-      // pass current entitlement before exact replay. The pin selects the immutable old version;
-      // it is never authorization evidence by itself.
-      let entitled: boolean;
-      try {
-        entitled = await new PlatformAgentEffectiveResolver(this.db).isEntitled(
-          this.userId,
-          platformAgentId,
-        );
-      } catch (error) {
-        this.mapPlatformConfigError(error, platformAgentId, identifier);
-      }
-      if (!entitled) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-      }
-      try {
-        const materialized = resumeContext.existingAgentId
-          ? await materializationService.resolveFromPinForExistingAgent(
-              pin,
-              resumeContext.existingAgentId,
-            )
-          : await materializationService.materializeFromPin(pin);
-        await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
-        if (resumeContext.existingAgentId) {
-          materialized.config.slug = INBOX_SESSION_ID;
-        }
-        return {
-          config: materialized.config,
-          connectorRefs: materialized.dependencySnapshot.connectors,
-          modelPin: materialized.dependencySnapshot.model,
-          pin,
-          skillRefs: materialized.dependencySnapshot.skills,
-        };
-      } catch (error) {
-        this.mapPlatformConfigError(error, platformAgentId, identifier);
-      }
-    }
-
-    const handle =
-      resumeContext.capturedHandle ??
-      (await new PlatformAgentEffectiveResolver(this.db).beginOperation(
-        this.userId,
-        platformAgentId,
-      ));
-    if (!handle) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-    }
-    if (handle.platformAgentId !== platformAgentId) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-    }
-    try {
-      const snapshot = handle.getSnapshot();
-      const materialized = resumeContext.existingAgentId
-        ? await materializationService.resolveForExistingAgent(
-            snapshot,
-            resumeContext.existingAgentId,
-          )
-        : await materializationService.materializeForOperation(snapshot);
-      await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
-      if (resumeContext.existingAgentId) {
-        materialized.config.slug = INBOX_SESSION_ID;
-        if (materialized.config.platform && handle.distribution) {
-          materialized.config.platform.distribution = handle.distribution;
-        }
-      }
-      return {
-        config: materialized.config,
-        connectorRefs: materialized.dependencySnapshot.connectors,
-        modelPin: materialized.dependencySnapshot.model,
-        pin: {
-          checksum: snapshot.checksum,
-          platformAgentId: snapshot.platformAgentId,
-          versionId: snapshot.versionId,
-        },
-        skillRefs: materialized.dependencySnapshot.skills,
-      };
-    } catch (error) {
-      this.mapPlatformConfigError(error, platformAgentId, identifier);
-    }
+  ): Promise<PlatformAgentExecutionPlan> {
+    return this.createPlatformExecutionResolver().resolveExecutionPlan(
+      platformAgentId,
+      identifier,
+      resumeContext,
+    );
   }
 
   /**
@@ -1490,11 +1213,12 @@ export class AiAgentService {
     // every LLM call runs on the exact historical provider revision.
     let platformOperationPin: PlatformOperationPin | undefined;
     let platformModelPin: PlatformOperationModelPin | undefined;
-    // Exact pinned Skill / Connector refs for a platform operation (undefined for non-platform). Set
-    // (possibly empty) whenever the operation is a platform Agent, so the Skill/Connector pools are
-    // EXACTLY its pinned set.
+    // Exact pinned Skill refs for a platform operation (undefined for non-platform). Set
+    // (possibly empty) whenever the operation is a platform Agent, so the Skill pool is
+    // EXACTLY its pinned set. Connector refs live on the plan and are loaded via one adapter call.
     let platformSkillRefs: PlatformAgentSkillDependencyRef[] | undefined;
-    let platformConnectorRefs: PlatformAgentConnectorDependencyRef[] | undefined;
+    /** Managed execution plan from PlatformAgentExecutionResolver (policy + immutable pin). */
+    let platformExecutionPlan: PlatformAgentExecutionPlan | undefined;
     if (platformAgentId) {
       // RR5-5: ONLY an approval / tool-result body drives a PAUSED resume (replay the parked op's
       // pin). A bare `resume` / `parentMessageId` (UI regenerate passes the user message id, continue
@@ -1514,11 +1238,11 @@ export class AiAgentService {
         threadId: appContext?.threadId ?? null,
         topicId: appContext?.topicId ?? null,
       });
+      platformExecutionPlan = resolved;
       agentConfig = resolved.config;
       platformOperationPin = resolved.pin;
       platformModelPin = resolved.modelPin;
       platformSkillRefs = resolved.skillRefs;
-      platformConnectorRefs = resolved.connectorRefs;
     } else {
       agentConfig = await this.agentService.getAgentConfig(identifier);
       // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
@@ -1552,8 +1276,8 @@ export class AiAgentService {
     // documents stay keyed on `resolvedAgentId`.
     const persistAgentId = appContext?.agentSignal?.agentId ?? resolvedAgentId;
 
-    // Apply per-call model/provider overrides (e.g. from task.config)
-    if (!platformOperationPin) {
+    // Apply per-call model/provider overrides (e.g. from task.config). Managed plans freeze the pin.
+    if (!platformExecutionPlan || platformExecutionPlan.policy.allowModelOverride) {
       if (modelOverride) agentConfig.model = modelOverride;
       if (providerOverride) agentConfig.provider = providerOverride;
     }
@@ -1587,7 +1311,11 @@ export class AiAgentService {
     // The DB only stores persist config. Runtime config (e.g. inbox systemRole) is generated dynamically.
     const agentSlug = agentConfig.slug;
     const builtinSlugs = Object.values(BUILTIN_AGENT_SLUGS) as string[];
-    if (!platformOperationPin && agentSlug && builtinSlugs.includes(agentSlug)) {
+    if (
+      (!platformExecutionPlan || platformExecutionPlan.policy.allowBuiltinRuntimeMerge) &&
+      agentSlug &&
+      builtinSlugs.includes(agentSlug)
+    ) {
       let userLocale: string | undefined;
       try {
         const userInfo = await UserModel.getInfoForAIGeneration(this.db, this.userId);
@@ -1622,7 +1350,7 @@ export class AiAgentService {
       }
     }
 
-    if (!platformOperationPin) {
+    if (!platformExecutionPlan || platformExecutionPlan.policy.allowPluginInjection) {
       if (appContext?.scope !== 'page') {
         activePluginIds = activePluginIds.filter((id) => id !== PageAgentIdentifier);
       }
@@ -1679,7 +1407,10 @@ export class AiAgentService {
     await throwIfExecutionAborted('agent configuration');
 
     // 2.5. Append additional instructions to agent's systemRole
-    if (instructions && !platformOperationPin) {
+    if (
+      instructions &&
+      (!platformExecutionPlan || platformExecutionPlan.policy.allowInstructions)
+    ) {
       agentConfig.systemRole = agentConfig.systemRole
         ? `${agentConfig.systemRole}\n\n${instructions}`
         : instructions;
@@ -2718,7 +2449,9 @@ export class AiAgentService {
     } catch (error) {
       log('execAgent: failed to fetch user settings: %O', error);
     }
-    if (platformOperationPin) globalMemoryEnabled = false;
+    if (platformExecutionPlan && !platformExecutionPlan.policy.allowGlobalMemory) {
+      globalMemoryEnabled = false;
+    }
     log(
       'execAgent: globalMemoryEnabled=%s, timezone=%s',
       globalMemoryEnabled,
@@ -2767,11 +2500,8 @@ export class AiAgentService {
     // (deduped) alongside the agent's pinned plugins and any internal
     // `additionalPluginIds` so a mentioned-but-not-pinned tool (e.g. a custom MCP
     // connector) is both queried for manifests and enabled by the tools engine.
-    let agentPlugins: string[] = platformOperationPin
-      ? [
-          ...PLATFORM_AUDITED_BUILTIN_TOOL_IDS,
-          ...(platformConnectorRefs ?? []).map(({ connectorKey }) => connectorKey),
-        ]
+    let agentPlugins: string[] = platformExecutionPlan
+      ? [...platformExecutionPlan.policy.managedPluginIds]
       : [
           ...new Set([
             ...getActivePluginIds(agentConfig?.plugins),
@@ -2915,16 +2645,15 @@ export class AiAgentService {
       // True when Connectors run under the managed/enforced runtime (platform pinned OR current
       // enforced) — those never fall back to the personal stdio-client executor path below.
       let connectorsEnforced = false;
-      // Platform Agent (CONNECTOR-EXACT): build Connector manifests from the immutable pinned refs —
-      // exact historical published revision/checksum + pinned tool allowlist — never the current
-      // catalog head, and never personal Connectors. The pinned set is authoritative and fully
-      // replaces the ordinary Connector path.
-      if (platformConnectorRefs) {
+      // Platform Agent (CONNECTOR-EXACT): one adapter call from the plan's pinned refs —
+      // exact historical published revision/checksum + pinned tool allowlist. Never the current
+      // catalog head, and never personal Connectors.
+      if (platformExecutionPlan) {
         const pinnedConnectors = await buildPinnedManagedConnectorManifests({
           agentId: resolvedAgentId,
           db: this.db,
           operationId,
-          pinnedConnectors: platformConnectorRefs,
+          pinnedConnectors: platformExecutionPlan.connectorRefs,
           userId: this.userId,
           workspaceId: this.workspaceId,
         });
@@ -3189,7 +2918,10 @@ export class AiAgentService {
       // the same source of truth the tools engine uses.
       executionPlan = resolveExecutionPlan({
         agencyConfig: agentConfig.agencyConfig,
-        canUseDevice: platformOperationPin ? false : canUseDevice,
+        canUseDevice:
+          platformExecutionPlan && !platformExecutionPlan.policy.allowDeviceTools
+            ? false
+            : canUseDevice,
         chatConfig: agentConfig.chatConfig ?? undefined,
         clientExecutionAvailable: gatewayConfigured,
         onlineDeviceIds: onlineDevices.map((device) => device.deviceId),
@@ -3295,7 +3027,7 @@ export class AiAgentService {
             }
           : undefined,
         disableLocalSystem,
-        exactBuiltinToolIds: platformOperationPin ? PLATFORM_AUDITED_BUILTIN_TOOL_IDS : undefined,
+        exactBuiltinToolIds: platformExecutionPlan?.policy.exactBuiltinToolIds,
         executionPlan,
         globalMemoryEnabled,
         hasEnabledKnowledgeBases,
@@ -3330,8 +3062,13 @@ export class AiAgentService {
       const pluginIds = [
         ...new Set([
           ...agentPlugins,
-          ...(!platformOperationPin && !disableLocalSystem ? [LocalSystemManifest.identifier] : []),
-          ...(!platformOperationPin ? [RemoteDeviceManifest.identifier] : []),
+          ...((!platformExecutionPlan || platformExecutionPlan.policy.allowLocalSystem) &&
+          !disableLocalSystem
+            ? [LocalSystemManifest.identifier]
+            : []),
+          ...(!platformExecutionPlan || platformExecutionPlan.policy.allowRemoteDevice
+            ? [RemoteDeviceManifest.identifier]
+            : []),
           // Include LobeHub Skills and Composio tools so they are passed to generateToolsDetailed
           ...activeLobehubSkillManifests.map((m) => m.identifier),
           ...activeComposioManifests.map((m) => m.identifier),
@@ -3391,8 +3128,8 @@ export class AiAgentService {
         disableLocalSystem,
       }).filter(
         ({ identifier }) =>
-          !platformOperationPin ||
-          (PLATFORM_AUDITED_BUILTIN_TOOL_IDS as readonly string[]).includes(identifier),
+          !platformExecutionPlan ||
+          platformExecutionPlan.policy.exactBuiltinToolIds.includes(identifier),
       );
       // Effective runtimeMode from the plan's resolved target — same value the
       // engine derives, single derivation point.
@@ -4276,7 +4013,7 @@ export class AiAgentService {
         // produces. Persisted into the operation's own (server-only) metadata so a later resume can
         // bind to THIS operation without trusting any client-writable message metadata.
         assistantMessageId: assistantMessageRecord.id,
-        platformConnectorPins: platformConnectorRefs,
+        platformConnectorPins: platformExecutionPlan?.connectorRefs,
         platformModelPin,
         platformOperationPin,
         platformSkillPins: platformSkillRefs,

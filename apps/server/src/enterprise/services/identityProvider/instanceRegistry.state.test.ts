@@ -5,10 +5,10 @@ import { getTestDB } from '@/database/core/getTestDB';
 import {
   platformIdentityProviderInstances,
   platformIdentityProviders,
-  platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import {
   getIdentityProviderProcessInstance,
   registerIdentityProviderInstance,
@@ -31,7 +31,8 @@ beforeEach(async () => {
   stopIdentityProviderHeartbeatForTest();
   await db.delete(platformIdentityProviderInstances);
   await db.delete(platformIdentityProviders);
-  await db.delete(platformResourceRevisions);
+  // This suite does not insert revisions; empty resourceIds is an explicit no-op (SG-07).
+  await deletePlatformResourceRevisionsForTest(db, { resourceIds: [] });
 });
 
 afterEach(() => {

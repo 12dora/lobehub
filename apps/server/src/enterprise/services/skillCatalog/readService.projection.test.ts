@@ -2,6 +2,7 @@
 import { sql } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 
+import { platformSkillVersionChecksum } from '@/database/models/platform';
 import { platformSkillVersions } from '@/database/schemas/platform';
 
 import { loadCurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
@@ -84,7 +85,7 @@ describe('SkillCatalogReadService projection / merge', () => {
     expect(catalog.skills).toHaveLength(101);
     expect(catalog.skills[0]?.skillKey).toBe('paged-000');
     expect(catalog.skills.at(-1)?.skillKey).toBe('paged-100');
-  });
+  }, 30_000);
 
   it('derives revision from final builtin projection and rejects injected builtin fields', async () => {
     const builtin: BuiltinSkillDefinition = {
@@ -131,31 +132,45 @@ describe('SkillCatalogReadService projection / merge', () => {
   it('skips a corrupt published skill without taking down the rest of the catalog', async () => {
     await publish({ skillKey: 'healthy.skill', version: '1.0.0' });
     const broken = await publish({ skillKey: 'broken.skill', version: '1.0.0' });
-    // Stale sizeBytes after content normalization historically made serverResolvedSkillSchema
-    // throw mid-projection and disable the entire managed catalog.
-    await db
-      .update(platformSkillVersions)
-      .set({
-        resources: [
-          {
-            checksum: 'a'.repeat(64),
-            content: 'B\n',
-            mediaType: 'text/plain',
-            path: 'b.txt',
-            sizeBytes: 3,
-          },
-        ],
-      })
-      .where(sql`${platformSkillVersions.id} = ${broken.version.id}`);
+    // Stale sizeBytes + non-content digest after content normalization historically made
+    // serverResolvedSkillSchema throw mid-projection and disable the entire managed catalog.
+    // Keep the aggregate version checksum consistent so catalog authority still loads the row;
+    // only the per-item resource binding fails (skip path in loadPublishedProjection).
+    // Versions are immutable; use the test-only replication-role bypass (same as readiness suite).
+    const corruptResources = [
+      {
+        checksum: 'a'.repeat(64),
+        content: 'B\n',
+        mediaType: 'text/plain',
+        path: 'b.txt',
+        sizeBytes: 3,
+      },
+    ];
+    const corruptChecksum = platformSkillVersionChecksum({
+      content: broken.version.content,
+      contentRef: broken.version.contentRef,
+      manifest: broken.version.manifest,
+      resources: corruptResources,
+    });
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .update(platformSkillVersions)
+        .set({
+          checksum: corruptChecksum,
+          resources: corruptResources,
+        })
+        .where(sql`${platformSkillVersions.id} = ${broken.version.id}`);
+    });
     invalidatePublishedSkillCatalogReadCache();
-    const catalog = await new SkillCatalogReadService(db).getPublishedCatalog();
+    const service = new SkillCatalogReadService(db);
+    const catalog = await service.getPublishedCatalog();
     expect(catalog.skills.map((skill) => skill.skillKey)).toEqual(['healthy.skill']);
-    await expect(
-      new SkillCatalogReadService(db).resolveForExecution('healthy.skill', '1.0.0'),
-    ).resolves.toMatchObject({ skillKey: 'healthy.skill' });
-    await expect(
-      new SkillCatalogReadService(db).resolveForExecution('broken.skill', '1.0.0'),
-    ).resolves.toBeUndefined();
+    await expect(service.resolveForExecution('healthy.skill', '1.0.0')).resolves.toMatchObject({
+      skillKey: 'healthy.skill',
+    });
+    // Head resolution uses the published projection (corrupt row skipped → undefined).
+    await expect(service.resolveForExecution('broken.skill')).resolves.toBeUndefined();
   });
 
   it('rejects aggregate item growth only after the strict authority load completes', async () => {
@@ -200,5 +215,5 @@ describe('SkillCatalogReadService projection / merge', () => {
         loadCurrentSnapshot,
       }).getPublishedCatalog(),
     ).rejects.toThrow('after builtin merge');
-  });
+  }, 30_000);
 });

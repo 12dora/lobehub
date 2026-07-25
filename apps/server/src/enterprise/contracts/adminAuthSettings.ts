@@ -1,47 +1,24 @@
 import { z } from 'zod';
 
-import { EMAIL_DOMAIN_PATTERN } from '@/types/platform/authSettings';
+import {
+  platformAuthSettingsFields,
+  requireAllowlistWhenEnabled,
+} from '@/types/platform/authSettings';
 
 /**
  * Platform auth-settings admin contracts (direct-save with CAS revision).
  *
- * Matches the flat document shape used by the identity router: settings fields
- * plus `revision` on reads and `expectedRevision` on writes. Domain validation
- * mirrors `platformAuthSettingsSchema` (including non-empty allowlist when enabled).
+ * Field shape + allowlist refinement are derived from the shared
+ * `platformAuthSettingsFields` / `requireAllowlistWhenEnabled` so domain
+ * validation has a single implementation (SCT-04).
  */
 
 const revisionSchema = z.number().int().nonnegative();
 
-const domainEntrySchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .max(253)
-  .regex(EMAIL_DOMAIN_PATTERN, { message: 'INVALID_EMAIL_DOMAIN' });
-
-const authSettingsFields = {
-  emailDomainAllowlist: z.array(domainEntrySchema).max(200),
-  emailDomainAllowlistEnabled: z.boolean(),
-  openRegistration: z.boolean(),
-} as const;
-
-const requireAllowlistWhenEnabled = (
-  value: { emailDomainAllowlist: string[]; emailDomainAllowlistEnabled: boolean },
-  ctx: z.RefinementCtx,
-) => {
-  if (value.emailDomainAllowlistEnabled && value.emailDomainAllowlist.length === 0) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'EMAIL_DOMAIN_ALLOWLIST_REQUIRED',
-      path: ['emailDomainAllowlist'],
-    });
-  }
-};
-
 /** Full platform auth-settings document including CAS revision. */
 export const adminAuthSettingsGetOutputSchema = z
   .object({
-    ...authSettingsFields,
+    ...platformAuthSettingsFields,
     revision: revisionSchema,
   })
   .strict()
@@ -51,7 +28,7 @@ export type AdminAuthSettingsGetOutput = z.infer<typeof adminAuthSettingsGetOutp
 /** Full-document update with optimistic concurrency token. */
 export const adminAuthSettingsUpdateInputSchema = z
   .object({
-    ...authSettingsFields,
+    ...platformAuthSettingsFields,
     expectedRevision: revisionSchema,
   })
   .strict()

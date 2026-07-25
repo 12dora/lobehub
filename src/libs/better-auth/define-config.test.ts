@@ -319,6 +319,30 @@ describe('defineConfig', () => {
     expect(mocks.ensureDefaultPlatformUserRole).toHaveBeenCalledWith(serverDB, 'user_new_signup');
   });
 
+  it('repairs default platform_user on session.create.before (idempotent)', async () => {
+    const { defineConfig } = await import('./define-config');
+    const { serverDB } = await import('@lobechat/database');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0] as {
+      databaseHooks: {
+        session: {
+          create: {
+            before: (
+              session: Record<string, unknown>,
+            ) => Promise<false | { data: Record<string, unknown> }>;
+          };
+        };
+      };
+    };
+
+    mocks.ensureDefaultPlatformUserRole.mockClear();
+    const allowed = await options.databaseHooks.session.create.before({ userId: 'user_repair_1' });
+    expect(allowed).toEqual({ data: { userId: 'user_repair_1' } });
+    expect(mocks.ensureDefaultPlatformUserRole).toHaveBeenCalledWith(serverDB, 'user_repair_1');
+  });
+
   it('enforces IdP group→role mapping on session.create.before (fail-closed)', async () => {
     const { defineConfig } = await import('./define-config');
     const { serverDB } = await import('@lobechat/database');

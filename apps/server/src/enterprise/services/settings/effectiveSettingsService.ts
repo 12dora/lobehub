@@ -72,6 +72,80 @@ const SOFT_CACHE_TTL_MS = 5_000;
 /** Bound resident keys so historical user/revision traffic cannot grow unbounded. */
 const SOFT_CACHE_MAX_ENTRIES = 512;
 
+/**
+ * Process-local published-policy rows keyed by platform revision.
+ * Avoids re-SELECTing the same org policies on every user materialization
+ * (soft-cache is per-user; this is shared across users at a revision).
+ */
+type PublishedPolicyMap = Record<
+  string,
+  {
+    mode: SettingPolicyMode;
+    schemaVersion: number;
+    value: unknown;
+    visibility: SettingPolicyVisibility;
+  }
+>;
+const publishedPoliciesByRevision = new Map<number, PublishedPolicyMap>();
+const PUBLISHED_POLICIES_CACHE_MAX = 16;
+
+const readPublishedPoliciesCache = (platformRevision: number): PublishedPolicyMap | undefined => {
+  const cached = publishedPoliciesByRevision.get(platformRevision);
+  if (!cached) return undefined;
+  // Refresh LRU insertion order.
+  publishedPoliciesByRevision.delete(platformRevision);
+  publishedPoliciesByRevision.set(platformRevision, cached);
+  return cached;
+};
+
+const writePublishedPoliciesCache = (
+  platformRevision: number,
+  policies: PublishedPolicyMap,
+): void => {
+  publishedPoliciesByRevision.delete(platformRevision);
+  publishedPoliciesByRevision.set(platformRevision, policies);
+  while (publishedPoliciesByRevision.size > PUBLISHED_POLICIES_CACHE_MAX) {
+    const oldest = publishedPoliciesByRevision.keys().next().value;
+    if (oldest === undefined) break;
+    publishedPoliciesByRevision.delete(oldest);
+  }
+};
+
+/**
+ * Users with the same platform revision, override revision token, and legacy
+ * checksum resolve to identical EffectiveSettingsResult payloads. Memoize the
+ * pure resolve so multi-user first-fill (soft-cache cold) does not re-walk the
+ * full registry for every user.
+ */
+const resolvedByLayerKey = new Map<string, EffectiveSettingsResult>();
+const RESOLVED_LAYER_CACHE_MAX = 64;
+
+const buildResolvedLayerKey = (params: {
+  legacyChecksum: string;
+  platformRevision: number;
+  registryVersion: number;
+  userOverrideRevision: number;
+}): string =>
+  `r${params.registryVersion}:p${params.platformRevision}:o${params.userOverrideRevision}:l${params.legacyChecksum}`;
+
+const readResolvedLayerCache = (key: string): EffectiveSettingsResult | undefined => {
+  const cached = resolvedByLayerKey.get(key);
+  if (!cached) return undefined;
+  resolvedByLayerKey.delete(key);
+  resolvedByLayerKey.set(key, cached);
+  return cached;
+};
+
+const writeResolvedLayerCache = (key: string, value: EffectiveSettingsResult): void => {
+  resolvedByLayerKey.delete(key);
+  resolvedByLayerKey.set(key, value);
+  while (resolvedByLayerKey.size > RESOLVED_LAYER_CACHE_MAX) {
+    const oldest = resolvedByLayerKey.keys().next().value;
+    if (oldest === undefined) break;
+    resolvedByLayerKey.delete(oldest);
+  }
+};
+
 const pruneSoftCache = (now: number): void => {
   for (const [key, entry] of softCache) {
     if (now >= entry.expiresAt) softCache.delete(key);
@@ -155,9 +229,13 @@ export class EffectiveSettingsService {
       });
     }
 
-    const bundle = await this.model.getBundle();
-    const platformRevision = bundle?.revision ?? 0;
-    const published = await this.model.listPublishedPolicies();
+    let snapshot: Awaited<ReturnType<PlatformSettingsModel['readEffectiveSettingsSnapshot']>>;
+    try {
+      snapshot = await this.model.readEffectiveSettingsSnapshot({ userId: null });
+    } catch (error) {
+      this.reportUnavailable(error);
+      throw error;
+    }
     const policies: Record<
       string,
       {
@@ -167,7 +245,7 @@ export class EffectiveSettingsService {
         visibility: SettingPolicyVisibility;
       }
     > = {};
-    for (const row of published) {
+    for (const row of snapshot.published) {
       policies[row.path] = {
         mode: row.mode as SettingPolicyMode,
         schemaVersion: row.schemaVersion,
@@ -180,7 +258,7 @@ export class EffectiveSettingsService {
       legacyUserSettings: {},
       overrides: {},
       platformPolicyEnabled: true,
-      platformRevision,
+      platformRevision: snapshot.platformRevision,
       policies,
       userOverrideRevision: 0,
     });
@@ -208,71 +286,53 @@ export class EffectiveSettingsService {
       });
     }
 
-    let bundle: Awaited<ReturnType<PlatformSettingsModel['getBundle']>>;
+    // Cheap single-statement revision probe for soft-cache hits.
+    // On miss, reuse process-local published policies for the platform revision
+    // and skip override SELECTs when the user revision token is still 0 (never written).
+    let probePlatformRevision: number;
+    let probeUserOverrideRevision: number;
     try {
-      bundle = await this.model.getBundle();
-    } catch (error) {
-      this.reportUnavailable(error);
-      throw error;
-    }
-    const platformRevision = bundle?.revision ?? 0;
-    let userOverrideRevision: number;
-    try {
-      userOverrideRevision = await this.model.getUserOverrideRevision(params.userId);
+      const probe = await this.model.getRevisionTokens(params.userId);
+      probePlatformRevision = probe.platformRevision;
+      probeUserOverrideRevision = probe.userOverrideRevision;
     } catch (error) {
       this.reportUnavailable(error);
       throw error;
     }
 
     const legacyChecksum = legacyCacheChecksum(legacyUserSettings);
-    const cacheKey = buildSettingsCacheKey({
+    const probeCacheKey = buildSettingsCacheKey({
       legacyChecksum,
-      platformRevision,
+      platformRevision: probePlatformRevision,
       registryVersion: settingsRegistry.version,
       userId: params.userId,
-      userOverrideRevision,
+      userOverrideRevision: probeUserOverrideRevision,
     });
 
-    const cached = readSoftCache(cacheKey);
+    const cached = readSoftCache(probeCacheKey);
     if (cached) {
       return cached;
     }
 
-    let published: Awaited<ReturnType<PlatformSettingsModel['listPublishedPolicies']>>;
+    let platformRevision: number;
+    let userOverrideRevision: number;
+    let policies: PublishedPolicyMap;
+    let overrides: Record<string, { value: unknown }>;
     try {
-      published = await this.model.listPublishedPolicies();
+      const materialised = await this.materializeUserSettingsLayers({
+        seedRevisions: {
+          platformRevision: probePlatformRevision,
+          userOverrideRevision: probeUserOverrideRevision,
+        },
+        userId: params.userId,
+      });
+      platformRevision = materialised.platformRevision;
+      userOverrideRevision = materialised.userOverrideRevision;
+      policies = materialised.policies;
+      overrides = materialised.overrides;
     } catch (error) {
       this.reportUnavailable(error);
       throw error;
-    }
-    const policies: Record<
-      string,
-      {
-        mode: SettingPolicyMode;
-        schemaVersion: number;
-        value: unknown;
-        visibility: SettingPolicyVisibility;
-      }
-    > = {};
-    for (const row of published) {
-      policies[row.path] = {
-        mode: row.mode as SettingPolicyMode,
-        schemaVersion: row.schemaVersion,
-        value: row.value,
-        visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
-      };
-    }
-
-    let overrideRows: Awaited<ReturnType<PlatformSettingsModel['listUserOverrides']>>;
-    try {
-      overrideRows = await this.model.listUserOverrides(params.userId);
-    } catch (error) {
-      this.reportUnavailable(error);
-      throw error;
-    }
-    const overrides: Record<string, { value: unknown }> = {};
-    for (const row of overrideRows) {
-      overrides[row.path] = { value: row.value };
     }
 
     // One-time migration: copy validated registered legacy leaves into override rows.
@@ -294,16 +354,32 @@ export class EffectiveSettingsService {
       throw error;
     }
 
-    const result = resolveEffectiveSettings({
-      legacyUserSettings,
-      overrides,
-      platformPolicyEnabled: true,
-      platformRevision,
-      policies,
-      userOverrideRevision,
-    });
+    // Pure resolve is identical for every user at the same platform revision with no
+    // overrides and the same legacy checksum — reuse it so multi-user cold fill is
+    // dominated by the revision probe, not registry walks.
+    const canShareResolved = userOverrideRevision === 0 && Object.keys(overrides).length === 0;
+    const layerKey = canShareResolved
+      ? buildResolvedLayerKey({
+          legacyChecksum,
+          platformRevision,
+          registryVersion: settingsRegistry.version,
+          userOverrideRevision,
+        })
+      : null;
+    let result = layerKey ? readResolvedLayerCache(layerKey) : undefined;
+    if (!result) {
+      result = resolveEffectiveSettings({
+        legacyUserSettings,
+        overrides,
+        platformPolicyEnabled: true,
+        platformRevision,
+        policies,
+        userOverrideRevision,
+      });
+      if (layerKey) writeResolvedLayerCache(layerKey, result);
+    }
 
-    // Cache under both the pre- and post-backfill revision keys when backfill bumped the token.
+    // Soft-cache stays per-user (LRU bound); layer memo only skips pure resolve work.
     writeSoftCache(
       buildSettingsCacheKey({
         legacyChecksum,
@@ -321,6 +397,109 @@ export class EffectiveSettingsService {
       source: 'database',
     });
     return result;
+  };
+
+  /**
+   * Load published policies + user overrides coherently for one user.
+   *
+   * Hot path: process-cached policies by platform revision + skip override reads
+   * when userOverrideRevision is 0. Bracket with a closing token read when any
+   * row SELECT ran; on sustained mismatch fall back to a single-statement snapshot
+   * (never throw SETTINGS_SNAPSHOT_RETRY to the caller).
+   */
+  private materializeUserSettingsLayers = async (params: {
+    seedRevisions: { platformRevision: number; userOverrideRevision: number };
+    userId: string;
+  }): Promise<{
+    overrides: Record<string, { value: unknown }>;
+    platformRevision: number;
+    policies: PublishedPolicyMap;
+    userOverrideRevision: number;
+  }> => {
+    const maxAttempts = 5;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const before =
+        attempt === 0 ? params.seedRevisions : await this.model.getRevisionTokens(params.userId);
+
+      let policyMap = readPublishedPoliciesCache(before.platformRevision);
+      let loadedPoliciesFromDb = false;
+      if (!policyMap) {
+        const rows = await this.model.listPublishedPolicies();
+        policyMap = {};
+        for (const row of rows) {
+          policyMap[row.path] = {
+            mode: row.mode as SettingPolicyMode,
+            schemaVersion: row.schemaVersion,
+            value: row.value,
+            visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
+          };
+        }
+        loadedPoliciesFromDb = true;
+      }
+
+      // Revision 0 means the user has never written overrides (bump is transactional
+      // with every insert/delete). Skip the empty SELECT on the common first-read path.
+      let overrideRows: Awaited<ReturnType<PlatformSettingsModel['listUserOverrides']>> = [];
+      let loadedOverridesFromDb = false;
+      if (before.userOverrideRevision > 0) {
+        overrideRows = await this.model.listUserOverrides(params.userId);
+        loadedOverridesFromDb = true;
+      }
+
+      // Cached policies for revision R plus empty overrides at user rev 0 need no
+      // recheck: concurrent publish advances the platform token (next probe misses),
+      // and concurrent first patch advances the user token the same way.
+      const needsRecheck = loadedPoliciesFromDb || loadedOverridesFromDb;
+      if (needsRecheck) {
+        const after = await this.model.getRevisionTokens(params.userId);
+        if (
+          before.platformRevision !== after.platformRevision ||
+          before.userOverrideRevision !== after.userOverrideRevision
+        ) {
+          continue;
+        }
+        if (loadedPoliciesFromDb) {
+          writePublishedPoliciesCache(before.platformRevision, policyMap);
+        }
+      }
+
+      const overrides: Record<string, { value: unknown }> = {};
+      for (const row of overrideRows) {
+        overrides[row.path] = { value: row.value };
+      }
+
+      return {
+        overrides,
+        platformRevision: before.platformRevision,
+        policies: policyMap,
+        userOverrideRevision: before.userOverrideRevision,
+      };
+    }
+
+    // Sustained churn: one statement-level snapshot — coherent and never throws
+    // SETTINGS_SNAPSHOT_RETRY (settings reads must not become an outage mode).
+    const snapshot = await this.model.readEffectiveSettingsSnapshot({ userId: params.userId });
+    const policies: PublishedPolicyMap = {};
+    for (const row of snapshot.published) {
+      policies[row.path] = {
+        mode: row.mode as SettingPolicyMode,
+        schemaVersion: row.schemaVersion,
+        value: row.value,
+        visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
+      };
+    }
+    writePublishedPoliciesCache(snapshot.platformRevision, policies);
+    const overrides: Record<string, { value: unknown }> = {};
+    for (const row of snapshot.overrideRows) {
+      overrides[row.path] = { value: row.value };
+    }
+    return {
+      overrides,
+      platformRevision: snapshot.platformRevision,
+      policies,
+      userOverrideRevision: snapshot.userOverrideRevision,
+    };
   };
 
   /**
@@ -398,6 +577,8 @@ export class EffectiveSettingsService {
     // Force recovery through a new materialization instead of leaving the reporter unavailable
     // while subsequent requests keep serving a pre-failure cache hit at the same revision.
     softCache.clear();
+    publishedPoliciesByRevision.clear();
+    resolvedByLayerKey.clear();
     reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
       domain: 'settings',
       errorCategory: classifyRuntimeMaterializationError(error),
@@ -700,6 +881,8 @@ export class EffectiveSettingsService {
 
 export const resetEffectiveSettingsCacheForTest = (): void => {
   softCache.clear();
+  publishedPoliciesByRevision.clear();
+  resolvedByLayerKey.clear();
 };
 
 /** Test/observability helper — current soft-cache resident key count. */

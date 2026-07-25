@@ -188,6 +188,88 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
     ).resolves.toBe(true);
   });
 
+  it('accepts already-stored shared credentials whose header names fail the write-time RFC token grammar', async () => {
+    // Pre-token-rule vaults could store space/colon/non-ASCII names. Readiness
+    // must not hard-fail so the connector stays loadable for admin replace.
+    const legacyCredential = {
+      headers: {
+        'Bad Header': 'space-name',
+        'X-Key:Sub': 'colon-name',
+        'X-键': 'non-ascii-name',
+      },
+    };
+    const id = `m09-readiness-${randomUUID()}`;
+    connectorIds.push(id);
+    const repository = new PlatformConnectorCatalogRepository(db);
+    await repository.createConnector({
+      connectorKey: id.slice(0, 64),
+      credentialMode: 'shared_service_account',
+      displayName: id,
+      enabled: true,
+      endpoint: 'https://connector.example.test/mcp',
+      id,
+    });
+    const stored = await getConnectorOAuthRuntime(db, env).secrets.persistSecret({
+      connectorId: id,
+      slot: 'sharedSecret',
+      value: legacyCredential,
+    });
+    await db
+      .update(platformConnectors)
+      .set({
+        sharedSecretFingerprint: stored.fingerprint,
+        sharedSecretRef: stored.ref,
+        sharedSecretUpdatedAt: stored.updatedAt,
+      })
+      .where(eq(platformConnectors.id, id));
+    const payload: PlatformConnectorRevisionPayload = {
+      connector: {
+        credentialMode: 'shared_service_account',
+        description: null,
+        displayName: id,
+        enabled: true,
+        endpoint: 'https://connector.example.test/mcp',
+        id,
+        key: id.slice(0, 64),
+        oauthClientSecretConfigured: false,
+        oauthClientSecretFingerprint: null,
+        oauthConfig: null,
+        sharedSecretConfigured: true,
+        sharedSecretFingerprint: stored.fingerprint,
+        sort: 0,
+        transport: 'http',
+      },
+      schemaVersion: 'm09-v1',
+      tools: [],
+    };
+    const checksum = checksumPayload(payload);
+    await repository.createPublishedRevision({
+      checksum,
+      connectorId: id,
+      payload,
+      publishedAt: new Date(),
+      publishedBy: 'readiness-admin',
+      revision: 1,
+    });
+    await repository.setPublishedPointerCas({
+      checksum,
+      connectorId: id,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      publishedRevision: 1,
+    });
+    const connector = await repository.getConnector(id);
+    if (!connector) throw new Error('connector fixture missing');
+
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({
+        db,
+        env,
+        repository: listedRepository([connector]),
+      }),
+    ).resolves.toBe(true);
+  });
+
   it('accepts strictly advancing multi-page results', async () => {
     const first = await publish('none');
     const second = await publish('none');
@@ -392,7 +474,7 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
     ).resolves.toBe(false);
   });
 
-  it('fails closed on serverless without a configured runtime-audit reconciler', async () => {
+  it('fails closed on serverless without configured runtime-audit and secret-cleanup reconcilers', async () => {
     const fixture = await publish('none');
     await expect(
       resolveConnectorCatalogRuntimeReadiness({
@@ -405,12 +487,39 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
       }),
     ).resolves.toBe(false);
 
+    // Audit-only opt-in must not green-light readiness while secret cleanup is unconfigured.
     await expect(
       resolveConnectorCatalogRuntimeReadiness({
         db,
         env: {
           ...env,
           CONNECTOR_RUNTIME_AUDIT_RECONCILE_ENABLED: '1',
+          VERCEL_ENV: 'production',
+        },
+        repository: listedRepository([fixture.connector]),
+      }),
+    ).resolves.toBe(false);
+
+    // Cleanup-only opt-in is also insufficient.
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({
+        db,
+        env: {
+          ...env,
+          CONNECTOR_SECRET_CLEANUP_RECONCILE_ENABLED: '1',
+          VERCEL_ENV: 'production',
+        },
+        repository: listedRepository([fixture.connector]),
+      }),
+    ).resolves.toBe(false);
+
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({
+        db,
+        env: {
+          ...env,
+          CONNECTOR_RUNTIME_AUDIT_RECONCILE_ENABLED: '1',
+          CONNECTOR_SECRET_CLEANUP_RECONCILE_ENABLED: '1',
           VERCEL_ENV: 'production',
         },
         repository: listedRepository([fixture.connector]),

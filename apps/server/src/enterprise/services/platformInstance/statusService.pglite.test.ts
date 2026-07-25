@@ -126,6 +126,42 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
     ).not.toBe('converged');
   });
 
+  it('projects identical domain summaries from getStatus and first-page inventory', async () => {
+    const now = new Date();
+    const ids = ['1', '2', '3'].map(platformId);
+    await db.insert(platformSettingsBundle).values({
+      id: 'global',
+      revision: 3,
+      status: 'published',
+    });
+    await db.insert(platformInstanceHeartbeats).values(
+      ids.map((instanceId, index) => ({
+        instanceId,
+        lastHeartbeatAt: new Date(now.getTime() - index),
+        startedAt: new Date(now.getTime() - 300_000),
+      })),
+    );
+    await db.insert(platformInstanceRevisionStates).values(
+      ids.map((instanceId, index) => ({
+        domain: 'settings' as const,
+        health: 'healthy' as const,
+        instanceId,
+        loadedRevision: index === 0 ? 3 : 2,
+        loadMode: 'process_cached' as const,
+        source: 'database' as const,
+      })),
+    );
+
+    const service = new PlatformInstanceStatusService(db, {
+      env: { ENABLE_PLATFORM_SETTINGS_POLICY: '1' },
+    });
+    const status = await service.getStatus();
+    const inventory = await service.getRevisionInventoryPage({ includeDomains: true, limit: 10 });
+
+    expect(inventory.domains.length).toBeGreaterThan(0);
+    expect(inventory.domains).toEqual(status.domains);
+  });
+
   it('projects OIDC startup state read-only and always degrades LKG fallback', async () => {
     const now = new Date();
     const target = checksum('b');

@@ -101,6 +101,18 @@ describe('platform identity provider Better Auth adapter', () => {
       requireIssuerValidation: false,
     });
     expect(config.requireIssuerValidation).toBe(false);
+    // Discovery advertises RFC 9207 → require authorization-response iss at runtime.
+    const rfc9207Provider = {
+      ...provider,
+      oidcMetadata: {
+        ...provider.oidcMetadata,
+        authorizationResponseIssParameterSupported: true,
+      },
+    } as const satisfies RuntimeIdentityProvider;
+    expect(
+      buildPlatformIdentityProvider(rfc9207Provider, 'https://app.example.test')
+        .requireIssuerValidation,
+    ).toBe(true);
     expect(config).not.toHaveProperty('discoveryUrl');
     expect(config.tokenUrl).toBe('https://platform-oidc-token.invalid/');
     expect(config.tokenUrl).not.toBe(provider.oidcMetadata.tokenEndpoint);
@@ -206,13 +218,14 @@ describe('platform identity provider Better Auth adapter', () => {
     ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   });
 
-  it('stashes IdP groups on mapProfileToUser and login enforce consumes the pending mapping', async () => {
+  it('mapProfileToUser is pure — only flow-keyed stash is consumable on login', async () => {
     resetIdentityProviderGroupRoleMappingRuntimeForTest();
     const mappedProvider = {
       ...provider,
       groupRoleMapping: { engineering: 'ai_admin' },
     } as const satisfies RuntimeIdentityProvider;
     const config = buildPlatformIdentityProvider(mappedProvider, 'https://app.example.test');
+    // mapProfileToUser must not leave a subject-only stash (password re-login attack).
     config.mapProfileToUser!({
       display_name: 'Ada',
       employee_id: 'employee-1',
@@ -224,27 +237,36 @@ describe('platform identity provider Better Auth adapter', () => {
         providerKey: 'corp-oidc',
         subject: 'employee-1',
       }),
-    ).toMatchObject({
+    ).toBeNull();
+
+    const { stashIdentityProviderGroupRoleMapping } =
+      await import('@/server/enterprise/services/identityProvider/groupRoleMappingRuntime');
+    // Production getUserInfo stashes once with the OAuth flow id.
+    stashIdentityProviderGroupRoleMapping({
+      flowId: 'oauth-state-1',
       groupRoleMapping: { engineering: 'ai_admin' },
       groups: ['engineering'],
-    });
-
-    // Re-stash; enforceOnLogin takes pending then fail-closed apply (fake db) propagates.
-    config.mapProfileToUser!({
-      display_name: 'Ada',
-      employee_id: 'employee-1',
-      groups: ['engineering'],
-      mail: 'ada@example.test',
+      providerKey: 'corp-oidc',
+      subject: 'employee-1',
     });
     await expect(
       enforcePlatformOidcGroupRoleMappingOnLogin({
         accountId: 'employee-1',
         db: { __test: true } as never,
+        flowId: 'oauth-state-1',
         providerId: 'corp-oidc',
         userId: 'user_local_1',
       }),
     ).rejects.toBeTruthy();
     // Pending entry is still consumed (one-shot) so it cannot be retried into a session.
+    expect(
+      takeIdentityProviderGroupRoleMapping({
+        flowId: 'oauth-state-1',
+        providerKey: 'corp-oidc',
+        subject: 'employee-1',
+      }),
+    ).toBeNull();
+    // A later password session (no flow id) must not re-grant from leftover state.
     expect(
       takeIdentityProviderGroupRoleMapping({
         providerKey: 'corp-oidc',
@@ -272,6 +294,7 @@ describe('platform identity provider Better Auth adapter', () => {
     });
     expect(
       takeIdentityProviderGroupRoleMapping({
+        flowId: 'oauth-state-fail-1',
         providerKey: 'corp-oidc',
         subject: 'employee-fail',
       }),
@@ -291,6 +314,7 @@ describe('platform identity provider Better Auth adapter', () => {
     });
     expect(
       takeIdentityProviderGroupRoleMapping({
+        flowId: 'oauth-state-fail-1',
         providerKey: 'corp-oidc',
         subject: 'employee-fail',
       }),
@@ -340,12 +364,14 @@ describe('platform identity provider Better Auth adapter', () => {
     // Failed attempt discarded; concurrent success mapping retained for reconcile.
     expect(
       takeIdentityProviderGroupRoleMapping({
+        flowId: 'state-failed-login',
         providerKey: 'corp-oidc',
         subject: 'subject-failed',
       }),
     ).toBeNull();
     expect(
       takeIdentityProviderGroupRoleMapping({
+        flowId: 'state-success-login',
         providerKey: 'corp-oidc',
         subject: 'subject-success',
       }),
@@ -365,6 +391,7 @@ describe('platform identity provider Better Auth adapter', () => {
     discardPlatformOidcGroupRoleMappingOnLoginFailure({ providerKey: 'corp-oidc' });
     expect(
       takeIdentityProviderGroupRoleMapping({
+        flowId: 'state-success-login-2',
         providerKey: 'corp-oidc',
         subject: 'subject-success-2',
       }),

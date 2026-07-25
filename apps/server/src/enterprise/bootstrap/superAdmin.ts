@@ -8,14 +8,18 @@
  *   BOOTSTRAP_SUPER_ADMIN_USER_ID  — existing user id to promote (preferred)
  *   BOOTSTRAP_SUPER_ADMIN_EMAIL    — find user by email if id unset
  *   BOOTSTRAP_ALLOW_CREATE=1       — create a local break-glass user when missing
+ *   BOOTSTRAP_REPAIR_CREDENTIAL=1  — for an existing user, also provision a local
+ *                                    Better Auth credential if missing (break-glass).
+ *                                    Default off: existing-user bootstrap only assigns
+ *                                    the super_admin RBAC role (OIDC-safe).
  *   BOOTSTRAP_SUPER_ADMIN_USERNAME — username when creating
- *   BOOTSTRAP_SUPER_ADMIN_PASSWORD — password when creating (optional; a one-time
+ *   BOOTSTRAP_SUPER_ADMIN_PASSWORD — password when creating/repairing (optional; a one-time
  *                                    password is generated and printed when unset).
  *                                    Must satisfy Better Auth 8–64 char policy; bytes
  *                                    are preserved exactly (no trim).
  *
  * Idempotent: re-running is safe. Never auto-promotes the first registered user.
- * Refuses create when AUTH_DISABLE_EMAIL_PASSWORD is enabled (credential login off).
+ * Refuses create/credential-repair when AUTH_DISABLE_EMAIL_PASSWORD is enabled.
  */
 import { randomBytes } from 'node:crypto';
 
@@ -63,8 +67,14 @@ export interface BootstrapSuperAdminResult {
 export interface BootstrapSuperAdminParams {
   allowCreate?: boolean;
   email?: string | null;
-  /** Required when creating unless omitted — then a secure one-time password is generated. */
+  /** Required when creating/repairing unless omitted — then a secure one-time password is generated. */
   password?: string | null;
+  /**
+   * When true, provision/repair a local Better Auth credential for an existing user.
+   * Default false: existing-user bootstrap only assigns the super_admin role (OIDC-safe).
+   * Create path (`allowCreate`) always provisions a credential regardless of this flag.
+   */
+  repairCredential?: boolean;
   userId?: string | null;
   username?: string | null;
 }
@@ -149,14 +159,16 @@ export const bootstrapSuperAdmin = async (
   const rbac = new RbacModel(db, userId);
   const alreadySuperAdmin = await rbac.isGlobalSuperAdmin(userId);
 
-  // Repair legacy break-glass users that have role grants but no credential account
-  // (previous bootstrap path only inserted users + RBAC, not Better Auth accounts).
+  // Role promotion is independent of auth provider. OIDC-only users normally have
+  // no Better Auth `credential` account; they must still receive super_admin.
+  // Credential repair is opt-in (legacy break-glass / local password recovery).
   const existingCredential = await db.query.account.findFirst({
     where: (t, { and, eq }) => and(eq(t.userId, userId), eq(t.providerId, 'credential')),
   });
 
   const needsRole = !alreadySuperAdmin;
-  const needsCredential = !existingCredential;
+  const wantsCredentialRepair = params.repairCredential === true;
+  const needsCredential = wantsCredentialRepair && !existingCredential;
 
   let credentialRepaired = false;
   let oneTimePassword: string | undefined;
@@ -181,7 +193,7 @@ export const bootstrapSuperAdmin = async (
   }
 
   if (needsRole || needsCredential) {
-    // Role grant + credential insert are all-or-nothing.
+    // Role grant + optional credential insert are all-or-nothing when both apply.
     await db.transaction(async (tx) => {
       if (needsCredential && passwordHash) {
         await tx.insert(account).values({
@@ -241,6 +253,7 @@ if (isMain) {
       allowCreate: process.env.BOOTSTRAP_ALLOW_CREATE === '1',
       email: process.env.BOOTSTRAP_SUPER_ADMIN_EMAIL,
       password: process.env.BOOTSTRAP_SUPER_ADMIN_PASSWORD,
+      repairCredential: process.env.BOOTSTRAP_REPAIR_CREDENTIAL === '1',
       userId: process.env.BOOTSTRAP_SUPER_ADMIN_USER_ID,
       username: process.env.BOOTSTRAP_SUPER_ADMIN_USERNAME,
     });

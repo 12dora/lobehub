@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -19,8 +19,14 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createContextInner } from '@/libs/trpc/lambda/context';
+import {
+  PLATFORM_SETTINGS_RESOURCE_ID,
+  PLATFORM_SETTINGS_RESOURCE_TYPE,
+} from '@/types/platform/settings';
 
 import { getPlatformConfigInvalidationPublisher } from '../../services/platformConfigInvalidation';
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { adminSettingsRouter } from './settings';
 
 const { policyState } = vi.hoisted(() => ({ policyState: { enabled: false } }));
@@ -51,8 +57,12 @@ const ids = {
 const updateOnlyRoleName = 'settings_update_only_role';
 
 const cleanup = async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  // Scope audit cleanup to this suite's actors so concurrent suites are not wiped (SG-07).
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: Object.values(ids) });
+  await deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+    resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+  });
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
   const owned = await serverDB
@@ -177,7 +187,15 @@ describe('admin.settings denied audit outcomes', () => {
       serverDB.select().from(platformAuditLogs),
       serverDB.select().from(platformSettingsBundle),
       serverDB.select().from(platformSettingPolicies),
-      serverDB.select().from(platformResourceRevisions),
+      serverDB
+        .select()
+        .from(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceType, PLATFORM_SETTINGS_RESOURCE_TYPE),
+            eq(platformResourceRevisions.resourceId, PLATFORM_SETTINGS_RESOURCE_ID),
+          ),
+        ),
     ]);
     expect(audits).toMatchObject([
       {
@@ -239,7 +257,17 @@ describe('admin.settings denied audit outcomes', () => {
       await expect(denied.rollback(rollbackInput)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     }
     expect(invalidation).not.toHaveBeenCalled();
-    await expect(serverDB.select().from(platformResourceRevisions)).resolves.toEqual([]);
+    await expect(
+      serverDB
+        .select()
+        .from(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceType, PLATFORM_SETTINGS_RESOURCE_TYPE),
+            eq(platformResourceRevisions.resourceId, PLATFORM_SETTINGS_RESOURCE_ID),
+          ),
+        ),
+    ).resolves.toEqual([]);
     await expect(serverDB.select().from(platformSettingPolicies)).resolves.toEqual([]);
     await expect(serverDB.select().from(platformSettingsBundle)).resolves.toEqual([]);
     const deniedAudits = (await serverDB.select().from(platformAuditLogs)).filter(

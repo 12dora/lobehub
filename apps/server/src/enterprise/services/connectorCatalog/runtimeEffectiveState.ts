@@ -55,9 +55,18 @@ local state = cjson.encode({
 redis.call('SET', KEYS[1], state)
 return state
 `;
+// Compare-and-set: return unchanged state without INCR/SET when mode+revision match.
+// Transition lease still takes priority (read-only return of current state).
 const CAPABILITY_SCRIPT = `
 if redis.call('EXISTS', KEYS[3]) == 1 then
   return redis.call('GET', KEYS[1])
+end
+local current = redis.call('GET', KEYS[1])
+if current then
+  local decoded = cjson.decode(current)
+  if decoded.mode == ARGV[1] and tonumber(decoded.revision or 0) == tonumber(ARGV[2]) then
+    return current
+  end
 end
 local epoch = redis.call('INCR', KEYS[2])
 local state = cjson.encode({ epoch = epoch, mode = ARGV[1], revision = tonumber(ARGV[2]) })
@@ -210,10 +219,24 @@ export const publishConnectorRuntimeCapabilityState = async (params: {
 }): Promise<void> => {
   const config = getRedisConfig();
   if (!config.enabled) {
+    // During a transition, capability writers stay blocked and must not clobber
+    // the lease; only the transition owner finalizes/cancels.
+    if (localTransitionToken) {
+      if (localState && localState.mode === 'blocked' && localState.revision === params.revision) {
+        return;
+      }
+      localEpoch += 1;
+      localState = { epoch: localEpoch, mode: 'blocked', revision: params.revision };
+      return;
+    }
+    // Idempotent: unchanged mode+revision must not advance the epoch.
+    if (localState && localState.mode === params.mode && localState.revision === params.revision) {
+      return;
+    }
     localEpoch += 1;
     localState = {
       epoch: localEpoch,
-      mode: localTransitionToken ? 'blocked' : params.mode,
+      mode: params.mode,
       revision: params.revision,
     };
     return;
@@ -305,3 +328,6 @@ export const resetConnectorRuntimeEffectiveStateForTest = (): void => {
   localEpoch = 0;
   localTransitionToken = null;
 };
+
+/** Test-only: observe process-local epoch without Redis (CAS regression). */
+export const getConnectorRuntimeLocalEpochForTest = (): number => localEpoch;

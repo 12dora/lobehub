@@ -344,5 +344,3 @@ export class IdentityProviderTestAttemptStore {
   cleanupExpired = async (limit = CLEANUP_BATCH_SIZE, now = new Date()): Promise<number> =>
     cleanupExpiredIdentityProviderTestAttempts(this.db, limit, now);
 }
-
-export const hashIdentityProviderTestValue = digest;

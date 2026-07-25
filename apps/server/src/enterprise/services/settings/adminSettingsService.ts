@@ -21,8 +21,9 @@ import {
 } from '@/types/platform/settings';
 
 import { classifyEnterpriseError } from '../../observability';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import {
-  type CreatePlatformAuditLogParams,
+  type AppendPlatformAuditLogParams,
   type PlatformAuditLogItem,
   PlatformAuditService,
 } from '../platformAudit';
@@ -88,7 +89,7 @@ export interface AdminSettingsMutationLifecycle {
 export interface AdminSettingsServiceOptions {
   auditAppend?: (
     db: LobeChatDatabase | Transaction,
-    params: CreatePlatformAuditLogParams,
+    params: AppendPlatformAuditLogParams,
   ) => Promise<PlatformAuditLogItem>;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: AdminSettingsMutationLifecycle;
@@ -760,7 +761,7 @@ export class AdminSettingsService {
    * storage failure is deliberately non-recursive and never turns into success.
    */
   private appendFailureAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     beforeDiff: Record<string, unknown> | null;
     error?: unknown;

@@ -18,11 +18,15 @@ export interface AdminAuthorizationReconciliationInput {
 }
 
 const samePermissions = (
-  actual: readonly PlatformPermission[],
-  expected: readonly PlatformPermission[],
-): boolean =>
-  actual.length === expected.length &&
-  actual.every((permission, index) => permission === expected[index]);
+  actual: readonly PlatformPermission[] | undefined,
+  expected: readonly PlatformPermission[] | undefined,
+): boolean => {
+  const left = actual ?? [];
+  const right = expected ?? [];
+  return (
+    left.length === right.length && left.every((permission, index) => permission === right[index])
+  );
+};
 
 /**
  * Reconcile static declarations with live tRPC objects. This never invokes a resolver.
@@ -81,7 +85,8 @@ export const reconcileAdminProcedureAuthorization = ({
     const [actual] = permissionMetadata;
     if (
       actual.mode !== declaration.permission.mode ||
-      !samePermissions(actual.permissions, declaration.permission.permissions)
+      !samePermissions(actual.permissions, declaration.permission.permissions) ||
+      !samePermissions(actual.selectable, declaration.permission.selectable)
     ) {
       failures.push(`permission mismatch: ${expectedPath}`);
     }
@@ -113,7 +118,17 @@ export const isAuthorizedByPlatformPermissions = (
   permissions: ReadonlySet<PlatformPermission>,
 ): boolean => {
   if ('selfAccess' in authorization) return true;
-  return authorization.permission.mode === 'all'
-    ? authorization.permission.permissions.every((permission) => permissions.has(permission))
-    : authorization.permission.permissions.some((permission) => permissions.has(permission));
+  const { mode, permissions: required, selectable } = authorization.permission;
+  if (mode === 'all') {
+    return required.every((permission) => permissions.has(permission));
+  }
+  if (mode === 'any') {
+    return required.some((permission) => permissions.has(permission));
+  }
+  // compound: fixed permissions + at least one selectable secondary permission
+  // (enough to invoke some input variant of the procedure).
+  return (
+    required.every((permission) => permissions.has(permission)) &&
+    (selectable ?? []).some((permission) => permissions.has(permission))
+  );
 };

@@ -34,6 +34,7 @@ import {
   parsePlatformAgentRolloutInput,
   PLATFORM_AGENT_ROLLOUT_JOB_TYPE,
 } from '../agentCatalog/rolloutService';
+import { AUDIT_ACTION, type AuditAction } from '../audit/auditActionCatalog';
 import { getIdentityProviderStartupArtifactHealth } from '../identityProvider/startupArtifact';
 import { IdentityProviderSystemService } from '../identityProvider/systemService';
 import { PlatformAuditService } from '../platformAudit';
@@ -323,7 +324,7 @@ export class PlatformSystemAdminService {
   private appendFailureAudit = async (
     actorUserId: string,
     input: AdminSystemCancelJobInput | AdminSystemRetryJobInput,
-    action: 'admin.system.jobs.cancel' | 'admin.system.jobs.retry',
+    action: typeof AUDIT_ACTION.SYSTEM_JOBS_CANCEL | typeof AUDIT_ACTION.SYSTEM_JOBS_RETRY,
     error: unknown,
   ): Promise<void> => {
     try {
@@ -349,7 +350,8 @@ export class PlatformSystemAdminService {
     input: AdminSystemCancelJobInput | AdminSystemRetryJobInput,
     action: 'cancel' | 'retry',
   ): Promise<AdminSystemJob> => {
-    const auditAction = `admin.system.jobs.${action}` as const;
+    const auditAction: AuditAction =
+      action === 'cancel' ? AUDIT_ACTION.SYSTEM_JOBS_CANCEL : AUDIT_ACTION.SYSTEM_JOBS_RETRY;
     try {
       return await this.db.transaction(async (tx) => {
         const [current] = await tx

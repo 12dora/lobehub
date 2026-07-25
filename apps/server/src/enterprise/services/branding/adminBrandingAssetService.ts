@@ -2,11 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 
-import {
-  checksumPayload,
-  type CreatePlatformAuditLogParams,
-  type PlatformAuditLogItem,
-} from '@/database/models/platform';
+import { checksumPayload, type PlatformAuditLogItem } from '@/database/models/platform';
 import { platformBrandingAssets } from '@/database/schemas/platform';
 import type { PlatformBrandingAssetItem } from '@/database/schemas/platform/branding';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
@@ -17,7 +13,7 @@ import {
   adminBrandingUploadAssetInputSchema,
   platformBrandingAssetIdFromUrl,
 } from '../../contracts/adminBranding';
-import { PlatformAuditService } from '../platformAudit';
+import { type AppendPlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
 import { BrandingIdempotencyConflictError } from './adminBrandingOperationService';
 import type { BrandingAssetStorage, ValidatedBrandingAsset } from './assetStorage';
 import {
@@ -42,7 +38,7 @@ const MAX_SWEEP_LIMIT = 100;
 
 type AuditAppend = (
   db: LobeChatDatabase | Transaction,
-  params: CreatePlatformAuditLogParams,
+  params: AppendPlatformAuditLogParams,
 ) => Promise<PlatformAuditLogItem>;
 
 export class BrandingAssetUploadInProgressError extends Error {

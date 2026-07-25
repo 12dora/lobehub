@@ -24,6 +24,7 @@ import type {
   AdminPlatformAgentUpdateDraftInput,
   AdminPlatformAgentVersionsListInput,
 } from '../../contracts/platformAgents';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import {
   acquirePlatformDefaultInboxLock,
@@ -98,7 +99,7 @@ export class PlatformAgentAdminService {
   constructor(private readonly db: LobeChatDatabase) {}
 
   private appendAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     afterDiff?: Record<string, unknown>;
     db?: LobeChatDatabase | Transaction;
@@ -117,7 +118,7 @@ export class PlatformAgentAdminService {
     });
 
   private appendFailureAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     errorCategory: string;
     reason: string;
@@ -141,7 +142,7 @@ export class PlatformAgentAdminService {
   };
 
   private atomicMutation = async <T>(params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     run: (tx: Transaction) => Promise<T>;

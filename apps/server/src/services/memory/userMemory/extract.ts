@@ -268,8 +268,18 @@ export type ProviderKeyVaultMap = Record<
 >;
 
 const MANAGED_EXECUTIONS = Symbol('platformManagedAiExecutions');
+/** Exact provider selected per runtime role — never re-search a shared execution map. */
+const MANAGED_ROLE_BINDINGS = Symbol('platformManagedRoleBindings');
+
+type ManagedRoleBindings = {
+  embedding: string;
+  gatekeeper: string;
+  layerExtractor: string;
+};
+
 type ManagedProviderKeyVaultMap = ProviderKeyVaultMap & {
   [MANAGED_EXECUTIONS]?: Record<string, PlatformAiExecutionConfig>;
+  [MANAGED_ROLE_BINDINGS]?: ManagedRoleBindings;
 };
 
 const toDefinedKeyVaults = (
@@ -515,7 +525,11 @@ export type RuntimeResolveOptions = {
   preferred?: {
     providerIds?: string[];
   };
-  managedExecutions?: Record<string, PlatformAiExecutionConfig>;
+  /**
+   * Exact platform execution for this agent role. When set, the runtime is bound to this
+   * provider only — never the first hit from a shared multi-role execution map.
+   */
+  managedExecution?: PlatformAiExecutionConfig;
   userId?: string;
 };
 
@@ -537,19 +551,15 @@ export const resolveRuntimeAgentConfig = (
     ]),
   );
 
-  if (options?.managedExecutions) {
-    for (const provider of providerOrder) {
-      const execution = options.managedExecutions[provider];
-      if (!execution) continue;
-      const payload = buildPayloadFromKeyVaults(execution.keyVaults, execution.runtimeProvider);
-      return initModelRuntimeWithUserPayload(
-        execution.providerKey,
-        payload,
-        { userId: options.userId },
-        mergeModelRuntimeHooks(createPlatformAiModelAllowlistHooks(execution.allowedModels), hooks),
-      );
-    }
-    throw new Error('PLATFORM_AI_PROVIDER_NOT_PUBLISHED');
+  if (options?.managedExecution) {
+    const execution = options.managedExecution;
+    const payload = buildPayloadFromKeyVaults(execution.keyVaults, execution.runtimeProvider);
+    return initModelRuntimeWithUserPayload(
+      execution.providerKey,
+      payload,
+      { userId: options.userId },
+      mergeModelRuntimeHooks(createPlatformAiModelAllowlistHooks(execution.allowedModels), hooks),
+    );
   }
 
   for (const provider of providerOrder) {
@@ -2469,6 +2479,9 @@ export class MemoryExtractionExecutor {
       type: 'embedding',
     });
 
+    // Layer models may resolve to different providers; the single layerExtractor runtime binds
+    // to the first preferred provider among those actually selected for layer models.
+    const layerSelectedProviders: string[] = [];
     for (const model of Object.values(memoryServiceConfig.modelConfig.layerModels)) {
       if (!model) continue;
       const providerId = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
@@ -2483,8 +2496,25 @@ export class MemoryExtractionExecutor {
           : this.layerPreferredProviders,
       });
       selectedProviders.add(providerId);
+      layerSelectedProviders.push(providerId);
       managedRequirements.push({ modelKey: model, providerKey: providerId, type: 'chat' });
     }
+
+    const layerPreferredOrder = (
+      memoryServiceConfig.overrides.layerExtractor.provider
+        ? [memoryServiceConfig.agents.layerExtractor.provider]
+        : [
+            ...(this.layerPreferredProviders || []),
+            memoryServiceConfig.agents.layerExtractor.provider,
+          ]
+    )
+      .filter((provider): provider is string => Boolean(provider))
+      .map(normalizeProvider);
+    const layerProviderSet = new Set(layerSelectedProviders.map(normalizeProvider));
+    const layerExtractorProvider =
+      layerPreferredOrder.find((provider) => layerProviderSet.has(provider)) ??
+      layerSelectedProviders[0] ??
+      normalizeProvider(memoryServiceConfig.agents.layerExtractor.provider || 'openai');
 
     if (managed) {
       const db = await this.db;
@@ -2506,6 +2536,13 @@ export class MemoryExtractionExecutor {
         }),
       );
       Object.defineProperty(keyVaults, MANAGED_EXECUTIONS, { value: executions });
+      Object.defineProperty(keyVaults, MANAGED_ROLE_BINDINGS, {
+        value: {
+          embedding: embeddingProvider,
+          gatekeeper: gatekeeperProvider,
+          layerExtractor: layerExtractorProvider,
+        } satisfies ManagedRoleBindings,
+      });
       return keyVaults;
     }
 
@@ -2535,13 +2572,23 @@ export class MemoryExtractionExecutor {
       memoryServiceConfig.agents.layerExtractor.provider,
     ].join(':');
     const managed = isPlatformManagedAiEnabled();
-    const managedExecutions = (keyVaults as ManagedProviderKeyVaultMap | undefined)?.[
-      MANAGED_EXECUTIONS
-    ];
+    const managedMap = keyVaults as ManagedProviderKeyVaultMap | undefined;
+    const managedExecutions = managedMap?.[MANAGED_EXECUTIONS];
+    const roleBindings = managedMap?.[MANAGED_ROLE_BINDINGS];
     if (!managed) {
       const cached = this.runtimeCache.get(cacheKey);
       if (cached) return cached;
     }
+
+    const executionFor = (role: keyof ManagedRoleBindings) => {
+      if (!managedExecutions || !roleBindings) return undefined;
+      const providerId = roleBindings[role];
+      const execution = managedExecutions[providerId];
+      if (!execution) {
+        throw new Error('PLATFORM_AI_PROVIDER_NOT_PUBLISHED');
+      }
+      return execution;
+    };
 
     const embeddingOptions: RuntimeResolveOptions = {
       fallback: {
@@ -2553,7 +2600,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.embeddingPreferredProviders,
       },
-      managedExecutions,
+      managedExecution: executionFor('embedding'),
       userId,
     };
 
@@ -2567,7 +2614,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.gatekeeperPreferredProviders,
       },
-      managedExecutions,
+      managedExecution: executionFor('gatekeeper'),
       userId,
     };
 
@@ -2581,7 +2628,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.layerPreferredProviders,
       },
-      managedExecutions,
+      managedExecution: executionFor('layerExtractor'),
       userId,
     };
 

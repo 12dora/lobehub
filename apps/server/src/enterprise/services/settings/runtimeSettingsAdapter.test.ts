@@ -6,10 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { LobeChatDatabase } from '@/database/type';
 
-import {
-  loadEffectiveUserSettings,
-  SETTINGS_RUNTIME_READ_REGISTRY,
-} from './runtimeSettingsAdapter';
+import { loadEffectiveUserSettings } from './runtimeSettingsAdapter';
 
 vi.mock('../../featureFlags', async (importOriginal) => {
   const actual = (await importOriginal()) as {
@@ -47,16 +44,6 @@ describe('runtimeSettingsAdapter', () => {
     expect(settings).toEqual(legacy);
     expect(effective.platformRevision).toBe(0);
     expect(Object.keys(effective.pathMeta)).toHaveLength(0);
-  });
-
-  it('registry lists known runtime read entry points', () => {
-    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('userRouter.getUserState');
-    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain(
-      'runtimeSettingsAdapter.getEffectiveDefaultAgentConfig',
-    );
-    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('AgentService.getAgentConfig');
-    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('AiAgentService.execAgent.approvalPolicy');
-    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('memoryRuntime.memoryEffort');
   });
 
   it('catches direct defaultAgent/systemAgent/tool/memory raw settings bypasses', () => {

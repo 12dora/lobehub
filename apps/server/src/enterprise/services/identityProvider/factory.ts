@@ -8,7 +8,8 @@ import { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import { resolveIdentityProviderOutboundMode } from './outboundMode';
 import { IdentityProviderSecretStore } from './secretStore';
 
-export interface IdentityProviderSecurityFoundation {
+/** Local return type for the factory — not part of the public package surface. */
+interface IdentityProviderSecurityFoundation {
   discovery: IdentityProviderDiscoveryValidator;
   secrets: IdentityProviderSecretStore;
 }

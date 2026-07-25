@@ -6,6 +6,7 @@ import {
 } from '@lobechat/device-control';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
+import pMap from 'p-map';
 import { z } from 'zod';
 
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
@@ -23,6 +24,7 @@ import {
 } from '@/libs/trpc/utils/internalJwt';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { withActiveUserWhenManaged } from '@/server/enterprise/routers/managedActiveUser';
 import { redactForLog } from '@/server/enterprise/security/redaction';
 import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
@@ -103,6 +105,15 @@ const marketToolProcedure = wsCompatProcedure
     });
   });
 
+/**
+ * Sandbox execution that can materialize managed Skills. Enforce active-user
+ * revocation when managed Skills are enabled (same gate as proof issuance).
+ * Flag-off: no-op so legacy personal-Skill sandbox paths stay unchanged.
+ */
+const managedSkillExecutionProcedure = marketToolProcedure.use(
+  withActiveUserWhenManaged('ENABLE_PLATFORM_MANAGED_SKILLS'),
+);
+
 // ============================== LobeHub Skill Procedures ==============================
 /**
  * LobeHub Skill procedure with SDK and optional auth
@@ -148,6 +159,57 @@ const execInSandboxSchema = z.object({
   userId: z.string().optional(), // Optional: fallback to ctx.userId if not provided
 });
 
+/**
+ * Bound activated Skills before any catalog I/O (SR-002).
+ * Matches published-catalog page size / skill-dependency ceilings.
+ */
+const EXEC_SCRIPT_ACTIVATED_SKILLS_MAX = 100;
+/** Cap concurrent catalog resolves so a burst of execScript cannot exhaust the DB pool. */
+const EXEC_SCRIPT_RESOLVE_CONCURRENCY = 8;
+
+const activatedSkillEntrySchema = z
+  .object({
+    description: z.string().max(4000).optional(),
+    id: z.string().min(1).max(256).optional(),
+    name: z.string().trim().min(1).max(128),
+  })
+  .strict();
+
+const activatedSkillsListSchema = z
+  .array(activatedSkillEntrySchema)
+  .max(EXEC_SCRIPT_ACTIVATED_SKILLS_MAX);
+
+/**
+ * Parse/validate activatedSkills before catalog resolution.
+ * Caps at 100 entries; collapses duplicate names (first wins) so a DB skill and a
+ * filesystem/builtin skill sharing a name do not hard-fail the whole execution.
+ */
+const parseActivatedSkillsOrThrow = (raw: unknown): Array<{ name: string }> => {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'activatedSkills must be an array',
+    });
+  }
+  const parsed = activatedSkillsListSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'activatedSkills is invalid or exceeds the maximum of 100 Skills',
+    });
+  }
+  // Collapse by name (upstream messageSelectors dedupe by id ?? name, so same-name
+  // different-id pairs are legitimate). First occurrence wins.
+  const seen = new Set<string>();
+  const unique: Array<{ name: string }> = [];
+  for (const skill of parsed.data) {
+    if (seen.has(skill.name)) continue;
+    seen.add(skill.name);
+    unique.push({ name: skill.name });
+  }
+  return unique;
+};
 const platformSkillSnapshotSchema = z
   .object({
     agentId: z.string().min(1).max(256),
@@ -310,12 +372,10 @@ const execInSandboxHandler = async ({
     }
 
     // Every execScript request crosses the managed boundary, including calls
-    // with a missing/empty activatedSkills array.
+    // with a missing/empty activatedSkills array. Bound/dedupe before any I/O.
     if (toolName === 'execScript' && execScriptBoundary) {
       const { authorizedSnapshot, platformEnforced, snapshot } = execScriptBoundary;
-      const activatedSkills = Array.isArray(enhancedParams.activatedSkills)
-        ? enhancedParams.activatedSkills
-        : [];
+      const activatedSkills = parseActivatedSkillsOrThrow(enhancedParams.activatedSkills);
       // Resolve zipUrls for all activated skills
       const skillZipUrls: Record<string, string> = {};
 
@@ -330,26 +390,26 @@ const execInSandboxHandler = async ({
         const catalog = new SkillCatalogReadService(ctx.serverDB, {
           builtinSkills: getBuiltinSkillDefinitions(),
         });
-        const unresolvedManagedInlineSkills: Array<{
-          ref: { checksum: string; skillKey: string; version: string };
-          resources: InlineSkillResource[];
-          skillContent: string;
-        }> = [];
-        for (const activatedSkill of activatedSkills) {
-          const ref = refsByKey.get(activatedSkill.name);
-          const resolved = ref ? await catalog.resolvePinnedForExecution(ref) : undefined;
-          if (!ref || !resolved) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: `Managed Skill reference is unavailable: ${activatedSkill.name}`,
-            });
-          }
-          unresolvedManagedInlineSkills.push({
-            ref,
-            resources: resolved.resources,
-            skillContent: resolved.content,
-          });
-        }
+        // Resolve unique signed refs with an explicit concurrency pool (not list size).
+        const unresolvedManagedInlineSkills = await pMap(
+          activatedSkills,
+          async (activatedSkill) => {
+            const ref = refsByKey.get(activatedSkill.name);
+            const resolved = ref ? await catalog.resolvePinnedForExecution(ref) : undefined;
+            if (!ref || !resolved) {
+              throw new TRPCError({
+                code: 'PRECONDITION_FAILED',
+                message: `Managed Skill reference is unavailable: ${activatedSkill.name}`,
+              });
+            }
+            return {
+              ref,
+              resources: resolved.resources as InlineSkillResource[],
+              skillContent: resolved.content,
+            };
+          },
+          { concurrency: EXEC_SCRIPT_RESOLVE_CONCURRENCY },
+        );
         const validatedPayloads = validateInlineSkillOperationPayloads(
           unresolvedManagedInlineSkills,
         );
@@ -620,12 +680,12 @@ export const marketRouter = router({
     }),
 
   /** @deprecated Use execInSandbox instead. Will be removed in a future version. */
-  callCodeInterpreterTool: marketToolProcedure
+  callCodeInterpreterTool: managedSkillExecutionProcedure
     .input(execInSandboxSchema)
     .mutation(({ input, ctx }) => execInSandboxHandler({ ctx, input })),
 
   // ============================== Sandbox Execution ==============================
-  execInSandbox: marketToolProcedure
+  execInSandbox: managedSkillExecutionProcedure
     .input(execInSandboxSchema)
     .mutation(({ input, ctx }) => execInSandboxHandler({ ctx, input })),
 

@@ -59,6 +59,7 @@ import {
   PlatformAgentRolloutService,
   validateExactPlatformAgentDependencies,
 } from '../../services/agentCatalog';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import { PlatformAuditService } from '../../services/platformAudit';
 import {
   assertAgentDangerousReauth,
@@ -160,7 +161,7 @@ const assignmentsRouter = router({
 });
 
 const rolloutMutation = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertAgentDangerousReauth>[0]['authMethod'];

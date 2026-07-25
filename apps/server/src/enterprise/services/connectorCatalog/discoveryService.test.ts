@@ -276,6 +276,47 @@ describe('ConnectorCatalogDiscoveryService', () => {
     );
   });
 
+  it('success_probe_is_not_rewritten_when_success_audit_append_fails', async () => {
+    const { connectorId, requestJson, service } = await createHarness();
+    requestJson.mockResolvedValue({
+      body: {
+        result: {
+          tools: [{ inputSchema: { type: 'object' }, name: 'probe.ping' }],
+        },
+      },
+      status: 200,
+      url: 'https://connector.example.test/mcp',
+    });
+
+    const platformAudit = await import('../platformAudit');
+    const append = vi.fn().mockRejectedValue(new Error('audit-store-outage'));
+    // Class-field `append` is not on the prototype — replace the constructor for this test.
+    vi.spyOn(platformAudit, 'PlatformAuditService').mockImplementation(
+      () => ({ append }) as unknown as InstanceType<typeof platformAudit.PlatformAuditService>,
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      service.testConnection('admin-user', {
+        id: connectorId,
+        reason: 'probe with audit outage',
+      }),
+    ).resolves.toMatchObject({
+      messageCode: 'connector.operation_succeeded',
+      status: 'success',
+    });
+
+    // Durable success state must remain — audit outage must not reclassify as network.
+    const detail = await loadConnectorDraft(db, connectorId);
+    expect(detail.draft.connectionTest).toMatchObject({
+      status: 'success',
+      stale: false,
+      testedDraftToken: detail.draftToken,
+      testedRevision: detail.draft.revision,
+    });
+    expect(append).toHaveBeenCalledOnce();
+  });
+
   it('successful_test_survives_refetch_and_unlocks_publish', async () => {
     const { connectorId, requestJson, service } = await createHarness();
     requestJson.mockResolvedValue({

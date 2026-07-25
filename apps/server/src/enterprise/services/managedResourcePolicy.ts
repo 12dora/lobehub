@@ -14,9 +14,10 @@ import {
   MANAGED_POLICY_RESOURCE_TYPE,
 } from '@/types/platform/managedResources';
 
+import type { AuditAction } from './audit/auditActionCatalog';
 import { resolveManagedResourceReadiness } from './managedResourceReadiness';
 import {
-  type CreatePlatformAuditLogParams,
+  type AppendPlatformAuditLogParams,
   type PlatformAuditLogItem,
   PlatformAuditService,
 } from './platformAudit';
@@ -38,7 +39,7 @@ export class ManagedResourceCatalogNotReadyError extends Error {
 export interface ManagedResourcePolicyServiceOptions {
   auditAppend?: (
     db: LobeChatDatabase | Transaction,
-    params: CreatePlatformAuditLogParams,
+    params: AppendPlatformAuditLogParams,
   ) => Promise<PlatformAuditLogItem>;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: {
@@ -201,7 +202,7 @@ export class ManagedResourcePolicyService {
   };
 
   private appendFailureAudit = async (params: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
   }): Promise<void> => {

@@ -7,16 +7,24 @@ import type { LobeChatDatabase } from '@/database/type';
 import type { PlatformAuthSettings } from '@/types/platform/authSettings';
 import type { PlatformBrandingPublished } from '@/types/platform/branding';
 
+import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 import { buildPlatformPublicSnapshot } from '../platformPublicSnapshot';
 import { BrandingPublishedReadService } from './publishedReadService';
 
 const log = debug('lobe-server:platform-public-snapshot');
+
+export type PublishedIdentityTarget = Awaited<ReturnType<typeof loadPublishedIdentityTarget>>;
 
 export interface ResolvePlatformPublicSnapshotOptions {
   flags: EnterpriseFeatureFlags;
   getAuthSettings?: (db: LobeChatDatabase) => Promise<PlatformAuthSettings>;
   getDatabase?: () => Promise<LobeChatDatabase>;
   getPublishedBranding?: (db: LobeChatDatabase) => Promise<PlatformBrandingPublished | null>;
+  /**
+   * Published work-account IdP loader (M11). Defaults to `loadPublishedIdentityTarget`.
+   * Failures fail closed to `workAccountEnabled: false`.
+   */
+  getPublishedIdentityTarget?: (db: LobeChatDatabase) => Promise<PublishedIdentityTarget>;
 }
 
 /**
@@ -30,6 +38,7 @@ export const resolvePlatformPublicSnapshot = async ({
   getDatabase = getServerDB,
   getPublishedBranding = (db) => new BrandingPublishedReadService(db).getPublished(),
   getAuthSettings = (db) => new PlatformAuthSettingsModel(db).get(),
+  getPublishedIdentityTarget = (db) => loadPublishedIdentityTarget(db),
 }: ResolvePlatformPublicSnapshotOptions) => {
   let db: LobeChatDatabase;
   try {
@@ -67,9 +76,25 @@ export const resolvePlatformPublicSnapshot = async ({
     );
   }
 
+  // Work-account IdP is independent of branding/auth-settings. Loader failure fails closed.
+  let workAccountEnabled: boolean | undefined;
+  if (flags.ENABLE_DATABASE_OIDC) {
+    try {
+      const target = await getPublishedIdentityTarget(db);
+      workAccountEnabled = target.providers.length > 0;
+    } catch (error) {
+      log(
+        'published identity target unavailable; workAccountEnabled fails closed (%s)',
+        error instanceof Error ? error.name : 'UnknownError',
+      );
+      workAccountEnabled = false;
+    }
+  }
+
   return buildPlatformPublicSnapshot({
     branding,
     flags,
     openRegistration,
+    workAccountEnabled,
   });
 };

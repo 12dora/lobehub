@@ -9,7 +9,7 @@
  */
 import { z } from 'zod';
 
-import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
+import { PLATFORM_SYSTEM_ROLES, type PlatformSystemRoleName } from '@/const/platform/roles';
 
 import { secretSafeAuditReasonSchema, strictDateSchema } from './shared';
 
@@ -24,24 +24,18 @@ export const ADMIN_USERS_LIST_MAX_LIMIT = 100;
  */
 export const ADMIN_REAUTH_MAX_AGE_MS = 15 * 60 * 1000;
 
-/** Fixed system role packages assignable via replaceGlobalRoles. */
-export const ADMIN_USER_ASSIGNABLE_ROLE_NAMES = [
-  PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
-  PLATFORM_SYSTEM_ROLES.USER_ADMIN,
-  PLATFORM_SYSTEM_ROLES.AI_ADMIN,
-  PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
-  PLATFORM_SYSTEM_ROLES.AUDITOR,
-  PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
-] as const;
+/**
+ * Fixed system role packages assignable via replaceGlobalRoles.
+ * Derived from PLATFORM_SYSTEM_ROLES so admin assignment cannot drift from the catalog.
+ */
+export const ADMIN_USER_ASSIGNABLE_ROLE_NAMES = Object.values(PLATFORM_SYSTEM_ROLES) as [
+  PlatformSystemRoleName,
+  ...PlatformSystemRoleName[],
+];
 
 export type AdminUserAssignableRoleName = (typeof ADMIN_USER_ASSIGNABLE_ROLE_NAMES)[number];
 
-export const adminUserAssignableRoleNameSchema = z.enum(
-  ADMIN_USER_ASSIGNABLE_ROLE_NAMES as unknown as [
-    AdminUserAssignableRoleName,
-    ...AdminUserAssignableRoleName[],
-  ],
-);
+export const adminUserAssignableRoleNameSchema = z.enum(ADMIN_USER_ASSIGNABLE_ROLE_NAMES);
 
 export const adminUserStatusSchema = z.enum(['active', 'banned']);
 export type AdminUserStatus = z.infer<typeof adminUserStatusSchema>;

@@ -152,13 +152,6 @@ export class PostgresAdminMutationRateLimiter implements AdminMutationRateLimite
 }
 
 /**
- * Alias of {@link PostgresAdminMutationRateLimiter}.
- * Not deprecated — multi-instance production path is PostgreSQL-backed; this
- * name remains for tests and call sites that prefer the historical class name.
- */
-export class SharedAdminMutationRateLimiter extends PostgresAdminMutationRateLimiter {}
-
-/**
  * Process-local test double only. Never used as the production enforcement path.
  */
 export class InMemoryAdminMutationRateLimiter implements AdminMutationRateLimiter {

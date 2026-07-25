@@ -161,6 +161,78 @@ describe('per-user connector OAuth refresh/concurrency', () => {
     expect(harness.refresh).toHaveBeenCalledOnce();
   });
 
+  it('stale_worker_heartbeat_loss_never_calls_outbound_refresh', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const authorization = await start(harness, published.draft.id);
+    await harness.callback.callback({ code: 'connect', state: authorization.state });
+
+    // After acquisition, transfer the lease to another worker so the pre-outbound
+    // heartbeat matches zero rows and must refuse IdP I/O.
+    harness.dependencies.__testAfterRefreshLeaseAcquire = async (lease) => {
+      await db
+        .update(platformJobs)
+        .set({ leaseOwner: 'reclaim-worker-b' })
+        .where(eq(platformJobs.id, lease.jobId));
+    };
+
+    await expect(harness.userA.refreshBinding(published.draft.id)).rejects.toMatchObject({
+      code: 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH',
+    });
+    expect(harness.refresh).not.toHaveBeenCalled();
+  });
+
+  it('post_outbound_heartbeat_loss_still_persists_rotated_credential', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const authorization = await start(harness, published.draft.id);
+    await harness.callback.callback({ code: 'connect', state: authorization.state });
+    const [before] = await db.select().from(platformUserConnectorBindings);
+    expect(before?.oauthTokenRef).toBeTruthy();
+    const originalRef = before!.oauthTokenRef!;
+
+    // Steal lease ownership during outbound I/O so the post-outbound heartbeat
+    // loses ownership. The rotated pair must still land on the binding (CAS fence)
+    // rather than being discarded while the IdP has already consumed the old RT.
+    harness.refresh.mockImplementation(async () => {
+      await db
+        .update(platformJobs)
+        .set({ leaseOwner: 'post-outbound-thief' })
+        .where(eq(platformJobs.type, 'connector.oauth.refresh.v1'));
+      return {
+        body: {
+          access_token: 'provider-access-token-post-outbound',
+          expires_in: 7200,
+          refresh_token: 'provider-refresh-token-post-outbound',
+          scope: 'issues:read',
+          token_type: 'Bearer',
+        },
+        status: 200,
+        url: 'https://identity.example.test/oauth/token',
+      };
+    });
+
+    // Post-outbound ownership loss: binding CAS still commits; complete() miss
+    // is soft-success (rotated credential is durable) rather than a hard error.
+    await expect(harness.userA.refreshBinding(published.draft.id)).resolves.toBeUndefined();
+    expect(harness.refresh).toHaveBeenCalledOnce();
+
+    const [after] = await db.select().from(platformUserConnectorBindings);
+    expect(after?.status).toBe('connected');
+    expect(after?.oauthTokenRef).toBeTruthy();
+    expect(after!.oauthTokenRef).not.toBe(originalRef);
+
+    const rotated = await harness.secrets.resolveSecretRef({
+      connectorId: published.draft.id,
+      ref: after!.oauthTokenRef!,
+      slot: 'oauthBindingToken',
+    });
+    expect(rotated?.value).toMatchObject({
+      accessToken: 'provider-access-token-post-outbound',
+      refreshToken: 'provider-refresh-token-post-outbound',
+    });
+  });
+
   it('expired_outbound_refresh_lease_is_ambiguous_and_not_retried', async () => {
     const harness = createHarness();
     const published = await publishOAuthConnector(harness);

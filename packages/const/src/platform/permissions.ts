@@ -9,7 +9,8 @@ export const PLATFORM_PERMISSIONS = {
 
   USER_READ: 'platform_user:read:all',
   USER_CREATE: 'platform_user:create:all',
-  USER_UPDATE: 'platform_user:update:all',
+  // No platform_user:update:all — user mutations are specialized (ban/delete/session/role).
+  // Re-introduce USER_UPDATE only when an explicit update procedure enforces it.
   USER_BAN: 'platform_user:ban:all',
   USER_DELETE: 'platform_user:delete:all',
   USER_SESSION_REVOKE: 'platform_user:session_revoke:all',

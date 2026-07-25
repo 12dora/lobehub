@@ -157,10 +157,12 @@ export const installMarketplaceAgents = async (
   );
 
   // 5. Create the local agents. Legacy templates intentionally omit
-  // marketIdentifier because no remote Market fork exists.
+  // marketIdentifier because no remote Market fork exists. Only `sourceType
+  // === 'new'` may look up a fork outcome — legacy and new templates can share
+  // the same bare sourceId and must not cross-attribute Market lineage.
   const installResults = await Promise.allSettled(
     prepared.map(async ({ detail, forkedFromIdentifier, sourceId, sourceType, templateId }) => {
-      const forkOutcome = forkOutcomeBySource.get(sourceId);
+      const forkOutcome = sourceType === 'new' ? forkOutcomeBySource.get(sourceId) : undefined;
       if (sourceType === 'new' && !forkOutcome?.success) {
         throw new Error(forkOutcome?.error.message || 'Marketplace fork failed');
       }

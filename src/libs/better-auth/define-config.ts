@@ -262,6 +262,16 @@ export function defineConfig(
            * `create.before` returning false aborts session creation fail-closed.
            */
           before: async (session) => {
+            // Idempotent repair: signup may have failed to grant platform_user
+            // (DB-004). Never blocks the session — errors stay non-blocking.
+            try {
+              const { ensureDefaultPlatformUserRole } =
+                await import('@/database/models/platform/ensureDefaultRole');
+              await ensureDefaultPlatformUserRole(serverDB, session.userId);
+            } catch {
+              // ignore — session creation must proceed
+            }
+
             const linked = await serverDB
               .select({
                 accountId: schema.account.accountId,
@@ -372,8 +382,12 @@ export function defineConfig(
       registrationGuard(),
       expo(),
       admin(),
-      // Email OTP plugin for mobile verification
+      // Email OTP plugin for mobile verification / existing-user sign-in.
+      // disableSignUp: OTP must not self-provision accounts — registration policy
+      // (registrationGuard) + admin/SSO cover account creation. Defense in depth:
+      // even if a future path bypasses the create hook, email-otp will not createUser.
       emailOTP({
+        disableSignUp: true,
         expiresIn: OTP_EXPIRES_IN,
         otpLength: 6,
         allowedAttempts: 3,

@@ -378,4 +378,96 @@ describe('ConnectorCatalogReadService exact snapshot boundary', () => {
       ),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
   });
+
+  it('accepts already-stored shared credentials whose header names fail the write-time RFC token grammar', async () => {
+    // Pre-token-rule vaults could store space/colon/non-ASCII names. Trusted
+    // published resolution must not hard-fail so admins can replace the secret
+    // (detail API is presence-only — values are not projected for display).
+    const legacyCredential = {
+      headers: {
+        'Bad Header': 'space-name',
+        'X-Key:Sub': 'colon-name',
+        'X-键': 'non-ascii-name',
+      },
+    };
+    const secrets = new MemoryConnectorSecretStore(db);
+    const repository = new PlatformConnectorCatalogRepository(db);
+    await repository.createConnector({
+      connectorKey: 'legacy-headers-connector',
+      credentialMode: 'shared_service_account',
+      displayName: 'Legacy Headers',
+      endpoint: 'https://legacy-headers.example.test/mcp',
+      id: connectorId,
+      status: 'draft',
+    });
+    const stored = await secrets.persistSecret({
+      connectorId,
+      slot: 'sharedSecret',
+      value: legacyCredential,
+    });
+    await db
+      .update(platformConnectors)
+      .set({
+        sharedSecretFingerprint: stored.fingerprint,
+        sharedSecretRef: stored.ref,
+        sharedSecretUpdatedAt: stored.updatedAt,
+      })
+      .where(eq(platformConnectors.id, connectorId));
+
+    const revision: PlatformConnectorRevisionPayload = {
+      connector: {
+        credentialMode: 'shared_service_account',
+        description: null,
+        displayName: 'Legacy Headers',
+        enabled: true,
+        endpoint: 'https://legacy-headers.example.test/mcp',
+        id: connectorId,
+        key: 'legacy-headers-connector',
+        oauthClientSecretConfigured: false,
+        oauthClientSecretFingerprint: null,
+        oauthConfig: null,
+        sharedSecretConfigured: true,
+        sharedSecretFingerprint: stored.fingerprint,
+        sort: 0,
+        transport: 'http',
+      },
+      schemaVersion: 'm09-v1',
+      tools: [
+        {
+          description: 'Search safely',
+          displayName: 'Search',
+          inputSchema: { properties: { query: { type: 'string' } }, type: 'object' },
+          outputSchema: { type: 'object' },
+          platformPolicy: 'allow',
+          requiresConfirmation: false,
+          riskLevel: 'low',
+          sort: 0,
+          toolKey: 'search.v1',
+        },
+      ],
+    };
+    const checksum = checksumPayload(revision);
+    await repository.createPublishedRevision({
+      checksum,
+      connectorId,
+      payload: revision,
+      publishedAt: new Date(),
+      publishedBy: 'admin-user',
+      revision: 1,
+    });
+    await repository.setPublishedPointerCas({
+      checksum,
+      connectorId,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      publishedRevision: 1,
+    });
+
+    const read = new ConnectorCatalogReadService(db, secrets);
+    await expect(read.getTrustedPublished(connectorId)).resolves.toMatchObject({
+      credentialMode: 'shared_service_account',
+      credentials: legacyCredential,
+      endpoint: 'https://legacy-headers.example.test/mcp',
+    });
+  });
 });

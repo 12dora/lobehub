@@ -5,6 +5,7 @@ import {
   cancelConnectorRuntimeEffectiveStateTransition,
   finalizeConnectorRuntimeEffectiveStateTransition,
   getConnectorRuntimeEffectiveState,
+  getConnectorRuntimeLocalEpochForTest,
   publishConnectorRuntimeCapabilityState,
   publishConnectorRuntimeEffectiveState,
   reserveConnectorRuntimeEffectiveStateEpoch,
@@ -18,6 +19,9 @@ const redisState = vi.hoisted(() => ({
   value: null as string | null,
 }));
 const redis = vi.hoisted(() => ({
+  // Mock implements generic transition/CAS-by-epoch semantics only.
+  // Capability mode+revision short-circuit is intentionally NOT reimplemented here —
+  // tests assert the real CAPABILITY_SCRIPT source is passed to eval (R5).
   eval: vi.fn(async (script: string, _keys: number, ...args: string[]) => {
     if (script.includes("'PX'")) {
       if (redisState.transition) return null;
@@ -37,11 +41,12 @@ const redis = vi.hoisted(() => ({
       return redisState.value;
     }
     if (script.includes('mode = ARGV[1]')) {
+      // Capability publish path: always apply (no JS reimplementation of Lua CAS).
       if (redisState.transition) return redisState.value;
       redisState.epoch += 1;
       redisState.value = JSON.stringify({
         epoch: redisState.epoch,
-        mode: args[3],
+        mode: args[3]!,
         revision: Number(args[4]),
       });
       return redisState.value;
@@ -88,6 +93,12 @@ const redis = vi.hoisted(() => ({
 
 vi.mock('@/envs/redis', () => ({ getRedisConfig: () => ({ enabled: redisState.enabled }) }));
 vi.mock('@/libs/redis', () => ({ initializeRedis: async () => redis }));
+
+const CAPABILITY_CAS_SNIPPET =
+  'decoded.mode == ARGV[1] and tonumber(decoded.revision or 0) == tonumber(ARGV[2])';
+const REDIS_KEY = 'platform:managed:connectors:effective:v1';
+const REDIS_EPOCH_KEY = 'platform:managed:connectors:effective:epoch:v1';
+const REDIS_TRANSITION_KEY = 'platform:managed:connectors:effective:transition:v1';
 
 describe('connector runtime effective-state authority', () => {
   beforeEach(() => {
@@ -210,5 +221,59 @@ describe('connector runtime effective-state authority', () => {
     await expect(
       getConnectorRuntimeEffectiveState({ ENABLE_PLATFORM_MANAGED_CONNECTORS: 'true' }),
     ).resolves.toEqual({ epoch: currentEpoch, mode: 'enforced', revision: 9 });
+  });
+
+  it('passes CAPABILITY_SCRIPT with mode+revision CAS to redis.eval (not mock-reimplemented)', async () => {
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 3 });
+
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+    const first = redis.eval.mock.calls[0]!;
+    // Fail if the real Lua CAS short-circuit is removed from CAPABILITY_SCRIPT.
+    expect(first[0]).toContain(CAPABILITY_CAS_SNIPPET);
+    expect(first[0]).toContain("if redis.call('EXISTS', KEYS[3]) == 1 then");
+    expect(first[0]).toContain("redis.call('INCR', KEYS[2])");
+    expect(first.slice(1)).toEqual([
+      3,
+      REDIS_KEY,
+      REDIS_EPOCH_KEY,
+      REDIS_TRANSITION_KEY,
+      'enforced',
+      '3',
+    ]);
+
+    redis.eval.mockClear();
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 3 });
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 3 });
+
+    // Idempotent republish still goes through the same CAS script + ARGV sequence.
+    expect(redis.eval).toHaveBeenCalledTimes(2);
+    for (const call of redis.eval.mock.calls) {
+      expect(call[0]).toContain(CAPABILITY_CAS_SNIPPET);
+      expect(call.slice(1)).toEqual([
+        3,
+        REDIS_KEY,
+        REDIS_EPOCH_KEY,
+        REDIS_TRANSITION_KEY,
+        'enforced',
+        '3',
+      ]);
+    }
+  });
+
+  it('does not advance process-local epoch on unchanged capability publish', async () => {
+    redisState.enabled = false;
+    await publishConnectorRuntimeCapabilityState({ mode: 'legacy', revision: 1 });
+    expect(getConnectorRuntimeLocalEpochForTest()).toBe(1);
+
+    await publishConnectorRuntimeCapabilityState({ mode: 'legacy', revision: 1 });
+    await publishConnectorRuntimeCapabilityState({ mode: 'legacy', revision: 1 });
+    // Without the Redis-off CAS at publishConnectorRuntimeCapabilityState, epoch would be 3.
+    expect(getConnectorRuntimeLocalEpochForTest()).toBe(1);
+
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 5 });
+    expect(getConnectorRuntimeLocalEpochForTest()).toBe(2);
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 5 });
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 5 });
+    expect(getConnectorRuntimeLocalEpochForTest()).toBe(2);
   });
 });

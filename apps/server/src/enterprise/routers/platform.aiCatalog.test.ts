@@ -15,6 +15,7 @@ import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import { getEnterpriseErrorBody } from '../guards/enterpriseErrors';
+import { deletePlatformResourceRevisionsForTest } from '../testing/deletePlatformResourceRevisions';
 import { platformRouter } from './platform';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -31,7 +32,11 @@ vi.mock('@/database/core/db-adaptor', () => ({
 }));
 
 const cleanup = async () => {
-  await db.delete(platformResourceRevisions);
+  const ownedProviders = await db.select({ id: platformAiProviders.id }).from(platformAiProviders);
+  await deletePlatformResourceRevisionsForTest(db, {
+    resourceIds: ownedProviders.map((row) => row.id),
+    resourceType: 'provider',
+  });
   await db.delete(platformAiModels);
   await db.delete(platformAiProviders);
   await db.delete(users);

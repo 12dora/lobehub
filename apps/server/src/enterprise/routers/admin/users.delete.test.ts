@@ -21,6 +21,7 @@ import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
@@ -48,7 +49,7 @@ const IDS = {
 
 const cleanup = async () => {
   await db.delete(session);
-  await db.delete(platformAuditLogs);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(IDS) });
   await db.delete(userRoles);
   await db.delete(rolePermissions);
   await db.delete(roles);
@@ -66,7 +67,7 @@ const grant = async (userId: string, roleName: string) => {
 
 beforeAll(async () => {
   db = await getTestDB();
-});
+}, 120_000);
 
 beforeEach(async () => {
   vi.unstubAllEnvs();

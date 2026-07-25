@@ -1,9 +1,11 @@
-import { and, eq } from 'drizzle-orm';
+import type { PlatformIdentityProviderDraft } from '@lobechat/types';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import {
   type PlatformIdentityProviderInternalDraft,
   PlatformIdentityProviderModel,
   toPublicIdentityProviderDraft,
+  toSafeIdentityProviderDraft,
   toSafeIdentityProviderDraftFromList,
 } from '@/database/models/platform';
 import { PlatformIdentityProviderRepository } from '@/database/repositories/platformIdentityProvider';
@@ -20,8 +22,10 @@ import type {
   AdminIdentityProviderUpdateInput,
 } from '../../contracts/identityProviders';
 import type { PlatformSecretService } from '../../security/secret';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { IdentityProviderPublicationService } from './publicationService';
 import { IdentityProviderSecretStore } from './secretStore';
 
 const editableValues = (
@@ -76,23 +80,77 @@ export class AdminIdentityProviderService {
     private readonly appUrl: string,
   ) {}
 
-  get = async (id: string) =>
-    toPublicIdentityProviderDraft(
-      requireProvider(await new PlatformIdentityProviderModel(this.db).get(id)),
-    );
+  get = async (id: string): Promise<PlatformIdentityProviderDraft> => {
+    const row = await new PlatformIdentityProviderRepository(this.db).get(id);
+    if (!row) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+    const internal = requireProvider(toSafeIdentityProviderDraft(row));
+    const publicDraft = toPublicIdentityProviderDraft(internal);
+    return this.enrichLifecycleMetadata(publicDraft, {
+      secretFingerprint: row.secretFingerprint,
+      secretRef: row.secretRef,
+    });
+  };
 
   list = async (input: AdminIdentityProviderListInput) => {
     const page = await new PlatformIdentityProviderRepository(this.db).listPage(input);
+    const items = page.items.map((item) =>
+      toPublicIdentityProviderDraft(toSafeIdentityProviderDraftFromList(item)),
+    );
+    if (items.length === 0) {
+      return { items, nextCursor: page.nextCursor };
+    }
+
+    const publication = new IdentityProviderPublicationService(this.db);
+    const historySet = await publication.hasPublishedHistoryBatch(items.map((item) => item.id));
+    const bindings = await this.db
+      .select({
+        id: platformIdentityProviders.id,
+        revision: platformIdentityProviders.revision,
+        secretFingerprint: platformIdentityProviders.secretFingerprint,
+        secretRef: platformIdentityProviders.secretRef,
+      })
+      .from(platformIdentityProviders)
+      .where(
+        inArray(
+          platformIdentityProviders.id,
+          items.map((item) => item.id),
+        ),
+      );
+    const readyMap = await publication.isPublishTestReadyBatch(bindings);
+
     return {
-      items: page.items.map((item) =>
-        toPublicIdentityProviderDraft(toSafeIdentityProviderDraftFromList(item)),
-      ),
+      items: items.map((item) => ({
+        ...item,
+        hasPublishedHistory: historySet.has(item.id),
+        publishTestReady: readyMap.get(`${item.id}:${item.revision}`) ?? false,
+      })),
       nextCursor: page.nextCursor,
     };
   };
 
+  /** Attach list/get lifecycle flags without exposing secret material. */
+  private enrichLifecycleMetadata = async (
+    draft: PlatformIdentityProviderDraft,
+    binding: {
+      secretFingerprint: string | null | undefined;
+      secretRef: string | null | undefined;
+    },
+  ): Promise<PlatformIdentityProviderDraft> => {
+    const publication = new IdentityProviderPublicationService(this.db);
+    const [hasPublishedHistory, publishTestReady] = await Promise.all([
+      publication.hasPublishedHistory(draft.id),
+      publication.isPublishTestReady({
+        id: draft.id,
+        revision: draft.revision,
+        secretFingerprint: binding.secretFingerprint,
+        secretRef: binding.secretRef,
+      }),
+    ]);
+    return { ...draft, hasPublishedHistory, publishTestReady };
+  };
+
   private mutation = async <T>(input: {
-    action: string;
+    action: AuditAction;
     actorUserId: string;
     reason: string;
     run: (tx: Transaction) => Promise<T>;

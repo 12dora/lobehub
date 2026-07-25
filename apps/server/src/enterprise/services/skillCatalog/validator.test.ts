@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { platformSkillVersionChecksum } from '@/database/models/platform';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
-import { skillValidationResultSchema } from '../../contracts/skillCatalog';
+import {
+  skillResourceContentChecksum,
+  skillValidationResultSchema,
+} from '../../contracts/skillCatalog';
 import { SkillCatalogValidator, type SkillCatalogValidatorOptions } from './validator';
 
 const manifest = {
@@ -21,7 +24,7 @@ const manifest = {
 } satisfies SkillManifest;
 
 const resource = {
-  checksum: 'd'.repeat(64),
+  checksum: skillResourceContentChecksum('reference'),
   content: 'reference',
   mediaType: 'text/plain',
   path: 'references/source.txt',
@@ -364,6 +367,161 @@ describe('SkillCatalogValidator', () => {
     expect(result.issues.find((item) => item.code === 'manifest_invalid')?.path).toEqual(
       expect.arrayContaining(['resolvedManifest']),
     );
+  });
+
+  it('detects a B→C→B cycle reached through a sibling diamond branch', async () => {
+    // root:[a,b], a:[c], b:[c], c:[b] — genuine cycle on b↔c. BFS with a global
+    // `expanded` set alone misses this: c is first expanded via a (ancestry without b),
+    // then c→b is skipped because b is already expanded, and the second c (via b) is
+    // dropped by expanded.has(c). Post-traversal DFS over the resolved edge set catches it.
+    const deps = (entries: Array<{ skillKey: string; version?: string }>): SkillManifest => ({
+      ...manifest,
+      skillDependencies: entries.map(({ skillKey, version = '1.0.0' }) => ({
+        optional: false,
+        skillKey,
+        version,
+      })),
+    });
+    const manifests: Record<string, SkillManifest> = {
+      a: deps([{ skillKey: 'c' }]),
+      b: deps([{ skillKey: 'c' }]),
+      c: deps([{ skillKey: 'b' }]),
+    };
+    const resolver = vi.fn(async (skillKey: string, version: string) => ({
+      manifest: manifests[skillKey] ?? { ...manifest, skillDependencies: [] },
+      skillKey,
+      version,
+    }));
+    const result = await new SkillCatalogValidator(
+      safeOptions({ resolveSkillDependency: resolver }),
+    ).validate(validationInput({ manifest: deps([{ skillKey: 'a' }, { skillKey: 'b' }]) }));
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({
+        code: 'dependency_cycle',
+      }),
+    );
+  });
+
+  it('detects a cycle that closes on an unpublished root (publication case)', async () => {
+    // Publication validates a root skillKey@version that is not yet published, so the
+    // resolver returns undefined for the root. The cycle root→k1→root must still be
+    // seen: declared edges must be recorded *before* the !resolved early-continue.
+    // Minimal clean-pass repro from the round-2 fuzz: root:[k1 required], k1:[root optional].
+    const rootKey = 'internal.search';
+    const rootVersion = '1.0.0';
+    const k1Manifest: SkillManifest = {
+      ...manifest,
+      skillDependencies: [{ optional: true, skillKey: rootKey, version: rootVersion }],
+    };
+    const rootManifest: SkillManifest = {
+      ...manifest,
+      skillDependencies: [{ optional: false, skillKey: 'k1', version: '1.0.0' }],
+    };
+    const resolver = vi.fn(async (skillKey: string, version: string) => {
+      // Root is unpublished — never returned by the resolver during publication validation.
+      if (skillKey === rootKey && version === rootVersion) return undefined;
+      if (skillKey === 'k1') return { manifest: k1Manifest, skillKey, version };
+      return undefined;
+    });
+    const result = await new SkillCatalogValidator(
+      safeOptions({ resolveSkillDependency: resolver }),
+    ).validate(
+      validationInput({
+        manifest: rootManifest,
+        skillKey: rootKey,
+        version: rootVersion,
+      }),
+    );
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({
+        code: 'dependency_cycle',
+      }),
+    );
+  });
+
+  it('does not invent a cycle when an optional edge points at an unpublished skill', async () => {
+    // Acyclic control: root → missing (optional) contributes a declared edge to a node
+    // with no out-edges. Must not emit dependency_cycle (only silence / no unknown for optional).
+    const rootManifest: SkillManifest = {
+      ...manifest,
+      skillDependencies: [{ optional: true, skillKey: 'missing.optional', version: '1.0.0' }],
+    };
+    const result = await new SkillCatalogValidator(
+      safeOptions({
+        resolveSkillDependency: async () => undefined,
+      }),
+    ).validate(validationInput({ manifest: rootManifest }));
+    expect(codes(result)).not.toContain('dependency_cycle');
+    expect(result.issues).toEqual([]);
+  });
+
+  it('de-duplicates the same dependency ref when two parents share a child in one frontier', async () => {
+    const leaf: SkillManifest = { ...manifest, skillDependencies: [] };
+    const parent = (skillKey: string): SkillManifest => ({
+      ...manifest,
+      skillDependencies: [{ optional: false, skillKey, version: '1.0.0' }],
+    });
+    const batch = vi.fn(
+      async (refs: readonly { skillKey: string; version: string }[]) =>
+        new Map(
+          refs.map((ref) => [
+            `${ref.skillKey}@${ref.version}`,
+            {
+              manifest: ref.skillKey === 'shared' ? leaf : parent('shared'),
+              skillKey: ref.skillKey,
+              version: ref.version,
+            },
+          ]),
+        ),
+    );
+    // root → [left, right]; left → shared; right → shared. Frontier-2 would enqueue
+    // shared twice without de-dupe.
+    const root: SkillManifest = {
+      ...manifest,
+      skillDependencies: [
+        { optional: false, skillKey: 'left', version: '1.0.0' },
+        { optional: false, skillKey: 'right', version: '1.0.0' },
+      ],
+    };
+    const result = await new SkillCatalogValidator(
+      safeOptions({ resolveSkillDependenciesBatch: batch }),
+    ).validate(validationInput({ manifest: root }));
+    expect(result.issues).toEqual([]);
+    // Two batch calls (depth 1 + depth 2); the shared child appears once in the second batch.
+    expect(batch).toHaveBeenCalledTimes(2);
+    expect(batch.mock.calls[1]![0]).toHaveLength(1);
+    expect(batch.mock.calls[1]![0][0]).toEqual({ skillKey: 'shared', version: '1.0.0' });
+  });
+
+  it('resolves a wide dependency frontier with one batch query', async () => {
+    const width = 32;
+    const wide: SkillManifest = {
+      ...manifest,
+      skillDependencies: Array.from({ length: width }, (_, index) => ({
+        optional: false,
+        skillKey: `wide-child-${index}`,
+        version: '1.0.0',
+      })),
+    };
+    const batch = vi.fn(
+      async (refs: readonly { skillKey: string; version: string }[]) =>
+        new Map(
+          refs.map((ref) => [
+            `${ref.skillKey}@${ref.version}`,
+            {
+              manifest: { ...manifest, skillDependencies: [] },
+              skillKey: ref.skillKey,
+              version: ref.version,
+            },
+          ]),
+        ),
+    );
+    const result = await new SkillCatalogValidator(
+      safeOptions({ resolveSkillDependenciesBatch: batch }),
+    ).validate(validationInput({ manifest: wide }));
+    expect(result.issues).toEqual([]);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(batch.mock.calls[0]![0]).toHaveLength(width);
   });
 
   it('hard-bounds depth, width, resolver calls and emitted issues', async () => {

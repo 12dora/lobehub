@@ -1,7 +1,13 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 import { containsEnterpriseSecretMaterial } from '../security/redaction';
 import { isStrictSemVer } from './shared';
+
+/** SHA-256 hex digest of UTF-8 content bytes (resource integrity). */
+export const skillResourceContentChecksum = (content: string): string =>
+  createHash('sha256').update(content, 'utf8').digest('hex');
 
 const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
   if (containsEnterpriseSecretMaterial(value)) {
@@ -75,14 +81,24 @@ export const skillResourceSchema = z
         message: 'resource must contain exactly one of content or contentRef',
       });
     }
-    if (
-      resource.content !== undefined &&
-      new TextEncoder().encode(resource.content).byteLength !== resource.sizeBytes
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'resource sizeBytes must match UTF-8 content bytes',
-      });
+    if (resource.content !== undefined) {
+      const contentBytes = new TextEncoder().encode(resource.content);
+      if (contentBytes.byteLength !== resource.sizeBytes) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'resource sizeBytes must match UTF-8 content bytes',
+          path: ['sizeBytes'],
+        });
+      }
+      // Bind checksum to actual content bytes — syntax-only digests must not pass.
+      const digest = skillResourceContentChecksum(resource.content);
+      if (digest !== resource.checksum) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'resource checksum must match SHA-256 of UTF-8 content',
+          path: ['checksum'],
+        });
+      }
     }
   });
 

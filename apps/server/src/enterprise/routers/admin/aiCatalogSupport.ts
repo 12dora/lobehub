@@ -19,6 +19,7 @@ import {
   AiCatalogSecretManager,
   type AiSecretMutation,
 } from '../../services/aiCatalog/secretManager';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 
 export const aiSecretMutationRequiresReauth = (mutation?: AiSecretMutation): boolean =>
   mutation?.operation === 'replace' ||
@@ -104,7 +105,7 @@ export const mapServiceError = (error: unknown): never => {
 };
 
 export const assertDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -115,15 +116,14 @@ export const assertDangerousReauth = async (params: {
   targetId: string;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.aiCatalog] reauth denied audit failed',
-    // Legacy path only logged errorClass (no action).
-    auditFailureMeta: {},
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    resolveDeniedReason: () => safeDeniedReason(params),
     serverDB: params.serverDB,
-    targetId: params.targetId,
-    targetType: 'provider',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      resolveDeniedReason: () => safeDeniedReason(params),
+      targetId: params.targetId,
+      targetType: 'provider',
+    },
   });

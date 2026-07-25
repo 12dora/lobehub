@@ -8,7 +8,6 @@ import {
   permissions,
   platformAuditLogs,
   platformBranding,
-  platformResourceRevisions,
   rolePermissions,
   roles,
   userRoles,
@@ -18,7 +17,12 @@ import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
-import { AdminBrandingService } from '../../services/branding/adminBrandingService';
+import {
+  AdminBrandingService,
+  BRANDING_RESOURCE_ID,
+} from '../../services/branding/adminBrandingService';
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { adminBrandingRouter } from './branding';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -28,8 +32,11 @@ const roleNames = ['branding_router_reader', 'branding_router_publisher'];
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db) }));
 
 const cleanup = async () => {
-  await db.delete(platformAuditLogs);
-  await db.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(db, { actorUserIds: Object.values(ids) });
+  await deletePlatformResourceRevisionsForTest(db, {
+    resourceIds: [BRANDING_RESOURCE_ID],
+    resourceType: 'branding',
+  });
   await db.delete(platformBranding);
   const ownedRoles = await db
     .select({ id: roles.id })

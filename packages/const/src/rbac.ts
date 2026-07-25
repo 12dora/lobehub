@@ -273,27 +273,19 @@ export const ALL_SCOPE = 'ALL';
 
 /**
  * RBAC Role Constants Definition
- * Platform sub-roles live in `@/const/platform/roles` (PLATFORM_SYSTEM_ROLES).
+ * Platform sub-roles live solely in `@/const/platform/roles` (PLATFORM_SYSTEM_ROLES) —
+ * do not re-list enterprise role names here (avoids a second source of truth).
  */
 export const SYSTEM_DEFAULT_ROLES = {
   SUPER_ADMIN: 'super_admin',
-  USER_ADMIN: 'user_admin',
-  AI_ADMIN: 'ai_admin',
-  IDENTITY_ADMIN: 'identity_admin',
-  AUDITOR: 'auditor',
-  PLATFORM_USER: 'platform_user',
 } as const;
 
 /**
- * Role Description Mapping
+ * Role Description Mapping (legacy workspace / super_admin only).
+ * Platform system role UI copy is i18n-driven via `users.roles.*`.
  */
 export const ROLE_DESCRIPTIONS = {
   [SYSTEM_DEFAULT_ROLES.SUPER_ADMIN]: 'Administrator with all system permissions',
-  [SYSTEM_DEFAULT_ROLES.USER_ADMIN]: 'Platform user administrator',
-  [SYSTEM_DEFAULT_ROLES.AI_ADMIN]: 'Platform AI / skill / connector / agent administrator',
-  [SYSTEM_DEFAULT_ROLES.IDENTITY_ADMIN]: 'Platform identity and branding administrator',
-  [SYSTEM_DEFAULT_ROLES.AUDITOR]: 'Platform read-only auditor',
-  [SYSTEM_DEFAULT_ROLES.PLATFORM_USER]: 'Base platform access for authenticated users',
 } as const;
 
 /**

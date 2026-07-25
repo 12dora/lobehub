@@ -4,6 +4,7 @@ import {
   collectConnectorSecretLeaves,
   type ConnectorCurrentSecretLoader,
 } from '../../contracts/platformConnectors';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { ConnectorDraft } from './catalogTypes';
 import { PlatformConnectorContractError } from './errors';
@@ -70,7 +71,7 @@ export const connectorAuditSummary = (
 };
 
 export interface ConnectorFailureAuditParams {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   reason?: string | null;
   targetId?: string | null;

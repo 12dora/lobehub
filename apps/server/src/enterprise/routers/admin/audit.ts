@@ -78,6 +78,7 @@ import {
   AdminAuditRetentionService,
   AdminAuditService,
 } from '../../services/audit';
+import type { AuditTargetType } from '../../services/audit/auditActionCatalog';
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -116,18 +117,19 @@ const assertAuditDangerousReauth = async (params: {
   reason: string;
   serverDB: LobeChatDatabase;
   targetId?: string;
-  targetType: string;
+  targetType: AuditTargetType;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.audit] reauth denied audit unavailable',
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: params.reason,
     serverDB: params.serverDB,
-    targetId: params.targetId ?? null,
-    targetType: params.targetType,
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: params.reason,
+      targetId: params.targetId ?? null,
+      targetType: params.targetType,
+    },
   });
 
 const policyRouter = router({

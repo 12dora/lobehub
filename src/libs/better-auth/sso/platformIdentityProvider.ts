@@ -14,7 +14,6 @@ import {
 import { validatePlatformIdentityProviderClaims } from '@/server/enterprise/services/identityProvider/claimValidation';
 import { extractIdentityProviderGroups } from '@/server/enterprise/services/identityProvider/groupRoleMapping';
 import {
-  bindIdentityProviderGroupRoleMappingFlow,
   discardIdentityProviderGroupRoleMapping,
   discardIdentityProviderGroupRoleMappingByFlow,
   reconcileIdentityProviderGroupRoles,
@@ -108,10 +107,15 @@ interface PlatformIdentityProviderUser {
   name: string;
 }
 
+/**
+ * Pure claim→user projection. Does NOT stash group-role mappings — that happens
+ * exactly once in getUserInfo with the real OAuth flow id. Better Auth also calls
+ * mapProfileToUser after getUserInfo; a second stash without flowId used to leave a
+ * subject-only entry that a later password login could re-grant.
+ */
 const mapPlatformProfileToUser = (
   provider: RuntimeIdentityProvider,
   profile: Record<string, unknown>,
-  options?: { flowId?: string },
 ): PlatformIdentityProviderUser => {
   const { issues, values } = validatePlatformIdentityProviderClaims({
     claimMapping: provider.claimMapping,
@@ -121,18 +125,6 @@ const mapPlatformProfileToUser = (
   if (issues.length > 0 || !values.subject || !values.name || !values.email) {
     throw new Error('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
   }
-  // Stash IdP groups for account/session after-hook role reconciliation.
-  // getUserInfo knows groups but not userId; session/account create has userId.
-  // Prefer flowId (OAuth state) so terminal failures discard only this attempt.
-  if (Object.keys(provider.groupRoleMapping).length > 0) {
-    stashIdentityProviderGroupRoleMapping({
-      flowId: options?.flowId,
-      groupRoleMapping: provider.groupRoleMapping,
-      groups: extractIdentityProviderGroups(profile),
-      providerKey: provider.providerKey,
-      subject: values.subject,
-    });
-  }
   return {
     ...getStableDingTalkClaims(provider, profile),
     email: values.email,
@@ -140,6 +132,23 @@ const mapPlatformProfileToUser = (
     image: firstStringClaim(profile, provider.claimMapping.picture),
     name: values.name,
   };
+};
+
+/** Stash IdP groups once per OAuth flow for session.create role reconciliation. */
+const stashPlatformGroupRoleMapping = (
+  provider: RuntimeIdentityProvider,
+  profile: Record<string, unknown>,
+  subject: string,
+  flowId: string | undefined,
+): void => {
+  if (Object.keys(provider.groupRoleMapping).length === 0) return;
+  stashIdentityProviderGroupRoleMapping({
+    flowId,
+    groupRoleMapping: provider.groupRoleMapping,
+    groups: extractIdentityProviderGroups(profile),
+    providerKey: provider.providerKey,
+    subject,
+  });
 };
 
 /**
@@ -198,8 +207,6 @@ export const enforcePlatformOidcGroupRoleMappingOnLogin = async (input: {
  * then subject-only synthetic entry when no flow id is known. Never clear every pending
  * mapping for the provider — a concurrent successful login would lose its reconciliation
  * and the session hook would treat "no pending" as success (stale roles).
- * Provider-wide clear remains only for unload/disable via
- * discardIdentityProviderGroupRoleMappingsForProvider.
  */
 export const discardPlatformOidcGroupRoleMappingOnLoginFailure = (input: {
   /** OAuth `state` (or equivalent per-login flow identifier) from the callback. */
@@ -437,15 +444,10 @@ export const buildPlatformIdentityProvider = (
           ? oauthState.oauthState
           : undefined;
       try {
-        const mapped = mapPlatformProfileToUser(provider, profile, { flowId });
-        // Ensure flow binding even if stash ran without flowId on a prior mapProfile call.
-        if (flowId) {
-          bindIdentityProviderGroupRoleMappingFlow({
-            flowId,
-            providerKey: provider.providerKey,
-            subject: mapped.id,
-          });
-        }
+        const mapped = mapPlatformProfileToUser(provider, profile);
+        // Single stash with the real OAuth flow id — mapProfileToUser stays pure so a
+        // later password session cannot re-consume a subject-only duplicate.
+        stashPlatformGroupRoleMapping(provider, profile, mapped.id, flowId);
       } catch (error) {
         await markPlatformOidcLoginStage('authenticated', 'claim_invalid');
         await observePlatformOidcLoginFailure();
@@ -455,15 +457,18 @@ export const buildPlatformIdentityProvider = (
       return profile;
     },
     issuer: provider.issuer,
+    // Pure projection only — group-role stash lives solely in getUserInfo.
     mapProfileToUser: (profile) => mapPlatformProfileToUser(provider, profile),
     pkce: true,
     providerId: provider.providerKey,
     redirectURI,
-    // Authentik (this deploy) does not support RFC 9207: auth responses omit `iss` and
-    // discovery has no authorization_response_iss_parameter_supported. better-auth still
-    // rejects a present-but-mismatched iss; when missing we must not fail closed here.
-    // Issuer authenticity is enforced by getUserInfo → verifyPlatformOidcIdToken (iss/sig/aud/nonce).
-    requireIssuerValidation: false,
+    // RFC 9207: when discovery advertises authorization_response_iss_parameter_supported,
+    // require `iss` on the authorization response (matches the isolated connection test).
+    // When the IdP does not advertise support (e.g. Authentik), keep permissive absence;
+    // better-auth still rejects a present-but-mismatched iss. Issuer authenticity for the
+    // token is enforced by getUserInfo → verifyPlatformOidcIdToken (iss/sig/aud/nonce).
+    requireIssuerValidation:
+      provider.oidcMetadata.authorizationResponseIssParameterSupported === true,
     scopes: provider.scopes,
     tokenUrl: BETTER_AUTH_UNUSED_TOKEN_ENDPOINT,
   };

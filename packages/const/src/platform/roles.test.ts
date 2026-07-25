@@ -12,17 +12,15 @@ import {
 } from './roles';
 
 describe('platform system roles', () => {
-  it('defines the expected system role set', () => {
-    expect(Object.values(PLATFORM_SYSTEM_ROLES)).toEqual(
-      expect.arrayContaining([
-        PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
-        PLATFORM_SYSTEM_ROLES.USER_ADMIN,
-        PLATFORM_SYSTEM_ROLES.AI_ADMIN,
-        PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
-        PLATFORM_SYSTEM_ROLES.AUDITOR,
-        PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
-      ]),
-    );
+  it('defines the exact system role catalog', () => {
+    expect(Object.values(PLATFORM_SYSTEM_ROLES)).toEqual([
+      PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
+      PLATFORM_SYSTEM_ROLES.USER_ADMIN,
+      PLATFORM_SYSTEM_ROLES.AI_ADMIN,
+      PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
+      PLATFORM_SYSTEM_ROLES.AUDITOR,
+      PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+    ]);
   });
 
   it('identifies system role names for i18n-first display', () => {

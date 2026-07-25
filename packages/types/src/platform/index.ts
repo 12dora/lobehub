@@ -8,7 +8,6 @@ export * from './featureFlags';
 export * from './identityProvider';
 export * from './managedResources';
 export * from './publicSnapshot';
-export * from './revision';
 export * from './settings';
 export * from './sidebarLayout';
 export * from './skills';

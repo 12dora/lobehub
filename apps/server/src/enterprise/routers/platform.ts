@@ -20,7 +20,8 @@ import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
 import { resolvePlatformPublicSnapshot } from '../services/branding';
 import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
-import { publishConnectorRuntimeCapabilityState } from '../services/connectorCatalog/runtimeEffectiveState';
+import { ensureConnectorRuntimeCapabilityStateBootstrapped } from '../services/connectorCatalog/runtimeEffectiveStateBootstrap';
+import { ensureConnectorSecretCleanupWorkerStarted } from '../services/connectorCatalog/secretCleanupWorker';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
@@ -31,6 +32,11 @@ import { platformSkillsRouter } from './platformSkills';
 ensureSkillCatalogReadinessRegistered();
 
 ensureConnectorRuntimeAuditWorkerStarted();
+
+/** Process bootstrap only — never from user capability reads (SR-003). */
+ensureConnectorRuntimeCapabilityStateBootstrapped();
+
+ensureConnectorSecretCleanupWorkerStarted();
 
 ensurePlatformAgentRolloutWorkerStarted();
 
@@ -65,6 +71,11 @@ export const platformRouter = router({
 
   skills: platformSkillsRouter,
 
+  /**
+   * Read-only capability DTO for client bootstrap.
+   * Connector runtime effective-state is published on policy finalize and
+   * process bootstrap — never mutated here (avoids Redis write amplification).
+   */
   getCapabilities: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);
 
@@ -78,18 +89,6 @@ export const platformRouter = router({
       db: ctx.serverDB,
       flags,
     });
-    const connectorPolicy = managed.published.connectors;
-    if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
-      await publishConnectorRuntimeCapabilityState({
-        mode:
-          !connectorPolicy.managed || connectorPolicy.enforcementMode !== 'enforced'
-            ? 'legacy'
-            : managed.readiness.connectors
-              ? 'enforced'
-              : 'blocked',
-        revision: managed.revision,
-      });
-    }
 
     return buildPlatformCapabilities({
       adminAccess,

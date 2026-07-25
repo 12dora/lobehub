@@ -185,4 +185,84 @@ describe('installMarketplaceAgents', () => {
     );
     expect(refreshAgentList).toHaveBeenCalledTimes(1);
   });
+
+  it('does not attribute a Market fork to a legacy template that shares a sourceId', async () => {
+    vi.spyOn(agentService, 'getAgentByForkedFromIdentifier').mockResolvedValue(null);
+    vi.spyOn(discoverService, 'getAssistantDetail').mockImplementation(
+      async ({ identifier, source }) => {
+        if (source === 'legacy' && identifier === 'writer') {
+          return {
+            avatar: 'L',
+            backgroundColor: '#111',
+            category: 'writing',
+            config: { params: {}, systemRole: 'Legacy writer' } as any,
+            description: 'Legacy writer',
+            editorData: {},
+            identifier,
+            summary: 'Legacy writer',
+            tags: ['legacy'],
+            title: 'Legacy Writer',
+          } as any;
+        }
+        if (source === 'new' && identifier === 'writer') {
+          return {
+            avatar: 'N',
+            backgroundColor: '#222',
+            category: 'writing',
+            config: { params: {}, systemRole: 'Market writer' } as any,
+            description: 'Market writer',
+            editorData: {},
+            identifier,
+            summary: 'Market writer',
+            tags: ['market'],
+            title: 'Market Writer',
+          } as any;
+        }
+        return undefined;
+      },
+    );
+    vi.spyOn(marketApiService, 'forkAgent').mockResolvedValue([
+      {
+        data: {
+          agent: { identifier: 'forked-market-writer', name: 'Forked Market Writer' },
+        },
+        sourceIdentifier: 'writer',
+        success: true,
+      },
+    ] as any);
+    createAgent
+      .mockResolvedValueOnce({ agentId: 'agent-legacy' })
+      .mockResolvedValueOnce({ agentId: 'agent-new' });
+
+    const reportSpy = vi.spyOn(discoverService, 'reportAgentEvent').mockResolvedValue(undefined);
+
+    await installMarketplaceAgents(['legacy:writer', 'writer']);
+
+    const legacyCall = createAgent.mock.calls.find(
+      (call) => call[0].config.params?.forkedFromIdentifier === 'legacy:writer',
+    );
+    const newCall = createAgent.mock.calls.find(
+      (call) => call[0].config.params?.forkedFromIdentifier === 'writer',
+    );
+
+    expect(legacyCall?.[0].config).toEqual(
+      expect.objectContaining({
+        title: 'Legacy Writer',
+      }),
+    );
+    expect(legacyCall?.[0].config).not.toHaveProperty('marketIdentifier');
+    expect(newCall?.[0].config).toEqual(
+      expect.objectContaining({
+        marketIdentifier: 'forked-market-writer',
+        title: 'Forked Market Writer',
+      }),
+    );
+    expect(reportSpy).toHaveBeenCalledTimes(1);
+    expect(reportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'add',
+        identifier: 'forked-market-writer',
+      }),
+    );
+  });
 });

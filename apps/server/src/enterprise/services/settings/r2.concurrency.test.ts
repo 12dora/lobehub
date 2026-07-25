@@ -8,8 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
-  platformAuditLogs,
-  platformResourceRevisions,
   platformSettingPolicies,
   platformSettingsBundle,
   userSettingOverrideRevisions,
@@ -17,7 +15,13 @@ import {
 } from '@/database/schemas/platform';
 import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
+import {
+  PLATFORM_SETTINGS_RESOURCE_ID,
+  PLATFORM_SETTINGS_RESOURCE_TYPE,
+} from '@/types/platform/settings';
 
+import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
+import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { AdminSettingsService } from './adminSettingsService';
 import { EffectiveSettingsService, SettingsPathError } from './effectiveSettingsService';
@@ -45,9 +49,14 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+const FIXTURE_ACTOR_IDS = ['admin'] as const;
+
 beforeEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: FIXTURE_ACTOR_IDS });
+  await deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+    resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+  });
   await serverDB.delete(userSettingOverrides);
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
@@ -57,8 +66,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await serverDB.delete(platformAuditLogs);
-  await serverDB.delete(platformResourceRevisions);
+  await deletePlatformAuditLogsForTest(serverDB, { actorUserIds: FIXTURE_ACTOR_IDS });
+  await deletePlatformResourceRevisionsForTest(serverDB, {
+    resourceIds: [PLATFORM_SETTINGS_RESOURCE_ID],
+    resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+  });
   await serverDB.delete(userSettingOverrides);
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);

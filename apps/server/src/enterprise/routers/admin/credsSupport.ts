@@ -4,6 +4,7 @@ import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
+import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import {
   PlatformGlobalCredentialAdminService,
   PlatformGlobalCredentialConflictError,
@@ -75,7 +76,7 @@ export const mapCredsServiceError = (error: unknown): never => {
 };
 
 export const assertDangerousReauth = async (params: {
-  action: string;
+  action: AuditAction;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -83,15 +84,14 @@ export const assertDangerousReauth = async (params: {
   targetId: string;
 }) =>
   assertDangerousReauthWithAudit({
-    action: params.action,
-    actorUserId: params.actorUserId,
-    auditFailureLog: '[admin.creds] reauth denied audit failed',
-    // Legacy path only logged errorClass (no action).
-    auditFailureMeta: {},
     authenticatedAt: params.authenticatedAt,
     authMethod: params.authMethod,
-    reason: FIXED_AUDIT_REASON,
     serverDB: params.serverDB,
-    targetId: params.targetId,
-    targetType: 'platform_global_credential',
+    denied: {
+      action: params.action,
+      actorUserId: params.actorUserId,
+      reason: FIXED_AUDIT_REASON,
+      targetId: params.targetId,
+      targetType: 'platform_global_credential',
+    },
   });
