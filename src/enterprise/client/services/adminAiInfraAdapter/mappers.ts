@@ -62,14 +62,31 @@ export const mapProviderDetail = (
   };
 };
 
+/**
+ * Endpoint field tri-state from form keyVaults:
+ * - `undefined` — field absent; leave prior endpoint
+ * - `string` — explicit set
+ * - `null` — administrator cleared the field; remove endpoint
+ */
+export type EndpointField = string | null | undefined;
+
 /** Split form keyVaults: baseURL/endpoint → public config; remaining non-empty → secret merge. */
-export const splitFormKeyVaults = (keyVaults?: Record<string, unknown> | null) => {
+export const splitFormKeyVaults = (
+  keyVaults?: Record<string, unknown> | null,
+): { endpoint: EndpointField; secretParts: Record<string, string | Record<string, string>> } => {
   const raw = keyVaults ?? {};
-  const endpointRaw = raw.baseURL ?? raw.endpoint;
-  const endpoint =
-    typeof endpointRaw === 'string' && endpointRaw.trim().length > 0
-      ? endpointRaw.trim()
-      : undefined;
+  const hasEndpointField =
+    Object.prototype.hasOwnProperty.call(raw, 'baseURL') ||
+    Object.prototype.hasOwnProperty.call(raw, 'endpoint');
+
+  let endpoint: EndpointField;
+  if (hasEndpointField) {
+    const endpointRaw = raw.baseURL ?? raw.endpoint;
+    endpoint =
+      typeof endpointRaw === 'string' && endpointRaw.trim().length > 0 ? endpointRaw.trim() : null;
+  } else {
+    endpoint = undefined;
+  }
 
   const secretParts: Record<string, string | Record<string, string>> = {};
   for (const [key, value] of Object.entries(raw)) {

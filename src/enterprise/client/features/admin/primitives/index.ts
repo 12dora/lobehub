@@ -15,7 +15,6 @@ export {
   clearAdminFilters,
   createEmptyAdminFilters,
   hasActiveAdminFilters,
-  matchAdminFilterQuery,
 } from './filterBar.utils';
 export {
   carriesLocalDraftSecretMaterial,

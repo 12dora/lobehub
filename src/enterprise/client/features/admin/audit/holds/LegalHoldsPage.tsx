@@ -49,6 +49,8 @@ const LegalHoldsPage = memo(() => {
   const { t } = useTranslation('admin');
   const { permissions, authMethod } = useAdminAccess();
   const canManage = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_LEGAL_HOLD_MANAGE);
+  // users.search requires AUDIT_READ; legal-hold-only actors fall back to free-form user ID.
+  const canAuditRead = hasPermission(permissions, PLATFORM_PERMISSIONS.AUDIT_READ);
   const { createLegalHold, releaseLegalHold } = useAdminAuditMutations();
 
   /** List filter uses stored status only (not projected `expired`). */
@@ -302,7 +304,7 @@ const LegalHoldsPage = memo(() => {
             <Text>{t('audit.holds.create.scopeId')}</Text>
             {newScopeType === 'user' ? (
               <AuditUserSearchSelect
-                enabled
+                enabled={canAuditRead}
                 value={newScopeId || undefined}
                 onChange={(id) => setNewScopeId(id ?? '')}
               />

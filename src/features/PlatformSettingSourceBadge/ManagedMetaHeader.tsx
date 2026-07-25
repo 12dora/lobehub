@@ -1,7 +1,8 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
+import { Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
+import { useReducedMotion } from 'motion/react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -18,6 +19,7 @@ import { type PlatformSettingMetaState } from './usePlatformSettingMeta';
 const ManagedMetaHeader = memo<{ meta: PlatformSettingMetaState; showBadge: boolean }>(
   ({ meta, showBadge }) => {
     const { t } = useTranslation('setting');
+    const reduceMotion = useReducedMotion();
     return (
       <>
         {showBadge ? (
@@ -30,7 +32,13 @@ const ManagedMetaHeader = memo<{ meta: PlatformSettingMetaState; showBadge: bool
           />
         ) : null}
         {meta.status === 'loading' ? (
-          <Text type="secondary">{t('platformSource.loadingMeta')}</Text>
+          <div aria-label={t('platformSource.loadingMeta')} role="status">
+            <Skeleton.Button
+              active={!reduceMotion}
+              size="small"
+              style={{ height: 16, width: 120 }}
+            />
+          </div>
         ) : null}
         {meta.status === 'error' ? (
           <Button size="small" type="text" onClick={() => void meta.retry()}>

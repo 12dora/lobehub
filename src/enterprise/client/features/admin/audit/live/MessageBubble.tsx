@@ -2,6 +2,7 @@
 
 import { Tag, Text } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -92,10 +93,12 @@ export interface MessageBubbleProps {
 
 const MessageBubble = memo<MessageBubbleProps>(({ message, bodyHidden }) => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const role = (message.role || 'assistant').toLowerCase();
   const isUser = role === 'user';
   const isSystem = role === 'system' || role === 'tool';
   const [collapsed, setCollapsed] = useState(isSystem);
+  const bodyOpen = !(isSystem && collapsed);
 
   const rowClass = isUser
     ? `${styles.row} ${styles.rowUser}`
@@ -108,6 +111,16 @@ const MessageBubble = memo<MessageBubbleProps>(({ message, bodyHidden }) => {
     : isSystem
       ? `${styles.bubble} ${styles.bubbleSystem}`
       : `${styles.bubble} ${styles.bubbleAssistant}`;
+
+  const body = bodyHidden ? (
+    <Text type="secondary">{t('audit.live.message.bodyHidden')}</Text>
+  ) : message.content != null && message.content !== '' ? (
+    renderBody(message.content)
+  ) : message.hasContent ? (
+    <Text type="secondary">{t('audit.conversations.topic.bodyNotLoaded')}</Text>
+  ) : (
+    '—'
+  );
 
   return (
     <div className={rowClass}>
@@ -135,18 +148,26 @@ const MessageBubble = memo<MessageBubbleProps>(({ message, bodyHidden }) => {
             {collapsed ? t('audit.live.message.expand') : t('audit.live.message.collapse')}
           </div>
         ) : null}
-        {isSystem && collapsed ? null : (
-          <div className={styles.body}>
-            {bodyHidden ? (
-              <Text type="secondary">{t('audit.live.message.bodyHidden')}</Text>
-            ) : message.content != null && message.content !== '' ? (
-              renderBody(message.content)
-            ) : message.hasContent ? (
-              <Text type="secondary">{t('audit.conversations.topic.bodyNotLoaded')}</Text>
-            ) : (
-              '—'
-            )}
-          </div>
+        {reduceMotion ? (
+          bodyOpen ? (
+            <div className={styles.body}>{body}</div>
+          ) : null
+        ) : (
+          <AnimatePresence initial={false}>
+            {bodyOpen ? (
+              <m.div
+                animate={{ height: 'auto', opacity: 1 }}
+                className={styles.body}
+                exit={{ height: 0, opacity: 0 }}
+                initial={{ height: 0, opacity: 0 }}
+                key="body"
+                style={{ overflow: 'hidden' }}
+                transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+              >
+                {body}
+              </m.div>
+            ) : null}
+          </AnimatePresence>
         )}
       </div>
     </div>

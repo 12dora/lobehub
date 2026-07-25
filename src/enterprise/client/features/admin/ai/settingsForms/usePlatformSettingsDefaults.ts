@@ -1,6 +1,8 @@
 'use client';
 
+import { toast } from '@lobehub/ui/base-ui';
 import { useCallback, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -24,6 +26,7 @@ const SWR_KEY = ['admin', 'settings', 'platform-defaults'] as const;
  * Load published platform settings and apply path patches via applyImmediate.
  */
 export const usePlatformSettingsDefaults = () => {
+  const { t } = useTranslation('admin');
   const { permissions } = useAdminAccess();
   const canUpdate = permissions.includes(PLATFORM_PERMISSIONS.SETTINGS_UPDATE);
   const canPublish = permissions.includes(PLATFORM_PERMISSIONS.SETTINGS_PUBLISH);
@@ -55,9 +58,20 @@ export const usePlatformSettingsDefaults = () => {
         throw new Error('PLATFORM_PERMISSION_DENIED');
       }
       try {
+        // Commit and cache refresh are separate outcomes (XT-003): a refresh
+        // failure must not be reported as a write failure / force a re-write.
         const result = await adminSettingsService.applyImmediate({ patch, reason });
         setDirtyDraftBlocked(false);
-        await mutate();
+        try {
+          await mutate();
+        } catch {
+          toast.warning(
+            t('aiServiceModel.savedRefreshFailed', {
+              defaultValue:
+                'Saved successfully, but the latest values could not be refreshed. Retry load if the form looks stale.',
+            }),
+          );
+        }
         return result;
       } catch (err) {
         if (isUnpublishedSettingsDraftError(err)) {
@@ -68,7 +82,7 @@ export const usePlatformSettingsDefaults = () => {
         throw err;
       }
     },
-    [canWrite, mutate],
+    [canWrite, mutate, t],
   );
 
   const updateDefaultAgentModel = useCallback(

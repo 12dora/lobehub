@@ -14,9 +14,12 @@ import { useAssignmentEditor } from './useAssignmentEditor';
 import type { RefreshLock } from './useRefreshLock';
 
 interface AssignmentPanelProps {
+  /** True when the detail aggregate hit the page ceiling for assignments. */
+  assignmentsTruncated?: boolean;
   authMethod: AdminReauthAuthMethod | null;
   /** Shared refresh gate; when a committed agent/assignment change awaits refresh, writes lock. */
   lock: RefreshLock;
+  onLoadMoreAssignments?: () => Promise<void>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   /**
    * Job-scoped detail refresh after Start. Start only enqueues a rollout and does NOT advance
@@ -29,8 +32,10 @@ interface AssignmentPanelProps {
 }
 
 export const AssignmentPanel = ({
+  assignmentsTruncated = false,
   authMethod,
   lock,
+  onLoadMoreAssignments,
   permissions,
   refresh,
   rolloutsEnabled,
@@ -78,6 +83,22 @@ export const AssignmentPanel = ({
       <Text as="h3" fontSize={16} weight={600}>
         {t('agentCatalog.assignment.title')}
       </Text>
+
+      {assignmentsTruncated ? (
+        <Alert
+          showIcon
+          description={t('agentCatalog.collection.truncatedAssignments')}
+          message={t('agentCatalog.collection.truncated')}
+          type="warning"
+          action={
+            onLoadMoreAssignments ? (
+              <Button size="small" onClick={() => void onLoadMoreAssignments()}>
+                {t('agentCatalog.collection.loadMore')}
+              </Button>
+            ) : undefined
+          }
+        />
+      ) : null}
 
       {editor.refreshFailed ? (
         <Alert

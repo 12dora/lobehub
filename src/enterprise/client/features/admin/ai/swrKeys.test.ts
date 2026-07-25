@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildAdminAiModelDependentsKey,
   buildAdminAiModelListKey,
   buildAdminAiProviderGetKey,
   buildAdminAiProviderListKey,
@@ -22,13 +21,8 @@ describe('admin AI catalog SWR keys', () => {
     ).toEqual(['admin.aiProviders.list', 'p-1', true, 20, 'open', 'custom', 'published']);
   });
 
-  it('scopes provider and dependent caches by identity', () => {
+  it('scopes provider caches by identity', () => {
     expect(buildAdminAiProviderGetKey('p-1')).toEqual(['admin.aiProviders.get', 'p-1']);
-    expect(buildAdminAiModelDependentsKey('p-1', 'm-1')).toEqual([
-      'admin.aiModels.dependents',
-      'p-1',
-      'm-1',
-    ]);
     expect(buildAdminAiProviderRevisionsKey('p-1', 7, 20)).toEqual([
       'admin.aiProviders.listRevisions',
       'p-1',

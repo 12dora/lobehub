@@ -4,12 +4,11 @@ import isEqual from 'fast-deep-equal';
 import { memo } from 'react';
 
 import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
+import { MemoryFormView } from '@/features/SettingsForms';
 import { usePermission } from '@/hooks/usePermission';
 import { useSaveState } from '@/hooks/useSaveState';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/selectors';
-
-import MemoryFormView from './MemoryFormView';
 
 /**
  * User-settings wrapper for memory preferences. Store / meta / permission wiring stays here.

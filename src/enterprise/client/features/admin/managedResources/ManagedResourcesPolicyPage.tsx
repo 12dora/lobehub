@@ -38,32 +38,13 @@ import {
   toManagedResourceUiMode,
 } from './controller';
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
+import { managedResourcePolicyCardStyles, POLICY_MODE_SELECT_WIDTH } from './policyCardStyles';
 import SharedOAuthAuthorizationControl from './SharedOAuthAuthorizationControl';
 import SidebarLayoutControl from './SidebarLayoutControl';
 
 const log = debug('lobe-client:admin:managed-resources');
 
 const styles = createStaticStyles(({ css }) => ({
-  card: css`
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-
-    padding: 16px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadiusLG};
-
-    background: ${cssVar.colorBgContainer};
-  `,
-  row: css`
-    display: flex;
-    flex-wrap: nowrap;
-    gap: 12px;
-    align-items: center;
-    justify-content: space-between;
-
-    min-width: 0;
-  `,
   footer: css`
     position: sticky;
     z-index: 2;
@@ -493,8 +474,8 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
             const item = draft[resource];
             const uiMode = toManagedResourceUiMode(item);
             return (
-              <section className={styles.card} key={resource}>
-                <div className={styles.row}>
+              <section className={managedResourcePolicyCardStyles.card} key={resource}>
+                <div className={managedResourcePolicyCardStyles.row}>
                   <Text
                     strong
                     ellipsis={{ tooltip: true, tooltipWhenOverflow: true }}
@@ -505,8 +486,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
                   <Select
                     aria-label={`${t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never)} ${t('managedResources.uiMode.label')}`}
                     disabled={!canEditPolicy}
-                    // Unified policy-mode select width — keep in sync with the sidebar + settings boxes.
-                    style={{ flexShrink: 0, width: 180 }}
+                    style={{ flexShrink: 0, width: POLICY_MODE_SELECT_WIDTH }}
                     value={uiMode}
                     options={UI_MODE_VALUES.map((mode) => ({
                       label: t(`managedResources.uiMode.${mode}` as never),
@@ -577,8 +557,8 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     if (canView || !canReadConnectorGovernance) return null;
     return (
       <div className={styles.grid}>
-        <section className={styles.card}>
-          <div className={styles.row}>
+        <section className={managedResourcePolicyCardStyles.card}>
+          <div className={managedResourcePolicyCardStyles.row}>
             <Text strong style={{ flex: 1, minWidth: 0 }}>
               {t(MANAGED_RESOURCE_NAV_LABEL_KEY.connectors as never)}
             </Text>

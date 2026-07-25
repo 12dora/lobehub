@@ -9,7 +9,7 @@ import GeneralSettingsPage from './GeneralSettingsPage';
 
 const mocks = vi.hoisted(() => ({
   blocker: { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' as string },
-  confirmModal: vi.fn((_options: { onCancel: () => void; onOk: () => void }) => ({
+  createModal: vi.fn((_options: { onOpenChange?: (open: boolean) => void }) => ({
     close: vi.fn(),
     destroy: vi.fn(),
   })),
@@ -61,6 +61,11 @@ vi.mock('@lobehub/ui', () => ({
   TextArea: (props: any) => <textarea {...props} />,
 }));
 
+const toastMocks = vi.hoisted(() => ({
+  error: vi.fn(),
+  success: vi.fn(),
+}));
+
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, loading, type: _type, ...props }: any) => (
     <button {...props} disabled={props.disabled || loading}>
@@ -76,8 +81,9 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       onChange={(event) => onChange?.(event.target.checked)}
     />
   ),
-  confirmModal: mocks.confirmModal,
-  toast: { error: vi.fn(), success: vi.fn() },
+  createModal: mocks.createModal,
+  ModalFooter: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  toast: toastMocks,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -148,7 +154,7 @@ describe('GeneralSettingsPage unsaved guard', () => {
     mocks.blocker.state = 'unblocked';
     mocks.blocker.proceed.mockReset();
     mocks.blocker.reset.mockReset();
-    mocks.confirmModal.mockClear();
+    mocks.createModal.mockClear();
     mocks.useBlocker.mockClear();
     mocks.update.mockReset();
     mocks.mutate.mockReset();
@@ -213,14 +219,66 @@ describe('GeneralSettingsPage unsaved guard', () => {
     addSpy.mockRestore();
   });
 
-  it('prompts via confirmModal when the router reports a blocked navigation', async () => {
+  it('prompts via createModal when the router reports a blocked navigation', async () => {
     mocks.blocker.state = 'blocked';
     render(<GeneralSettingsPage embedded />);
     const switches = await screen.findAllByLabelText('switch');
     fireEvent.click(switches[0]!);
 
-    await waitFor(() => expect(mocks.confirmModal).toHaveBeenCalled());
-    act(() => mocks.confirmModal.mock.calls[0]![0].onCancel());
+    await waitFor(() => expect(mocks.createModal).toHaveBeenCalled());
+    // Passive dismiss (Escape / close) resolves cancel via onOpenChange(false).
+    act(() => mocks.createModal.mock.calls[0]![0].onOpenChange?.(false));
     expect(mocks.blocker.reset).toHaveBeenCalled();
+  });
+});
+
+describe('GeneralSettingsPage CAS conflict recovery', () => {
+  beforeEach(() => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.IDENTITY_READ, PLATFORM_PERMISSIONS.IDENTITY_UPDATE];
+    mocks.data = {
+      emailDomainAllowlist: [],
+      emailDomainAllowlistEnabled: false,
+      openRegistration: true,
+      revision: 4,
+    };
+    mocks.blocker.state = 'unblocked';
+    mocks.update.mockReset();
+    mocks.mutate.mockReset();
+    toastMocks.error.mockClear();
+    toastMocks.success.mockClear();
+  });
+
+  it('keeps edits and conflict state when discard refresh fails (ASI-001)', async () => {
+    mocks.update.mockRejectedValueOnce({
+      data: { errorData: { code: 'PLATFORM_REVISION_CONFLICT' } },
+      message: 'revision conflict',
+    });
+    // Auto-refresh after conflict fails, then discard-and-refresh also fails.
+    mocks.mutate.mockRejectedValue(new Error('network down'));
+
+    render(<GeneralSettingsPage />);
+    const switches = await screen.findAllByLabelText('switch');
+    // Toggle openRegistration off (dirty edit).
+    fireEvent.click(switches[0]!);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'generalSettings.save' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('generalSettings.conflict.title');
+    });
+
+    // Local edit must still be reflected (openRegistration now false → first switch unchecked).
+    expect((switches[0] as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'generalSettings.stale.refresh' }));
+
+    await waitFor(() => {
+      expect(toastMocks.error).toHaveBeenCalledWith('generalSettings.stale.refreshFailed');
+    });
+
+    // Conflict alert remains; save stays disabled; edits retained.
+    expect(screen.getByRole('alert')).toHaveTextContent('generalSettings.conflict.title');
+    expect(screen.getByRole('button', { name: 'generalSettings.save' })).toBeDisabled();
+    expect((switches[0] as HTMLInputElement).checked).toBe(false);
   });
 });

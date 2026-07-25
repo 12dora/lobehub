@@ -1,25 +1,48 @@
 import { adminStatsService } from '@/enterprise/client/services/adminStats';
-import {
-  ADMIN_GLOBAL_STATS_SCOPE,
-  type StatsDataSource,
-} from '@/routes/(main)/settings/stats/features/StatsDataSource';
+import { ADMIN_GLOBAL_STATS_SCOPE, type StatsDataSource } from '@/features/SettingsStats';
 import type { UserDisplay } from '@/routes/(main)/settings/stats/types';
 import type { UsageLog, UsageRecordItem } from '@/types/usage/usageRecord';
+
+/** Cap identity labels retained for GroupBy.User charts (LRU by Map insertion order). */
+export const ADMIN_STATS_USER_DISPLAY_CACHE_MAX = 500;
 
 /** Filled as global usage rows stream in — drives resolveUser for GroupBy.User. */
 const userDisplayCache = new Map<string, UserDisplay>();
 
-const rememberUsersFromUsage = (records: Array<{ userDisplay?: string; userId?: string }>) => {
+/**
+ * Remember/update user display labels from authoritative usage rows.
+ * Always overwrites existing entries so renames are visible without reload.
+ * Evicts the least-recently-used key when the cache exceeds the cap.
+ */
+export const rememberUsersFromUsage = (
+  records: Array<{ userDisplay?: string; userId?: string }>,
+) => {
   for (const row of records) {
     if (!row.userId) continue;
-    if (!userDisplayCache.has(row.userId)) {
-      userDisplayCache.set(row.userId, {
-        avatar: null,
-        name: row.userDisplay || row.userId,
-      });
+    const next: UserDisplay = {
+      avatar: null,
+      name: row.userDisplay || row.userId,
+    };
+    // Re-insert to mark as most recently used.
+    if (userDisplayCache.has(row.userId)) {
+      userDisplayCache.delete(row.userId);
+    }
+    userDisplayCache.set(row.userId, next);
+    while (userDisplayCache.size > ADMIN_STATS_USER_DISPLAY_CACHE_MAX) {
+      const oldest = userDisplayCache.keys().next().value;
+      if (oldest === undefined) break;
+      userDisplayCache.delete(oldest);
     }
   }
 };
+
+/** Clear the display cache (account/scope transition or tests). */
+export const resetAdminStatsUserDisplayCache = () => {
+  userDisplayCache.clear();
+};
+
+/** Test / diagnostics helper — current bounded cache size. */
+export const getAdminStatsUserDisplayCacheSize = () => userDisplayCache.size;
 
 /** Platform-global stats data source for admin.stats (scoped SWR keys). */
 export const adminGlobalStatsDataSource: StatsDataSource = {
@@ -53,5 +76,11 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
  * Resolve userId → display for admin GroupBy.User.
  * Populated when usage rows are fetched (userDisplay joined server-side).
  */
-export const resolveAdminStatsUser = (userId: string): UserDisplay =>
-  userDisplayCache.get(userId) ?? { avatar: null, name: userId };
+export const resolveAdminStatsUser = (userId: string): UserDisplay => {
+  const hit = userDisplayCache.get(userId);
+  if (!hit) return { avatar: null, name: userId };
+  // Touch LRU order on read.
+  userDisplayCache.delete(userId);
+  userDisplayCache.set(userId, hit);
+  return hit;
+};

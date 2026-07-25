@@ -1,8 +1,9 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
+import { Flexbox, NeuralNetworkLoading, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -36,12 +37,30 @@ export const RetryAction = ({ mutate }: { mutate: () => Promise<unknown> }) => {
 
 export const LoadingHint = () => {
   const { t } = useTranslation('admin');
-  return <Text type="secondary">{t('agentCatalog.dependency.loading')}</Text>;
+  const reduceMotion = useReducedMotion();
+  if (reduceMotion) {
+    return <Text type="secondary">{t('agentCatalog.dependency.loading')}</Text>;
+  }
+  return (
+    <Flexbox horizontal align="center" gap={8} role="status">
+      <NeuralNetworkLoading size={16} />
+      <Text type="secondary">{t('agentCatalog.dependency.loading')}</Text>
+    </Flexbox>
+  );
 };
 
 export const RevalidatingHint = () => {
   const { t } = useTranslation('admin');
-  return <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>;
+  const reduceMotion = useReducedMotion();
+  if (reduceMotion) {
+    return <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>;
+  }
+  return (
+    <Flexbox horizontal align="center" gap={8} role="status">
+      <NeuralNetworkLoading size={16} />
+      <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>
+    </Flexbox>
+  );
 };
 
 /**

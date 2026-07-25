@@ -39,32 +39,18 @@ const DEP_CONNECTOR_DETAIL_KEY = 'enterprise.admin.agents.dep.connectorDetail';
 const DEP_CONNECTOR_DETAILS_KEY = 'enterprise.admin.agents.dep.connectorDetails';
 
 /**
- * Hard cap on cursor-followed dependency-catalog preflight drains (providers / connectors /
- * provider revisions). 20 pages × 100 items = 2,000 rows — enough for the editor without
- * unbounded memory growth or a stuck cursor cycle.
+ * Hard cap on cursor-followed dependency-catalog preflight drains (provider revisions only).
+ * Provider/connector *pickers* use server-side paginated search (one page per query) instead of
+ * silent multi-page drains.
  */
 export const ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT = 20;
 
-/** Cursor-safe page walk: stops on cycle or at {@link ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT}. */
-const collectCursorPages = async <T>(
-  fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor: string | null }>,
-): Promise<T[]> => {
-  const items: T[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-  let pages = 0;
-  do {
-    if (cursor) {
-      if (seenCursors.has(cursor)) break;
-      seenCursors.add(cursor);
-    }
-    const page = await fetchPage(cursor);
-    items.push(...page.items);
-    cursor = page.nextCursor ?? undefined;
-    pages += 1;
-  } while (cursor && pages < ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
-  return items;
-};
+/** One server page of catalog options with an explicit truncation signal. */
+export interface CatalogSearchPage<T> {
+  items: T[];
+  /** True when the server returned a nextCursor — more matching rows exist beyond this page. */
+  truncated: boolean;
+}
 
 const toConnectorDetail = (
   published: NonNullable<Awaited<ReturnType<PublishedConnectorService['get']>>['published']>,
@@ -79,18 +65,26 @@ const toConnectorDetail = (
   })),
 });
 
+/**
+ * Server-side published-provider search for the model dependency picker.
+ * One page per query (limit 100) — never silently drains past a page ceiling.
+ * Pass a debounced `query` so typing re-keys SWR without local catalog filtering alone.
+ */
 export const useAdminPublishedProviders = (
   enabled: boolean,
+  query = '',
   service: PublishedProviderService = adminAiCatalogService,
 ) =>
-  useClientDataSWR<PublishedProviderSummary[]>(
-    enabled ? [DEP_PROVIDERS_KEY] : null,
+  useClientDataSWR<CatalogSearchPage<PublishedProviderSummary>>(
+    enabled ? [DEP_PROVIDERS_KEY, query] : null,
     async () => {
-      const pages = await collectCursorPages((cursor) =>
-        service.listProviders({ cursor, limit: 100, status: 'published' }),
-      );
+      const page = await service.listProviders({
+        limit: 100,
+        query: query.trim() || undefined,
+        status: 'published',
+      });
       const items: PublishedProviderSummary[] = [];
-      for (const provider of pages) {
+      for (const provider of page.items) {
         if (provider.status !== 'published') continue;
         items.push({
           displayName: provider.displayName,
@@ -98,7 +92,7 @@ export const useAdminPublishedProviders = (
           providerKey: provider.providerKey,
         });
       }
-      return items;
+      return { items, truncated: page.nextCursor !== null };
     },
     { revalidateOnFocus: false },
   );
@@ -160,18 +154,25 @@ export const useAdminPublishedSkills = (
     { revalidateOnFocus: false },
   );
 
+/**
+ * Server-side published-connector search for the connector dependency picker.
+ * One page per query — never silently drains past a page ceiling.
+ */
 export const useAdminPublishedConnectors = (
   enabled: boolean,
+  query = '',
   service: PublishedConnectorService = adminConnectorsService,
 ) =>
-  useClientDataSWR<PublishedConnectorSummary[]>(
-    enabled ? [DEP_CONNECTORS_KEY] : null,
+  useClientDataSWR<CatalogSearchPage<PublishedConnectorSummary>>(
+    enabled ? [DEP_CONNECTORS_KEY, query] : null,
     async () => {
-      const pages = await collectCursorPages((cursor) =>
-        service.list({ cursor, limit: 100, status: 'published' }),
-      );
+      const page = await service.list({
+        limit: 100,
+        query: query.trim() || undefined,
+        status: 'published',
+      });
       const items: PublishedConnectorSummary[] = [];
-      for (const connector of pages) {
+      for (const connector of page.items) {
         if (connector.status !== 'published') continue;
         items.push({
           displayName: connector.displayName,
@@ -179,7 +180,7 @@ export const useAdminPublishedConnectors = (
           key: connector.key,
         });
       }
-      return items;
+      return { items, truncated: page.nextCursor !== null };
     },
     { revalidateOnFocus: false },
   );

@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { DEFAULT_AVATAR } from '@/const/meta';
 import type { AgentRankItem } from '@/types/agent';
 
+import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
 import { useOverviewAgentRank, useOverviewModelRank } from './useOverviewStats';
 import { isEmptyRank } from './utils';
@@ -88,54 +89,58 @@ const RankCards = memo(() => {
     <div className={styles.rankGrid}>
       <section className={styles.card}>
         <h2 className={styles.sectionTitle}>{t('overview.rank.modelsTitle')}</h2>
-        {modelsFirstError ? (
-          firstLoadError(() => void models.mutate())
-        ) : (
-          <>
-            {modelsStaleError ? refreshWarning(() => void models.mutate()) : null}
-            {modelsEmpty ? (
-              <div className={styles.empty}>
-                <p className={styles.emptyTitle}>{noData.title}</p>
-                <p className={styles.emptyDesc}>{noData.desc}</p>
-              </div>
-            ) : (
-              <BarList
-                data={(models.data ?? []).map(mapModel)}
-                height={220}
-                leftLabel={t('overview.rank.modelsLeft')}
-                loading={modelsLoading}
-                noDataText={noData}
-                rightLabel={t('overview.rank.modelsRight')}
-              />
-            )}
-          </>
-        )}
+        {modelsStaleError ? refreshWarning(() => void models.mutate()) : null}
+        <OverviewCardState
+          stateKey={
+            modelsLoading ? 'loading' : modelsFirstError ? 'error' : modelsEmpty ? 'empty' : 'data'
+          }
+        >
+          {modelsFirstError ? (
+            firstLoadError(() => void models.mutate())
+          ) : modelsEmpty ? (
+            <div className={styles.empty}>
+              <p className={styles.emptyTitle}>{noData.title}</p>
+              <p className={styles.emptyDesc}>{noData.desc}</p>
+            </div>
+          ) : (
+            <BarList
+              data={(models.data ?? []).map(mapModel)}
+              height={220}
+              leftLabel={t('overview.rank.modelsLeft')}
+              loading={modelsLoading}
+              noDataText={noData}
+              rightLabel={t('overview.rank.modelsRight')}
+            />
+          )}
+        </OverviewCardState>
       </section>
 
       <section className={styles.card}>
         <h2 className={styles.sectionTitle}>{t('overview.rank.agentsTitle')}</h2>
-        {agentsFirstError ? (
-          firstLoadError(() => void agents.mutate())
-        ) : (
-          <>
-            {agentsStaleError ? refreshWarning(() => void agents.mutate()) : null}
-            {agentsEmpty ? (
-              <div className={styles.empty}>
-                <p className={styles.emptyTitle}>{noData.title}</p>
-                <p className={styles.emptyDesc}>{noData.desc}</p>
-              </div>
-            ) : (
-              <BarList
-                data={(agents.data ?? []).map((item) => mapAgent(item, fallbackAgent))}
-                height={220}
-                leftLabel={t('overview.rank.agentsLeft')}
-                loading={agentsLoading}
-                noDataText={noData}
-                rightLabel={t('overview.rank.agentsRight')}
-              />
-            )}
-          </>
-        )}
+        {agentsStaleError ? refreshWarning(() => void agents.mutate()) : null}
+        <OverviewCardState
+          stateKey={
+            agentsLoading ? 'loading' : agentsFirstError ? 'error' : agentsEmpty ? 'empty' : 'data'
+          }
+        >
+          {agentsFirstError ? (
+            firstLoadError(() => void agents.mutate())
+          ) : agentsEmpty ? (
+            <div className={styles.empty}>
+              <p className={styles.emptyTitle}>{noData.title}</p>
+              <p className={styles.emptyDesc}>{noData.desc}</p>
+            </div>
+          ) : (
+            <BarList
+              data={(agents.data ?? []).map((item) => mapAgent(item, fallbackAgent))}
+              height={220}
+              leftLabel={t('overview.rank.agentsLeft')}
+              loading={agentsLoading}
+              noDataText={noData}
+              rightLabel={t('overview.rank.agentsRight')}
+            />
+          )}
+        </OverviewCardState>
       </section>
     </div>
   );

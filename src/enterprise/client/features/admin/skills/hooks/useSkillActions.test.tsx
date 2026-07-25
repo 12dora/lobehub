@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   archive: vi.fn(),
   createVersion: vi.fn(),
   getVersion: vi.fn(),
+  invalidatePublishedSkillCatalog: vi.fn(),
   openReasonModal: vi.fn(),
   openVersionEditorModal: vi.fn(),
   publish: vi.fn(),
@@ -34,7 +35,8 @@ vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () =>
 // Keep the published-catalog side effect out of the write-action suite (avoids pulling
 // business-config / model-bank into this happy-dom unit test).
 vi.mock('@/enterprise/client/features/skills', () => ({
-  invalidatePublishedSkillCatalog: vi.fn(),
+  invalidatePublishedSkillCatalog: (...args: unknown[]) =>
+    mocks.invalidatePublishedSkillCatalog(...args),
 }));
 vi.mock('@/enterprise/client/services/adminSkills', () => ({
   adminSkillsService: {
@@ -127,11 +129,12 @@ const validation = {
 describe('M08 Skill write actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.archive.mockResolvedValue({});
-    mocks.publish.mockResolvedValue({});
+    mocks.archive.mockResolvedValue({ catalogRevision: 'catalog-1' });
+    mocks.invalidatePublishedSkillCatalog.mockResolvedValue(undefined);
+    mocks.publish.mockResolvedValue({ catalogRevision: 'catalog-1' });
     mocks.getVersion.mockResolvedValue({ validation });
     mocks.refresh.mockResolvedValue(data('skill-1', 4));
-    mocks.rollback.mockResolvedValue({});
+    mocks.rollback.mockResolvedValue({ catalogRevision: 'catalog-1' });
     mocks.updateDraft.mockResolvedValue({});
     mocks.validate.mockResolvedValue(validation);
   });
@@ -351,6 +354,46 @@ describe('M08 Skill write actions', () => {
     expect(result.current.validation?.validatedAt.getTime()).toBe(
       freshValidation.validatedAt.getTime(),
     );
+    expect(result.current.refreshFailed).toBe(false);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
+  });
+
+  it('exposes refresh retry when post-commit catalog invalidation fails without reissuing publish', async () => {
+    const currentEditor = { ...editor(), dirty: false };
+    mocks.invalidatePublishedSkillCatalog
+      .mockRejectedValueOnce(new Error('cache unavailable'))
+      .mockResolvedValueOnce(undefined);
+    mocks.refresh.mockResolvedValue(data('skill-1', 4));
+
+    const { result } = renderHook(() =>
+      useSkillActions({
+        authMethod: null,
+        data: data(),
+        editor: currentEditor as any,
+        permissions,
+        selectedValidation: validation,
+        selectedVersionId: 'version-1',
+      }),
+    );
+
+    act(() => result.current.openPublish());
+    const modal = mocks.openReasonModal.mock.calls[0][0];
+    // Commit succeeds; invalidation failure must not surface as a mutation error.
+    await act(async () => {
+      await modal.onSubmit(modal.buildPayload('publish'));
+    });
+
+    expect(mocks.publish).toHaveBeenCalledTimes(1);
+    expect(result.current.refreshFailed).toBe(true);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.refresh.failed');
+
+    // Locked: further write modals stay closed.
+    act(() => result.current.openArchive());
+    expect(mocks.openReasonModal).toHaveBeenCalledTimes(1);
+
+    await act(() => result.current.retryRefresh());
+    expect(mocks.publish).toHaveBeenCalledTimes(1);
+    expect(mocks.invalidatePublishedSkillCatalog).toHaveBeenCalledTimes(2);
     expect(result.current.refreshFailed).toBe(false);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
   });

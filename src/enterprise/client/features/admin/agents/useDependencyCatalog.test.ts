@@ -95,47 +95,61 @@ describe('useAdminConnectorDetails uses a bounded batch read (no N+1)', () => {
   });
 });
 
-describe('dependency catalog preflights are page-bounded', () => {
+describe('dependency catalog pickers use server-side one-page search', () => {
   beforeEach(() => {
     swr.fetcher = undefined;
     swr.key = undefined;
   });
 
-  it('stops provider preflight on a repeating cursor without draining forever', async () => {
+  it('loads one provider page with query and reports truncation when nextCursor remains', async () => {
     const listProviders = vi.fn().mockResolvedValue({
       items: [{ displayName: 'P', id: 'p1', providerKey: 'p', status: 'published' }],
-      nextCursor: 'stuck',
+      nextCursor: 'more',
     });
     renderHook(() =>
-      useAdminPublishedProviders(true, {
+      useAdminPublishedProviders(true, 'openai', {
         getProvider: vi.fn(),
         listProviderRevisions: vi.fn(),
         listProviders,
       } as never),
     );
 
-    const items = await swr.fetcher!();
-    expect(listProviders.mock.calls.length).toBeLessThanOrEqual(
-      ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT,
-    );
-    expect((items as unknown[]).length).toBeLessThanOrEqual(ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
+    const page = (await swr.fetcher!()) as { items: unknown[]; truncated: boolean };
+    expect(listProviders).toHaveBeenCalledTimes(1);
+    expect(listProviders).toHaveBeenCalledWith({
+      limit: 100,
+      query: 'openai',
+      status: 'published',
+    });
+    expect(page.items).toHaveLength(1);
+    expect(page.truncated).toBe(true);
+    expect(swr.key).toEqual(['enterprise.admin.agents.dep.providers', 'openai']);
   });
 
-  it('stops connector preflight at the hard page ceiling', async () => {
+  it('loads one connector page with query and reports truncation when nextCursor remains', async () => {
     const list = vi.fn().mockResolvedValue({
       items: [{ displayName: 'C', id: 'c1', key: 'c', status: 'published' }],
-      nextCursor: 'stuck',
+      nextCursor: 'more',
     });
     renderHook(() =>
-      useAdminPublishedConnectors(true, {
+      useAdminPublishedConnectors(true, 'issues', {
         get: vi.fn(),
         getPublishedBatch: vi.fn(),
         list,
       } as never),
     );
 
-    const items = await swr.fetcher!();
-    expect(list.mock.calls.length).toBeLessThanOrEqual(ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
-    expect((items as unknown[]).length).toBeLessThanOrEqual(ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT);
+    const page = (await swr.fetcher!()) as { items: unknown[]; truncated: boolean };
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith({
+      limit: 100,
+      query: 'issues',
+      status: 'published',
+    });
+    expect(page.truncated).toBe(true);
+    expect(swr.key).toEqual(['enterprise.admin.agents.dep.connectors', 'issues']);
   });
 });
+
+// Keep the page-limit constant exported for revision history drains.
+void ADMIN_AGENT_DEP_COLLECTION_PAGE_LIMIT;

@@ -80,21 +80,58 @@ describe('Admin Agent hook adapter injection', () => {
     expect(mocks.keys[1]).toBeNull();
   });
 
-  it('dedupes active jobs and merges lightweight getRollout projections', async () => {
+  it('dedupes active jobs and merges list-status poll projections without a silent 20-job slice', async () => {
     const client = createMockAdminAgentsClient();
     const detail = await fetchAdminAgentDetail('agent-inbox', client);
     const running = detail.rollouts[0]!;
-    const duplicateDetail = { ...detail, rollouts: [running, running] };
-    expect(selectActiveRolloutJobIds(duplicateDetail)).toEqual([running.jobId]);
+    const jobs = Array.from({ length: 21 }, (_, index) => ({
+      ...running,
+      jobId: `rollout-active-${index}`,
+    }));
+    const manyActive = { ...detail, rollouts: jobs };
+    // No silent cap — every loaded active job is in the poll key.
+    expect(selectActiveRolloutJobIds(manyActive)).toHaveLength(21);
 
+    const listRollouts = vi.spyOn(client, 'listRollouts').mockResolvedValue({
+      items: jobs.map((job) => ({ ...job, completed: job.completed + 1 })),
+      nextCursor: null,
+    });
     const getRollout = vi.spyOn(client, 'getRollout');
-    const polled = await fetchActiveAdminAgentRollouts(detail.identity.id, [running.jobId], client);
-    expect(getRollout).toHaveBeenCalledTimes(1);
-    const merged = mergePolledRollouts(detail, [
-      { ...polled[0]!, completed: running.completed + 1 },
-    ]);
-    expect(merged.rollouts[0]!.completed).toBe(running.completed + 1);
+    const polled = await fetchActiveAdminAgentRollouts(
+      detail.identity.id,
+      selectActiveRolloutJobIds(manyActive),
+      client,
+    );
+    // Prefer one list walk over N×getRollout when the list covers the active set.
+    // Active poll must request only pending/running so completed history is not transferred.
+    expect(listRollouts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: detail.identity.id,
+        status: ['pending', 'running'],
+      }),
+    );
+    expect(getRollout).not.toHaveBeenCalled();
+    expect(polled).toHaveLength(21);
+    const merged = mergePolledRollouts(manyActive, polled);
+    expect(merged.rollouts.every((row) => row.completed === running.completed + 1)).toBe(true);
     expect(detail.rollouts[0]!.completed).toBe(running.completed);
+  });
+
+  it('reports collection truncation after the page ceiling and keeps a nextCursor for load-more', async () => {
+    const client = createMockAdminAgentsClient();
+    const version = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
+    const listVersions = vi.spyOn(client, 'listVersions');
+    for (let i = 0; i < ADMIN_AGENT_COLLECTION_PAGE_LIMIT; i += 1) {
+      listVersions.mockResolvedValueOnce({
+        items: [{ ...version, id: `version-page-${i}` }],
+        nextCursor: i === ADMIN_AGENT_COLLECTION_PAGE_LIMIT - 1 ? 'still-more' : `cursor-${i + 1}`,
+      });
+    }
+
+    const detail = await fetchAdminAgentDetail('agent-inbox', client);
+    expect(detail.collectionMeta?.versionsTruncated).toBe(true);
+    expect(detail.collectionMeta?.versionsNextCursor).toBe('still-more');
+    expect(listVersions).toHaveBeenCalledTimes(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
   });
 
   it('skips rollout reads when the authoritative platform capability is off', async () => {
@@ -147,7 +184,7 @@ describe('Admin Agent hook adapter injection', () => {
       limit: 100,
     });
 
-    // Cycle guard: a stuck cursor must not spin past the hard page ceiling.
+    // Cycle guard: a stuck cursor must not spin past the hard page ceiling, and must flag truncation.
     listVersions.mockReset();
     for (let i = 0; i < ADMIN_AGENT_COLLECTION_PAGE_LIMIT + 5; i += 1) {
       listVersions.mockResolvedValueOnce({
@@ -158,6 +195,7 @@ describe('Admin Agent hook adapter injection', () => {
     const cycled = await fetchAdminAgentDetail('agent-inbox', client);
     expect(listVersions.mock.calls.length).toBeLessThanOrEqual(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
     expect(cycled.versions.length).toBeLessThanOrEqual(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
+    expect(cycled.collectionMeta?.versionsTruncated).toBe(true);
   });
 
   it('resolves the default inbox via a dedicated isDefault list filter (no catalog drain)', async () => {

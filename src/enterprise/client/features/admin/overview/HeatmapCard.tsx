@@ -3,7 +3,7 @@
 import { memo } from 'react';
 
 import { adminGlobalStatsDataSource } from '@/enterprise/client/features/admin/stats/adminStatsDataSource';
-import { StatsDataSourceProvider } from '@/routes/(main)/settings/stats/features/StatsDataSource';
+import { StatsDataSourceProvider } from '@/features/SettingsStats';
 import { AiHeatmaps } from '@/routes/(main)/settings/stats/features/visualization';
 
 import { overviewStyles as styles } from './styles';

@@ -4,6 +4,7 @@ import {
   type EnterpriseErrorCode,
   isEnterpriseErrorCode,
   MANAGED_ERROR_CODES,
+  PLATFORM_CONNECTOR_ERROR_CODES,
   PLATFORM_ERROR_CODES,
 } from '@/const/platform/errorCodes';
 import type { EnterpriseErrorBody } from '@/types/platform/errors';
@@ -19,15 +20,32 @@ export interface MappedEnterpriseError {
 const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError['action']>> = {
   [PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED]: 'contact_admin',
   [PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT]: 'retry',
+  [PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE]: 'retry',
   [PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED]: 'none',
   [PLATFORM_ERROR_CODES.PLATFORM_LAST_SUPER_ADMIN]: 'none',
   [PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED]: 'none',
+  [PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_PARTIAL_LOAD]: 'retry',
   [ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED]: 'contact_admin',
   [ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED]: 'reauth',
   [ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED]: 'none',
   [MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM]: 'contact_admin',
   [MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN]: 'contact_admin',
   [MANAGED_ERROR_CODES.MANAGED_AGENT_BATCH_LIMIT]: 'none',
+  // Connector admin / runtime failures — prefer reload/retry over silent generic fallback.
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_NOT_FOUND]: 'retry',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_NOT_PUBLISHED]: 'contact_admin',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_RESOURCE_MISMATCH]: 'retry',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_RATE_LIMITED]: 'retry',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED]: 'contact_admin',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED]: 'contact_admin',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_TOOL_DENIED]: 'contact_admin',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_SSRF_BLOCKED]: 'contact_admin',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED]: 'none',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_OAUTH_STATE_EXPIRED]: 'retry',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_OAUTH_STATE_INVALID]: 'retry',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED]: 'retry',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_BINDING_NOT_FOUND]: 'retry',
+  [PLATFORM_CONNECTOR_ERROR_CODES.PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH]: 'contact_admin',
 };
 
 /** M06 contract spelling; normalize to the legacy catalog entry for compatible UI copy/actions. */
@@ -107,6 +125,19 @@ export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null
         i18nKey: skillImportI18nKey(reason),
       };
     }
+    // Legal-hold create: purge contention uses shared PLATFORM_RESOURCE_IN_USE code
+    // with a domain-specific details.reason — map to hold-specific copy, not generic.
+    if (
+      body.code === PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE &&
+      reason === 'purge_in_progress'
+    ) {
+      return {
+        action: ACTION_BY_CODE[body.code] ?? 'retry',
+        code: body.code,
+        details: body.details,
+        i18nKey: 'audit.legalHold.errors.purgeInProgress',
+      };
+    }
     return {
       action: ACTION_BY_CODE[body.code] ?? 'none',
       code: body.code,
@@ -143,4 +174,10 @@ export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null
 };
 
 /** Re-export catalogs for UI bindings. */
-export { ADMIN_ERROR_CODES, ENTERPRISE_ERROR_CODES, MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES };
+export {
+  ADMIN_ERROR_CODES,
+  ENTERPRISE_ERROR_CODES,
+  MANAGED_ERROR_CODES,
+  PLATFORM_CONNECTOR_ERROR_CODES,
+  PLATFORM_ERROR_CODES,
+};

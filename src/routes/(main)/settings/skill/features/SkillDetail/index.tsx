@@ -28,18 +28,11 @@ import {
   ManagedComposioDisconnectButton,
   shouldSyncConnectorDefinition,
 } from './managedConnectorBehavior';
-import PlatformSkillDetail from './PlatformSkillDetail';
 
 const AgentSkillDetail = lazy(() => import('@/features/AgentSkillDetail'));
 
 export type ToolDetailType =
-  | 'agent-skill'
-  | 'builtin'
-  | 'builtin-skill'
-  | 'lobehub-connector'
-  | 'mcp-connector'
-  | 'platform-skill'
-  | 'plugin';
+  'agent-skill' | 'builtin' | 'builtin-skill' | 'lobehub-connector' | 'mcp-connector' | 'plugin';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   description: css`
@@ -490,12 +483,9 @@ const LegacySkillDetail = memo<SkillDetailProps>(
 
 LegacySkillDetail.displayName = 'LegacySkillDetail';
 
+/** Detail surface — managed catalog detail is intentionally not shipped here. */
 const SkillDetail = memo<SkillDetailProps>((props) =>
-  props.type === 'platform-skill' ? (
-    <PlatformSkillDetail skillKey={props.identifier} />
-  ) : props.managed ? null : (
-    <LegacySkillDetail {...props} />
-  ),
+  props.managed ? null : <LegacySkillDetail {...props} />,
 );
 
 SkillDetail.displayName = 'SkillDetail';

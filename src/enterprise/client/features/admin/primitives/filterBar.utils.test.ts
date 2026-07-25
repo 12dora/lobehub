@@ -4,7 +4,6 @@ import {
   clearAdminFilters,
   createEmptyAdminFilters,
   hasActiveAdminFilters,
-  matchAdminFilterQuery,
 } from './filterBar.utils';
 
 describe('filterBar.utils', () => {
@@ -15,11 +14,5 @@ describe('filterBar.utils', () => {
     const active = { ...empty, query: 'alice', status: 'draft' };
     expect(hasActiveAdminFilters(active)).toBe(true);
     expect(hasActiveAdminFilters(clearAdminFilters(active))).toBe(false);
-  });
-
-  it('matches query case-insensitively', () => {
-    expect(matchAdminFilterQuery('Alice Admin', 'ali')).toBe(true);
-    expect(matchAdminFilterQuery('Alice Admin', 'bob')).toBe(false);
-    expect(matchAdminFilterQuery('Alice', '')).toBe(true);
   });
 });

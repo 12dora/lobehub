@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
+import { POLICY_MODE_SELECT_WIDTH } from '../managedResources/policyCardStyles';
 import { formatSettingValue } from './policyPresentation';
 import { PolicyValueEditor } from './PolicyValueEditor';
 import type { DraftPolicy, SettingsPolicyUiMode } from './settingsPolicyController';
@@ -120,8 +121,7 @@ const SettingsPolicyGroupGrid = memo<SettingsPolicyGroupGridProps>(
                           <Select
                             aria-label={t('settingsPolicy.uiMode.label')}
                             disabled={!canUpdate}
-                            // Unified policy-mode select width — keep in sync with the managed-resource boxes.
-                            style={{ width: 180 }}
+                            style={{ width: POLICY_MODE_SELECT_WIDTH }}
                             value={toSettingsPolicyUiMode(policy)}
                             options={UI_MODE_VALUES.map((value) => ({
                               label: t(`settingsPolicy.uiMode.${value}` as never),

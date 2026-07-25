@@ -49,13 +49,6 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const mutateProviders = providers.mutate;
   const runtimeEnabled = accessStatus === 'allowed' && canRestart;
   const [restartPolling, setRestartPolling] = useState(false);
-  /**
-   * Draft id → published-history tri-state.
-   * Missing / loading / lookup-error = unknown (never treated as no-history).
-   */
-  const [publishedHistoryById, setPublishedHistoryById] = useState<
-    Record<string, PublishedHistorySignal>
-  >({});
   const runtime = useAuthSnapshotStatus(runtimeEnabled, restartPolling);
   const restartLifecycle = useIdentityProviderRestartLifecycle({
     error: runtime.error,
@@ -71,45 +64,24 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     setRestartPolling(restartLifecycle.phase === 'accepted');
   }, [restartLifecycle.phase]);
 
-  // Resolve published-history for draft heads. Prior live configs remain tombstoneable
-  // after edit/secret-clear even though activationRevision is cleared on the draft head.
-  // Lookup failure/loading stays `unknown` — never conflated with never-published.
-  useEffect(() => {
+  /**
+   * Published-history for draft heads — server-batched on list items (ASI-005).
+   * Prior live configs remain tombstoneable after edit/secret-clear.
+   * Missing field (older cache / mutation payload) → `unknown` (fail safe).
+   */
+  const publishedHistoryById = useMemo(() => {
     const items = providers.data?.items ?? [];
-    const draftIds = items.filter((item) => item.status === 'draft').map((item) => item.id);
-    if (draftIds.length === 0) {
-      setPublishedHistoryById({});
-      return;
-    }
-    // Fail safe while resolving: keep Disable, withhold Delete until confirmed empty.
-    setPublishedHistoryById((prev) => {
-      const next: Record<string, PublishedHistorySignal> = {};
-      for (const id of draftIds) {
-        next[id] = prev[id] ?? 'unknown';
+    const next: Record<string, PublishedHistorySignal> = {};
+    for (const item of items) {
+      if (item.status !== 'draft') continue;
+      if (typeof item.hasPublishedHistory === 'boolean') {
+        next[item.id] = item.hasPublishedHistory ? 'has-history' : 'no-history';
+      } else {
+        next[item.id] = 'unknown';
       }
-      return next;
-    });
-    let cancelled = false;
-    void (async () => {
-      const entries = await Promise.all(
-        draftIds.map(async (id) => {
-          try {
-            const revisions = await adminIdentityProvidersService.listPublishedRevisions(id);
-            const signal: PublishedHistorySignal =
-              revisions.length > 0 ? 'has-history' : 'no-history';
-            return [id, signal] as const;
-          } catch {
-            // Lookup failed ≠ never published. Keep unknown so Disable stays available.
-            return [id, 'unknown' as const] as const;
-          }
-        }),
-      );
-      if (!cancelled) setPublishedHistoryById(Object.fromEntries(entries));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [providers.data]);
+    }
+    return next;
+  }, [providers.data?.items]);
 
   const openWizard = useCallback(
     (provider?: PlatformIdentityProviderDraft) => {
@@ -184,13 +156,22 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                   reason,
                 });
                 await refreshProviders();
-                // Refresh restart status so the Restart action appears for the tombstone.
-                await runtime.mutate().catch(() => undefined);
-                toast.success(
-                  t('identityProviders.disable.success', {
-                    defaultValue: 'Provider disabled — restart required',
-                  }),
-                );
+                // Commit and runtime refresh are separate outcomes (XT-005).
+                try {
+                  await runtime.mutate();
+                  toast.success(
+                    t('identityProviders.disable.success', {
+                      defaultValue: 'Provider disabled — restart required',
+                    }),
+                  );
+                } catch {
+                  toast.warning(
+                    t('identityProviders.disable.committedRefreshFailed', {
+                      defaultValue:
+                        'Provider disabled, but runtime status could not be refreshed. Retry status — do not disable again.',
+                    }),
+                  );
+                }
               },
               submitLabel: t('identityProviders.disable.confirm', {
                 defaultValue: 'Disable provider',
@@ -214,18 +195,11 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       if (!canDelete) return;
       if (!isDeletable(provider)) return;
       confirmModal({
-        cancelText: t('identityProviders.delete.cancel', {
-          defaultValue: 'Cancel',
-        }),
-        content: t('identityProviders.delete.impact', {
-          defaultValue:
-            'This permanently deletes a never-published draft. Providers that have been published must be Disabled (tombstoned) instead.',
-        }),
+        cancelText: t('identityProviders.delete.cancel'),
+        content: t('identityProviders.delete.impact'),
         okButtonProps: { danger: true },
-        okText: t('identityProviders.delete.confirm', { defaultValue: 'Delete draft' }),
-        title: t('identityProviders.delete.title', {
-          defaultValue: 'Delete identity provider draft',
-        }),
+        okText: t('identityProviders.delete.confirm'),
+        title: t('identityProviders.delete.title'),
         onOk: async () => {
           try {
             await requestAdminReauth({ authMethod });
@@ -233,9 +207,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
               authMethod,
               buildPayload: (reason) => ({ reason }),
               danger: true,
-              impact: t('identityProviders.delete.impact', {
-                defaultValue: 'This permanently deletes a never-published draft.',
-              }),
+              impact: t('identityProviders.delete.impact'),
               onSubmit: async (payload) => {
                 const { reason } = payload as { reason: string };
                 await lambdaClient.admin.identityProviders.delete.mutate({
@@ -244,22 +216,14 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                   reason,
                 });
                 await refreshProviders();
-                toast.success(
-                  t('identityProviders.delete.success', {
-                    defaultValue: 'Draft deleted',
-                  }),
-                );
+                toast.success(t('identityProviders.delete.success'));
               },
-              submitLabel: t('identityProviders.delete.confirm', {
-                defaultValue: 'Delete draft',
-              }),
+              submitLabel: t('identityProviders.delete.confirm'),
               targetLabel: provider.displayName,
-              title: t('identityProviders.delete.title', {
-                defaultValue: 'Delete identity provider draft',
-              }),
+              title: t('identityProviders.delete.title'),
             });
           } catch {
-            toast.error(t('identityProviders.errors.generic', { defaultValue: 'Request failed' }));
+            toast.error(t('identityProviders.errors.generic'));
           }
         },
       });
@@ -291,8 +255,17 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                   intentToken: prepared.intentToken,
                 });
                 if (restartLifecycle.accept(prepared, result)) {
-                  await runtime.mutate().catch(() => undefined);
-                  toast.success(t('identityProviders.restart.accepted'));
+                  try {
+                    await runtime.mutate();
+                    toast.success(t('identityProviders.restart.accepted'));
+                  } catch {
+                    toast.warning(
+                      t('identityProviders.restart.acceptedRefreshFailed', {
+                        defaultValue:
+                          'Restart accepted, but runtime status could not be refreshed. Retry status — do not restart again.',
+                      }),
+                    );
+                  }
                 } else {
                   throw new Error('restart acceptance mismatch');
                 }
@@ -450,7 +423,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                                 requestDelete(item);
                               }}
                             >
-                              {t('identityProviders.actions.delete', { defaultValue: 'Delete' })}
+                              {t('identityProviders.actions.delete')}
                             </Button>
                           );
                         }

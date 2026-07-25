@@ -13,6 +13,8 @@ import type { RefreshLock } from './useRefreshLock';
 const mocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   openModal: vi.fn(),
+  retry: vi.fn(),
+  rollback: vi.fn(),
 }));
 
 const unlockedLock = (): RefreshLock => ({
@@ -31,11 +33,21 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
   adminAgentsService: {
     cancelRollout: mocks.cancel,
-    retryRollout: vi.fn(),
-    rollbackRollout: vi.fn(),
+    retryRollout: mocks.retry,
+    rollbackRollout: mocks.rollback,
   },
 }));
-vi.mock('./openAgentReasonModal', () => ({ openAgentReasonModal: mocks.openModal }));
+vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () => ({
+  openReasonModal: mocks.openModal,
+}));
+vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => ({
+  isAdminReauthRequiredError: (error: unknown) =>
+    Boolean(
+      error &&
+      typeof error === 'object' &&
+      (error as { code?: string }).code === 'ADMIN_REAUTH_REQUIRED',
+    ),
+}));
 vi.mock('@lobehub/ui', () => ({
   Alert: ({
     action,
@@ -94,15 +106,25 @@ const runningSnapshot: AdminAgentDetailOutput = {
   versions: [],
 };
 
+const lastModal = () =>
+  mocks.openModal.mock.calls.at(-1)![0] as {
+    authMethod?: string;
+    buildPayload: (reason: string) => unknown;
+    onSubmit: (payload: unknown) => Promise<void>;
+  };
+
 describe('RolloutPanel capability gate', () => {
   beforeEach(() => {
     mocks.cancel.mockReset();
+    mocks.retry.mockReset();
+    mocks.rollback.mockReset();
     mocks.openModal.mockReset();
   });
 
   it('shows a deferral notice and no rollout actions when the backend is unavailable', () => {
     render(
       <RolloutPanel
+        authMethod={null}
         enabled={false}
         lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
@@ -121,6 +143,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        authMethod={null}
         lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         refresh={vi.fn()}
@@ -136,6 +159,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        authMethod={null}
         lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_PUBLISH])}
         refresh={vi.fn()}
@@ -162,6 +186,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        authMethod={null}
         lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         pollError={new Error('poll failed')}
@@ -179,9 +204,48 @@ describe('RolloutPanel capability gate', () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it('routes cancel/retry/rollback through the shared reauth modal with authMethod and frozen CAS', async () => {
+    mocks.cancel
+      .mockRejectedValueOnce(new Error('ADMIN_REAUTH_REQUIRED'))
+      .mockResolvedValueOnce({} as never);
+    const refresh = vi.fn().mockResolvedValue(runningSnapshot);
+    render(
+      <RolloutPanel
+        enabled
+        authMethod="better-auth"
+        lock={unlockedLock()}
+        permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
+        refresh={refresh}
+        snapshot={runningSnapshot}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('agentCatalog.rollout.cancel'));
+    const config = lastModal();
+    expect(config.authMethod).toBe('better-auth');
+    const payload = config.buildPayload('approved reason');
+    expect(payload).toEqual({
+      agentId: 'agent-1',
+      expectedJobRevision: 1,
+      expectedStatus: 'running',
+      jobId: 'rollout-1',
+      reason: 'approved reason',
+    });
+
+    // First attempt: reauth required — surface the error for the shared modal retry path.
+    await expect(config.onSubmit(payload)).rejects.toThrow(/ADMIN_REAUTH_REQUIRED/);
+    // Same frozen payload succeeds on the single retry (no re-open of the modal).
+    await act(async () => {
+      await config.onSubmit(payload);
+    });
+    expect(mocks.cancel).toHaveBeenCalledTimes(2);
+    expect(mocks.cancel).toHaveBeenNthCalledWith(1, payload);
+    expect(mocks.cancel).toHaveBeenNthCalledWith(2, payload);
+    expect(mocks.openModal).toHaveBeenCalledTimes(1);
+  });
+
   it('routes rollback through the shared identity lock and keeps writes locked on failed refresh', async () => {
-    const { adminAgentsService } = await import('@/enterprise/client/services/adminAgents');
-    const rollback = vi.spyOn(adminAgentsService, 'rollbackRollout').mockResolvedValue({} as never);
+    mocks.rollback.mockResolvedValue({} as never);
     const beginWrite = vi.fn(() => true);
     const markCommitted = vi.fn();
     let lockedAfterRefresh = false;
@@ -202,6 +266,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        authMethod={null}
         lock={lock}
         refresh={vi.fn()}
         permissions={deriveAdminAgentPermissions([
@@ -221,18 +286,122 @@ describe('RolloutPanel capability gate', () => {
       />,
     );
     fireEvent.click(screen.getByText('agentCatalog.rollout.rollback'));
-    const options = mocks.openModal.mock.calls[0]![0] as {
-      onConfirm: (reason: string) => Promise<void>;
-    };
+    const config = lastModal();
+    const payload = config.buildPayload('rollback');
     await act(async () => {
-      await options.onConfirm('rollback');
+      await config.onSubmit(payload);
     });
     expect(beginWrite).toHaveBeenCalledOnce();
-    expect(rollback).toHaveBeenCalledOnce();
+    expect(mocks.rollback).toHaveBeenCalledOnce();
     expect(markCommitted).toHaveBeenCalledOnce();
     expect(commitWrite).toHaveBeenCalledOnce();
     // Failed post-commit refresh leaves the shared lock engaged — further writes must gate.
     expect(lock.isLocked()).toBe(true);
+  });
+
+  it('retries rollback after reauth with the same frozen CAS while the write lock is held', async () => {
+    // Real beginWrite lifecycle: first attempt locks; reauth retry must re-enter with the same
+    // token (isLocked() stays true) rather than being rejected by an isLocked() guard in onSubmit.
+    const reauthError = Object.assign(new Error('ADMIN_REAUTH_REQUIRED'), {
+      code: 'ADMIN_REAUTH_REQUIRED',
+    });
+    mocks.rollback.mockRejectedValueOnce(reauthError).mockResolvedValueOnce({} as never);
+
+    let locked = false;
+    let activeToken: object | null = null;
+    let committed = false;
+    const beginWrite = vi.fn((token: object) => {
+      if (!locked) {
+        locked = true;
+        activeToken = token;
+        committed = false;
+        return true;
+      }
+      return activeToken === token && !committed;
+    });
+    const markCommitted = vi.fn((token: object) => {
+      if (activeToken === token) committed = true;
+    });
+    const commitWrite = vi.fn(async (token: object) => {
+      if (activeToken !== token) return;
+      committed = true;
+      locked = false;
+      activeToken = null;
+    });
+    const abortWrite = vi.fn((token: object) => {
+      if (activeToken === token && !committed) {
+        locked = false;
+        activeToken = null;
+      }
+    });
+    const lock: RefreshLock = {
+      abortWrite,
+      beginWrite,
+      commitWrite,
+      isLocked: () => locked,
+      get locked() {
+        return locked;
+      },
+      markCommitted,
+      refreshFailed: false,
+      resolveWrite: vi.fn(),
+      retryRefresh: vi.fn(async () => undefined),
+    };
+
+    render(
+      <RolloutPanel
+        enabled
+        authMethod="better-auth"
+        lock={lock}
+        refresh={vi.fn()}
+        permissions={deriveAdminAgentPermissions([
+          PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+          PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+        ])}
+        snapshot={{
+          ...runningSnapshot,
+          rollouts: [
+            {
+              ...runningSnapshot.rollouts[0]!,
+              previousVersionId: 'version-0',
+              status: 'completed',
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('agentCatalog.rollout.rollback'));
+    const config = lastModal();
+    expect(config.authMethod).toBe('better-auth');
+    const payload = config.buildPayload('approved rollback');
+    expect(payload).toEqual({
+      agentId: 'agent-1',
+      expectedJobRevision: 1,
+      expectedStatus: 'completed',
+      jobId: 'rollout-1',
+      reason: 'approved rollback',
+      targetVersionId: 'version-0',
+    });
+
+    // First attempt: reauth required — lock stays open (no abortWrite).
+    await expect(config.onSubmit(payload)).rejects.toMatchObject({ code: 'ADMIN_REAUTH_REQUIRED' });
+    expect(beginWrite).toHaveBeenCalledTimes(1);
+    expect(lock.isLocked()).toBe(true);
+    expect(abortWrite).not.toHaveBeenCalled();
+
+    // Single retry with the identical frozen payload must succeed through beginWrite re-entry.
+    await act(async () => {
+      await config.onSubmit(payload);
+    });
+    expect(mocks.rollback).toHaveBeenCalledTimes(2);
+    expect(mocks.rollback).toHaveBeenNthCalledWith(1, payload);
+    expect(mocks.rollback).toHaveBeenNthCalledWith(2, payload);
+    expect(beginWrite).toHaveBeenCalledTimes(2);
+    expect(beginWrite.mock.results[1]?.value).toBe(true);
+    expect(markCommitted).toHaveBeenCalledOnce();
+    expect(commitWrite).toHaveBeenCalledOnce();
+    expect(mocks.openModal).toHaveBeenCalledTimes(1);
   });
 
   it('disables duplicate controls during mutation and surfaces a refresh failure', async () => {
@@ -242,6 +411,7 @@ describe('RolloutPanel capability gate', () => {
     render(
       <RolloutPanel
         enabled
+        authMethod={null}
         lock={unlockedLock()}
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         refresh={refresh}
@@ -249,12 +419,11 @@ describe('RolloutPanel capability gate', () => {
       />,
     );
     fireEvent.click(screen.getByText('agentCatalog.rollout.cancel'));
-    const options = mocks.openModal.mock.calls[0]![0] as {
-      onConfirm: (reason: string) => Promise<void>;
-    };
+    const config = lastModal();
+    const payload = config.buildPayload('approved reason');
     let confirming!: Promise<void>;
     act(() => {
-      confirming = options.onConfirm('approved reason');
+      confirming = config.onSubmit(payload);
     });
     await waitFor(() => expect(screen.getByText('agentCatalog.rollout.cancel')).toBeDisabled());
     resolveCancel();

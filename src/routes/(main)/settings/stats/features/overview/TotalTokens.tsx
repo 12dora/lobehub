@@ -6,13 +6,13 @@ import AsyncBoundary from '@/components/AsyncBoundary';
 import Statistic from '@/components/Statistic';
 import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
+import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatShortenNumber } from '@/utils/format';
 import { lastMonth } from '@/utils/time';
 
 import { HeatmapType } from '../../types';
-import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 import TotalCard from './ShareButton/TotalCard';
 
 /**

@@ -44,6 +44,16 @@ vi.mock('antd-style', () => ({
 
 vi.mock('@lobehub/ui', async () => {
   const React = await import('react');
+  const Skeleton = Object.assign(
+    ({ children, ...rest }: any) =>
+      React.createElement('div', { 'data-testid': 'skeleton', ...rest }, children),
+    {
+      Block: (props: any) =>
+        React.createElement('div', { 'data-testid': 'skeleton-block', ...props }),
+      Button: (props: any) =>
+        React.createElement('div', { 'data-testid': 'skeleton-button', ...props }),
+    },
+  );
   return {
     Alert: ({ message, action, ...rest }: any) =>
       React.createElement(
@@ -55,6 +65,7 @@ vi.mock('@lobehub/ui', async () => {
     Avatar: () => null,
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
     Icon: () => null,
+    Skeleton,
     Tag: ({ children, ...rest }: any) => React.createElement('span', rest, children),
     Text: ({ children, as: As, ...rest }: any) => React.createElement(As || 'span', rest, children),
     Tooltip: ({ children, title }: any) =>

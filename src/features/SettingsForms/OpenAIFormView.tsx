@@ -2,16 +2,18 @@
 
 import { type FormGroupItemType } from '@lobehub/ui';
 import { Form, Icon, Skeleton } from '@lobehub/ui';
-import { Select } from '@lobehub/ui/base-ui';
+import { Select, toast } from '@lobehub/ui/base-ui';
 import { Loader2Icon } from 'lucide-react';
-import { memo, useState } from 'react';
+import { memo, useLayoutEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import AutoSaveHint from '@/components/Editor/AutoSaveHint';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import { ManagedFormControlContent } from '@/features/PlatformSettingSourceBadge/ManagedFormControl';
 import type { PlatformSettingMetaState } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
+import type { useSaveState } from '@/hooks/useSaveState';
 
-import { opeanaiTTSOptions } from './const';
+import { opeanaiTTSOptions } from './openaiTtsOptions';
 
 export interface OpenAITtsFormValue {
   openAI?: {
@@ -24,6 +26,8 @@ export interface OpenAIFormViewProps {
   disabledReason?: string;
   isInit: boolean;
   onChange: (patch: OpenAITtsFormValue) => Promise<void> | void;
+  /** When provided, drives AutoSaveHint (admin platform-defaults path). */
+  saveState?: Pick<ReturnType<typeof useSaveState>, 'lastSavedAt' | 'retry' | 'save' | 'status'>;
   ttsModelMeta?: PlatformSettingMetaState;
   value: OpenAITtsFormValue;
 }
@@ -49,13 +53,44 @@ const WRITABLE_META: PlatformSettingMetaState = {
  * Pure controlled OpenAI TTS model section (used on service-model + TTS pages).
  */
 const OpenAIFormView = memo<OpenAIFormViewProps>(
-  ({ canManage, disabledReason, isInit, onChange, ttsModelMeta = WRITABLE_META, value }) => {
+  ({
+    canManage,
+    disabledReason,
+    isInit,
+    onChange,
+    saveState,
+    ttsModelMeta = WRITABLE_META,
+    value,
+  }) => {
     const { t } = useTranslation('setting');
     const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
+    const save = saveState?.save;
+    const saveStatus = saveState?.status;
+    const lastSavedAt = saveState?.lastSavedAt ?? null;
+    const retry = saveState?.retry;
+
+    // Keep Ant Form fields in sync when the parent revalidates / resets / rolls back.
+    useLayoutEffect(() => {
+      form.setFieldsValue(value);
+    }, [form, value]);
 
     if (!isInit) return <Skeleton active paragraph={{ rows: 5 }} title={false} />;
     if (ttsModelMeta.hidden) return null;
+
+    const commit = async (values: OpenAITtsFormValue) => {
+      try {
+        await onChange(values);
+      } catch (err) {
+        form.setFieldsValue(value);
+        toast.error(
+          t('settingTTS.openai.saveFailed', {
+            defaultValue: 'Could not update the TTS model. Please try again.',
+          }),
+        );
+        throw err;
+      }
+    };
 
     const openai: FormGroupItemType = {
       children: [
@@ -73,7 +108,11 @@ const OpenAIFormView = memo<OpenAIFormViewProps>(
           name: ['openAI', 'ttsModel'],
         },
       ],
-      extra: loading && <Icon spin icon={Loader2Icon} size={16} style={{ opacity: 0.5 }} />,
+      extra: saveState ? (
+        <AutoSaveHint lastUpdatedTime={lastSavedAt} saveStatus={saveStatus!} onRetry={retry} />
+      ) : (
+        loading && <Icon spin icon={Loader2Icon} size={16} style={{ opacity: 0.5 }} />
+      ),
       title: t('settingTTS.openai.title'),
     };
 
@@ -88,9 +127,16 @@ const OpenAIFormView = memo<OpenAIFormViewProps>(
         onValuesChange={async (values) => {
           if (!canManage) return;
 
+          if (save) {
+            await save(() => commit(values));
+            return;
+          }
+
           setLoading(true);
           try {
-            await onChange(values);
+            await commit(values);
+          } catch {
+            // Toast + rollback already handled in commit.
           } finally {
             setLoading(false);
           }

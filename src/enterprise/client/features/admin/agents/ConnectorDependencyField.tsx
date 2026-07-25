@@ -1,7 +1,7 @@
 'use client';
 
 import type { PlatformAgentConnectorDependencyRef } from '@lobechat/types';
-import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 import { useTranslation } from 'react-i18next';
 
@@ -28,6 +28,7 @@ interface SwrSlice<T> {
   isLoading?: boolean;
   isValidating?: boolean;
   mutate: () => Promise<unknown>;
+  truncated?: boolean;
 }
 
 export interface ConnectorDependencyFieldProps {
@@ -37,11 +38,13 @@ export interface ConnectorDependencyFieldProps {
   connectorOptions: SelectOption[];
   connectorRefDetails: SwrSlice<unknown>;
   connectors: SwrSlice<PublishedConnectorSummary[]>;
+  connectorSearch: string;
   connectorsListUsable: boolean;
   connectorsSettled: boolean;
   editable: boolean;
   enabled: boolean;
   onAdd: () => void;
+  onConnectorSearchChange: (query: string) => void;
   onRemove: (connectorKey: string) => void;
   onSelectConnector: (connectorId: string | undefined) => void;
   onUpdateExisting: (connectorKey: string) => void;
@@ -141,12 +144,14 @@ export const ConnectorDependencyField = ({
   connectorId,
   connectorOptions,
   connectorRefDetails,
+  connectorSearch,
   connectors,
   connectorsListUsable,
   connectorsSettled,
   editable,
   enabled,
   onAdd,
+  onConnectorSearchChange,
   onRemove,
   onSelectConnector,
   onUpdateExisting,
@@ -223,6 +228,14 @@ export const ConnectorDependencyField = ({
 
           {editable ? (
             <Flexbox gap={8}>
+              <Input
+                allowClear
+                aria-label={t('agentCatalog.dependency.connector.search')}
+                disabled={!editable}
+                placeholder={t('agentCatalog.dependency.connector.searchPlaceholder')}
+                value={connectorSearch}
+                onChange={(event) => onConnectorSearchChange(event.target.value)}
+              />
               <Select
                 aria-label={t('agentCatalog.dependency.connector.add')}
                 disabled={!connectorsListUsable}
@@ -239,6 +252,9 @@ export const ConnectorDependencyField = ({
                   onSelectConnector(next as string | undefined);
                 }}
               />
+              {connectors.truncated ? (
+                <Text type="secondary">{t('agentCatalog.dependency.catalogTruncated')}</Text>
+              ) : null}
               {connectors.isValidating && connectors.data ? <RevalidatingHint /> : null}
               {connectorId ? (
                 <ConnectorDetailPanel

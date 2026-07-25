@@ -11,6 +11,12 @@ import { memo, type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
+import {
+  scopeStatsKey,
+  type StatsDataSource,
+  StatsDataSourceProvider,
+  useStatsDataSource,
+} from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import SettingHeader from '@/routes/(main)/settings/features/SettingHeader';
@@ -24,12 +30,6 @@ import {
   Welcome,
 } from './features/overview';
 import { AssistantsRank, ModelsRank, TopicsRank } from './features/rankings';
-import {
-  scopeStatsKey,
-  type StatsDataSource,
-  StatsDataSourceProvider,
-  useStatsDataSource,
-} from './features/StatsDataSource';
 import { UsageCards, UsageTable, UsageTrends } from './features/usage';
 import { AiHeatmaps } from './features/visualization';
 import { GroupBy, type UserDisplayResolver } from './types';
@@ -199,10 +199,10 @@ const StatsSetting = memo<StatsSettingProps>(({ dataSource, ...rest }) => {
 });
 
 export default StatsSetting;
-export type { StatsDataSource } from './features/StatsDataSource';
+export type { StatsDataSource } from '@/features/SettingsStats';
 export {
   ADMIN_GLOBAL_STATS_SCOPE,
   PERSONAL_STATS_SCOPE,
   personalStatsDataSource,
   StatsDataSourceProvider,
-} from './features/StatsDataSource';
+} from '@/features/SettingsStats';

@@ -34,12 +34,11 @@ export {
   useBranding,
   useRuntimeBranding,
 } from './providers/RuntimeBrandingProvider';
-export {
-  createEnterpriseModuleRegistry,
-  type EnterpriseModuleRegistration,
-  type EnterpriseModuleRegistry,
-  enterpriseModuleRegistry,
-} from './registry';
+// Types only — the singleton + register() are intentionally NOT re-exported from
+// the public barrel. Desktop routes are a module-eval snapshot of the registry;
+// late register() never rebuilds the router. Extension modules stay internal
+// until a createDesktopRoutes() rebuild mechanism exists (CS-05 option b).
+export type { EnterpriseModuleRegistration, EnterpriseModuleRegistry } from './registry';
 export {
   createAdminRouteTree,
   EnterpriseDesktopRoutesWithoutMainLayout,

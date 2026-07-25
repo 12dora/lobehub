@@ -1,6 +1,6 @@
 'use client';
 
-import { Empty, Flexbox } from '@lobehub/ui';
+import { Empty } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 import type { TableColumnsType, TableProps } from 'antd';
 import { Table } from 'antd';
@@ -386,5 +386,3 @@ const DataTable = memo(DataTableInner) as typeof DataTableInner & { displayName?
 DataTable.displayName = 'AdminDataTable';
 
 export default DataTable;
-
-export { Flexbox };

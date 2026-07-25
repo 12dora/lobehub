@@ -7,13 +7,13 @@ import { CoinsIcon, FlameIcon, MessageSquareIcon } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatIntergerNumber, formatShortenNumber } from '@/utils/format';
 
 import { HeatmapType } from '../../types';
 import StatsFormGroup from '../components/StatsFormGroup';
-import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 import HeatmapStats from './HeatmapStats';
 
 const AiHeatmaps = memo<

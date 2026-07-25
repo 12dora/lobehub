@@ -153,18 +153,19 @@ describe('mock Admin Agents contract adapter', () => {
     expect(afterAssignment.draftToken).toMatch(/^[a-f0-9]{64}$/);
 
     const tokenMid = afterAssignment.draftToken;
-    await client.updateDraft({
+    // A second draft-only write (remove) must also re-digest the full identity, not a 64-char prefix.
+    const listed = await client.listAssignments({ agentId: created.identity.id });
+    await client.removeAssignment({
       agentId: created.identity.id,
+      assignmentId: listed.items[0]!.id,
       expectedDraftToken: tokenMid,
       expectedRevision: revisionBefore,
-      isDefault: false,
-      reason: 'long-key draft patch',
-      systemKey: null,
+      reason: 'long-key assignment remove',
     });
-    const afterDraft = await client.get({ id: created.identity.id });
-    expect(afterDraft.identity.revision).toBe(revisionBefore);
-    expect(afterDraft.identity.draftSequence).toBe(sequenceBefore + 2);
-    expect(afterDraft.draftToken).not.toBe(tokenMid);
+    const afterRemove = await client.get({ id: created.identity.id });
+    expect(afterRemove.identity.revision).toBe(revisionBefore);
+    expect(afterRemove.identity.draftSequence).toBe(sequenceBefore + 2);
+    expect(afterRemove.draftToken).not.toBe(tokenMid);
   });
 
   it('enforces job revision/status CAS across rollout transitions', async () => {

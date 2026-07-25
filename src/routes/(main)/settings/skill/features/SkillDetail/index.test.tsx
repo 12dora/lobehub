@@ -121,12 +121,6 @@ vi.mock('antd-style', () => ({
     }),
 }));
 
-vi.mock('./PlatformSkillDetail', () => ({
-  default: ({ skillKey }: { skillKey: string }) => (
-    <div data-testid="platform-skill-detail">{skillKey}</div>
-  ),
-}));
-
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { defaultValue?: string; name?: string } | string) => {

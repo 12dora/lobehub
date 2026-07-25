@@ -35,13 +35,3 @@ export const clearAdminFilters = (values: AdminFilterValues): AdminFilterValues 
   }
   return next;
 };
-
-/** Simple client-side filter helper for list pages before server filters land. */
-export const matchAdminFilterQuery = (
-  haystack: string | null | undefined,
-  query: string,
-): boolean => {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return (haystack ?? '').toLowerCase().includes(q);
-};

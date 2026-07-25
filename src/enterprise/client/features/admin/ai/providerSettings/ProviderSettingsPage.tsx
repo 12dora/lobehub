@@ -2,10 +2,11 @@
 
 import { Text } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router';
 
+import AdminAiRuntimeLoadAlert from '@/enterprise/client/features/admin/ai/shared/AdminAiRuntimeLoadAlert';
 import SettingContainer from '@/features/Setting/SettingContainer';
 import SettingsContextProvider from '@/routes/(main)/settings/_layout/ContextProvider';
 import ProviderGrid from '@/routes/(main)/settings/provider/(list)/ProviderGrid';
@@ -97,7 +98,8 @@ const AdminProviderSettingsLayout = memo(() => {
 
   // Admin is always authenticated when this page is reachable.
   useFetchAiProviderList({ enabled: true });
-  useFetchRuntime(true);
+  const { error: runtimeError, mutate: mutateRuntime } = useFetchRuntime(true);
+  const retryRuntime = useCallback(() => mutateRuntime(), [mutateRuntime]);
 
   const id = params.id;
   const onProviderSelect = (providerKey: string) => {
@@ -122,6 +124,9 @@ const AdminProviderSettingsLayout = memo(() => {
       <div className={styles.body}>
         <ProviderMenu mobile={false} onProviderSelect={onProviderSelect} />
         <SettingContainer flex={1} maxWidth={1024} padding={24} style={{ minHeight: 0 }}>
+          {runtimeError ? (
+            <AdminAiRuntimeLoadAlert error={runtimeError} onRetry={retryRuntime} />
+          ) : null}
           <DraftPublishBanner />
           {id ? (
             <ProviderDetailPageComponent id={id} onProviderSelect={onProviderSelect} />

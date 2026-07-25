@@ -4,7 +4,7 @@ import { type UserMemoryEffort } from '@lobechat/types';
 import { type FormGroupItemType } from '@lobehub/ui';
 import { Form, Skeleton, Tooltip } from '@lobehub/ui';
 import { Switch } from '@lobehub/ui/base-ui';
-import { memo } from 'react';
+import { memo, useLayoutEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AutoSaveHint from '@/components/Editor/AutoSaveHint';
@@ -69,6 +69,11 @@ const MemoryFormView = memo<MemoryFormViewProps>(
     const branding = useBranding();
     const [form] = Form.useForm();
     const { status: saveStatus, lastSavedAt, save, retry } = saveState;
+
+    // Keep Ant Form fields in sync when the parent revalidates / resets / rolls back.
+    useLayoutEffect(() => {
+      form.setFieldsValue(value);
+    }, [form, value]);
 
     if (!isInit) return <Skeleton active paragraph={{ rows: 3 }} title={false} />;
 

@@ -3,6 +3,7 @@
 import { DEFAULT_IDP_BUTTON_LABEL, type PlatformIdentityProviderDraft } from '@lobechat/types';
 import { copyToClipboard, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -110,7 +111,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     onSaved,
   }) => {
     const { t } = useTranslation('admin');
+    const reduceMotion = useReducedMotion();
     const [step, setStep] = useState<IdentityProviderStep>('basic');
+    const [stepDirection, setStepDirection] = useState(1);
     const [draft, setDraft] = useState<EditableDraft>(() =>
       provider
         ? fromProvider(provider)
@@ -140,7 +143,13 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     > | null>(null);
     const [networkValid, setNetworkValid] = useState(false);
     const [busy, setBusy] = useState<string | null>(null);
-    const [attempt, setAttempt] = useState<{ id: string; startedAt: number } | null>(null);
+    // Session test signal is revision-scoped (ASI-009): a success for rev N must not
+    // enable Publish after a save bumps the provider to N+1.
+    const [attempt, setAttempt] = useState<{
+      id: string;
+      revision: number;
+      startedAt: number;
+    } | null>(null);
     const [testPolling, setTestPolling] = useState(false);
     const testResult = useIdentityProviderTestResult(attempt?.id ?? null, testPolling, () =>
       setTestPolling(false),
@@ -160,8 +169,15 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const invalidJson = jsonErrors.claims;
     const dirty = JSON.stringify(draft) !== baseline || Boolean(secret) || clearSecret;
     const draftWorkflowReady = isIdentityProviderDraftWorkflowReady(provider);
-    const testSucceeded =
-      testResult.data?.status === 'succeeded' && Boolean(testResult.data.result?.valid);
+    const sessionTestSucceeded =
+      attempt != null &&
+      attempt.revision === provider?.revision &&
+      testResult.data?.status === 'succeeded' &&
+      Boolean(testResult.data.result?.valid);
+    // Authoritative readiness: current-revision session success OR server publishTestReady.
+    const testSucceeded = sessionTestSucceeded || Boolean(provider?.publishTestReady);
+    const publishReady =
+      Boolean(provider) && draftWorkflowReady && !dirty && canPublish && testSucceeded;
     const isLastStep = step === IDENTITY_PROVIDER_STEPS.at(-1);
 
     useEffect(() => {
@@ -182,6 +198,10 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       setJsonErrors({ claims: false });
       setSecret('');
       setClearSecret(false);
+      // Drop session test state when the server revision changes — stale successes
+      // must not keep Publish enabled (ASI-009 passed-stale-revision).
+      setAttempt(null);
+      setTestPolling(false);
     }, [provider]);
 
     useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
@@ -348,7 +368,11 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
                 reason: (payload as { reason: string }).reason,
               }),
             );
-            setAttempt({ id: result.attemptId, startedAt: Date.now() });
+            setAttempt({
+              id: result.attemptId,
+              revision: provider.revision,
+              startedAt: Date.now(),
+            });
             setTestPolling(true);
           }),
         submitLabel: t('identityProviders.actions.startTest'),
@@ -361,6 +385,14 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       if (!provider) return;
       if (!draftWorkflowReady) {
         toast.error(t('identityProviders.workflow.draftRequired'));
+        return;
+      }
+      if (!testSucceeded) {
+        toast.error(t('identityProviders.workflow.testRequired'));
+        return;
+      }
+      if (dirty) {
+        toast.error(t('identityProviders.unsaved'));
         return;
       }
       openReasonModal({
@@ -384,12 +416,20 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       });
     };
 
+    const goToStep = (next: IdentityProviderStep) => {
+      const currentIndex = IDENTITY_PROVIDER_STEPS.indexOf(step);
+      const nextIndex = IDENTITY_PROVIDER_STEPS.indexOf(next);
+      if (nextIndex === currentIndex) return;
+      setStepDirection(nextIndex > currentIndex ? 1 : -1);
+      setStep(next);
+    };
+
     const navigateStep = (offset: -1 | 1) => {
       const nextIndex = Math.min(
         IDENTITY_PROVIDER_STEPS.length - 1,
         Math.max(0, IDENTITY_PROVIDER_STEPS.indexOf(step) + offset),
       );
-      setStep(IDENTITY_PROVIDER_STEPS[nextIndex]);
+      goToStep(IDENTITY_PROVIDER_STEPS[nextIndex]);
     };
 
     const handleClaimJsonChange = (raw: string) => {
@@ -528,7 +568,11 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             </Tag>
           </Flexbox>
         </Flexbox>
-        <IdentityProviderWizardNavigation stepStates={stepStates} value={step} onChange={setStep} />
+        <IdentityProviderWizardNavigation
+          stepStates={stepStates}
+          value={step}
+          onChange={goToStep}
+        />
         {conflict ? (
           <IdentityProviderConflictAlert
             refreshFailed={conflictRefreshFailed}
@@ -536,7 +580,17 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             onRefresh={refreshConflict}
           />
         ) : null}
-        {renderStep()}
+        <AnimatePresence initial={false} mode="wait">
+          <m.div
+            animate={{ opacity: 1, x: 0 }}
+            exit={reduceMotion ? undefined : { opacity: 0, x: stepDirection * -8 }}
+            initial={reduceMotion ? false : { opacity: 0, x: stepDirection * 12 }}
+            key={step}
+            transition={{ duration: reduceMotion ? 0 : 0.18 }}
+          >
+            {renderStep()}
+          </m.div>
+        </AnimatePresence>
         <Flexbox horizontal justify="space-between">
           <Button disabled={step === IDENTITY_PROVIDER_STEPS[0]} onClick={() => navigateStep(-1)}>
             {t('identityProviders.actions.previous')}
@@ -554,7 +608,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
             </Button>
             {isLastStep ? (
               <Button
-                disabled={!provider || !draftWorkflowReady || dirty || !canPublish}
+                disabled={!publishReady}
                 loading={busy === 'publish'}
                 type="primary"
                 onClick={publish}

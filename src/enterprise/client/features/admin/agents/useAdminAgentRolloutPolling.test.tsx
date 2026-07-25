@@ -5,11 +5,7 @@ import { SWRConfig } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
-import type {
-  AdminAgentDetailOutput,
-  AdminPlatformAgentRolloutGetInput,
-  AdminPlatformAgentRolloutGetOutput,
-} from './types';
+import type { AdminAgentDetailOutput } from './types';
 import { fetchAdminAgentDetail, useFetchAdminAgent } from './useAdminAgents';
 
 vi.mock('@/business/client/hooks/useActiveWorkspaceId', () => ({
@@ -36,14 +32,18 @@ const createPollingClient = async () => {
     [first.jobId, first],
     [second.jobId, second],
   ]);
-  vi.spyOn(client, 'listRollouts').mockResolvedValue({ items: [first, second], nextCursor: null });
-  const getRolloutImpl = (async ({
-    jobId,
-  }: AdminPlatformAgentRolloutGetInput): Promise<AdminPlatformAgentRolloutGetOutput> =>
-    current.get(jobId)!) satisfies (
-    input: AdminPlatformAgentRolloutGetInput,
-  ) => Promise<AdminPlatformAgentRolloutGetOutput>;
-  vi.spyOn(client, 'getRollout').mockImplementation(getRolloutImpl);
+  // Honour status the way the server does after R5 — completed/failed leave the active set.
+  vi.spyOn(client, 'listRollouts').mockImplementation(async (input) => {
+    const items = [...current.values()].filter((row) =>
+      input.status && input.status.length > 0 ? input.status.includes(row.status) : true,
+    );
+    return { items, nextCursor: null };
+  });
+  vi.spyOn(client, 'getRollout').mockImplementation(async ({ jobId }) => {
+    const row = current.get(jobId);
+    if (!row) throw new Error(`missing rollout ${jobId}`);
+    return structuredClone(row);
+  });
   return { client, current, first, second };
 };
 
@@ -58,7 +58,7 @@ describe('active Agent rollout polling', () => {
     vi.restoreAllMocks();
   });
 
-  it('polls multiple active job ids without refetching detail collections, then stops and cleans up', async () => {
+  it('polls via listRollouts without refetching detail collections, then stops and cleans up', async () => {
     const { client, current, first, second } = await createPollingClient();
     const get = vi.spyOn(client, 'get');
     const assignments = vi.spyOn(client, 'listAssignments');
@@ -74,45 +74,58 @@ describe('active Agent rollout polling', () => {
     expect(result.current.data?.rollouts).toHaveLength(2);
     expect(get).toHaveBeenCalledTimes(1);
     expect(assignments).toHaveBeenCalledTimes(1);
-    expect(rollouts).toHaveBeenCalledTimes(1);
+    // Initial detail drain + first poll interval list.
+    expect(rollouts.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(versions).toHaveBeenCalledTimes(1);
-    expect(getRollout).toHaveBeenCalledWith({ agentId: 'agent-inbox', jobId: first.jobId });
-    expect(getRollout).toHaveBeenCalledWith({ agentId: 'agent-inbox', jobId: second.jobId });
+    // Prefer list-status over N×getRollout.
+    expect(getRollout).not.toHaveBeenCalled();
 
+    const listCallsAfterDetail = rollouts.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(4000));
     expect(get).toHaveBeenCalledTimes(1);
     expect(assignments).toHaveBeenCalledTimes(1);
-    expect(rollouts).toHaveBeenCalledTimes(1);
     expect(versions).toHaveBeenCalledTimes(1);
+    expect(rollouts.mock.calls.length).toBeGreaterThan(listCallsAfterDetail);
+    expect(getRollout).not.toHaveBeenCalled();
 
     current.set(first.jobId, { ...first, status: 'completed' });
     current.set(second.jobId, { ...second, status: 'failed' });
+    const getRolloutCallsBeforeCompletion = getRollout.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(2000));
     await flush();
+    // Status-filtered list no longer returns terminal jobs → missing → getRollout fallback.
+    expect(getRollout.mock.calls.length).toBeGreaterThan(getRolloutCallsBeforeCompletion);
+    expect(getRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent-inbox', jobId: first.jobId }),
+    );
+    expect(getRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent-inbox', jobId: second.jobId }),
+    );
     expect(result.current.data?.rollouts.map(({ status }) => status)).toEqual([
       'completed',
       'failed',
     ]);
-    const stoppedAt = getRollout.mock.calls.length;
+    const stoppedAt = rollouts.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(6000));
-    expect(getRollout).toHaveBeenCalledTimes(stoppedAt);
+    // No active jobs → poll key null → no further list polls.
+    expect(rollouts).toHaveBeenCalledTimes(stoppedAt);
 
     unmount();
     await act(async () => vi.advanceTimersByTimeAsync(6000));
-    expect(getRollout).toHaveBeenCalledTimes(stoppedAt);
+    expect(rollouts).toHaveBeenCalledTimes(stoppedAt);
   });
 
-  it('keeps loaded detail on poll error and retries only the lightweight job request', async () => {
-    const { client, first } = await createPollingClient();
-    vi.mocked(client.listRollouts).mockResolvedValue({ items: [first], nextCursor: null });
+  it('keeps loaded detail on poll error and retries only the lightweight list-status request', async () => {
+    const { client, current, first } = await createPollingClient();
+    vi.mocked(client.listRollouts)
+      .mockResolvedValueOnce({ items: [first], nextCursor: null }) // detail drain (no status)
+      .mockRejectedValueOnce(new Error('poll unavailable'))
+      // Filtered active poll: completed job is gone from the list.
+      .mockResolvedValue({ items: [], nextCursor: null });
     const get = vi.spyOn(client, 'get');
     const assignments = vi.spyOn(client, 'listAssignments');
-    const rollouts = vi.spyOn(client, 'listRollouts');
     const versions = vi.spyOn(client, 'listVersions');
-    const getRollout = vi
-      .spyOn(client, 'getRollout')
-      .mockRejectedValueOnce(new Error('poll unavailable'))
-      .mockResolvedValue({ ...first, status: 'completed' });
+    const getRollout = vi.spyOn(client, 'getRollout');
     const { result } = renderHook(() => useFetchAdminAgent('agent-inbox', true, client, true), {
       wrapper,
     });
@@ -120,15 +133,18 @@ describe('active Agent rollout polling', () => {
 
     expect(result.current.data?.identity.id).toBe('agent-inbox');
     expect(result.current.rolloutPollError).toBeInstanceOf(Error);
+    current.set(first.jobId, { ...first, status: 'completed' });
     await act(async () => {
       await result.current.retryRolloutPoll();
     });
     await flush();
     expect(result.current.data?.rollouts[0]!.status).toBe('completed');
-    expect(getRollout).toHaveBeenCalledTimes(2);
+    // Completion observed via getRollout fallback, not by smuggling terminal rows into the list.
+    expect(getRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent-inbox', jobId: first.jobId }),
+    );
     expect(get).toHaveBeenCalledTimes(1);
     expect(assignments).toHaveBeenCalledTimes(1);
-    expect(rollouts).toHaveBeenCalledTimes(1);
     expect(versions).toHaveBeenCalledTimes(1);
   });
 });

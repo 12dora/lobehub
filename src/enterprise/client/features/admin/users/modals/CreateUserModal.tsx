@@ -9,6 +9,7 @@ import {
   useModalContext,
 } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -25,9 +26,6 @@ import type {
 import { CREATE_USER_AUTO_REASON } from '../auditReasonCodes';
 import { getAdminUsersCreateErrorKey } from '../utils';
 import { generatePassword } from './generatePassword';
-
-// Stable create-user reason code — defined in auditReasonCodes (lightweight).
-export { CREATE_USER_AUTO_REASON } from '../auditReasonCodes';
 
 const styles = createStaticStyles(({ css }) => ({
   body: css`
@@ -124,6 +122,7 @@ export interface CreateUserModalContentProps {
 export const CreateUserModalContent = memo<CreateUserModalContentProps>(
   ({ abortControllerRef, authMethod, dismissGuardRef, onPhaseChange, onSubmit }) => {
     const { t } = useTranslation('admin');
+    const reduceMotion = useReducedMotion();
     const { close } = useModalContext();
 
     const [email, setEmail] = useState('');
@@ -296,147 +295,158 @@ export const CreateUserModalContent = memo<CreateUserModalContentProps>(
       close();
     }, [close, dismissGuardRef]);
 
-    if (phase === 'success' && credentials) {
-      return (
-        <div className={styles.body}>
-          <Text as="h2" className={styles.title}>
-            {t('users.modals.create.successTitle')}
-          </Text>
-          <Text className={styles.warning} role="alert">
-            {t('users.modals.create.successWarning')}
-          </Text>
-          <div className={styles.field}>
-            <Text strong>{t('users.modals.create.credentialEmail')}</Text>
-            <div className={styles.credentialRow}>
-              <Text className={styles.credentialValue}>{credentials.email}</Text>
-              <CopyButton
-                content={credentials.email}
-                size="small"
-                title={t('users.modals.create.copy')}
-              />
-            </div>
-          </div>
-          <div className={styles.field}>
-            <Text strong>{t('users.modals.create.credentialPassword')}</Text>
-            <div className={styles.credentialRow}>
-              <Text className={styles.credentialValue} data-testid="created-user-password">
-                {credentials.password}
-              </Text>
-              <CopyButton
-                content={credentials.password}
-                size="small"
-                title={t('users.modals.create.copy')}
-              />
-            </div>
-          </div>
-          <div className={styles.footer}>
-            <Button type="primary" onClick={handleDone}>
-              {t('users.modals.create.done')}
-            </Button>
-          </div>
-        </div>
-      );
-    }
+    const phaseKey = phase === 'success' && credentials ? 'success' : 'form';
 
     return (
-      <div className={styles.body}>
-        <Text as="h2" className={styles.title}>
-          {t('users.modals.create.title')}
-        </Text>
-        <Text type="secondary">{t('users.modals.create.desc')}</Text>
-        <div className={styles.field}>
-          <Text strong>{t('users.modals.create.emailLabel')}</Text>
-          <Input
-            aria-label={t('users.modals.create.emailLabel')}
-            autoComplete="off"
-            disabled={locked}
-            maxLength={EMAIL_MAX}
-            status={emailInvalid ? 'error' : undefined}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          {emailInvalid ? (
-            <Text className={styles.error}>{t('users.modals.create.emailInvalid')}</Text>
-          ) : null}
-        </div>
-        <div className={styles.field}>
-          <Text strong>{t('users.modals.create.fullNameLabel')}</Text>
-          <Input
-            aria-label={t('users.modals.create.fullNameLabel')}
-            autoComplete="off"
-            disabled={locked}
-            maxLength={FULL_NAME_MAX}
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-          />
-        </div>
-        <div className={styles.field}>
-          <Text strong>{t('users.modals.create.usernameLabel')}</Text>
-          <Input
-            aria-label={t('users.modals.create.usernameLabel')}
-            autoComplete="off"
-            disabled={locked}
-            maxLength={USERNAME_MAX}
-            status={usernameInvalid ? 'error' : undefined}
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          {usernameInvalid ? (
-            <Text className={styles.error}>{t('users.modals.create.usernameInvalid')}</Text>
-          ) : null}
-        </div>
-        <div className={styles.field}>
-          <Text strong>{t('users.modals.create.passwordLabel')}</Text>
-          <div className={styles.passwordRow}>
-            <InputPassword
-              aria-label={t('users.modals.create.passwordLabel')}
-              autoComplete="new-password"
-              disabled={locked}
-              maxLength={PASSWORD_MAX}
-              status={passwordInvalid ? 'error' : undefined}
-              style={{ flex: 1 }}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <Button disabled={locked} onClick={handleGenerate}>
-              {t('users.modals.create.generate')}
-            </Button>
-          </div>
-          <Text type="secondary">{t('users.modals.create.passwordHint')}</Text>
-          {passwordInvalid ? (
-            <Text className={styles.error}>{t('users.modals.create.passwordInvalid')}</Text>
-          ) : null}
-        </div>
-        {phase === 'reauthing' ? (
-          <Text role="status" type="secondary">
-            {t('users.reauth.inProgress')}
-          </Text>
-        ) : null}
-        {errorKey ? (
-          <Text className={styles.error} role="alert">
-            {t(errorKey as never)}
-          </Text>
-        ) : null}
-        <div className={styles.footer}>
-          {phase === 'reauthing' ? (
-            <Button type="default" onClick={handleCancelReauth}>
-              {t('users.reauth.cancel')}
-            </Button>
+      <AnimatePresence initial={false} mode="wait">
+        <m.div
+          animate={{ opacity: 1, y: 0 }}
+          className={styles.body}
+          exit={reduceMotion ? undefined : { opacity: 0, y: -4 }}
+          initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+          key={phaseKey}
+          transition={{ duration: reduceMotion ? 0 : 0.18 }}
+        >
+          {phaseKey === 'success' && credentials ? (
+            <>
+              <Text as="h2" className={styles.title}>
+                {t('users.modals.create.successTitle')}
+              </Text>
+              <Text className={styles.warning} role="alert">
+                {t('users.modals.create.successWarning')}
+              </Text>
+              <div className={styles.field}>
+                <Text strong>{t('users.modals.create.credentialEmail')}</Text>
+                <div className={styles.credentialRow}>
+                  <Text className={styles.credentialValue}>{credentials.email}</Text>
+                  <CopyButton
+                    content={credentials.email}
+                    size="small"
+                    title={t('users.modals.create.copy')}
+                  />
+                </div>
+              </div>
+              <div className={styles.field}>
+                <Text strong>{t('users.modals.create.credentialPassword')}</Text>
+                <div className={styles.credentialRow}>
+                  <Text className={styles.credentialValue} data-testid="created-user-password">
+                    {credentials.password}
+                  </Text>
+                  <CopyButton
+                    content={credentials.password}
+                    size="small"
+                    title={t('users.modals.create.copy')}
+                  />
+                </div>
+              </div>
+              <div className={styles.footer}>
+                <Button type="primary" onClick={handleDone}>
+                  {t('users.modals.create.done')}
+                </Button>
+              </div>
+            </>
           ) : (
-            <Button disabled={phase === 'mutating'} onClick={handleClose}>
-              {t('users.modals.cancel')}
-            </Button>
+            <>
+              <Text as="h2" className={styles.title}>
+                {t('users.modals.create.title')}
+              </Text>
+              <Text type="secondary">{t('users.modals.create.desc')}</Text>
+              <div className={styles.field}>
+                <Text strong>{t('users.modals.create.emailLabel')}</Text>
+                <Input
+                  aria-label={t('users.modals.create.emailLabel')}
+                  autoComplete="off"
+                  disabled={locked}
+                  maxLength={EMAIL_MAX}
+                  status={emailInvalid ? 'error' : undefined}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+                {emailInvalid ? (
+                  <Text className={styles.error}>{t('users.modals.create.emailInvalid')}</Text>
+                ) : null}
+              </div>
+              <div className={styles.field}>
+                <Text strong>{t('users.modals.create.fullNameLabel')}</Text>
+                <Input
+                  aria-label={t('users.modals.create.fullNameLabel')}
+                  autoComplete="off"
+                  disabled={locked}
+                  maxLength={FULL_NAME_MAX}
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                />
+              </div>
+              <div className={styles.field}>
+                <Text strong>{t('users.modals.create.usernameLabel')}</Text>
+                <Input
+                  aria-label={t('users.modals.create.usernameLabel')}
+                  autoComplete="off"
+                  disabled={locked}
+                  maxLength={USERNAME_MAX}
+                  status={usernameInvalid ? 'error' : undefined}
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                />
+                {usernameInvalid ? (
+                  <Text className={styles.error}>{t('users.modals.create.usernameInvalid')}</Text>
+                ) : null}
+              </div>
+              <div className={styles.field}>
+                <Text strong>{t('users.modals.create.passwordLabel')}</Text>
+                <div className={styles.passwordRow}>
+                  <InputPassword
+                    aria-label={t('users.modals.create.passwordLabel')}
+                    autoComplete="new-password"
+                    disabled={locked}
+                    maxLength={PASSWORD_MAX}
+                    status={passwordInvalid ? 'error' : undefined}
+                    style={{ flex: 1 }}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <Button disabled={locked} onClick={handleGenerate}>
+                    {t('users.modals.create.generate')}
+                  </Button>
+                </div>
+                <Text type="secondary">{t('users.modals.create.passwordHint')}</Text>
+                {passwordInvalid ? (
+                  <Text className={styles.error}>{t('users.modals.create.passwordInvalid')}</Text>
+                ) : null}
+              </div>
+              {phase === 'reauthing' ? (
+                <Text role="status" type="secondary">
+                  {t('users.reauth.inProgress')}
+                </Text>
+              ) : null}
+              {errorKey ? (
+                <Text className={styles.error} role="alert">
+                  {t(errorKey as never)}
+                </Text>
+              ) : null}
+              <div className={styles.footer}>
+                {phase === 'reauthing' ? (
+                  <Button type="default" onClick={handleCancelReauth}>
+                    {t('users.reauth.cancel')}
+                  </Button>
+                ) : (
+                  <Button disabled={phase === 'mutating'} onClick={handleClose}>
+                    {t('users.modals.cancel')}
+                  </Button>
+                )}
+                <Button
+                  disabled={!canSubmit}
+                  loading={phase === 'mutating' || phase === 'reauthing'}
+                  type="primary"
+                  onClick={() => void handleSubmit()}
+                >
+                  {t('users.modals.create.confirm')}
+                </Button>
+              </div>
+            </>
           )}
-          <Button
-            disabled={!canSubmit}
-            loading={phase === 'mutating' || phase === 'reauthing'}
-            type="primary"
-            onClick={() => void handleSubmit()}
-          >
-            {t('users.modals.create.confirm')}
-          </Button>
-        </div>
-      </div>
+        </m.div>
+      </AnimatePresence>
     );
   },
 );

@@ -4,12 +4,12 @@ import { cssVar } from 'antd-style';
 import { Fragment, memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatShortenNumber } from '@/utils/format';
 
 import { HeatmapType } from '../../types';
-import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 /**
  * Render a wall-clock duration in seconds as a compact "1h 15m" / "15m 20s" /

@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import ImperativeModal from '@/components/ImperativeModal';
+import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import Link from '@/libs/router/Link';
 import { useClientDataSWR } from '@/libs/swr';
@@ -18,7 +19,6 @@ import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { type TopicRankItem } from '@/types/topic';
 
 import StatsFormGroup from '../components/StatsFormGroup';
-import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 export const TopicsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
   const [open, setOpen] = useState(false);

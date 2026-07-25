@@ -1,8 +1,9 @@
 'use client';
 
-import { Flexbox, Text } from '@lobehub/ui';
+import { Flexbox, Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -35,6 +36,7 @@ const formatDateTime = (value: Date | string): string =>
 
 const ConnectorAuditPanel = memo<ConnectorAuditPanelProps>(({ canReadAudit, connectorId }) => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const cursor = cursorStack.at(-1) ?? null;
   const { data, error, isLoading, mutate } = useAdminConnectorAudit({
@@ -60,7 +62,9 @@ const ConnectorAuditPanel = memo<ConnectorAuditPanelProps>(({ canReadAudit, conn
       {!canReadAudit ? (
         <Text type={'secondary'}>{t('connectorCatalog.audit.noPermission')}</Text>
       ) : isLoading && !data ? (
-        <Text type={'secondary'}>{t('primitives.dataTable.loading')}</Text>
+        <div aria-label={t('primitives.dataTable.loading')} role="status">
+          <Skeleton active={!reduceMotion} paragraph={{ rows: 4 }} title={false} />
+        </div>
       ) : error && !data ? (
         <Flexbox gap={8} role={'alert'}>
           <Text>{t('primitives.dataTable.error')}</Text>

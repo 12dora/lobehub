@@ -1,8 +1,9 @@
 'use client';
 
-import { Alert, Flexbox, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Skeleton, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { useReducedMotion } from 'motion/react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -45,6 +46,7 @@ export interface ProviderRevisionsPanelProps {
 const ProviderRevisionsPanel = memo<ProviderRevisionsPanelProps>(
   ({ baseRevision, canPublish, canRead, disabled, onRollback, providerId }) => {
     const { t } = useTranslation('admin');
+    const reduceMotion = useReducedMotion();
     const [revisionCursorStack, setRevisionCursorStack] = useState<number[]>([]);
     const revisionCursor = revisionCursorStack.at(-1);
     const revisions = useFetchAdminAiProviderRevisions(providerId, canRead, revisionCursor);
@@ -67,7 +69,29 @@ const ProviderRevisionsPanel = memo<ProviderRevisionsPanelProps>(
             }
           />
         ) : revisions.isLoading && !revisions.data ? (
-          <Text type="secondary">{t('aiCatalog.revisions.loading')}</Text>
+          <div aria-label={t('aiCatalog.revisions.loading')} role="status">
+            <Flexbox gap={0}>
+              {[0, 1, 2].map((row) => (
+                <div className={styles.revision} key={row}>
+                  <Skeleton.Button
+                    active={!reduceMotion}
+                    size="small"
+                    style={{ height: 16, width: 48 }}
+                  />
+                  <Skeleton.Button
+                    active={!reduceMotion}
+                    size="small"
+                    style={{ height: 20, width: 72 }}
+                  />
+                  <Skeleton
+                    active={!reduceMotion}
+                    paragraph={{ rows: 1, width: '80%' }}
+                    title={false}
+                  />
+                </div>
+              ))}
+            </Flexbox>
+          </div>
         ) : revisions.data?.items.length ? (
           <>
             {revisions.data.items.map((revision) => (

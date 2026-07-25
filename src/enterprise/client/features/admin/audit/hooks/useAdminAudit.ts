@@ -1,5 +1,8 @@
 'use client';
 
+import { toast } from '@lobehub/ui/base-ui';
+import debug from 'debug';
+import i18n from 'i18next';
 import { useCallback } from 'react';
 import { mutate } from 'swr';
 
@@ -39,6 +42,8 @@ import {
   buildAdminAuditUserSummaryKey,
   buildAdminAuditUserTimelineKey,
 } from '../swrKeys';
+
+const log = debug('lobe-client:admin:audit');
 
 export const useFetchAuditEventsList = (
   filters: AdminAuditEventsListInput & { cursor?: string | null },
@@ -279,16 +284,37 @@ export const refreshAuditPolicy = async () => {
   await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AUDIT_POLICY_KEY);
 };
 
+/**
+ * Best-effort cache invalidation after a successful audit mutation.
+ * Never rethrows — a refresh failure must not surface as a mutation failure
+ * (would invite unsafe retries of irreversible commits such as holds/exports/runs).
+ */
+const softRefresh = async (tasks: Array<() => Promise<unknown>>) => {
+  const results = await Promise.allSettled(tasks.map((task) => task()));
+  const rejected = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (!rejected) return;
+
+  log('post-commit refresh failed: %O', rejected.reason);
+  toast.warning(
+    String(
+      i18n.t('audit.toast.savedRefreshFailed' as never, {
+        defaultValue: 'Saved, but the latest view could not be refreshed.',
+        ns: 'admin',
+      }),
+    ),
+  );
+};
+
 export const useAdminAuditMutations = () => {
   const updatePolicy = useCallback(async (input: AdminAuditPolicyUpdateInput) => {
     const result = await adminAuditService.updatePolicy(input);
-    await refreshAuditPolicy();
+    await softRefresh([() => refreshAuditPolicy()]);
     return result;
   }, []);
 
   const createExport = useCallback(async (input: AdminAuditExportsCreateInput) => {
     const result = await adminAuditService.createExport(input);
-    await refreshAuditExportsList();
+    await softRefresh([() => refreshAuditExportsList()]);
     return result;
   }, []);
 
@@ -298,37 +324,37 @@ export const useAdminAuditMutations = () => {
 
   const cancelExport = useCallback(async (input: AdminAuditExportsCancelInput) => {
     const result = await adminAuditService.cancelExport(input);
-    await refreshAuditExportsList();
+    await softRefresh([() => refreshAuditExportsList()]);
     return result;
   }, []);
 
   const createLegalHold = useCallback(async (input: AdminAuditLegalHoldsCreateInput) => {
     const result = await adminAuditService.createLegalHold(input);
-    await refreshAuditHoldsList();
+    await softRefresh([() => refreshAuditHoldsList()]);
     return result;
   }, []);
 
   const releaseLegalHold = useCallback(async (input: AdminAuditLegalHoldsReleaseInput) => {
     const result = await adminAuditService.releaseLegalHold(input);
-    await refreshAuditHoldsList();
+    await softRefresh([() => refreshAuditHoldsList()]);
     return result;
   }, []);
 
   const retentionDryRun = useCallback(async (input: AdminAuditRetentionCreateInput) => {
     const result = await adminAuditService.retentionDryRun(input);
-    await refreshAuditRetentionRuns();
+    await softRefresh([() => refreshAuditRetentionRuns()]);
     return result;
   }, []);
 
   const retentionRun = useCallback(async (input: AdminAuditRetentionCreateInput) => {
     const result = await adminAuditService.retentionRun(input);
-    await refreshAuditRetentionRuns();
+    await softRefresh([() => refreshAuditRetentionRuns()]);
     return result;
   }, []);
 
   const cancelRetentionRun = useCallback(async (input: AdminAuditRetentionCancelInput) => {
     const result = await adminAuditService.cancelRetentionRun(input);
-    await refreshAuditRetentionRuns();
+    await softRefresh([() => refreshAuditRetentionRuns()]);
     return result;
   }, []);
 

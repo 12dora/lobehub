@@ -3,17 +3,20 @@
 import { AreaChart } from '@lobehub/charts';
 import { Alert, Skeleton } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
+import { useReducedMotion } from 'motion/react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { formatTokenNumber } from '@/utils/format';
 
+import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
 import { useOverviewUsageTrend } from './useOverviewStats';
 import { isEmptyTokenTrend } from './utils';
 
 const UsageTrendCard = memo(() => {
   const { t } = useTranslation('admin');
+  const reduceMotion = useReducedMotion();
   const { data, error, isLoading, mutate } = useOverviewUsageTrend();
   const loading = isLoading && !data;
   // Emptiness is independent of a stale-refresh error (after the initial-error
@@ -25,25 +28,8 @@ const UsageTrendCard = memo(() => {
     day: point.day,
     [seriesName]: point.tokens,
   }));
-
-  if (error && !data) {
-    return (
-      <section className={styles.card}>
-        <h2 className={styles.sectionTitle}>{t('overview.usage.title')}</h2>
-        <Alert
-          showIcon
-          description={t('overview.error.loadFailedDescription')}
-          message={t('overview.error.loadFailed')}
-          type="error"
-          action={
-            <Button size="small" onClick={() => void mutate()}>
-              {t('overview.error.retry')}
-            </Button>
-          }
-        />
-      </section>
-    );
-  }
+  const firstError = Boolean(error && !data);
+  const bodyKey = loading ? 'loading' : firstError ? 'error' : empty ? 'empty' : 'data';
 
   return (
     <section className={styles.card}>
@@ -61,23 +47,37 @@ const UsageTrendCard = memo(() => {
           }
         />
       ) : null}
-      {loading ? (
-        <Skeleton.Block active height={220} width="100%" />
-      ) : empty ? (
-        <div className={styles.empty}>
-          <p className={styles.emptyTitle}>{t('overview.usage.emptyTitle')}</p>
-          <p className={styles.emptyDesc}>{t('overview.usage.emptyDesc')}</p>
-        </div>
-      ) : (
-        <AreaChart
-          categories={[seriesName]}
-          data={chartData}
-          index="day"
-          showLegend={false}
-          valueFormatter={(num) => formatTokenNumber(num)}
-          yAxisWidth={48}
-        />
-      )}
+      <OverviewCardState stateKey={bodyKey}>
+        {loading ? (
+          <Skeleton.Block active={!reduceMotion} height={220} width="100%" />
+        ) : firstError ? (
+          <Alert
+            showIcon
+            description={t('overview.error.loadFailedDescription')}
+            message={t('overview.error.loadFailed')}
+            type="error"
+            action={
+              <Button size="small" onClick={() => void mutate()}>
+                {t('overview.error.retry')}
+              </Button>
+            }
+          />
+        ) : empty ? (
+          <div className={styles.empty}>
+            <p className={styles.emptyTitle}>{t('overview.usage.emptyTitle')}</p>
+            <p className={styles.emptyDesc}>{t('overview.usage.emptyDesc')}</p>
+          </div>
+        ) : (
+          <AreaChart
+            categories={[seriesName]}
+            data={chartData}
+            index="day"
+            showLegend={false}
+            valueFormatter={(num) => formatTokenNumber(num)}
+            yAxisWidth={48}
+          />
+        )}
+      </OverviewCardState>
     </section>
   );
 });

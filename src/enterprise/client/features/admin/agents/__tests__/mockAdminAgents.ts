@@ -13,7 +13,6 @@ import {
   adminPlatformAgentAssignmentRemoveOutputSchema,
   adminPlatformAgentAssignmentUpsertOutputSchema,
   adminPlatformAgentCreateOutputSchema,
-  adminPlatformAgentDependentsOutputSchema,
   adminPlatformAgentGetOutputSchema,
   adminPlatformAgentListOutputSchema,
   adminPlatformAgentPublishOutputSchema,
@@ -25,8 +24,6 @@ import {
   adminPlatformAgentRolloutRollbackOutputSchema,
   adminPlatformAgentRolloutStartOutputSchema,
   adminPlatformAgentSetDefaultInboxOutputSchema,
-  adminPlatformAgentUpdateDraftOutputSchema,
-  adminPlatformAgentValidateDependenciesOutputSchema,
   adminPlatformAgentVersionsListOutputSchema,
 } from '@/server/enterprise/contracts/platformAgents';
 
@@ -359,17 +356,6 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
         structuredClone({ draftToken: record.draftToken, identity: record.identity }),
       );
     },
-    getDependents: async ({ agentId, cursor, limit }) => {
-      const record = requireRecord(agentId);
-      const items = record.assignments.map((assignment) => ({
-        id: assignment.id,
-        key: `${assignment.targetType}:${assignment.targetId}`,
-        name: assignment.targetId,
-        type: 'assignment' as const,
-        version: null,
-      }));
-      return adminPlatformAgentDependentsOutputSchema.parse(page(items, cursor, limit));
-    },
     getRollout: async ({ agentId, jobId }) =>
       adminPlatformAgentRolloutGetOutputSchema.parse(
         structuredClone(requireRollout(agentId, jobId)),
@@ -390,10 +376,12 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       adminPlatformAgentAssignmentListOutputSchema.parse(
         page(structuredClone(requireRecord(agentId).assignments), cursor, limit),
       ),
-    listRollouts: async ({ agentId, cursor, limit }) =>
-      adminPlatformAgentRolloutListOutputSchema.parse(
-        page(structuredClone(requireRecord(agentId).rollouts), cursor, limit),
-      ),
+    listRollouts: async ({ agentId, cursor, limit, status }) => {
+      const rows = structuredClone(requireRecord(agentId).rollouts).filter((row) =>
+        status && status.length > 0 ? status.includes(row.status) : true,
+      );
+      return adminPlatformAgentRolloutListOutputSchema.parse(page(rows, cursor, limit));
+    },
     listVersions: async ({ agentId, cursor, limit }) =>
       adminPlatformAgentVersionsListOutputSchema.parse(
         page(structuredClone(requireRecord(agentId).versions), cursor, limit),
@@ -521,20 +509,6 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       record.rollouts.unshift(rollout);
       return adminPlatformAgentRolloutStartOutputSchema.parse(rollout);
     },
-    updateDraft: async (input) => {
-      const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
-      // Production updateDraft is draftSequence-only CAS (revision unchanged).
-      record.identity = {
-        ...record.identity,
-        isDefault: input.isDefault,
-        systemKey: input.systemKey,
-      };
-      advanceDraft(record);
-      return adminPlatformAgentUpdateDraftOutputSchema.parse({
-        draftToken: record.draftToken,
-        identity: record.identity,
-      });
-    },
     upsertAssignment: async (input) => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       const assignment = {
@@ -553,7 +527,5 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       advanceDraft(record);
       return adminPlatformAgentAssignmentUpsertOutputSchema.parse(assignment);
     },
-    validateDependencies: async () =>
-      adminPlatformAgentValidateDependenciesOutputSchema.parse({ valid: true }),
   };
 };

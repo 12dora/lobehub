@@ -2,15 +2,15 @@
 
 import { Alert, Text } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useMemo } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { AdminProviderSettingsStoreProvider } from '@/enterprise/client/features/admin/ai/providerSettings/AdminProviderSettingsStore';
+import AdminAiRuntimeLoadAlert from '@/enterprise/client/features/admin/ai/shared/AdminAiRuntimeLoadAlert';
 import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
 import { ModelAssignmentsFormView } from '@/features/ServiceModel';
+import { ImageFormView, OpenAIFormView } from '@/features/SettingsForms';
 import { useSaveState } from '@/hooks/useSaveState';
-import ImageFormView from '@/routes/(main)/settings/image/features/ImageFormView';
-import OpenAIFormView from '@/routes/(main)/settings/tts/features/OpenAIFormView';
 import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 
@@ -35,14 +35,19 @@ const AdminAiInfraPrefetch = memo(() => {
   const useFetchAiProviderList = useAiInfraStore((s) => s.useFetchAiProviderList);
   const useFetchRuntime = useAiInfraStore((s) => s.useFetchAiProviderRuntimeState);
   useFetchAiProviderList({ enabled: true });
-  useFetchRuntime(true);
-  return null;
+  const { error: runtimeError, mutate: mutateRuntime } = useFetchRuntime(true);
+  const retryRuntime = useCallback(() => mutateRuntime(), [mutateRuntime]);
+
+  if (!runtimeError) return null;
+  return <AdminAiRuntimeLoadAlert error={runtimeError} onRetry={retryRuntime} />;
 });
 
 const ServiceModelSettingsBody = memo(() => {
   const { t } = useTranslation('admin');
   const { enableSTT, showAiImage } = useServerConfigStore(featureFlagsSelectors);
-  const saveState = useSaveState();
+  const modelSaveState = useSaveState();
+  const ttsSaveState = useSaveState();
+  const imageSaveState = useSaveState();
   const {
     canWrite,
     clearDirtyDraftBlocked,
@@ -84,7 +89,7 @@ const ServiceModelSettingsBody = memo(() => {
         disabledReason={disabledReason}
         initError={error}
         isInit={isInit}
-        saveState={saveState}
+        saveState={modelSaveState}
         systemAgentSettings={systemAgent}
         onRetryInit={() => void mutate()}
         onUpdateDefaultAgent={updateDefaultAgentModel}
@@ -95,6 +100,7 @@ const ServiceModelSettingsBody = memo(() => {
           canManage={canWrite}
           disabledReason={disabledReason}
           isInit={isInit}
+          saveState={ttsSaveState}
           value={tts}
           onChange={updateTts}
         />
@@ -104,6 +110,7 @@ const ServiceModelSettingsBody = memo(() => {
           canManage={canWrite}
           disabledReason={disabledReason}
           isInit={isInit}
+          saveState={imageSaveState}
           value={image}
           onChange={updateImage}
         />

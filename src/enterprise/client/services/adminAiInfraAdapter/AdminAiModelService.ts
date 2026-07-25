@@ -1,4 +1,5 @@
-import { mergeArrayById } from '@lobechat/utils';
+import { BRANDING_PROVIDER } from '@lobechat/business-const';
+import { buildProviderModelList } from '@lobechat/utils';
 import type {
   AiModelSortMap,
   AiProviderModelListItem,
@@ -55,7 +56,7 @@ export class AdminAiModelService {
 
   getAiProviderModelList = async (
     id: string,
-    _params?: GetAiProviderModelListParams,
+    params?: GetAiProviderModelListParams,
   ): Promise<AiProviderModelListItem[]> => {
     // Built-in model catalog from client-side model-bank, mirroring the server repo's
     // fetchBuiltinModels fallback so every provider shows its full model list even before
@@ -77,13 +78,13 @@ export class AdminAiModelService {
       if (!isPlatformNotFoundError(cause)) throw cause;
     }
 
-    const merged = mergeArrayById(builtinModels, dbModels) as AiProviderModelListItem[];
-    const builtinTypeById = new Map(builtinModels.map((model) => [model.id, model.type]));
-    for (const model of merged) {
-      const builtinType = builtinTypeById.get(model.id);
-      if (builtinType) model.type = builtinType;
-    }
-    return merged;
+    // Shared pure policy with server AiInfraRepos — no client-side drift.
+    return buildProviderModelList(id, builtinModels, dbModels, {
+      brandingProviderId: BRANDING_PROVIDER,
+      enabled: params?.enabled,
+      limit: params?.limit,
+      offset: params?.offset,
+    });
   };
 
   toggleModelEnabled = async (params: ToggleAiModelEnableParams) => {

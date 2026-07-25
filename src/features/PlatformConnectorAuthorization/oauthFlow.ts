@@ -22,17 +22,19 @@ export interface WaitForManagedConnectorAuthorizationOptions {
 
 const sleepFor = (milliseconds: number, signal?: AbortSignal) =>
   new Promise<void>((resolve) => {
-    const timer = window.setTimeout(resolve, milliseconds);
-    // Clear the pending timer if the poll is aborted mid-sleep, so a cancelled authorization
-    // does not leave an orphaned timeout running to completion.
-    signal?.addEventListener(
-      'abort',
-      () => {
-        window.clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const onAbort = () => finish();
+    const timer = window.setTimeout(finish, milliseconds);
+    // Remove the listener on both abort and normal timer settlement so long
+    // polls do not accumulate one-shot abort handlers on the same signal.
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 
 class ConnectorAuthorizationPollingCancelledError extends Error {}

@@ -14,7 +14,7 @@ import { type RouteObject } from 'react-router';
 
 import {
   BusinessDesktopRoutesWithMainLayout,
-  BusinessDesktopRoutesWithoutMainLayout,
+  getBusinessDesktopRoutesWithoutMainLayout,
 } from '@/business/client/BusinessDesktopRoutes';
 import { agentDocumentRouteMeta } from '@/features/AgentDocumentPage/routeMeta';
 import { taskRouteMeta, tasksRouteMeta } from '@/features/AgentTasks/routeMeta';
@@ -977,7 +977,7 @@ export const desktopRoutes: RouteObject[] = [
   },
   // Onboarding route (outside main layout)
 
-  ...BusinessDesktopRoutesWithoutMainLayout,
+  ...getBusinessDesktopRoutesWithoutMainLayout(),
 
   // Share topic route (outside main layout)
   {

@@ -1,5 +1,4 @@
 export {
-  refreshAdminUserDetail,
   refreshAdminUsersList,
   useAdminUserMutations,
   useFetchAdminUserAuditTrail,

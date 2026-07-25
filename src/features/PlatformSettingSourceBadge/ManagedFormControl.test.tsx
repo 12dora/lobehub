@@ -98,7 +98,8 @@ describe('ManagedFormControlContent', () => {
     );
 
     expect(screen.getByRole('switch')).toBeDisabled();
-    expect(screen.getByText('platformSource.loadingMeta')).toBeInTheDocument();
+    // Loading meta is an aria-label on a role="status" node (skeleton, not visible text).
+    expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'platformSource.loadingMeta');
 
     rerender(
       <ManagedFormControlContent

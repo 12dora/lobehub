@@ -8,11 +8,11 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import ImperativeModal from '@/components/ImperativeModal';
+import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 
 import StatsFormGroup from '../components/StatsFormGroup';
-import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 export const TopicsRank = memo(() => {
   const [open, setOpen] = useState(false);

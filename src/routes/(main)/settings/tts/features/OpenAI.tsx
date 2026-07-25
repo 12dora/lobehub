@@ -5,11 +5,10 @@ import isEqual from 'fast-deep-equal';
 import { memo } from 'react';
 
 import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
+import { OpenAIFormView } from '@/features/SettingsForms';
 import { usePermission } from '@/hooks/usePermission';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/selectors';
-
-import OpenAIFormView from './OpenAIFormView';
 
 const OpenAI = memo(() => {
   const { allowed: canManageServiceModel, reason } = usePermission('manage_settings');

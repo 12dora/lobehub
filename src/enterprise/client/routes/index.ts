@@ -23,8 +23,10 @@ export const getEnterpriseDesktopRoutesWithoutMainLayout = (): RouteObject[] => 
 };
 
 /**
- * Static export evaluated at SPA module load (after `__SERVER_CONFIG__` inject).
- * When platform admin is off, this array is empty.
+ * Boot-time snapshot (after `__SERVER_CONFIG__` inject). Prefer
+ * {@link getEnterpriseDesktopRoutesWithoutMainLayout} when assembling the
+ * business/desktop router so registry modules registered during bootstrap
+ * are included. When platform admin is off, both return [].
  */
 export const EnterpriseDesktopRoutesWithoutMainLayout: RouteObject[] =
   getEnterpriseDesktopRoutesWithoutMainLayout();

@@ -1,14 +1,35 @@
 import { toast } from '@lobehub/ui/base-ui';
+import debug from 'debug';
 import i18n from 'i18next';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import {
   AdminReauthBlockedError,
   AdminReauthCancelledError,
 } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import type { EnterpriseErrorBody } from '@/types/platform/errors';
+
+const log = debug('lobe-client:admin:ai-infra');
 
 const t = (key: string, options?: Record<string, unknown>) =>
   String(i18n.t(key as never, { ns: 'admin', ...options }));
+
+/**
+ * Typed partial-load failure for admin provider detail batch fetches.
+ * Shape matches mapEnterpriseError's tRPC `data.errorData` extraction path.
+ */
+export const createAdminAiProviderPartialLoadError = (failedKeys: string[]): Error => {
+  const unique = [...new Set(failedKeys.filter(Boolean))];
+  const body: EnterpriseErrorBody = {
+    code: PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_PARTIAL_LOAD,
+    details: { count: unique.length },
+    message: PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_PARTIAL_LOAD,
+  };
+  const error = new Error(PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_PARTIAL_LOAD);
+  Object.assign(error, { data: { errorData: body } });
+  return error;
+};
 
 /**
  * Map admin AiInfra write failures to a short user-visible toast.
@@ -74,14 +95,24 @@ export const notifyAdminAiInfraError = (
     return;
   }
 
-  const message =
-    cause instanceof Error && cause.message
-      ? cause.message.slice(0, 200)
-      : typeof cause === 'string'
-        ? cause.slice(0, 200)
-        : fallback;
-  toast.error(message || fallback);
+  // Never surface raw exception / transport text to admins (XT-007 / AI-10).
+  log('unmapped ai-infra write failure: %O', cause);
+  toast.error(fallback);
 };
+
+/**
+ * Marker set on errors after `withAdminAiInfraErrorToast` has already shown a
+ * user-facing toast. Adapter catches check this to avoid double-toasting when a
+ * pre-read or local guard needs its own failure path.
+ */
+export const ADMIN_AI_INFRA_ERROR_TOASTED = Symbol.for('lobe.adminAiInfraErrorToasted');
+
+export const isAdminAiInfraErrorToasted = (err: unknown): boolean =>
+  Boolean(
+    err &&
+    typeof err === 'object' &&
+    (err as Record<PropertyKey, unknown>)[ADMIN_AI_INFRA_ERROR_TOASTED] === true,
+  );
 
 /** Wrap an async write so failures toast without swallowing the rejection. */
 export const withAdminAiInfraErrorToast = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -89,6 +120,14 @@ export const withAdminAiInfraErrorToast = async <T>(fn: () => Promise<T>): Promi
     return await fn();
   } catch (error) {
     notifyAdminAiInfraError(error);
+    if (error && typeof error === 'object') {
+      Object.defineProperty(error, ADMIN_AI_INFRA_ERROR_TOASTED, {
+        configurable: true,
+        enumerable: false,
+        value: true,
+        writable: false,
+      });
+    }
     throw error;
   }
 };

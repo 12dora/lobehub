@@ -1,9 +1,11 @@
 'use client';
 
 import { Text } from '@lobehub/ui';
-import { Segmented } from '@lobehub/ui/base-ui';
+import { Segmented, toast } from '@lobehub/ui/base-ui';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { isAdminAiInfraErrorToasted } from '@/enterprise/client/services/adminAiInfraAdapter/errors';
 
 import type { AdminSkillDistribution, AdminToolScope } from './index';
 
@@ -21,6 +23,7 @@ const AdminBuiltinSkillDistribution = memo<{
   const { t } = useTranslation('admin');
   const [busy, setBusy] = useState(false);
   const value = scope.getBuiltinSkillDistribution(identifier);
+  const canSet = scope.canSetBuiltinSkillDistribution(identifier);
 
   return (
     <div
@@ -36,7 +39,7 @@ const AdminBuiltinSkillDistribution = memo<{
     >
       <Text type="secondary">{t('skillCatalog.detail.identity.distribution')}</Text>
       <Segmented<AdminSkillDistribution>
-        disabled={busy}
+        disabled={busy || !canSet}
         size="small"
         value={value}
         options={ORDERED.map((d) => ({
@@ -44,9 +47,18 @@ const AdminBuiltinSkillDistribution = memo<{
           value: d,
         }))}
         onChange={(next) => {
-          if (next === value) return;
+          if (next === value || !canSet) return;
           setBusy(true);
-          void scope.setBuiltinSkillDistribution(identifier, next).finally(() => setBusy(false));
+          void scope
+            .setBuiltinSkillDistribution(identifier, next)
+            .catch((err: unknown) => {
+              // applyImmediate already toasts via withAdminAiInfraErrorToast — skip double toast.
+              // Local denials / pre-read failures still need a control-boundary message.
+              if (!isAdminAiInfraErrorToasted(err)) {
+                toast.error(t('skillCatalog.toast.distributionFailed'));
+              }
+            })
+            .finally(() => setBusy(false));
         }}
       />
     </div>

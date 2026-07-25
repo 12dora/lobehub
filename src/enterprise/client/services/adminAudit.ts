@@ -181,10 +181,6 @@ class AdminAuditService {
     return lambdaClient.admin.audit.legalHolds.list.query(input);
   };
 
-  getLegalHold = async (input: { id: string }): Promise<AdminAuditLegalHoldItem> => {
-    return lambdaClient.admin.audit.legalHolds.get.query(input);
-  };
-
   createLegalHold = async (
     input: AdminAuditLegalHoldsCreateInput,
   ): Promise<AdminAuditLegalHoldItem> => {
@@ -212,10 +208,6 @@ class AdminAuditService {
     } = {},
   ): Promise<AdminAuditExportsListOutput> => {
     return lambdaClient.admin.audit.exports.list.query(input);
-  };
-
-  getExport = async (input: { id: string }): Promise<AdminAuditExportItem> => {
-    return lambdaClient.admin.audit.exports.get.query(input);
   };
 
   downloadExport = async (
@@ -252,14 +244,6 @@ class AdminAuditService {
     } = {},
   ): Promise<AdminAuditRetentionListRunsOutput> => {
     return lambdaClient.admin.audit.retention.listRuns.query(input);
-  };
-
-  getRetentionRun = async (input: { id: string }): Promise<AdminAuditRetentionRunItem> => {
-    return lambdaClient.admin.audit.retention.getRun.query(input);
-  };
-
-  getRetentionStatus = async (input: { id: string }): Promise<AdminAuditRetentionRunItem> => {
-    return lambdaClient.admin.audit.retention.status.query(input);
   };
 
   cancelRetentionRun = async (

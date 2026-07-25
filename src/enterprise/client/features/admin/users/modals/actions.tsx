@@ -22,9 +22,6 @@ import { AUTO_REASON } from '../auditReasonCodes';
 import { validateHardDeleteConfirm } from './deleteConfirm';
 import { openReasonModal } from './openReasonModal';
 
-// Re-export stable codes for callers that historically imported from this module.
-export { AUTO_REASON, AUTO_REASON_LEGACY } from '../auditReasonCodes';
-
 const styles = createStaticStyles(({ css }) => ({
   field: css`
     display: flex;

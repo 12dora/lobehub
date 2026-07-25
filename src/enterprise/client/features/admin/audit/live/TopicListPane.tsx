@@ -3,6 +3,7 @@
 import { Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -77,6 +78,7 @@ export interface TopicListPaneProps {
 const TopicListPane = memo<TopicListPaneProps>(
   ({ items, selectedTopicId, onSelect, hasMore, onLoadMore, loading }) => {
     const { t } = useTranslation('admin');
+    const reduceMotion = useReducedMotion();
     const [now, setNow] = useState(() => Date.now());
 
     useEffect(() => {
@@ -92,34 +94,43 @@ const TopicListPane = memo<TopicListPaneProps>(
       );
     }
 
+    // layoutScroll so popLayout/layout children measure offsetTop against the scrollport
+    // when the operator has scrolled (plain overflow:auto has no layoutScroll ancestor).
     return (
-      <div className={styles.root}>
-        {items.map((item) => (
-          <div
-            className={styles.item}
-            data-active={item.id === selectedTopicId}
-            key={item.id}
-            role="button"
-            tabIndex={0}
-            title={formatAdminDateTime(item.updatedAt)}
-            onClick={() => onSelect(item.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') onSelect(item.id);
-            }}
-          >
-            <p className={styles.title}>{item.title || t('audit.conversations.untitled')}</p>
-            <p className={styles.meta}>
-              {formatRelative(new Date(item.updatedAt), now, t as never)}
-              {item.model ? ` · ${item.model}` : ''}
-            </p>
-          </div>
-        ))}
+      <m.div layoutScroll className={styles.root}>
+        <AnimatePresence initial={false} mode="popLayout">
+          {items.map((item) => (
+            <m.div
+              animate={{ opacity: 1 }}
+              className={styles.item}
+              data-active={item.id === selectedTopicId}
+              exit={reduceMotion ? undefined : { opacity: 0 }}
+              initial={reduceMotion ? false : { opacity: 0 }}
+              key={item.id}
+              layout={!reduceMotion}
+              role="button"
+              tabIndex={0}
+              title={formatAdminDateTime(item.updatedAt)}
+              transition={{ duration: reduceMotion ? 0 : 0.16 }}
+              onClick={() => onSelect(item.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') onSelect(item.id);
+              }}
+            >
+              <p className={styles.title}>{item.title || t('audit.conversations.untitled')}</p>
+              <p className={styles.meta}>
+                {formatRelative(new Date(item.updatedAt), now, t as never)}
+                {item.model ? ` · ${item.model}` : ''}
+              </p>
+            </m.div>
+          ))}
+        </AnimatePresence>
         {hasMore ? (
           <Button loading={loading} size="small" type="default" onClick={onLoadMore}>
             {t('audit.live.topics.loadMore')}
           </Button>
         ) : null}
-      </div>
+      </m.div>
     );
   },
 );

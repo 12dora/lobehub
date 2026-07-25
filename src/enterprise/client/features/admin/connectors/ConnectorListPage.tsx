@@ -1,7 +1,7 @@
 'use client';
 
 import { toast } from '@lobehub/ui/base-ui';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 
@@ -15,6 +15,8 @@ import type { AdminConnectorListInput } from './types';
 import { refreshAdminConnectorLists, useFetchAdminConnectors } from './useAdminConnectorCatalog';
 
 const DEFAULT_LIMIT = 50;
+/** Match the admin skill catalog debounce so typing does not thrash URL/SWR. */
+export const CONNECTOR_SEARCH_DEBOUNCE_MS = 300;
 
 const enumValue = <Value extends string>(
   value: string | null,
@@ -27,7 +29,8 @@ const ConnectorListPage = memo(() => {
   const { authMethod, permissions } = useAdminAccess();
   const connectorPermissions = deriveAdminConnectorPermissions(permissions);
   const [searchParams, setSearchParams] = useSearchParams();
-  const query = searchParams.get('q')?.trim() || undefined;
+  const query = searchParams.get('q') ?? '';
+  const normalizedQuery = query.trim();
   const status = enumValue(searchParams.get('status'), ['draft', 'published', 'archived']);
   const credentialMode = enumValue(searchParams.get('credentialMode'), [
     'none',
@@ -37,15 +40,17 @@ const ConnectorListPage = memo(() => {
   const enabledParam = searchParams.get('enabled');
   const enabled = enabledParam === 'true' ? true : enabledParam === 'false' ? false : undefined;
   const fingerprint = JSON.stringify([
-    query ?? '',
+    normalizedQuery,
     status ?? '',
     credentialMode ?? '',
     enabledParam,
   ]);
+  const [queryDraft, setQueryDraft] = useState(query);
   const [cursorState, setCursorState] = useState<{ fingerprint: string; stack: (string | null)[] }>(
     { fingerprint, stack: [] },
   );
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const searchTimerRef = useRef<number | null>(null);
   const cursorStack = cursorState.fingerprint === fingerprint ? cursorState.stack : [];
   const cursor = cursorStack.at(-1) ?? null;
   const input = useMemo<AdminConnectorListInput>(
@@ -54,10 +59,10 @@ const ConnectorListPage = memo(() => {
       cursor: cursor ?? undefined,
       enabled,
       limit,
-      query,
+      query: normalizedQuery || undefined,
       status,
     }),
-    [credentialMode, cursor, enabled, limit, query, status],
+    [credentialMode, cursor, enabled, limit, normalizedQuery, status],
   );
   const { data, error, isLoading, mutate } = useFetchAdminConnectors(
     input,
@@ -76,11 +81,38 @@ const ConnectorListPage = memo(() => {
     [searchParams, setSearchParams],
   );
 
+  useEffect(() => setQueryDraft(query), [query]);
+  useEffect(() => {
+    if (cursorState.fingerprint === fingerprint) return;
+    setCursorState({ fingerprint, stack: [] });
+  }, [cursorState.fingerprint, fingerprint]);
+  useEffect(() => {
+    if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
+    if (queryDraft === query) return;
+    searchTimerRef.current = window.setTimeout(
+      () => patchFilter('query', queryDraft.trim() || undefined),
+      CONNECTOR_SEARCH_DEBOUNCE_MS,
+    );
+    return () => {
+      if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
+    };
+  }, [patchFilter, query, queryDraft]);
+
+  const onFilterChange = useCallback(
+    (key: 'credentialMode' | 'enabled' | 'query' | 'status', value?: string) => {
+      if (key === 'query') {
+        setQueryDraft(value ?? '');
+        return;
+      }
+      patchFilter(key, value);
+    },
+    [patchFilter],
+  );
+
   return (
     <ConnectorListView
       data={data?.items}
       error={Boolean(error)}
-      filters={{ credentialMode, enabled, query, status }}
       loading={isLoading}
       permissions={connectorPermissions}
       cursorPagination={{
@@ -98,7 +130,13 @@ const ConnectorListPage = memo(() => {
         onPrevious: () => setCursorState({ fingerprint, stack: cursorStack.slice(0, -1) }),
         pageSize: limit,
       }}
-      onFilterChange={patchFilter}
+      filters={{
+        credentialMode,
+        enabled,
+        query: queryDraft || undefined,
+        status,
+      }}
+      onFilterChange={onFilterChange}
       onOpen={(id) => navigate(`/admin/connectors/${encodeURIComponent(id)}`)}
       onRetry={() => void mutate()}
       onCreate={() =>

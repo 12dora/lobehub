@@ -20,6 +20,9 @@ import {
 } from '../localDraftStorage';
 import type { AdminAiProviderGetOutput } from '../types';
 
+/** CAS identity attached to the local recovery draft (may lag the live snapshot). */
+type LocalCasIdentity = { baseRevision: number; draftToken: string };
+
 export const useAiProviderEditor = (
   snapshot: AdminAiProviderGetOutput | undefined,
   editable = true,
@@ -33,6 +36,12 @@ export const useAiProviderEditor = (
   const [actionError, setActionError] = useState<string | null>(null);
   const [testLocallyStale, setTestLocallyStale] = useState(false);
   const [rebaseConflicts, setRebaseConflicts] = useState<AiProviderRebaseConflict[]>([]);
+  /**
+   * Persisted CAS metadata for the recovery draft. Must survive hydration against a
+   * newer server snapshot so conflict detection is not silently erased on the next write.
+   * Updated only on explicit rebase / discard / save against a fresh snapshot.
+   */
+  const [localCas, setLocalCas] = useState<LocalCasIdentity | null>(null);
   const hydratedKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -49,6 +58,8 @@ export const useAiProviderEditor = (
       setDirty(true);
       setTestLocallyStale(true);
       setSaveState('dirty');
+      // Preserve the draft's own CAS identity — do not rewrite to the live snapshot.
+      setLocalCas({ baseRevision: local.baseRevision, draftToken: local.draftToken });
       setConflict(
         local.baseRevision !== snapshot.baseRevision || local.draftToken !== snapshot.draftToken,
       );
@@ -64,18 +75,24 @@ export const useAiProviderEditor = (
     setActionError(null);
     setTestLocallyStale(false);
     setRebaseConflicts([]);
+    setLocalCas({ baseRevision: snapshot.baseRevision, draftToken: snapshot.draftToken });
   }, [editable, snapshot]);
 
   useEffect(() => {
     if (!editable || !snapshot || !draft || !dirty) return;
+    // Always re-persist the draft's original CAS identity, not the live snapshot's.
+    const cas = localCas ?? {
+      baseRevision: snapshot.baseRevision,
+      draftToken: snapshot.draftToken,
+    };
     saveAiProviderPublicDraft(snapshot.draft.id, {
       baseDraft: baseDraft ?? toEditableAiProviderDraft(snapshot.draft),
-      baseRevision: snapshot.baseRevision,
+      baseRevision: cas.baseRevision,
       draft,
-      draftToken: snapshot.draftToken,
+      draftToken: cas.draftToken,
       savedAt: new Date().toISOString(),
     });
-  }, [baseDraft, dirty, draft, editable, snapshot]);
+  }, [baseDraft, dirty, draft, editable, localCas, snapshot]);
 
   const unsavedMessages = useMemo(
     () => ({
@@ -112,6 +129,8 @@ export const useAiProviderEditor = (
     setActionError(null);
     setTestLocallyStale(false);
     setRebaseConflicts([]);
+    // Discard adopts the live snapshot CAS identity.
+    setLocalCas({ baseRevision: snapshot.baseRevision, draftToken: snapshot.draftToken });
   }, [snapshot]);
 
   const rebaseLocal = useCallback(
@@ -128,6 +147,8 @@ export const useAiProviderEditor = (
       setTestLocallyStale(true);
       setRebaseConflicts(result.conflicts);
       setConflict(result.conflicts.length > 0);
+      // Explicit rebase advances the local draft onto the server's CAS identity.
+      setLocalCas({ baseRevision: source.baseRevision, draftToken: source.draftToken });
     },
     [baseDraft, draft, snapshot],
   );
@@ -159,6 +180,8 @@ export const useAiProviderEditor = (
     setSaveState('saved');
     setActionError(null);
     setRebaseConflicts([]);
+    // Successful save against the current snapshot refreshes local CAS identity.
+    setLocalCas({ baseRevision: snapshot.baseRevision, draftToken: snapshot.draftToken });
   }, [snapshot]);
 
   const validation = useMemo(
