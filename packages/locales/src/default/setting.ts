@@ -817,6 +817,8 @@ export default {
   'settingGroupMembers.remove': 'Remove Member',
   'settingGroupMembers.removeFromGroup': 'Remove from Group',
   'settingGroupMembers.you': 'You',
+  'settingImage.defaultCount.saveFailed':
+    'Could not update the default image count. Please try again.',
   'settingImage.defaultCount.desc':
     'Set the default number of images generated when creating a new task in the image generation panel.',
   'settingImage.defaultCount.label': 'Default Image Count',
@@ -957,6 +959,7 @@ export default {
   'settingSystemTools.tools.rg.desc': 'ripgrep - extremely fast text search tool',
   'settingSystemTools.tools.uv.desc': 'uv - extremely fast Python package manager',
   'settingTTS.openai.sttModel': 'OpenAI Speech-to-Text Model',
+  'settingTTS.openai.saveFailed': 'Could not update the TTS model. Please try again.',
   'settingTTS.openai.title': 'OpenAI',
   'settingTTS.openai.ttsModel': 'OpenAI Text-to-Speech Model',
   'settingTTS.showAllLocaleVoice.desc':

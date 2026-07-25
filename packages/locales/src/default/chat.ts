@@ -262,6 +262,12 @@ export default {
     'Claude Code sessions are pinned to a working directory. Switching will start a new session for this topic — chat messages stay, but the previous session context cannot be resumed.',
   'heteroAgent.switchCwd.ok': 'Switch and start new session',
   'heteroAgent.switchCwd.title': 'Switch working directory?',
+  'heteroAgent.cloudCredError.desc':
+    'The credential list could not be loaded. Retry or open agent settings to configure credentials.',
+  'heteroAgent.cloudCredError.retry': 'Retry',
+  'heteroAgent.cloudCredError.title': 'Could not verify cloud credentials',
+  'heteroAgent.cloudCredLoading.desc': 'Verifying vault credentials before enabling the input.',
+  'heteroAgent.cloudCredLoading.title': 'Checking cloud credentials…',
   'heteroAgent.cloudNotConfigured.action': 'Configure',
   'heteroAgent.cloudNotConfigured.desc':
     'Configure your Claude Code token in agent profile to start sending messages.',

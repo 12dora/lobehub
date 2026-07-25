@@ -29,6 +29,8 @@ export default {
   'codes.PROVIDER_NOT_FOUND': 'Identity provider configuration not found',
   'codes.RATE_LIMIT_EXCEEDED': 'Too many requests, please try again later',
   'codes.REGISTRATION_CLOSED': 'New account registration is currently disabled',
+  'codes.REGISTRATION_POLICY_UNAVAILABLE':
+    'Registration policy is temporarily unavailable. Please try again later.',
   'codes.SESSION_EXPIRED': 'Session has expired, please sign in again',
   'codes.SOCIAL_ACCOUNT_ALREADY_LINKED': 'This social account is already linked to another user',
   'codes.TEMPORARY_EMAIL_NOT_ALLOWED':
