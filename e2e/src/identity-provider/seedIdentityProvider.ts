@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import bcrypt from 'bcryptjs';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 
@@ -211,14 +211,18 @@ export const cleanupPublishedIdentityProvider = async (databaseUrl: string): Pro
   const pool = new Pool({ connectionString: databaseUrl });
   const db = drizzle(pool, { schema });
   try {
-    await db
-      .delete(platformResourceRevisions)
-      .where(
-        and(
-          eq(platformResourceRevisions.resourceType, 'oidc'),
-          eq(platformResourceRevisions.resourceId, IDENTITY_PROVIDER_ID),
-        ),
-      );
+    // platform_resource_revisions are immutable; bypass user triggers for fixture teardown.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx
+        .delete(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceType, 'oidc'),
+            eq(platformResourceRevisions.resourceId, IDENTITY_PROVIDER_ID),
+          ),
+        );
+    });
     await db
       .delete(platformIdentityProviderSecrets)
       .where(eq(platformIdentityProviderSecrets.providerId, IDENTITY_PROVIDER_ID));

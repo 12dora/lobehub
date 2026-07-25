@@ -7,8 +7,14 @@ on:
       - 'scripts/enterprise/preflight.ts'
       - 'scripts/enterprise/recovery-drill.ts'
       - 'scripts/enterprise/production-readiness/**'
+      - 'scripts/enterprise/check-path-boundaries.ts'
+      - 'scripts/enterprise/pathBoundaries.ts'
+      - 'scripts/enterprise/pathBoundaries.test.ts'
       - 'docs/enterprise/runbooks/**'
       - 'docs/redevelopment/overview/14_Q06生产就绪门禁运行说明.md'
+      - 'src/**'
+      - 'apps/server/src/**'
+      - 'packages/**'
   push:
     branches:
       - canary
@@ -17,6 +23,8 @@ on:
       - 'scripts/enterprise/preflight.ts'
       - 'scripts/enterprise/recovery-drill.ts'
       - 'scripts/enterprise/production-readiness/**'
+      - 'scripts/enterprise/check-path-boundaries.ts'
+      - 'scripts/enterprise/pathBoundaries.ts'
   workflow_dispatch: {}
 
 permissions:
@@ -30,7 +38,11 @@ jobs:
   harness-contract:
     name: Harness and contract validation (non-production)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      # SCE-05 — recovery docker cases must execute, never soft-pass
+      REQUIRE_DOCKER_INTEGRATION: '1'
+      CI: 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -41,11 +53,104 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Unit contracts (preflight + recovery)
+      - name: Path-boundary gate (SCE-03)
+        run: bun run enterprise:check-paths
+
+      - name: Collect path-boundary evidence
         run: |
+          set -euo pipefail
+          mkdir -p .records/enterprise-production-readiness/envelopes
+          bun -e '
+            import { collectPathBoundaryEvidence } from "./scripts/enterprise/production-readiness/adapters/pathBoundaries.ts";
+            import { writeFile, mkdir } from "node:fs/promises";
+            const sha = process.env.GITHUB_SHA ?? "0".repeat(40);
+            const out = ".records/enterprise-production-readiness";
+            const evidence = await collectPathBoundaryEvidence({
+              candidateSha: /^[a-f\\d]{40}$/u.test(sha) ? sha : "0".repeat(40),
+              outputDir: out,
+              repoRoot: process.cwd(),
+            });
+            if (evidence.status !== "passed") {
+              console.error("path-boundary evidence failed", evidence);
+              process.exit(1);
+            }
+            await mkdir(`${out}/envelopes`, { recursive: true });
+            await writeFile(
+              `${out}/envelopes/path-boundaries.envelope.json`,
+              `${JSON.stringify({
+                gate: "path-boundaries",
+                status: evidence.status,
+                artifactSha256: evidence.artifactSha256,
+                assertions: evidence.assertions,
+                candidateSha: evidence.candidateSha,
+                generatedAt: evidence.generatedAt,
+              }, null, 2)}\\n`,
+            );
+            console.log("path-boundaries.envelope.json written");
+          '
+
+      - name: Unit + Docker recovery contracts
+        run: |
+          set -euo pipefail
+          mkdir -p .records/enterprise-production-readiness
           bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            --reporter=default --reporter=json \
+            --outputFile=.records/enterprise-production-readiness/recovery-contracts.json \
             scripts/enterprise/production-readiness/preflight.test.ts \
-            scripts/enterprise/production-readiness/recovery.test.ts
+            scripts/enterprise/production-readiness/recovery.test.ts \
+            scripts/enterprise/production-readiness/rr4.contracts.test.ts \
+            scripts/enterprise/production-readiness/rr5.contracts.test.ts \
+            scripts/enterprise/production-readiness/rr6.contracts.test.ts \
+            scripts/enterprise/production-readiness/rr7.contracts.test.ts \
+            scripts/enterprise/production-readiness/rr8.contracts.test.ts \
+            scripts/enterprise/production-readiness/rr9.contracts.test.ts
+
+      - name: Assert recovery Docker cases executed (SCE-05)
+        run: |
+          set -euo pipefail
+          bun -e '
+            const report = JSON.parse(
+              await Bun.file(".records/enterprise-production-readiness/recovery-contracts.json").text(),
+            );
+            // Known docker case titles from SCE-05 + rr4/rr5 soft-pass sweep
+            const expectedSnippets = [
+              "detects secret ref rewiring",
+              "full semantic digests catch",
+              "nested after_diff",
+              "changed published_checksum",
+              "NULL/empty/invalid",
+              "valid oidc + branding",
+              "genuine pre-publish",
+              "archived/draft target",
+              "delimiter collision produce different table digests",
+              "same revision number wrong type",
+              "revision and audit pipe pairs differ",
+              "binding owner uses connector_id",
+            ];
+            const all = [];
+            for (const file of report.testResults ?? []) {
+              for (const a of file.assertionResults ?? []) {
+                all.push(a);
+              }
+            }
+            const matched = expectedSnippets.map((snippet) => {
+              const hit = all.find((a) => String(a.title ?? a.fullName ?? "").includes(snippet));
+              return { snippet, status: hit?.status ?? "missing", title: hit?.title };
+            });
+            const failed = matched.filter((m) => m.status !== "passed");
+            if (failed.length > 0) {
+              console.error("SCE-05: expected docker recovery cases to pass; missing/failed:", failed);
+              console.error("all titles:", all.map((a) => a.title));
+              process.exit(1);
+            }
+            if ((report.numPendingTests ?? 0) > 0) {
+              console.error("SCE-05: pending/skipped tests are not allowed in CI recovery lane", {
+                pending: report.numPendingTests,
+              });
+              process.exit(1);
+            }
+            console.log("SCE-05 docker recovery postcondition ok", matched);
+          '
 
       - name: CLI help paths exit cleanly
         run: |
@@ -69,10 +174,13 @@ jobs:
           printf '%s\n' '{"lane":"enterprise-production-readiness","classification":"ci-harness","productionPassed":false,"note":"ci-harness-only"}' \
             > .records/enterprise-production-readiness/ci-classification.json
 
-      - name: Upload redacted classification only
+      - name: Upload redacted classification + path evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: enterprise-production-readiness-ci
-          path: .records/enterprise-production-readiness/ci-classification.json
+          path: |
+            .records/enterprise-production-readiness/ci-classification.json
+            .records/enterprise-production-readiness/path-boundaries.artifact.json
+            .records/enterprise-production-readiness/envelopes/path-boundaries.envelope.json
           if-no-files-found: error

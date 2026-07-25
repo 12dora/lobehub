@@ -200,10 +200,19 @@ describe('failure-drill evidence runner', () => {
       reportsDirectory,
     });
 
+    const multiconnExpected = FAILURE_DRILL_SCENARIOS[0]!.reports.reduce(
+      (total, report) => total + report.expectedAssertions,
+      0,
+    );
     expect(result.passed).toBe(true);
-    expect(result.records).toHaveLength(4);
+    expect(result.records).toHaveLength(FAILURE_DRILL_SCENARIOS.length);
     expect(result.records[0]).toMatchObject({
-      assertions: { failed: 0, passed: 19, skipped: 0, total: 19 },
+      assertions: {
+        failed: 0,
+        passed: multiconnExpected,
+        skipped: 0,
+        total: multiconnExpected,
+      },
       dependencies: DEPENDENCIES,
       redactionScan: { result: 'passed', violations: 0 },
     });
@@ -228,6 +237,11 @@ describe('failure-drill evidence runner', () => {
         passed: 0,
         pending: 2,
       },
+      // Also skip the cluster-restart scenario so no trailing all-pass record masks the failure.
+      'redis-cluster-restart.json': {
+        passed: 0,
+        pending: 2,
+      },
     });
 
     const result = await collectFailureDrillEvidence({
@@ -239,7 +253,10 @@ describe('failure-drill evidence runner', () => {
     });
 
     expect(result.passed).toBe(false);
-    expect(result.records.at(-1)?.assertions).toEqual({
+    const skippedScenario = result.records.find(
+      (record) => record.scenarioId === 'redis-database-rebuild',
+    );
+    expect(skippedScenario?.assertions).toEqual({
       failed: 0,
       passed: 0,
       skipped: 1,
@@ -266,12 +283,17 @@ describe('failure-drill evidence runner', () => {
       reportsDirectory,
     });
 
+    const multiconnExpected = FAILURE_DRILL_SCENARIOS[0]!.reports.reduce(
+      (total, report) => total + report.expectedAssertions,
+      0,
+    );
     expect(result.passed).toBe(false);
     expect(result.records[0].assertions).toEqual({
       failed: 1,
-      passed: 18,
+      // rollout override: passed 2 instead of 3 → one fewer passed
+      passed: multiconnExpected - 1,
       skipped: 0,
-      total: 19,
+      total: multiconnExpected,
     });
   });
 
@@ -327,5 +349,59 @@ describe('failure-drill evidence runner', () => {
         reportsDirectory,
       }),
     ).rejects.toThrow();
+  });
+
+  it('expectedAssertions match wired multiconn test file it() counts', async () => {
+    // SAO-008 seam: scenarios.ts hardcodes counts; concurrent suites add it() blocks.
+    // Only full-file vitest invocations (no --testNamePattern) must match file it() count.
+    // Filtered reports use assertionTitles + expectedAssertions for a subset — skip those.
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { DRILL_COMMANDS } = await import('../upstream-rebase-ci/failureDrillGate');
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
+    const reportToCmd = new Map<string, (typeof DRILL_COMMANDS)[number]>();
+    for (const cmd of DRILL_COMMANDS) {
+      reportToCmd.set(cmd.output, cmd);
+    }
+
+    const itPattern = /^\s*it(?:\.skipIf)?\s*\(/gm;
+    const mismatches: string[] = [];
+
+    for (const scenario of FAILURE_DRILL_SCENARIOS) {
+      for (const report of scenario.reports) {
+        // Subset selection by title is intentional (e.g. identity-startup-lock-release).
+        if (
+          'assertionTitles' in report &&
+          Array.isArray(report.assertionTitles) &&
+          report.assertionTitles.length > 0
+        ) {
+          continue;
+        }
+
+        const cmd = reportToCmd.get(report.reportFile);
+        if (!cmd) continue;
+        if (cmd.args.includes('--testNamePattern')) continue;
+
+        const testPath = [...cmd.args]
+          .reverse()
+          .find((a) => a.endsWith('.ts') && a.includes('test'));
+        if (!testPath || testPath.startsWith('-')) continue;
+        const wired =
+          cmd.cwd === undefined
+            ? path.join(repoRoot, testPath)
+            : path.join(repoRoot, cmd.cwd, testPath);
+
+        const source = await readFile(wired, 'utf8');
+        const count = [...source.matchAll(itPattern)].length;
+        if (count !== report.expectedAssertions) {
+          mismatches.push(
+            `${report.reportFile}: expectedAssertions=${report.expectedAssertions} but ${path.relative(repoRoot, wired)} has ${count} it()/it.skipIf()`,
+          );
+        }
+      }
+    }
+
+    expect(mismatches, mismatches.join('\n')).toEqual([]);
   });
 });

@@ -17,6 +17,8 @@ const playwrightJsonSchema = z
         expected: z.number().int().nonnegative().optional(),
         flaky: z.number().int().nonnegative().optional(),
         skipped: z.number().int().nonnegative().optional(),
+        // Playwright JSON reporter (1.x): immutable suite start as ISO string.
+        startTime: z.string().datetime().optional(),
         unexpected: z.number().int().nonnegative().optional(),
       })
       .passthrough()
@@ -53,23 +55,31 @@ export const adaptEnterpriseAdminE2e = async (input: {
   }
 
   // Immutable timestamp from report only — never mtime.
+  // Prefer Playwright stats.startTime (ISO string); keep recursive numeric path for legacy artifacts.
   if (typeof record.generatedAt !== 'string' || Number.isNaN(Date.parse(record.generatedAt))) {
-    // Try Playwright stats startTime if present in nested structure
-    const startMs = findStartTimeMs(parsedJson);
-    if (startMs === undefined) {
-      return {
-        artifactSha256: resultsDigest,
-        assertions: { failed: 0, passed: 0, skipped: 0, total: 0 },
-        candidateSha: input.candidateSha,
-        details: { reason: 'missing-immutable-generatedAt' },
-        gate: 'enterprise-admin-e2e',
-        generatedAt: new Date(0).toISOString(),
-        harnessScope: 'local-harness',
-        rawArtifactPaths: [input.resultsJsonPath],
-        status: 'unverified',
-      };
+    const parsed = parsedJson as {
+      stats?: { startTime?: string };
+    };
+    const statsStart = parsed.stats?.startTime;
+    if (typeof statsStart === 'string' && !Number.isNaN(Date.parse(statsStart))) {
+      record.generatedAt = new Date(statsStart).toISOString();
+    } else {
+      const startMs = findStartTimeMs(parsedJson);
+      if (startMs === undefined) {
+        return {
+          artifactSha256: resultsDigest,
+          assertions: { failed: 0, passed: 0, skipped: 0, total: 0 },
+          candidateSha: input.candidateSha,
+          details: { reason: 'missing-immutable-generatedAt' },
+          gate: 'enterprise-admin-e2e',
+          generatedAt: new Date(0).toISOString(),
+          harnessScope: 'local-harness',
+          rawArtifactPaths: [input.resultsJsonPath],
+          status: 'unverified',
+        };
+      }
+      record.generatedAt = new Date(startMs).toISOString();
     }
-    record.generatedAt = new Date(startMs).toISOString();
   }
 
   const counts = countPlaywrightTests(parsedJson);

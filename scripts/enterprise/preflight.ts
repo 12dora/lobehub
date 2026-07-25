@@ -47,30 +47,39 @@ const GATE_ENVELOPE_NAMES = [
   'app-rollback.envelope.json',
 ] as const;
 
+const isEnoent = (error: unknown): boolean =>
+  Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: string }).code === 'ENOENT',
+  );
+
 const loadEvidenceFromDir = async (directory: string) => {
   const absolute = path.resolve(directory);
   const envelopesDir = path.join(absolute, 'envelopes');
+
+  // Fallback to legacy root envelopes only when envelopes/ is absent (ENOENT).
+  // Read/parse/schema failures for present canonical files must propagate.
+  let entries: string[];
+  let baseDir = envelopesDir;
   try {
-    const entries = await readdir(envelopesDir);
-    const present = new Set(entries);
-    const evidence = [];
-    for (const name of GATE_ENVELOPE_NAMES) {
-      if (!present.has(name)) continue;
-      evidence.push(await loadGateEvidenceFile(path.join(envelopesDir, name)));
-    }
-    // Extra files under envelopes/ and any raw/ neighbors are ignored deliberately.
-    return evidence;
-  } catch {
-    // Fallback: only exact recognized *.envelope.json names in root (never raw/*.json).
-    const entries = await readdir(absolute);
-    const present = new Set(entries);
-    const evidence = [];
-    for (const name of GATE_ENVELOPE_NAMES) {
-      if (!present.has(name)) continue;
-      evidence.push(await loadGateEvidenceFile(path.join(absolute, name)));
-    }
-    return evidence;
+    entries = await readdir(envelopesDir);
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    // Legacy layout: only exact recognized *.envelope.json names in root (never raw/*.json).
+    entries = await readdir(absolute);
+    baseDir = absolute;
   }
+
+  const present = new Set(entries);
+  const evidence = [];
+  for (const name of GATE_ENVELOPE_NAMES) {
+    if (!present.has(name)) continue;
+    evidence.push(await loadGateEvidenceFile(path.join(baseDir, name)));
+  }
+  // Extra files under envelopes/ and any raw/ neighbors are ignored deliberately.
+  return evidence;
 };
 
 const main = async () => {

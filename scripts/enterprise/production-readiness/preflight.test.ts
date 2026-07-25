@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -271,6 +272,142 @@ describe('production preflight evaluation', () => {
     });
     expect(report.checks.find((c) => c.gate === 'failure-drills')?.result).toBe('failed');
   });
+
+  it('CLI: malformed canonical envelopes/ evidence fails closed (does not fall back to root)', async () => {
+    const dir = await makeTempDir();
+    const evidenceDir = path.join(dir, 'evidence');
+    const envelopesDir = path.join(evidenceDir, 'envelopes');
+    await mkdir(envelopesDir, { recursive: true });
+
+    const validRoot = buildGateEvidence('migration-compat');
+    // Valid legacy root artifact must NOT be used when envelopes/ exists with corrupt file.
+    await writeFile(
+      path.join(evidenceDir, 'migration-compat.envelope.json'),
+      JSON.stringify(validRoot),
+      'utf8',
+    );
+    await writeFile(
+      path.join(envelopesDir, 'migration-compat.envelope.json'),
+      '{ not-valid-json',
+      'utf8',
+    );
+
+    const candidatePath = path.join(dir, 'candidate.json');
+    const planPath = path.join(dir, 'plan.json');
+    const outPath = path.join(dir, 'report.json');
+    await writeFile(candidatePath, JSON.stringify(buildCandidate()), 'utf8');
+    await writeFile(planPath, JSON.stringify(buildPlan()), 'utf8');
+
+    const cli = path.resolve(process.cwd(), 'scripts/enterprise/preflight.ts');
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+      const child = spawn(
+        'bun',
+        [
+          'run',
+          cli,
+          'preflight',
+          '--candidate',
+          candidatePath,
+          '--plan',
+          planPath,
+          '--evidence-dir',
+          evidenceDir,
+          '--output',
+          outPath,
+        ],
+        { cwd: process.cwd(), env: process.env },
+      );
+      let stderr = '';
+      child.stderr.on('data', (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code, stderr }));
+    });
+
+    // Discriminating assertions (old fallback wrote a report with migration-compat=passed):
+    // process dies before runProductionPreflight → no report file; canonical parse error surfaces.
+    expect(result.code, result.stderr).not.toBe(0);
+    expect(result.stderr).toMatch(/Malformed JSON:\s*migration-compat\.envelope\.json/);
+    await expect(readFile(outPath, 'utf8')).rejects.toThrow();
+  }, 30_000);
+
+  it('CLI: valid envelopes/ evidence is preferred over a differing root twin', async () => {
+    const dir = await makeTempDir();
+    const evidenceDir = path.join(dir, 'evidence');
+    const envelopesDir = path.join(evidenceDir, 'envelopes');
+    await mkdir(envelopesDir, { recursive: true });
+
+    // Root twin is failed; canonical envelopes/ copy is passed — load must prefer envelopes/.
+    const rootFailed = {
+      ...buildGateEvidence('migration-compat'),
+      status: 'failed' as const,
+      assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
+    };
+    const envelopesPassed = buildGateEvidence('migration-compat');
+    await writeFile(
+      path.join(evidenceDir, 'migration-compat.envelope.json'),
+      JSON.stringify(rootFailed),
+      'utf8',
+    );
+    await writeFile(
+      path.join(envelopesDir, 'migration-compat.envelope.json'),
+      JSON.stringify(envelopesPassed),
+      'utf8',
+    );
+
+    const candidatePath = path.join(dir, 'candidate.json');
+    const planPath = path.join(dir, 'plan.json');
+    const outPath = path.join(dir, 'report.json');
+    await writeFile(candidatePath, JSON.stringify(buildCandidate()), 'utf8');
+    await writeFile(planPath, JSON.stringify(buildPlan()), 'utf8');
+
+    const cli = path.resolve(process.cwd(), 'scripts/enterprise/preflight.ts');
+    const result = await new Promise<{ code: number | null; stderr: string; stdout: string }>(
+      (resolve, reject) => {
+        const child = spawn(
+          'bun',
+          [
+            'run',
+            cli,
+            'preflight',
+            '--candidate',
+            candidatePath,
+            '--plan',
+            planPath,
+            '--evidence-dir',
+            evidenceDir,
+            '--output',
+            outPath,
+          ],
+          { cwd: process.cwd(), env: process.env },
+        );
+        let stderr = '';
+        let stdout = '';
+        child.stderr.on('data', (chunk) => {
+          stderr += String(chunk);
+        });
+        child.stdout.on('data', (chunk) => {
+          stdout += String(chunk);
+        });
+        child.on('error', reject);
+        child.on('close', (code) => resolve({ code, stderr, stdout }));
+      },
+    );
+
+    // preflight with partial evidence is still non-zero / unverified, but the gate must
+    // reflect the envelopes/ twin (passed), not the failed root twin.
+    expect(result.code, result.stderr).not.toBe(0);
+    const reportRaw = await readFile(outPath, 'utf8');
+    const report = JSON.parse(reportRaw) as {
+      checks?: Array<{ gate?: string; result?: string }>;
+      overall?: string;
+    };
+    expect(report.overall).not.toBe('passed');
+    const migration = report.checks?.find((c) => c.gate === 'migration-compat');
+    expect(migration?.result).toBe('passed');
+    expect(result.stdout + result.stderr).toMatch(/check gate=migration-compat result=passed/);
+  }, 30_000);
 });
 
 describe('release plan high-risk binding', () => {

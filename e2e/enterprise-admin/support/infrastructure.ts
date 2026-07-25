@@ -74,13 +74,6 @@ export type StartupFaultError = Error & {
   runToken?: string;
 };
 
-/** @deprecated Prefer holdPort / Docker ephemeral publish — kept for unit helpers only. */
-export const freePort = async (): Promise<number> => {
-  const held = await holdPort();
-  await held.release();
-  return held.port;
-};
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const waitForPostgres = async (url: string) => {

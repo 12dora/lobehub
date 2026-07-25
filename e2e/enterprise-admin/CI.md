@@ -1,34 +1,20 @@
 # Enterprise Admin E2E — CI boundaries
 
-This suite is **opt-in** and lives entirely under `e2e/enterprise-admin/`.
+This suite lives under `e2e/enterprise-admin/` and is wired by
+`.github/workflows/enterprise-admin-gates.yml` (SCE-04).
 
-## Explicit non-wiring (this batch)
+## CI layers
 
-- Does **not** modify `.github/workflows/*`
-- Does **not** add root `package.json` scripts
-- Does **not** change the default Cucumber `e2e` CI job (`bun run e2e`)
-- Artifacts stay under gitignored paths (`.records/`, `e2e/enterprise-admin/reports/`)
+| Layer                        | When                                                                           | Command                                         |
+| ---------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------- |
+| Unit (support + scripts)     | Every PR/push touching suite or enterprise paths                               | `cd e2e && bun run test:enterprise-admin:unit`  |
+| Playwright critical paths    | Schedule, `workflow_dispatch`, canary push, or PR label `enterprise-admin-e2e` | `cd e2e && bun run test:enterprise-admin`       |
+| Identity-provider unit       | Same unit job                                                                  | `cd e2e && bun run test:identity-provider:unit` |
+| Identity-provider Playwright | Schedule, `workflow_dispatch`, or PR label `identity-provider-e2e`             | `cd e2e && bun run test:identity-provider`      |
 
-## How to run in CI later (follow-up PR)
-
-Suggested independent job (draft only — not applied here):
-
-```yaml
-enterprise-admin-e2e:
-  runs-on: ubuntu-latest
-  timeout-minutes: 45
-  steps:
-    - uses: actions/checkout@v4
-    -  # install deps, docker, playwright chromium
-    - run: cd e2e && bun run test:enterprise-admin
-    - uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: enterprise-admin-e2e
-        path: |
-          e2e/enterprise-admin/reports
-          .records/enterprise-admin-e2e
-```
+The Playwright enterprise-admin lane requires **zero skipped / flaky** results among
+the six critical-path cases. Identity-provider real-tenant discovery remains a
+separately gated external lane when credentials are present.
 
 ## Local vs CI flags
 
@@ -48,3 +34,4 @@ enterprise-admin-e2e:
 - Test passwords are suite-local constants, not production secrets
 - Evidence screenshots must not capture email fields or session tokens
 - TRPC error bodies asserted by code name only; never log cookies
+- Artifacts stay under gitignored paths (`.records/`, `e2e/enterprise-admin/reports/`)

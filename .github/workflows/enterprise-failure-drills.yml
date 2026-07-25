@@ -92,7 +92,7 @@ jobs:
             "${GITHUB_WORKSPACE}/.records/enterprise-failure-drills-raw/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             "${GITHUB_WORKSPACE}/.records/enterprise-failure-drills/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-      - name: Run 18 server multi-connection assertions
+      - name: Run server multi-connection PostgreSQL assertions
         id: pg_server
         continue-on-error: true
         run: |
@@ -119,6 +119,17 @@ jobs:
           run_suite \
             "$FAILURE_DRILL_RAW_DIR/postgres-secret-rewrap.json" \
             apps/server/src/enterprise/services/secretRewrap/worker.multiconn.pg.test.ts
+          # SAO-008 — audit export publication + retention lease multi-connection suites
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-audit-export-publication.json" \
+            apps/server/src/enterprise/services/audit/exportPublication.multiconn.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-audit-retention-lease.json" \
+            apps/server/src/enterprise/services/audit/retentionWorker.multiconn.pg.test.ts
+          # SAI-005 — AI catalog publication advisory-lock concurrency
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-ai-catalog-publication.json" \
+            apps/server/src/enterprise/services/aiCatalog/publication.pgConcurrency.test.ts
           exit "$status"
 
       - name: Run database server-config multi-connection assertion
@@ -152,6 +163,17 @@ jobs:
             --testNamePattern='releases the cross-instance advisory lock when the owning PG connection crashes' \
             apps/server/src/enterprise/services/identityProvider/startupSnapshot.test.ts
 
+      - name: Run identity publish/startup lock contention assertion
+        id: identity_publish_lock
+        continue-on-error: true
+        run: |
+          bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            --fileParallelism=false --hookTimeout=60000 --maxWorkers=1 \
+            --reporter=json --testTimeout=60000 \
+            --outputFile="$FAILURE_DRILL_RAW_DIR/identity-publish-startup-lock.json" \
+            --testNamePattern='blocks a real concurrent publish between startup recheck and LKG write' \
+            apps/server/src/enterprise/services/identityProvider/publicationService.publish.test.ts
+
       - name: Run real Redis database-rebuild assertion
         id: redis_rebuild
         continue-on-error: true
@@ -162,6 +184,55 @@ jobs:
             --outputFile="$FAILURE_DRILL_RAW_DIR/redis-database-rebuild.json" \
             --testNamePattern='converges through request-time version reads across two independent clients' \
             apps/server/src/enterprise/runtimeConfig/domainCache.redis.integration.test.ts
+
+      # SCE-09 — three-process cluster drill needs an owned ephemeral Redis it may stop/rm.
+      # Do not reuse the workflow service Redis (shared with redis_rebuild / cleanup).
+      - name: Provision owned ephemeral Redis for cluster restart drill
+        id: owned_redis
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          token="$(openssl rand -hex 16)"
+          host_port="$(python3 - <<'PY'
+          import socket
+          s = socket.socket()
+          s.bind(('127.0.0.1', 0))
+          print(s.getsockname()[1])
+          s.close()
+          PY
+          )"
+          container_id="$(docker run -d \
+            --label "com.lobehub.failure-drill-token=${token}" \
+            --label "com.lobehub.failure-drill-ephemeral=true" \
+            -p "127.0.0.1:${host_port}:6379" \
+            redis:7-alpine)"
+          # Resolve full 64-char id for the suite's ownership contract.
+          full_id="$(docker inspect --format '{{.Id}}' "$container_id")"
+          for _ in $(seq 1 30); do
+            if docker exec "$full_id" redis-cli ping 2>/dev/null | grep -q PONG; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$full_id" redis-cli ping | grep -q PONG
+          echo "TEST_REDIS_RESTART_OPT_IN=1" >> "$GITHUB_ENV"
+          echo "TEST_REDIS_OWNERSHIP_TOKEN=${token}" >> "$GITHUB_ENV"
+          echo "TEST_REDIS_OWNED_CONTAINER_ID=${full_id}" >> "$GITHUB_ENV"
+          echo "TEST_REDIS_CLUSTER_URL=redis://127.0.0.1:${host_port}/0" >> "$GITHUB_ENV"
+          echo "OWNED_REDIS_CONTAINER_ID=${full_id}" >> "$GITHUB_ENV"
+
+      - name: Run three-process Redis/Postgres cluster failure drill
+        id: redis_cluster
+        continue-on-error: true
+        env:
+          # Suite reads TEST_REDIS_URL for the owned endpoint (not the service Redis).
+          TEST_REDIS_URL: ${{ env.TEST_REDIS_CLUSTER_URL }}
+        run: |
+          bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            --fileParallelism=false --hookTimeout=120000 --maxWorkers=1 \
+            --reporter=json --testTimeout=180000 \
+            --outputFile="$FAILURE_DRILL_RAW_DIR/redis-cluster-restart.json" \
+            apps/server/src/enterprise/runtimeConfig/domainCache.cluster.redis.pg.test.ts
 
       - name: Verify and clean isolated stores
         env:
@@ -177,6 +248,13 @@ jobs:
           if [ "$?" -ne 0 ] || [ "$redis_keys" != '0' ]; then
             cleanup_result=failed
             docker exec "$REDIS_SERVICE_ID" redis-cli --no-auth-warning --raw -n "$redis_db" FLUSHDB >/dev/null 2>&1
+          fi
+
+          # Cluster drill removes its owned container on success; force-rm if still present.
+          if [ -n "${OWNED_REDIS_CONTAINER_ID:-}" ]; then
+            if docker inspect "$OWNED_REDIS_CONTAINER_ID" >/dev/null 2>&1; then
+              docker rm --force "$OWNED_REDIS_CONTAINER_ID" >/dev/null 2>&1 || cleanup_result=failed
+            fi
           fi
 
           docker exec "$POSTGRES_SERVICE_ID" dropdb --force --if-exists --username postgres "$FAILURE_DRILL_DATABASE"
@@ -205,7 +283,10 @@ jobs:
           test '${{ steps.pg_database.outcome }}' = success
           test '${{ steps.identity_convergence.outcome }}' = success
           test '${{ steps.identity_startup_lock.outcome }}' = success
+          test '${{ steps.identity_publish_lock.outcome }}' = success
           test '${{ steps.redis_rebuild.outcome }}' = success
+          test '${{ steps.owned_redis.outcome }}' = success
+          test '${{ steps.redis_cluster.outcome }}' = success
 
           bun scripts/enterprise/failure-drills/index.ts verify \
             --output-dir "$FAILURE_DRILL_RECORD_DIR" \

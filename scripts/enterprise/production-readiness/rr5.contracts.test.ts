@@ -8,6 +8,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { assertDockerAvailableForIntegration, probeDockerAvailable } from './dockerAvailability';
 import {
   assertGateEvidenceShape,
   createSignedProvenance,
@@ -40,16 +41,8 @@ afterEach(async () => {
   }
 });
 
-const dockerAvailable = async (): Promise<boolean> => {
-  try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    await promisify(execFile)('docker', ['info'], { timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
+const hasDocker = await probeDockerAvailable();
+assertDockerAvailableForIntegration(hasDocker);
 
 describe('RR5: preflight verifies raw report inputAttestation chain', () => {
   it('full signed production evidence with embedded rawReport passes loader+evaluate', () => {
@@ -247,134 +240,134 @@ describe('RR5: revision/audit/pointer digests are collision-free', () => {
     expect(a).not.toBe(b);
   });
 
-  it('docker: revision and audit pipe pairs differ', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const beforeRev = await digestResourceRevisions(client);
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+  it.skipIf(!hasDocker)(
+    'docker: revision and audit pipe pairs differ',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const beforeRev = await digestResourceRevisions(client);
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('pipe_a', 'branding', 'a|b', 9, 'draft', '{}'::jsonb, 'ck-a')
            ON CONFLICT DO NOTHING`,
-        );
-        const mid = await digestResourceRevisions(client);
-        expect(mid.digest).not.toBe(beforeRev.digest);
-        await client.query(`DELETE FROM platform_resource_revisions WHERE id = 'pipe_a'`);
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+          );
+          const mid = await digestResourceRevisions(client);
+          expect(mid.digest).not.toBe(beforeRev.digest);
+          await client.query(`DELETE FROM platform_resource_revisions WHERE id = 'pipe_a'`);
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('pipe_b', 'branding', 'a', 9, 'draft', '{}'::jsonb, 'ck-b')
            ON CONFLICT DO NOTHING`,
-        );
-        // force different resource_id semantics vs a|b
-        await client.query(
-          `UPDATE platform_resource_revisions SET resource_id = 'a', revision = 99, checksum = 'ck-b2'
+          );
+          // force different resource_id semantics vs a|b
+          await client.query(
+            `UPDATE platform_resource_revisions SET resource_id = 'a', revision = 99, checksum = 'ck-b2'
            WHERE id = 'pipe_b'`,
-        );
-        // Use two explicit collision-style rows
-        await client.query(`DELETE FROM platform_resource_revisions WHERE id LIKE 'pipe_%'`);
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+          );
+          // Use two explicit collision-style rows
+          await client.query(`DELETE FROM platform_resource_revisions WHERE id LIKE 'pipe_%'`);
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES
              ('pipe1', 'branding', 'x|y', 1, 'draft', '{}'::jsonb, '1'),
              ('pipe2', 'branding', 'x', 1, 'draft', '{}'::jsonb, '2')
            ON CONFLICT DO NOTHING`,
-        );
-        // Not testing id difference — test resource_id field values that would collide with |
-        await client.query(`DELETE FROM platform_resource_revisions WHERE id LIKE 'pipe%'`);
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+          );
+          // Not testing id difference — test resource_id field values that would collide with |
+          await client.query(`DELETE FROM platform_resource_revisions WHERE id LIKE 'pipe%'`);
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('p1', 'branding', 'a|b', 3, 'draft', '{}'::jsonb, 'sameck')`,
-        );
-        const d1 = await digestResourceRevisions(client);
-        await client.query(`DELETE FROM platform_resource_revisions WHERE id = 'p1'`);
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+          );
+          const d1 = await digestResourceRevisions(client);
+          await client.query(`DELETE FROM platform_resource_revisions WHERE id = 'p1'`);
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('p1', 'branding', 'a', 3, 'draft', '{}'::jsonb, 'sameck')`,
-        );
-        // change only resource_id from a|b to a — should differ (and revision same)
-        // For true delimiter collision we'd need different field pairs that stringify the same
-        // with pipes. Compare a|b vs a + separate row is enough for structured encoding.
-        const d2 = await digestResourceRevisions(client);
-        expect(d1.digest).not.toBe(d2.digest);
+          );
+          // change only resource_id from a|b to a — should differ (and revision same)
+          // For true delimiter collision we'd need different field pairs that stringify the same
+          // with pipes. Compare a|b vs a + separate row is enough for structured encoding.
+          const d2 = await digestResourceRevisions(client);
+          expect(d1.digest).not.toBe(d2.digest);
 
-        // Audit after_diff collision-style
-        await client.query(`DELETE FROM platform_audit_logs`);
-        await client.query(
-          `INSERT INTO platform_audit_logs (id, action, result, after_diff)
+          // Audit after_diff collision-style
+          await client.query(`DELETE FROM platform_audit_logs`);
+          await client.query(
+            `INSERT INTO platform_audit_logs (id, action, result, after_diff)
            VALUES ('a1', 'act', 'ok', '{"k":"a|b"}'::jsonb)`,
-        );
-        const ad1 = await digestAuditLogs(client);
-        await client.query(`DELETE FROM platform_audit_logs`);
-        await client.query(
-          `INSERT INTO platform_audit_logs (id, action, result, after_diff)
+          );
+          const ad1 = await digestAuditLogs(client);
+          await client.query(`DELETE FROM platform_audit_logs`);
+          await client.query(
+            `INSERT INTO platform_audit_logs (id, action, result, after_diff)
            VALUES ('a1', 'act', 'ok', '{"k":"a"}'::jsonb)`,
-        );
-        const ad2 = await digestAuditLogs(client);
-        expect(ad1.digest).not.toBe(ad2.digest);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+          );
+          const ad2 = await digestAuditLogs(client);
+          expect(ad1.digest).not.toBe(ad2.digest);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });
 
 describe('RR5: pointer binding uses connector_id and real checksum', () => {
-  it('docker: binding owner uses connector_id; checksum mutation changes digest', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const ok = await verifyPublicationPointers(client);
-        expect(ok.match).toBe(true);
+  it.skipIf(!hasDocker)(
+    'docker: binding owner uses connector_id; checksum mutation changes digest',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const ok = await verifyPublicationPointers(client);
+          expect(ok.match).toBe(true);
 
-        // Wrong connector_id on binding → dangling (owner is connector_id, not binding id)
-        await client.query(
-          `UPDATE platform_user_connector_bindings SET connector_id = 'missing-connector'
+          // Wrong connector_id on binding → dangling (owner is connector_id, not binding id)
+          await client.query(
+            `UPDATE platform_user_connector_bindings SET connector_id = 'missing-connector'
            WHERE id = 'pcub_m15q06_probe_01'`,
-        );
-        const badOwner = await verifyPublicationPointers(client);
-        expect(badOwner.match).toBe(false);
-        expect(badOwner.detail).toMatch(/dangling-pointer|owner/);
+          );
+          const badOwner = await verifyPublicationPointers(client);
+          expect(badOwner.match).toBe(false);
+          expect(badOwner.detail).toMatch(/dangling-pointer|owner/);
 
-        // Restore binding owner (ON CONFLICT DO NOTHING will not fix updates)
-        await client.query(
-          `UPDATE platform_user_connector_bindings SET connector_id = $1
+          // Restore binding owner (ON CONFLICT DO NOTHING will not fix updates)
+          await client.query(
+            `UPDATE platform_user_connector_bindings SET connector_id = $1
            WHERE id = 'pcub_m15q06_probe_01'`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
-        const before = await verifyPublicationPointers(client);
-        expect(before.match).toBe(true);
-        await client.query(`UPDATE platform_agent_versions SET checksum = $1 WHERE id = $2`, [
-          sha256Of('mutated-agent-checksum'),
-          RECOVERY_PROBE_IDS.agentVersionId,
-        ]);
-        const after = await verifyPublicationPointers(client);
-        expect(after.match).toBe(true);
-        expect(after.pointerDigest).not.toBe(before.pointerDigest);
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
+          const before = await verifyPublicationPointers(client);
+          expect(before.match).toBe(true);
+          await client.query(`UPDATE platform_agent_versions SET checksum = $1 WHERE id = $2`, [
+            sha256Of('mutated-agent-checksum'),
+            RECOVERY_PROBE_IDS.agentVersionId,
+          ]);
+          const after = await verifyPublicationPointers(client);
+          expect(after.match).toBe(true);
+          expect(after.pointerDigest).not.toBe(before.pointerDigest);
 
-        await client.query(`UPDATE platform_skill_versions SET checksum = $1 WHERE id = $2`, [
-          sha256Of('mutated-skill-checksum'),
-          RECOVERY_PROBE_IDS.skillVersionId,
-        ]);
-        const afterSkill = await verifyPublicationPointers(client);
-        expect(afterSkill.pointerDigest).not.toBe(after.pointerDigest);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+          await client.query(`UPDATE platform_skill_versions SET checksum = $1 WHERE id = $2`, [
+            sha256Of('mutated-skill-checksum'),
+            RECOVERY_PROBE_IDS.skillVersionId,
+          ]);
+          const afterSkill = await verifyPublicationPointers(client);
+          expect(afterSkill.pointerDigest).not.toBe(after.pointerDigest);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });

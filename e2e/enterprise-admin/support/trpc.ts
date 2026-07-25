@@ -255,9 +255,6 @@ export const assertSafeProjection = (value: unknown): void => {
   }
 };
 
-/** @deprecated flat allowlist removed — use assertSafeProjection hierarchical DTO */
-export const ADMIN_SYSTEM_STATUS_ALLOWED_KEYS = new Set<string>();
-
 export interface TrpcErrorParts {
   enterpriseCode?: string;
   message?: string;

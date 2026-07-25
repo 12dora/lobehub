@@ -42,6 +42,29 @@ export const assessFailureDrillReadiness = (
       reason: 'TEST_REDIS_URL must point at an owned disposable Redis database',
     };
   }
+  // SCE-09: three-process cluster restart drill requires an explicitly owned ephemeral Redis.
+  if (env.TEST_REDIS_RESTART_OPT_IN !== '1') {
+    return {
+      ok: false,
+      reason:
+        'TEST_REDIS_RESTART_OPT_IN=1 is required for the three-process Redis restart failure drill',
+    };
+  }
+  if (
+    !env.TEST_REDIS_OWNED_CONTAINER_ID ||
+    !/^[a-f0-9]{64}$/u.test(env.TEST_REDIS_OWNED_CONTAINER_ID)
+  ) {
+    return {
+      ok: false,
+      reason: 'TEST_REDIS_OWNED_CONTAINER_ID must be a full 64-char Docker container id',
+    };
+  }
+  if (!env.TEST_REDIS_OWNERSHIP_TOKEN || !/^[a-f0-9]{32}$/u.test(env.TEST_REDIS_OWNERSHIP_TOKEN)) {
+    return {
+      ok: false,
+      reason: 'TEST_REDIS_OWNERSHIP_TOKEN must be a 32-char hex ownership token',
+    };
+  }
   // Refuse obviously shared/production-looking host names in the URL strings without logging them.
   const combined = `${env.DATABASE_TEST_URL}\0${env.TEST_REDIS_URL}`.toLowerCase();
   if (
@@ -155,7 +178,7 @@ const pathExists = async (absolutePath: string) => {
 };
 
 /** Vitest invocations matching enterprise-failure-drills.yml (owned env only). */
-const DRILL_COMMANDS: Array<{ cwd?: string; output: string; args: string[] }> = [
+export const DRILL_COMMANDS: Array<{ cwd?: string; output: string; args: string[] }> = [
   {
     output: 'postgres-agent-materialization.json',
     args: [
@@ -233,6 +256,63 @@ const DRILL_COMMANDS: Array<{ cwd?: string; output: string; args: string[] }> = 
     ],
   },
   {
+    output: 'postgres-audit-export-publication.json',
+    args: [
+      'bunx',
+      'vitest',
+      'run',
+      '--config',
+      'vitest.config.mts',
+      '--silent=passed-only',
+      '--fileParallelism=false',
+      '--hookTimeout=60000',
+      '--maxWorkers=1',
+      '--reporter=json',
+      '--testTimeout=60000',
+      '--outputFile',
+      '__OUT__',
+      'apps/server/src/enterprise/services/audit/exportPublication.multiconn.pg.test.ts',
+    ],
+  },
+  {
+    output: 'postgres-audit-retention-lease.json',
+    args: [
+      'bunx',
+      'vitest',
+      'run',
+      '--config',
+      'vitest.config.mts',
+      '--silent=passed-only',
+      '--fileParallelism=false',
+      '--hookTimeout=60000',
+      '--maxWorkers=1',
+      '--reporter=json',
+      '--testTimeout=60000',
+      '--outputFile',
+      '__OUT__',
+      'apps/server/src/enterprise/services/audit/retentionWorker.multiconn.pg.test.ts',
+    ],
+  },
+  {
+    output: 'postgres-ai-catalog-publication.json',
+    args: [
+      'bunx',
+      'vitest',
+      'run',
+      '--config',
+      'vitest.config.mts',
+      '--silent=passed-only',
+      '--fileParallelism=false',
+      '--hookTimeout=60000',
+      '--maxWorkers=1',
+      '--reporter=json',
+      '--testTimeout=60000',
+      '--outputFile',
+      '__OUT__',
+      'apps/server/src/enterprise/services/aiCatalog/publication.pgConcurrency.test.ts',
+    ],
+  },
+  {
     cwd: 'packages/database',
     output: 'postgres-platform-instance.json',
     args: [
@@ -291,6 +371,27 @@ const DRILL_COMMANDS: Array<{ cwd?: string; output: string; args: string[] }> = 
     ],
   },
   {
+    output: 'identity-publish-startup-lock.json',
+    args: [
+      'bunx',
+      'vitest',
+      'run',
+      '--config',
+      'vitest.config.mts',
+      '--silent=passed-only',
+      '--fileParallelism=false',
+      '--hookTimeout=60000',
+      '--maxWorkers=1',
+      '--reporter=json',
+      '--testTimeout=60000',
+      '--outputFile',
+      '__OUT__',
+      '--testNamePattern',
+      'blocks a real concurrent publish between startup recheck and LKG write',
+      'apps/server/src/enterprise/services/identityProvider/publicationService.publish.test.ts',
+    ],
+  },
+  {
     output: 'redis-database-rebuild.json',
     args: [
       'bunx',
@@ -309,6 +410,25 @@ const DRILL_COMMANDS: Array<{ cwd?: string; output: string; args: string[] }> = 
       '--testNamePattern',
       'converges through request-time version reads across two independent clients',
       'apps/server/src/enterprise/runtimeConfig/domainCache.redis.integration.test.ts',
+    ],
+  },
+  {
+    output: 'redis-cluster-restart.json',
+    args: [
+      'bunx',
+      'vitest',
+      'run',
+      '--config',
+      'vitest.config.mts',
+      '--silent=passed-only',
+      '--fileParallelism=false',
+      '--hookTimeout=120000',
+      '--maxWorkers=1',
+      '--reporter=json',
+      '--testTimeout=180000',
+      '--outputFile',
+      '__OUT__',
+      'apps/server/src/enterprise/runtimeConfig/domainCache.cluster.redis.pg.test.ts',
     ],
   },
 ];

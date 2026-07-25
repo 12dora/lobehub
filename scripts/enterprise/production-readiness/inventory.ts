@@ -6,24 +6,41 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-/** Explicit inventory of every platform_* (and related) enterprise table. */
+/**
+ * Recovery-drill inventory: tables the recovery seed + digests actually exercise.
+ * Must stay in exact lockstep with packages/database platform `pgTable` names
+ * discovered by `assertInventoryMatchesSchemas` (two-sided: missing + extra).
+ * DB-011 asserts migrated DB presence; this list asserts backup/restore coverage.
+ */
 export const RECOVERY_ENTERPRISE_TABLES = [
+  'platform_admin_mutation_rate_windows',
   'platform_agents',
   'platform_agent_versions',
   'platform_agent_assignments',
   'platform_user_agent_materializations',
+  'platform_user_agent_materialization_tombstones',
   'platform_ai_providers',
   'platform_ai_provider_secrets',
   'platform_ai_models',
+  'platform_audit_exports',
+  'platform_audit_legal_holds',
   'platform_audit_logs',
+  'platform_audit_policies',
+  'platform_audit_retention_runs',
+  'platform_auth_settings',
   'platform_branding',
   'platform_branding_assets',
   'platform_branding_operations',
+  'platform_catalog_authority',
   'platform_connectors',
+  'platform_connector_governance',
   'platform_connector_secrets',
   'platform_connector_tools',
   'platform_user_connector_bindings',
   'platform_connector_oauth_states',
+  'platform_global_credentials',
+  'platform_global_credential_secrets',
+  'platform_global_credential_uploads',
   'platform_identity_providers',
   'platform_identity_provider_secrets',
   'platform_identity_provider_test_attempts',
@@ -36,6 +53,7 @@ export const RECOVERY_ENTERPRISE_TABLES = [
   'platform_resource_revisions',
   'platform_settings_bundle',
   'platform_setting_policies',
+  'platform_sidebar_layout',
   'platform_skills',
   'platform_skill_versions',
   'user_setting_overrides',
@@ -171,12 +189,15 @@ export const assertInventoryMatchesSchemas = async (repoRoot: string): Promise<v
   const discoveredSet = new Set<string>(discovered);
   const expectedSet = new Set<string>(expected);
 
+  // Two-sided drift: inventory must cover every schema table (backup/restore gate),
+  // and must not name tables the schema no longer exports.
   const missing = expected.filter((name) => !discoveredSet.has(name));
   const extra = discovered.filter((name) => !expectedSet.has(name));
 
   if (missing.length > 0 || extra.length > 0) {
     throw new Error(
-      `Recovery inventory drift: missing=[${missing.join(',')}] extra=[${extra.join(',')}]`,
+      `Recovery inventory drift: missing=[${missing.join(',')}] extra=[${extra.join(',')}] ` +
+        `(discovered=${discovered.length}, inventory=${expected.length})`,
     );
   }
 };

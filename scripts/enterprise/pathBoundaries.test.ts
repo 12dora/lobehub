@@ -42,7 +42,7 @@ describe('enterprise path boundaries', () => {
     );
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/routers/tools/market.ts');
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
-      'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
+      'src/features/ProfileEditor/useManagedAgentSkills.ts',
     );
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts',

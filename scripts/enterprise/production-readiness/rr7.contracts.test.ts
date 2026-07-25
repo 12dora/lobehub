@@ -7,6 +7,7 @@ import { rm } from 'node:fs/promises';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { assertDockerAvailableForIntegration, probeDockerAvailable } from './dockerAvailability';
 import {
   createSignedProvenance,
   newNonce,
@@ -35,16 +36,8 @@ afterEach(async () => {
   }
 });
 
-const dockerAvailable = async (): Promise<boolean> => {
-  try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    await promisify(execFile)('docker', ['info'], { timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
+const hasDocker = await probeDockerAvailable();
+assertDockerAvailableForIntegration(hasDocker);
 
 describe('RR7: canonical JSON preserves own keys and code-unit sort', () => {
   it('nested __proto__ own key is preserved and affects digest', () => {
@@ -90,6 +83,7 @@ describe('RR7: canonical JSON preserves own keys and code-unit sort', () => {
     const bundle = createTestTrustBundle(['production']);
     const payload = {
       artifactSha256: sha256Of('art'),
+      assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
       candidateSha: FIXTURE_CANDIDATE_SHA,
       environment: 'production' as const,
       gateId: 'path-boundaries' as const,
@@ -120,132 +114,133 @@ describe('RR7: canonical JSON preserves own keys and code-unit sort', () => {
 });
 
 describe('RR7: mandatory connector holder checksum', () => {
-  it('docker: NULL/empty/invalid/different checksum fail', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        expect((await verifyPublicationPointers(client)).match).toBe(true);
+  it.skipIf(!hasDocker)(
+    'docker: NULL/empty/invalid/different checksum fail',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          expect((await verifyPublicationPointers(client)).match).toBe(true);
 
-        await client.query(
-          `UPDATE platform_connectors SET published_checksum = NULL WHERE id = $1`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
-        let r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/missing-or-invalid-holder-checksum/);
+          await client.query(
+            `UPDATE platform_connectors SET published_checksum = NULL WHERE id = $1`,
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
+          let r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/missing-or-invalid-holder-checksum/);
 
-        await client.query(`UPDATE platform_connectors SET published_checksum = '' WHERE id = $1`, [
-          RECOVERY_PROBE_IDS.connectorId,
-        ]);
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
+          await client.query(
+            `UPDATE platform_connectors SET published_checksum = '' WHERE id = $1`,
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
 
-        await client.query(
-          `UPDATE platform_connectors SET published_checksum = 'not-a-sha' WHERE id = $1`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
+          await client.query(
+            `UPDATE platform_connectors SET published_checksum = 'not-a-sha' WHERE id = $1`,
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
 
-        await client.query(`UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`, [
-          sha256Of('other'),
-          RECOVERY_PROBE_IDS.connectorId,
-        ]);
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/dangling-pointer|holder-checksum/);
+          await client.query(
+            `UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`,
+            [sha256Of('other'), RECOVERY_PROBE_IDS.connectorId],
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/dangling-pointer|holder-checksum/);
 
-        await client.query(`UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`, [
-          PROBE_PAYLOAD_CHECKSUM_V2,
-          RECOVERY_PROBE_IDS.connectorId,
-        ]);
-        expect((await verifyPublicationPointers(client)).match).toBe(true);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+          await client.query(
+            `UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`,
+            [PROBE_PAYLOAD_CHECKSUM_V2, RECOVERY_PROBE_IDS.connectorId],
+          );
+          expect((await verifyPublicationPointers(client)).match).toBe(true);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });
 
 describe('RR7: oidc identity and branding:published pointers', () => {
-  it('docker: valid oidc + branding:published; wrong type/revision/target fail', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const ok = await verifyPublicationPointers(client);
-        expect(ok.match).toBe(true);
-        const baseDigest = ok.pointerDigest;
+  it.skipIf(!hasDocker)(
+    'docker: valid oidc + branding:published; wrong type/revision/target fail',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const ok = await verifyPublicationPointers(client);
+          expect(ok.match).toBe(true);
+          const baseDigest = ok.pointerDigest;
 
-        // Wrong resource type on identity activation (point at identity_provider instead of oidc)
-        await client.query(
-          `UPDATE platform_resource_revisions SET resource_type = 'identity_provider'
+          // Wrong resource type on identity activation (point at identity_provider instead of oidc)
+          await client.query(
+            `UPDATE platform_resource_revisions SET resource_type = 'identity_provider'
            WHERE id = 'prev_m15q06_oidc_01'`,
-        );
-        let r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        await client.query(
-          `UPDATE platform_resource_revisions SET resource_type = 'oidc'
+          );
+          let r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          await client.query(
+            `UPDATE platform_resource_revisions SET resource_type = 'oidc'
            WHERE id = 'prev_m15q06_oidc_01'`,
-        );
-        expect((await verifyPublicationPointers(client)).match).toBe(true);
+          );
+          expect((await verifyPublicationPointers(client)).match).toBe(true);
 
-        // Branding published revision 7 → 99 without target row
-        await client.query(
-          `UPDATE platform_branding SET revision = 99 WHERE id = 'branding:published'`,
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/dangling-fixed-pointer/);
+          // Branding published revision 7 → 99 without target row
+          await client.query(
+            `UPDATE platform_branding SET revision = 99 WHERE id = 'branding:published'`,
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/dangling-fixed-pointer/);
 
-        // Create target 99 and restore path
-        await client.query(
-          `INSERT INTO platform_resource_revisions
+          // Create target 99 and restore path
+          await client.query(
+            `INSERT INTO platform_resource_revisions
              (id, resource_type, resource_id, revision, status, payload, checksum)
            VALUES ('prev_brand_99', 'branding', 'global', 99, 'published', '{}'::jsonb, $1)
            ON CONFLICT DO NOTHING`,
-          [PROBE_PAYLOAD_CHECKSUM],
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(true);
-        expect(r.pointerDigest).not.toBe(baseDigest);
+            [PROBE_PAYLOAD_CHECKSUM],
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(true);
+          expect(r.pointerDigest).not.toBe(baseDigest);
 
-        // Wrong status on fixed published row is corrupt (not pre-publish).
-        await client.query(
-          `UPDATE platform_branding SET status = 'draft' WHERE id = 'branding:published'`,
-        );
-        r = await verifyPublicationPointers(client);
-        expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/fixed-holder-status-mismatch/);
+          // Wrong status on fixed published row is corrupt (not pre-publish).
+          await client.query(
+            `UPDATE platform_branding SET status = 'draft' WHERE id = 'branding:published'`,
+          );
+          r = await verifyPublicationPointers(client);
+          expect(r.match).toBe(false);
+          expect(r.detail).toMatch(/fixed-holder-status-mismatch/);
 
-        await client.query(
-          `UPDATE platform_branding SET status = 'published', revision = 7
+          await client.query(
+            `UPDATE platform_branding SET status = 'published', revision = 7
            WHERE id = 'branding:published'`,
-        );
-        expect((await verifyPublicationPointers(client)).match).toBe(true);
-        // Asset first_published_revision change must not masquerade as global pointer
-        const beforeAsset = (await verifyPublicationPointers(client)).pointerDigest;
-        await client.query(
-          `INSERT INTO platform_branding_assets (id, branding_id, first_published_revision)
+          );
+          expect((await verifyPublicationPointers(client)).match).toBe(true);
+          // Asset first_published_revision change must not masquerade as global pointer
+          const beforeAsset = (await verifyPublicationPointers(client)).pointerDigest;
+          await client.query(
+            `INSERT INTO platform_branding_assets (id, branding_id, first_published_revision)
            VALUES ('asset1', 'branding:published', 99)
            ON CONFLICT DO NOTHING`,
-        );
-        const afterAsset = (await verifyPublicationPointers(client)).pointerDigest;
-        expect(afterAsset).toBe(beforeAsset);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+          );
+          const afterAsset = (await verifyPublicationPointers(client)).pointerDigest;
+          expect(afterAsset).toBe(beforeAsset);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });
 
 void createHash;

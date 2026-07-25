@@ -6,6 +6,7 @@ import { rm } from 'node:fs/promises';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { assertDockerAvailableForIntegration, probeDockerAvailable } from './dockerAvailability';
 import {
   createSignedProvenance,
   digestAuditLogs,
@@ -38,16 +39,8 @@ afterEach(async () => {
   }
 });
 
-const dockerAvailable = async (): Promise<boolean> => {
-  try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    await promisify(execFile)('docker', ['info'], { timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
+const hasDocker = await probeDockerAvailable();
+assertDockerAvailableForIntegration(hasDocker);
 
 describe('RR6: exact generatedAt binding for production provenance', () => {
   it('exact generatedAt passes; earlier-but-fresh signed payload fails', () => {
@@ -104,6 +97,7 @@ describe('RR6: exact generatedAt binding for production provenance', () => {
     const t0 = freshTimestamp();
     const payload = {
       artifactSha256: sha256Of('art'),
+      assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
       candidateSha: FIXTURE_CANDIDATE_SHA,
       environment: 'production' as const,
       gateId: 'path-boundaries' as const,
@@ -170,122 +164,122 @@ describe('RR6: recursive audit/after_diff canonicalization', () => {
     expect(digestCanonicalValue([1, 2])).not.toBe(digestCanonicalValue([2, 1]));
   });
 
-  it('docker: nested after_diff pairs differ in audit digest', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        await client.query(`DELETE FROM platform_audit_logs`);
-        await client.query(
-          `INSERT INTO platform_audit_logs (id, action, result, after_diff)
+  it.skipIf(!hasDocker)(
+    'docker: nested after_diff pairs differ in audit digest',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          await client.query(`DELETE FROM platform_audit_logs`);
+          await client.query(
+            `INSERT INTO platform_audit_logs (id, action, result, after_diff)
            VALUES ('n1', 'act', 'ok', '{"outer":{"x":1}}'::jsonb)`,
-        );
-        const d1 = await digestAuditLogs(client);
-        await client.query(`DELETE FROM platform_audit_logs`);
-        await client.query(
-          `INSERT INTO platform_audit_logs (id, action, result, after_diff)
+          );
+          const d1 = await digestAuditLogs(client);
+          await client.query(`DELETE FROM platform_audit_logs`);
+          await client.query(
+            `INSERT INTO platform_audit_logs (id, action, result, after_diff)
            VALUES ('n1', 'act', 'ok', '{"outer":{"x":2}}'::jsonb)`,
-        );
-        const d2 = await digestAuditLogs(client);
-        expect(d1.digest).not.toBe(d2.digest);
+          );
+          const d2 = await digestAuditLogs(client);
+          expect(d1.digest).not.toBe(d2.digest);
 
-        // deeper nesting
-        await client.query(`DELETE FROM platform_audit_logs`);
-        await client.query(
-          `INSERT INTO platform_audit_logs (id, action, result, after_diff)
+          // deeper nesting
+          await client.query(`DELETE FROM platform_audit_logs`);
+          await client.query(
+            `INSERT INTO platform_audit_logs (id, action, result, after_diff)
            VALUES ('n1', 'act', 'ok', '{"a":{"b":{"c":[1,2]}}}'::jsonb)`,
-        );
-        const deep1 = await digestAuditLogs(client);
-        await client.query(`DELETE FROM platform_audit_logs`);
-        await client.query(
-          `INSERT INTO platform_audit_logs (id, action, result, after_diff)
+          );
+          const deep1 = await digestAuditLogs(client);
+          await client.query(`DELETE FROM platform_audit_logs`);
+          await client.query(
+            `INSERT INTO platform_audit_logs (id, action, result, after_diff)
            VALUES ('n1', 'act', 'ok', '{"a":{"b":{"c":[2,1]}}}'::jsonb)`,
-        );
-        const deep2 = await digestAuditLogs(client);
-        expect(deep1.digest).not.toBe(deep2.digest);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+          );
+          const deep2 = await digestAuditLogs(client);
+          expect(deep1.digest).not.toBe(deep2.digest);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });
 
 describe('RR6: holder-side checksum and composite FK for connectors', () => {
-  it('docker: changed published_checksum fails; binding owner still works', async () => {
-    if (!(await dockerAvailable())) {
-      expect(true).toBe(true);
-      return;
-    }
-    const lifecycle = await createOwnedPostgres();
-    try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const ok = await verifyPublicationPointers(client);
-        expect(ok.match).toBe(true);
-        const before = ok.pointerDigest;
+  it.skipIf(!hasDocker)(
+    'docker: changed published_checksum fails; binding owner still works',
+    async () => {
+      const lifecycle = await createOwnedPostgres();
+      try {
+        await lifecycle.handle.withClient(async (client) => {
+          await seedRecoveryFixture(client);
+          const ok = await verifyPublicationPointers(client);
+          expect(ok.match).toBe(true);
+          const before = ok.pointerDigest;
 
-        // Mutate holder published_checksum to another valid 64-hex without matching target
-        await client.query(`UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`, [
-          sha256Of('wrong-holder-checksum'),
-          RECOVERY_PROBE_IDS.connectorId,
-        ]);
-        const bad = await verifyPublicationPointers(client);
-        expect(bad.match).toBe(false);
-        expect(bad.detail).toMatch(/dangling-pointer|holder-checksum/);
+          // Mutate holder published_checksum to another valid 64-hex without matching target
+          await client.query(
+            `UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`,
+            [sha256Of('wrong-holder-checksum'), RECOVERY_PROBE_IDS.connectorId],
+          );
+          const bad = await verifyPublicationPointers(client);
+          expect(bad.match).toBe(false);
+          expect(bad.detail).toMatch(/dangling-pointer|holder-checksum/);
 
-        // Restore correct checksum
-        await client.query(`UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`, [
-          PROBE_PAYLOAD_CHECKSUM_V2,
-          RECOVERY_PROBE_IDS.connectorId,
-        ]);
-        const restored = await verifyPublicationPointers(client);
-        expect(restored.match).toBe(true);
-        expect(restored.pointerDigest).toBe(before);
+          // Restore correct checksum
+          await client.query(
+            `UPDATE platform_connectors SET published_checksum = $1 WHERE id = $2`,
+            [PROBE_PAYLOAD_CHECKSUM_V2, RECOVERY_PROBE_IDS.connectorId],
+          );
+          const restored = await verifyPublicationPointers(client);
+          expect(restored.match).toBe(true);
+          expect(restored.pointerDigest).toBe(before);
 
-        // Wrong published_resource_type
-        await client.query(
-          `UPDATE platform_connectors SET published_resource_type = 'branding' WHERE id = $1`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
-        const wrongType = await verifyPublicationPointers(client);
-        expect(wrongType.match).toBe(false);
+          // Wrong published_resource_type
+          await client.query(
+            `UPDATE platform_connectors SET published_resource_type = 'branding' WHERE id = $1`,
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
+          const wrongType = await verifyPublicationPointers(client);
+          expect(wrongType.match).toBe(false);
 
-        await client.query(
-          `UPDATE platform_connectors SET published_resource_type = 'connector' WHERE id = $1`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
+          await client.query(
+            `UPDATE platform_connectors SET published_resource_type = 'connector' WHERE id = $1`,
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
 
-        // binding wrong connector_id still fails
-        await client.query(
-          `UPDATE platform_user_connector_bindings SET connector_id = 'nope'
+          // binding wrong connector_id still fails
+          await client.query(
+            `UPDATE platform_user_connector_bindings SET connector_id = 'nope'
            WHERE id = 'pcub_m15q06_probe_01'`,
-        );
-        const badBind = await verifyPublicationPointers(client);
-        expect(badBind.match).toBe(false);
+          );
+          const badBind = await verifyPublicationPointers(client);
+          expect(badBind.match).toBe(false);
 
-        await client.query(
-          `UPDATE platform_user_connector_bindings SET connector_id = $1
+          await client.query(
+            `UPDATE platform_user_connector_bindings SET connector_id = $1
            WHERE id = 'pcub_m15q06_probe_01'`,
-          [RECOVERY_PROBE_IDS.connectorId],
-        );
+            [RECOVERY_PROBE_IDS.connectorId],
+          );
 
-        // agent checksum mutation still changes digest
-        const beforeAgent = await verifyPublicationPointers(client);
-        await client.query(`UPDATE platform_agent_versions SET checksum = $1 WHERE id = $2`, [
-          sha256Of('agent-ck-mut'),
-          RECOVERY_PROBE_IDS.agentVersionId,
-        ]);
-        const afterAgent = await verifyPublicationPointers(client);
-        expect(afterAgent.pointerDigest).not.toBe(beforeAgent.pointerDigest);
-      });
-    } finally {
-      await lifecycle.cleanup();
-    }
-  }, 120_000);
+          // agent checksum mutation still changes digest
+          const beforeAgent = await verifyPublicationPointers(client);
+          await client.query(`UPDATE platform_agent_versions SET checksum = $1 WHERE id = $2`, [
+            sha256Of('agent-ck-mut'),
+            RECOVERY_PROBE_IDS.agentVersionId,
+          ]);
+          const afterAgent = await verifyPublicationPointers(client);
+          expect(afterAgent.pointerDigest).not.toBe(beforeAgent.pointerDigest);
+        });
+      } finally {
+        await lifecycle.cleanup();
+      }
+    },
+    120_000,
+  );
 });
 
 void FIXTURE_MIGRATION_TAG;
