@@ -52,6 +52,20 @@ export default {
     'Assignment is disabled and will not take effect.',
   'agentCatalog.assignment.warning.MANDATORY_AGENT_CANNOT_BE_HIDDEN':
     'Mandatory Agents cannot be hidden by users.',
+  'agentCatalog.collection.truncated': 'List is incomplete',
+  'agentCatalog.collection.truncatedAssignments':
+    'Only the first pages of assignments were loaded. Load more to see the rest, or treat this list as partial.',
+  'agentCatalog.collection.truncatedRollouts':
+    'Only the first pages of rollout jobs were loaded. Load more to see the rest, or treat this list as partial.',
+  'agentCatalog.collection.truncatedVersions':
+    'Only the first pages of versions were loaded. Load more to see the rest, or treat this list as partial.',
+  'agentCatalog.collection.loadMore': 'Load more',
+  'agentCatalog.dependency.catalogTruncated':
+    'More published catalog entries match this search. Refine the query to find a specific item.',
+  'agentCatalog.dependency.model.providerSearch': 'Search providers',
+  'agentCatalog.dependency.model.providerSearchPlaceholder': 'Search published providers',
+  'agentCatalog.dependency.connector.search': 'Search connectors',
+  'agentCatalog.dependency.connector.searchPlaceholder': 'Search published connectors',
   'agentCatalog.conflict.description':
     'The server revision changed while this local recovery draft was open. Discard the local copy, then reapply the change.',
   'agentCatalog.conflict.discard': 'Discard local draft',
@@ -590,7 +604,21 @@ export default {
   'generalSettings.stale.description':
     'Server settings changed while you were editing. Discard local changes and reload to continue.',
   'generalSettings.stale.refresh': 'Discard and refresh',
+  'generalSettings.stale.refreshFailed':
+    'Could not reload the latest settings. Your local edits and conflict state were kept — try again when the network recovers.',
   'generalSettings.stale.title': 'Settings updated on the server',
+  'generalSettings.refreshError':
+    'Could not reload the latest settings. Your local edits were kept — try again when the network recovers.',
+  'generalSettings.recovery.title': 'Recover unsaved general settings?',
+  'generalSettings.recovery.description':
+    'This browser has unsaved registration or allowlist edits from a previous session.',
+  'generalSettings.recovery.restore': 'Restore edits',
+  'generalSettings.recovery.discard': 'Discard',
+  'generalSettings.conflict':
+    'Settings were changed elsewhere. Discard local changes and reload before saving again.',
+  'generalSettings.conflict.description':
+    'Another admin saved while you were editing (revision conflict). Discard local changes and reload to continue.',
+  'generalSettings.conflict.title': 'Revision conflict',
   'securityAuth.tabs.login': 'Login methods',
   'securityAuth.tabs.general': 'General settings',
   'sidebarLayout.title': 'Sidebar layout',
@@ -630,10 +658,16 @@ export default {
     'Edits save and publish as platform defaults. Users inherit these values unless they override them.',
   'aiServiceModel.noWritePermission':
     'You need settings update and publish permissions to edit platform defaults.',
+  'aiServiceModel.saveFailed': 'Could not save platform defaults. Try again.',
+  'aiServiceModel.savedRefreshFailed':
+    'Saved successfully, but the latest values could not be refreshed. Retry load if the form looks stale.',
   'aiInfraError.rateLimited': 'Too many admin actions — try again shortly.',
   'aiInfraError.reauthCancelled': 'Re-authentication cancelled.',
   'aiInfraError.reauthRequired': 'Re-authentication required.',
   'aiInfraError.reauthUnavailable': 'Re-authentication unavailable for this session.',
+  'aiInfraError.retry': 'Retry',
+  'aiInfraError.runtimeLoadFailed':
+    'Failed to load the platform AI model catalog. Retry to refresh model lists.',
   'aiInfraError.saveFailed': 'Save failed.',
   'aiInfraError.validationFailed': 'Validation failed — draft kept, not published.',
   'aiInfraError.validationFailedCount': 'Validation failed ({{count}} issues).',
@@ -655,6 +689,8 @@ export default {
     'Publish retry failed. Try again or open advanced catalog management.',
   'aiToolSettings.connectors.partialLoadFailed':
     '{{count}} connectors failed to load; retry to refresh.',
+  'aiToolSettings.connectors.createIncomplete':
+    'Connector draft was created, but discovery or publish did not complete. Finish setup in the advanced catalog.',
   'aiSettingsDefaults.dirtyDraft.title': 'Unpublished settings draft blocks save',
   'aiSettingsDefaults.dirtyDraft.desc':
     'The Settings Policy page has an unpublished draft outside this change. Resolve it on the <settingsLink>Settings Policy</settingsLink> page first, then retry.',
@@ -1062,6 +1098,8 @@ export default {
     'Skill package ZIP is too large to import.',
   'skillCatalog.toast.archive': 'Skill archived',
   'skillCatalog.toast.created': 'Skill created',
+  'skillCatalog.toast.distributionFailed':
+    'Could not update the organization skill distribution. Try again.',
   'skillCatalog.toast.publish': 'Skill version published',
   'skillCatalog.toast.rollback': 'Skill rolled back',
   'skillCatalog.toast.saved': 'Skill draft saved',
@@ -1246,6 +1284,17 @@ export default {
   'users.providers.oidc': 'OIDC',
   'nav.reauthComplete': 'Re-authentication complete',
   'users.reauth.complete': 'Re-authentication complete. You can close this window.',
+  'users.reauth.complete.pending': 'Finishing re-authentication…',
+  'users.reauth.complete.invalid.title': 'Re-authentication link is invalid',
+  'users.reauth.complete.invalid.description':
+    'This page is missing a valid re-authentication token. Return to the admin console and try the action again.',
+  'users.reauth.complete.noOpener.title': 'Could not notify the original window',
+  'users.reauth.complete.noOpener.description':
+    'This tab was not opened as a re-authentication popup. Close it and restart the action from the admin console.',
+  'users.reauth.complete.deliveryFailed.title': 'Could not complete re-authentication',
+  'users.reauth.complete.deliveryFailed.description':
+    'The original window could not be notified. Close this tab and retry the action from the admin console.',
+  'users.reauth.complete.close': 'Back to admin',
   'users.errors.reauthCancelled': 'Re-authentication was cancelled. Your form is still open.',
   'users.errors.reauthBlocked': 'Could not open the sign-in window. Allow popups and try again.',
   'users.detail.youBadge': 'You',
@@ -1342,6 +1391,26 @@ export default {
     'Restore the settings on this page to their built-in defaults. This clears the platform overrides configured here and publishes a new revision; users regain control of these settings. Continue?',
   'settingsPolicy.resetReason': 'Restore settings policy to defaults',
   'settingsPolicy.resetFailed': 'Restore defaults failed',
+  'settingsPolicy.resetSuccess': 'Platform defaults restored.',
+  'settingsPolicy.publishSuccess': 'Settings policy published.',
+  'settingsPolicy.loadFailed': 'Could not load settings policy. Retry to try again.',
+  'settingsPolicy.validateRequestFailed': 'Could not validate the draft. Try again.',
+  'settingsPolicy.errors.generic': 'The operation failed. Try again.',
+  'settingsPolicy.errors.saveFailed': 'Could not save the draft. Try again.',
+  'settingsPolicy.validation.generic': 'Invalid value at {{path}}',
+  'settingsPolicy.validation.MANAGED_SETTING_INVALID_VALUE': 'Invalid value at {{path}}',
+  'settingsPolicy.validation.MANAGED_SETTING_UNKNOWN_PATH': 'Unknown settings path: {{path}}',
+  'settingsPolicy.validation.MANAGED_SETTING_SECRET_PATH':
+    'Secret paths cannot be managed here: {{path}}',
+  'settingsPolicy.validation.PLATFORM_CONFIG_VALIDATION_FAILED':
+    'Configuration validation failed at {{path}}',
+  'settingsPolicy.resetPartial.title': 'Restore defaults partially applied',
+  'settingsPolicy.resetPartial.description':
+    'The draft was cleared on the server, but publishing failed and the previous draft could not be restored. Mutations are locked until you retry the restore or refresh from the server.',
+  'settingsPolicy.resetPartial.retryRestore': 'Retry restore draft',
+  'settingsPolicy.resetPartial.refresh': 'Refresh from server',
+  'settingsPolicy.resetPartial.restoreFailed':
+    'Could not restore the previous draft. The server may still hold an empty draft — try again or refresh.',
   'settingsPolicy.publishDesc':
     'Publishing creates an immutable revision and updates effective settings for all users.',
   'settingsPolicy.saveReason': 'Save settings policy draft',
@@ -1714,6 +1783,8 @@ export default {
   'connectorCatalog.tools.title': 'Tool policy',
   'connectorCatalog.toast.archived': 'Connector archived.',
   'connectorCatalog.toast.created': 'Connector draft created.',
+  'connectorCatalog.toast.createdDiscoveryFailed':
+    'Connector created, but tool discovery failed. Open the advanced catalog to retry discovery.',
   'connectorCatalog.toast.deleted': 'Connector draft deleted.',
   'connectorCatalog.toast.discovered': 'Connector tools discovered.',
   'connectorCatalog.toast.published': 'Connector revision published.',
@@ -1816,19 +1887,128 @@ export default {
   'branding.unsaved.leave': 'Leave without saving',
   'branding.unsaved.stay': 'Keep editing',
   'branding.unsaved.title': 'Unsaved Branding changes',
+  'branding.recovery.title': 'Recover unsaved Branding edits?',
+  'branding.recovery.description':
+    'This browser has unsaved Branding edits from a previous session (non-secret fields only).',
+  'branding.recovery.restore': 'Restore edits',
+  'branding.recovery.discard': 'Discard',
   'branding.upload.description':
     'The server verifies the file bytes, format, dimensions, and container before storage.',
   'branding.upload.title': 'Upload controlled Branding asset',
   'enterprise.error.MANAGED_AGENT_BATCH_LIMIT':
     'Too many agents in one request. Select at most {{max}} agents and try again.',
+  'enterprise.error.MANAGED_POLICY_ENFORCED': 'This option is restricted by organization policy.',
+  'enterprise.error.MANAGED_RESOURCE_BY_PLATFORM':
+    'This resource is managed by the organization and cannot be changed here.',
+  'enterprise.error.MANAGED_SETTING_BY_ADMIN':
+    'This setting is managed by an administrator and cannot be changed here.',
+  'enterprise.error.MANAGED_SETTING_INAPPLICABLE_CLIENT':
+    'This setting does not apply to the current client.',
+  'enterprise.error.MANAGED_SETTING_INVALID_VALUE':
+    'The setting value is invalid. Check it and try again.',
+  'enterprise.error.MANAGED_SETTING_NOT_POLICY_ELIGIBLE':
+    'This setting cannot be managed by organization policy.',
+  'enterprise.error.MANAGED_SETTING_SECRET_PATH':
+    'Sensitive settings cannot be changed through organization policy.',
+  'enterprise.error.MANAGED_SETTING_UNKNOWN_PATH': 'This setting is not supported.',
+  'enterprise.error.ADMIN_ACCESS_DENIED': 'You do not have permission to access the admin console.',
+  'enterprise.error.ADMIN_FEATURE_DISABLED': 'This admin feature has been disabled.',
+  'enterprise.error.ADMIN_RATE_LIMITED': 'Too many operations. Please wait and try again.',
+  'enterprise.error.ADMIN_REASON_REQUIRED': 'Please provide a reason for this admin operation.',
+  'enterprise.error.ADMIN_REAUTH_REQUIRED': 'This operation requires re-authentication.',
+  'enterprise.error.PLATFORM_ACTIVATION_RESTART_REQUIRED':
+    'A service restart is required to activate this change.',
+  'enterprise.error.PLATFORM_AI_MODEL_NOT_PUBLISHED':
+    'This model has not been published and is not available.',
+  'enterprise.error.PLATFORM_AI_MODEL_PULL_DISABLED':
+    'Your organization has disabled pulling this model.',
+  'enterprise.error.PLATFORM_AI_PROVIDER_DISABLED':
+    'This model provider has been disabled by an administrator.',
   'enterprise.error.PLATFORM_ASSET_STORAGE_UNAVAILABLE':
     'Branding asset storage is unavailable. Ask an operator to configure object storage.',
+  'enterprise.error.PLATFORM_AI_PROVIDER_PARTIAL_LOAD':
+    'Some provider model catalogs failed to load ({{count}}). Model lists stay unchanged until you retry.',
+  'enterprise.error.PLATFORM_CONFIG_VALIDATION_FAILED':
+    'Configuration validation failed. Check your input and try again.',
+  'enterprise.error.PLATFORM_DEFAULT_AGENT_REQUIRED': 'A default agent must be designated first.',
+  'enterprise.error.PLATFORM_FEATURE_DISABLED':
+    'This feature has been disabled by an administrator.',
   'enterprise.error.PLATFORM_IDEMPOTENCY_CONFLICT':
     'This request ID was already used for different changes. Retry as a new action.',
+  'enterprise.error.PLATFORM_LAST_SUPER_ADMIN': 'Cannot remove the last super administrator.',
+  'enterprise.error.PLATFORM_NOT_FOUND':
+    'The requested resource could not be found. It may have been deleted.',
+  'enterprise.error.PLATFORM_OIDC_CLAIM_VALIDATION_FAILED':
+    'OIDC claim validation failed. Check the mapping configuration.',
+  'enterprise.error.PLATFORM_OIDC_DISCOVERY_FAILED':
+    'Could not read the OIDC discovery configuration. Check the URL and try again.',
+  'enterprise.error.PLATFORM_OIDC_RESTART_INTENT_EXPIRED':
+    'The restart request has expired. Start a new one.',
+  'enterprise.error.PLATFORM_OIDC_RESTART_INTENT_INVALID':
+    'The restart request is invalid. Start a new one.',
+  'enterprise.error.PLATFORM_OIDC_RESTART_NOT_PENDING':
+    'There is no pending identity configuration to activate.',
+  'enterprise.error.PLATFORM_OIDC_RESTART_UNSUPPORTED':
+    'Automatic restart is not supported in this environment. Contact operations.',
+  'enterprise.error.PLATFORM_PERMISSION_DENIED':
+    'You do not have permission to perform this action. Contact an administrator.',
+  'enterprise.error.PLATFORM_RESOURCE_IN_USE':
+    'This resource is in use and the operation cannot be completed.',
+  'audit.legalHold.errors.purgeInProgress':
+    'A related evidence purge is in progress. Wait a moment and retry creating the legal hold.',
+  'enterprise.error.PLATFORM_REVISION_CONFLICT':
+    'The data was updated by another operation. Refresh and try again.',
+  'enterprise.error.PLATFORM_ROLLOUT_PARTIAL_FAILURE':
+    'Publishing failed for some users. Review details and retry.',
+  'enterprise.error.PLATFORM_SECRET_NOT_READABLE':
+    'The configured secret could not be read. Reconfigure it and try again.',
+  'enterprise.error.PLATFORM_SECRET_REQUIRED': 'This operation requires a secret to be provided.',
+  'enterprise.error.PLATFORM_SSRF_BLOCKED':
+    'The request URL was blocked by the network safety policy.',
   // Generic invalid-input copy — never overload with batch / domain-specific text.
   'enterprise.error.PLATFORM_INVALID_INPUT':
     'The request is invalid. Check the input and try again.',
+  // Connector domain codes (mapEnterpriseError → admin namespace).
+  'enterprise.error.PLATFORM_CONNECTOR_BINDING_NOT_FOUND':
+    'This authorization no longer exists. Reload the list and connect again.',
+  'enterprise.error.PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH':
+    'This authorization belongs to another account and cannot be used.',
+  'enterprise.error.PLATFORM_CONNECTOR_CONFIRMATION_REQUIRED':
+    'This operation needs confirmation before it can run.',
+  'enterprise.error.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED':
+    'The organization credential is not configured. Contact an administrator.',
+  'enterprise.error.PLATFORM_CONNECTOR_NOT_FOUND':
+    'This Connector is no longer available. Reload the list and try again.',
+  'enterprise.error.PLATFORM_CONNECTOR_NOT_PUBLISHED':
+    'This Connector is not published. Contact an administrator.',
+  'enterprise.error.PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID':
+    'The authorization response was invalid. Try connecting again.',
+  'enterprise.error.PLATFORM_CONNECTOR_OAUTH_STATE_EXPIRED':
+    'The authorization request expired. Start a new connection.',
+  'enterprise.error.PLATFORM_CONNECTOR_OAUTH_STATE_INVALID':
+    'The authorization request was invalid. Start a new connection.',
+  'enterprise.error.PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED':
+    'This authorization request was already used. Start a new connection.',
+  'enterprise.error.PLATFORM_CONNECTOR_RETURN_TO_INVALID':
+    'The requested return page was invalid. Start authorization again.',
+  'enterprise.error.PLATFORM_CONNECTOR_RATE_LIMITED':
+    'Too many Connector requests. Wait a moment and try again.',
+  'enterprise.error.PLATFORM_CONNECTOR_RESOURCE_MISMATCH':
+    'The Connector changed while this operation was running. Reload and try again.',
+  'enterprise.error.PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED':
+    'The requested authorization scope is not allowed by your organization.',
+  'enterprise.error.PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED':
+    'The operation was blocked because it could expose a credential.',
+  'enterprise.error.PLATFORM_CONNECTOR_SSRF_BLOCKED':
+    'The Connector endpoint was blocked by the network safety policy.',
+  'enterprise.error.PLATFORM_CONNECTOR_STDIO_UNSUPPORTED':
+    'Command-based Connectors are not supported in this app.',
+  'enterprise.error.PLATFORM_CONNECTOR_TOOL_DENIED':
+    'This tool is not allowed by your organization or Agent policy.',
+  'enterprise.error.PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED':
+    'This Connector transport is not supported.',
   'identityProviders.actions.create': 'New',
+  'identityProviders.actions.delete': 'Delete',
   'identityProviders.actions.disable': 'Disable',
   'identityProviders.columns.actions': 'Actions',
   'identityProviders.columns.name': 'Sign-in method',
@@ -1850,7 +2030,15 @@ export default {
   'identityProviders.disable.impact':
     'This publishes a signed tombstone revision. The provider will stop accepting logins after instances reload. This cannot be undone without republishing a new configuration.',
   'identityProviders.disable.success': 'Provider disabled — restart required',
+  'identityProviders.disable.committedRefreshFailed':
+    'Provider disabled, but runtime status could not be refreshed. Retry status — do not disable again.',
   'identityProviders.disable.title': 'Disable identity provider',
+  'identityProviders.delete.cancel': 'Cancel',
+  'identityProviders.delete.confirm': 'Delete draft',
+  'identityProviders.delete.impact':
+    'This permanently deletes a never-published draft. Providers that have been published must be Disabled (tombstoned) instead.',
+  'identityProviders.delete.success': 'Draft deleted',
+  'identityProviders.delete.title': 'Delete identity provider draft',
   'identityProviders.callback.copy': 'Copy',
   'identityProviders.callback.copied': 'Callback URL copied.',
   'identityProviders.callback.copyFailed': 'Could not copy the callback URL.',
@@ -1912,6 +2100,8 @@ export default {
   'identityProviders.publish.title': 'Publish identity provider',
   'identityProviders.restart.accepted':
     'Restart accepted. Waiting for instances to load the published revision.',
+  'identityProviders.restart.acceptedRefreshFailed':
+    'Restart accepted, but runtime status could not be refreshed. Retry status — do not restart again.',
   'identityProviders.restart.activated':
     'Activation complete. Every fresh instance is running the target published revision.',
   'identityProviders.restart.cancel': 'Keep current runtime',
@@ -2236,7 +2426,9 @@ export default {
   'nav.auditLegalHolds': 'Data retention',
   'nav.auditRetention': 'General settings',
   'audit.noPermission': 'You do not have permission to use any audit tools on this account.',
-  'audit.shared.userSearchPlaceholder': 'Search users by email, username, or name',
+  'audit.toast.savedRefreshFailed':
+    'Saved, but the latest view could not be refreshed. Reload if it looks stale.',
+  'audit.shared.userSearchPlaceholder': 'Search users by email or username',
   'audit.shared.clearFilters': 'Clear filters',
   'audit.shared.yes': 'Yes',
   'audit.shared.no': 'No',
@@ -2279,15 +2471,50 @@ export default {
   'audit.logs.columns.requestId': 'Request ID',
   // Human labels for audit action + target-type enum values (fallback humanizes unknowns).
   'audit.logs.action.admin.agents.archive': 'Archive agent',
+  'audit.logs.action.admin.agents.assignments.create': 'Create agent assignment',
+  'audit.logs.action.admin.agents.assignments.remove': 'Remove agent assignment',
+  'audit.logs.action.admin.agents.assignments.update': 'Update agent assignment',
+  'audit.logs.action.admin.agents.assignments.upsert': 'Save agent assignment',
   'audit.logs.action.admin.agents.create': 'Create agent',
+  'audit.logs.action.admin.agents.createVersion': 'Create agent version',
   'audit.logs.action.admin.agents.delete': 'Delete agent',
+  'audit.logs.action.admin.agents.publish': 'Publish agent',
+  'audit.logs.action.admin.agents.rollback': 'Roll back agent',
+  'audit.logs.action.admin.agents.rollouts.cancel': 'Cancel agent rollout',
+  'audit.logs.action.admin.agents.rollouts.retry': 'Retry agent rollout',
+  'audit.logs.action.admin.agents.rollouts.rollback': 'Roll back agent rollout',
+  'audit.logs.action.admin.agents.rollouts.start': 'Start agent rollout',
+  'audit.logs.action.admin.agents.setDefaultInbox': 'Set default Inbox agent',
+  'audit.logs.action.admin.agents.updateDraft': 'Update agent draft',
+  'audit.logs.action.admin.agents.validateDependencies': 'Validate agent dependencies',
+  'audit.logs.action.admin.aiModels.applyImmediate': 'Apply model changes immediately',
+  'audit.logs.action.admin.aiModels.batchToggle': 'Batch enable or disable models',
+  'audit.logs.action.admin.aiModels.batchUpdate': 'Batch update models',
+  'audit.logs.action.admin.aiModels.clear': 'Clear model draft',
   'audit.logs.action.admin.aiModels.create': 'Create model',
+  'audit.logs.action.admin.aiModels.deleteFromDraft': 'Delete model from draft',
+  'audit.logs.action.admin.aiModels.reorder': 'Reorder models',
+  'audit.logs.action.admin.aiModels.update': 'Update model',
   'audit.logs.action.admin.aiProviders.applyImmediate': 'Apply provider',
+  'audit.logs.action.admin.aiProviders.archive': 'Archive provider',
   'audit.logs.action.admin.aiProviders.createDraft': 'Create provider draft',
   'audit.logs.action.admin.aiProviders.delete': 'Delete provider',
   'audit.logs.action.admin.aiProviders.publish': 'Publish provider',
+  'audit.logs.action.admin.aiProviders.publishNow': 'Publish provider now',
+  'audit.logs.action.admin.aiProviders.rollback': 'Roll back provider',
   'audit.logs.action.admin.aiProviders.test': 'Test provider',
   'audit.logs.action.admin.aiProviders.updateDraft': 'Update provider draft',
+  'audit.logs.action.admin.branding.publish': 'Publish Branding',
+  'audit.logs.action.admin.branding.rollback': 'Roll back Branding',
+  'audit.logs.action.admin.branding.saveDraft': 'Save Branding draft',
+  'audit.logs.action.admin.branding.uploadAsset': 'Upload branding asset',
+  'audit.logs.action.admin.creds.createFile': 'Create file credential',
+  'audit.logs.action.admin.creds.createKV': 'Create key-value credential',
+  'audit.logs.action.admin.creds.createOAuth': 'Create OAuth credential',
+  'audit.logs.action.admin.creds.delete': 'Delete credential',
+  'audit.logs.action.admin.creds.deleteByKey': 'Delete credential by key',
+  'audit.logs.action.admin.creds.update': 'Update credential',
+  'audit.logs.action.admin.creds.uploadFile': 'Upload credential file',
   'audit.logs.action.admin.audit.conversations.get': 'View conversation',
   'audit.logs.action.admin.audit.conversations.list': 'List conversations',
   'audit.logs.action.admin.audit.conversations.messages': 'View conversation messages',
@@ -2300,6 +2527,7 @@ export default {
   'audit.logs.action.admin.audit.exports.download': 'Download export',
   'audit.logs.action.admin.audit.exports.get': 'View export',
   'audit.logs.action.admin.audit.exports.list': 'List exports',
+  'audit.logs.action.admin.audit.exports.worker': 'Export worker',
   'audit.logs.action.admin.audit.get': 'View audit entry',
   'audit.logs.action.admin.audit.legalHolds.create': 'Create data hold',
   'audit.logs.action.admin.audit.legalHolds.get': 'View data hold',
@@ -2333,18 +2561,51 @@ export default {
   'audit.logs.action.admin.connectors.updateBuiltinToolPolicy': 'Update built-in tool policy',
   'audit.logs.action.admin.connectors.updateDraft': 'Update connector draft',
   'audit.logs.action.admin.identityProviders.create': 'Create sign-in method',
+  'audit.logs.action.admin.identityProviders.delete': 'Delete sign-in method',
+  'audit.logs.action.admin.identityProviders.disable': 'Disable sign-in method',
+  'audit.logs.action.admin.identityProviders.disable.lkgAdvance':
+    'Update sign-in last-known-good config',
+  'audit.logs.action.admin.identityProviders.discover': 'Discover identity provider configuration',
   'audit.logs.action.admin.identityProviders.publish': 'Publish sign-in method',
+  'audit.logs.action.admin.identityProviders.publish.requestLease':
+    'Take over sign-in publish request',
   'audit.logs.action.admin.identityProviders.publish.requestReserved': 'Reserve sign-in publish',
+  'audit.logs.action.admin.identityProviders.rollback': 'Roll back sign-in method',
+  'audit.logs.action.admin.identityProviders.rollback.requestLease':
+    'Take over sign-in rollback request',
+  'audit.logs.action.admin.identityProviders.rollback.requestReserved':
+    'Accept sign-in rollback request',
   'audit.logs.action.admin.identityProviders.testStart': 'Start sign-in test',
   'audit.logs.action.admin.identityProviders.testTerminal': 'Finish sign-in test',
+  'audit.logs.action.admin.identityProviders.update': 'Update sign-in method',
+  'audit.logs.action.admin.identityProviders.validateNetwork': 'Validate identity provider network',
+  'audit.logs.action.admin.managedResources.publish': 'Publish managed resource policy',
   'audit.logs.action.admin.managedResources.saveDraft': 'Save managed resources',
   'audit.logs.action.admin.permission.denied': 'Permission denied',
+  'audit.logs.action.admin.roles.replaceUserGlobalRoles': 'Update user global roles',
+  'audit.logs.action.admin.security.secretRotation.cancel': 'Cancel secret rotation',
+  'audit.logs.action.admin.security.secretRotation.restart': 'Restart secret rotation',
+  'audit.logs.action.admin.security.secretRotation.retry': 'Retry secret rotation',
+  'audit.logs.action.admin.security.secretRotation.start': 'Start secret rotation',
   'audit.logs.action.admin.settings.applyImmediate': 'Apply settings',
+  'audit.logs.action.admin.settings.getDraft': 'View settings draft',
+  'audit.logs.action.admin.settings.publish': 'Publish settings',
+  'audit.logs.action.admin.settings.rollback': 'Roll back settings',
   'audit.logs.action.admin.settings.saveDraft': 'Save settings draft',
+  'audit.logs.action.admin.settings.validateDraft': 'Validate settings draft',
   'audit.logs.action.admin.sidebarLayout.update': 'Update sidebar layout',
+  'audit.logs.action.admin.skills.applyImmediate': 'Apply skill changes immediately',
+  'audit.logs.action.admin.skills.archive': 'Archive skill',
   'audit.logs.action.admin.skills.create': 'Create skill',
+  'audit.logs.action.admin.skills.createBuiltinOverride': 'Create built-in skill override',
   'audit.logs.action.admin.skills.createVersion': 'Create skill version',
+  'audit.logs.action.admin.skills.publish': 'Publish skill',
+  'audit.logs.action.admin.skills.publishNow': 'Publish skill now',
+  'audit.logs.action.admin.skills.rollback': 'Roll back skill',
   'audit.logs.action.admin.skills.updateDraft': 'Update skill draft',
+  'audit.logs.action.admin.skills.validate': 'Validate skill',
+  'audit.logs.action.admin.system.jobs.cancel': 'Cancel platform job',
+  'audit.logs.action.admin.system.jobs.retry': 'Retry platform job',
   'audit.logs.action.admin.system.prepareRestart': 'Prepare restart',
   'audit.logs.action.admin.system.requestRestart': 'Request restart',
   'audit.logs.action.admin.users.ban': 'Ban user',
@@ -2356,27 +2617,42 @@ export default {
   'audit.logs.action.admin.users.replaceGlobalRoles': 'Update user roles',
   'audit.logs.action.admin.users.revokeSessions': 'Revoke sessions',
   'audit.logs.action.admin.users.unban': 'Unban user',
+  'audit.logs.action.connector.runtime.sharedCall': 'Call shared connector',
   'audit.logs.action.managedResource.legacyMutation': 'Managed resource change',
+  'audit.logs.action.system.email.send': 'Send platform email',
   'audit.logs.action.platform.managed_policy.publish': 'Publish managed policy',
   'audit.logs.action.platform.provider.publish': 'Publish provider',
   'audit.logs.action.platform.roles.replace': 'Replace roles',
   'audit.logs.action.platform.settings.publish': 'Publish settings',
   'audit.logs.action.platform.skill.publish': 'Publish skill',
+  'audit.logs.action.user.connectors.disconnect': 'Disconnect connector',
+  'audit.logs.action.user.connectors.oauthCallback': 'Complete connector OAuth callback',
   'audit.logs.targetType.agent': 'Agent',
+  'audit.logs.targetType.agent_dependency_validation': 'Agent dependency validation',
   'audit.logs.targetType.audit_event': 'Audit entry',
   'audit.logs.targetType.audit_export': 'Audit export',
   'audit.logs.targetType.audit_policy': 'Audit settings',
   'audit.logs.targetType.audit_retention_run': 'Retention run',
   'audit.logs.targetType.authSettings': 'Sign-in settings',
+  'audit.logs.targetType.branding': 'Branding',
+  'audit.logs.targetType.connector': 'Connector',
+  'audit.logs.targetType.connector_binding': 'Connector authorization',
   'audit.logs.targetType.connector_governance': 'Connector governance',
+  'audit.logs.targetType.email_delivery': 'Email delivery',
   'audit.logs.targetType.identity_provider': 'Sign-in method',
   'audit.logs.targetType.identity_provider_test': 'Sign-in test',
+  'audit.logs.targetType.identity_provider_validation': 'Identity provider validation',
   'audit.logs.targetType.legal_hold': 'Data hold',
   'audit.logs.targetType.managed_policy': 'Managed policy',
   'audit.logs.targetType.model': 'Model',
   'audit.logs.targetType.permission': 'Permission',
+  'audit.logs.targetType.platform_global_credential': 'Platform global credential',
+  'audit.logs.targetType.platform_global_credential_upload': 'Platform global credential upload',
+  'audit.logs.targetType.platform_job': 'Platform job',
   'audit.logs.targetType.provider': 'Provider',
+  'audit.logs.targetType.secret_rotation': 'Secret rotation',
   'audit.logs.targetType.settings': 'Settings',
+  'audit.logs.targetType.settings_validation': 'Settings validation',
   'audit.logs.targetType.sidebarLayout': 'Sidebar layout',
   'audit.logs.targetType.skill': 'Skill',
   'audit.logs.targetType.system': 'System',
@@ -2404,8 +2680,7 @@ export default {
   'audit.conversations.page.desc':
     'Find a user, then drill into sessions and messages. Access is controlled by audit policy.',
   'audit.conversations.search.heading': 'Find a user',
-  'audit.conversations.search.hint':
-    'Search by email, username, or display name. Every view is fully audited.',
+  'audit.conversations.search.hint': 'Search by email or username. Every view is fully audited.',
   'audit.conversations.search.placeholder': 'Search users…',
   'audit.conversations.search.lastActive': 'Last active',
   'audit.conversations.search.policyNote':
@@ -2434,6 +2709,13 @@ export default {
   'audit.conversations.user.timeline': 'Activity timeline',
   'audit.conversations.user.emptyTopics': 'No conversations in this window.',
   'audit.conversations.user.emptyTimeline': 'No timeline items.',
+  'audit.conversations.user.timelineLoading': 'Loading timeline…',
+  'audit.conversations.user.timelineError': 'Failed to load the timeline. Try again.',
+  'audit.conversations.user.timelineRetry': 'Retry',
+  'audit.conversations.user.timelinePrevious': 'Previous',
+  'audit.conversations.user.timelineNext': 'Next',
+  'audit.conversations.user.timelineStale':
+    'Showing the last loaded timeline — the latest refresh failed.',
   'audit.conversations.topic.title': 'Conversation',
   'audit.conversations.topic.desc': 'Message stream for this topic.',
   'audit.conversations.topic.back': 'Back to user',

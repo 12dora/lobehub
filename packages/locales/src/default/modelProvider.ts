@@ -191,6 +191,7 @@ export default {
   'providerModels.batchSelect.title': 'Bulk Selection',
   'providerModels.config.aesGcm':
     'Your key and proxy URL will be encrypted using <1>AES-GCM</1> encryption algorithm',
+  'providerModels.config.apiKey.configuredPlaceholder': 'Configured — enter a new value to replace',
   'providerModels.config.apiKey.desc': 'Please enter your {{name}} API Key',
   'providerModels.config.apiKey.descWithUrl':
     'Please enter your {{name}} API Key. <3>Click here to get it</3>',
