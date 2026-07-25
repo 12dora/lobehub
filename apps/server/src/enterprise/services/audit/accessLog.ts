@@ -8,6 +8,7 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { AdminAuditAccessFilterSummary } from '../../contracts/adminAudit';
 import { PlatformAuditService } from '../platformAudit';
+import type { AuditTargetType } from './auditActionCatalog';
 
 export type AuditAccessAction =
   | 'admin.audit.conversations.get'
@@ -22,6 +23,7 @@ export type AuditAccessAction =
   | 'admin.audit.exports.download'
   | 'admin.audit.exports.get'
   | 'admin.audit.exports.list'
+  | 'admin.audit.exports.worker'
   | 'admin.audit.get'
   | 'admin.audit.legalHolds.create'
   | 'admin.audit.legalHolds.get'
@@ -56,7 +58,7 @@ export interface AppendAuditAccessLogParams {
   required?: boolean;
   result: PlatformAuditResult;
   targetId?: string | null;
-  targetType: string;
+  targetType: AuditTargetType;
 }
 
 /** Build a bounded, free-text-free summary from known structured filter fields. */

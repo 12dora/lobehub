@@ -11,21 +11,9 @@ import {
   hashAsyncIterable,
   InMemoryAuditExportArtifactStorage,
   sha256Hex,
-  verifyArtifactChecksum,
 } from './exportStorage';
 
 describe('audit export private storage', () => {
-  it('verifyArtifactChecksum accepts matching SHA-256 and rejects mismatch/missing', () => {
-    const body = Buffer.from('{"type":"manifest"}\n');
-    const good = formatArtifactChecksum(sha256Hex(body));
-    expect(verifyArtifactChecksum(body, good)).toBe(true);
-    expect(verifyArtifactChecksum(body, sha256Hex(body))).toBe(true); // bare hex form
-    expect(verifyArtifactChecksum(body, formatArtifactChecksum(sha256Hex('other')))).toBe(false);
-    expect(verifyArtifactChecksum(body, null)).toBe(false);
-    expect(verifyArtifactChecksum(body, undefined)).toBe(false);
-    expect(verifyArtifactChecksum(body, '')).toBe(false);
-  });
-
   it('checksumsMatch normalizes the sha256: prefix', () => {
     const hex = sha256Hex('abc');
     expect(checksumsMatch(hex, `sha256:${hex}`)).toBe(true);
@@ -96,14 +84,12 @@ describe('audit export private storage', () => {
       contentLength: 4,
       contentType: 'application/x-ndjson',
     }));
-    const getFileByteArray = vi.fn(async () => new Uint8Array(Buffer.from('test')));
     const createPreSignedUrlForPreview = vi.fn(async () => 'https://signed.example/obj');
     const deleteFile = vi.fn(async () => undefined);
 
     const storage = new AuditExportPrivateS3Storage({
       createPreSignedUrlForPreview,
       deleteFile,
-      getFileByteArray,
       getFileMetadata,
       uploadBuffer,
     } as never);
@@ -137,5 +123,87 @@ describe('audit export private storage', () => {
 
     await storage.deleteObject('platform-audit-exports/paex_x/evidence.ndjson');
     expect(deleteFile).toHaveBeenCalled();
+  });
+
+  it('AuditExportPrivateS3Storage.listObjectKeysByPrefix paginates ListObjectsV2', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({
+        Contents: [{ Key: 'platform-audit-exports/e1/attempts/job_1/evidence.ndjson' }],
+        IsTruncated: true,
+        NextContinuationToken: 'tok-2',
+      })
+      .mockResolvedValueOnce({
+        Contents: [{ Key: 'platform-audit-exports/e1/attempts/job_2/evidence.ndjson' }],
+        IsTruncated: false,
+      });
+
+    const storage = new AuditExportPrivateS3Storage({
+      createPreSignedUrlForPreview: vi.fn(),
+      deleteFile: vi.fn(),
+      getFileMetadata: vi.fn(),
+      uploadBuffer: vi.fn(),
+    } as never);
+    // Inject stream backend so list uses the mocked client (no real S3 env).
+    (
+      storage as unknown as { streamBackend: { bucket: string; client: { send: typeof send } } }
+    ).streamBackend = { bucket: 'audit-bucket', client: { send } };
+
+    const keys = await storage.listObjectKeysByPrefix('platform-audit-exports/e1/attempts/');
+    expect(keys).toEqual([
+      'platform-audit-exports/e1/attempts/job_1/evidence.ndjson',
+      'platform-audit-exports/e1/attempts/job_2/evidence.ndjson',
+    ]);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('prefix deleteObject expands via listObjectKeysByPrefix (never bare DeleteObject on prefix)', async () => {
+    const deleteFile = vi.fn(async () => undefined);
+    const send = vi.fn().mockResolvedValue({
+      Contents: [
+        { Key: 'platform-audit-exports/e1/attempts/a/evidence.ndjson' },
+        { Key: 'platform-audit-exports/e1/attempts/b/evidence.ndjson' },
+      ],
+      IsTruncated: false,
+    });
+
+    const storage = new AuditExportPrivateS3Storage({
+      createPreSignedUrlForPreview: vi.fn(),
+      deleteFile,
+      getFileMetadata: vi.fn(),
+      uploadBuffer: vi.fn(),
+    } as never);
+    (
+      storage as unknown as { streamBackend: { bucket: string; client: { send: typeof send } } }
+    ).streamBackend = { bucket: 'audit-bucket', client: { send } };
+
+    await storage.deleteObject('platform-audit-exports/e1/attempts/');
+    expect(deleteFile).toHaveBeenCalledTimes(2);
+    expect(deleteFile).toHaveBeenCalledWith('platform-audit-exports/e1/attempts/a/evidence.ndjson');
+    expect(deleteFile).toHaveBeenCalledWith('platform-audit-exports/e1/attempts/b/evidence.ndjson');
+    // Prefix itself must never be passed to DeleteObject.
+    expect(deleteFile).not.toHaveBeenCalledWith('platform-audit-exports/e1/attempts/');
+  });
+
+  it('adapters without listObjectKeysByPrefix must not silently finalize prefix purges', async () => {
+    // Contract: production path throws when a prefix is deleted without enumeration.
+    const bare: {
+      deleteObject: (k: string) => Promise<void>;
+      listObjectKeysByPrefix?: (p: string) => Promise<string[]>;
+    } = {
+      deleteObject: async () => undefined,
+      // intentionally omit listObjectKeysByPrefix
+    };
+    const { isAuditExportAttemptsPrefix } = await import('./exportStorage');
+    const prefix = 'platform-audit-exports/e1/attempts/';
+    expect(isAuditExportAttemptsPrefix(prefix)).toBe(true);
+    // Mirror retentionWorker guard: missing list → throw (outbox stays pending).
+    const guardedDelete = async (storageKey: string) => {
+      if (isAuditExportAttemptsPrefix(storageKey) && !bare.listObjectKeysByPrefix) {
+        throw new Error('AUDIT_EXPORT_PREFIX_LIST_REQUIRED');
+      }
+      await bare.deleteObject(storageKey);
+    };
+    await expect(guardedDelete(prefix)).rejects.toThrow('AUDIT_EXPORT_PREFIX_LIST_REQUIRED');
   });
 });

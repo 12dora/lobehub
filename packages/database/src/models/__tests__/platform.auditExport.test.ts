@@ -3,7 +3,11 @@ import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { platformAuditExports } from '../../schemas/platform';
+import {
+  platformAuditExports,
+  platformAuditLegalHolds,
+  platformJobs,
+} from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import { PlatformAuditExportModel } from '../platform/auditExport';
 
@@ -12,6 +16,8 @@ const model = new PlatformAuditExportModel(serverDB);
 
 afterEach(async () => {
   await serverDB.delete(platformAuditExports);
+  await serverDB.delete(platformAuditLegalHolds);
+  await serverDB.delete(platformJobs);
 });
 
 describe('PlatformAuditExportModel', () => {
@@ -63,10 +69,14 @@ describe('PlatformAuditExportModel', () => {
     expect(running?.jobId).toBe('pjob_export_1');
     expect(running?.startedAt).toBeInstanceOf(Date);
 
+    const attemptToken = 'pjob_export_1:1';
+    await model.bindPublicationAttempt(created.id, attemptToken);
+
     const expiresAt = new Date('2026-08-01T00:00:00.000Z');
     const completed = await model.complete(created.id, {
       artifactBytes: 1024,
       artifactChecksum: 'sha256:abc',
+      attemptToken,
       expiresAt,
       rowCount: 42,
       storageKey: 'audit-exports/paex/export.jsonl',
@@ -82,13 +92,15 @@ describe('PlatformAuditExportModel', () => {
     expect((completed as { artifactUrl?: unknown }).artifactUrl).toBeUndefined();
   });
 
-  it('complete requires checksum, storageKey, and expiresAt', async () => {
+  it('complete is fenced on attemptToken and requires checksum, storageKey, expiresAt', async () => {
     const created = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
     await model.markRunning(created.id);
+    await model.bindPublicationAttempt(created.id, 'tok-a');
 
     await expect(
       model.complete(created.id, {
         artifactChecksum: '',
+        attemptToken: 'tok-a',
         expiresAt: new Date(),
         storageKey: 'k',
       }),
@@ -97,6 +109,7 @@ describe('PlatformAuditExportModel', () => {
     await expect(
       model.complete(created.id, {
         artifactChecksum: 'sha256:x',
+        attemptToken: 'tok-a',
         expiresAt: new Date(),
         storageKey: '',
       }),
@@ -105,11 +118,31 @@ describe('PlatformAuditExportModel', () => {
     await expect(
       model.complete(created.id, {
         artifactChecksum: 'sha256:x',
+        attemptToken: '',
+        expiresAt: new Date(),
+        storageKey: 'k',
+      }),
+    ).rejects.toThrow(/attemptToken/);
+
+    await expect(
+      model.complete(created.id, {
+        artifactChecksum: 'sha256:x',
+        attemptToken: 'tok-a',
         // @ts-expect-error intentional
         expiresAt: null,
         storageKey: 'k',
       }),
     ).rejects.toThrow(/expiresAt/);
+
+    // Wrong fencing token loses publication.
+    await expect(
+      model.complete(created.id, {
+        artifactChecksum: 'sha256:x',
+        attemptToken: 'tok-other',
+        expiresAt: new Date(),
+        storageKey: 'k',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('enforces unique jobId when set', async () => {
@@ -142,8 +175,10 @@ describe('PlatformAuditExportModel', () => {
 
     const c = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
     await model.markRunning(c.id);
+    await model.bindPublicationAttempt(c.id, 'tok-c');
     const completed = await model.complete(c.id, {
       artifactChecksum: 'x',
+      attemptToken: 'tok-c',
       expiresAt: new Date('2026-08-01T00:00:00.000Z'),
       storageKey: 'audit-exports/c.jsonl',
     });
@@ -216,10 +251,12 @@ describe('PlatformAuditExportModel', () => {
   it('clearArtifactStorage clears storageKey, sets expired, preserves finishedAt and metadata', async () => {
     const created = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
     await model.markRunning(created.id);
+    await model.bindPublicationAttempt(created.id, 'tok-clear');
     const finishedAt = new Date('2026-03-15T12:00:00.000Z');
     const completed = await model.complete(created.id, {
       artifactBytes: 99,
       artifactChecksum: 'sha256:keep-me',
+      attemptToken: 'tok-clear',
       expiresAt: new Date('2026-08-01T00:00:00.000Z'),
       rowCount: 3,
       storageKey: 'audit-exports/keep/meta.jsonl',
@@ -243,5 +280,271 @@ describe('PlatformAuditExportModel', () => {
     const again = await model.clearArtifactStorage(created.id);
     expect(again?.status).toBe('expired');
     expect(again?.finishedAt?.toISOString()).toBe(finishedAt.toISOString());
+  });
+
+  it('DB-002: dead-letter reconcile atomically fails + enqueues purge (no failed+storageKey intermediate)', async () => {
+    // Seed a dead job + running export that already uploaded.
+    await serverDB.insert(platformJobs).values({
+      attempt: 1,
+      id: 'pjob_dead_export_1',
+      idempotencyKey: 'dead-export-1',
+      maxAttempts: 1,
+      status: 'dead',
+      type: 'platform.audit.export.v1',
+    });
+    const created = await model.create({
+      jobId: 'pjob_dead_export_1',
+      kind: 'operation_logs',
+      requestedBy: 'admin-1',
+    });
+    await model.markRunning(created.id, { jobId: 'pjob_dead_export_1' });
+    await serverDB
+      .update(platformAuditExports)
+      .set({
+        error: {
+          attemptToken: 't1',
+          code: 'ARTIFACT_PURGE_PENDING',
+          purgeStatus: 'pending',
+          purgeStorageKey: 'attempt-key/x',
+        },
+        status: 'running',
+        storageKey: null,
+      })
+      .where(eq(platformAuditExports.id, created.id));
+
+    // Also seed a row with storageKey still set (upload completed path without intent).
+    await serverDB.insert(platformJobs).values({
+      attempt: 1,
+      id: 'pjob_dead_export_2',
+      idempotencyKey: 'dead-export-2',
+      maxAttempts: 1,
+      status: 'dead',
+      type: 'platform.audit.export.v1',
+    });
+    const withKey = await model.create({
+      jobId: 'pjob_dead_export_2',
+      kind: 'operation_logs',
+      requestedBy: 'admin-1',
+    });
+    await model.markRunning(withKey.id, { jobId: 'pjob_dead_export_2' });
+    await serverDB
+      .update(platformAuditExports)
+      .set({ status: 'running', storageKey: 'live-key/y' })
+      .where(eq(platformAuditExports.id, withKey.id));
+
+    const n = await model.reconcileDeadLetterExportArtifacts({
+      buildStorageKey: (id) => `fallback/${id}`,
+      limit: 50,
+    });
+    expect(n).toBeGreaterThanOrEqual(2);
+
+    const rows = await serverDB.select().from(platformAuditExports);
+    for (const row of rows) {
+      if (row.id === created.id || row.id === withKey.id) {
+        expect(row.status).toBe('failed');
+        // Never stranded failed + storageKey non-null
+        expect(row.storageKey).toBeNull();
+        expect(row.error?.purgeStorageKey).toBeTruthy();
+      }
+    }
+
+    const pending = await model.listPendingArtifactPurges({ limit: 50 });
+    expect(pending.some((p) => p.id === created.id)).toBe(true);
+    expect(pending.some((p) => p.id === withKey.id)).toBe(true);
+  });
+
+  it('DB-001: two-phase purge — deleteObject success + finalize failure leaves deleting; scoped hold rejects; non-intersecting succeeds', async () => {
+    const { PlatformAuditLegalHoldModel } = await import('../platform/auditLegalHold');
+    const { LegalHoldPurgeInProgressError } = await import('../platform/auditExport');
+    const created = await model.create({
+      filterSnapshot: { userId: 'user-held-by-purge' },
+      kind: 'conversations',
+      requestedBy: 'admin-1',
+    });
+    await model.markRunning(created.id);
+    await model.bindPublicationAttempt(created.id, 'tok-purge');
+    await model.complete(created.id, {
+      artifactChecksum: 'sha256:p',
+      attemptToken: 'tok-purge',
+      expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+      storageKey: 'purge-key/z',
+    });
+    // Claim into purge outbox
+    const claimed = await model.claimArtifactStorageForPurge(created.id);
+    expect(claimed?.storageKey).toBe('purge-key/z');
+
+    // Phase 1 under lock; external delete succeeds; finalize is NOT called (crash).
+    const phase1 = await model.authorizeAndMarkDeletingUnderHoldLock([created.id], {
+      resolveHeldIds: async () => new Set(),
+    });
+    expect(phase1.authorized).toHaveLength(1);
+    expect(phase1.authorized[0]!.storageKey).toBe('purge-key/z');
+    // Object destroyed externally; DB still `deleting`.
+
+    const [mid] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(mid?.error?.purgeStatus).toBe('deleting');
+    expect(mid?.error?.purgeToken).toBeTruthy();
+
+    const holds = new PlatformAuditLegalHoldModel(serverDB);
+
+    // Intersecting hold (same user) must reject with typed purge-in-progress error.
+    await expect(
+      holds.create({
+        createdBy: 'admin-hold',
+        reason: 'must reject while deleting intersecting',
+        scopeId: 'user-held-by-purge',
+        scopeType: 'user',
+      }),
+    ).rejects.toThrow(LegalHoldPurgeInProgressError);
+
+    // Non-intersecting hold (different user) must still succeed while deleting is open.
+    const other = await holds.create({
+      createdBy: 'admin-hold',
+      reason: 'unrelated scope while purge runs',
+      scopeId: 'user-other-scope',
+      scopeType: 'user',
+    });
+    expect(other.status).toBe('active');
+
+    // Self-heal: objectExists=false finalizes the stranded deleting row, then hold works.
+    const healed = await holds.create({
+      createdBy: 'admin-hold',
+      objectExists: async () => false,
+      reason: 'self-heal then create',
+      scopeId: 'user-held-by-purge',
+      scopeType: 'user',
+    });
+    expect(healed.status).toBe('active');
+
+    const [done] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(done?.error?.purgeStorageKey).toBeFalsy();
+    expect(done?.error?.purgeStatus).toBeFalsy();
+  });
+
+  it('R2: recordArtifactUploadIntent appends keys — attempt rebind retains both for purge', async () => {
+    const created = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
+    await model.markRunning(created.id);
+    await model.bindPublicationAttempt(created.id, 'tok-a1');
+    await model.recordArtifactUploadIntent(created.id, 'attempts/job_1/evidence.ndjson', serverDB, {
+      attemptToken: 'tok-a1',
+    });
+    // Rebind to attempt 2 and record a new key — must not drop attempt 1.
+    await model.bindPublicationAttempt(created.id, 'tok-a2');
+    await model.recordArtifactUploadIntent(created.id, 'attempts/job_2/evidence.ndjson', serverDB, {
+      attemptToken: 'tok-a2',
+    });
+    const [row] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    const keys = [...(row?.error?.purgeStorageKeys ?? []), row?.error?.purgeStorageKey].filter(
+      Boolean,
+    );
+    expect(keys).toEqual(
+      expect.arrayContaining(['attempts/job_1/evidence.ndjson', 'attempts/job_2/evidence.ndjson']),
+    );
+
+    // Fail + purge both keys.
+    await model.fail(created.id, { code: 'EXPORT_FAILED' });
+    const pending = await model.listPendingArtifactPurges({ limit: 10 });
+    expect(pending.some((p) => p.id === created.id)).toBe(true);
+
+    const result = await model.purgeArtifactObjectsUnderHoldLock([created.id], {
+      deleteObject: async () => undefined,
+      objectExists: async () => false,
+      resolveHeldIds: async () => new Set(),
+    });
+    expect(result.deleted).toBeGreaterThanOrEqual(1);
+    const [after] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(after?.error?.purgeStorageKey).toBeFalsy();
+    expect(after?.error?.purgeStorageKeys?.length ?? 0).toBe(0);
+  });
+
+  it('SAO-002 R1: complete() retains orphan attempt-1 key after crash-retry success', async () => {
+    // Attempt 1 intent → rebind + attempt 2 intent → attempt 2 completes.
+    // Attempt 1 object must stay purge-tracked and be drained (not wiped by error:null).
+    const created = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
+    await model.markRunning(created.id);
+    await model.bindPublicationAttempt(created.id, 'tok-a1');
+    await model.recordArtifactUploadIntent(created.id, 'attempts/job_1/evidence.ndjson', serverDB, {
+      attemptToken: 'tok-a1',
+    });
+    await model.bindPublicationAttempt(created.id, 'tok-a2');
+    await model.recordArtifactUploadIntent(created.id, 'attempts/job_2/evidence.ndjson', serverDB, {
+      attemptToken: 'tok-a2',
+    });
+
+    const completed = await model.complete(created.id, {
+      artifactBytes: 12,
+      artifactChecksum: 'sha256:deadbeef',
+      attemptToken: 'tok-a2',
+      expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+      storageKey: 'attempts/job_2/evidence.ndjson',
+    });
+    expect(completed?.status).toBe('completed');
+    expect(completed?.storageKey).toBe('attempts/job_2/evidence.ndjson');
+    // Published key is live; orphan attempt-1 remains on the outbox.
+    expect(completed?.error?.purgeStorageKeys).toEqual(['attempts/job_1/evidence.ndjson']);
+    expect(completed?.error?.purgeStorageKey).toBe('attempts/job_1/evidence.ndjson');
+    expect(completed?.error?.purgeStatus).toBe('pending');
+    expect(completed?.error?.attemptToken).toBeUndefined();
+
+    const pending = await model.listPendingArtifactPurges({ limit: 20 });
+    const mine = pending.filter((p) => p.id === created.id);
+    expect(mine.length).toBeGreaterThanOrEqual(1);
+    expect(mine.map((p) => p.storageKey)).toContain('attempts/job_1/evidence.ndjson');
+    // Live published key must not be scheduled for purge.
+    expect(mine.map((p) => p.storageKey)).not.toContain('attempts/job_2/evidence.ndjson');
+
+    const deletedKeys: string[] = [];
+    const result = await model.purgeArtifactObjectsUnderHoldLock([created.id], {
+      deleteObject: async (key) => {
+        deletedKeys.push(key);
+      },
+      objectExists: async () => false,
+      resolveHeldIds: async () => new Set(),
+    });
+    expect(result.deleted).toBeGreaterThanOrEqual(1);
+    expect(deletedKeys).toContain('attempts/job_1/evidence.ndjson');
+    expect(deletedKeys).not.toContain('attempts/job_2/evidence.ndjson');
+
+    const [after] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(after?.status).toBe('completed');
+    expect(after?.storageKey).toBe('attempts/job_2/evidence.ndjson');
+    expect(after?.error?.purgeStorageKey).toBeFalsy();
+    expect(after?.error?.purgeStorageKeys?.length ?? 0).toBe(0);
+  });
+
+  it('fencing: complete with wrong attemptToken returns undefined (no publication)', async () => {
+    const created = await model.create({ kind: 'operation_logs', requestedBy: 'admin-1' });
+    await model.markRunning(created.id);
+    await model.bindPublicationAttempt(created.id, 'owner-token');
+    const lost = await model.complete(created.id, {
+      artifactChecksum: 'sha256:x',
+      attemptToken: 'loser-token',
+      expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+      storageKey: 'loser-key',
+    });
+    expect(lost).toBeUndefined();
+    const won = await model.complete(created.id, {
+      artifactChecksum: 'sha256:x',
+      attemptToken: 'owner-token',
+      expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+      storageKey: 'winner-key',
+    });
+    expect(won?.status).toBe('completed');
+    expect(won?.storageKey).toBe('winner-key');
   });
 });

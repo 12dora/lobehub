@@ -88,6 +88,13 @@ export const topics = pgTable(
     index('topics_id_user_id_idx').on(t.id, t.userId),
     // Audit conversation listTopics: filter user_id, order by created_at DESC, id DESC.
     index('topics_user_id_created_at_id_idx').on(t.userId, t.createdAt, t.id),
+    // Retention scan: updated_at < cutoff, order by (updated_at, id) (DB-006).
+    // Partial: purgeable statuses + legacy NULL only.
+    index('topics_retention_updated_at_id_idx')
+      .on(t.updatedAt, t.id)
+      .where(
+        sql`${t.status} IS NULL OR ${t.status} IN ('active','completed','failed','archived','unread')`,
+      ),
     index('topics_session_id_idx').on(t.sessionId),
     index('topics_group_id_idx').on(t.groupId),
     index('topics_agent_id_idx').on(t.agentId),

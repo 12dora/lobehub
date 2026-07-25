@@ -16,6 +16,8 @@
  *
  * @vitest-environment node
  */
+import type { Readable } from 'node:stream';
+
 import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
@@ -281,5 +283,224 @@ run('audit export publication — true multi-connection PostgreSQL (F1/F12)', ()
     expect(successLogs.filter((l) => l.result === 'success').map((l) => l.targetId)).toContain(
       winner.id,
     );
+  });
+
+  it('SAO-001: cancel racing concurrent complete does not purge the winner artifact', async () => {
+    // Pause *inside* the service between pre-TX terminal check and cancel TX so the
+    // race hits the in-TX conflict branch (not the pre-TX short-circuit).
+    const { PlatformAuditExportModel } = await import('@/database/models/platform');
+    const exportsModel = new PlatformAuditExportModel(db);
+    const created = await exportsModel.create({
+      kind: 'operation_logs',
+      requestedBy: actor,
+    });
+    await exportsModel.markRunning(created.id, { jobId: null });
+    await exportsModel.bindPublicationAttempt(created.id, 'race-tok');
+    const key = `platform-audit-exports/${created.id}/attempts/race/evidence.ndjson`;
+    storage.objects.set(key, Buffer.from('{"type":"manifest"}\n'));
+
+    let releaseCancel!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      releaseCancel = resolve;
+    });
+
+    const cancelConn = workerDb();
+    const completeConn = workerDb();
+
+    const cancelPromise = (async () => {
+      const svc = new AdminAuditExportService(cancelConn, { storage });
+      try {
+        return await svc.cancel({
+          actorPermissions: ['platform_audit:export:all'],
+          actorUserId: actor,
+          beforeCancelTx: async () => {
+            // Service has confirmed status=running; pause so complete wins the race.
+            await hold;
+          },
+          input: { id: created.id, reason: 'stale cancel race' },
+        });
+      } catch (error) {
+        return error;
+      }
+    })();
+
+    // Wait until cancel is inside beforeCancelTx (status still running on cancel conn's read).
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Concurrent complete wins on a second connection.
+    await new PlatformAuditExportModel(completeConn).complete(created.id, {
+      artifactBytes: 20,
+      artifactChecksum: 'sha256:race',
+      attemptToken: 'race-tok',
+      expiresAt: new Date('2026-12-01T00:00:00.000Z'),
+      rowCount: 1,
+      storageKey: key,
+    });
+
+    releaseCancel();
+    const cancelResult = await cancelPromise;
+
+    // (i) storageKey unchanged (ii) object present
+    const [row] = await db
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(row?.status).toBe('completed');
+    expect(row?.storageKey).toBe(key);
+    expect(storage.objects.has(key)).toBe(true);
+
+    // Cancel must throw already-terminal (not a cancelled success projection).
+    expect(cancelResult).toBeTruthy();
+    if (cancelResult && typeof cancelResult === 'object' && 'status' in cancelResult) {
+      expect((cancelResult as { status: string }).status).not.toBe('cancelled');
+    }
+
+    // (iii) exactly one durable failure audit for cancel (must survive TX throw).
+    const cancelLogs = await db
+      .select()
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.action, 'admin.audit.exports.cancel'));
+    const failures = cancelLogs.filter((l) => l.result === 'failure');
+    expect(failures).toHaveLength(1);
+    expect(cancelLogs.some((l) => l.result === 'success')).toBe(false);
+  });
+
+  it('SAO-002: lease-race reclaim — loser deletes only own key; exactly one artifact remains', async () => {
+    const { processNextAuditExportJob } = await import('./exportWorker');
+    const { createHash } = await import('node:crypto');
+
+    await db.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      createdAt: new Date('2026-03-05T12:00:00.000Z'),
+      id: `op-lease-race-${Date.now()}`,
+      result: 'success',
+      targetType: 'settings',
+    });
+
+    const publisher = new AdminAuditExportService(db, { storage });
+    const created = await publisher.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'sao-002 lease race',
+        to: window.to,
+      },
+    });
+    const jobId = created.jobId!;
+
+    const leaseMs = 200;
+    let releaseUpload!: () => void;
+    const uploadHold = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    let aKey: string | undefined;
+
+    const connA = workerDb();
+    const connB = workerDb();
+
+    const wrapStorage = (uploadHoldMs?: Promise<void>) => ({
+      deleteObject: async (key: string) => {
+        storage.objects.delete(key);
+      },
+      getObjectMetadata: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return { contentLength: body.byteLength, contentType: 'application/x-ndjson' };
+      },
+      getSignedDownloadUrl: async (key: string) =>
+        `https://audit-export.test/signed/${encodeURIComponent(key)}`,
+      hashObject: async (key: string) => {
+        const body = storage.objects.get(key);
+        if (!body) throw new Error(`Object not found: ${key}`);
+        return {
+          artifactBytes: body.byteLength,
+          artifactChecksum: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+        };
+      },
+      listObjectKeysByPrefix: async (prefix: string) =>
+        [...storage.objects.keys()].filter((k) => k.startsWith(prefix)),
+      uploadArtifact: async (params: {
+        artifactChecksum?: string;
+        body: Buffer | Readable;
+        storageKey: string;
+      }) => {
+        if (uploadHoldMs) {
+          aKey = params.storageKey;
+          await uploadHoldMs;
+        }
+        const chunks: Buffer[] = [];
+        if (Buffer.isBuffer(params.body)) {
+          chunks.push(params.body);
+        } else {
+          for await (const c of params.body) {
+            chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+          }
+        }
+        const body = Buffer.concat(chunks);
+        storage.objects.set(params.storageKey, body);
+        const checksum =
+          params.artifactChecksum ?? `sha256:${createHash('sha256').update(body).digest('hex')}`;
+        return {
+          artifactBytes: body.byteLength,
+          artifactChecksum: checksum,
+          storageKey: params.storageKey,
+        };
+      },
+    });
+
+    // Worker A: blocks in upload longer than leaseMs so B can reclaim.
+    const workerA = processNextAuditExportJob(connA, {
+      leaseMs,
+      storage: wrapStorage(uploadHold),
+      workerId: 'worker-a-lease',
+    });
+
+    // Wait until A has entered upload (aKey set).
+    const deadline = Date.now() + 10_000;
+    while (!aKey && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(aKey).toBeTruthy();
+
+    // Expire lease so B can claim.
+    await db
+      .update(platformJobs)
+      .set({
+        leaseOwner: null,
+        leaseUntil: new Date(Date.now() - 1000),
+        status: 'pending',
+      })
+      .where(eq(platformJobs.id, jobId));
+
+    // Worker B completes on a second connection.
+    const resultB = await processNextAuditExportJob(connB, {
+      leaseMs: 60_000,
+      storage: wrapStorage(),
+      workerId: 'worker-b-lease',
+    });
+    expect(resultB.outcome).toBe('completed');
+
+    // Unblock A — loses fencing; deletes only its own key.
+    releaseUpload();
+    const resultA = await workerA;
+    expect(['skipped', 'cancelled', 'retry']).toContain(resultA.outcome);
+
+    const [row] = await db
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    expect(row?.status).toBe('completed');
+    expect(row?.storageKey).toBeTruthy();
+
+    // Exactly one object under platform-audit-exports/{exportId}/ equals storageKey.
+    const prefix = `platform-audit-exports/${created.id}/`;
+    const remaining = [...storage.objects.keys()].filter((k) => k.startsWith(prefix));
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toBe(row!.storageKey!);
+    // A must not have published its key as the winner.
+    if (aKey) expect(remaining[0]).not.toBe(aKey);
   });
 });

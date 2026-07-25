@@ -223,6 +223,19 @@ export class PlatformSkillCatalogModel {
     return row ? publishedView(row) : undefined;
   };
 
+  /** Batch exact-version resolution for dependency-graph frontiers. */
+  resolvePublishedVersionsExact = async (
+    references: readonly { skillKey: string; version: string }[],
+  ): Promise<Map<string, PlatformPublishedSkillView>> => {
+    const rows = await new PlatformSkillCatalogRepository(this.db).resolveVersionsExact(references);
+    const out = new Map<string, PlatformPublishedSkillView>();
+    for (const [key, row] of rows) {
+      const view = publishedView(row);
+      if (view) out.set(key, view);
+    }
+    return out;
+  };
+
   updateDraft = async (params: {
     actorUserId?: string;
     description?: string | null;

@@ -4,35 +4,33 @@
  * Builds NDJSON (manifest + evidence). Hard-fails if maxExportRows+1 would be written.
  * No generic redaction / summarization / body truncation; credential-only masking for messages.
  *
- * Evidence inventory is frozen under a PostgreSQL REPEATABLE READ snapshot (plus an
- * export-start watermark on `to`) so concurrent inserts/updates/deletes cannot reshape
- * the eligible ID set mid-export. Full rows are then streamed by frozen ID batches with
- * heartbeats outside the snapshot TX (avoids single-connection deadlocks). NDJSON lines
- * stream to a temp file with incremental SHA-256 — O(batch) memory during write, not a
- * million-element in-memory line buffer.
+ * Evidence is materialised under a PostgreSQL REPEATABLE READ snapshot (plus an
+ * export-start watermark on `to`) into a staging temp file so concurrent mutations
+ * cannot reshape content after freeze. Staging lines are then copied into the
+ * artifact with heartbeats outside the snapshot TX. NDJSON streams to a temp file
+ * with incremental SHA-256 — O(batch) memory during write.
+ *
+ * Publication is a durable two-phase fenced state machine (SAO-001/002):
+ * each attempt binds a fencing token, uploads to an attempt-unique object key,
+ * renews the lease across remote I/O, and completes only if the token still owns
+ * the row. Losers never delete a key they do not own.
  *
  * Reliability: unknown/transient storage/DB errors requeue via platform_jobs (maxAttempts);
- * domain stays `running` and the deterministic object is cleaned. Domain is marked failed
- * only when the job becomes `dead`. Contract/data errors (max rows, invalid frozen filter)
- * are terminal immediately.
+ * domain stays `running` and only the attempt's own object is cleaned. Domain is marked
+ * failed only when the job becomes `dead`. Contract/data errors are terminal immediately.
+ * Terminal domain/job outcomes append a required audit event in the same DB transaction.
  */
 
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, type WriteStream } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { finished } from 'node:stream/promises';
 
-import { sql } from 'drizzle-orm';
-
 import {
-  maskAuditConversationEvidence,
-  PlatformAuditConversationModel,
-  type PlatformAuditExportFilterSnapshot,
   type PlatformAuditExportItem,
   PlatformAuditExportModel,
-  PlatformAuditLogModel,
   PlatformAuditPolicyModel,
   PlatformJobModel,
 } from '@/database/models/platform';
@@ -41,8 +39,8 @@ import type { LobeChatDatabase } from '@/database/type';
 import { assertConversationAccessEnabled } from './contentPolicy';
 import {
   AUDIT_EXPORT_ARTIFACT_VERSION,
-  AUDIT_EXPORT_BATCH_LIMIT,
   AUDIT_EXPORT_DEFAULT_LEASE_MS,
+  AUDIT_EXPORT_MAX_ARTIFACT_BYTES,
   parseAuditExportJobInput,
   PLATFORM_AUDIT_EXPORT_JOB_TYPE,
 } from './exportConstants';
@@ -50,14 +48,33 @@ import {
   AUDIT_EXPORT_CONTENT_TYPE,
   type AuditExportArtifactStorage,
   AuditExportPrivateS3Storage,
-  buildAuditExportStorageKey,
+  buildAuditExportAttemptStorageKey,
+  buildAuditExportAttemptToken,
   checksumsMatch,
   formatArtifactChecksum,
 } from './exportStorage';
+import {
+  AuditExportArtifactTooLargeError,
+  AuditExportCancelledError,
+  AuditExportInvalidFilterError,
+  AuditExportLeaseLostError,
+  AuditExportMaxRowsError,
+  isTerminalContractError,
+} from './exportWorkerErrors';
+import type { ExportTimeWindow } from './exportWorkerShared';
+import { jsonlLine, toIso } from './exportWorkerShared';
+import { materializeExportSnapshot, streamStagingIntoArtifact } from './exportWorkerSnapshot';
+import {
+  safeDeleteOwned,
+  terminalCancelExport,
+  terminalCompleteExport,
+  terminalFailExport,
+} from './exportWorkerTerminal';
 import { mapExportFailureCode } from './jobError';
 
-/** Defense-in-depth ceiling on artifact bytes while streaming (F10). */
-export const AUDIT_EXPORT_MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
+export { AUDIT_EXPORT_MAX_ARTIFACT_BYTES } from './exportConstants';
+export { AuditExportLeaseLostError, isTerminalContractError } from './exportWorkerErrors';
+export { jsonlLine, toIso } from './exportWorkerShared';
 
 export interface ProcessNextAuditExportOptions {
   /**
@@ -70,16 +87,34 @@ export interface ProcessNextAuditExportOptions {
     storageKey: string;
   }) => Promise<void> | void;
   /**
-   * Test seam: after domain `complete` succeeds, before `jobs.complete`.
-   * Used to simulate final-step lease loss without cancelling the domain.
+   * Test seam: after integrity checks + upload succeed, **before** the terminal
+   * domain/job/audit transaction (SAO-004). Stealing the lease here causes the
+   * whole terminal TX to roll back — domain stays non-completed for reclaim.
    */
   afterDomainComplete?: (info: { exportId: string; jobId: string }) => Promise<void> | void;
+  /**
+   * Test seam: inject the artifact write stream (SAO-006). Defaults to
+   * `createWriteStream(tmpPath)`. Used to prove async stream errors after
+   * `write()===true` follow the bounded failure path without process death.
+   */
+  createArtifactWriteStream?: (tmpPath: string) => NodeJS.WritableStream;
   leaseMs?: number;
   /**
    * Test seam: override the defense-in-depth byte ceiling (production keeps 256 MiB).
    * Used to prove streaming handles artifacts larger than a small injected cap path.
    */
   maxArtifactBytes?: number;
+  /**
+   * Test seam (SAO-005): every model method call during RR materialisation
+   * (real query-count proxy — catches reintroduced getTopic N+1).
+   */
+  onSnapshotModelCall?: (info: { method: string; model: string }) => void;
+  /**
+   * Test seam (SAO-005): observe each keyset page fetch during RR materialisation.
+   */
+  onSnapshotPageFetch?: (info: {
+    kind: 'operation_logs' | 'conversations_topics' | 'conversations_messages' | 'user_timeline';
+  }) => void;
   storage?: AuditExportArtifactStorage;
   workerId: string;
 }
@@ -90,51 +125,6 @@ export interface ProcessNextAuditExportResult {
   jobId?: string;
   outcome?: 'cancelled' | 'completed' | 'failed' | 'retry' | 'skipped';
 }
-
-/** Explicit domain/job cancellation only — never lease loss. */
-class AuditExportCancelledError extends Error {
-  constructor() {
-    super('AUDIT_EXPORT_CANCELLED');
-    this.name = 'AuditExportCancelledError';
-  }
-}
-
-/** Checkpoint returned null / lease owner changed — do not cancel domain or job. */
-export class AuditExportLeaseLostError extends Error {
-  constructor() {
-    super('AUDIT_EXPORT_LEASE_LOST');
-    this.name = 'AuditExportLeaseLostError';
-  }
-}
-
-/** Terminal contract error: export exceeds frozen maxExportRows. */
-class AuditExportMaxRowsError extends Error {
-  constructor(public readonly maxExportRows: number) {
-    super('AUDIT_EXPORT_MAX_ROWS_EXCEEDED');
-    this.name = 'AuditExportMaxRowsError';
-  }
-}
-
-/** Terminal contract error: frozen filter snapshot is invalid for the export kind. */
-class AuditExportInvalidFilterError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AuditExportInvalidFilterError';
-  }
-}
-
-/** Terminal: streamed artifact exceeds the hard byte cap (F10). */
-class AuditExportArtifactTooLargeError extends Error {
-  constructor() {
-    super('AUDIT_EXPORT_ARTIFACT_TOO_LARGE');
-    this.name = 'AuditExportArtifactTooLargeError';
-  }
-}
-
-const isTerminalContractError = (error: unknown): boolean =>
-  error instanceof AuditExportMaxRowsError ||
-  error instanceof AuditExportInvalidFilterError ||
-  error instanceof AuditExportArtifactTooLargeError;
 
 /** Align with adminAuditPolicyUpdateInputSchema max bounds. */
 const FROZEN_MAX_EXPORT_ROWS_BOUND = 1_000_000;
@@ -186,16 +176,7 @@ const resolveFrozenPositiveInt = (
   return snapshot;
 };
 
-type ExportTimeWindow = { from: Date; to: Date };
-
-const jsonlLine = (row: Record<string, unknown>): string => `${JSON.stringify(row)}\n`;
-
-const toIso = (value: Date | string | null | undefined): string | null => {
-  if (value == null) return null;
-  if (value instanceof Date) return value.toISOString();
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-};
+export type { ExportTimeWindow } from './exportWorkerShared';
 
 /**
  * Claim and process at most one audit export job.
@@ -230,7 +211,9 @@ export const processNextAuditExportJob = async (
   }
 
   const exportId = parsedInput.exportId;
-  const storageKey = buildAuditExportStorageKey(exportId);
+  // Fenced attempt identity — unique object key + complete() condition.
+  const attemptToken = buildAuditExportAttemptToken(claimed.id, claimed.attempt);
+  const storageKey = buildAuditExportAttemptStorageKey(exportId, attemptToken);
 
   try {
     const exportRow = await exportsModel.get(exportId);
@@ -245,8 +228,20 @@ export const processNextAuditExportJob = async (
     }
 
     if (exportRow.status === 'cancelled') {
-      await jobs.cancel(claimed.id);
-      await safeDelete(storage, storageKey, exportsModel, exportId);
+      await terminalCancelExport(db, {
+        exportId,
+        jobId: claimed.id,
+        requestedBy: exportRow.requestedBy,
+        workerId: options.workerId,
+      });
+      // Only purge keys we know about from the cancelled row — never a winner's key.
+      const knownKey =
+        exportRow.storageKey ||
+        (exportRow.error as { purgeStorageKey?: string } | null)?.purgeStorageKey ||
+        null;
+      if (knownKey) {
+        await safeDeleteOwned(storage, knownKey, exportsModel, exportId);
+      }
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
     }
 
@@ -274,6 +269,18 @@ export const processNextAuditExportJob = async (
       await exportsModel.markRunning(exportId, { jobId: claimed.id });
     }
 
+    // Bind fencing token before any long work so concurrent reclaim cannot publish.
+    const bound = await exportsModel.bindPublicationAttempt(exportId, attemptToken);
+    if (!bound) {
+      // Concurrent cancel/complete between read and bind.
+      const current = await exportsModel.get(exportId);
+      if (current?.status === 'cancelled') {
+        await jobs.cancel(claimed.id);
+        return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
+      }
+      throw new AuditExportLeaseLostError();
+    }
+
     // Live policy only as fallback for legacy rows missing frozen caps.
     const livePolicy = await new PlatformAuditPolicyModel(db).getOrCreate();
     // Conversation surfaces: recheck kill-switch before reading evidence (F3).
@@ -281,11 +288,11 @@ export const processNextAuditExportJob = async (
       try {
         assertConversationAccessEnabled(livePolicy.contentAccessMode);
       } catch {
-        // Domain stores code-only for public projection compliance (F3).
-        await exportsModel.fail(exportId, { code: 'CONTENT_ACCESS_DISABLED' });
-        await jobs.fail({
-          error: { code: 'CONTENT_ACCESS_DISABLED' },
+        await terminalFailExport(db, {
+          code: 'CONTENT_ACCESS_DISABLED',
+          exportId,
           jobId: claimed.id,
+          requestedBy: exportRow.requestedBy,
           terminal: true,
           workerId: options.workerId,
         });
@@ -320,13 +327,28 @@ export const processNextAuditExportJob = async (
     // Stream NDJSON to a temp file (bounded memory: one line / batch, not 1M rows).
     const tmpDir = await mkdtemp(path.join(tmpdir(), 'audit-export-'));
     const tmpPath = path.join(tmpDir, 'evidence.ndjson');
+    const stagingPath = path.join(tmpDir, 'snapshot.ndjson');
     let lineCount = 0;
     let totalBytes = 0;
     let evidenceCount = 0;
     const hasher = createHash('sha256');
-    const fileStream = createWriteStream(tmpPath, { flags: 'w' });
+    const fileStream = (
+      options.createArtifactWriteStream
+        ? options.createArtifactWriteStream(tmpPath)
+        : createWriteStream(tmpPath, { flags: 'w' })
+    ) as WriteStream;
+    // SAO-006: record stream errors immediately — never rethrow into an unhandled
+    // rejection while the worker awaits materialization / other macrotasks.
+    // Premature close from intentional destroy() in finally is expected.
+    let fileClosedIntentionally = false;
+    let streamError: Error | null = null;
+    const fileFinished = finished(fileStream).catch((err: NodeJS.ErrnoException) => {
+      if (fileClosedIntentionally && err?.code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+      streamError = err instanceof Error ? err : new Error(String(err));
+    });
 
     const writeLine = async (line: string) => {
+      if (streamError) throw streamError;
       const buf = Buffer.from(line, 'utf8');
       hasher.update(buf);
       totalBytes += buf.byteLength;
@@ -334,18 +356,33 @@ export const processNextAuditExportJob = async (
         throw new AuditExportArtifactTooLargeError();
       }
       lineCount += 1;
-      if (!fileStream.write(buf)) {
+      const ok = fileStream.write(buf);
+      if (!ok) {
         await new Promise<void>((resolve, reject) => {
-          fileStream.once('drain', () => resolve());
-          fileStream.once('error', reject);
+          const onDrain = () => {
+            fileStream.off('error', onError);
+            resolve();
+          };
+          const onError = (err: Error) => {
+            fileStream.off('drain', onDrain);
+            reject(err);
+          };
+          fileStream.once('drain', onDrain);
+          fileStream.once('error', onError);
         });
       }
+      if (streamError) throw streamError;
     };
 
     const assertNotCancelled = async () => {
       const current = await exportsModel.get(exportId);
       if (!current || current.status === 'cancelled') {
         throw new AuditExportCancelledError();
+      }
+      // Fencing: if another attempt rebound the token, stop without cancelling.
+      const boundToken = (current.error as { attemptToken?: string } | null)?.attemptToken;
+      if (boundToken && boundToken !== attemptToken) {
+        throw new AuditExportLeaseLostError();
       }
       const job = await jobs.findById(claimed.id);
       if (!job || job.status === 'cancelled') {
@@ -364,7 +401,7 @@ export const processNextAuditExportJob = async (
     };
 
     let completedRow: Awaited<ReturnType<PlatformAuditExportModel['complete']>> | null = null;
-    let uploadedBytes = 0;
+    const requestedBy = exportRow.requestedBy;
 
     try {
       await assertNotCancelled();
@@ -385,53 +422,48 @@ export const processNextAuditExportJob = async (
         }),
       );
 
-      const pushEvidence = async (row: Record<string, unknown>) => {
-        evidenceCount += 1;
-        if (evidenceCount > maxExportRows) {
-          throw new AuditExportMaxRowsError(maxExportRows);
-        }
-        await writeLine(jsonlLine(row));
-      };
-
-      // Phase 1: freeze eligible IDs under one RR snapshot (no outer-db heartbeats —
-      // single-connection test DBs deadlock if lease checks run while the TX holds
-      // the only connection). Phase 2 streams full rows by frozen ID with heartbeats.
-      const inventory = await freezeExportInventory(db, {
+      // Phase 1: materialise immutable evidence under one RR snapshot into staging
+      // (SAO-003). Heartbeats must NOT run against the outer connection while this
+      // TX is open (single-connection engines deadlock).
+      const snapshot = await materializeExportSnapshot(db, {
         filter,
         includeBodies: exportRow.includesMessageBodies,
         kind: exportRow.kind,
         maxExportRows,
+        onModelCall: options.onSnapshotModelCall,
+        onPageFetch: options.onSnapshotPageFetch,
+        stagingPath,
         window: snapshotWindow,
       });
+      evidenceCount = snapshot.evidenceCount;
 
       await assertNotCancelled();
 
-      if (inventory.kind === 'operation_logs') {
-        await streamOperationLogsByIds(db, inventory.ids, pushEvidence, assertNotCancelled);
-      } else if (inventory.kind === 'conversations') {
-        await streamConversationsByInventory(db, inventory, pushEvidence, assertNotCancelled);
-      } else {
-        await streamUserTimelineByIds(
-          db,
-          inventory.userId,
-          inventory.ids,
-          pushEvidence,
-          assertNotCancelled,
-        );
-      }
+      // Phase 2: stream frozen staging lines into the artifact with heartbeats
+      // and batched copy (SAO-005 — no live N+1 re-reads).
+      await streamStagingIntoArtifact(stagingPath, writeLine, assertNotCancelled);
 
       await assertNotCancelled();
+      if (streamError) throw streamError;
       fileStream.end();
-      await finished(fileStream);
+      await fileFinished;
+      if (streamError) throw streamError;
 
       // Incremental digest from the write path — never re-buffer the temp file (F10).
       const localChecksum = formatArtifactChecksum(hasher.digest('hex'));
 
-      // F6: durable cleanup intent before the object may exist. claimNext can
-      // dead-letter a lease-expired final attempt without invoking worker cleanup.
-      await exportsModel.recordArtifactUploadIntent(exportId, storageKey);
+      // Renew lease before long remote I/O (upload / metadata / hash) — SAO-002.
+      await assertNotCancelled();
 
-      // Stream upload: createReadStream + precomputed checksum (bounded memory).
+      // F6: durable cleanup intent for THIS attempt key only, fenced by attemptToken.
+      const intentOk = await exportsModel.recordArtifactUploadIntent(exportId, storageKey, db, {
+        attemptToken,
+      });
+      if (!intentOk) {
+        throw new AuditExportLeaseLostError();
+      }
+
+      await assertNotCancelled();
       const uploaded = await storage.uploadArtifact({
         artifactChecksum: localChecksum,
         body: createReadStream(tmpPath),
@@ -439,28 +471,30 @@ export const processNextAuditExportJob = async (
         contentType: AUDIT_EXPORT_CONTENT_TYPE,
         storageKey,
       });
-      uploadedBytes = uploaded.artifactBytes;
+      await assertNotCancelled();
 
       // Integrity: size + streaming SHA-256 — same-length corruption must fail closed.
       if (!checksumsMatch(uploaded.artifactChecksum, localChecksum)) {
-        await safeDelete(storage, storageKey);
+        await safeDeleteOwned(storage, storageKey);
         throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
       }
       if (uploaded.artifactBytes !== totalBytes) {
-        await safeDelete(storage, storageKey);
+        await safeDeleteOwned(storage, storageKey);
         throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
       }
+      await assertNotCancelled();
       const meta = await storage.getObjectMetadata(storageKey);
       if (meta.contentLength !== uploaded.artifactBytes || meta.contentLength !== totalBytes) {
-        await safeDelete(storage, storageKey);
+        await safeDeleteOwned(storage, storageKey);
         throw new Error('AUDIT_EXPORT_SIZE_MISMATCH');
       }
+      await assertNotCancelled();
       const storedHash = await storage.hashObject(storageKey);
       if (
         storedHash.artifactBytes !== totalBytes ||
         !checksumsMatch(storedHash.artifactChecksum, uploaded.artifactChecksum)
       ) {
-        await safeDelete(storage, storageKey);
+        await safeDeleteOwned(storage, storageKey);
         throw new Error('AUDIT_EXPORT_CHECKSUM_MISMATCH');
       }
 
@@ -472,60 +506,73 @@ export const processNextAuditExportJob = async (
         });
       }
 
+      await assertNotCancelled();
+
       const expiresAt = new Date(
         Date.now() + Math.max(1, exportArtifactRetentionDays) * 24 * 60 * 60 * 1000,
       );
 
-      completedRow = await exportsModel.complete(exportId, {
+      // Fenced transactional publication + required audit (SAO-002 / SAO-004).
+      completedRow = await terminalCompleteExport(db, {
+        afterDomainComplete: options.afterDomainComplete
+          ? async () => {
+              await options.afterDomainComplete!({ exportId, jobId: claimed.id });
+            }
+          : undefined,
         artifactBytes: uploaded.artifactBytes,
         artifactChecksum: uploaded.artifactChecksum,
+        attemptToken,
+        evidenceCount,
+        exportId,
         expiresAt,
-        rowCount: evidenceCount,
+        jobId: claimed.id,
+        requestedBy,
         storageKey: uploaded.storageKey,
+        workerId: options.workerId,
       });
     } finally {
-      fileStream.destroy();
+      fileClosedIntentionally = true;
+      if (!fileStream.destroyed) {
+        fileStream.destroy();
+      }
+      await fileFinished.catch(() => undefined);
       await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     }
 
     if (!completedRow) {
-      // Race with cancel — clean object (durable outbox if S3 delete fails)
-      await safeDelete(storage, storageKey, exportsModel, exportId);
+      // Lost race: cancel or another fenced attempt won. Never purge a completed
+      // row's published key — only delete our attempt-unique object (SAO-002).
+      const current = await exportsModel.get(exportId);
+      if (current?.status === 'completed') {
+        if (current.storageKey !== storageKey) {
+          await safeDeleteOwned(storage, storageKey);
+        }
+        await jobs.cancel(claimed.id);
+        return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
+      }
+      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
       await jobs.cancel(claimed.id);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
-    }
-
-    if (options.afterDomainComplete) {
-      await options.afterDomainComplete({ exportId, jobId: claimed.id });
-    }
-
-    const jobDone = await jobs.complete({
-      jobId: claimed.id,
-      resultSummary: {
-        artifactBytes: uploadedBytes,
-        exportId,
-        rowCount: evidenceCount,
-      },
-      workerId: options.workerId,
-    });
-    if (!jobDone) {
-      // Domain already terminal-completed; lease ownership lost — do not report clean
-      // completion, cancel, or delete the object (reclaiming owner finishes platform job).
-      return { claimed: true, exportId, jobId: claimed.id, outcome: 'skipped' };
     }
 
     return { claimed: true, exportId, jobId: claimed.id, outcome: 'completed' };
   } catch (error) {
     if (error instanceof AuditExportLeaseLostError) {
       // Lease loss is NOT user cancellation — leave domain + platform job as-is for reclaim.
-      // Do not touch storage: a reclaiming worker uses the same deterministic key.
+      // Best-effort delete of our attempt key only (never the published winner).
+      await safeDeleteOwned(storage, storageKey);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'skipped' };
     }
 
     if (error instanceof AuditExportCancelledError) {
-      await exportsModel.cancel(exportId);
-      await jobs.cancel(claimed.id);
-      await safeDelete(storage, storageKey, exportsModel, exportId);
+      const exportRow = await exportsModel.get(exportId);
+      await terminalCancelExport(db, {
+        exportId,
+        jobId: claimed.id,
+        requestedBy: exportRow?.requestedBy ?? 'system',
+        workerId: options.workerId,
+      });
+      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'cancelled' };
     }
 
@@ -540,23 +587,25 @@ export const processNextAuditExportJob = async (
             : mapExportFailureCode(error)
       : mapExportFailureCode(error);
 
+    const exportRow = await exportsModel.get(exportId);
+    const requestedBy = exportRow?.requestedBy ?? 'system';
+
     if (isTerminalContractError(error)) {
-      // Terminal first so purge outbox can attach to failed status (F6).
-      // Code-only domain error; outbox may add purgeStorageKey internally.
-      await exportsModel.fail(exportId, { code });
-      await safeDelete(storage, storageKey, exportsModel, exportId);
-      await jobs.fail({
-        error: { code },
+      await terminalFailExport(db, {
+        code,
+        exportId,
         jobId: claimed.id,
+        requestedBy,
         terminal: true,
         workerId: options.workerId,
       });
+      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
     }
 
     // Transient / unknown: requeue job (or dead when maxAttempts exhausted).
-    // Best-effort object clean only — domain still running, no durable purge outbox.
-    await safeDelete(storage, storageKey);
+    // Best-effort delete of attempt key only — domain still running.
+    await safeDeleteOwned(storage, storageKey);
 
     const failedJob = await jobs.fail({
       error: { code },
@@ -565,8 +614,17 @@ export const processNextAuditExportJob = async (
     });
 
     if (failedJob?.status === 'dead') {
-      await exportsModel.fail(exportId, { code });
-      await safeDelete(storage, storageKey, exportsModel, exportId);
+      await terminalFailExport(db, {
+        code,
+        exportId,
+        jobId: claimed.id,
+        requestedBy,
+        terminal: true,
+        workerId: options.workerId,
+        // Job already dead — do not re-fail the job inside terminalFailExport.
+        skipJobFail: true,
+      });
+      await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
     }
 
@@ -574,353 +632,7 @@ export const processNextAuditExportJob = async (
   }
 };
 
-/**
- * Object delete with durable purge outbox when domain is terminal (F6).
- * Outbox persistence is **required** before relying on best-effort S3 delete —
- * never swallow enqueue failures (orphaned objects would be unrecoverable).
- */
-const safeDelete = async (
-  storage: AuditExportArtifactStorage,
-  storageKey: string,
-  exportsModel?: PlatformAuditExportModel,
-  exportId?: string,
-): Promise<void> => {
-  if (exportsModel && exportId) {
-    // Required cleanup intent — must not be swallowed.
-    await exportsModel.enqueueArtifactObjectPurge(exportId, storageKey);
-  }
-  try {
-    await storage.deleteObject(storageKey);
-    if (exportsModel && exportId) {
-      await exportsModel.completeArtifactObjectDelete(exportId);
-    }
-  } catch {
-    // Leave purge outbox for retention recovery. Re-assert outbox if complete failed mid-flight.
-    if (exportsModel && exportId) {
-      await exportsModel.enqueueArtifactObjectPurge(exportId, storageKey);
-    }
-  }
-};
-
-type EvidencePush = (row: Record<string, unknown>) => void | Promise<void>;
-
-type FrozenOpLogInventory = { kind: 'operation_logs'; ids: string[] };
-type FrozenConversationInventory = {
-  includeBodies: boolean;
-  kind: 'conversations';
-  topics: Array<{ id: string; messageIds: string[] }>;
-  userId: string;
-};
-type FrozenTimelineInventory = { kind: 'user_timeline'; ids: string[]; userId: string };
-type FrozenExportInventory =
-  FrozenOpLogInventory | FrozenConversationInventory | FrozenTimelineInventory;
-
-/**
- * Materialize eligible evidence IDs under one REPEATABLE READ snapshot.
- * Heartbeats must NOT run against the outer connection while this TX is open
- * (single-connection engines like PGlite would deadlock).
- */
-const freezeExportInventory = async (
-  db: LobeChatDatabase,
-  params: {
-    filter: PlatformAuditExportFilterSnapshot;
-    includeBodies: boolean;
-    kind: PlatformAuditExportItem['kind'];
-    maxExportRows: number;
-    window: ExportTimeWindow;
-  },
-): Promise<FrozenExportInventory> => {
-  return db.transaction(async (tx) => {
-    // First statement after BEGIN — required for SET TRANSACTION.
-    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
-    const snap = tx as unknown as LobeChatDatabase;
-
-    if (params.kind === 'operation_logs') {
-      const model = new PlatformAuditLogModel(snap);
-      const ids: string[] = [];
-      let cursor: string | undefined;
-      for (;;) {
-        const page = await model.list({
-          action: params.filter.action,
-          actions: params.filter.actions,
-          actorUserId: params.filter.actorUserId,
-          cursor,
-          from: params.window.from,
-          limit: AUDIT_EXPORT_BATCH_LIMIT,
-          requestId: params.filter.requestId,
-          result: params.filter.result,
-          results: params.filter.results,
-          targetId: params.filter.targetId,
-          targetType: params.filter.targetType,
-          to: params.window.to,
-        });
-        for (const row of page.items) {
-          ids.push(row.id);
-          if (ids.length > params.maxExportRows) {
-            throw new AuditExportMaxRowsError(params.maxExportRows);
-          }
-        }
-        if (!page.nextCursor) break;
-        cursor = page.nextCursor;
-      }
-      return { kind: 'operation_logs', ids };
-    }
-
-    if (params.kind === 'conversations') {
-      const userId = params.filter.userId;
-      if (!userId) {
-        throw new AuditExportInvalidFilterError(
-          'userId required in frozen filter for conversations export',
-        );
-      }
-      const model = new PlatformAuditConversationModel(snap);
-      const topics: FrozenConversationInventory['topics'] = [];
-      let evidenceRows = 0;
-      let topicCursor: string | undefined;
-
-      for (;;) {
-        const topicPage = await model.listTopics({
-          cursor: topicCursor,
-          from: params.window.from,
-          limit: AUDIT_EXPORT_BATCH_LIMIT,
-          q: params.filter.q,
-          to: params.window.to,
-          userId,
-        });
-
-        for (const topic of topicPage.items) {
-          if (params.filter.topicId && topic.id !== params.filter.topicId) continue;
-          evidenceRows += 1;
-          if (evidenceRows > params.maxExportRows) {
-            throw new AuditExportMaxRowsError(params.maxExportRows);
-          }
-
-          const messageIds: string[] = [];
-          if (params.includeBodies) {
-            let msgCursor: string | undefined;
-            for (;;) {
-              // Metadata list only — freeze IDs, not bodies, under the snapshot.
-              const msgPage = await model.listMessages({
-                cursor: msgCursor,
-                from: params.window.from,
-                limit: AUDIT_EXPORT_BATCH_LIMIT,
-                to: params.window.to,
-                topicId: topic.id,
-                userId,
-              });
-              for (const msg of msgPage.items) {
-                messageIds.push(msg.id);
-                evidenceRows += 1;
-                if (evidenceRows > params.maxExportRows) {
-                  throw new AuditExportMaxRowsError(params.maxExportRows);
-                }
-              }
-              if (!msgPage.nextCursor) break;
-              msgCursor = msgPage.nextCursor;
-            }
-          }
-          topics.push({ id: topic.id, messageIds });
-        }
-
-        if (!topicPage.nextCursor) break;
-        topicCursor = topicPage.nextCursor;
-      }
-
-      return { includeBodies: params.includeBodies, kind: 'conversations', topics, userId };
-    }
-
-    // user_timeline
-    const userId = params.filter.userId;
-    if (!userId) {
-      throw new AuditExportInvalidFilterError(
-        'userId required in frozen filter for user_timeline export',
-      );
-    }
-    const model = new PlatformAuditConversationModel(snap);
-    const ids: string[] = [];
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await model.listUserTimeline({
-        cursor,
-        from: params.window.from,
-        limit: AUDIT_EXPORT_BATCH_LIMIT,
-        to: params.window.to,
-        userId,
-      });
-      for (const item of page.items) {
-        ids.push(item.id);
-        if (ids.length > params.maxExportRows) {
-          throw new AuditExportMaxRowsError(params.maxExportRows);
-        }
-      }
-      if (!page.nextCursor) break;
-      cursor = page.nextCursor;
-    }
-    return { kind: 'user_timeline', ids, userId };
-  });
-};
-
-const streamOperationLogsByIds = async (
-  db: LobeChatDatabase,
-  ids: string[],
-  push: EvidencePush,
-  heartbeat: () => Promise<void>,
-): Promise<void> => {
-  const model = new PlatformAuditLogModel(db);
-  for (let i = 0; i < ids.length; i += AUDIT_EXPORT_BATCH_LIMIT) {
-    await heartbeat();
-    const batch = ids.slice(i, i + AUDIT_EXPORT_BATCH_LIMIT);
-    for (const id of batch) {
-      const row = await model.findById(id);
-      if (!row) continue; // deleted after snapshot — omit rather than fail the package
-      await push({
-        action: row.action,
-        actorUserId: row.actorUserId,
-        afterDiff: row.afterDiff,
-        beforeDiff: row.beforeDiff,
-        configRevision: row.configRevision,
-        createdAt: toIso(row.createdAt),
-        id: row.id,
-        ipHash: row.ipHash,
-        reason: row.reason,
-        requestId: row.requestId,
-        result: row.result,
-        targetId: row.targetId,
-        targetType: row.targetType,
-        type: 'operation_log',
-        userAgent: row.userAgent,
-      });
-    }
-  }
-};
-
-const streamConversationsByInventory = async (
-  db: LobeChatDatabase,
-  inventory: FrozenConversationInventory,
-  push: EvidencePush,
-  heartbeat: () => Promise<void>,
-): Promise<void> => {
-  const model = new PlatformAuditConversationModel(db);
-  for (const topicRef of inventory.topics) {
-    await heartbeat();
-    const topic = await model.getTopic({ topicId: topicRef.id, userId: inventory.userId });
-    if (!topic) continue;
-
-    await push({
-      agentId: topic.agentId,
-      createdAt: toIso(topic.createdAt),
-      description:
-        topic.description == null ? null : maskAuditConversationEvidence(topic.description),
-      id: topic.id,
-      model: topic.model,
-      provider: topic.provider,
-      sessionId: topic.sessionId,
-      status: topic.status,
-      title: topic.title == null ? null : maskAuditConversationEvidence(topic.title),
-      type: 'conversation_topic',
-      updatedAt: toIso(topic.updatedAt),
-      userId: topic.userId,
-    });
-
-    if (!inventory.includeBodies) continue;
-
-    for (let i = 0; i < topicRef.messageIds.length; i += AUDIT_EXPORT_BATCH_LIMIT) {
-      await heartbeat();
-      const batch = topicRef.messageIds.slice(i, i + AUDIT_EXPORT_BATCH_LIMIT);
-      for (const messageId of batch) {
-        const msg = await model.getMessage({ messageId, userId: inventory.userId });
-        if (!msg) continue;
-        await push({
-          agentId: msg.agentId,
-          content: msg.content == null ? null : maskAuditConversationEvidence(msg.content),
-          createdAt: toIso(msg.createdAt),
-          editorData: msg.editorData == null ? null : maskAuditConversationEvidence(msg.editorData),
-          error: msg.error == null ? null : maskAuditConversationEvidence(msg.error),
-          id: msg.id,
-          model: msg.model,
-          parentId: msg.parentId,
-          provider: msg.provider,
-          role: msg.role,
-          sessionId: msg.sessionId,
-          topicId: msg.topicId,
-          type: 'conversation_message',
-          updatedAt: toIso(msg.updatedAt),
-          userId: msg.userId,
-        });
-      }
-    }
-  }
-};
-
-const streamUserTimelineByIds = async (
-  db: LobeChatDatabase,
-  userId: string,
-  ids: string[],
-  push: EvidencePush,
-  heartbeat: () => Promise<void>,
-): Promise<void> => {
-  // Timeline rows are projected from topics/sessions; re-scan and emit only frozen IDs.
-  const model = new PlatformAuditConversationModel(db);
-  const wanted = new Set(ids);
-  let cursor: string | undefined;
-  let emitted = 0;
-
-  // Prefer topic get for topic-kind items; fall back to ordered re-scan filter.
-  for (const id of ids) {
-    await heartbeat();
-    const topic = await model.getTopic({ topicId: id, userId });
-    if (topic) {
-      await push({
-        createdAt: toIso(topic.createdAt),
-        id: topic.id,
-        kind: 'topic',
-        sessionId: topic.sessionId,
-        title: topic.title == null ? null : maskAuditConversationEvidence(topic.title),
-        topicId: topic.id,
-        type: 'user_timeline_item',
-        updatedAt: toIso(topic.updatedAt),
-        userId,
-      });
-      emitted += 1;
-      wanted.delete(id);
-    }
-  }
-
-  // Remaining IDs (sessions / other kinds) via listUserTimeline filter.
-  if (wanted.size === 0) return;
-
-  cursor = undefined;
-  for (;;) {
-    await heartbeat();
-    const page = await model.listUserTimeline({
-      cursor,
-      limit: AUDIT_EXPORT_BATCH_LIMIT,
-      userId,
-    });
-    for (const item of page.items) {
-      if (!wanted.has(item.id)) continue;
-      await push({
-        createdAt: toIso(item.createdAt),
-        id: item.id,
-        kind: item.kind,
-        sessionId: item.sessionId,
-        title: item.title == null ? null : maskAuditConversationEvidence(item.title),
-        topicId: item.topicId,
-        type: 'user_timeline_item',
-        updatedAt: toIso(item.updatedAt),
-        userId,
-      });
-      emitted += 1;
-      wanted.delete(item.id);
-    }
-    if (!page.nextCursor || wanted.size === 0) break;
-    cursor = page.nextCursor;
-  }
-
-  void emitted;
-};
-
-/** Process up to `batchLimit` jobs (for poller / tests). */
+/** Required append-only worker outcome (SAO-004). Fail closed when required. */
 export const runAuditExportBatches = async (
   db: LobeChatDatabase,
   params: {

@@ -148,11 +148,6 @@ run('audit retention lease — true multi-connection PostgreSQL (F12)', () => {
           inDelete -= 1;
         }
       },
-      getObjectBytes: async (key: string) => {
-        const body = storage.objects.get(key);
-        if (!body) throw new Error(`Object not found: ${key}`);
-        return Buffer.from(body);
-      },
       getObjectMetadata: async (key: string) => {
         const body = storage.objects.get(key);
         if (!body) throw new Error(`Object not found: ${key}`);

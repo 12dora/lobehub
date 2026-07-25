@@ -13,7 +13,12 @@
 import { createHash } from 'node:crypto';
 import type { Readable } from 'node:stream';
 
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 
 import { fileEnv } from '@/envs/file';
 import { S3 } from '@/server/modules/S3';
@@ -22,9 +27,39 @@ export const AUDIT_EXPORT_STORAGE_KEY_PREFIX = 'platform-audit-exports';
 export const AUDIT_EXPORT_ARTIFACT_FILENAME = 'evidence.ndjson';
 export const AUDIT_EXPORT_CONTENT_TYPE = 'application/x-ndjson';
 
-/** Deterministic private object key for idempotent retry of the same export. */
+/** Deterministic private object key (legacy; attempt-unique keys are preferred). */
 export const buildAuditExportStorageKey = (exportId: string): string =>
   `${AUDIT_EXPORT_STORAGE_KEY_PREFIX}/${exportId}/${AUDIT_EXPORT_ARTIFACT_FILENAME}`;
+
+/**
+ * Prefix under which all attempt-unique publication keys for an export live.
+ * Dead-letter reconcile / multi-attempt purge use this when individual keys are
+ * unknown — never the legacy deterministic filename (no attempt writes there).
+ */
+export const buildAuditExportAttemptsPrefix = (exportId: string): string =>
+  `${AUDIT_EXPORT_STORAGE_KEY_PREFIX}/${exportId}/attempts/`;
+
+/** True when a purge outbox entry is the attempts/ prefix (not a single object key). */
+export const isAuditExportAttemptsPrefix = (storageKey: string): boolean =>
+  storageKey.endsWith('/attempts/') || /\/attempts\/$/u.test(storageKey);
+
+/**
+ * Attempt-unique object key for fenced publication (SAO-002).
+ * Each worker attempt uploads to its own key; only the fenced `complete()` winner
+ * publishes that key onto the domain row. Losers delete only their own attempt key.
+ */
+export const buildAuditExportAttemptStorageKey = (
+  exportId: string,
+  attemptToken: string,
+): string => {
+  // Sanitize token for S3 key safety (jobId:attempt → jobId_attempt).
+  const safe = attemptToken.replaceAll(/[^\w.-]+/g, '_').slice(0, 128);
+  return `${AUDIT_EXPORT_STORAGE_KEY_PREFIX}/${exportId}/attempts/${safe}/${AUDIT_EXPORT_ARTIFACT_FILENAME}`;
+};
+
+/** Build a fencing token from platform_jobs claim identity. */
+export const buildAuditExportAttemptToken = (jobId: string, attempt: number): string =>
+  `${jobId}:${attempt}`;
 
 export interface AuditExportUploadResult {
   artifactBytes: number;
@@ -48,11 +83,6 @@ export type AuditExportUploadBody = Buffer | Readable;
 export interface AuditExportArtifactStorage {
   /** Best-effort delete (cancel / fail cleanup). */
   deleteObject: (storageKey: string) => Promise<void>;
-  /**
-   * Read full object bytes. Prefer {@link hashObject} for integrity checks so
-   * large artifacts are not fully buffered (F10). Kept for test fixtures.
-   */
-  getObjectBytes: (storageKey: string) => Promise<Buffer>;
   /** Head object for post-upload integrity check. */
   getObjectMetadata: (storageKey: string) => Promise<AuditExportObjectMetadata>;
   /**
@@ -62,9 +92,15 @@ export interface AuditExportArtifactStorage {
   getSignedDownloadUrl: (storageKey: string, expiresInSeconds: number) => Promise<string>;
   /**
    * Stream-hash object bytes (bounded memory). Same checksum semantics as
-   * `formatArtifactChecksum(sha256Hex(fullBuffer))`.
+   * `formatArtifactChecksum(sha256Hex(fullBuffer))`. Single integrity path (SAO-011).
    */
   hashObject: (storageKey: string) => Promise<AuditExportObjectHash>;
+  /**
+   * List object keys under a prefix (attempts/ purge fallback).
+   * Required for production S3 so a prefix outbox entry expands to real keys
+   * instead of a silent DeleteObject on a non-existent ".../attempts/" key.
+   */
+  listObjectKeysByPrefix?: (prefix: string) => Promise<string[]>;
   /**
    * Private upload of the NDJSON artifact.
    * Accepts a Buffer or a Readable stream. When streaming, pass `contentLength`
@@ -81,16 +117,6 @@ export interface AuditExportArtifactStorage {
     storageKey: string;
   }) => Promise<AuditExportUploadResult>;
 }
-
-/** Verify object bytes match the trusted `sha256:…` checksum stored on the export row. */
-export const verifyArtifactChecksum = (
-  body: Buffer,
-  expectedChecksum: string | null | undefined,
-): boolean => {
-  if (!expectedChecksum) return false;
-  const actual = formatArtifactChecksum(sha256Hex(body));
-  return actual === formatArtifactChecksum(expectedChecksum);
-};
 
 /** Compare two checksum strings after normalizing the `sha256:` prefix. */
 export const checksumsMatch = (
@@ -122,15 +148,6 @@ export const hashAsyncIterable = async (
     artifactBytes,
     artifactChecksum: formatArtifactChecksum(hasher.digest('hex')),
   };
-};
-
-/** Drain a Node Readable into a Buffer (tests / fallback only — not the hot path). */
-export const readableToBuffer = async (body: Readable): Promise<Buffer> => {
-  const chunks: Buffer[] = [];
-  for await (const chunk of body) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
 };
 
 /**
@@ -259,11 +276,6 @@ export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
     };
   };
 
-  getObjectBytes = async (storageKey: string): Promise<Buffer> => {
-    const bytes = await this.s3.getFileByteArray(storageKey);
-    return Buffer.from(bytes);
-  };
-
   hashObject = async (storageKey: string): Promise<AuditExportObjectHash> => {
     const { bucket, client } = this.getStreamBackend();
     const response = await client.send(
@@ -284,7 +296,40 @@ export class AuditExportPrivateS3Storage implements AuditExportArtifactStorage {
   };
 
   deleteObject = async (storageKey: string): Promise<void> => {
+    // Expand attempts/ prefixes — bare DeleteObject on a non-existent prefix key
+    // succeeds on S3 and would silently leave real attempt objects behind (SAO-002).
+    if (isAuditExportAttemptsPrefix(storageKey)) {
+      const keys = await this.listObjectKeysByPrefix(storageKey);
+      for (const key of keys) {
+        await this.s3.deleteFile(key);
+      }
+      return;
+    }
     await this.s3.deleteFile(storageKey);
+  };
+
+  /**
+   * ListObjectsV2 + pagination under `prefix`. Required so attempts/ prefix
+   * purges expand to real keys instead of DeleteObject-on-prefix (silent success).
+   */
+  listObjectKeysByPrefix = async (prefix: string): Promise<string[]> => {
+    const { bucket, client } = this.getStreamBackend();
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const response = await client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          ContinuationToken: continuationToken,
+          Prefix: prefix,
+        }),
+      );
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key) keys.push(obj.Key);
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return keys;
   };
 }
 
@@ -336,12 +381,6 @@ export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactSt
     return { contentLength: body.byteLength, contentType: AUDIT_EXPORT_CONTENT_TYPE };
   };
 
-  getObjectBytes = async (storageKey: string): Promise<Buffer> => {
-    const body = this.objects.get(storageKey);
-    if (!body) throw new Error(`Object not found: ${storageKey}`);
-    return Buffer.from(body);
-  };
-
   hashObject = async (storageKey: string): Promise<AuditExportObjectHash> => {
     const body = this.objects.get(storageKey);
     if (!body) throw new Error(`Object not found: ${storageKey}`);
@@ -365,6 +404,20 @@ export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactSt
   };
 
   deleteObject = async (storageKey: string): Promise<void> => {
+    if (isAuditExportAttemptsPrefix(storageKey)) {
+      for (const key of await this.listObjectKeysByPrefix(storageKey)) {
+        this.objects.delete(key);
+      }
+      return;
+    }
     this.objects.delete(storageKey);
+  };
+
+  listObjectKeysByPrefix = async (prefix: string): Promise<string[]> => {
+    const keys: string[] = [];
+    for (const key of this.objects.keys()) {
+      if (key.startsWith(prefix)) keys.push(key);
+    }
+    return keys;
   };
 }

@@ -5,12 +5,14 @@
  * Security: AUDIT_EXPORT alone never lists/gets/downloads/cancels conversation or
  * user_timeline exports (would bypass AUDIT_CONVERSATION_READ). Conversation kinds
  * require server-derived platformAuth permissions on every operation.
+ *
+ * Split (SAO-009): public DTO helpers live in exportServiceShared; cancel/download
+ * in sibling modules.
  */
 
-import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import {
-  type PlatformAuditExportFilterSnapshot,
   type PlatformAuditExportItem,
   type PlatformAuditExportKind,
   PlatformAuditExportModel,
@@ -36,97 +38,24 @@ import {
   parseAuditExportJobInput,
   PLATFORM_AUDIT_EXPORT_JOB_TYPE,
 } from './exportConstants';
+import { cancelExport } from './exportServiceCancel';
+import {
+  accessLogResultForError,
+  type ActorAuthParams,
+  CONVERSATION_EXPORT_KINDS,
+  freezeFilterSnapshot,
+  isConversationExportKind,
+  isDeniedError,
+  toExportPublic,
+} from './exportServiceShared';
 import {
   type AuditExportArtifactStorage,
   AuditExportPrivateS3Storage,
-  buildAuditExportStorageKey,
   checksumsMatch,
 } from './exportStorage';
-import { toPublicJobError } from './jobError';
 import { resolveAuditTimeWindow } from './timeWindow';
 
-const CONVERSATION_EXPORT_KINDS: readonly PlatformAuditExportKind[] = [
-  'conversations',
-  'user_timeline',
-];
-
-const isConversationExportKind = (kind: PlatformAuditExportKind | undefined): boolean =>
-  kind === 'conversations' || kind === 'user_timeline';
-
-const isDeniedError = (error: unknown): boolean => {
-  const code = getEnterpriseErrorBody(error)?.code;
-  return (
-    code === PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED ||
-    code === PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED ||
-    code === ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED ||
-    code === ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED ||
-    code === ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED
-  );
-};
-
-const accessLogResultForError = (error: unknown): 'denied' | 'failure' =>
-  isDeniedError(error) ? 'denied' : 'failure';
-
-/** Public projection — never includes storageKey or raw/purge error payloads. */
-export const toExportPublic = (row: PlatformAuditExportItem) => ({
-  artifactBytes: row.artifactBytes,
-  artifactChecksum: row.artifactChecksum,
-  createdAt: row.createdAt,
-  // Strict code-only DTO (F3/F5/F6) — drop message / purgeStorageKey.
-  error: toPublicJobError(row.error as { code?: string } | null, 'EXPORT_FAILED'),
-  expiresAt: row.expiresAt,
-  filterSnapshot: row.filterSnapshot ?? {},
-  finishedAt: row.finishedAt,
-  id: row.id,
-  includesMessageBodies: row.includesMessageBodies,
-  jobId: row.jobId,
-  kind: row.kind,
-  requestedBy: row.requestedBy,
-  rowCount: row.rowCount,
-  startedAt: row.startedAt,
-  status: row.status,
-  updatedAt: row.updatedAt,
-});
-
-const freezeFilterSnapshot = (
-  input: AdminAuditExportsCreateInputParsed,
-  window: { from: Date; to: Date },
-  policy: {
-    exportArtifactRetentionDays: number;
-    maxExportRows: number;
-    revision: number;
-  },
-): PlatformAuditExportFilterSnapshot => {
-  const snap: PlatformAuditExportFilterSnapshot = {
-    exportArtifactRetentionDays: policy.exportArtifactRetentionDays,
-    from: window.from.toISOString(),
-    maxExportRows: policy.maxExportRows,
-    policyRevision: policy.revision,
-    to: window.to.toISOString(),
-  };
-  if (input.kind === 'operation_logs') {
-    if (input.action) snap.action = input.action;
-    if (input.actions?.length) snap.actions = input.actions;
-    if (input.actorUserId) snap.actorUserId = input.actorUserId;
-    if (input.requestId) snap.requestId = input.requestId;
-    if (input.result) snap.result = input.result;
-    if (input.results?.length) snap.results = input.results;
-    if (input.targetId) snap.targetId = input.targetId;
-    if (input.targetType) snap.targetType = input.targetType;
-  }
-  if ((input.kind === 'conversations' || input.kind === 'user_timeline') && input.userId)
-    snap.userId = input.userId;
-  if (input.kind === 'conversations') {
-    if (input.q) snap.q = input.q;
-    if (input.topicId) snap.topicId = input.topicId;
-  }
-  return snap;
-};
-
-type ActorAuthParams = {
-  actorPermissions?: readonly string[];
-  actorUserId: string;
-};
+export { toExportPublic } from './exportServiceShared';
 
 export type AdminAuditExportServiceOptions = {
   /**
@@ -714,114 +643,17 @@ export class AdminAuditExportService {
     actorPermissions?: readonly string[];
     actorUserId: string;
     input: AdminAuditExportsCancelInput;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({});
-    try {
-      const existing = await this.exportsModel.get(params.input.id);
-      if (!existing) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.exports.cancel',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_found' },
-          filterSummary,
-          reason: params.input.reason,
-          result: 'failure',
-          targetId: params.input.id,
-          targetType: 'audit_export',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-
-      await this.assertConversationExportAccess(
-        { actorPermissions: params.actorPermissions, actorUserId: params.actorUserId },
-        existing.kind,
-      );
-
-      if (PlatformAuditExportModel.isTerminal(existing.status)) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.exports.cancel',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'already_terminal', status: existing.status },
-          filterSummary,
-          reason: params.input.reason,
-          result: 'failure',
-          targetId: existing.id,
-          targetType: 'audit_export',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-          details: { reason: 'export_already_terminal', status: existing.status },
-          httpCode: 'BAD_REQUEST',
-          message: 'Export is already terminal',
-        });
-      }
-
-      // Domain cancel + job cancel + required audit in one TX (F5).
-      // Object delete is external — durable purge outbox survives failed S3 deletes (F6).
-      const storageKey = existing.storageKey ?? buildAuditExportStorageKey(existing.id);
-
-      const row = await this.inTransaction(async (tx) => {
-        const exportsTx = new PlatformAuditExportModel(tx);
-        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
-
-        const cancelled = await exportsTx.cancel(existing.id);
-        if (existing.jobId) {
-          await jobsTx.cancel(existing.jobId);
-        }
-
-        // Durable outbox whenever a deterministic object key may exist.
-        await exportsTx.enqueueArtifactObjectPurge(existing.id, storageKey);
-
-        const next = cancelled ?? (await exportsTx.get(existing.id)) ?? existing;
-
-        await appendAuditAccessLog(tx, {
-          action: 'admin.audit.exports.cancel',
-          actorUserId: params.actorUserId,
-          afterDiff: { status: next.status },
-          filterSummary,
-          reason: params.input.reason,
-          required: true,
-          result: 'success',
-          targetId: next.id,
-          targetType: 'audit_export',
-        });
-
-        return next;
-      });
-
-      // Best-effort immediate delete; outbox remains if S3 fails (retention drains it).
-      try {
-        await this.storage.deleteObject(storageKey);
-        await this.exportsModel.completeArtifactObjectDelete(existing.id);
-      } catch {
-        // leave ARTIFACT_PURGE_PENDING outbox
-      }
-
-      // Reload after purge cleanup so the public projection never returns the
-      // internal purge payload that was written inside the cancel TX (F5).
-      const latest = (await this.exportsModel.get(existing.id)) ?? row;
-      return toExportPublic(latest);
-    } catch (error) {
-      if (
-        getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND ||
-        getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT
-      ) {
-        throw error;
-      }
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.exports.cancel',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: accessLogResultForError(error) },
-        filterSummary,
-        reason: params.input.reason,
-        result: accessLogResultForError(error),
-        targetId: params.input.id,
-        targetType: 'audit_export',
-      });
-      throw error;
-    }
-  };
+    /** Test seam: after claim, before cancel TX (e.g. inject concurrent cancel). */
+    beforeCancelTx?: (info: { exportId: string }) => Promise<void> | void;
+  }) =>
+    cancelExport(
+      {
+        assertConversationExportAccess: this.assertConversationExportAccess,
+        db: this.db,
+        exportsModel: this.exportsModel,
+        getStorage: () => this.storage,
+        inTransaction: this.inTransaction,
+      },
+      params,
+    );
 }

@@ -398,34 +398,58 @@ export class AdminAuditRetentionService {
         });
       }
 
-      // Domain cancel + job cancel + required audit in one TX (F5).
-      const row = await this.inTransaction(async (tx) => {
+      // SAO-001: fenced conditional cancel — if no row matched, commit empty TX
+      // then durable failure audit + throw (audit must not roll back with the throw).
+      const cancelOutcome = await this.inTransaction(async (tx) => {
         const runsTx = new PlatformAuditRetentionRunModel(tx);
         const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
 
         const cancelled = await runsTx.cancel(existing.id);
-        if (existing.jobId) {
-          await jobsTx.cancel(existing.jobId);
+        if (!cancelled) {
+          const current = (await runsTx.get(existing.id)) ?? existing;
+          return { kind: 'conflict' as const, status: current.status, targetId: current.id };
         }
 
-        const next = cancelled ?? (await runsTx.get(existing.id)) ?? existing;
+        if (cancelled.jobId) {
+          await jobsTx.cancel(cancelled.jobId);
+        }
 
         await appendAuditAccessLog(tx, {
           action: 'admin.audit.retention.cancel',
           actorUserId: params.actorUserId,
-          afterDiff: { mode: next.mode, scope: next.scope, status: next.status },
+          afterDiff: { mode: cancelled.mode, scope: cancelled.scope, status: cancelled.status },
           filterSummary,
           reason: params.input.reason,
           required: true,
           result: 'success',
-          targetId: next.id,
+          targetId: cancelled.id,
           targetType: 'audit_retention_run',
         });
 
-        return next;
+        return { kind: 'cancelled' as const, row: cancelled };
       });
 
-      return toRetentionPublic(row);
+      if (cancelOutcome.kind === 'conflict') {
+        await appendAuditAccessLog(this.db, {
+          action: 'admin.audit.retention.cancel',
+          actorUserId: params.actorUserId,
+          afterDiff: { error: 'already_terminal', status: cancelOutcome.status },
+          filterSummary,
+          reason: params.input.reason,
+          required: true,
+          result: 'failure',
+          targetId: cancelOutcome.targetId,
+          targetType: 'audit_retention_run',
+        });
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+          details: { reason: 'retention_already_terminal', status: cancelOutcome.status },
+          httpCode: 'BAD_REQUEST',
+          message: 'Retention run is already terminal',
+        });
+      }
+
+      return toRetentionPublic(cancelOutcome.row);
     } catch (error) {
       if (
         getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND ||

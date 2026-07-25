@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
@@ -77,7 +78,11 @@ describe.skipIf(!runPostgresConcurrency)('PlatformSkillCatalogModel PostgreSQL c
       expect(identity.draftSequence).toBe(1);
     } finally {
       await cleanup();
-      await firstDb.delete(platformResourceRevisions);
+      // Revisions are immutable; teardown needs session_replication_role (superuser on real PG).
+      await firstDb.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+        await tx.delete(platformResourceRevisions);
+      });
       await Promise.all([firstPool.end(), secondPool.end()]);
     }
   }, 15_000);

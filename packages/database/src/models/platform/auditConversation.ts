@@ -9,6 +9,7 @@
 
 import { and, desc, eq, gte, ilike, lt, or, type SQL, sql } from 'drizzle-orm';
 
+import { escapeLike } from '../../repositories/platformSearch';
 import { messages } from '../../schemas/message';
 import { sessions } from '../../schemas/session';
 import { topics } from '../../schemas/topic';
@@ -19,9 +20,6 @@ import {
   encodeCreatedAtCursor as encodeCursor,
   parseCreatedAtCursor as parseCursor,
 } from './cursor';
-
-const escapeLike = (value: string): string =>
-  value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 
 export interface PlatformAuditConversationTopicListParams {
   /** Composite cursor `${createdAt.toISOString()}|${id}` (desc). */
@@ -410,13 +408,16 @@ export class PlatformAuditConversationModel {
     if (!params.q) throw new Error('q is required for platform audit user search');
 
     const limit = clampListLimit(params.limit);
-    const prefix = `${escapeLike(params.q)}%`;
+    // lower(field) LIKE 'prefix%' — uses users_*_lower_pattern_idx (DB-007).
+    // Match AdminUserModel: lowercase escaped prefix + ESCAPE '\\'.
+    // Search email/username only (indexed). fullName/id lack prefix indexes and
+    // would force sequential scans on enterprise user tables.
+    const prefix = `${escapeLike(params.q.toLowerCase())}%`;
     const conditions: SQL[] = [
       or(
-        ilike(users.email, prefix),
-        ilike(users.username, prefix),
-        ilike(users.id, prefix),
-        ilike(users.fullName, prefix),
+        sql`lower(${users.email}) LIKE ${prefix} ESCAPE '\\'`,
+        sql`lower(${users.username}) LIKE ${prefix} ESCAPE '\\'`,
+        sql`lower(${users.normalizedEmail}) LIKE ${prefix} ESCAPE '\\'`,
       )!,
     ];
 

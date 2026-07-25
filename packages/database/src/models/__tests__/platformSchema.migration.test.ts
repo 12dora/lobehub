@@ -1,19 +1,34 @@
 // @vitest-environment node
 /**
- * PR-005: Migration 0 smoke — platform tables exist and accept empty inserts.
- * Does not exercise publish / audit / job domain logic (those land in PR-006+).
+ * Migration smoke — every enterprise platform_* (and user_setting_*) table exported
+ * from the Drizzle schema must exist in the migrated test database (DB-011).
+ *
+ * Does not exercise publish / audit / job domain logic.
  */
-import { sql } from 'drizzle-orm';
+import { getTableName, is, sql, Table } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
+import * as platformSchemas from '../../schemas/platform';
 import { platformAuditLogs, platformJobs, platformResourceRevisions } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+
+/** Derive the authoritative enterprise table list from exported Drizzle table configs. */
+export const expectedEnterpriseTableNames = (): string[] => {
+  const names = new Set<string>();
+  for (const value of Object.values(platformSchemas)) {
+    if (is(value, Table)) {
+      names.add(getTableName(value));
+    }
+  }
+  return [...names].toSorted();
+};
 
 const serverDB: LobeChatDatabase = await getTestDB();
 
 afterEach(async () => {
   // TRUNCATE bypasses revision/audit immutability triggers (migration 0145).
+  // Scoped to tables this file inserts into — not a shared-worker wipe of all platform_*.
   await serverDB.execute(
     sql.raw(`
       TRUNCATE TABLE
@@ -26,15 +41,23 @@ afterEach(async () => {
     `),
   );
 });
+
 describe('platform Migration 0 tables', () => {
-  it('exposes all platform_* tables in information_schema', async () => {
+  it('exposes all platform_* / user_setting_* tables from the Drizzle schema', async () => {
+    const expected = expectedEnterpriseTableNames();
+    // Guard: schema export drift — currently 45 enterprise tables.
+    expect(expected.length).toBeGreaterThanOrEqual(45);
+    expect(
+      expected.every((name) => name.startsWith('platform_') || name.startsWith('user_setting')),
+    ).toBe(true);
+
     const result = await serverDB.execute(sql`
       SELECT table_name
       FROM information_schema.tables
       WHERE table_schema = 'public'
         AND (
           table_name LIKE 'platform_%'
-          OR table_name = 'user_setting_overrides'
+          OR table_name LIKE 'user_setting%'
         )
       ORDER BY table_name
     `);
@@ -46,28 +69,11 @@ describe('platform Migration 0 tables', () => {
       (r: { table_name: string }) => r.table_name,
     );
 
-    expect(names).toEqual(
-      expect.arrayContaining([
-        'platform_agent_assignments',
-        'platform_agent_versions',
-        'platform_agents',
-        'platform_ai_models',
-        'platform_ai_providers',
-        'platform_audit_logs',
-        'platform_branding',
-        'platform_connector_tools',
-        'platform_connectors',
-        'platform_identity_providers',
-        'platform_jobs',
-        'platform_managed_resource_policies',
-        'platform_resource_revisions',
-        'platform_setting_policies',
-        'platform_skill_versions',
-        'platform_skills',
-        'platform_user_connector_bindings',
-        'user_setting_overrides',
-      ]),
-    );
+    // Exact equality: every Drizzle enterprise table must be present; no silent omissions.
+    expect(names).toEqual(expect.arrayContaining(expected));
+    for (const name of expected) {
+      expect(names).toContain(name);
+    }
   });
 
   it('accepts inserts into M01 core tables', async () => {

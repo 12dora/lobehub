@@ -8,6 +8,12 @@ import {
   type PlatformAuditLegalHoldStatus,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import {
+  finalizeAbsentDeletingOutboxes,
+  hasDeletingPurgeOutboxes,
+  LegalHoldPurgeInProgressError,
+  probeAbsentDeletingOutboxes,
+} from './auditExport';
 import { acquirePlatformAuditRetentionHoldLock } from './auditRetentionHoldLock';
 import {
   clampListLimit,
@@ -22,6 +28,11 @@ export interface CreatePlatformAuditLegalHoldParams {
   createdBy: string;
   /** Optional auto-expiry; active lookup ignores holds past this instant. */
   expiresAt?: Date | null;
+  /**
+   * Optional HEAD probe for self-healing stranded `deleting` purge outboxes
+   * that intersect this hold (object already gone → finalize, then re-check).
+   */
+  objectExists?: (storageKey: string) => Promise<boolean>;
   reason: string;
   /**
    * Target id for user/session/topic/workspace.
@@ -154,10 +165,28 @@ export class PlatformAuditLegalHoldModel {
       status: 'active',
     };
 
+    const holdScope = { scopeId, scopeType: params.scopeType };
+    // R6: probe S3 **outside** the advisory-lock TX so a slow/hanging HEAD cannot
+    // pin every retention purge and other legal-hold creates on one PG connection.
+    const provenAbsent = params.objectExists
+      ? await probeAbsentDeletingOutboxes(this.db, {
+          objectExists: params.objectExists,
+          scope: holdScope,
+        })
+      : [];
+
     return this.inTransaction(async (tx) => {
       // Serialize with retention deletes; release expired active rows for this scope
       // so the partial unique index does not block a legitimate replacement hold.
       await acquirePlatformAuditRetentionHoldLock(tx);
+      // DB-001: refuse only when an *intersecting* purge is in `deleting` — object
+      // may already be gone. Finalize only rows proven absent pre-lock (no remote I/O).
+      if (provenAbsent.length > 0) {
+        await finalizeAbsentDeletingOutboxes(tx, provenAbsent);
+      }
+      if (await hasDeletingPurgeOutboxes(tx, holdScope)) {
+        throw new LegalHoldPurgeInProgressError();
+      }
       const now = new Date();
       await this.releaseExpiredActiveForScope(tx, params.scopeType, scopeId, now);
 

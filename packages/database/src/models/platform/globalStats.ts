@@ -9,21 +9,7 @@ import { INBOX_SESSION_ID } from '@lobechat/const';
 import type { AgentRankItem, ModelRankItem, TopicRankItem } from '@lobechat/types';
 import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
-import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  gt,
-  gte,
-  isNotNull,
-  isNull,
-  lt,
-  ne,
-  or,
-  sql,
-} from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type { MessageMetadata } from '@/types/message';
 import type { UsageLog, UsageRecordItem } from '@/types/usage/usageRecord';
@@ -34,6 +20,53 @@ import { agentOperations } from '../../schemas/agentOperations';
 import type { LobeChatDatabase } from '../../type';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../../utils/genWhere';
 import { normalizeInboxAgentMeta } from '../../utils/inboxAgent';
+
+/**
+ * Parse a calendar day (`YYYY-MM-DD`) as UTC midnight.
+ * Explicit UTC policy so half-open bounds do not shift with the process timezone (DB-008).
+ */
+const utcDayStart = (ymd: string): Date | null => {
+  // Accept only date-shaped input; reject timestamps so callers stay calendar-day based.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+    const d = new Date(ymd);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(`${ymd}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
+const utcDayAfter = (ymd: string): Date | null => {
+  const start = utcDayStart(ymd);
+  if (!start) return null;
+  return new Date(start.getTime() + 24 * 60 * 60 * 1000);
+};
+
+/**
+ * Half-open calendar-day range for platform usage detail/chart (DB-008).
+ * Inclusive of `startDate` 00:00:00.000Z; exclusive of the day after `endDate` 00:00:00.000Z.
+ * Avoids the upstream `genRangeWhere` end predicate (`<= endDate + 1 day`) that
+ * includes exactly midnight of the following day.
+ */
+export const genHalfOpenDayRangeWhere = (
+  range: [string, string] | undefined,
+  key: typeof messages.createdAt,
+): ReturnType<typeof and> | undefined => {
+  if (!range) return;
+  const startAt = range[0] ? utcDayStart(range[0]) : null;
+  const endExclusive = range[1] ? utcDayAfter(range[1]) : null;
+  if (!startAt && !endExclusive) return;
+  if (!startAt && endExclusive) return lt(key, endExclusive);
+  if (startAt && !endExclusive) return gte(key, startAt);
+  return and(gte(key, startAt!), lt(key, endExclusive!));
+};
+
+/**
+ * Non-virtual agents including legacy `virtual IS NULL` rows (DB-009).
+ * Shared by {@link PlatformGlobalStatsModel.countAgents} and rankAgents so totals
+ * and rankings operate on the same population. Inbox slug is always included.
+ */
+export const isNonVirtualAgentSql = () =>
+  or(eq(agents.slug, INBOX_SESSION_ID), eq(agents.virtual, false), isNull(agents.virtual));
 
 /**
  * Hard safety cap for uncapped {@link PlatformGlobalStatsModel.findByDateRange} /
@@ -291,7 +324,9 @@ export class PlatformGlobalStatsModel {
     range?: [string, string];
     startDate?: string;
   }): Promise<number> => {
-    // Align with AgentModel.countAgents: non-virtual (false or null legacy).
+    // Align with AgentModel.countAgents: non-virtual only (virtual=false OR virtual IS NULL).
+    // Inbox (virtual=true) is intentionally excluded from countAgents; rankAgents uses
+    // isNonVirtualAgentSql which additionally includes the inbox slug.
     const result = await this.db
       .select({ count: count() })
       .from(agents)
@@ -368,7 +403,7 @@ export class PlatformGlobalStatsModel {
 
     const rangeWhere = genWhere([
       eq(messages.role, 'assistant'),
-      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
     ]);
 
     const dayTotals = await this.db
@@ -419,7 +454,8 @@ export class PlatformGlobalStatsModel {
       })
       .from(agents)
       .leftJoin(topics, eq(topics.agentId, agents.id))
-      .where(or(eq(agents.slug, INBOX_SESSION_ID), ne(agents.virtual, true)))
+      // Same legacy population as countAgents (virtual=false OR NULL) + inbox (DB-009).
+      .where(isNonVirtualAgentSql())
       .groupBy(agents.id)
       .having(({ count: c }) => gt(c, 0))
       .orderBy(desc(sql`count`))
@@ -607,7 +643,7 @@ export class PlatformGlobalStatsModel {
 
     const conditions = genWhere([
       eq(messages.role, 'assistant'),
-      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
     ]);
 
     const cursor = options?.cursor;
@@ -735,7 +771,7 @@ export class PlatformGlobalStatsModel {
     const { endAt, startAt } = this.resolveMonthRange(mo);
     const conditions = genWhere([
       eq(messages.role, 'assistant'),
-      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
     ]);
 
     const spends = await this.db
@@ -838,7 +874,7 @@ export class PlatformGlobalStatsModel {
 
     const rangeWhere = genWhere([
       eq(messages.role, 'assistant'),
-      genRangeWhere([startAt, endAt], messages.createdAt, (date) => date.toDate()),
+      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
     ]);
 
     const [dayTotals, dimRows] = await Promise.all([

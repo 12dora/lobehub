@@ -9,11 +9,12 @@ import type {
 } from '@lobechat/types';
 import { isEmpty } from 'es-toolkit/compat';
 import type { AIChatModelCard, AiProviderModelListItem, EnabledAiModel } from 'model-bank';
-import { AiModelSourceEnum, isAiModelVisible, normalizeAiModelType } from 'model-bank';
+import { AiModelSourceEnum, normalizeAiModelType } from 'model-bank';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 import pMap from 'p-map';
 
 import { merge, mergeArrayById } from '@/utils/merge';
+import { buildProviderModelList, injectSearchSettings } from '@/utils/providerModelListPolicy';
 
 import { AiModelModel } from '../../models/aiModel';
 import { AiProviderModel } from '../../models/aiProvider';
@@ -22,104 +23,6 @@ import type { LobeChatDatabase } from '../../type';
 type DecryptUserKeyVaults = (encryptKeyVaultsStr: string | null) => Promise<any>;
 
 const normalizeProvider = (provider: string) => provider.toLowerCase();
-
-/**
- * Provider-level search defaults (only used when built-in models don't provide settings.searchImpl and settings.searchProvider)
- * Note: Not stored in DB, only injected during read
- */
-const PROVIDER_SEARCH_DEFAULTS: Record<
-  string,
-  { searchImpl?: 'tool' | 'params' | 'internal'; searchProvider?: string }
-> = {
-  ai360: { searchImpl: 'params' },
-  aihubmix: { searchImpl: 'params' },
-  anthropic: { searchImpl: 'params' },
-  baichuan: { searchImpl: 'params' },
-  default: { searchImpl: 'params' },
-  google: { searchImpl: 'params', searchProvider: 'google' },
-  hunyuan: { searchImpl: 'params' },
-  jina: { searchImpl: 'internal' },
-  minimax: { searchImpl: 'params' },
-  // openai: defaults to params, but -search- models use internal as special case
-  openai: { searchImpl: 'params' },
-  // perplexity: defaults to internal
-  perplexity: { searchImpl: 'internal' },
-  qwen: { searchImpl: 'params' },
-  spark: { searchImpl: 'params' }, // Some models (like max-32k) will prioritize built-in if marked as internal
-  stepfun: { searchImpl: 'params' },
-  vertexai: { searchImpl: 'params', searchProvider: 'google' },
-  wenxin: { searchImpl: 'params' },
-  xai: { searchImpl: 'params' },
-  zhipu: { searchImpl: 'params' },
-};
-
-// Special model configuration - model-level settings override provider defaults
-const MODEL_SEARCH_DEFAULTS: Record<
-  string,
-  Record<string, { searchImpl?: 'tool' | 'params' | 'internal'; searchProvider?: string }>
-> = {
-  openai: {
-    'gpt-4o-mini-search-preview': { searchImpl: 'internal' },
-    'gpt-4o-search-preview': { searchImpl: 'internal' },
-    // Add other special model configurations here
-  },
-  spark: {
-    'max-32k': { searchImpl: 'internal' },
-  },
-  // Add special model configurations for other providers here
-};
-
-// Infer default settings based on providerId + modelId
-const inferProviderSearchDefaults = (
-  providerId: string | undefined,
-  modelId: string,
-): { searchImpl?: 'tool' | 'params' | 'internal'; searchProvider?: string } => {
-  const modelSpecificConfig = providerId ? MODEL_SEARCH_DEFAULTS[providerId]?.[modelId] : undefined;
-  if (modelSpecificConfig) {
-    return modelSpecificConfig;
-  }
-
-  return (providerId && PROVIDER_SEARCH_DEFAULTS[providerId]) || PROVIDER_SEARCH_DEFAULTS.default;
-};
-
-// Only inject settings during read; add or remove search-related fields in settings based on abilities.search
-const injectSearchSettings = (providerId: string, item: any) => {
-  const abilities = item?.abilities || {};
-
-  // Model explicitly disables search capability: remove search-related fields from settings to prevent UI from showing built-in search
-  if (abilities.search === false) {
-    if (item?.settings?.searchImpl || item?.settings?.searchProvider) {
-      const next = { ...item } as any;
-      if (next.settings) {
-        // eslint-disable-next-line unused-imports/no-unused-vars
-        const { searchImpl, searchProvider, ...restSettings } = next.settings;
-        next.settings = Object.keys(restSettings).length > 0 ? restSettings : undefined;
-      }
-      return next;
-    }
-    return item;
-  }
-
-  // Model explicitly enables search capability: add search-related fields to settings
-  else if (abilities.search === true) {
-    // If built-in (local) model already has either field, preserve it without overriding
-    if (item?.settings?.searchImpl || item?.settings?.searchProvider) return item;
-
-    // Otherwise use providerId + modelId
-    const searchSettings = inferProviderSearchDefaults(providerId, item.id);
-
-    return {
-      ...item,
-      settings: {
-        ...item.settings,
-        ...searchSettings,
-      },
-    };
-  }
-
-  // Compatibility for legacy versions where database doesn't store abilities.search field
-  return item;
-};
 
 export class AiInfraRepos {
   private userId: string;
@@ -405,53 +308,17 @@ export class AiInfraRepos {
     },
   ) => {
     const aiModels = await this.aiModelModel.getModelListByProviderId(providerId);
-
     const defaultModels: AiProviderModelListItem[] =
       (await this.fetchBuiltinModels(providerId)) || [];
-    // Not modifying search settings here doesn't affect usage, but done for data consistency on get
-    let mergedModel = mergeArrayById(defaultModels, aiModels) as AiProviderModelListItem[];
 
-    // Model type (chat/video/image/embedding/tts/stt) should always come from builtin config,
-    // because remote-fetched models from provider API (e.g. OpenAI /v1/models) don't return
-    // a type field, causing them to fallback to 'chat' and get saved to DB with wrong type.
-    // e.g. sora-2 is a video model but gets stored as 'chat' after "Fetch models".
-    const builtinTypeMap = new Map(defaultModels.map((m) => [m.id, m.type]));
-    for (const m of mergedModel) {
-      const builtinType = builtinTypeMap.get(m.id);
-      if (builtinType) m.type = builtinType;
-      // Read-time map for the legacy `stt` → `asr` rename (custom models that
-      // aren't in the builtin list and still carry the old value in the DB).
-      m.type = normalizeAiModelType(m.type);
-    }
-
-    // Filter out DB residual models that are no longer in the builtin list for branding provider
-    if (providerId === BRANDING_PROVIDER) {
-      const builtinIds = new Set(defaultModels.map((m) => m.id));
-      mergedModel = mergedModel.filter((m) => builtinIds.has(m.id));
-    }
-
-    mergedModel = mergedModel.filter(isAiModelVisible);
-
-    let list = mergedModel.map((m) =>
-      injectSearchSettings(providerId, m),
-    ) as AiProviderModelListItem[];
-
-    if (typeof options?.enabled === 'boolean') {
-      list = list.filter((m) => m.enabled === options.enabled);
-    }
-
-    if (options?.type) {
-      list = list.filter((m) => m.type === options.type);
-    }
-
-    if (typeof options?.offset === 'number' || typeof options?.limit === 'number') {
-      const offset = Math.max(0, options?.offset ?? 0);
-      const limit = options?.limit;
-      if (typeof limit === 'number') return list.slice(offset, offset + Math.max(0, limit));
-      return list.slice(offset);
-    }
-
-    return list;
+    // Shared pure policy (also used by admin adapter) — single merge/filter contract.
+    return buildProviderModelList(providerId, defaultModels, aiModels, {
+      brandingProviderId: BRANDING_PROVIDER,
+      enabled: options?.enabled,
+      limit: options?.limit,
+      offset: options?.offset,
+      type: options?.type,
+    });
   };
 
   /**

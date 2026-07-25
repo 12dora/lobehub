@@ -1250,11 +1250,6 @@ describe('audit retention worker', () => {
         if (deletes === 1) throw new Error('S3_TRANSIENT_DELETE');
         storage.objects.delete(key);
       },
-      getObjectBytes: async (key: string) => {
-        const body = storage.objects.get(key);
-        if (!body) throw new Error(`Object not found: ${key}`);
-        return Buffer.from(body);
-      },
       getObjectMetadata: async (key: string) => {
         const body = storage.objects.get(key);
         if (!body) throw new Error(`Object not found: ${key}`);

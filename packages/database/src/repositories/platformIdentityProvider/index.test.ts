@@ -82,6 +82,27 @@ describe('PlatformIdentityProviderRepository', () => {
     });
   });
 
+  it('listPage treats %, _, and \\ as literal characters (DB-010)', async () => {
+    await repository.create({ displayName: 'Percent % Provider', providerKey: 'pct-provider' });
+    await repository.create({ displayName: 'Under_score Provider', providerKey: 'us-provider' });
+    await repository.create({ displayName: 'Back\\slash Provider', providerKey: 'bs-provider' });
+    await repository.create({ displayName: 'Normal Provider', providerKey: 'normal-provider' });
+
+    // Bare `%` must not match everything — only rows whose display/key contains a percent.
+    const percent = await repository.listPage({ limit: 20, query: '%' });
+    expect(percent.items.map((r) => r.providerKey)).toEqual(['pct-provider']);
+
+    const underscore = await repository.listPage({ limit: 20, query: '_' });
+    expect(underscore.items.map((r) => r.providerKey)).toEqual(['us-provider']);
+
+    const backslash = await repository.listPage({ limit: 20, query: '\\' });
+    expect(backslash.items.map((r) => r.providerKey)).toEqual(['bs-provider']);
+
+    // Case-insensitive contains still works for normal input.
+    const normal = await repository.listPage({ limit: 20, query: 'normal' });
+    expect(normal.items.map((r) => r.providerKey)).toEqual(['normal-provider']);
+  });
+
   it('rejects invalid status and secret-bearing claim mapping at the database boundary', async () => {
     await expect(
       serverDB.execute(sql`

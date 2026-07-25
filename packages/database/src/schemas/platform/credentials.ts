@@ -39,7 +39,15 @@ export const PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES = 256 * 1024;
 
 /**
  * Platform-owned global credentials shared by all users.
+ *
  * Serial integer `id` mirrors Market UserCredSummary.id (number) for UI reuse.
+ * **Known coupling (DB-012):** persistence identity is a sequence-backed serial solely
+ * for presentation compatibility. After restore/import, operators MUST run
+ * {@link repairPlatformGlobalCredentialIdSequence} (or the SQL in that helper's JSDoc)
+ * so the next insert cannot collide. Operator runbook:
+ * `docs/self-hosting/advanced/database-restore-sequence-repair.md`.
+ * A future migration should introduce a prefixed text domain id via `idGenerator`
+ * and demote this integer to a presentation field.
  */
 export const platformGlobalCredentials = pgTable(
   'platform_global_credentials',

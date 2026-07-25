@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -18,6 +19,7 @@ import {
   PlatformGlobalCredentialModel,
   PlatformGlobalCredentialNotFoundError,
   PlatformGlobalCredentialValidationError,
+  repairPlatformGlobalCredentialIdSequence,
 } from './globalCredential';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -602,5 +604,41 @@ describe('PlatformGlobalCredentialModel', () => {
     await expect(model.getStagedUpload(loserHash, actor)).resolves.not.toBeNull();
     // Exactly one new secret revision; prior revoked, winner active.
     expect(await model.countSecrets(created.id)).toBe(2);
+  });
+
+  it('repairPlatformGlobalCredentialIdSequence prevents post-restore id collisions (DB-012)', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const a = await model.create({
+      envelope: fakeEnvelope('restore-a'),
+      key: 'restore-a',
+      name: 'Restore A',
+      type: 'kv-env',
+    });
+    const b = await model.create({
+      envelope: fakeEnvelope('restore-b'),
+      key: 'restore-b',
+      name: 'Restore B',
+      type: 'kv-env',
+    });
+    expect(b.id).toBeGreaterThan(a.id);
+
+    // Simulate a restore that left the sequence behind max(id).
+    await db.execute(
+      // is_called=false means next nextval() returns the value as-is (collision with a.id).
+      sql`SELECT setval(pg_get_serial_sequence('platform_global_credentials', 'id'), ${a.id}, false)`,
+    );
+
+    const repaired = await repairPlatformGlobalCredentialIdSequence(db);
+    expect(repaired.maxId).toBe(b.id);
+    // After repair, the next insert must not collide with a or b.
+    const c = await model.create({
+      envelope: fakeEnvelope('restore-c'),
+      key: 'restore-c',
+      name: 'Restore C',
+      type: 'kv-env',
+    });
+    expect(c.id).toBeGreaterThan(b.id);
+    expect(c.id).not.toBe(a.id);
+    expect(c.id).not.toBe(b.id);
   });
 });

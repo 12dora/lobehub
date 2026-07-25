@@ -2,17 +2,16 @@
  * Admin audit A2 service layer.
  * Orchestrates policy, operation events, conversations, users, and legal holds.
  * Credential-only masking for conversation bodies; no extra read-time redaction on operation diffs.
+ *
+ * Split (SAO-009): conversations / users / legal holds live in sibling modules;
+ * this class remains the public facade (`export * from './adminAuditService'`).
  */
 
-import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import {
-  maskAuditConversationEvidence,
   PlatformAuditConversationModel,
-  type PlatformAuditLegalHoldItem,
   PlatformAuditLegalHoldModel,
-  type PlatformAuditLogItem,
   PlatformAuditLogModel,
-  type PlatformAuditPolicyItem,
   PlatformAuditPolicyModel,
   PlatformRevisionConflictError,
 } from '@/database/models/platform';
@@ -30,104 +29,31 @@ import type {
   AdminAuditUsersSearchInputParsed,
   AdminAuditUsersTimelineInputParsed,
 } from '../../contracts/adminAudit';
-import { getEnterpriseErrorBody, throwEnterpriseError } from '../../guards/enterpriseErrors';
+import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { appendAuditAccessLog, buildAuditFilterSummary } from './accessLog';
-import { assertConversationAccessEnabled, resolveConversationContentAccess } from './contentPolicy';
+import {
+  getConversation,
+  listConversationMessages,
+  listConversations,
+} from './adminAuditServiceConversations';
+import type { AdminAuditServiceHost } from './adminAuditServiceHost';
+import {
+  createLegalHold,
+  getLegalHold,
+  listLegalHolds,
+  releaseLegalHold,
+} from './adminAuditServiceLegalHolds';
+import {
+  type ConversationsGetInput,
+  type EventsStatsInput,
+  isNotFoundError,
+  toEventDetail,
+  toEventListItem,
+  toPolicyPublic,
+} from './adminAuditServiceShared';
+import { getUserSummary, listUserTimeline, searchUsers } from './adminAuditServiceUsers';
+import type { AuditExportArtifactStorage } from './exportStorage';
 import { resolveAuditTimeWindow } from './timeWindow';
-
-type ConversationsGetInput = { topicId: string; userId: string };
-type EventsStatsInput = { from?: Date; to?: Date };
-
-const toPolicyPublic = (policy: PlatformAuditPolicyItem) => ({
-  contentAccessMode: policy.contentAccessMode,
-  conversationRetentionDays: policy.conversationRetentionDays,
-  createdAt: policy.createdAt,
-  exportArtifactRetentionDays: policy.exportArtifactRetentionDays,
-  id: policy.id,
-  maxExportRows: policy.maxExportRows,
-  maxListWindowDays: policy.maxListWindowDays,
-  messageBodyInExport: policy.messageBodyInExport,
-  operationLogRetentionDays: policy.operationLogRetentionDays,
-  redactionProfile: policy.redactionProfile,
-  revision: policy.revision,
-  updatedAt: policy.updatedAt,
-  updatedBy: policy.updatedBy,
-});
-
-const toEventListItem = (row: PlatformAuditLogItem) => ({
-  action: row.action,
-  actorUserId: row.actorUserId,
-  configRevision: row.configRevision,
-  createdAt: row.createdAt,
-  id: row.id,
-  ipHash: row.ipHash,
-  reason: row.reason,
-  requestId: row.requestId,
-  result: row.result,
-  targetId: row.targetId,
-  targetType: row.targetType,
-  userAgent: row.userAgent,
-});
-
-/** Detail: stored diffs as-is (write-time redaction only — no extra read-time pass). */
-const toEventDetail = (row: PlatformAuditLogItem) => ({
-  ...toEventListItem(row),
-  afterDiff: row.afterDiff,
-  beforeDiff: row.beforeDiff,
-});
-
-/**
- * Project elapsed holds as `expired` even while the stored row is still `active`.
- * Retention's listActive() already excludes past-expiry holds; the admin API must
- * not present them as actionable/active.
- */
-const effectiveLegalHoldStatus = (
-  row: PlatformAuditLegalHoldItem,
-  now: Date = new Date(),
-): 'active' | 'released' | 'expired' => {
-  if (row.status === 'released') return 'released';
-  if (row.expiresAt != null && row.expiresAt.getTime() <= now.getTime()) return 'expired';
-  return 'active';
-};
-
-const toLegalHoldPublic = (row: PlatformAuditLegalHoldItem, now: Date = new Date()) => ({
-  createdAt: row.createdAt,
-  createdBy: row.createdBy,
-  expiresAt: row.expiresAt,
-  id: row.id,
-  reason: row.reason,
-  releaseReason: row.releaseReason,
-  releasedAt: row.releasedAt,
-  releasedBy: row.releasedBy,
-  scopeId: row.scopeId,
-  scopeType: row.scopeType,
-  status: effectiveLegalHoldStatus(row, now),
-  updatedAt: row.updatedAt,
-});
-
-const isNotFoundError = (error: unknown): boolean =>
-  getEnterpriseErrorBody(error)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND;
-
-/** Policy / feature denials that must self-audit as `denied` (not `failure`). */
-const isDeniedError = (error: unknown): boolean => {
-  const code = getEnterpriseErrorBody(error)?.code;
-  return (
-    code === PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED ||
-    code === PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED ||
-    code === ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED ||
-    code === ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED ||
-    code === ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED
-  );
-};
-
-const accessLogResultForError = (error: unknown): 'denied' | 'failure' =>
-  isDeniedError(error) ? 'denied' : 'failure';
-
-/** Credential-mask free-text metadata that may contain pasted secrets. */
-const maskOptionalText = (value: string | null | undefined): string | null | undefined => {
-  if (value == null) return value;
-  return maskAuditConversationEvidence(value);
-};
 
 export class AdminAuditService {
   private readonly conversationModel: PlatformAuditConversationModel;
@@ -141,6 +67,14 @@ export class AdminAuditService {
     this.logModel = new PlatformAuditLogModel(db);
     this.policyModel = new PlatformAuditPolicyModel(db);
   }
+
+  private host = (): AdminAuditServiceHost => ({
+    conversationModel: this.conversationModel,
+    db: this.db,
+    legalHoldModel: this.legalHoldModel,
+    logModel: this.logModel,
+    policyModel: this.policyModel,
+  });
 
   // ── policy ────────────────────────────────────────────────────────────────
 
@@ -449,613 +383,52 @@ export class AdminAuditService {
     }
   };
 
-  // ── conversations ─────────────────────────────────────────────────────────
+  // ── conversations (delegated) ─────────────────────────────────────────────
 
   listConversations = async (params: {
     actorUserId: string;
     input: AdminAuditConversationsListInputParsed;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      cursor: params.input.cursor,
-      from: params.input.from,
-      hasQ: Boolean(params.input.q),
-      limit: params.input.limit,
-      to: params.input.to,
-      userId: params.input.userId,
-    });
-    try {
-      const policy = await this.policyModel.getOrCreate();
-      assertConversationAccessEnabled(policy.contentAccessMode);
-      const window = resolveAuditTimeWindow({
-        from: params.input.from,
-        maxListWindowDays: policy.maxListWindowDays,
-        to: params.input.to,
-      });
+  }) => listConversations(this.host(), params);
 
-      const page = await this.conversationModel.listTopics({
-        cursor: params.input.cursor,
-        from: window.from,
-        limit: params.input.limit,
-        q: params.input.q,
-        to: window.to,
-        userId: params.input.userId,
-      });
-
-      const items = page.items.map((row) => ({
-        ...row,
-        description: maskOptionalText(row.description) ?? null,
-        title: maskOptionalText(row.title) ?? null,
-      }));
-
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.conversations.list',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetId: params.input.userId,
-        targetType: 'user',
-      });
-      return { items, nextCursor: page.nextCursor };
-    } catch (error) {
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.conversations.list',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          error: accessLogResultForError(error) === 'denied' ? 'content_access_denied' : 'failure',
-        },
-        filterSummary,
-        result: accessLogResultForError(error),
-        targetId: params.input.userId,
-        targetType: 'user',
-      });
-      throw error;
-    }
-  };
-
-  getConversation = async (params: { actorUserId: string; input: ConversationsGetInput }) => {
-    const filterSummary = buildAuditFilterSummary({
-      topicId: params.input.topicId,
-      userId: params.input.userId,
-    });
-    try {
-      const policy = await this.policyModel.getOrCreate();
-      assertConversationAccessEnabled(policy.contentAccessMode);
-      const access = resolveConversationContentAccess(policy.contentAccessMode);
-
-      const topic = await this.conversationModel.getTopic({
-        topicId: params.input.topicId,
-        userId: params.input.userId,
-      });
-      if (!topic) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.conversations.get',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_found' },
-          filterSummary,
-          result: 'failure',
-          targetId: params.input.topicId,
-          targetType: 'topic',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-
-      const base = {
-        agentId: topic.agentId,
-        contentAccessMode: access.mode,
-        createdAt: topic.createdAt,
-        description: maskOptionalText(topic.description) ?? null,
-        id: topic.id,
-        model: topic.model,
-        provider: topic.provider,
-        sessionId: topic.sessionId,
-        status: topic.status,
-        title: maskOptionalText(topic.title) ?? null,
-        updatedAt: topic.updatedAt,
-        userId: topic.userId,
-      };
-
-      const result = access.allowBody
-        ? {
-            ...base,
-            content: topic.content == null ? null : maskAuditConversationEvidence(topic.content),
-            editorData:
-              topic.editorData == null
-                ? undefined
-                : maskAuditConversationEvidence(topic.editorData),
-            historySummary:
-              topic.historySummary == null
-                ? null
-                : maskAuditConversationEvidence(topic.historySummary),
-          }
-        : base;
-
-      // Body-bearing conversation reads are sensitive — fail closed on audit failure.
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.conversations.get',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        required: access.allowBody,
-        result: 'success',
-        targetId: params.input.topicId,
-        targetType: 'topic',
-      });
-      return result;
-    } catch (error) {
-      if (isNotFoundError(error)) throw error;
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.conversations.get',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          error: accessLogResultForError(error) === 'denied' ? 'content_access_denied' : 'failure',
-        },
-        filterSummary,
-        result: accessLogResultForError(error),
-        targetId: params.input.topicId,
-        targetType: 'topic',
-      });
-      throw error;
-    }
-  };
+  getConversation = async (params: { actorUserId: string; input: ConversationsGetInput }) =>
+    getConversation(this.host(), params);
 
   listConversationMessages = async (params: {
     actorUserId: string;
     input: AdminAuditConversationsMessagesInputParsed;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      cursor: params.input.cursor,
-      from: params.input.from,
-      includeBody: params.input.includeBody,
-      limit: params.input.limit,
-      to: params.input.to,
-      topicId: params.input.topicId,
-      userId: params.input.userId,
-    });
-    try {
-      const policy = await this.policyModel.getOrCreate();
-      assertConversationAccessEnabled(policy.contentAccessMode);
-      const access = resolveConversationContentAccess(policy.contentAccessMode);
-      const window = resolveAuditTimeWindow({
-        from: params.input.from,
-        maxListWindowDays: policy.maxListWindowDays,
-        to: params.input.to,
-      });
+  }) => listConversationMessages(this.host(), params);
 
-      const wantBody = Boolean(params.input.includeBody) && access.allowBody;
+  // ── users (delegated) ─────────────────────────────────────────────────────
 
-      if (wantBody) {
-        const page = await this.conversationModel.listMessageDetails({
-          cursor: params.input.cursor,
-          from: window.from,
-          limit: params.input.limit,
-          to: window.to,
-          topicId: params.input.topicId,
-          userId: params.input.userId,
-        });
+  searchUsers = async (params: { actorUserId: string; input: AdminAuditUsersSearchInputParsed }) =>
+    searchUsers(this.host(), params);
 
-        // Message bodies are sensitive evidence — never return them unaudited.
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.conversations.messages',
-          actorUserId: params.actorUserId,
-          filterSummary,
-          required: true,
-          result: 'success',
-          targetId: params.input.topicId,
-          targetType: 'topic',
-        });
-
-        return {
-          contentAccessMode: access.mode,
-          items: page.items.map((row) => ({
-            agentId: row.agentId,
-            content: row.content == null ? null : maskAuditConversationEvidence(row.content),
-            contentAccessMode: access.mode,
-            createdAt: row.createdAt,
-            editorData:
-              row.editorData == null ? null : maskAuditConversationEvidence(row.editorData),
-            error: row.error == null ? null : maskAuditConversationEvidence(row.error),
-            id: row.id,
-            model: row.model,
-            parentId: row.parentId,
-            provider: row.provider,
-            role: row.role,
-            sessionId: row.sessionId,
-            topicId: row.topicId,
-            updatedAt: row.updatedAt,
-            userId: row.userId,
-          })),
-          nextCursor: page.nextCursor,
-        };
-      }
-
-      const page = await this.conversationModel.listMessages({
-        cursor: params.input.cursor,
-        from: window.from,
-        limit: params.input.limit,
-        to: window.to,
-        topicId: params.input.topicId,
-        userId: params.input.userId,
-      });
-
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.conversations.messages',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetId: params.input.topicId,
-        targetType: 'topic',
-      });
-
-      return {
-        contentAccessMode: access.mode,
-        items: page.items.map((row) => ({
-          ...row,
-          contentAccessMode: access.mode,
-        })),
-        nextCursor: page.nextCursor,
-      };
-    } catch (error) {
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.conversations.messages',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          error: accessLogResultForError(error) === 'denied' ? 'content_access_denied' : 'failure',
-        },
-        filterSummary,
-        result: accessLogResultForError(error),
-        targetId: params.input.topicId,
-        targetType: 'topic',
-      });
-      throw error;
-    }
-  };
-
-  // ── users ─────────────────────────────────────────────────────────────────
-
-  searchUsers = async (params: {
-    actorUserId: string;
-    input: AdminAuditUsersSearchInputParsed;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      cursor: params.input.cursor,
-      hasQ: true,
-      limit: params.input.limit,
-    });
-    try {
-      const page = await this.conversationModel.searchUsers({
-        cursor: params.input.cursor,
-        limit: params.input.limit,
-        q: params.input.q,
-      });
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.users.search',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetType: 'user',
-      });
-      return page;
-    } catch (error) {
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.users.search',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'failure' },
-        filterSummary,
-        result: 'failure',
-        targetType: 'user',
-      });
-      throw error;
-    }
-  };
-
-  getUserSummary = async (params: { actorUserId: string; userId: string }) => {
-    const filterSummary = buildAuditFilterSummary({ userId: params.userId });
-    try {
-      const summary = await this.conversationModel.getUserSummary(params.userId);
-      if (!summary) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.users.summary',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_found' },
-          filterSummary,
-          result: 'failure',
-          targetId: params.userId,
-          targetType: 'user',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.users.summary',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetId: params.userId,
-        targetType: 'user',
-      });
-      return summary;
-    } catch (error) {
-      if (isNotFoundError(error)) throw error;
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.users.summary',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'failure' },
-        filterSummary,
-        result: 'failure',
-        targetId: params.userId,
-        targetType: 'user',
-      });
-      throw error;
-    }
-  };
+  getUserSummary = async (params: { actorUserId: string; userId: string }) =>
+    getUserSummary(this.host(), params);
 
   listUserTimeline = async (params: {
     actorUserId: string;
     input: AdminAuditUsersTimelineInputParsed;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      cursor: params.input.cursor,
-      from: params.input.from,
-      limit: params.input.limit,
-      to: params.input.to,
-      userId: params.input.userId,
-    });
-    try {
-      const policy = await this.policyModel.getOrCreate();
-      assertConversationAccessEnabled(policy.contentAccessMode);
-      const window = resolveAuditTimeWindow({
-        from: params.input.from,
-        maxListWindowDays: policy.maxListWindowDays,
-        to: params.input.to,
-      });
-      const page = await this.conversationModel.listUserTimeline({
-        cursor: params.input.cursor,
-        from: window.from,
-        limit: params.input.limit,
-        to: window.to,
-        userId: params.input.userId,
-      });
-      const items = page.items.map((row) => ({
-        ...row,
-        title: maskOptionalText(row.title) ?? null,
-      }));
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.users.timeline',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetId: params.input.userId,
-        targetType: 'user',
-      });
-      return { items, nextCursor: page.nextCursor };
-    } catch (error) {
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.users.timeline',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'failure' },
-        filterSummary,
-        result: 'failure',
-        targetId: params.input.userId,
-        targetType: 'user',
-      });
-      throw error;
-    }
-  };
+  }) => listUserTimeline(this.host(), params);
 
-  // ── legal holds ───────────────────────────────────────────────────────────
+  // ── legal holds (delegated) ───────────────────────────────────────────────
 
   listLegalHolds = async (params: {
     actorUserId: string;
     input: AdminAuditLegalHoldsListInputParsed;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      cursor: params.input.cursor,
-      limit: params.input.limit,
-      scopeType: params.input.scopeType,
-    });
-    try {
-      const page = await this.legalHoldModel.list({
-        createdBy: params.input.createdBy,
-        cursor: params.input.cursor,
-        limit: params.input.limit,
-        scopeId: params.input.scopeId,
-        scopeType: params.input.scopeType,
-        status: params.input.status,
-      });
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.list',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetType: 'legal_hold',
-      });
-      return {
-        // Explicit row callback — map would pass index as the second arg (`now`).
-        items: page.items.map((row) => toLegalHoldPublic(row)),
-        nextCursor: page.nextCursor,
-      };
-    } catch (error) {
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.list',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'failure' },
-        filterSummary,
-        result: 'failure',
-        targetType: 'legal_hold',
-      });
-      throw error;
-    }
-  };
+  }) => listLegalHolds(this.host(), params);
 
-  getLegalHold = async (params: { actorUserId: string; id: string }) => {
-    const filterSummary = buildAuditFilterSummary({});
-    try {
-      const row = await this.legalHoldModel.get(params.id);
-      if (!row) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.legalHolds.get',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_found' },
-          filterSummary,
-          result: 'failure',
-          targetId: params.id,
-          targetType: 'legal_hold',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.get',
-        actorUserId: params.actorUserId,
-        filterSummary,
-        result: 'success',
-        targetId: params.id,
-        targetType: 'legal_hold',
-      });
-      return toLegalHoldPublic(row);
-    } catch (error) {
-      if (isNotFoundError(error)) throw error;
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.get',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'failure' },
-        filterSummary,
-        result: 'failure',
-        targetId: params.id,
-        targetType: 'legal_hold',
-      });
-      throw error;
-    }
-  };
+  getLegalHold = async (params: { actorUserId: string; id: string }) =>
+    getLegalHold(this.host(), params);
 
   createLegalHold = async (params: {
     actorUserId: string;
     input: AdminAuditLegalHoldsCreateInput;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({
-      scopeType: params.input.scopeType,
-    });
-    try {
-      // Reject non-future expiry so the UI cannot show "active" holds that
-      // retention's listActive() already treats as expired.
-      if (params.input.expiresAt != null) {
-        const expiresMs = params.input.expiresAt.getTime();
-        if (Number.isNaN(expiresMs) || expiresMs <= Date.now()) {
-          return throwEnterpriseError({
-            code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-            details: { reason: 'expires_at_must_be_future' },
-            httpCode: 'BAD_REQUEST',
-            // Stable code as message — clients localize via details.reason / code.
-            message: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-          });
-        }
-      }
-
-      const db = this.db as LobeChatDatabase;
-      const row = await db.transaction(async (tx) => {
-        const legalHoldModel = new PlatformAuditLegalHoldModel(tx);
-        const created = await legalHoldModel.create({
-          createdBy: params.actorUserId,
-          expiresAt: params.input.expiresAt,
-          reason: params.input.reason,
-          scopeId: params.input.scopeId,
-          scopeType: params.input.scopeType,
-        });
-        await appendAuditAccessLog(tx, {
-          action: 'admin.audit.legalHolds.create',
-          actorUserId: params.actorUserId,
-          afterDiff: {
-            scopeIdPresent: params.input.scopeId != null,
-            scopeType: created.scopeType,
-            status: created.status,
-          },
-          filterSummary,
-          reason: params.input.reason,
-          required: true,
-          result: 'success',
-          targetId: created.id,
-          targetType: 'legal_hold',
-        });
-        return created;
-      });
-      return toLegalHoldPublic(row);
-    } catch (error) {
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.create',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'failure' },
-        filterSummary,
-        reason: params.input.reason,
-        result: 'failure',
-        targetType: 'legal_hold',
-      });
-      throw error;
-    }
-  };
+    storage?: AuditExportArtifactStorage;
+  }) => createLegalHold(this.host(), params);
 
   releaseLegalHold = async (params: {
     actorUserId: string;
     input: AdminAuditLegalHoldsReleaseInput;
-  }) => {
-    const filterSummary = buildAuditFilterSummary({});
-    try {
-      const db = this.db as LobeChatDatabase;
-      const row = await db.transaction(async (tx) => {
-        const legalHoldModel = new PlatformAuditLegalHoldModel(tx);
-        const released = await legalHoldModel.release(params.input.id, {
-          releasedBy: params.actorUserId,
-          releaseReason: params.input.releaseReason,
-        });
-        if (!released) return null;
-        await appendAuditAccessLog(tx, {
-          action: 'admin.audit.legalHolds.release',
-          actorUserId: params.actorUserId,
-          afterDiff: { status: released.status },
-          filterSummary,
-          reason: params.input.releaseReason,
-          required: true,
-          result: 'success',
-          targetId: released.id,
-          targetType: 'legal_hold',
-        });
-        return released;
-      });
-      if (!row) {
-        await appendAuditAccessLog(this.db, {
-          action: 'admin.audit.legalHolds.release',
-          actorUserId: params.actorUserId,
-          afterDiff: { error: 'not_found' },
-          filterSummary,
-          reason: params.input.releaseReason,
-          result: 'failure',
-          targetId: params.input.id,
-          targetType: 'legal_hold',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
-          httpCode: 'NOT_FOUND',
-        });
-      }
-      return toLegalHoldPublic(row);
-    } catch (error) {
-      if (isNotFoundError(error)) throw error;
-      await appendAuditAccessLog(this.db, {
-        action: 'admin.audit.legalHolds.release',
-        actorUserId: params.actorUserId,
-        afterDiff: { error: 'failure' },
-        filterSummary,
-        reason: params.input.releaseReason,
-        result: 'failure',
-        targetId: params.input.id,
-        targetType: 'legal_hold',
-      });
-      throw error;
-    }
-  };
+  }) => releaseLegalHold(this.host(), params);
 }
