@@ -33,7 +33,11 @@ import { settingsSelectors, toolInterventionSelectors } from '@/store/user/selec
 
 import { buildRunLifecycle } from '../../lifecycle/buildRunLifecycle';
 import type { RunScope } from '../../lifecycle/types';
-import { createGatewayEventHandler, isCompletedRuntimeEnd } from './gatewayEventHandler';
+import {
+  createGatewayEventHandler,
+  createHumanInterventionOutcomeConsumer,
+  isCompletedRuntimeEnd,
+} from './gatewayEventHandler';
 import { createGatewayEventRouter } from './gatewayEventRouter';
 import { createGatewayMemberStreamHandler } from './gatewayMemberStreamHandler';
 
@@ -761,8 +765,16 @@ export class GatewayActionImpl {
       ?.runningOperation?.operationId;
     if (topicCurrentOpId && topicCurrentOpId !== operationId) return;
 
-    // Get a fresh JWT token (original expired after 5 min)
-    const { token } = await aiAgentService.refreshGatewayToken(topicId);
+    // Refresh the short-lived JWT and read the durable operation state in
+    // parallel. The status read recovers a human-intervention outcome when the
+    // Gateway's best-effort push was dropped before this reconnect.
+    const [{ token }, operationStatus] = await Promise.all([
+      aiAgentService.refreshGatewayToken(topicId),
+      aiAgentService.getOperationStatus({ operationId }).catch((error) => {
+        console.error('[Gateway] getOperationStatus failed during reconnect:', error);
+        return null;
+      }),
+    ]);
 
     // Re-check after the async token refresh: a newer executeGatewayAgent call may have
     // taken over for this topic while we were waiting. If so, bail to avoid a duplicate stream.
@@ -816,12 +828,30 @@ export class GatewayActionImpl {
         .catch((err) => console.error('[Gateway] interruptTask failed:', err));
     });
 
+    const consumeHumanInterventionOutcome = createHumanInterventionOutcomeConsumer(
+      this.#get,
+      context,
+    );
+    const persistedOutcome = operationStatus?.currentState.metadata?.interventionOutcome;
+    if (persistedOutcome) {
+      await consumeHumanInterventionOutcome(
+        {
+          outcome: persistedOutcome.status,
+          toolMessageId: persistedOutcome.toolMessageId,
+        },
+        {
+          pendingToolMessageIds: operationStatus.currentState.pendingHumanToolMessageIds,
+        },
+      );
+    }
+
     const eventHandler = createGatewayEventHandler(this.#get, {
       assistantMessageId,
       context,
       // Server-side operation id — needed for tool_result dispatch back over
       // the same WS that gatewayConnections is keyed on.
       gatewayOperationId: operationId,
+      humanInterventionOutcomeConsumer: consumeHumanInterventionOutcome,
       operationId: gatewayOpId,
       runLifecycle: buildRunLifecycle(this.#get, {
         context,

@@ -7,6 +7,7 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { AdminReauthCancelledError } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 
+import type { IdentityProviderRestartPhase } from './controller';
 import IdentityProviderPage from './IdentityProviderPage';
 import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
 
@@ -29,7 +30,7 @@ const mocks = vi.hoisted(() => ({
     accept: vi.fn(),
     attempt: null,
     fail: vi.fn(),
-    phase: 'idle' as const,
+    phase: 'idle' as IdentityProviderRestartPhase,
     retry: vi.fn(),
   },
   runtime: {

@@ -32,6 +32,27 @@ import {
 import { useFetchAdminAuthSettings } from './useAdminAuthSettings';
 
 const styles = createStaticStyles(({ css }) => ({
+  allowlistReveal: css`
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition:
+      grid-template-rows ${cssVar.motionDurationMid} ${cssVar.motionEaseInOut},
+      opacity ${cssVar.motionDurationMid} ${cssVar.motionEaseInOut};
+
+    &[data-open='true'] {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      transition: none;
+    }
+  `,
+  allowlistRevealInner: css`
+    overflow: hidden;
+    min-height: 0;
+  `,
   card: css`
     display: flex;
     flex-direction: column;
@@ -419,18 +440,24 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
             <div className={styles.rowText}>
               <Text strong>{t('generalSettings.emailAllowlist.title')}</Text>
               <Text type="secondary">{t('generalSettings.emailAllowlist.desc')}</Text>
-              {draft.emailDomainAllowlistEnabled ? (
-                <Flexbox gap={6} style={{ marginTop: 8 }}>
-                  <TextArea
-                    disabled={disabled}
-                    placeholder={t('generalSettings.emailAllowlist.placeholder')}
-                    rows={4}
-                    value={draft.emailDomainText}
-                    onChange={(event) => patch({ emailDomainText: event.target.value })}
-                  />
-                  <span className={styles.hint}>{t('generalSettings.emailAllowlist.hint')}</span>
-                </Flexbox>
-              ) : null}
+              <div
+                aria-hidden={!draft.emailDomainAllowlistEnabled}
+                className={styles.allowlistReveal}
+                data-open={draft.emailDomainAllowlistEnabled}
+              >
+                <div className={styles.allowlistRevealInner}>
+                  <Flexbox gap={6} style={{ paddingTop: 8 }}>
+                    <TextArea
+                      disabled={disabled || !draft.emailDomainAllowlistEnabled}
+                      placeholder={t('generalSettings.emailAllowlist.placeholder')}
+                      rows={4}
+                      value={draft.emailDomainText}
+                      onChange={(event) => patch({ emailDomainText: event.target.value })}
+                    />
+                    <span className={styles.hint}>{t('generalSettings.emailAllowlist.hint')}</span>
+                  </Flexbox>
+                </div>
+              </div>
             </div>
             <Switch
               checked={draft.emailDomainAllowlistEnabled}

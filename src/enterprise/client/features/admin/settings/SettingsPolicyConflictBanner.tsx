@@ -54,19 +54,21 @@ const SettingsPolicyConflictBanner = memo<SettingsPolicyConflictBannerProps>(
             {conflictState.phase === 'conflict' ? (
               <>
                 <Text as="div" type="secondary">
-                  {t('settingsPolicy.conflict.revisions', {
-                    local: conflictState.localBaseRevision,
-                    server: conflictState.serverBaseRevision,
-                  })}
+                  {t('settingsPolicy.conflict.description')}
                 </Text>
                 {conflictState.conflictingPaths.length > 0 ? (
                   <div className={styles.conflictGrid}>
-                    {conflictState.conflictingPaths.map((path) => {
+                    {conflictState.conflictingPaths.map((path, index) => {
                       const entry = registryByPath.get(path);
-                      if (!entry) return <Text key={path}>{path}</Text>;
+                      const fallbackLabel = t('settingsPolicy.unknownSetting', {
+                        index: index + 1,
+                      });
+                      if (!entry) return <Text key={path}>{fallbackLabel}</Text>;
                       return (
                         <div key={path} style={{ gridColumn: '1 / -1' }}>
-                          <Text strong>{t(entry.titleKey as never, { defaultValue: path })}</Text>
+                          <Text strong>
+                            {t(entry.titleKey as never, { defaultValue: fallbackLabel })}
+                          </Text>
                           <div className={styles.conflictGrid}>
                             <Text type="secondary">
                               {t('settingsPolicy.conflict.localValue', {

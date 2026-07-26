@@ -96,7 +96,7 @@ const ProviderRevisionsPanel = memo<ProviderRevisionsPanelProps>(
           <>
             {revisions.data.items.map((revision) => (
               <div className={styles.revision} key={revision.revision}>
-                <Text>#{revision.revision}</Text>
+                <Text>{t('aiCatalog.revisions.row', { revision: revision.revision })}</Text>
                 <StatusBadge status={revision.status} />
                 <Flexbox gap={2}>
                   <Text>{revision.comment || t('aiCatalog.revisions.noComment')}</Text>

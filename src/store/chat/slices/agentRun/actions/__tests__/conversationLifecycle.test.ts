@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { TRPCClientError } from '@trpc/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createI18nNext } from '@/locales/create';
 import { agentService } from '@/services/agent';
 import { aiChatService } from '@/services/aiChat';
 import { chatService } from '@/services/chat';
@@ -16,6 +17,7 @@ import * as toolStoreModule from '@/store/tool';
 import { pageAgentRuntime } from '@/store/tool/slices/builtin/executors/lobe-page-agent';
 
 import { useChatStore } from '../../../../store';
+import { getGatewayStartErrorMessage } from '../entries/conversationLifecycle';
 import { createMockAgentConfig, createMockMessage, TEST_CONTENT, TEST_IDS } from './fixtures';
 import { resetTestEnvironment, setupMockSelectors, spyOnMessageService } from './helpers';
 
@@ -360,6 +362,8 @@ describe('ConversationLifecycle actions', () => {
               source: 'builtin',
             },
           ],
+          platformSkillCatalog: null,
+          platformSkillRuntimeStatus: 'unmanaged',
         } as any);
 
         await act(async () => {
@@ -648,6 +652,59 @@ describe('ConversationLifecycle actions', () => {
         expect(useChatStore.getState().topicLoadingIds).not.toContain(newTopicId);
         expect(useChatStore.getState().topicLoadingIds).not.toContain(optimisticTopicId);
       });
+
+      it.each([
+        ['zh-CN', '此 Agent 因所需资源不可用而无法启动。请联系管理员检查其配置。'],
+        [
+          'en-US',
+          'This Agent cannot start because a required resource is unavailable. Ask an administrator to review its setup.',
+        ],
+      ])(
+        'persists exact %s copy for a structured Platform Agent gateway failure',
+        async (locale, expected) => {
+          const { result } = renderHook(() => useChatStore());
+          const agentId = TEST_IDS.SESSION_ID;
+          const structuredError = {
+            data: {
+              errorData: {
+                code: 'PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE',
+              },
+            },
+            message: 'PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE',
+          };
+
+          const appI18n = createI18nNext(locale);
+          await appI18n.init({ initAsync: false });
+          await vi.waitFor(() =>
+            expect(
+              appI18n.instance.t('response.PlatformAgentDependencyUnavailable', { ns: 'error' }),
+            ).toBe(expected),
+          );
+          expect(appI18n.instance.hasResourceBundle(locale, 'admin')).toBe(false);
+
+          act(() => {
+            useChatStore.setState({
+              activeAgentId: agentId,
+              executeGatewayAgent: vi.fn().mockRejectedValue(structuredError),
+              isGatewayModeEnabled: () => true,
+            });
+          });
+
+          await act(async () => {
+            await result.current.sendMessage({
+              context: { agentId, threadId: null, topicId: null },
+              message: 'hello',
+            });
+          });
+
+          const operation = Object.values(result.current.operations).find(
+            (item) => item.type === 'sendMessage' && item.status === 'failed',
+          );
+          expect(operation?.metadata.error?.message).toBe(expected);
+          expect(operation?.metadata.error?.message).not.toContain('PLATFORM_AGENT_');
+          expect(getGatewayStartErrorMessage(structuredError)).toBe(expected);
+        },
+      );
 
       it('should hold the migrated topicLoadingIds owner through a hetero new-topic run and release it at the end', async () => {
         mockConstEnv.isDesktop = true;

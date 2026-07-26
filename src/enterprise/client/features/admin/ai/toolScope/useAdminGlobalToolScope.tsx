@@ -2,9 +2,10 @@
 
 import { builtinSkills as bundledBuiltinSkills } from '@lobechat/builtin-skills';
 import type { SkillListItem, SkillResourceTreeNode } from '@lobechat/types';
-import { toast } from '@lobehub/ui/base-ui';
+import { Alert } from '@lobehub/ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ConnectorToolPermission } from '@/database/schemas';
@@ -145,6 +146,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     () => adminConnectorsService.getGovernance(),
     { revalidateOnFocus: false },
   );
+  const mutateGovernance = governanceSWR.mutate;
   const governance = governanceSWR.data;
   const builtinToolPolicies = governance?.doc.builtinToolPolicies;
   const connectorListItems = connectorsListSWR.data ?? [];
@@ -242,15 +244,18 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     }
     void connectorsListSWR.mutate();
     void connectorDetailsSWR.mutate();
-    void governanceSWR.mutate();
+    void mutateGovernance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     view,
     skillsSWR.mutate,
     connectorsListSWR.mutate,
     connectorDetailsSWR.mutate,
-    governanceSWR.mutate,
+    mutateGovernance,
   ]);
+  const retryGovernance = useCallback(() => {
+    void mutateGovernance();
+  }, [mutateGovernance]);
 
   const connectorPartialDetailError =
     connectorDetailFailedCount > 0
@@ -260,14 +265,39 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
           }),
         )
       : undefined;
+  const governanceFailureActiveRef = useRef(false);
+
+  useEffect(() => {
+    if (view !== 'connector') {
+      governanceFailureActiveRef.current = false;
+      return;
+    }
+
+    if (governanceSWR.error) {
+      if (governanceFailureActiveRef.current) return;
+      governanceFailureActiveRef.current = true;
+      toast.error(t('aiToolSettings.connectors.governanceLoadFailed'));
+      return;
+    }
+
+    if (governanceSWR.data && !governanceSWR.isValidating) {
+      governanceFailureActiveRef.current = false;
+    }
+  }, [governanceSWR.data, governanceSWR.error, governanceSWR.isValidating, t, view]);
 
   const listError =
     view === 'connector'
-      ? (connectorsListSWR.error ?? connectorDetailsSWR.error ?? connectorPartialDetailError)
+      ? (connectorsListSWR.error ??
+        governanceSWR.error ??
+        connectorDetailsSWR.error ??
+        connectorPartialDetailError)
       : (skillsSWR.error ?? undefined);
   const listLoading =
     view === 'connector'
-      ? Boolean(connectorsListSWR.isLoading && !connectorsListSWR.data)
+      ? Boolean(
+          (connectorsListSWR.isLoading && !connectorsListSWR.data) ||
+          (governanceSWR.isLoading && !governanceSWR.data),
+        )
       : Boolean(skillsSWR.isLoading && !skillsSWR.data);
 
   // ── builtin skill org distribution ────────────────────────────────────────
@@ -324,6 +354,27 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     lastConnectorSavedToastAtRef.current = now;
     toast.success(t('connectorCatalog.toast.saved'));
   }, [t]);
+
+  const connectorNotice = useMemo(
+    () =>
+      governanceSWR.error ? (
+        <Alert
+          showIcon
+          type="error"
+          action={
+            <Button onClick={retryGovernance}>
+              {t('aiToolSettings.connectors.retryGovernance', {
+                defaultValue: 'Retry permissions',
+              })}
+            </Button>
+          }
+          message={t('aiToolSettings.connectors.governanceLoadFailed', {
+            defaultValue: 'Connector permissions could not be loaded. Retry before making changes.',
+          })}
+        />
+      ) : undefined,
+    [governanceSWR.error, retryGovernance, t],
+  );
 
   const localizePublishError = useCallback(
     (publishError: string) => {
@@ -603,17 +654,17 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
           reason: REASONS.builtinToolPolicy,
         });
         notifyConnectorSaved();
-        await governanceSWR.mutate();
+        await mutateGovernance();
       } catch (err) {
         // Service wrapper toasts hard failures; cover getGovernance + local deny.
         notifyUnlessAlreadyToasted(notifyConnectorFailure, err);
         throw err;
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
     [
       capabilities.canUpdateConnector,
-      governanceSWR.mutate,
+      mutateGovernance,
       notifyConnectorFailure,
       notifyConnectorSaved,
       notifyUnlessAlreadyToasted,
@@ -865,6 +916,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     () => ({
       canSetBuiltinSkillDistribution,
       capabilities,
+      connectorNotice,
       connectors,
       deleteConnector,
       deleteOrgSkill,
@@ -889,6 +941,7 @@ export const useAdminGlobalToolScope = (view: 'connector' | 'skill'): AdminToolS
     [
       canSetBuiltinSkillDistribution,
       capabilities,
+      connectorNotice,
       connectors,
       deleteConnector,
       deleteOrgSkill,

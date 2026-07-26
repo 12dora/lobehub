@@ -64,6 +64,42 @@ const fetchAndReplaceMessages = async (get: () => ChatStore, context: Conversati
   return messages;
 };
 
+export type HumanInterventionOutcomeConsumer = (
+  data: HumanInterventionOutcomeData,
+  options?: { pendingToolMessageIds?: string[] },
+) => Promise<void>;
+
+/**
+ * Reconcile live/replayed Gateway pushes and status-based reconnect recovery
+ * through one path. Status recovery supplies the server's current pending
+ * tool-message IDs so an old non-accepted outcome cannot affect a newer
+ * approval in the same operation.
+ *
+ * Accepted outcomes always refresh from the database: the target has already
+ * left the server's pending set, and the refresh clears only that persisted
+ * tool row while preserving other pending approvals.
+ */
+export const createHumanInterventionOutcomeConsumer = (
+  get: () => ChatStore,
+  context: ConversationContext,
+): HumanInterventionOutcomeConsumer => {
+  return async (data, options) => {
+    const { pendingToolMessageIds } = options ?? {};
+    const isCorrelatedOutcome =
+      data.outcome === 'accepted' ||
+      !data.toolMessageId ||
+      pendingToolMessageIds === undefined ||
+      pendingToolMessageIds.includes(data.toolMessageId);
+
+    if (!isCorrelatedOutcome) return;
+
+    await fetchAndReplaceMessages(get, context).catch(console.error);
+    if (data.outcome !== 'accepted') {
+      antdMessage.warning(t('tool.intervention.outcomeNotAccepted', { ns: 'chat' }));
+    }
+  };
+};
+
 const shouldSkipMessageFetch = (
   event: AgentStreamEvent,
   runtimeType: 'gateway' | 'hetero',
@@ -355,6 +391,7 @@ export const createGatewayEventHandler = (
      * Defaults to `operationId` when the caller does not distinguish the two.
      */
     gatewayOperationId?: string;
+    humanInterventionOutcomeConsumer?: HumanInterventionOutcomeConsumer;
     operationId: string;
     /**
      * Shared run lifecycle for this run, assembled by the caller (gateway.ts).
@@ -380,6 +417,8 @@ export const createGatewayEventHandler = (
   const { context, operationId, runLifecycle } = params;
   const gatewayOperationId = params.gatewayOperationId ?? operationId;
   const runtimeType = params.runtimeType ?? 'gateway';
+  const consumeHumanInterventionOutcome =
+    params.humanInterventionOutcomeConsumer ?? createHumanInterventionOutcomeConsumer(get, context);
 
   const runScope: RunScope = context.scope === 'sub_agent' ? 'sub_agent' : 'top_level';
   const lifecycleEventBase = {
@@ -940,11 +979,7 @@ export const createGatewayEventHandler = (
 
       case 'human_intervention_outcome': {
         enqueue(async () => {
-          const data = event.data as HumanInterventionOutcomeData;
-          await fetchAndReplaceMessages(get, context).catch(console.error);
-          if (data.outcome !== 'accepted') {
-            antdMessage.warning(t('tool.intervention.outcomeNotAccepted', { ns: 'chat' }));
-          }
+          await consumeHumanInterventionOutcome(event.data as HumanInterventionOutcomeData);
         });
         break;
       }

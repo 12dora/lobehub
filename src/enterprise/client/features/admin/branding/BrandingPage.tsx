@@ -127,18 +127,34 @@ const BrandingPage = memo(() => {
   } = useBrandingEditorStore();
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
+  const [runtimeRefreshPending, setRuntimeRefreshPending] = useState(false);
   const [recoveryOffer, setRecoveryOffer] = useState<AdminBrandingDraft | null>(null);
+  const committedPublishRevisionRef = useRef<number | null>(null);
   const observedServerSnapshot = useRef<string | null>(null);
   const recoveryCheckedRevisionRef = useRef<number | null>(null);
   const dirty = editorState === 'dirty';
   const conflict = editorState === 'conflict';
   const committedRefresh = editorState === 'committedRefresh';
   /** Mutations stay locked on CAS conflict and after a committed publish whose refresh failed. */
-  const mutationLocked = conflict || committedRefresh;
+  const mutationLocked = conflict || committedRefresh || runtimeRefreshPending;
 
   useEffect(() => {
     if (!data) return;
     const snapshotKey = `${data.baseRevision}:${data.draftToken}:${data.published?.revision ?? ''}`;
+    if (draft && observedServerSnapshot.current === snapshotKey) return;
+    const committedPublishRevision = committedPublishRevisionRef.current;
+    if (
+      committedPublishRevision !== null &&
+      (data.baseRevision < committedPublishRevision ||
+        (data.published?.revision ?? 0) < committedPublishRevision)
+    ) {
+      // A fulfilled SWR update can still be an older cached snapshot. Keep the editor
+      // locked until both authoritative pointers have reached the committed publish.
+      observedServerSnapshot.current = snapshotKey;
+      if (editorState !== 'committedRefresh') markCommittedRefresh();
+      return;
+    }
     // After unmount/StrictMode cleanup the store is reset but this ref can still hold the
     // same snapshot key (mark-before-hydrate). Always rehydrate when draft is empty so
     // Inputs refill after leave→re-enter, HMR, or StrictMode double-invoke.
@@ -160,7 +176,6 @@ const BrandingPage = memo(() => {
       }
       return;
     }
-    if (observedServerSnapshot.current === snapshotKey) return;
     observedServerSnapshot.current = snapshotKey;
     if (data.draftToken !== draftToken || data.baseRevision !== baseRevision) {
       if (editorState === 'idle' || editorState === 'committedRefresh') {
@@ -168,7 +183,16 @@ const BrandingPage = memo(() => {
         setRecoveryOffer(null);
       } else if (editorState !== 'conflict') markConflict();
     }
-  }, [baseRevision, data, draft, draftToken, editorState, hydrate, markConflict]);
+  }, [
+    baseRevision,
+    data,
+    draft,
+    draftToken,
+    editorState,
+    hydrate,
+    markCommittedRefresh,
+    markConflict,
+  ]);
 
   // Persist non-secret dirty drafts for crash/reload recovery (store resets on unmount).
   useEffect(() => {
@@ -249,29 +273,32 @@ const BrandingPage = memo(() => {
   const refreshAuthoritative = useCallback(async () => {
     setActionError(null);
     setActionNotice(null);
-    try {
-      const refreshed = await mutate();
-      if (refreshed) hydrate(refreshed);
-    } catch {
-      // Never surface an unhandled rejection from retry-refresh. Preserve mutation
-      // locks (committedRefresh / conflict); only re-show a benign refresh error.
-      if (editorState === 'committedRefresh') {
-        setActionError(
-          t('branding.refresh.committedFailed', {
-            defaultValue:
-              'Branding was published, but refreshing the editor failed. Retry refresh before making more changes.',
-          }),
-        );
-      } else {
-        setActionError(
-          t('branding.refresh.failed', {
-            defaultValue:
-              'Refreshing the branding editor failed. Retry before making more changes.',
-          }),
-        );
-      }
+    const [adminRefresh, runtimeRefresh] = await Promise.allSettled([mutate(), platform.refresh()]);
+    const committedPublishRevision = committedPublishRevisionRef.current;
+    const refreshed = adminRefresh.status === 'fulfilled' ? adminRefresh.value : undefined;
+    const adminRefreshAuthoritative =
+      refreshed !== undefined &&
+      (committedPublishRevision === null ||
+        (refreshed.baseRevision >= committedPublishRevision &&
+          (refreshed.published?.revision ?? 0) >= committedPublishRevision));
+    if (adminRefreshAuthoritative) {
+      hydrate(refreshed);
+    } else {
+      markCommittedRefresh();
     }
-  }, [editorState, hydrate, mutate, t]);
+    if (!adminRefreshAuthoritative || runtimeRefresh.status === 'rejected') {
+      if (runtimeRefresh.status === 'rejected') setRuntimeRefreshPending(true);
+      setRefreshWarning(
+        committedPublishRevision !== null && !adminRefreshAuthoritative
+          ? t('branding.refresh.committedFailed')
+          : t('branding.refresh.postCommitFailed'),
+      );
+      return;
+    }
+    committedPublishRevisionRef.current = null;
+    setRuntimeRefreshPending(false);
+    setRefreshWarning(null);
+  }, [hydrate, markCommittedRefresh, mutate, platform, t]);
 
   const save = useCallback(() => {
     if (!draft || !canUpdate || !dirty || mutationLocked) return;
@@ -294,7 +321,21 @@ const BrandingPage = memo(() => {
           setRecoveryOffer(null);
           setActionError(null);
           setActionNotice(t('branding.status.draftSaved'));
-          void mutate();
+          try {
+            const refreshed = await mutate();
+            if (!refreshed) throw new Error('BRANDING_REFRESH_EMPTY');
+            if (
+              refreshed.baseRevision < result.baseRevision ||
+              refreshed.draftToken !== result.draftToken
+            ) {
+              throw new Error('BRANDING_REFRESH_STALE');
+            }
+            hydrate(refreshed);
+            setRefreshWarning(null);
+          } catch (refreshError) {
+            console.error('Branding post-save refresh failed', refreshError);
+            setRefreshWarning(t('branding.refresh.postCommitFailed'));
+          }
         } catch (cause) {
           const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
           if (isConflict) markConflict();
@@ -314,6 +355,7 @@ const BrandingPage = memo(() => {
     draft,
     draftToken,
     formatError,
+    hydrate,
     markConflict,
     mutate,
     mutationLocked,
@@ -337,23 +379,39 @@ const BrandingPage = memo(() => {
       onSubmit: async (payload) => {
         setEditorState('publishing');
         try {
-          await adminBrandingService.publish(payload as AdminBrandingPublishInput);
+          const result = await adminBrandingService.publish(payload as AdminBrandingPublishInput);
+          committedPublishRevisionRef.current = result.revision;
           clearBrandingLocalDraft(baseRevision);
           setRecoveryOffer(null);
           setActionError(null);
           setActionNotice(t('branding.status.published'));
-          const [brandingRefresh] = await Promise.allSettled([mutate(), platform.refresh()]);
-          if (brandingRefresh.status === 'fulfilled' && brandingRefresh.value) {
-            hydrate(brandingRefresh.value);
+          const [brandingRefresh, runtimeRefresh] = await Promise.allSettled([
+            mutate(),
+            platform.refresh(),
+          ]);
+          const refreshed =
+            brandingRefresh.status === 'fulfilled' ? brandingRefresh.value : undefined;
+          const adminRefreshAuthoritative =
+            refreshed !== undefined &&
+            refreshed.baseRevision >= result.revision &&
+            (refreshed.published?.revision ?? 0) >= result.revision;
+          if (adminRefreshAuthoritative) {
+            hydrate(refreshed);
           } else {
             // Publish already committed — lock mutations until an authoritative refresh lands.
             markCommittedRefresh();
-            setActionError(
-              t('branding.refresh.committedFailed', {
-                defaultValue:
-                  'Branding was published, but refreshing the editor failed. Retry refresh before making more changes.',
-              }),
+          }
+          if (!adminRefreshAuthoritative || runtimeRefresh.status === 'rejected') {
+            if (runtimeRefresh.status === 'rejected') setRuntimeRefreshPending(true);
+            setRefreshWarning(
+              !adminRefreshAuthoritative
+                ? t('branding.refresh.committedFailed')
+                : t('branding.refresh.postCommitFailed'),
             );
+          } else {
+            committedPublishRevisionRef.current = null;
+            setRuntimeRefreshPending(false);
+            setRefreshWarning(null);
           }
         } catch (cause) {
           const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
@@ -408,7 +466,21 @@ const BrandingPage = memo(() => {
             hydrate({ ...result, draftMatchesPublished: false });
             setActionError(null);
             setActionNotice(t('branding.status.restoredDraft'));
-            void mutate();
+            try {
+              const refreshed = await mutate();
+              if (!refreshed) throw new Error('BRANDING_REFRESH_EMPTY');
+              if (
+                refreshed.baseRevision < result.baseRevision ||
+                refreshed.draftToken !== result.draftToken
+              ) {
+                throw new Error('BRANDING_REFRESH_STALE');
+              }
+              hydrate(refreshed);
+              setRefreshWarning(null);
+            } catch (refreshError) {
+              console.error('Branding post-rollback refresh failed', refreshError);
+              setRefreshWarning(t('branding.refresh.postCommitFailed'));
+            }
           } catch (cause) {
             if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') markConflict();
             setActionError(formatError(cause));
@@ -575,19 +647,18 @@ const BrandingPage = memo(() => {
         />
       ) : null}
       {!canUpdate ? <Alert showIcon message={t('branding.readOnly')} type="info" /> : null}
-      {committedRefresh ? (
+      {committedRefresh || refreshWarning ? (
         <Alert
           extraIsolate
           showIcon
+          description={refreshWarning}
+          message={t('branding.refresh.committedTitle')}
           type="warning"
           extra={
             <Button onClick={() => void refreshAuthoritative()}>
               {t('branding.refresh.retry', { defaultValue: 'Retry refresh' })}
             </Button>
           }
-          message={t('branding.refresh.committedTitle', {
-            defaultValue: 'Published — refresh required',
-          })}
         />
       ) : null}
       {pendingPublish ? (

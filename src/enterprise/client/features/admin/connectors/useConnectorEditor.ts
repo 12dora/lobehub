@@ -1,5 +1,6 @@
 'use client';
 
+import { toast } from '@lobehub/ui/base-ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -64,12 +65,14 @@ export const useConnectorEditor = (
   /** Stable i18n key — translated at the presentation boundary so locale changes apply. */
   const [restoreNoticeKey, setRestoreNoticeKey] = useState<string | null>(null);
   const hydratedRef = useRef('');
+  const recoveryWarningShownRef = useRef(false);
 
   useEffect(() => {
     if (!snapshot) return;
     const key = `${snapshot.draft.id}:${snapshot.baseRevision}:${snapshot.draftToken}:${editable}`;
     if (hydratedRef.current === key) return;
     hydratedRef.current = key;
+    recoveryWarningShownRef.current = false;
     const stored = editable ? loadAdminConnectorDraft(snapshot.draft.id) : null;
     setDraft(stored?.draft ?? toEditableAdminConnectorDraft(snapshot.draft));
     setDirty(Boolean(stored));
@@ -104,7 +107,7 @@ export const useConnectorEditor = (
     if (!editable || !snapshot || !draft || !dirty) return;
     const secretLeaves =
       secret.operation === 'replace' && secret.value ? [secret.value] : undefined;
-    saveAdminConnectorDraft(
+    const result = saveAdminConnectorDraft(
       snapshot.draft.id,
       {
         baseRevision: snapshot.baseRevision,
@@ -115,7 +118,11 @@ export const useConnectorEditor = (
       },
       { secretLeaves },
     );
-  }, [dirty, draft, editable, requiresSecretReentry, secret, snapshot]);
+    if (result.status === 'unavailable' && !recoveryWarningShownRef.current) {
+      recoveryWarningShownRef.current = true;
+      toast.warning(t('connectorCatalog.unsaved.recoveryUnavailable'));
+    }
+  }, [dirty, draft, editable, requiresSecretReentry, secret, snapshot, t]);
 
   const unsavedMessages = useMemo(
     () => ({

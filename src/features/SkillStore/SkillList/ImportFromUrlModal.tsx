@@ -47,7 +47,9 @@ const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ canCreate, onImp
 
     try {
       await runSkillImport({
-        importSkill: () => (onImport ?? importAgentSkillFromUrl)({ url: trimmed }),
+        importSkill: async () => {
+          await (onImport ?? importAgentSkillFromUrl)({ url: trimmed });
+        },
         onComplete: close,
         onPersonalSuccess: () => message.success(t('agentSkillModal.importSuccess')),
         platformOverride: Boolean(onImport),

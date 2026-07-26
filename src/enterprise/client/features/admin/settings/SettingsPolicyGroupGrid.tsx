@@ -63,15 +63,6 @@ const styles = createStaticStyles(({ css }) => ({
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 12px;
   `,
-  path: css`
-    overflow: hidden;
-
-    font-family: ${cssVar.fontFamilyCode};
-    font-size: 12px;
-    color: ${cssVar.colorTextSecondary};
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  `,
   row: css`
     display: flex;
     flex-shrink: 0;
@@ -106,16 +97,19 @@ const SettingsPolicyGroupGrid = memo<SettingsPolicyGroupGridProps>(
               <div className={styles.grid}>
                 {groupEntries.map((entry) => {
                   const policy = getPolicy(entry.path);
+                  const fallbackLabel = t('settingsPolicy.unknownSetting', {
+                    index: entries.indexOf(entry) + 1,
+                  });
+                  const settingLabel = t(entry.titleKey as never, {
+                    defaultValue: fallbackLabel,
+                  });
                   return (
                     <div className={styles.field} id={`setting-${entry.path}`} key={entry.path}>
                       <div className={styles.fieldHeader}>
                         <div className={styles.titleBlock}>
                           <Text strong ellipsis={{ tooltip: true, tooltipWhenOverflow: true }}>
-                            {t(entry.titleKey as never, { defaultValue: entry.path })}
+                            {settingLabel}
                           </Text>
-                          <div className={styles.path} title={entry.path}>
-                            {entry.path}
-                          </div>
                         </div>
                         <div className={styles.row}>
                           <Select
@@ -141,7 +135,7 @@ const SettingsPolicyGroupGrid = memo<SettingsPolicyGroupGridProps>(
                       <PolicyValueEditor
                         control={entry.control}
                         disabled={!canUpdate}
-                        label={t(entry.titleKey as never, { defaultValue: entry.path })}
+                        label={settingLabel}
                         max={entry.max}
                         min={entry.min}
                         options={entry.options}

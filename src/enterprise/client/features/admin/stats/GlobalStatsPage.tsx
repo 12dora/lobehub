@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useEffect } from 'react';
+import { memo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
@@ -24,13 +24,19 @@ const GlobalStatsPage = memo(() => {
     resetAdminStatsUserDisplayCache();
   }, [accountUserId]);
 
+  const resolveUser = useCallback(
+    (userId: string) =>
+      resolveAdminStatsUser(userId, (index) => t('stats.user.unknown', { index })),
+    [t],
+  );
+
   return (
     <AdminPageTemplate description={t('stats.page.desc')} title={t('stats.page.title')}>
       <StatsSetting
         enableUserDimension
         dataSource={adminGlobalStatsDataSource}
         headerNode={<GlobalStatsBanner />}
-        resolveUser={resolveAdminStatsUser}
+        resolveUser={resolveUser}
         showSettingHeader={false}
       />
     </AdminPageTemplate>

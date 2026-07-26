@@ -14,6 +14,7 @@ import { GatewayActionImpl } from '../transports/gateway/gateway';
 vi.mock('@/services/aiAgent', () => ({
   aiAgentService: {
     execAgentTask: vi.fn(),
+    getOperationStatus: vi.fn(),
     interruptTask: vi.fn(),
     refreshGatewayToken: vi.fn(),
   },
@@ -155,10 +156,12 @@ function createTestAction() {
 
 describe('GatewayActionImpl', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockAgentStore.state = { activeAgentId: undefined, agentMap: {} };
     mockUserDefaultConfig.disableGatewayMode = undefined;
     mockToolInterventionConfig.approvalMode = 'manual';
     mockToolInterventionConfig.allowList = [];
+    vi.mocked(aiAgentService.getOperationStatus).mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -1167,7 +1170,7 @@ describe('GatewayActionImpl', () => {
   });
 
   describe('reconnectToGatewayOperation', () => {
-    function createReconnectTestAction(assistantMessage: any) {
+    function createReconnectTestAction(assistantMessage: any, extraMessages: any[] = []) {
       const startOperation = vi.fn(() => ({ operationId: 'gw-op-reconnect' }));
       const mockClient = createMockClient();
       const captured: { onEvent?: (event: AgentStreamEvent) => void } = {};
@@ -1175,7 +1178,11 @@ describe('GatewayActionImpl', () => {
       const state: Record<string, any> = {
         activeAgentId: 'agent-1',
         gatewayConnections: {},
-        messagesMap: { 'agent-1_topic-1': assistantMessage ? [assistantMessage] : [] },
+        messagesMap: {
+          'agent-1_topic-1': assistantMessage
+            ? [assistantMessage, ...extraMessages]
+            : extraMessages,
+        },
         // getTopicById reads here; an empty map yields no running op so the
         // reconnect guards fall through to startOperation.
         topicDataMap: {},
@@ -1209,7 +1216,7 @@ describe('GatewayActionImpl', () => {
       const action = new GatewayActionImpl(set as any, get, undefined);
       action.createClient = vi.fn(() => mockClient);
 
-      return { action, captured, replaceMessages, startOperation };
+      return { action, captured, replaceMessages, startOperation, state };
     }
 
     afterEach(() => {
@@ -1295,6 +1302,141 @@ describe('GatewayActionImpl', () => {
         }
       },
     );
+
+    it.each(['accepted', 'already_consumed', 'mismatch', 'stale'] as const)(
+      'recovers a dropped %s intervention push from authoritative status',
+      async (outcome) => {
+        warning.mockClear();
+        const persistedMessages = [
+          {
+            id: 'tool-msg-1',
+            plugin: { apiName: 'write', arguments: '{}', identifier: 'local-system' },
+            pluginIntervention: {
+              status: outcome === 'accepted' ? 'approved' : 'pending',
+            },
+            role: 'tool',
+            tool_call_id: 'tool-call-1',
+          },
+        ];
+        const { action, replaceMessages } = createReconnectTestAction({
+          createdAt: 1,
+          id: 'ast-1',
+        });
+        vi.mocked(aiAgentService.getOperationStatus).mockResolvedValueOnce({
+          currentState: {
+            metadata: {
+              interventionOutcome: {
+                occurredAt: '2026-07-26T10:00:00.000Z',
+                status: outcome,
+                toolMessageId: 'tool-msg-1',
+              },
+            },
+            pendingHumanToolMessageIds: outcome === 'accepted' ? [] : ['tool-msg-1'],
+          },
+        } as any);
+        vi.mocked(messageService.getMessages).mockResolvedValueOnce(persistedMessages as any);
+
+        await action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        });
+
+        expect(aiAgentService.getOperationStatus).toHaveBeenCalledWith({
+          operationId: 'server-op-1',
+        });
+        expect(replaceMessages).toHaveBeenCalledWith(persistedMessages, {
+          context: expect.objectContaining({ topicId: 'topic-1' }),
+        });
+        expect(
+          (vi.mocked(replaceMessages).mock.lastCall?.[0] as any[])[0].pluginIntervention.status,
+        ).toBe(outcome === 'accepted' ? 'approved' : 'pending');
+        if (outcome === 'accepted') {
+          expect(warning).not.toHaveBeenCalled();
+        } else {
+          expect(warning).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it('ignores an old stale outcome when a newer approval is pending in the same operation', async () => {
+      warning.mockClear();
+      const newerPendingApproval = {
+        id: 'tool-msg-new',
+        pluginIntervention: { status: 'pending' },
+        role: 'tool',
+      };
+      const { action, replaceMessages, state } = createReconnectTestAction(
+        {
+          createdAt: 1,
+          id: 'ast-1',
+        },
+        [newerPendingApproval],
+      );
+      vi.mocked(aiAgentService.getOperationStatus).mockResolvedValueOnce({
+        currentState: {
+          metadata: {
+            interventionOutcome: {
+              occurredAt: '2026-07-26T10:00:00.000Z',
+              status: 'stale',
+              toolMessageId: 'tool-msg-old',
+            },
+          },
+          pendingHumanToolMessageIds: ['tool-msg-new'],
+        },
+      } as any);
+
+      await action.reconnectToGatewayOperation({
+        assistantMessageId: 'ast-1',
+        operationId: 'server-op-1',
+        topicId: 'topic-1',
+      });
+
+      expect(messageService.getMessages).not.toHaveBeenCalled();
+      expect(replaceMessages).not.toHaveBeenCalled();
+      expect(warning).not.toHaveBeenCalled();
+      expect(state.messagesMap['agent-1_topic-1']).toContain(newerPendingApproval);
+    });
+
+    it('refreshes an accepted approval without clearing another pending approval', async () => {
+      const stillPendingMessages = [
+        {
+          id: 'tool-msg-new',
+          plugin: { apiName: 'write', arguments: '{}', identifier: 'local-system' },
+          pluginIntervention: { status: 'pending' },
+          role: 'tool',
+          tool_call_id: 'tool-call-new',
+        },
+      ];
+      const { action, replaceMessages } = createReconnectTestAction({
+        createdAt: 1,
+        id: 'ast-1',
+      });
+      vi.mocked(aiAgentService.getOperationStatus).mockResolvedValueOnce({
+        currentState: {
+          metadata: {
+            interventionOutcome: {
+              occurredAt: '2026-07-26T10:00:00.000Z',
+              status: 'accepted',
+              toolMessageId: 'tool-msg-old',
+            },
+          },
+          pendingHumanToolMessageIds: ['tool-msg-new'],
+        },
+      } as any);
+      vi.mocked(messageService.getMessages).mockResolvedValueOnce(stillPendingMessages as any);
+
+      await action.reconnectToGatewayOperation({
+        assistantMessageId: 'ast-1',
+        operationId: 'server-op-1',
+        topicId: 'topic-1',
+      });
+
+      expect(replaceMessages).toHaveBeenCalledWith(stillPendingMessages, {
+        context: expect.objectContaining({ topicId: 'topic-1' }),
+      });
+      expect(warning).not.toHaveBeenCalled();
+    });
 
     // Captures the onSessionComplete handed to connectToGateway so we can drive
     // both close paths directly. Provides the methods that callback reaches.

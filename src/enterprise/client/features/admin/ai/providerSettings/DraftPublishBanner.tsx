@@ -22,7 +22,7 @@ const DraftPublishBanner = memo(() => {
   const activeId = useAiInfraStore((s) => s.activeAiProvider);
   const refreshList = useAiInfraStore((s) => s.refreshAiProviderList);
   const refreshDetail = useAiInfraStore((s) => s.refreshAiProviderDetail);
-  const outcome = useAdminPublishOutcome();
+  const outcome = useAdminPublishOutcome(activeId);
   const show =
     Boolean(outcome && !outcome.published) && (!activeId || outcome!.providerId === activeId);
 
@@ -34,8 +34,8 @@ const DraftPublishBanner = memo(() => {
   }, [outcome?.providerId, refreshDetail, refreshList]);
 
   const onDismiss = useCallback(() => {
-    clearLastAdminPublishOutcome();
-  }, []);
+    clearLastAdminPublishOutcome(outcome?.providerId);
+  }, [outcome?.providerId]);
 
   return (
     <AdminDraftPublishBanner

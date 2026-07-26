@@ -372,17 +372,17 @@ describe('managed Connector operation integration security', () => {
     expect(failed).toMatchObject({
       handled: true,
       result: {
-        content: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+        content: '',
         error: {
           code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
-          message: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
-          messageCode: 'platformConnectors.feedback.PLATFORM_CONNECTOR_NOT_PUBLISHED',
+          message: '',
         },
         success: false,
       },
     });
-    const { default: zh } = await import('../../../../../../locales/zh-CN/setting.json');
-    expect(zh[failed.result!.error!.messageCode as keyof typeof zh]).toContain('尚未发布');
+    expect(JSON.stringify(failed.result)).not.toContain(
+      '"message":"PLATFORM_CONNECTOR_NOT_PUBLISHED"',
+    );
   });
 
   // CONNECTOR-EXACT: a platform Agent's Connector manifests come from its immutable pinned refs —

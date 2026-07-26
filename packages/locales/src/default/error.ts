@@ -164,6 +164,12 @@ export default {
     'Skill server request returned an error. Please check your skill manifest file, skill configuration, or server implementation based on the error information below',
   'response.PluginSettingsInvalid':
     'This skill needs to be correctly configured before it can be used. Please check if your configuration is correct',
+  'response.PlatformAgentDependencyUnavailable':
+    'This Agent cannot start because a required resource is unavailable. Ask an administrator to review its setup.',
+  'response.PlatformAgentStartFailed':
+    'This Agent could not start. Try again. If the problem continues, contact your administrator.',
+  'response.PlatformAgentUnavailable':
+    'This Agent is no longer available. Return to the Agent list and choose another.',
   'response.ProviderContentModeration':
     'Content policy check failed. Revise your prompt and try again.',
   'response.ProviderContentModerationWarning':

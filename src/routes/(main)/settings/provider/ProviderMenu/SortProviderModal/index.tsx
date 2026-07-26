@@ -1,6 +1,5 @@
 import { Flexbox, SortableList } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
-import { App } from 'antd';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -35,7 +34,6 @@ const ConfigGroupModal = memo<ConfigGroupModalProps>(({ open, onCancel, defaultI
   const { allowed: canManageProvider } = usePermission('manage_provider_key');
   const updateAiProviderSort = useAiInfraStore((s) => s.updateAiProviderSort);
   const [loading, setLoading] = useState(false);
-  const { message } = App.useApp();
 
   const [items, setItems] = useState(defaultItems);
   return (
@@ -82,10 +80,39 @@ const ConfigGroupModal = memo<ConfigGroupModalProps>(({ open, onCancel, defaultI
               sort: index,
             }));
             setLoading(true);
-            await updateAiProviderSort(sortMap);
-            setLoading(false);
-            message.success(t('sortModal.success'));
-            onCancel();
+            try {
+              await updateAiProviderSort(sortMap);
+              toast.success(t('sortModal.success'));
+              onCancel();
+            } catch (error) {
+              const failures =
+                error &&
+                typeof error === 'object' &&
+                'code' in error &&
+                error.code === 'ADMIN_AI_PROVIDER_ORDER_PARTIAL_PUBLISH' &&
+                'failures' in error &&
+                Array.isArray(error.failures)
+                  ? (error.failures as { providerId: string }[])
+                  : [];
+              if (failures.length > 0) {
+                const failedNames = failures
+                  .map(
+                    ({ providerId }) =>
+                      items.find((item) => item.id === providerId)?.name || providerId,
+                  )
+                  .join(', ');
+                toast.warning(
+                  t('sortModal.partialFailure', {
+                    count: failures.length,
+                    providers: failedNames,
+                  }),
+                );
+              } else {
+                toast.error(t('sortModal.failure'));
+              }
+            } finally {
+              setLoading(false);
+            }
           }}
         >
           {t('sortModal.update')}

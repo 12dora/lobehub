@@ -1594,6 +1594,12 @@ export class AgentRuntimeService {
           interruption: currentState.interruption,
           lastModified: currentState.lastModified,
           maxSteps: currentState.maxSteps,
+          metadata: currentState.metadata?.interventionOutcome
+            ? { interventionOutcome: currentState.metadata.interventionOutcome }
+            : undefined,
+          pendingHumanToolMessageIds: currentState.pendingHumanToolMessages
+            ?.map((pending) => pending.messageId)
+            .filter((messageId): messageId is string => typeof messageId === 'string'),
           pendingHumanPrompt: currentState.pendingHumanPrompt,
           pendingHumanSelect: currentState.pendingHumanSelect,
           pendingToolsCalling: currentState.pendingToolsCalling,

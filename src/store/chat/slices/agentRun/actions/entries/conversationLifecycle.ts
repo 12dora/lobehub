@@ -27,6 +27,7 @@ import { TRPCClientError } from '@trpc/client';
 import { t } from 'i18next';
 
 import { message as antdMessage } from '@/components/AntdStaticMethods';
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { resolveAgentWorkingDirectoryConfig } from '@/helpers/agentWorkingDirectory';
 import { agentService } from '@/services/agent';
 import { aiChatService } from '@/services/aiChat';
@@ -76,6 +77,7 @@ import { pageAgentRuntime } from '@/store/tool/slices/builtin/executors/lobe-pag
 import { type StoreSetter } from '@/store/types';
 import { useUserMemoryStore } from '@/store/userMemory';
 import { markdownToTxt } from '@/utils/markdownToTxt';
+import { getStructuredPlatformErrorCode } from '@/utils/platformErrorCode';
 
 import { materializeLocalSystemToolSnapshots } from '../transports/client/localSystemToolSnapshots';
 import type { CommandSendOverrides, SingleAgentMentionDirectRoute } from './commandBus';
@@ -152,6 +154,35 @@ const isAbortError = (error: unknown, abortController?: AbortController) =>
 
 const createAbortError = () =>
   Object.assign(new Error('Compression cancelled'), { name: 'AbortError' });
+
+const PLATFORM_AGENT_GATEWAY_ERROR_KEYS = {
+  [PLATFORM_ERROR_CODES.PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE]:
+    'response.PlatformAgentDependencyUnavailable',
+  [PLATFORM_ERROR_CODES.PLATFORM_AGENT_START_FAILED]: 'response.PlatformAgentStartFailed',
+  [PLATFORM_ERROR_CODES.PLATFORM_AGENT_UNAVAILABLE]: 'response.PlatformAgentUnavailable',
+} as const;
+
+export const getGatewayStartErrorMessage = (error: unknown, translate: typeof t = t): string => {
+  const code = getStructuredPlatformErrorCode(error);
+  const i18nKey =
+    code && code in PLATFORM_AGENT_GATEWAY_ERROR_KEYS
+      ? PLATFORM_AGENT_GATEWAY_ERROR_KEYS[code as keyof typeof PLATFORM_AGENT_GATEWAY_ERROR_KEYS]
+      : undefined;
+  if (i18nKey) {
+    const localized = translate(i18nKey, {
+      defaultValue: translate('response.UnknownChatFetchError', { ns: 'error' }),
+      ns: 'error',
+    });
+    return localized.includes('PLATFORM_AGENT_')
+      ? translate('response.UnknownChatFetchError', { ns: 'error' })
+      : localized;
+  }
+
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  return message.includes('PLATFORM_AGENT_')
+    ? translate('response.UnknownChatFetchError', { ns: 'error' })
+    : message;
+};
 
 const QUEUE_BLOCKING_OPERATION_TYPE_SET = new Set<OperationType>(QUEUE_BLOCKING_OPERATION_TYPES);
 
@@ -1079,7 +1110,7 @@ export class ConversationLifecycleActionImpl {
 
         console.error('[Gateway] Failed to start server-side agent:', e);
         this.#get().failOperation(operationId, {
-          message: e instanceof Error ? e.message : 'Unknown error',
+          message: getGatewayStartErrorMessage(e),
           type: 'GatewayError',
         });
         rollbackOptimisticTopic('sendMessage/rollbackOptimisticTopic');

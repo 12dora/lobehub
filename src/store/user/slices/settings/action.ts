@@ -32,7 +32,8 @@ export class UserSettingsActionImpl {
   readonly #pendingSettingGroups = new Set<keyof UserSettings>();
   readonly #pendingSettingValues = new Map<keyof UserSettings, unknown>();
   readonly #set: Setter;
-  #resetPromise: Promise<void> | null = null;
+  #resetMutationPromise: Promise<AbortController> | null = null;
+  #resetOperationPromise: Promise<void> | null = null;
 
   constructor(set: Setter, get: () => UserStore, _api?: unknown) {
     void _api;
@@ -58,7 +59,7 @@ export class UserSettingsActionImpl {
     );
   };
 
-  #runReset = async (): Promise<void> => {
+  #runResetMutation = async (): Promise<AbortController> => {
     const previousSettings = this.#get().settings;
     const previousPendingGroups = new Set(this.#pendingSettingGroups);
     const previousPendingValues = new Map(this.#pendingSettingValues);
@@ -87,6 +88,22 @@ export class UserSettingsActionImpl {
         this.#restorePendingSettingGroups();
       }
       throw error;
+    }
+
+    return resetController;
+  };
+
+  #runResetOperation = async (): Promise<void> => {
+    const resetMutationPromise = this.#runResetMutation();
+    this.#resetMutationPromise = resetMutationPromise;
+
+    let resetController: AbortController;
+    try {
+      resetController = await resetMutationPromise;
+    } finally {
+      if (this.#resetMutationPromise === resetMutationPromise) {
+        this.#resetMutationPromise = null;
+      }
     }
 
     if (this.#get().updateSettingsSignal !== resetController) return;
@@ -142,24 +159,27 @@ export class UserSettingsActionImpl {
   };
 
   resetSettings = async (): Promise<void> => {
-    if (this.#resetPromise) {
-      await this.#resetPromise;
+    if (this.#resetOperationPromise) {
+      await this.#resetOperationPromise;
       return;
     }
 
-    const resetPromise = this.#runReset();
-    this.#resetPromise = resetPromise;
+    const resetOperationPromise = this.#runResetOperation();
+    this.#resetOperationPromise = resetOperationPromise;
     try {
-      await resetPromise;
+      await resetOperationPromise;
     } finally {
-      if (this.#resetPromise === resetPromise) this.#resetPromise = null;
+      if (this.#resetOperationPromise === resetOperationPromise) {
+        this.#resetOperationPromise = null;
+      }
     }
   };
 
   setSettings = async (settings: PartialDeep<UserSettings>): Promise<void> => {
-    // Reset is a write barrier. Deriving or sending an update before resetUserSettings settles
-    // lets a delayed reset erase a newer server write.
-    if (this.#resetPromise) await this.#resetPromise;
+    // Only the authoritative reset mutation is a write barrier. A best-effort freshness refresh
+    // may fail after the server reset has committed; post-reset edits must still be allowed to
+    // persist instead of inheriting that refresh failure.
+    if (this.#resetMutationPromise) await this.#resetMutationPromise;
 
     // A refresh applies its snapshot before its promise continuation can observe a generation
     // change. Reapply pending values synchronously before deriving the next mutation so a user

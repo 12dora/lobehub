@@ -32,25 +32,45 @@ export type AdminPublishOutcome = {
  * without coupling the adapter layer to a UI store framework.
  */
 class AdminPublishOutcomeStore {
-  #outcome: AdminPublishOutcome | null = null;
+  #latestProviderId: string | null = null;
   #listeners = new Set<() => void>();
+  #outcomes = new Map<string, AdminPublishOutcome>();
 
-  clear = () => {
-    if (this.#outcome === null) return;
-    this.#outcome = null;
+  clear = (providerId?: string) => {
+    if (providerId) {
+      if (!this.#outcomes.delete(providerId)) return;
+      if (this.#latestProviderId === providerId) {
+        this.#latestProviderId = [...this.#outcomes.keys()].at(-1) ?? null;
+      }
+    } else {
+      if (this.#outcomes.size === 0) return;
+      this.#outcomes.clear();
+      this.#latestProviderId = null;
+    }
     this.#emit();
   };
 
-  get = () => this.#outcome;
-
-  getSnapshot = () => this.#outcome;
+  get = (providerId?: string | null) =>
+    providerId
+      ? (this.#outcomes.get(providerId) ?? null)
+      : this.#latestProviderId
+        ? (this.#outcomes.get(this.#latestProviderId) ?? null)
+        : null;
 
   record = (providerKey: string, result: { published?: boolean; publishError?: string | null }) => {
-    this.#outcome = {
-      providerId: providerKey,
-      published: result.published !== false,
-      publishError: result.publishError ?? null,
-    };
+    if (result.published === false) {
+      this.#outcomes.set(providerKey, {
+        providerId: providerKey,
+        published: false,
+        publishError: result.publishError ?? null,
+      });
+      this.#latestProviderId = providerKey;
+    } else {
+      this.#outcomes.delete(providerKey);
+      if (this.#latestProviderId === providerKey) {
+        this.#latestProviderId = [...this.#outcomes.keys()].at(-1) ?? null;
+      }
+    }
     this.#emit();
   };
 
@@ -69,8 +89,8 @@ class AdminPublishOutcomeStore {
 /** Singleton store used by provider/model adapter writes and the draft banner. */
 export const adminPublishOutcomeStore = new AdminPublishOutcomeStore();
 
-export const clearLastAdminPublishOutcome = () => {
-  adminPublishOutcomeStore.clear();
+export const clearLastAdminPublishOutcome = (providerId?: string) => {
+  adminPublishOutcomeStore.clear(providerId);
 };
 
 export const recordPublishOutcome = (
@@ -84,11 +104,11 @@ export const recordPublishOutcome = (
  * React-friendly subscription to the last admin publish outcome.
  * Lives next to the store so DraftPublishBanner re-renders when record() fires.
  */
-export const useAdminPublishOutcome = (): AdminPublishOutcome | null =>
+export const useAdminPublishOutcome = (providerId?: string | null): AdminPublishOutcome | null =>
   useSyncExternalStore(
     adminPublishOutcomeStore.subscribe,
-    adminPublishOutcomeStore.getSnapshot,
-    adminPublishOutcomeStore.getSnapshot,
+    () => adminPublishOutcomeStore.get(providerId),
+    () => adminPublishOutcomeStore.get(providerId),
   );
 
 /** Platform UUIDs use standard hex-with-hyphens shape; everything else is treated as providerKey. */

@@ -71,6 +71,7 @@ const ProviderListPage = memo(() => {
     [cursor, enabled, limit, query, source, status],
   );
   const { data, error, isLoading, mutate } = useFetchAdminAiProviders(input);
+  const committedRefreshLocked = Boolean(committedProviderId);
 
   const columns = useMemo<TableColumnsType<AdminAiProviderListItem>>(
     () => [
@@ -108,6 +109,7 @@ const ProviderListPage = memo(() => {
         dataIndex: 'source',
         key: 'source',
         title: t('aiCatalog.providers.columns.source'),
+        render: (value: string) => t(`aiCatalog.providerSources.${value}` as never),
       },
       {
         dataIndex: 'secret',
@@ -140,6 +142,7 @@ const ProviderListPage = memo(() => {
                 canHardDeleteAiProvider(item) ? (
                   <Button
                     danger
+                    disabled={committedRefreshLocked}
                     size="small"
                     type="text"
                     onClick={(event) => {
@@ -172,7 +175,7 @@ const ProviderListPage = memo(() => {
           ]
         : []),
     ],
-    [t, canDeleteProvider, authMethod, mutate],
+    [t, canDeleteProvider, authMethod, mutate, committedRefreshLocked],
   );
 
   const patchFilter = useCallback(
@@ -227,6 +230,8 @@ const ProviderListPage = memo(() => {
       actions={
         canCreateProvider ? (
           <Button
+            disabled={committedRefreshLocked}
+            loading={committedRefreshLocked && !committedRefreshFailed}
             type="primary"
             onClick={() =>
               openCreateProviderModal({
@@ -336,7 +341,7 @@ const ProviderListPage = memo(() => {
         }
         onRetry={() => void mutate()}
         onRowActivate={
-          canReadProviders
+          canReadProviders && !committedRefreshLocked
             ? (item) => navigate(`/admin/ai/catalog/providers/${encodeURIComponent(item.id)}`)
             : undefined
         }

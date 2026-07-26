@@ -14,6 +14,7 @@ export interface StreamEvent {
     | 'stream_end'
     | 'visible_output_end'
     | 'stream_retry'
+    | 'human_intervention_outcome'
     | 'step_start'
     | 'step_complete'
     | 'error'
@@ -66,9 +67,23 @@ export interface AgentOperationResponse {
   success: boolean;
 }
 
-export interface HumanInterventionRequest {
-  action: 'approve' | 'reject' | 'input' | 'select';
+interface HumanInterventionRequestBase {
   data?: any;
   operationId: string;
   reason?: string;
 }
+
+export type HumanInterventionRequest =
+  | (HumanInterventionRequestBase & {
+      action: 'approve' | 'reject' | 'reject_continue';
+      /**
+       * ID of the persisted pending `role='tool'` message targeted by an
+       * approval/rejection. This is distinct from the tool-call ID carried
+       * inside `data.approvedToolCall`.
+       */
+      toolMessageId: string;
+    })
+  | (HumanInterventionRequestBase & {
+      action: 'input' | 'select';
+      toolMessageId?: string;
+    });

@@ -5,8 +5,12 @@ import { Button } from '@lobehub/ui';
 import { useMutation } from '@tanstack/react-query';
 import { Form, Input, message, Upload } from 'antd';
 import { createStaticStyles } from 'antd-style';
+import type { TFunction } from 'i18next';
 import { type FC, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { getStructuredPlatformErrorCode } from '@/utils/platformErrorCode';
 
 import { type CredsApi } from '../useCredsApi';
 
@@ -31,6 +35,12 @@ interface FormValues {
   key: string;
   name: string;
 }
+
+export const getFileCredUploadErrorMessage = (error: unknown, t: TFunction<'setting'>): string =>
+  getStructuredPlatformErrorCode(error) ===
+  PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID
+    ? t('creds.file.payloadInvalid')
+    : t('creds.file.uploadFailed');
 
 const FileCredForm: FC<FileCredFormProps> = ({ credsApi, disabled, onBack, onSuccess }) => {
   const { t } = useTranslation('setting');
@@ -87,7 +97,7 @@ const FileCredForm: FC<FileCredFormProps> = ({ credsApi, disabled, onBack, onSuc
       message.success(t('creds.file.uploadSuccess'));
     } catch (error) {
       console.error('[FileCredForm] Upload failed:', error);
-      message.error(error instanceof Error ? error.message : t('creds.file.uploadFailed'));
+      message.error(getFileCredUploadErrorMessage(error, t));
     } finally {
       setIsUploading(false);
     }

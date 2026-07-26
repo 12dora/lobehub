@@ -647,6 +647,42 @@ describe('useAdminGlobalToolScope', () => {
       expect(String(result.current.listError)).toMatch(/1 connectors failed to load/i);
       expect(result.current.connectors.some((c) => c.id === 'conn-2')).toBe(false);
     });
+
+    it('coalesces governance toasts by failure episode and resets after recovery', async () => {
+      const governanceErrorA = new Error('governance unavailable A');
+      const governanceErrorB = new Error('governance unavailable B');
+      const governanceErrorC = new Error('governance unavailable C');
+      mocks.connectors.getGovernance
+        .mockRejectedValueOnce(governanceErrorA)
+        .mockRejectedValueOnce(governanceErrorB)
+        .mockResolvedValueOnce({
+          doc: { builtinToolPolicies: {}, sharedAuthorization: { ownerUserId: null } },
+          managedActive: false,
+          revision: 0,
+        })
+        .mockRejectedValueOnce(governanceErrorC);
+
+      const { result } = renderScope('connector');
+
+      await waitFor(() => expect(result.current.listError).toBe(governanceErrorA));
+      expect(result.current.listLoading).toBe(false);
+      expect(toast.error).toHaveBeenCalledWith('aiToolSettings.connectors.governanceLoadFailed');
+      expect(result.current.connectorNotice).toBeTruthy();
+
+      act(() => result.current.retry());
+      await waitFor(() => expect(result.current.listError).toBe(governanceErrorB));
+      expect(result.current.connectorNotice).toBeTruthy();
+      expect(toast.error).toHaveBeenCalledTimes(1);
+
+      act(() => result.current.retry());
+      await waitFor(() => expect(result.current.listError).toBeUndefined());
+      expect(result.current.connectorNotice).toBeUndefined();
+
+      act(() => result.current.retry());
+      await waitFor(() => expect(result.current.listError).toBe(governanceErrorC));
+      expect(result.current.connectorNotice).toBeTruthy();
+      expect(toast.error).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('submitCustomConnector', () => {

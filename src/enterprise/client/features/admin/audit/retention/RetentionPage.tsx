@@ -116,7 +116,6 @@ const RetentionPage = memo(() => {
   const [editOpen, setEditOpen] = useState(false);
   const runsRef = useRef<HTMLDivElement>(null);
   const runStatusesRef = useRef(new Map<string, AdminAuditRetentionRunItem['status']>());
-  const runsInitializedRef = useRef(false);
 
   const runs = useFetchAuditRetentionRuns({ cursor: currentCursor, limit }, canOperate, {
     refreshInterval: pollWhileInFlight(),
@@ -140,12 +139,7 @@ const RetentionPage = memo(() => {
 
     for (const run of data.items) {
       const previousStatus = runStatusesRef.current.get(run.id);
-      if (
-        runsInitializedRef.current &&
-        previousStatus &&
-        isRetentionRunInFlight(previousStatus) &&
-        run.status === 'failed'
-      ) {
+      if (previousStatus && isRetentionRunInFlight(previousStatus) && run.status === 'failed') {
         toast.error(
           t('audit.retention.runs.failureToast', {
             reason: retentionFailureMessage(run),
@@ -154,7 +148,6 @@ const RetentionPage = memo(() => {
       }
       runStatusesRef.current.set(run.id, run.status);
     }
-    runsInitializedRef.current = true;
 
     setDetail((current) => {
       if (!current) return current;

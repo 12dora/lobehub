@@ -24,9 +24,11 @@ vi.mock('@/database/core/db-adaptor', () => ({
 
 // Mock AgentRuntimeService
 const mockGetOperationStatus = vi.fn();
+const mockProcessHumanIntervention = vi.fn();
 vi.mock('@/server/services/agentRuntime', () => ({
   AgentRuntimeService: vi.fn().mockImplementation(() => ({
     getOperationStatus: mockGetOperationStatus,
+    processHumanIntervention: mockProcessHumanIntervention,
   })),
 }));
 
@@ -110,6 +112,7 @@ describe('aiAgentRouter.getSubAgentTaskStatus', () => {
 
     // Reset mock
     mockGetOperationStatus.mockReset();
+    mockProcessHumanIntervention.mockReset();
   });
 
   afterEach(async () => {
@@ -741,6 +744,40 @@ describe('aiAgentRouter.getSubAgentTaskStatus', () => {
 
       expect(result.status).toBe('processing');
       expect(result.currentActivity).toBeUndefined();
+    });
+  });
+
+  describe('processHumanIntervention', () => {
+    it('forwards the top-level tool-message target without changing approval data', async () => {
+      const approvedToolCall = {
+        apiName: 'search',
+        arguments: '{}',
+        id: 'tool-call-1',
+        identifier: 'web-search',
+        type: 'default',
+      };
+      mockProcessHumanIntervention.mockResolvedValue({ messageId: 'queue-message-1' });
+      const caller = aiAgentRouter.createCaller(createTestContext());
+
+      const result = await caller.processHumanIntervention({
+        action: 'approve',
+        data: { approvedToolCall },
+        operationId: 'operation-1',
+        toolMessageId: 'tool-msg-1',
+      });
+
+      expect(mockProcessHumanIntervention).toHaveBeenCalledWith({
+        action: 'approve',
+        approvedToolCall,
+        operationId: 'operation-1',
+        stepIndex: 0,
+        toolMessageId: 'tool-msg-1',
+      });
+      expect(result).toMatchObject({
+        queued: true,
+        scheduledMessageId: 'queue-message-1',
+        success: true,
+      });
     });
   });
 });

@@ -3,9 +3,14 @@
  */
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import {
+  carriesLocalDraftSecretMaterial,
+  utf8ByteLength,
+} from '@/enterprise/client/features/admin/primitives/localDraftSafety';
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
 import { canonicalize } from '../primitives/canonicalize';
+import { isSettingsPolicyDraftMap } from './settingsPolicyDraftValidation';
 
 export type DraftMap = AdminSettingsGetDraftOutput['draft'];
 export type DraftPolicy = DraftMap[string];
@@ -192,6 +197,8 @@ export const buildChangePreview = (params: {
 
 /** Local draft key that survives revision advance for conflict rebase. */
 export const CONFLICT_DRAFT_KEY = 'aihub.admin.settings.conflictDraft';
+export const SETTINGS_POLICY_CONFLICT_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CONFLICT_DRAFT_MAX_BYTES = 512_000;
 
 export type ConflictDraftPayload = {
   /** Server draft the local work was originally based on (for three-way merge). */
@@ -205,8 +212,16 @@ export type ConflictDraftPayload = {
 
 export const saveConflictDraft = (payload: ConflictDraftPayload) => {
   if (typeof window === 'undefined') return;
+  if (
+    carriesLocalDraftSecretMaterial(payload.draft) ||
+    carriesLocalDraftSecretMaterial(payload.originalBaseDraft)
+  ) {
+    return;
+  }
   try {
-    window.localStorage.setItem(CONFLICT_DRAFT_KEY, JSON.stringify(payload));
+    const raw = JSON.stringify(payload);
+    if (utf8ByteLength(raw) > CONFLICT_DRAFT_MAX_BYTES) return;
+    window.localStorage.setItem(CONFLICT_DRAFT_KEY, raw);
   } catch {
     /* ignore */
   }
@@ -217,24 +232,48 @@ export const loadConflictDraft = (): ConflictDraftPayload | null => {
   try {
     const raw = window.localStorage.getItem(CONFLICT_DRAFT_KEY);
     if (!raw) return null;
+    if (utf8ByteLength(raw) > CONFLICT_DRAFT_MAX_BYTES) {
+      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
+      return null;
+    }
     const parsed = JSON.parse(raw) as Partial<ConflictDraftPayload>;
     if (
-      !parsed.draft ||
+      !isSettingsPolicyDraftMap(parsed.draft) ||
+      !isSettingsPolicyDraftMap(parsed.originalBaseDraft) ||
       typeof parsed.previousBaseRevision !== 'number' ||
+      typeof parsed.previousDraftToken !== 'string' ||
       typeof parsed.registryVersion !== 'number' ||
       typeof parsed.savedAt !== 'string'
     ) {
+      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
+      return null;
+    }
+    const age = Date.now() - Date.parse(parsed.savedAt);
+    if (!Number.isFinite(age) || age < 0 || age > SETTINGS_POLICY_CONFLICT_DRAFT_TTL_MS) {
+      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
+      return null;
+    }
+    if (
+      carriesLocalDraftSecretMaterial(parsed.draft) ||
+      carriesLocalDraftSecretMaterial(parsed.originalBaseDraft)
+    ) {
+      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
       return null;
     }
     return {
       draft: parsed.draft,
-      originalBaseDraft: parsed.originalBaseDraft ?? {},
+      originalBaseDraft: parsed.originalBaseDraft,
       previousBaseRevision: parsed.previousBaseRevision,
-      previousDraftToken: parsed.previousDraftToken ?? '',
+      previousDraftToken: parsed.previousDraftToken,
       registryVersion: parsed.registryVersion,
       savedAt: parsed.savedAt,
     };
   } catch {
+    try {
+      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
+    } catch {
+      /* private mode */
+    }
     return null;
   }
 };

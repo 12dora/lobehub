@@ -432,6 +432,7 @@ const AgentStreamEventSchema = z.object({
     'tool_result',
     'agent_intervention_request',
     'agent_intervention_response',
+    'human_intervention_outcome',
     'step_start',
     'step_complete',
     'notify_update',

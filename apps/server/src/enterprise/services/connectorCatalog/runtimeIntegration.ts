@@ -57,7 +57,7 @@ export interface ManagedConnectorExecutionResult {
   handled: boolean;
   result?: {
     content: string;
-    error?: { code: string; message: string; messageCode: string };
+    error?: { code: string; message: string };
     state?: Record<string, unknown>;
     success: boolean;
   };
@@ -75,12 +75,13 @@ const getSnapshots = (db: LobeChatDatabase): ConnectorOperationSnapshotService =
 };
 
 const stableFailure = (code: string): ManagedConnectorExecutionResult => {
-  const messageCode = `platformConnectors.feedback.${code}`;
   return {
     handled: true,
     result: {
-      content: code,
-      error: { code, message: code, messageCode },
+      // The stable code stays machine-readable on `error.code`; user-facing
+      // tool cards localize it at the presentation boundary.
+      content: '',
+      error: { code, message: '' },
       success: false,
     },
   };

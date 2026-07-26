@@ -213,7 +213,9 @@ describe('useManagedAgentSkills', () => {
     );
     const retryItem = sectionsResult.current.platformSkillUnavailableItems[0];
     expect(retryItem?.key).toBe('platform-skill-runtime-unavailable');
-    render(createElement('div', null, retryItem?.label));
+    render(
+      createElement('div', null, retryItem && 'label' in retryItem ? retryItem.label : undefined),
+    );
 
     const retryButton = screen.getByText('retry');
     fireEvent.click(retryButton);

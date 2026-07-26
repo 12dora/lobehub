@@ -287,7 +287,7 @@ export default {
   'aiCatalog.actions.reorder.title': 'Reorder models',
   'aiCatalog.actions.retry.label': 'Retry save',
   'aiCatalog.actions.rollback.desc':
-    'Restore published revision #{{revision}} as a new auditable catalog revision.',
+    'Restore published version {{revision}}. This creates a new version and keeps the history.',
   'aiCatalog.actions.rollback.label': 'Roll back',
   'aiCatalog.actions.rollback.title': 'Roll back Provider',
   'aiCatalog.actions.save.desc': 'Save public Provider fields to the isolated draft.',
@@ -366,7 +366,7 @@ export default {
   'aiCatalog.models.columns.context': 'Context window',
   'aiCatalog.models.columns.enabled': 'Availability',
   'aiCatalog.models.columns.model': 'Model',
-  'aiCatalog.models.columns.revision': 'Revision',
+  'aiCatalog.models.columns.revision': 'Published version',
   'aiCatalog.models.columns.status': 'Status',
   'aiCatalog.models.columns.type': 'Type',
   'aiCatalog.models.actions.create': 'Add model',
@@ -387,6 +387,14 @@ export default {
   'aiCatalog.models.filters.status': 'Status',
   'aiCatalog.models.filters.type': 'Type',
   'aiCatalog.models.title': 'AI Models',
+  'aiCatalog.modelTypes.asr': 'Speech-to-text',
+  'aiCatalog.modelTypes.chat': 'Chat',
+  'aiCatalog.modelTypes.embedding': 'Embeddings',
+  'aiCatalog.modelTypes.image': 'Image generation',
+  'aiCatalog.modelTypes.realtime': 'Realtime',
+  'aiCatalog.modelTypes.text2music': 'Music generation',
+  'aiCatalog.modelTypes.tts': 'Text-to-speech',
+  'aiCatalog.modelTypes.video': 'Video generation',
   'aiCatalog.models.providerSection.desc':
     'This is the complete Provider draft set, so ordering here is safe and deterministic.',
   'aiCatalog.models.providerSection.title': 'Provider models',
@@ -427,7 +435,7 @@ export default {
   'aiCatalog.providers.columns.actions': 'Actions',
   'aiCatalog.providers.columns.enabled': 'Availability',
   'aiCatalog.providers.columns.provider': 'Provider',
-  'aiCatalog.providers.columns.revision': 'Revision',
+  'aiCatalog.providers.columns.revision': 'Published version',
   'aiCatalog.providers.columns.secret': 'Secret',
   'aiCatalog.providers.columns.source': 'Source',
   'aiCatalog.providers.columns.status': 'Status',
@@ -441,12 +449,14 @@ export default {
   'aiCatalog.providers.secret.configured': 'Configured',
   'aiCatalog.providers.secret.missing': 'Not configured',
   'aiCatalog.providers.title': 'AI Providers',
+  'aiCatalog.providerSources.builtin': 'Built-in',
+  'aiCatalog.providerSources.custom': 'Custom',
   'aiCatalog.refresh.committed.desc':
     'Do not repeat the write. Reload the committed server state separately.',
   'aiCatalog.refresh.committed.pending': 'Change committed; loading the latest server state',
   'aiCatalog.refresh.committed.title': 'Change committed, but the latest state could not reload',
   'aiCatalog.refresh.retry': 'Retry reload',
-  'aiCatalog.revisions.desc': 'Published and rollback revisions are immutable audit history.',
+  'aiCatalog.revisions.desc': 'Previous published versions and rollbacks are kept for auditing.',
   'aiCatalog.revisions.empty': 'No published revisions yet.',
   'aiCatalog.revisions.error': 'Could not load Provider revision history.',
   'aiCatalog.revisions.loading': 'Loading revision history…',
@@ -454,7 +464,8 @@ export default {
   'aiCatalog.revisions.noComment': 'No revision comment',
   'aiCatalog.revisions.previous': 'Newer',
   'aiCatalog.revisions.retry': 'Retry',
-  'aiCatalog.revisions.title': 'Revision history',
+  'aiCatalog.revisions.row': 'Version {{revision}}',
+  'aiCatalog.revisions.title': 'Version history',
   'aiCatalog.secret.apply': 'Apply Secret change',
   'aiCatalog.secret.desc':
     'Choose how to handle the Secret for {{provider}}. The current value is never returned.',
@@ -508,12 +519,12 @@ export default {
   'managedResources.boolean.false': 'Off',
   'managedResources.boolean.true': 'On',
   'managedResources.conflict.desc':
-    'The policy changed after you loaded it. Rebase your local edits onto the latest draft, or discard them.',
+    'Another administrator changed this policy. Merge your edits with the latest changes, or discard them.',
   'managedResources.conflict.discard': 'Discard local edits',
   'managedResources.conflict.fields':
     'Local and server drafts changed the same field. Choose which conflicting values to keep.',
   'managedResources.conflict.keepLocal': 'Keep my values',
-  'managedResources.conflict.rebase': 'Refresh and rebase',
+  'managedResources.conflict.rebase': 'Merge with latest changes',
   'managedResources.conflict.title': 'Managed resource policy conflict',
   'managedResources.conflict.useLatest': 'Use server values',
   'managedResources.desc':
@@ -585,6 +596,11 @@ export default {
   'managedResources.sharedOAuth.saved': 'Shared authorization updated',
   'managedResources.sharedOAuth.savedRefreshFailed':
     'Shared authorization updated, but the view could not refresh.',
+  'managedResources.sharedOAuth.mutationFailed':
+    'Shared authorization could not be updated. Try again.',
+  'managedResources.sharedOAuth.refreshRetry': 'Refresh status',
+  'managedResources.sharedOAuth.refreshRetryFailed':
+    'The shared authorization is saved, but the latest status still could not load. Try refreshing again.',
   'managedResources.sharedOAuth.loadError': 'Could not load shared OAuth status.',
   'managedResources.sharedOAuth.title': 'Org-shared OAuth',
   'managedResources.title': 'Managed resources',
@@ -697,6 +713,9 @@ export default {
     'Publish retry failed. Try again or open advanced catalog management.',
   'aiToolSettings.connectors.partialLoadFailed':
     '{{count}} connectors failed to load; retry to refresh.',
+  'aiToolSettings.connectors.governanceLoadFailed':
+    'Connector permissions could not be loaded. Retry before making changes.',
+  'aiToolSettings.connectors.retryGovernance': 'Retry permissions',
   'aiToolSettings.connectors.createIncomplete':
     'Connector draft was created, but discovery or publish did not complete. Finish setup in the advanced catalog.',
   'aiSettingsDefaults.dirtyDraft.title': 'Unpublished settings draft blocks save',
@@ -835,6 +854,7 @@ export default {
   'stats.banner.usersTotal': 'Total users',
   'stats.banner.usersActive': 'Active users (30d)',
   'stats.banner.scopeNote': 'All metrics cover every user and workspace.',
+  'stats.user.unknown': 'Unknown user {{index}}',
 
   'creds.page.title': 'Credentials',
   'creds.page.desc':
@@ -1433,6 +1453,7 @@ export default {
   'settingsPolicy.impactSummary':
     'Estimated impact: {{rows}} override rows across {{paths}} paths.',
   'settingsPolicy.noResults': 'No settings match your search.',
+  'settingsPolicy.unknownSetting': 'Setting {{index}}',
   'settingsPolicy.hidden': 'Hidden',
   'settingsPolicy.publishedValue': 'Published value',
   'settingsPolicy.visibility.visible': 'Visible',
@@ -1445,21 +1466,21 @@ export default {
   'settingsPolicy.preview.summary': '{{mode}} · {{visibility}} · {{value}}',
   'settingsPolicy.preview.before': 'Before: {{summary}}',
   'settingsPolicy.preview.after': 'After: {{summary}}',
-  'settingsPolicy.conflict.title':
-    'A newer settings revision exists. Review and rebase or discard your local changes.',
-  'settingsPolicy.conflict.revisions':
-    'Your draft is based on revision {{local}}; the latest server revision is {{server}}.',
+  'settingsPolicy.conflict.title': 'Settings changed elsewhere',
+  'settingsPolicy.conflict.description':
+    'This policy changed elsewhere while you were editing. Review the latest values before continuing.',
+  'settingsPolicy.conflict.revisions': 'Your draft is based on older saved settings.',
   'settingsPolicy.conflict.localValue': 'Your value: {{value}}',
   'settingsPolicy.conflict.serverValue': 'Latest server value: {{value}}',
   'settingsPolicy.conflict.noCollisions':
-    'No path-level collisions were found. Rebase will preserve your local changes on the latest server draft.',
-  'settingsPolicy.conflict.refresh': 'Refresh latest revision',
-  'settingsPolicy.conflict.retryRefresh': 'Retry latest revision',
+    'No conflicting values were found. Merging will preserve your edits with the latest settings.',
+  'settingsPolicy.conflict.refresh': 'Refresh latest settings',
+  'settingsPolicy.conflict.retryRefresh': 'Retry loading latest settings',
   'settingsPolicy.conflict.awaitingServer':
     'Fetching the latest server draft. Editing actions remain blocked until it is available.',
   'settingsPolicy.conflict.latestUnavailable':
-    'The latest server draft could not be loaded. Your local changes are safe; retry before rebasing or discarding.',
-  'settingsPolicy.conflict.rebase': 'Rebase and merge',
+    'The latest settings could not be loaded. Your changes are safe; retry before merging or discarding them.',
+  'settingsPolicy.conflict.rebase': 'Merge with latest changes',
   'settingsPolicy.conflict.discard': 'Discard local changes',
   'settingsPolicy.revision': 'Revision {{revision}}',
   'settingsPolicy.saveState.idle': 'No unsaved changes',
@@ -1467,6 +1488,7 @@ export default {
   'settingsPolicy.saveState.saving': 'Saving draft…',
   'settingsPolicy.saveState.saved': 'Draft saved',
   'settingsPolicy.saveState.failed': 'Save failed',
+  'settingsPolicy.upToDate': 'Saved settings are up to date',
   'settingsPolicy.refresh.failed':
     'The change was committed, but the latest server state could not be loaded. Retry refresh before making further changes.',
   'settingsPolicy.refresh.committedTitle':
@@ -1649,7 +1671,7 @@ export default {
 
   // M09 platform Connector catalog
   'connectorCatalog.actions.archive': 'Archive Connector',
-  'connectorCatalog.actions.create': 'Create Connector',
+  'connectorCatalog.actions.create': 'Create connector',
   'connectorCatalog.actions.deleteDraft': 'Delete draft',
   'connectorCatalog.actions.discover': 'Discover tools',
   'connectorCatalog.actions.publish': 'Publish Connector',
@@ -1689,7 +1711,7 @@ export default {
     'This Connector changed on the server. Refresh and reapply your changes, or discard the local draft.',
   'connectorCatalog.conflict.discard': 'Discard local changes',
   'connectorCatalog.conflict.refresh': 'Refresh latest',
-  'connectorCatalog.conflict.title': 'Connector revision conflict',
+  'connectorCatalog.conflict.title': 'Connector version conflict',
   'connectorCatalog.credentialMode.none': 'No credentials',
   'connectorCatalog.credentialMode.per_user_oauth': 'Per-user OAuth',
   'connectorCatalog.credentialMode.shared_service_account': 'Shared service account',
@@ -1699,7 +1721,7 @@ export default {
   'connectorCatalog.create.reason': 'Creation reason',
   'connectorCatalog.create.required': 'Complete all required fields with valid HTTP(S) URLs.',
   'connectorCatalog.create.secret': 'Initial write-only credential',
-  'connectorCatalog.create.title': 'Create Connector draft',
+  'connectorCatalog.create.title': 'Create connector draft',
   'connectorCatalog.detail.description':
     'Edit the draft, validate network and Tool policy, test, then publish an immutable revision.',
   'connectorCatalog.editor.authorizationEndpoint': 'Authorization endpoint',
@@ -1710,9 +1732,9 @@ export default {
   'connectorCatalog.editor.enabled': 'Enabled',
   'connectorCatalog.editor.endpoint': 'Server URL',
   'connectorCatalog.editor.issuer': 'OAuth issuer',
-  'connectorCatalog.editor.oauthClientSecret': 'OAuth client secret replacement',
+  'connectorCatalog.editor.oauthClientSecret': 'Replace OAuth client secret',
   'connectorCatalog.editor.oauthSection': 'Per-user OAuth configuration',
-  'connectorCatalog.editor.scopes': 'OAuth scopes (space separated)',
+  'connectorCatalog.editor.scopes': 'OAuth scopes (space-separated)',
   'connectorCatalog.editor.secretClearAction': 'Clear stored credential',
   'connectorCatalog.editor.secretKeepAction': 'Keep stored credential',
   'connectorCatalog.editor.secretKeepPlaceholder': 'Leave empty to keep the stored secret',
@@ -1733,13 +1755,13 @@ export default {
   'connectorCatalog.list.columns.connector': 'Connector',
   'connectorCatalog.list.columns.credentialMode': 'Credentials',
   'connectorCatalog.list.columns.enabled': 'Availability',
-  'connectorCatalog.list.columns.revision': 'Draft revision',
+  'connectorCatalog.list.columns.revision': 'Draft version',
   'connectorCatalog.list.columns.status': 'Status',
   'connectorCatalog.list.description':
     'Manage platform definitions, credentials, Tool policy, tests, and published revisions.',
   'connectorCatalog.list.empty.default': 'No platform Connectors have been created yet.',
   'connectorCatalog.list.empty.filtered': 'No Connectors match these filters.',
-  'connectorCatalog.list.title': 'Platform Connectors',
+  'connectorCatalog.list.title': 'Platform connectors',
   'connectorCatalog.errors.generic': 'The Connector action failed. Check the form and try again.',
   'connectorCatalog.mutations.archive.description':
     'Archive the published Connector so it is no longer available for new use.',
@@ -1787,7 +1809,7 @@ export default {
   'connectorCatalog.status.published': 'Published',
   'connectorCatalog.tools.confirmation': 'Confirmation',
   'connectorCatalog.tools.description':
-    'Platform deny always wins. Risk and confirmation are part of the published revision.',
+    'Platform deny rules always take priority. Risk level and confirmation requirements are included in the published version.',
   'connectorCatalog.tools.enabled': 'Enabled',
   'connectorCatalog.tools.policy.allow': 'Allow',
   'connectorCatalog.tools.policy.deny': 'Deny',
@@ -1807,8 +1829,10 @@ export default {
   'connectorCatalog.toast.tested': 'Connector connection test completed.',
   'connectorCatalog.tombstone.unavailable': 'Managed Connector is unavailable',
   'connectorCatalog.unsaved.description':
-    'You have unsaved public Connector changes. Secret values are never stored in recovery drafts.',
+    'You have unsaved public connector settings. Secret values are not stored in recovery drafts.',
   'connectorCatalog.unsaved.leave': 'Leave without saving',
+  'connectorCatalog.unsaved.recoveryUnavailable':
+    'Recovery backup is unavailable. Keep this page open until you save.',
   'connectorCatalog.unsaved.secretClearRestored':
     'Clear-secret intent was restored. Save to apply the clear operation.',
   'connectorCatalog.unsaved.secretReentry':
@@ -1824,8 +1848,9 @@ export default {
   'branding.actions.upload': 'Upload asset',
   'branding.description':
     'Edit the {{platformName}} server draft, inspect an isolated preview, then deliberately publish one revision.',
-  'branding.empty': 'Branding is not available.',
-  'branding.errors.generic': 'The Branding operation failed. Review the fields and try again.',
+  'branding.empty': 'Branding is unavailable.',
+  'branding.errors.generic':
+    'The branding change could not be completed. Check the fields and try again.',
   'branding.fields.assets': 'Runtime assets',
   'branding.fields.defaultAgentDisplayName': 'Default Agent display name',
   'branding.fields.desktop': 'Desktop package',
@@ -1849,7 +1874,7 @@ export default {
   'branding.fields.primaryColor': 'Primary color',
   'branding.fields.privacyUrl': 'Privacy URL',
   'branding.fields.rebuildRequired':
-    'Rebuild required: publishing Web Branding does not rebuild or rename an installed desktop app.',
+    'Publishing web branding does not rename or rebuild an installed desktop app.',
   'branding.fields.shortName': 'Short name',
   'branding.fields.supportUrl': 'Support URL',
   'branding.fields.termsUrl': 'Terms URL',
@@ -1858,7 +1883,7 @@ export default {
   'branding.history.empty': 'No published revisions yet.',
   'branding.history.noReason': 'No reason recorded',
   'branding.history.title': 'Revision history',
-  'branding.loading': 'Loading Branding draft…',
+  'branding.loading': 'Loading branding draft…',
   'branding.preview.description':
     'This sandboxed preview never changes the published platform until you publish.',
   'branding.preview.defaultAgent': 'Default agent',
@@ -1867,25 +1892,25 @@ export default {
   'branding.preview.signIn': 'Sign in to continue',
   'branding.preview.title': 'Live preview',
   'branding.preview.workspace': 'Workspace',
-  'branding.publish.description':
-    'Publish the saved draft as the anonymous Runtime Branding snapshot.',
+  'branding.publish.description': 'Publish the saved branding draft for everyone.',
   'branding.publish.impact':
     'Web surfaces refresh after publication. Desktop package fields remain rebuild-only.',
-  'branding.publish.title': 'Publish Branding revision',
-  'branding.readOnly': 'You can inspect Branding, but you do not have permission to edit it.',
+  'branding.publish.title': 'Publish branding',
+  'branding.readOnly': 'You can view branding, but you do not have permission to edit it.',
   'branding.refresh.committedFailed':
     'Branding was published, but refreshing the editor failed. Retry refresh before making more changes.',
-  'branding.refresh.committedTitle': 'Published — refresh required',
+  'branding.refresh.committedTitle': 'Change saved — refresh required',
   'branding.refresh.failed':
     'Refreshing the branding editor failed. Retry before making more changes.',
+  'branding.refresh.postCommitFailed':
+    'Your change was saved, but the latest branding could not be refreshed. Retry refresh.',
   'branding.refresh.retry': 'Retry refresh',
   'branding.rollback.description': 'Restore revision #{{revision}} into the editable draft.',
   'branding.rollback.impact':
-    'Published Branding does not change now. Review and publish the restored draft separately.',
+    'Published branding does not change now. Review and publish the restored draft separately.',
   'branding.rollback.title': 'Restore historical revision',
-  'branding.save.description':
-    'Save these values to the server draft. Public Branding remains unchanged.',
-  'branding.save.title': 'Save Branding draft',
+  'branding.save.description': 'Save these values as a draft without changing public branding.',
+  'branding.save.title': 'Save branding draft',
   'branding.status.assetUploaded': 'Asset uploaded. Save the draft to retain this reference.',
   'branding.status.draftSaved': 'Draft saved. Publish it when you are ready for it to go live.',
   'branding.status.pendingPublish': 'Draft saved · Pending publish',
@@ -1893,21 +1918,19 @@ export default {
   'branding.status.restoredDraft':
     'Historical revision restored as a draft. Review and publish it separately.',
   'branding.storageUnavailable':
-    'Asset storage is not configured. Text and controlled existing asset URLs can still be edited; uploads fail closed.',
+    'Asset storage is not set up. You can still edit text and use existing image links, but you cannot upload new images.',
   'branding.title': '{{platformName}} Branding',
-  'branding.unsaved.description':
-    'Your local Branding edits have not been saved to the server draft.',
+  'branding.unsaved.description': 'Your branding edits have not been saved.',
   'branding.unsaved.leave': 'Leave without saving',
   'branding.unsaved.stay': 'Keep editing',
-  'branding.unsaved.title': 'Unsaved Branding changes',
-  'branding.recovery.title': 'Recover unsaved Branding edits?',
+  'branding.unsaved.title': 'Unsaved branding changes',
+  'branding.recovery.title': 'Recover unsaved branding edits?',
   'branding.recovery.description':
     'This browser has unsaved Branding edits from a previous session (non-secret fields only).',
   'branding.recovery.restore': 'Restore edits',
   'branding.recovery.discard': 'Discard',
-  'branding.upload.description':
-    'The server verifies the file bytes, format, dimensions, and container before storage.',
-  'branding.upload.title': 'Upload controlled Branding asset',
+  'branding.upload.description': 'We’ll check the image format and size before uploading it.',
+  'branding.upload.title': 'Upload branding image',
   'enterprise.error.MANAGED_AGENT_BATCH_LIMIT':
     'Too many agents in one request. Select at most {{max}} agents and try again.',
   'enterprise.error.MANAGED_POLICY_ENFORCED': 'This option is restricted by organization policy.',

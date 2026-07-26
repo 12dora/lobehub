@@ -38,9 +38,13 @@ const AdvancedActions = () => {
       content: t('danger.reset.confirm'),
       okButtonProps: { danger: true },
       okText: t('danger.reset.action'),
-      onOk: () => {
-        resetSettings();
-        message.success(t('danger.reset.success'));
+      onOk: async () => {
+        try {
+          await resetSettings();
+          message.success(t('danger.reset.success'));
+        } catch {
+          message.error(t('danger.reset.error'));
+        }
       },
       title: t('danger.reset.title'),
     });

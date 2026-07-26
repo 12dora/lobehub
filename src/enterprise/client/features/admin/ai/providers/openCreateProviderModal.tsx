@@ -1,7 +1,7 @@
 'use client';
 
 import { Input, InputPassword, Text, TextArea } from '@lobehub/ui';
-import { Button, createModal, Switch, useModalContext } from '@lobehub/ui/base-ui';
+import { Button, createModal, Select, Switch, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import i18next from 'i18next';
 import { memo, useReducer } from 'react';
@@ -178,13 +178,14 @@ const CreateProviderContent = memo<CreateProviderContentProps>(({ authMethod, on
         </div>
         <div className={styles.field}>
           <Text strong>{t('aiCatalog.providers.columns.source')}</Text>
-          <Input
+          <Select
             disabled={locked}
-            maxLength={32}
             value={state.source}
-            onChange={(event) =>
-              dispatch({ field: 'source', type: 'text', value: event.target.value })
-            }
+            options={(['builtin', 'custom'] as const).map((value) => ({
+              label: t(`aiCatalog.providerSources.${value}` as never),
+              value,
+            }))}
+            onChange={(value) => dispatch({ field: 'source', type: 'text', value })}
           />
         </div>
         <div className={styles.field}>

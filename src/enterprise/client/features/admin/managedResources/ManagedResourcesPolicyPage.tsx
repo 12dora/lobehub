@@ -79,6 +79,10 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 const UI_MODE_VALUES = ['user', 'platform'] as const satisfies readonly ManagedResourceUiMode[];
+const getManagedResourcesSnapshotIdentity = (snapshot: {
+  baseRevision: number;
+  draftToken: string;
+}) => `${snapshot.baseRevision}:${snapshot.draftToken}`;
 
 const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
@@ -104,9 +108,10 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   );
   const [actionError, setActionError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  const [fieldConflict, setFieldConflict] = useState(false);
   const [activeDraftToken, setActiveDraftToken] = useState('');
   const [baseRevision, setBaseRevision] = useState(0);
-  const hydratedRef = useRef(false);
+  const observedServerSnapshotRef = useRef<string | null>(null);
   /** Last clean server draft used as the three-way-merge base for conflict rebase. */
   const baseDraftRef = useRef<ManagedResourcePolicyMap | null>(null);
   /**
@@ -117,9 +122,12 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   const draftEpochRef = useRef(0);
 
   const shouldBlockPageExit = useCallback<BlockerFunction>(
-    ({ currentLocation, nextLocation }) =>
-      dirty && currentLocation.pathname !== nextLocation.pathname,
-    [dirty],
+    ({ currentLocation, nextLocation }) => {
+      if (!dirty) return false;
+      if (currentLocation.pathname !== nextLocation.pathname) return true;
+      return Boolean(embedded) && currentLocation.search !== nextLocation.search;
+    },
+    [dirty, embedded],
   );
   const unsavedMessages = useMemo(
     () => ({
@@ -137,8 +145,18 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   });
 
   useEffect(() => {
-    if (!data || hydratedRef.current) return;
-    hydratedRef.current = true;
+    if (!data) return;
+    const snapshotIdentity = getManagedResourcesSnapshotIdentity(data);
+    if (observedServerSnapshotRef.current === snapshotIdentity) return;
+    const isInitialSnapshot = observedServerSnapshotRef.current === null;
+    observedServerSnapshotRef.current = snapshotIdentity;
+    if (!isInitialSnapshot && dirty) {
+      setConflict(true);
+      setFieldConflict(false);
+      setSaveState('failed');
+      setActionError(t('managedResources.conflict.desc'));
+      return;
+    }
     setDraft(data.draft);
     setPublished(data.published);
     setActiveDraftToken(data.draftToken);
@@ -148,7 +166,8 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     setSaveState('idle');
     setFailedOperation(null);
     setConflict(false);
-  }, [data]);
+    setFieldConflict(false);
+  }, [data, dirty, t]);
 
   const editorsLocked = saveState === 'saving' || conflict;
   const canEditPolicy = canUpdate && !editorsLocked;
@@ -200,6 +219,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
 
   const enterConflict = useCallback(() => {
     setConflict(true);
+    setFieldConflict(false);
     setSaveState('failed');
     setActionError(t('managedResources.conflict.desc'));
   }, [t]);
@@ -210,6 +230,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     try {
       const latest = await mutate();
       if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
+      observedServerSnapshotRef.current = getManagedResourcesSnapshotIdentity(latest);
       draftEpochRef.current += 1;
       setDraft(latest.draft);
       setPublished(latest.published);
@@ -220,6 +241,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       setSaveState('idle');
       setFailedOperation(null);
       setConflict(false);
+      setFieldConflict(false);
     } catch {
       setActionError(t('managedResources.errors.refresh'));
     }
@@ -230,13 +252,15 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
    * and unlock the editor so the admin can review and save.
    */
   const handleKeepLocal = useCallback(() => {
+    if (!fieldConflict) return;
     setConflict(false);
+    setFieldConflict(false);
     setActionError(null);
     setFailedOperation(null);
     // Local draft remains; mark dirty so save is available after unlock.
     setDirty(true);
     setSaveState('dirty');
-  }, []);
+  }, [fieldConflict]);
 
   /** Three-way merge local edits onto the latest server draft after a revision conflict. */
   const handleRebase = useCallback(async () => {
@@ -245,6 +269,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     try {
       const latest = await mutate();
       if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
+      observedServerSnapshotRef.current = getManagedResourcesSnapshotIdentity(latest);
       const original = baseDraftRef.current ?? latest.draft;
       const rebased = rebaseManagedResourceDraft({
         latest: latest.draft,
@@ -264,9 +289,11 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
         // Local values already win for divergent fields; stay in conflict mode until
         // the admin explicitly keeps them (unlocks) or discards.
         setActionError(t('managedResources.conflict.fields'));
+        setFieldConflict(true);
         return;
       }
       setConflict(false);
+      setFieldConflict(false);
     } catch {
       setActionError(t('managedResources.errors.refresh'));
     }
@@ -336,6 +363,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
           return;
         }
         if (latest) {
+          observedServerSnapshotRef.current = getManagedResourcesSnapshotIdentity(latest);
           setPublished(latest.published);
           setActiveDraftToken(latest.draftToken);
           setBaseRevision(latest.baseRevision);
@@ -397,6 +425,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
           return;
         }
         if (latest) {
+          observedServerSnapshotRef.current = getManagedResourcesSnapshotIdentity(latest);
           setDraft(latest.draft);
           setPublished(latest.published);
           setActiveDraftToken(latest.draftToken);
@@ -588,12 +617,15 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
             type="warning"
             extra={
               <Flexbox horizontal gap={8} wrap="wrap">
-                <Button type="default" onClick={handleKeepLocal}>
-                  {t('managedResources.conflict.keepLocal')}
-                </Button>
-                <Button type="default" onClick={() => void handleRebase()}>
-                  {t('managedResources.conflict.rebase')}
-                </Button>
+                {fieldConflict ? (
+                  <Button type="default" onClick={handleKeepLocal}>
+                    {t('managedResources.conflict.keepLocal')}
+                  </Button>
+                ) : (
+                  <Button type="default" onClick={() => void handleRebase()}>
+                    {t('managedResources.conflict.rebase')}
+                  </Button>
+                )}
                 <Button type="primary" onClick={() => void handleRefresh()}>
                   {t('managedResources.conflict.discard')}
                 </Button>

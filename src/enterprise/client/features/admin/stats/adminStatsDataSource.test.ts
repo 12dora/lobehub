@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ADMIN_STATS_USER_DISPLAY_CACHE_MAX,
+  getAdminStatsCurrentUserDisplaySize,
   getAdminStatsUserDisplayCacheSize,
-  rememberUsersFromUsage,
+  rememberCurrentUsersFromUsage,
   resetAdminStatsUserDisplayCache,
   resolveAdminStatsUser,
 } from './adminStatsDataSource';
+
+const unknownUserLabel = (index: number) => `Unknown user ${index}`;
 
 describe('adminStatsDataSource user display cache', () => {
   afterEach(() => {
@@ -14,33 +17,63 @@ describe('adminStatsDataSource user display cache', () => {
   });
 
   it('updates an existing display name when a later row renames the user', () => {
-    rememberUsersFromUsage([{ userDisplay: 'Alice', userId: 'u1' }]);
-    expect(resolveAdminStatsUser('u1')).toEqual({ avatar: null, name: 'Alice' });
-
-    rememberUsersFromUsage([{ userDisplay: 'Alice Smith', userId: 'u1' }]);
-    expect(resolveAdminStatsUser('u1')).toEqual({ avatar: null, name: 'Alice Smith' });
-  });
-
-  it('does not grow without bound past the LRU cap', () => {
-    for (let i = 0; i < ADMIN_STATS_USER_DISPLAY_CACHE_MAX + 50; i += 1) {
-      rememberUsersFromUsage([{ userDisplay: `User ${i}`, userId: `u-${i}` }]);
-    }
-    expect(getAdminStatsUserDisplayCacheSize()).toBe(ADMIN_STATS_USER_DISPLAY_CACHE_MAX);
-
-    // Oldest entries are evicted.
-    expect(resolveAdminStatsUser('u-0')).toEqual({ avatar: null, name: 'u-0' });
-    // Newest entries remain.
-    const last = ADMIN_STATS_USER_DISPLAY_CACHE_MAX + 49;
-    expect(resolveAdminStatsUser(`u-${last}`)).toEqual({
+    rememberCurrentUsersFromUsage([{ userDisplay: 'Alice', userId: 'u1' }]);
+    expect(resolveAdminStatsUser('u1', unknownUserLabel)).toEqual({
       avatar: null,
-      name: `User ${last}`,
+      name: 'Alice',
+    });
+
+    rememberCurrentUsersFromUsage([{ userDisplay: 'Alice Smith', userId: 'u1' }]);
+    expect(resolveAdminStatsUser('u1', unknownUserLabel)).toEqual({
+      avatar: null,
+      name: 'Alice Smith',
     });
   });
 
+  it('retains every display name from a current response larger than the history cap', () => {
+    const records = Array.from({ length: ADMIN_STATS_USER_DISPLAY_CACHE_MAX + 50 }, (_, index) => ({
+      userDisplay: `User ${index}`,
+      userId: `u-${index}`,
+    }));
+    rememberCurrentUsersFromUsage(records);
+
+    expect(getAdminStatsCurrentUserDisplaySize()).toBe(records.length);
+    expect(getAdminStatsUserDisplayCacheSize()).toBe(ADMIN_STATS_USER_DISPLAY_CACHE_MAX);
+    for (let index = 0; index < records.length; index += 1) {
+      expect(resolveAdminStatsUser(`u-${index}`, unknownUserLabel)).toEqual({
+        avatar: null,
+        name: `User ${index}`,
+      });
+    }
+
+    // Replacing the active response proves the auxiliary historical cache remains bounded.
+    rememberCurrentUsersFromUsage([]);
+    expect(resolveAdminStatsUser('u-0', unknownUserLabel)).toEqual({
+      avatar: null,
+      name: 'Unknown user 1',
+    });
+    expect(resolveAdminStatsUser(`u-${records.length - 1}`, unknownUserLabel)).toEqual({
+      avatar: null,
+      name: `User ${records.length - 1}`,
+    });
+  });
+
+  it('uses stable localized aliases instead of exposing raw IDs', () => {
+    rememberCurrentUsersFromUsage([{ userId: 'internal-uuid-a' }, { userId: 'internal-uuid-b' }]);
+
+    expect(resolveAdminStatsUser('internal-uuid-a', unknownUserLabel).name).toBe('Unknown user 1');
+    expect(resolveAdminStatsUser('internal-uuid-b', unknownUserLabel).name).toBe('Unknown user 2');
+    expect(resolveAdminStatsUser('internal-uuid-a', unknownUserLabel).name).toBe('Unknown user 1');
+  });
+
   it('reset clears the cache for account/scope transitions', () => {
-    rememberUsersFromUsage([{ userDisplay: 'Alice', userId: 'u1' }]);
+    rememberCurrentUsersFromUsage([{ userDisplay: 'Alice', userId: 'u1' }]);
     resetAdminStatsUserDisplayCache();
     expect(getAdminStatsUserDisplayCacheSize()).toBe(0);
-    expect(resolveAdminStatsUser('u1')).toEqual({ avatar: null, name: 'u1' });
+    expect(getAdminStatsCurrentUserDisplaySize()).toBe(0);
+    expect(resolveAdminStatsUser('u1', unknownUserLabel)).toEqual({
+      avatar: null,
+      name: 'Unknown user 1',
+    });
   });
 });
