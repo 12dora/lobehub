@@ -1,7 +1,7 @@
 'use client';
 
-import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Popover, Select } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Button, Popover, Select, toast } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -146,6 +146,7 @@ const OperationLogsPage = memo(() => {
   const [targetTypeDraft, setTargetTypeDraft] = useState('');
   const [targetIdDraft, setTargetIdDraft] = useState('');
   const requestIdDebounceRef = useRef<number | null>(null);
+  const auxiliaryFailureNotifiedRef = useRef(false);
 
   // Debounce requestId: draft keystrokes must not fire list/access-audit per key.
   useEffect(() => {
@@ -180,11 +181,20 @@ const OperationLogsPage = memo(() => {
   );
 
   const { data, error, isLoading, mutate } = useFetchAuditEventsList(listInput, canRead);
-  const { data: stats } = useFetchAuditEventStats({ from: filters.from, to: filters.to }, canRead);
-  const { data: facets } = useFetchAuditEventFacets(
-    { from: filters.from, to: filters.to },
-    canRead,
-  );
+  const statsResult = useFetchAuditEventStats({ from: filters.from, to: filters.to }, canRead);
+  const facetsResult = useFetchAuditEventFacets({ from: filters.from, to: filters.to }, canRead);
+  const stats = statsResult.data;
+  const facets = facetsResult.data;
+  const auxiliaryFailed = Boolean(statsResult.error || facetsResult.error);
+
+  useEffect(() => {
+    if (auxiliaryFailed && !auxiliaryFailureNotifiedRef.current) {
+      auxiliaryFailureNotifiedRef.current = true;
+      toast.error(t('audit.shared.summaryLoadFailed'));
+    } else if (!auxiliaryFailed) {
+      auxiliaryFailureNotifiedRef.current = false;
+    }
+  }, [auxiliaryFailed, t]);
 
   const items = data?.items ?? [];
   const nextCursor = data?.nextCursor ?? null;
@@ -352,6 +362,23 @@ const OperationLogsPage = memo(() => {
       title={t('audit.logs.page.title')}
       toolbar={
         <Flexbox gap={12}>
+          {auxiliaryFailed ? (
+            <Alert
+              showIcon
+              message={t('audit.logs.summaryUnavailable')}
+              type="warning"
+              action={
+                <Button
+                  size="small"
+                  onClick={() =>
+                    void Promise.allSettled([statsResult.mutate(), facetsResult.mutate()])
+                  }
+                >
+                  {t('audit.shared.retryMissingSections')}
+                </Button>
+              }
+            />
+          ) : null}
           <div className={styles.stats}>
             {statCards.map((card) => (
               <button

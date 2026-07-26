@@ -9,4 +9,5 @@ export {
   MANAGED_RESOURCE_BROWSE_ROUTE,
   MANAGED_RESOURCE_BY_SETTINGS_TAB,
 } from './managedResourcePresentation';
+export { ManagedResourceTransition } from './ManagedResourceTransition';
 export { useManagedResource, useManagedResourceCapabilities } from './useManagedResource';

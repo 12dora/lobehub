@@ -53,7 +53,10 @@ export class PlatformGlobalCredentialFileTooLargeError extends Error {
 
 export class PlatformGlobalCredentialValidationError extends Error {
   readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_VALIDATION';
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly validationCode?: string,
+  ) {
     super(message);
     this.name = 'PlatformGlobalCredentialValidationError';
   }

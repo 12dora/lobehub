@@ -8,6 +8,12 @@ import type { ChatStore } from '@/store/chat/store';
 
 import { createGatewayEventHandler } from './gatewayEventHandler';
 
+const warning = vi.hoisted(() => vi.fn());
+
+vi.mock('@/components/AntdStaticMethods', () => ({
+  message: { warning },
+}));
+
 const context = {
   agentId: 'agent-1',
   topicId: 'topic-1',
@@ -48,6 +54,7 @@ const flush = async () => {
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    warning.mockClear();
     vi.spyOn(agentSignalBridge, 'emitClientAgentSignalSourceEvent').mockResolvedValue(undefined);
   });
 
@@ -145,6 +152,37 @@ describe('createGatewayEventHandler', () => {
     expect(getMessages).toHaveBeenCalledWith(context);
     expect(store.replaceMessages).toHaveBeenCalledWith([], { context });
   });
+
+  it.each(['accepted', 'already_consumed', 'mismatch', 'stale'] as const)(
+    'reconciles the authoritative %s intervention outcome from fresh or replayed streams',
+    async (outcome) => {
+      const getMessages = vi
+        .spyOn(messageService, 'getMessages')
+        .mockResolvedValue([] as unknown as UIChatMessage[]);
+      const store = createStore();
+      const handler = createGatewayEventHandler(() => store, {
+        assistantMessageId: 'seed-msg',
+        context,
+        operationId: 'op-1',
+      });
+
+      handler(
+        makeEvent('human_intervention_outcome', {
+          outcome,
+          toolMessageId: 'tool-msg-1',
+        }),
+      );
+      await flush();
+
+      expect(getMessages).toHaveBeenCalledWith(context);
+      expect(store.replaceMessages).toHaveBeenCalledWith([], { context });
+      if (outcome === 'accepted') {
+        expect(warning).not.toHaveBeenCalled();
+      } else {
+        expect(warning).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
 
   it('skips hetero execution_complete DB refetch when frontend state is the snapshot', async () => {
     const getMessages = vi

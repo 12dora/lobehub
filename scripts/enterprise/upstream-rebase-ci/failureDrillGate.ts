@@ -294,6 +294,25 @@ export const DRILL_COMMANDS: Array<{ cwd?: string; output: string; args: string[
     ],
   },
   {
+    output: 'postgres-audit-retention-attribution.json',
+    args: [
+      'bunx',
+      'vitest',
+      'run',
+      '--config',
+      'vitest.config.mts',
+      '--silent=passed-only',
+      '--fileParallelism=false',
+      '--hookTimeout=60000',
+      '--maxWorkers=1',
+      '--reporter=json',
+      '--testTimeout=60000',
+      '--outputFile',
+      '__OUT__',
+      'apps/server/src/enterprise/services/audit/retentionWorker.attribution.multiconn.pg.test.ts',
+    ],
+  },
+  {
     output: 'postgres-ai-catalog-publication.json',
     args: [
       'bunx',

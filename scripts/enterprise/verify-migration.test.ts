@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { materializeHistoricalBaselineFixture } from './verify-migration/baseline';
 import type { MigrationCompatReportCore } from './verify-migration/index';
 import {
   assertSyntheticFixtureIsSecretFree,
@@ -37,6 +39,7 @@ import {
   verifyBaseline,
   verifyExpandOnlyPostBaselineSql,
   verifyJournalSnapshotAlignment,
+  verifyNoTopLevelTransactionControl,
 } from './verify-migration/index';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -112,16 +115,41 @@ describe('migration compat baseline (2.2.10 / 0000-0116)', () => {
     expect(result.fileMatchCount).toBeGreaterThan(100);
   }, 60_000);
 
-  it('keeps journal entries contiguous with matching snapshots', () => {
+  it('keeps the ordered active journal aligned with non-empty chained snapshots', () => {
     const result = verifyJournalSnapshotAlignment(repoRoot);
     expect(result.match).toBe(true);
-    expect(result.totalEntries).toBeGreaterThanOrEqual(117);
+    expect(result.totalEntries).toBe(4);
   });
+
+  it('materializes the pinned historical chain outside the active migration directory', () => {
+    const fixture = materializeHistoricalBaselineFixture(repoRoot);
+    try {
+      expect(fixture.migrationsFolder).not.toBe(
+        path.join(repoRoot, 'packages/database/migrations'),
+      );
+      expect(existsSync(path.join(fixture.migrationsFolder, 'meta/_journal.json'))).toBe(true);
+      expect(
+        existsSync(
+          path.join(
+            fixture.migrationsFolder,
+            '0116_add_task_connector_message_and_verify_updates.sql',
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+    expect(existsSync(fixture.migrationsFolder)).toBe(false);
+  }, 60_000);
 
   it('treats post-baseline SQL as expand-only for protected core tables', () => {
     const result = verifyExpandOnlyPostBaselineSql(repoRoot);
     expect(result.match).toBe(true);
     expect(result.scannedMigrations).toBeGreaterThan(0);
+  });
+
+  it('contains no top-level transaction control inside migration bodies', () => {
+    expect(verifyNoTopLevelTransactionControl(repoRoot)).toEqual({ match: true, reasons: [] });
   });
 
   it('rejects destructive expand-only contract changes (negative fixtures)', async () => {
@@ -173,7 +201,7 @@ describe('migration compat baseline (2.2.10 / 0000-0116)', () => {
 describe('official drizzle migration semantics', () => {
   it('loads real SHA-256 hashes and journal.when folderMillis (not tag/idx)', () => {
     const official = loadOfficialMigrations(repoRoot);
-    expect(official.length).toBeGreaterThanOrEqual(117);
+    expect(official).toHaveLength(4);
     const first = official[0]!;
     expect(first.hash).toMatch(/^[a-f0-9]{64}$/);
     expect(first.hash.startsWith('tag:')).toBe(false);

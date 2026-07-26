@@ -355,25 +355,34 @@ describe('managed Connector operation integration security', () => {
     });
     mocks.getConnectorByKey.mockResolvedValue(connector(1, 'archived'));
 
-    await expect(
-      executeManagedConnectorTool({
-        agentId: 'agent-1',
-        apiName: 'search',
-        approvalReceipt: receipt,
-        arguments: '{}',
-        db,
-        env,
-        identifier: 'catalog',
-        manifest: built.manifests[0],
-        operationId: 'operation-toctou',
-        toolCallId: 'tool-call-toctou',
-        toolType: 'mcp',
-        userId: 'user-1',
-      }),
-    ).resolves.toMatchObject({
-      handled: true,
-      result: { error: { code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' }, success: false },
+    const failed = await executeManagedConnectorTool({
+      agentId: 'agent-1',
+      apiName: 'search',
+      approvalReceipt: receipt,
+      arguments: '{}',
+      db,
+      env,
+      identifier: 'catalog',
+      manifest: built.manifests[0],
+      operationId: 'operation-toctou',
+      toolCallId: 'tool-call-toctou',
+      toolType: 'mcp',
+      userId: 'user-1',
     });
+    expect(failed).toMatchObject({
+      handled: true,
+      result: {
+        content: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+        error: {
+          code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+          message: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+          messageCode: 'platformConnectors.feedback.PLATFORM_CONNECTOR_NOT_PUBLISHED',
+        },
+        success: false,
+      },
+    });
+    const { default: zh } = await import('../../../../../../locales/zh-CN/setting.json');
+    expect(zh[failed.result!.error!.messageCode as keyof typeof zh]).toContain('尚未发布');
   });
 
   // CONNECTOR-EXACT: a platform Agent's Connector manifests come from its immutable pinned refs —

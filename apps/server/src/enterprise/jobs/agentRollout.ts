@@ -6,6 +6,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { processNextPlatformAgentRolloutBatch } from '../services/agentCatalog/rolloutWorker';
 import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
+import { startPersistentWorkerScheduler } from './persistentWorkerScheduler';
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_INTERVAL_MS = 2000;
@@ -43,21 +44,12 @@ export const isPlatformAgentRolloutWorkerRuntime = (
 export const ensurePlatformAgentRolloutWorkerStarted = (): void => {
   if (workerStarted || !isPlatformAgentRolloutWorkerRuntime()) return;
   workerStarted = true;
-  const schedule = () => {
-    const timer = setTimeout(run, DEFAULT_INTERVAL_MS);
-    timer.unref();
-  };
-  const run = async () => {
-    try {
+  startPersistentWorkerScheduler({
+    baseIntervalMs: DEFAULT_INTERVAL_MS,
+    namespace: 'agent-rollout',
+    run: async () => {
       if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return;
       await runPlatformAgentRolloutBatches(await getServerDB());
-    } catch (error) {
-      console.error('[platform-agent-rollout-worker] batch failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
-    } finally {
-      schedule();
-    }
-  };
-  void run();
+    },
+  });
 };

@@ -1,7 +1,7 @@
 'use client';
 
 import { Alert, Flexbox, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import debug from 'debug';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -368,7 +368,7 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     setSaveState('saving');
     setActionError(null);
     try {
-      const { capabilityRefreshFailed } = await publishManagedResourcePolicy({
+      const { capabilityRefreshFailed, output } = await publishManagedResourcePolicy({
         authMethod: authMethod ?? null,
         input: {
           expectedDraftToken: activeDraftToken,
@@ -382,7 +382,9 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       setSaveState('saved');
       setFailedOperation(null);
       setPublished(normalizeManagedResourcePolicyMap(draft));
-      if (capabilityRefreshFailed) {
+      if (output.runtimeTransition === 'pending_recovery') {
+        toast.warning(t('managedResources.errors.publishedRuntimeRecovering'));
+      } else if (capabilityRefreshFailed) {
         setActionError(t('managedResources.errors.publishedRefreshFailed'));
       }
       try {

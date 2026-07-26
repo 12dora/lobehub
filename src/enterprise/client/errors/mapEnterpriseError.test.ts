@@ -38,6 +38,36 @@ describe('mapEnterpriseError (structured)', () => {
     expect(mapped?.details?.max).toBe(100);
   });
 
+  it('maps credential payload and Agent runtime codes to locale-backed presentation', async () => {
+    const credential = mapEnterpriseError({
+      data: {
+        errorData: {
+          code: PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID,
+        },
+      },
+    });
+    expect(credential).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID,
+      i18nKey: 'globalCredentials.validation.filePayloadInvalid',
+    });
+
+    const agent = mapEnterpriseError({
+      cause: { data: { code: PLATFORM_ERROR_CODES.PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE } },
+    });
+    expect(agent).toMatchObject({
+      action: 'contact_admin',
+      i18nKey: 'enterprise.error.PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE',
+    });
+
+    const [{ default: en }, { default: zh }] = await Promise.all([
+      import('../../../../locales/en-US/admin.json'),
+      import('../../../../locales/zh-CN/admin.json'),
+    ]);
+    expect(en[credential!.i18nKey as keyof typeof en]).toContain('file data');
+    expect(zh[credential!.i18nKey as keyof typeof zh]).toContain('文件数据');
+    expect(zh[agent!.i18nKey as keyof typeof zh]).toContain('所需资源');
+  });
+
   it('maps skill_import_* details.reason to skillCatalog.import.error.* (not raw code)', () => {
     const mapped = mapEnterpriseError({
       data: {

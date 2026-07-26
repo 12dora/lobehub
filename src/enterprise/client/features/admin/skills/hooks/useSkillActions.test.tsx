@@ -15,13 +15,14 @@ const mocks = vi.hoisted(() => ({
   publish: vi.fn(),
   refresh: vi.fn(),
   rollback: vi.fn(),
+  toastSuccess: vi.fn(),
   updateDraft: vi.fn(),
   validate: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@lobehub/ui/base-ui', () => ({
-  toast: { success: vi.fn(), warning: vi.fn() },
+  toast: { success: mocks.toastSuccess, warning: vi.fn() },
 }));
 vi.mock('@/enterprise/client/errors/mapEnterpriseError', () => ({
   mapEnterpriseError: (error: { code?: string }) =>
@@ -384,6 +385,7 @@ describe('M08 Skill write actions', () => {
     });
 
     expect(mocks.publish).toHaveBeenCalledTimes(1);
+    expect(mocks.toastSuccess).toHaveBeenCalledTimes(1);
     expect(result.current.refreshFailed).toBe(true);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.refresh.failed');
 
@@ -394,6 +396,7 @@ describe('M08 Skill write actions', () => {
     await act(() => result.current.retryRefresh());
     expect(mocks.publish).toHaveBeenCalledTimes(1);
     expect(mocks.invalidatePublishedSkillCatalog).toHaveBeenCalledTimes(2);
+    expect(mocks.toastSuccess).toHaveBeenCalledTimes(1);
     expect(result.current.refreshFailed).toBe(false);
     expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
   });

@@ -124,6 +124,24 @@ export const identityProviderStyles = createStaticStyles(({ css }) => ({
     font-family: ${cssVar.fontFamilyCode};
     overflow-wrap: anywhere;
   `,
+  restartActivity: css`
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  `,
+  restartActivityAnimated: css`
+    @media (prefers-reduced-motion: reduce) {
+      display: none;
+    }
+  `,
+  restartActivityStatic: css`
+    display: none;
+    color: ${cssVar.colorInfo};
+
+    @media (prefers-reduced-motion: reduce) {
+      display: inline;
+    }
+  `,
   setupList: css`
     margin: 0;
     padding-inline-start: 18px;

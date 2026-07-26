@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   openModal: vi.fn(),
   retry: vi.fn(),
   rollback: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastWarning: vi.fn(),
 }));
 
 const unlockedLock = (): RefreshLock => ({
@@ -70,8 +72,20 @@ vi.mock('@lobehub/ui', () => ({
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
-  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  toast: { error: vi.fn(), success: vi.fn() },
+  Button: ({ children, loading, ...props }: any) => (
+    <button
+      {...props}
+      data-loading={loading ? 'true' : 'false'}
+      disabled={props.disabled || loading}
+    >
+      {children}
+    </button>
+  ),
+  toast: {
+    error: vi.fn(),
+    success: mocks.toastSuccess,
+    warning: mocks.toastWarning,
+  },
 }));
 
 const runningSnapshot: AdminAgentDetailOutput = {
@@ -119,6 +133,8 @@ describe('RolloutPanel capability gate', () => {
     mocks.retry.mockReset();
     mocks.rollback.mockReset();
     mocks.openModal.mockReset();
+    mocks.toastSuccess.mockReset();
+    mocks.toastWarning.mockReset();
   });
 
   it('shows a deferral notice and no rollout actions when the backend is unavailable', () => {
@@ -202,6 +218,28 @@ describe('RolloutPanel capability gate', () => {
     fireEvent.click(screen.getByText('agentCatalog.rollout.pollRetry'));
     expect(retryPoll).toHaveBeenCalledTimes(1);
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('keeps rollout pagination retry visible and pending after a failure', () => {
+    const loadMore = vi.fn();
+    render(
+      <RolloutPanel
+        enabled
+        loadMoreError
+        loadingMore
+        rolloutsTruncated
+        authMethod={null}
+        lock={unlockedLock()}
+        permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
+        refresh={vi.fn()}
+        snapshot={runningSnapshot}
+        onLoadMoreRollouts={loadMore}
+      />,
+    );
+
+    const retry = screen.getByText('agentCatalog.collection.retry');
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAttribute('data-loading', 'true');
   });
 
   it('routes cancel/retry/rollback through the shared reauth modal with authMethod and frozen CAS', async () => {
@@ -297,6 +335,38 @@ describe('RolloutPanel capability gate', () => {
     expect(commitWrite).toHaveBeenCalledOnce();
     // Failed post-commit refresh leaves the shared lock engaged — further writes must gate.
     expect(lock.isLocked()).toBe(true);
+  });
+
+  it('warns on deferred rollout rollback invalidation without showing success', async () => {
+    mocks.rollback.mockResolvedValue({ invalidationStatus: 'deferred' });
+    render(
+      <RolloutPanel
+        enabled
+        authMethod={null}
+        lock={unlockedLock()}
+        permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_PUBLISH])}
+        refresh={vi.fn()}
+        snapshot={{
+          ...runningSnapshot,
+          rollouts: [
+            {
+              ...runningSnapshot.rollouts[0]!,
+              previousVersionId: 'version-0',
+              status: 'completed',
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('agentCatalog.rollout.rollback'));
+    const config = lastModal();
+    await act(async () => {
+      await config.onSubmit(config.buildPayload('rollback'));
+    });
+
+    expect(mocks.toastWarning).toHaveBeenCalledWith('agentCatalog.toast.refreshDeferred');
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });
 
   it('retries rollback after reauth with the same frozen CAS while the write lock is held', async () => {

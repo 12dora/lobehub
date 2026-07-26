@@ -555,16 +555,24 @@ describe('PlatformGlobalCredentialAdminService', () => {
 
   it('rejectsNonCanonicalBase64Uploads', async () => {
     const svc = service();
-    await expect(
-      svc.uploadFile({
+    let thrown: unknown;
+    try {
+      await svc.uploadFile({
         actorUserId: 'admin-1',
         // Valid alphabet chars mixed with invalid "!!!!" — Buffer.from accepts
         // this and produces "abc", but canonical check must reject.
         fileBase64: 'YWJj!!!!',
         fileName: 'bad.bin',
         fileType: 'application/octet-stream',
-      }),
-    ).rejects.toBeInstanceOf(PlatformGlobalCredentialValidationError);
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PlatformGlobalCredentialValidationError);
+    expect(thrown).toMatchObject({
+      message: 'PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID',
+      validationCode: 'PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID',
+    });
   });
 
   it('createFile keeps staging on key conflict and succeeds on retry', async () => {

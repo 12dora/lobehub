@@ -337,16 +337,16 @@ describe('PlatformConnectorSecretStore', () => {
     }
   });
 
-  it('does not block a new secret when opportunistic GC fails or log secret material', async () => {
+  it('does not run orphan GC on the request-path secret write', async () => {
     const keyProvider: KeyProvider = {
       getKek: async () => ({ key: keyA, keyId: 'test:key-a' }),
       providerId: 'test',
     };
     const store = new PlatformConnectorSecretStore(db, new PlatformSecretService({ keyProvider }));
     const privateFailure = 'private-gc-backend-response';
-    vi.spyOn(store, 'garbageCollectOrphanedOAuthSecrets').mockRejectedValueOnce(
-      new Error(privateFailure),
-    );
+    const garbageCollect = vi
+      .spyOn(store, 'garbageCollectOrphanedOAuthSecrets')
+      .mockRejectedValueOnce(new Error(privateFailure));
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await expect(
@@ -356,6 +356,7 @@ describe('PlatformConnectorSecretStore', () => {
         value: { accessToken: 'must-never-enter-log' },
       }),
     ).resolves.toMatchObject({ ref: expect.stringMatching(/^kms:\/\/platform-connectors\//) });
+    expect(garbageCollect).not.toHaveBeenCalled();
     expect(JSON.stringify(consoleError.mock.calls)).not.toMatch(
       /private-gc-backend-response|must-never-enter-log/,
     );

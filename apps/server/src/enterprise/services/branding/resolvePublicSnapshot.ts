@@ -91,10 +91,18 @@ export const resolvePlatformPublicSnapshot = async ({
     }
   }
 
-  return buildPlatformPublicSnapshot({
-    branding,
-    flags,
-    openRegistration,
-    workAccountEnabled,
-  });
+  try {
+    return buildPlatformPublicSnapshot({
+      branding,
+      flags,
+      openRegistration,
+      workAccountEnabled,
+    });
+  } catch (error) {
+    log(
+      'public snapshot projection invalid; using built-in fallback (%s)',
+      error instanceof Error ? error.name : 'UnknownError',
+    );
+    return buildPlatformPublicSnapshot({ flags, openRegistration, workAccountEnabled });
+  }
 };

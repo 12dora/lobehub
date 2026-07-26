@@ -211,6 +211,9 @@ describe('EffectiveSettingsService (flag ON)', () => {
     expect(overrideRows.some((row) => row.path === 'general.fontSize' && row.value === 18)).toBe(
       true,
     );
+    const durableAfterBackfill = await userModel.getUserSettings();
+    const cleanedGeneral = durableAfterBackfill?.general as { fontSize?: unknown } | null;
+    expect(cleanedGeneral?.fontSize).toBeUndefined();
 
     // Second read is idempotent and still returns the preference.
     const again = await service.getEffectiveSettings({

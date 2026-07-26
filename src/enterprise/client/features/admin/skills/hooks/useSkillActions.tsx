@@ -99,6 +99,7 @@ export const useSkillActions = ({
       commit: () => Promise<Result>;
       onCommitted?: (result: Result) => Promise<void> | void;
       previousFingerprint: string;
+      recover?: (result: Result) => Promise<void>;
       verify?: (
         latest: AdminSkillGetOutput | undefined,
         result: Result,
@@ -107,22 +108,21 @@ export const useSkillActions = ({
       // Server commit first; post-commit side effects never reverse a successful write.
       const result = await params.commit();
       writeGuard.lock();
+      // Local state finalization and success feedback are one-shot commit effects. They must not
+      // be replayed when a later cache refresh/verification retry is requested.
+      await params.onCommitted?.(result);
 
       const verify = async () => {
+        await params.recover?.(result);
         const latest = await refreshAdminSkill(data.draft.id);
         if (params.verify) return params.verify(latest, result);
         return Boolean(latest && fingerprintSkillSnapshot(latest) !== params.previousFingerprint);
       };
-      // Recovery re-runs fallible post-commit work (e.g. catalog invalidation) + verify.
-      // Install before awaiting so a rejecting side effect still leaves a retry path.
-      const recover = async () => {
-        await params.onCommitted?.(result);
-        return verify();
-      };
-      committedVerifierRef.current = recover;
+      // Only idempotent cache invalidation and freshness verification are retryable.
+      committedVerifierRef.current = verify;
 
       try {
-        if (!(await recover())) throw new Error('Committed Skill snapshot has not advanced');
+        if (!(await verify())) throw new Error('Committed Skill snapshot has not advanced');
         committedVerifierRef.current = null;
         setRefreshFailed(false);
         editor.setActionError(null);
@@ -364,11 +364,11 @@ export const useSkillActions = ({
                   : kind === 'rollback'
                     ? adminSkillsService.rollback(input as AdminSkillRollbackInput)
                     : adminSkillsService.archive(input as AdminSkillArchiveInput),
-              onCommitted: async (result) => {
-                await invalidatePublishedSkillCatalog(result.catalogRevision);
+              onCommitted: () => {
                 toast.success(t(`skillCatalog.toast.${kind}` as never));
               },
               previousFingerprint: operation.fingerprint,
+              recover: (result) => invalidatePublishedSkillCatalog(result.catalogRevision),
             });
           } catch (cause) {
             await handleMutationError(cause);

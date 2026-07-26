@@ -341,7 +341,14 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(result.newState).toBe(state);
+      expect(result.outcome).toBe('already_consumed');
+      expect(result.newState).toMatchObject({
+        metadata: {
+          interventionOutcome: {
+            status: 'already_consumed',
+          },
+        },
+      });
       expect(result.nextContext).toBeUndefined();
     });
 
@@ -358,12 +365,13 @@ describe('HumanInterventionHandler.process', () => {
       });
 
       expect(mockMessageModel.rejectPendingMessagePlugin).not.toHaveBeenCalled();
-      expect(result.newState).toBe(state);
+      expect(result.outcome).toBe('stale');
+      expect(result.newState.metadata.interventionOutcome.status).toBe('stale');
     });
   });
 
   describe('no-op paths', () => {
-    it('returns state unchanged when status is not waiting_for_human (approve)', async () => {
+    it('reports a stale approval when status is not waiting_for_human', async () => {
       const state = makeState({ status: 'running' });
 
       const result = await handler.process(state, {
@@ -371,12 +379,13 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(result.newState).toBe(state);
+      expect(result.outcome).toBe('stale');
+      expect(result.newState.metadata.interventionOutcome.status).toBe('stale');
       expect(result.nextContext).toBeUndefined();
       expect(mockMessageModel.approvePendingMessagePlugin).not.toHaveBeenCalled();
     });
 
-    it('returns state unchanged when status is not waiting_for_human (reject)', async () => {
+    it('reports a stale rejection when status is not waiting_for_human', async () => {
       const state = makeState({ status: 'running' });
 
       const result = await handler.process(state, {
@@ -384,11 +393,12 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(result.newState).toBe(state);
+      expect(result.outcome).toBe('stale');
+      expect(result.newState.metadata.interventionOutcome.status).toBe('stale');
       expect(result.nextContext).toBeUndefined();
     });
 
-    it('handles humanInput as out-of-scope (no state transition)', async () => {
+    it('reports unsupported humanInput as a mismatch', async () => {
       const state = makeState();
 
       const result = await handler.process(state, {
@@ -396,7 +406,8 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(result.newState).toBe(state);
+      expect(result.outcome).toBe('mismatch');
+      expect(result.newState.metadata.interventionOutcome.status).toBe('mismatch');
       expect(result.nextContext).toBeUndefined();
     });
   });

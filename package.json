@@ -86,6 +86,7 @@
     "enterprise:check-otel-collector": "bun run scripts/enterprise/prometheus-alerts/collectorValidate.ts",
     "enterprise:check-paths": "bun run scripts/enterprise/check-path-boundaries.ts",
     "enterprise:check-prometheus-rules": "bun run scripts/enterprise/prometheus-alerts/checkRules.ts",
+    "enterprise:predeploy-retention-indexes": "bun run scripts/migrateServerDB/predeployRetentionIndexes.ts",
     "enterprise:preflight": "bun run scripts/enterprise/preflight.ts",
     "enterprise:probe-otlp-prometheus": "bun run scripts/enterprise/prometheus-alerts/otlpPrometheusProbe.ts",
     "enterprise:recovery-drill": "bun run scripts/enterprise/recovery-drill.ts",

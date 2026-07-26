@@ -82,6 +82,43 @@ const composioOwnedAccountListSchema = z
   })
   .passthrough();
 
+const COMPOSIO_OWNER_LOOKUP_MAX_PAGES = 10;
+const COMPOSIO_OWNER_LOOKUP_TIMEOUT_MS = 15_000;
+
+const withComposioLookupDeadline = async <T>(
+  request: Promise<T>,
+  timeoutMs: number,
+): Promise<T> => {
+  if (timeoutMs <= 0) {
+    throw new TRPCError({
+      code: 'TIMEOUT',
+      message: 'Composio account lookup took too long. Please try again.',
+    });
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      request,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new TRPCError({
+                code: 'TIMEOUT',
+                message: 'Composio account lookup took too long. Please try again.',
+              }),
+            ),
+          timeoutMs,
+        );
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+};
+
 const composioServerToolSchema = z
   .object({
     description: z.string().optional(),
@@ -204,18 +241,30 @@ const resolveRemoteOwnedComposioAccount = async (
   ctx: ComposioRemoteOwnerContext,
   params: { appSlug: string; authConfigId: string; connectedAccountId: string },
 ) => {
+  const deadlineAt = Date.now() + COMPOSIO_OWNER_LOOKUP_TIMEOUT_MS;
   let cursor: string | undefined;
+  let pageCount = 0;
   const seenCursors = new Set<string>();
 
   do {
+    pageCount += 1;
+    if (pageCount > COMPOSIO_OWNER_LOOKUP_MAX_PAGES) {
+      throw new TRPCError({
+        code: 'TIMEOUT',
+        message: 'Composio account lookup took too long. Please try again.',
+      });
+    }
     const response = composioOwnedAccountListSchema.safeParse(
-      await ctx.composioClient.connectedAccounts.list({
-        authConfigIds: [params.authConfigId],
-        cursor,
-        limit: 100,
-        toolkitSlugs: [params.appSlug],
-        userIds: [ctx.userId],
-      }),
+      await withComposioLookupDeadline(
+        ctx.composioClient.connectedAccounts.list({
+          authConfigIds: [params.authConfigId],
+          cursor,
+          limit: 100,
+          toolkitSlugs: [params.appSlug],
+          userIds: [ctx.userId],
+        }),
+        deadlineAt - Date.now(),
+      ),
     );
     if (!response.success) {
       throw new TRPCError({

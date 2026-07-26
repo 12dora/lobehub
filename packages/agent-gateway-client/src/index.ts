@@ -7,6 +7,8 @@ export type {
   AgentStreamEvent,
   AgentStreamEventType,
   ConnectionStatus,
+  HumanInterventionOutcome,
+  HumanInterventionOutcomeData,
   StepCompleteData,
   StreamChunkData,
   StreamChunkType,

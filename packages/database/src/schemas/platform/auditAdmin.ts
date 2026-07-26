@@ -298,7 +298,7 @@ export const platformAuditExports = pgTable(
       .where(sql`${t.storageKey} IS NOT NULL AND ${t.status} IN ('completed','expired')`),
     // Purge outbox recovery: terminal rows with storage_key null + purge key(s) (DB-006).
     // Predicate must imply listPendingArtifactPurges: single key OR purgeStorageKeys array.
-    index('platform_audit_exports_purge_outbox_updated_at_id_idx')
+    index('platform_audit_exports_purge_outbox_updated_at_id_v2_idx')
       .on(t.updatedAt, t.id)
       .where(
         sql`${t.storageKey} IS NULL AND ${t.status} IN ('expired','failed','cancelled') AND (coalesce(${t.error}->>'purgeStorageKey','') <> '' OR jsonb_typeof(${t.error}->'purgeStorageKeys') = 'array')`,
@@ -309,7 +309,7 @@ export const platformAuditExports = pgTable(
       .where(sql`coalesce(${t.error}->>'purgeStatus', '') = 'deleting'`),
     // w1-evidence: expression predicate aligned with listPending / complete delete
     // (single key OR non-empty purgeStorageKeys array — w1 owns this predicate).
-    index('platform_audit_exports_purge_storage_key_expr_idx')
+    index('platform_audit_exports_purge_storage_key_expr_v2_idx')
       .using('btree', sql`coalesce(${t.error}->>'purgeStorageKey', '')`)
       .where(
         sql`coalesce(${t.error}->>'purgeStorageKey', '') <> '' OR (jsonb_typeof(${t.error}->'purgeStorageKeys') = 'array' AND jsonb_array_length(${t.error}->'purgeStorageKeys') > 0)`,

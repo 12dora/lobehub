@@ -7,6 +7,7 @@ import Loading from '@/components/Loading/BrandTextLoading';
 import type { ManagedResourceKind } from '@/const/platform/managedResources';
 
 import { ManagedResourceNotice } from './ManagedResourceNotice';
+import { ManagedResourceTransition } from './ManagedResourceTransition';
 import { useManagedResource } from './useManagedResource';
 
 export interface ManagedResourceBoundaryProps {
@@ -17,8 +18,16 @@ export interface ManagedResourceBoundaryProps {
 export const ManagedResourceBoundary = ({ children, resource }: ManagedResourceBoundaryProps) => {
   const { error, loading, managed, refresh } = useManagedResource(resource);
 
-  if (error) return <AsyncError error={error} variant="page" onRetry={() => void refresh()} />;
-  if (loading) return <Loading debugId={`ManagedResourceBoundary > ${resource}`} />;
-  if (managed) return <ManagedResourceNotice resource={resource} />;
-  return children;
+  const state = error ? 'error' : loading ? 'loading' : managed ? 'managed' : 'content';
+  const content = error ? (
+    <AsyncError error={error} variant="page" onRetry={() => void refresh()} />
+  ) : loading ? (
+    <Loading debugId={`ManagedResourceBoundary > ${resource}`} />
+  ) : managed ? (
+    <ManagedResourceNotice resource={resource} />
+  ) : (
+    children
+  );
+
+  return <ManagedResourceTransition state={state}>{content}</ManagedResourceTransition>;
 };

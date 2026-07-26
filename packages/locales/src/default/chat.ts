@@ -1163,6 +1163,8 @@ export default {
   'tool.intervention.approve': 'Approve',
   'tool.intervention.optionApprove': 'Approve',
   'tool.intervention.optionApproveRemember': "Approve, and don't ask again for similar actions",
+  'tool.intervention.outcomeNotAccepted':
+    'That approval is no longer current. The latest conversation state has been restored.',
   'tool.intervention.rememberSimilar': "Don't ask again for similar actions",
   'tool.intervention.renderFallback.description':
     'This display was downgraded to raw JSON because the current model was not capable enough to generate a stable interactive payload. Switch to a stronger model and try again.',
@@ -1173,9 +1175,9 @@ export default {
   'tool.intervention.mode.allowListDesc': 'Only automatically execute approved tools',
   'tool.intervention.mode.autoRun': 'Auto Approve',
   'tool.intervention.mode.autoRunDesc': 'Automatically approve all tool executions',
-  'tool.intervention.mode.headless': 'Headless',
+  'tool.intervention.mode.headless': 'Managed by your organization',
   'tool.intervention.mode.headlessDesc':
-    'Organization-managed unattended execution; unsafe tools are skipped automatically',
+    'Your organization allows approved tools to run automatically and blocks tools that do not meet its safety rules.',
   'tool.intervention.mode.manual': 'Manual',
   'tool.intervention.mode.manualDesc': 'Manual approval required for each invocation',
   'tool.intervention.onboarding.agentIdentity.editHint':

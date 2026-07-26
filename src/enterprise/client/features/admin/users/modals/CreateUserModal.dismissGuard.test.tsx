@@ -23,6 +23,12 @@ let capturedOnOpenChange: ((open: boolean) => void) | undefined;
 let committedOpen = true;
 let modalRoot: Root | null = null;
 let modalHost: HTMLDivElement | null = null;
+let capturedDiscardConfirm:
+  | {
+      onCancel?: () => void;
+      onOk?: () => void;
+    }
+  | undefined;
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string) => k }),
@@ -59,6 +65,10 @@ vi.mock('@lobehub/ui/base-ui', async () => {
         { type: 'button', onClick, disabled: disabled || loading, ...rest },
         children,
       ),
+    confirmModal: (props: { onCancel?: () => void; onOk?: () => void }) => {
+      capturedDiscardConfirm = props;
+      return { close: vi.fn() };
+    },
     createModal: (props: any) => {
       capturedOnOpenChange = props.onOpenChange;
       committedOpen = true;
@@ -131,6 +141,7 @@ describe('openCreateUserModal dismissal guard', () => {
     mockClose.mockReset();
     updateSpy.mockReset();
     capturedOnOpenChange = undefined;
+    capturedDiscardConfirm = undefined;
   });
 
   afterEach(() => {
@@ -212,6 +223,37 @@ describe('openCreateUserModal dismissal guard', () => {
 
     simulateEscapeDismiss();
     expect(updateSpy).not.toHaveBeenCalled();
+    expect(committedOpen).toBe(false);
+  });
+
+  it('keeps a populated idle draft until discard is explicitly confirmed', async () => {
+    openCreateUserModal({ onSubmit: vi.fn() });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('users.modals.create.emailLabel')).toBeTruthy(),
+    );
+    fillValidForm('Generated-secret!');
+    fireEvent.change(screen.getByLabelText('users.modals.create.usernameLabel'), {
+      target: { value: 'new.user' },
+    });
+
+    simulateEscapeDismiss();
+
+    expect(updateSpy).toHaveBeenCalledWith({ open: true });
+    expect(committedOpen).toBe(true);
+    expect(capturedDiscardConfirm).toBeTruthy();
+    expect(
+      (screen.getByLabelText('users.modals.create.emailLabel') as HTMLInputElement).value,
+    ).toBe('new.user@example.com');
+    expect(
+      (screen.getByLabelText('users.modals.create.passwordLabel') as HTMLInputElement).value,
+    ).toBe('Generated-secret!');
+
+    capturedDiscardConfirm?.onCancel?.();
+    expect(committedOpen).toBe(true);
+
+    simulateEscapeDismiss();
+    capturedDiscardConfirm?.onOk?.();
     expect(committedOpen).toBe(false);
   });
 });

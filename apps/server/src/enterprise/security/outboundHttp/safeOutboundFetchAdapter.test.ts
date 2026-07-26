@@ -162,4 +162,37 @@ describe('createSafeOutboundFetchAdapter', () => {
     await adapter('https://example.test/', { method: 'GET' });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it('removes each abort listener after a highly fragmented stream completes', async () => {
+    const addListener = vi.spyOn(AbortSignal.prototype, 'addEventListener');
+    const removeListener = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
+    const fetchMock = vi.fn(async () => okClientResponse());
+    const client = { fetch: fetchMock } as unknown as SafeOutboundHttpClient;
+    const adapter = createSafeOutboundFetchAdapter(client, { timeoutMs: 5_000 });
+    const controller = new AbortController();
+    let chunks = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(streamController) {
+        if (chunks === 128) {
+          streamController.close();
+          return;
+        }
+        chunks += 1;
+        streamController.enqueue(new Uint8Array([chunks]));
+      },
+    });
+
+    await adapter('https://example.test/upload', {
+      // @ts-expect-error duplex required by undici for streaming bodies
+      duplex: 'half',
+      body: stream,
+      method: 'POST',
+      signal: controller.signal,
+    });
+
+    const abortAdds = addListener.mock.calls.filter(([type]) => type === 'abort').length;
+    const abortRemoves = removeListener.mock.calls.filter(([type]) => type === 'abort').length;
+    expect(chunks).toBe(128);
+    expect(abortRemoves).toBe(abortAdds);
+  });
 });

@@ -2,11 +2,13 @@
  * Strict Zod contracts for `admin.audit.*` (A2 + A3 exports/retention).
  *
  * Data contract:
- * - Operation event detail returns stored before/after diffs (write-time redaction only).
+ * - Operation event detail and exports recursively remove fingerprint-named fields at read time
+ *   while preserving all other non-credential evidence in stored before/after diffs.
  * - Conversation/message body is full and unlimited when content_allowed + permission;
  *   only credentials are masked — no PII/business-text redaction or length truncation.
- * - Export artifacts store operation diffs exactly; conversation bodies only when allowed,
- *   with credential-only masking (no generic redaction / summarization / body truncation).
+ * - Export artifacts preserve non-fingerprint operation evidence; conversation bodies are
+ *   included only when allowed, with credential-only masking and no generic summarization or
+ *   length truncation.
  * - Lists may omit large detail fields; detail preserves full non-credential evidence.
  * - Access-log filter summaries never include free-text `q`, message bodies, or download URLs.
  * - Export list/get never expose storageKey; only download returns a short-lived signed URL.

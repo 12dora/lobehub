@@ -190,6 +190,24 @@ const requireSanitizedIdentityReason = async (input: {
   return sanitized ?? '[REDACTED]';
 };
 
+interface ExistingIdentityProviderReasonInput {
+  providerId: string;
+  reason: string;
+  replacementSecrets?: unknown[];
+  serverDB: Parameters<typeof createAdminIdentityProviderRuntime>[0];
+}
+
+/**
+ * Existing-provider mutations must always compare the reason with the stored
+ * opaque client secret. Keeping providerId required here makes an unsafe
+ * sanitization call impossible at those call sites.
+ */
+const requireSanitizedExistingIdentityReason = ({
+  providerId,
+  ...input
+}: ExistingIdentityProviderReasonInput): Promise<string> =>
+  requireSanitizedIdentityReason({ ...input, currentSecretTargetId: providerId });
+
 const assertIdentityDangerousReauth = async (input: {
   action: AuditAction;
   actorUserId: string;
@@ -212,6 +230,18 @@ const assertIdentityDangerousReauth = async (input: {
       targetId: input.targetId,
       targetType: 'identity_provider',
     },
+  });
+
+const assertExistingIdentityDangerousReauth = async (
+  input: Omit<
+    Parameters<typeof assertIdentityDangerousReauth>[0],
+    'currentSecretTargetId' | 'targetId'
+  > & { providerId: string },
+) =>
+  assertIdentityDangerousReauth({
+    ...input,
+    currentSecretTargetId: input.providerId,
+    targetId: input.providerId,
   });
 
 /** The flag middleware intentionally precedes DB/user/RBAC middleware: flag-off is a zero-I/O path. */
@@ -277,16 +307,17 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderDeleteInputSchema)
     .output(adminIdentityProviderDeleteOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      await assertIdentityDangerousReauth({
+      await assertExistingIdentityDangerousReauth({
         action: 'admin.identityProviders.delete',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
         authMethod: ctx.authMethod,
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
-        targetId: input.id,
       });
-      const reason = await requireSanitizedIdentityReason({
+      const reason = await requireSanitizedExistingIdentityReason({
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
       });
@@ -300,16 +331,17 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderDisableInputSchema)
     .output(adminIdentityProviderDisableOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      await assertIdentityDangerousReauth({
+      await assertExistingIdentityDangerousReauth({
         action: 'admin.identityProviders.disable',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
         authMethod: ctx.authMethod,
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
-        targetId: input.id,
       });
-      const reason = await requireSanitizedIdentityReason({
+      const reason = await requireSanitizedExistingIdentityReason({
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
       });
@@ -360,16 +392,17 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderPublishInputSchema)
     .output(adminIdentityProviderPublishOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      await assertIdentityDangerousReauth({
+      await assertExistingIdentityDangerousReauth({
         action: 'admin.identityProviders.publish',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
         authMethod: ctx.authMethod,
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
-        targetId: input.id,
       });
-      const reason = await requireSanitizedIdentityReason({
+      const reason = await requireSanitizedExistingIdentityReason({
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
       });
@@ -388,16 +421,17 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderRollbackInputSchema)
     .output(adminIdentityProviderRollbackOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      await assertIdentityDangerousReauth({
+      await assertExistingIdentityDangerousReauth({
         action: 'admin.identityProviders.rollback',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
         authMethod: ctx.authMethod,
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
-        targetId: input.id,
       });
-      const reason = await requireSanitizedIdentityReason({
+      const reason = await requireSanitizedExistingIdentityReason({
+        providerId: input.id,
         reason: input.reason,
         serverDB: ctx.serverDB,
       });
@@ -454,20 +488,19 @@ export const adminIdentityProvidersRouter = router({
     .mutation(async ({ ctx, input }) => {
       const replacementSecrets = input.secret.operation === 'replace' ? [input.secret.value] : [];
       if (identitySecretMutationRequiresReauth(input.secret)) {
-        await assertIdentityDangerousReauth({
+        await assertExistingIdentityDangerousReauth({
           action: 'admin.identityProviders.update',
           actorUserId: ctx.userId!,
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
-          currentSecretTargetId: input.id,
+          providerId: input.id,
           reason: input.reason,
           replacementSecrets,
           serverDB: ctx.serverDB,
-          targetId: input.id,
         });
       }
-      const reason = await requireSanitizedIdentityReason({
-        currentSecretTargetId: input.id,
+      const reason = await requireSanitizedExistingIdentityReason({
+        providerId: input.id,
         reason: input.reason,
         replacementSecrets,
         serverDB: ctx.serverDB,

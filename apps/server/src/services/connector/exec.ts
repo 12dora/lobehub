@@ -43,7 +43,10 @@ export const callConnectorToolById = async (
     throw new ConnectorToolCallError('FORBIDDEN', 'Connector is disabled');
   }
   if (connector.mcpConnectionType === ConnectorMcpConnectionType.stdio) {
-    throw new ConnectorToolCallError('BAD_REQUEST', 'Stdio MCP requires an isolated device');
+    throw new ConnectorToolCallError(
+      'BAD_REQUEST',
+      'This integration must run on a connected desktop device. Connect a device and try again.',
+    );
   }
 
   // The tool MUST be present in the synced list — this is the single source of

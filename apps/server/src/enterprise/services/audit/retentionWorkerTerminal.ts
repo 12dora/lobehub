@@ -2,10 +2,15 @@
  * Terminal audit outcome append for retention worker (SAO-009).
  */
 
-import type { PlatformAuditRetentionCounts } from '@/database/models/platform';
+import {
+  type PlatformAuditRetentionCounts,
+  PlatformAuditRetentionRunModel,
+  PlatformJobModel,
+} from '@/database/models/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { PlatformAuditService } from '../platformAudit';
+import { AuditRetentionLeaseLostError } from './retentionWorkerErrors';
 
 export const appendWorkerOutcome = async (
   db: LobeChatDatabase | Transaction,
@@ -62,6 +67,45 @@ export const appendWorkerOutcome = async (
 };
 
 /**
- * Claim and process at most one audit retention job.
- * Safe to call in a poller loop; returns claimed=false when the queue is empty.
+ * Fail one retention attempt atomically. A non-exhausted transient failure only
+ * requeues the job; a dead attempt also fails the domain run and appends its
+ * required audit outcome in the same transaction.
  */
+export const failRetentionAttempt = async (
+  db: LobeChatDatabase,
+  params: {
+    code: string;
+    jobId: string;
+    runId: string;
+    terminal: boolean;
+    workerId: string;
+  },
+): Promise<boolean> =>
+  db.transaction(async (tx) => {
+    const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
+    const runsTx = new PlatformAuditRetentionRunModel(tx);
+    const run = await runsTx.get(params.runId);
+    if (!run) throw new AuditRetentionLeaseLostError();
+
+    const failedJob = await jobsTx.fail({
+      error: { code: params.code },
+      jobId: params.jobId,
+      terminal: params.terminal,
+      workerId: params.workerId,
+    });
+    if (!failedJob) throw new AuditRetentionLeaseLostError();
+    if (failedJob.status !== 'dead') return false;
+
+    await runsTx.fail(params.runId, { code: params.code });
+    await appendWorkerOutcome(tx, {
+      errorCode: params.code,
+      mode: run.mode,
+      outcome: 'failed',
+      requestedBy: run.requestedBy,
+      required: true,
+      result: 'failure',
+      runId: params.runId,
+      scope: run.scope,
+    });
+    return true;
+  });

@@ -7,6 +7,7 @@ import {
 
 import {
   adminManagedResourcesPublishInputSchema,
+  adminManagedResourcesPublishOutputSchema,
   adminManagedResourcesSaveDraftInputSchema,
   managedResourceEnforcementModeSchema,
   managedResourcePolicyMapSchema,
@@ -89,5 +90,19 @@ describe('admin managed-resource contracts', () => {
         reason: 'publish managed policy',
       }).success,
     ).toBe(false);
+  });
+
+  it('distinguishes finalized activation from committed publication pending recovery', () => {
+    expect(
+      adminManagedResourcesPublishOutputSchema.parse({
+        auditId: 'audit-1',
+        revision: 3,
+        runtimeTransition: 'pending_recovery',
+      }),
+    ).toEqual({
+      auditId: 'audit-1',
+      revision: 3,
+      runtimeTransition: 'pending_recovery',
+    });
   });
 });

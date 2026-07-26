@@ -1,5 +1,6 @@
 import type {
   AgentStreamEvent,
+  HumanInterventionOutcomeData,
   StepCompleteData,
   StreamChunkData,
   StreamStartData,
@@ -15,7 +16,9 @@ import type {
 } from '@lobechat/types';
 import { AgentRuntimeErrorType } from '@lobechat/types';
 import { isRecord, pickNonEmptyString, toRecord } from '@lobechat/utils/object';
+import { t } from 'i18next';
 
+import { message as antdMessage } from '@/components/AntdStaticMethods';
 import { messageService } from '@/services/message';
 import { emitClientAgentSignalSourceEvent } from '@/store/chat/slices/agentRun/actions/lifecycle/agentSignalBridge';
 import type {
@@ -931,6 +934,17 @@ export const createGatewayEventHandler = (
         // `lh notify`. DB is the source of truth — just refresh the message list.
         enqueue(async () => {
           await fetchAndReplaceMessages(get, context).catch(console.error);
+        });
+        break;
+      }
+
+      case 'human_intervention_outcome': {
+        enqueue(async () => {
+          const data = event.data as HumanInterventionOutcomeData;
+          await fetchAndReplaceMessages(get, context).catch(console.error);
+          if (data.outcome !== 'accepted') {
+            antdMessage.warning(t('tool.intervention.outcomeNotAccepted', { ns: 'chat' }));
+          }
         });
         break;
       }

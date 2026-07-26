@@ -1,7 +1,7 @@
 'use client';
 
-import { Flexbox, InputNumber, Tag, Text } from '@lobehub/ui';
-import { Button, Modal, Select, Switch } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, InputNumber, Tag, Text } from '@lobehub/ui';
+import { Button, Modal, Select, Switch, toast } from '@lobehub/ui/base-ui';
 import { Descriptions, Drawer, Progress, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -88,6 +88,9 @@ const totalDeleted = (counts: AdminAuditRetentionRunItem['counts']) =>
   (counts.sessionsDeleted ?? 0) +
   (counts.exportArtifactsDeleted ?? 0);
 
+const isRetentionRunInFlight = (status: AdminAuditRetentionRunItem['status']) =>
+  status === 'pending' || status === 'running';
+
 const RetentionPage = memo(() => {
   const { t } = useTranslation('admin');
   const { permissions, authMethod } = useAdminAccess();
@@ -112,6 +115,8 @@ const RetentionPage = memo(() => {
   const [detail, setDetail] = useState<AdminAuditRetentionRunItem | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const runsRef = useRef<HTMLDivElement>(null);
+  const runStatusesRef = useRef(new Map<string, AdminAuditRetentionRunItem['status']>());
+  const runsInitializedRef = useRef(false);
 
   const runs = useFetchAuditRetentionRuns({ cursor: currentCursor, limit }, canOperate, {
     refreshInterval: pollWhileInFlight(),
@@ -121,6 +126,41 @@ const RetentionPage = memo(() => {
   const mutate = runs.mutate;
   const isLoading = runs.isLoading;
   const error = runs.error;
+
+  const retentionFailureMessage = useCallback(
+    (run: AdminAuditRetentionRunItem) =>
+      t(`audit.retention.runs.error.${run.error?.code ?? 'unknown'}` as never, {
+        defaultValue: t('audit.retention.runs.error.unknown'),
+      }),
+    [t],
+  );
+
+  useEffect(() => {
+    if (!data) return;
+
+    for (const run of data.items) {
+      const previousStatus = runStatusesRef.current.get(run.id);
+      if (
+        runsInitializedRef.current &&
+        previousStatus &&
+        isRetentionRunInFlight(previousStatus) &&
+        run.status === 'failed'
+      ) {
+        toast.error(
+          t('audit.retention.runs.failureToast', {
+            reason: retentionFailureMessage(run),
+          }),
+        );
+      }
+      runStatusesRef.current.set(run.id, run.status);
+    }
+    runsInitializedRef.current = true;
+
+    setDetail((current) => {
+      if (!current) return current;
+      return data.items.find((run) => run.id === current.id) ?? current;
+    });
+  }, [data, retentionFailureMessage, t]);
 
   const startCleanup = useCallback(
     (mode: 'dry_run' | 'execute') => {
@@ -139,6 +179,9 @@ const RetentionPage = memo(() => {
             const result =
               mode === 'execute' ? await retentionRun(input) : await retentionDryRun(input);
             const ids = result.items.map((i) => i.id);
+            for (const item of result.items) {
+              runStatusesRef.current.set(item.id, item.status);
+            }
             setHighlightIds(ids);
             resetCursor();
             void mutate();
@@ -422,7 +465,14 @@ const RetentionPage = memo(() => {
             setEditOpen(false);
           } catch (err) {
             // Genuine mutation failure (e.g. revision conflict): resync expectedRevision.
-            await refreshAuditPolicy().catch(() => undefined);
+            try {
+              await refreshAuditPolicy();
+            } catch (refreshError) {
+              console.error(
+                '[audit retention] Failed to refresh policy after conflict',
+                refreshError,
+              );
+            }
             throw err;
           }
         }}
@@ -436,37 +486,60 @@ const RetentionPage = memo(() => {
         onClose={() => setDetail(null)}
       >
         {detail ? (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: 'left' }}>{t('audit.retention.runs.countMetric')}</th>
-                <th style={{ textAlign: 'right' }}>{t('audit.retention.runs.scanned')}</th>
-                <th style={{ textAlign: 'right' }}>{t('audit.retention.runs.deleted')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(
-                [
-                  ['operationLogs', 'operationLogsScanned', 'operationLogsDeleted'],
-                  ['conversations', 'conversationsScanned', 'conversationsDeleted'],
-                  ['messages', 'messagesScanned', 'messagesDeleted'],
-                  ['topics', 'topicsScanned', 'topicsDeleted'],
-                  ['sessions', 'sessionsScanned', 'sessionsDeleted'],
-                  ['exportArtifacts', 'exportArtifactsScanned', 'exportArtifactsDeleted'],
-                ] as const
-              ).map(([label, scanned, deleted]) => (
-                <tr key={label}>
-                  <td>{t(`audit.retention.runs.metric.${label}` as never)}</td>
-                  <td style={{ textAlign: 'right' }}>{detail.counts[scanned] ?? 0}</td>
-                  <td style={{ textAlign: 'right' }}>{detail.counts[deleted] ?? 0}</td>
+          <Flexbox gap={16}>
+            {detail.status === 'failed' ? (
+              <Alert
+                showIcon
+                description={retentionFailureMessage(detail)}
+                message={t('audit.retention.runs.failureTitle')}
+                type="error"
+                action={
+                  canOperate ? (
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setDetail(null);
+                        startCleanup('dry_run');
+                      }}
+                    >
+                      {t('audit.retention.runs.runDryCheck')}
+                    </Button>
+                  ) : null
+                }
+              />
+            ) : null}
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left' }}>{t('audit.retention.runs.countMetric')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('audit.retention.runs.scanned')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('audit.retention.runs.deleted')}</th>
                 </tr>
-              ))}
-              <tr>
-                <td colSpan={2}>{t('audit.retention.runs.skippedHoldLabel')}</td>
-                <td style={{ textAlign: 'right' }}>{detail.counts.skippedLegalHold ?? 0}</td>
-              </tr>
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(
+                  [
+                    ['operationLogs', 'operationLogsScanned', 'operationLogsDeleted'],
+                    ['conversations', 'conversationsScanned', 'conversationsDeleted'],
+                    ['messages', 'messagesScanned', 'messagesDeleted'],
+                    ['topics', 'topicsScanned', 'topicsDeleted'],
+                    ['sessions', 'sessionsScanned', 'sessionsDeleted'],
+                    ['exportArtifacts', 'exportArtifactsScanned', 'exportArtifactsDeleted'],
+                  ] as const
+                ).map(([label, scanned, deleted]) => (
+                  <tr key={label}>
+                    <td>{t(`audit.retention.runs.metric.${label}` as never)}</td>
+                    <td style={{ textAlign: 'right' }}>{detail.counts[scanned] ?? 0}</td>
+                    <td style={{ textAlign: 'right' }}>{detail.counts[deleted] ?? 0}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td colSpan={2}>{t('audit.retention.runs.skippedHoldLabel')}</td>
+                  <td style={{ textAlign: 'right' }}>{detail.counts.skippedLegalHold ?? 0}</td>
+                </tr>
+              </tbody>
+            </table>
+          </Flexbox>
         ) : null}
       </Drawer>
     </AdminPageTemplate>
@@ -491,18 +564,40 @@ const PolicyEditModal = memo<{
   const [maxListWindowDays, setMaxListWindowDays] = useState(30);
   const [maxExportRows, setMaxExportRows] = useState(100_000);
   const [messageBodyInExport, setMessageBodyInExport] = useState(false);
+  const [hasConflict, setHasConflict] = useState(false);
+  const initializedOpenRef = useRef(false);
+  const latestRevisionRef = useRef<number | null>(null);
 
-  // Sync local draft when policy loads / revision changes
+  // Populate once per open session. Later policy refreshes advance only the retry
+  // revision and preserve the operator's local draft for review.
   useEffect(() => {
-    if (!policy || !open) return;
-    setContentAccessMode(policy.contentAccessMode);
-    setRedactionProfile(policy.redactionProfile);
-    setConversationRetentionDays(policy.conversationRetentionDays);
-    setOperationLogRetentionDays(policy.operationLogRetentionDays);
-    setExportArtifactRetentionDays(policy.exportArtifactRetentionDays);
-    setMaxListWindowDays(policy.maxListWindowDays);
-    setMaxExportRows(policy.maxExportRows);
-    setMessageBodyInExport(policy.messageBodyInExport);
+    if (!open) {
+      initializedOpenRef.current = false;
+      latestRevisionRef.current = null;
+      setHasConflict(false);
+      return;
+    }
+    if (!policy) return;
+
+    if (!initializedOpenRef.current) {
+      initializedOpenRef.current = true;
+      latestRevisionRef.current = policy.revision;
+      setContentAccessMode(policy.contentAccessMode);
+      setRedactionProfile(policy.redactionProfile);
+      setConversationRetentionDays(policy.conversationRetentionDays);
+      setOperationLogRetentionDays(policy.operationLogRetentionDays);
+      setExportArtifactRetentionDays(policy.exportArtifactRetentionDays);
+      setMaxListWindowDays(policy.maxListWindowDays);
+      setMaxExportRows(policy.maxExportRows);
+      setMessageBodyInExport(policy.messageBodyInExport);
+      setHasConflict(false);
+      return;
+    }
+
+    if (latestRevisionRef.current !== policy.revision) {
+      latestRevisionRef.current = policy.revision;
+      setHasConflict(true);
+    }
   }, [open, policy]);
 
   const field = (label: string, control: React.ReactNode) => (
@@ -550,7 +645,7 @@ const PolicyEditModal = memo<{
         authMethod: authMethod ?? undefined,
         buildPayload: (reason) => ({
           ...fields,
-          expectedRevision: policy.revision,
+          expectedRevision: latestRevisionRef.current ?? policy.revision,
           reason,
         }),
         description: t('audit.retention.policy.reasonDesc'),
@@ -587,6 +682,14 @@ const PolicyEditModal = memo<{
       onCancel={onClose}
       onOk={handleOk}
     >
+      {hasConflict ? (
+        <Alert
+          showIcon
+          description={t('audit.retention.policy.conflictDescription')}
+          message={t('audit.retention.policy.conflictTitle')}
+          type="warning"
+        />
+      ) : null}
       {field(
         t('audit.retention.policy.contentAccessMode'),
         <Select

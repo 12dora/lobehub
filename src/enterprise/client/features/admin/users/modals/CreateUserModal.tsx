@@ -3,12 +3,14 @@
 import { CopyButton, Input, InputPassword, Text } from '@lobehub/ui';
 import {
   Button,
+  confirmModal,
   createModal,
   type ModalInstance,
   toast,
   useModalContext,
 } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import i18next from 'i18next';
 import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -102,6 +104,8 @@ const EMAIL_PATTERN = /^(?!\.)(?!.+\.\.)[\w'+\-.]*[\w+-]@(?:[A-Z0-9][A-Z0-9-]*\.
 export interface CreateUserModalDismissGuard {
   /** True once Cancel / Done ran `close()` — vetoes must not resurrect the modal. */
   closedExplicitly: boolean;
+  dirty: boolean;
+  discardPromptOpen: boolean;
   phase: CreateUserModalPhase;
 }
 
@@ -224,6 +228,11 @@ export const CreateUserModalContent = memo<CreateUserModalContentProps>(
 
     const locked = phase !== 'idle';
     const canSubmit = formValid && phase === 'idle';
+    const dirty = Boolean(email || fullName || username || password);
+
+    useEffect(() => {
+      if (dismissGuardRef) dismissGuardRef.current.dirty = dirty;
+    }, [dirty, dismissGuardRef]);
 
     const clearSecrets = useCallback(() => {
       setPassword('');
@@ -457,7 +466,7 @@ export const openCreateUserModal = (props: CreateUserModalContentProps): ModalIn
   // Shared abort ref: onOpenChange(false) aborts before unmount/animation.
   const abortControllerRef: { current: AbortController | null } = { current: null };
   const dismissGuardRef: { current: CreateUserModalDismissGuard } = {
-    current: { closedExplicitly: false, phase: 'idle' },
+    current: { closedExplicitly: false, dirty: false, discardPromptOpen: false, phase: 'idle' },
   };
 
   const instance = createModal({
@@ -476,7 +485,8 @@ export const openCreateUserModal = (props: CreateUserModalContentProps): ModalIn
     width: 'min(92vw, 520px)',
     onOpenChange: (open) => {
       if (open) return;
-      const { closedExplicitly, phase } = dismissGuardRef.current;
+      const guard = dismissGuardRef.current;
+      const { closedExplicitly, phase } = guard;
       // base-ui commits the close (closeModal) BEFORE this callback for every
       // framework dismissal (Escape included, despite maskClosable: false). While a
       // create is in flight or the one-time credentials panel is showing, veto by
@@ -486,6 +496,32 @@ export const openCreateUserModal = (props: CreateUserModalContentProps): ModalIn
       // exit animation from resurrecting the modal.
       if (!closedExplicitly && (phase === 'mutating' || phase === 'success')) {
         instance.update({ open: true });
+        return;
+      }
+      if (!closedExplicitly && phase === 'idle' && guard.dirty) {
+        // base-ui has already committed the Escape close. Restore the form in the same
+        // event batch, then require an explicit destructive choice.
+        instance.update({ open: true });
+        if (guard.discardPromptOpen) return;
+        guard.discardPromptOpen = true;
+        confirmModal({
+          cancelText: i18next.t('users.modals.create.unsaved.stay', { ns: 'admin' }),
+          content: i18next.t('users.modals.create.unsaved.description', { ns: 'admin' }),
+          okButtonProps: { danger: true },
+          okText: i18next.t('users.modals.create.unsaved.discard', { ns: 'admin' }),
+          title: i18next.t('users.modals.create.unsaved.title', { ns: 'admin' }),
+          onCancel: () => {
+            guard.discardPromptOpen = false;
+          },
+          onOk: () => {
+            guard.closedExplicitly = true;
+            guard.dirty = false;
+            guard.discardPromptOpen = false;
+            abortControllerRef.current?.abort();
+            abortControllerRef.current = null;
+            instance.close();
+          },
+        });
         return;
       }
       // Escape / dismiss / close — abort immediately, do not wait for unmount.

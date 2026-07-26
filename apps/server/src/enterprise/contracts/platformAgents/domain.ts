@@ -84,6 +84,7 @@ export const platformAgentRolloutProjectionSchema = z
     completed: z.number().int().nonnegative(),
     cursor: z.string().min(1).max(1000).nullable(),
     failed: z.number().int().nonnegative(),
+    invalidationStatus: z.enum(['deferred', 'delivered']).optional(),
     jobId: idSchema,
     previousVersionId: idSchema.nullable(),
     revision: revisionSchema,

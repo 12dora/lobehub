@@ -30,6 +30,17 @@ import { adminRouter } from '../admin';
 
 let db: LobeChatDatabase;
 const createCaller = createCallerFactory(adminRouter);
+const runtimeTransition = vi.hoisted(() => ({
+  begin: vi.fn(async () => 'managed-transition-token'),
+  cancel: vi.fn(async () => undefined),
+  finalize: vi.fn(async () => undefined),
+}));
+
+vi.mock('@/server/enterprise/services/connectorCatalog/runtimeEffectiveState', () => ({
+  beginConnectorRuntimeEffectiveStateTransition: runtimeTransition.begin,
+  cancelConnectorRuntimeEffectiveStateTransition: runtimeTransition.cancel,
+  finalizeConnectorRuntimeEffectiveStateTransition: runtimeTransition.finalize,
+}));
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
@@ -73,6 +84,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+  runtimeTransition.begin.mockClear();
+  runtimeTransition.cancel.mockClear();
+  runtimeTransition.finalize.mockReset();
+  runtimeTransition.finalize.mockResolvedValue(undefined);
   await cleanup();
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -135,7 +150,34 @@ describe('admin.managedResources permission contract', () => {
       reason: 'publish skills rollout',
     });
     expect(result.revision).toBe(1);
+    expect(result.runtimeTransition).toBe('finalized');
     expect((await caller.managedResources.get()).published.skills).toEqual(draft.skills);
+  });
+
+  it('returns the committed revision with pending recovery when connector finalization fails', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
+    runtimeTransition.finalize.mockRejectedValueOnce(new Error('shared authority unavailable'));
+    const caller = createCaller((await context(ids.aiAdmin)) as never);
+    const current = await caller.managedResources.get();
+    const draft = {
+      ...current.draft,
+      connectors: { enforcementMode: 'ui-only' as const, managed: true },
+    };
+    await caller.managedResources.saveDraft({
+      draft,
+      expectedDraftToken: current.draftToken,
+      reason: 'prepare connector rollout',
+    });
+    const saved = await caller.managedResources.get();
+
+    const result = await caller.managedResources.publish({
+      expectedDraftToken: saved.draftToken,
+      expectedRevision: saved.baseRevision,
+      reason: 'publish connector rollout',
+    });
+    expect(result).toMatchObject({ revision: 1, runtimeTransition: 'pending_recovery' });
+    expect((await caller.managedResources.get()).published.connectors).toEqual(draft.connectors);
+    expect(runtimeTransition.cancel).not.toHaveBeenCalled();
   });
 
   it.each([

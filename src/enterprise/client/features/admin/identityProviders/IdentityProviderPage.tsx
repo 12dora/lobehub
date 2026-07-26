@@ -1,14 +1,17 @@
 'use client';
 
 import type { PlatformIdentityProviderDraft } from '@lobechat/types';
-import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, NeuralNetworkLoading, Tag, Text } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { requestAdminReauth } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import {
+  AdminReauthCancelledError,
+  requestAdminReauth,
+} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminIdentityProvidersService } from '@/enterprise/client/services/adminIdentityProviders';
 import { lambdaClient } from '@/libs/trpc/client';
@@ -132,7 +135,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
         }),
         content: t('identityProviders.disable.impact', {
           defaultValue:
-            'This publishes a signed tombstone revision. The provider will stop accepting logins after instances reload. This cannot be undone without republishing a new configuration.',
+            'Disabling this sign-in method stops new logins after all running instances reload. To restore it later, publish a new configuration.',
         }),
         okButtonProps: { danger: true },
         okText: t('identityProviders.disable.confirm', { defaultValue: 'Disable provider' }),
@@ -146,7 +149,7 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
               danger: true,
               impact: t('identityProviders.disable.impact', {
                 defaultValue:
-                  'This publishes a signed tombstone revision. The provider will stop accepting logins after instances reload.',
+                  'Disabling this sign-in method stops new logins after all running instances reload. To restore it later, publish a new configuration.',
               }),
               onSubmit: async (payload) => {
                 const { reason } = payload as { reason: string };
@@ -181,7 +184,8 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
                 defaultValue: 'Disable identity provider',
               }),
             });
-          } catch {
+          } catch (cause) {
+            if (cause instanceof AdminReauthCancelledError) return;
             toast.error(t('identityProviders.errors.generic', { defaultValue: 'Request failed' }));
           }
         },
@@ -222,7 +226,8 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
               targetLabel: provider.displayName,
               title: t('identityProviders.delete.title'),
             });
-          } catch {
+          } catch (cause) {
+            if (cause instanceof AdminReauthCancelledError) return;
             toast.error(t('identityProviders.errors.generic'));
           }
         },
@@ -278,7 +283,8 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
             targetLabel: t('identityProviders.restart.target'),
             title: t('identityProviders.restart.reasonTitle'),
           });
-        } catch {
+        } catch (cause) {
+          if (cause instanceof AdminReauthCancelledError) return;
           toast.error(t('identityProviders.restart.reauthFailed'));
         }
       },
@@ -355,7 +361,25 @@ const IdentityProviderPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       }
       banner={
         setupGuidance ? null : restartLifecycle.phase === 'accepted' ? (
-          <Alert showIcon description={t('identityProviders.restart.reconnecting')} type="info" />
+          <Alert
+            showIcon
+            description={t('identityProviders.restart.reconnecting')}
+            type="info"
+            action={
+              <span
+                aria-label={t('identityProviders.restart.monitoring')}
+                className={styles.restartActivity}
+                role="status"
+              >
+                <span className={styles.restartActivityAnimated}>
+                  <NeuralNetworkLoading size={16} />
+                </span>
+                <span aria-hidden className={styles.restartActivityStatic}>
+                  ●
+                </span>
+              </span>
+            }
+          />
         ) : restartLifecycle.phase === 'activated' ? (
           <Alert showIcon description={t('identityProviders.restart.activated')} type="success" />
         ) : restartLifecycle.phase === 'failed' ? (

@@ -129,9 +129,17 @@ describe('SkillCatalogReadService projection / merge', () => {
     ).toThrow();
   });
 
-  it('skips a corrupt published skill without taking down the rest of the catalog', async () => {
+  it('marks the catalog unavailable when a corrupt mandatory skill is omitted', async () => {
     await publish({ skillKey: 'healthy.skill', version: '1.0.0' });
-    const broken = await publish({ skillKey: 'broken.skill', version: '1.0.0' });
+    const broken = await publish({
+      distribution: 'mandatory',
+      skillKey: 'broken.skill',
+      version: '1.0.0',
+    });
+    const publishedBeforeCorruption = await loadCurrentSkillCatalogSnapshot(db);
+    expect(
+      publishedBeforeCorruption.items.find((item) => item.skillKey === 'broken.skill'),
+    ).toMatchObject({ distribution: 'mandatory' });
     // Stale sizeBytes + non-content digest after content normalization historically made
     // serverResolvedSkillSchema throw mid-projection and disable the entire managed catalog.
     // Keep the aggregate version checksum consistent so catalog authority still loads the row;
@@ -166,6 +174,7 @@ describe('SkillCatalogReadService projection / merge', () => {
     const service = new SkillCatalogReadService(db);
     const catalog = await service.getPublishedCatalog();
     expect(catalog.skills.map((skill) => skill.skillKey)).toEqual(['healthy.skill']);
+    expect(service.isPublishedCatalogExecutionReady(catalog)).toBe(false);
     await expect(service.resolveForExecution('healthy.skill', '1.0.0')).resolves.toMatchObject({
       skillKey: 'healthy.skill',
     });

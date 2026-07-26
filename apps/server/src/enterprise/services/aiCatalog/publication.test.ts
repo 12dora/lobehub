@@ -108,7 +108,10 @@ afterEach(async () => {
   await cleanup();
 });
 
-const createService = (lifecycle?: AiCatalogAdminServiceOptions['lifecycle']) => {
+const createService = (
+  lifecycle?: AiCatalogAdminServiceOptions['lifecycle'],
+  resolveDependentsForModels?: AiCatalogAdminServiceOptions['resolveDependentsForModels'],
+) => {
   const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
   return {
     invalidation,
@@ -116,11 +119,82 @@ const createService = (lifecycle?: AiCatalogAdminServiceOptions['lifecycle']) =>
       connectionProbe: async () => {},
       invalidation,
       lifecycle,
+      resolveDependentsForModels,
     }),
   };
 };
 
 describe('AiCatalog publication transaction', () => {
+  it('can disable a published provider without decrypting its stored Secret', async () => {
+    const { service } = createService();
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Emergency disable',
+      enabled: true,
+      providerKey: 'emergency-disable',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'emergency-disable-key' },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: provider.id,
+      reason: 'publish',
+    });
+    detail = await service.getDetail(provider.id);
+    await service.updateProviderDraft('admin', {
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 1,
+      id: provider.id,
+      reason: 'prepare emergency disable',
+    });
+    await db
+      .update(platformAiProviders)
+      .set({ encryptedKeyVaults: 'unreadable-envelope' })
+      .where(eq(platformAiProviders.id, provider.id));
+    await db
+      .update(platformAiProviderSecrets)
+      .set({ ciphertext: 'unreadable-envelope' })
+      .where(eq(platformAiProviderSecrets.providerId, provider.id));
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 1,
+        id: provider.id,
+        reason: 'disable during key outage',
+      }),
+    ).resolves.toMatchObject({ revision: 2 });
+    const [disabled] = await db
+      .select({
+        enabled: platformAiProviders.enabled,
+        providerKey: platformAiProviders.providerKey,
+        revision: platformAiProviders.revision,
+        status: platformAiProviders.status,
+      })
+      .from(platformAiProviders)
+      .where(eq(platformAiProviders.id, provider.id));
+    expect(disabled).toMatchObject({
+      enabled: false,
+      providerKey: 'emergency-disable',
+      revision: 2,
+      status: 'published',
+    });
+  });
+
   it('requires a successful connection test bound to the current draft', async () => {
     const { service } = createService();
     const provider = await service.createProviderDraft('admin', {
@@ -561,6 +635,85 @@ describe('AiCatalog publication transaction', () => {
     expect((await service.getDetail(rollbackTarget.id)).published?.models).toEqual(
       expect.arrayContaining([expect.objectContaining({ modelKey: 'v2-only' })]),
     );
+  });
+
+  it('checks all removed models for one provider in one batched resolver call', async () => {
+    const resolveDependentsForModels = vi.fn(async () => []);
+    const { service } = createService(undefined, resolveDependentsForModels);
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Batch removal provider',
+      enabled: true,
+      providerKey: 'batch-removal',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'batch-removal-key' },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'chat model',
+      type: 'chat',
+    });
+    detail = await service.getDetail(provider.id);
+    const firstRemoved = await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'batch-a',
+      providerId: provider.id,
+      reason: 'first removable model',
+      type: 'chat',
+    });
+    detail = await service.getDetail(provider.id);
+    const secondRemoved = await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'batch-b',
+      providerId: provider.id,
+      reason: 'second removable model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test v1' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: provider.id,
+      reason: 'publish all models',
+    });
+    expect(resolveDependentsForModels).not.toHaveBeenCalled();
+
+    detail = await service.getDetail(provider.id);
+    await service.deleteModel('admin', {
+      expectedDraftToken: detail.draftToken,
+      id: firstRemoved.id,
+      providerId: provider.id,
+      reason: 'remove first',
+    });
+    detail = await service.getDetail(provider.id);
+    await service.deleteModel('admin', {
+      expectedDraftToken: detail.draftToken,
+      id: secondRemoved.id,
+      providerId: provider.id,
+      reason: 'remove second',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test removal' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 1,
+      id: provider.id,
+      reason: 'publish removals',
+    });
+
+    expect(resolveDependentsForModels).toHaveBeenCalledOnce();
+    expect(resolveDependentsForModels).toHaveBeenCalledWith(expect.anything(), 'batch-removal', [
+      'batch-a',
+      'batch-b',
+    ]);
   });
 
   it('rechecks archive dependents after the provider lock before committing', async () => {

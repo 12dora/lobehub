@@ -2,13 +2,14 @@
 
 import { getPluginMode } from '@lobechat/types';
 import { Flexbox, Icon, type ItemType } from '@lobehub/ui';
-import { Button, toast } from '@lobehub/ui/base-ui';
+import { toast } from '@lobehub/ui/base-ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import ToolItem from '@/features/ChatInput/ActionBar/Tools/ToolItem';
 import ToolItemDetailPopover from '@/features/ChatInput/ActionBar/Tools/ToolItemDetailPopover';
+import { ManagedSkillRetryButton } from '@/features/ManagedSkills/ManagedSkillRetryButton';
 import { resolvePlatformSkillSelection } from '@/types/platform/skills';
 
 import { runAgentToolUpdate } from './runAgentToolUpdate';
@@ -102,17 +103,7 @@ export const useManagedSkillMenuSections = ({
             <span>
               {t(loading ? 'platformSkills.runtime.loading' : 'platformSkills.runtime.unavailable')}
             </span>
-            <Button
-              disabled={loading}
-              size="small"
-              type="text"
-              onClick={(event) => {
-                event.stopPropagation();
-                retryPlatformCatalog();
-              }}
-            >
-              {t('retry', { ns: 'common' })}
-            </Button>
+            <ManagedSkillRetryButton disabled={loading} onRetry={retryPlatformCatalog} />
           </Flexbox>
         ),
       },

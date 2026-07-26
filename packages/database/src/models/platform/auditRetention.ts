@@ -367,6 +367,8 @@ export class PlatformAuditRetentionRepository {
     cutoffAt: Date;
     ids: string[];
     now?: Date;
+    /** Persisted on each purge outbox for crash-recovery accounting. */
+    runId?: string;
     /**
      * Called after the advisory lock is held. Must re-query holds and return
      * the set of candidate ids that are still protected.
@@ -425,7 +427,7 @@ export class PlatformAuditRetentionRepository {
         if (!row.storageKey) continue;
         if (heldIds.has(row.id)) continue;
 
-        const result = await exportsModel.claimArtifactStorageForPurge(row.id, tx);
+        const result = await exportsModel.claimArtifactStorageForPurge(row.id, tx, params.runId);
         if (result?.storageKey) claimed.push(result);
       }
       return claimed;
@@ -520,7 +522,7 @@ export class PlatformAuditRetentionRepository {
    */
   listPendingExportArtifactPurges = async (params?: {
     limit?: number;
-  }): Promise<Array<{ id: string; storageKey: string }>> => {
+  }): Promise<Array<{ id: string; purgeRunId: string | null; storageKey: string }>> => {
     const exportsModel = new PlatformAuditExportModel(this.db);
     return exportsModel.listPendingArtifactPurges(params);
   };

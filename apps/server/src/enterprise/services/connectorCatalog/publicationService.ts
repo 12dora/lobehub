@@ -81,6 +81,7 @@ interface ConnectorPublicationProof {
 const MAX_REVOKE_BINDINGS = 10_000;
 const MAX_REVOKE_PAGES = 100;
 const REVOKE_PAGE_SIZE = 100;
+const EMERGENCY_STOP_AUDIT_REASON = 'emergency_connector_stop';
 const PG_ERROR_SEVERITIES = new Set(['ERROR', 'FATAL', 'PANIC']);
 const PG_OBJECT_NOT_IN_PREREQUISITE_STATE = '55000';
 const MAX_PG_CAUSE_DEPTH = 5;
@@ -91,6 +92,22 @@ const revisionSecretFingerprint = (payload: PlatformConnectorRevisionPayload): s
     : payload.connector.credentialMode === 'per_user_oauth'
       ? payload.connector.oauthClientSecretFingerprint
       : null;
+
+const sanitizeEmergencyReason = async (
+  secrets: ConnectorCatalogSecretStore,
+  connectorId: string,
+  reason: string,
+): Promise<string> => {
+  try {
+    return await sanitizeConnectorReason(secrets, connectorId, reason);
+  } catch (error) {
+    console.error('[connectorCatalog] emergency reason sanitization unavailable', {
+      connectorId,
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return EMERGENCY_STOP_AUDIT_REASON;
+  }
+};
 
 /**
  * Revisions are append-only (migration 0145). Any attempt to UPDATE/DELETE a
@@ -391,7 +408,10 @@ export class ConnectorCatalogPublicationService {
       payload,
       payloadChecksum: target.checksum,
       policyVersion,
-      resolved: await this.resolvePayloadSecrets(payload),
+      resolved:
+        mode === 'archive'
+          ? { oauth: null, shared: null }
+          : await this.resolvePayloadSecrets(payload),
       secretFingerprint: target.secretFingerprint,
       targetRevision,
     };
@@ -701,7 +721,7 @@ export class ConnectorCatalogPublicationService {
 
   archive = async (actorUserId: string, input: ArchiveInput) => {
     const command = adminConnectorArchiveInputSchema.parse(input);
-    const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
+    const reason = await sanitizeEmergencyReason(this.secrets, command.id, command.reason);
     try {
       const connector = await new PlatformConnectorCatalogRepository(this.db).getConnector(
         command.id,
@@ -749,7 +769,7 @@ export class ConnectorCatalogPublicationService {
 
   revokeAllBindings = async (actorUserId: string, input: RevokeAllInput) => {
     const command = adminConnectorRevokeAllBindingsInputSchema.parse(input);
-    const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
+    const reason = await sanitizeEmergencyReason(this.secrets, command.id, command.reason);
     try {
       const result = await this.db.transaction(async (tx) => {
         const [connector] = await tx

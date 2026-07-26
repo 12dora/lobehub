@@ -1,9 +1,12 @@
 // @vitest-environment node
 import type { WriteStream } from 'node:fs';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { Writable } from 'node:stream';
 
 import { eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformJobModel } from '@/database/models/platform';
@@ -16,6 +19,8 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { PlatformAuditService } from '../platformAudit';
+import { materializeExportSnapshot } from './exportWorkerSnapshot';
 import {
   AdminAuditExportService,
   AdminAuditRetentionService,
@@ -83,10 +88,14 @@ afterEach(async () => {
 });
 
 describe('audit export worker', () => {
-  it('exports operation_logs with full stored before/after diffs into NDJSON', async () => {
+  it('exports operation_logs through the canonical fingerprint-redacted projection', async () => {
     await serverDB.insert(platformAuditLogs).values({
       action: 'admin.settings.publish',
-      afterDiff: { displayName: 'Acme Legal Entity Full Name', fingerprint: 'keep-on-export' },
+      afterDiff: {
+        displayName: 'Acme Legal Entity Full Name',
+        fingerprint: 'legacy-sensitive-metadata',
+        nested: { certificateFingerprint: 'legacy-sensitive-metadata' },
+      },
       beforeDiff: { displayName: 'Old Name' },
       createdAt: new Date('2026-01-05T12:00:00.000Z'),
       id: 'op-export-1',
@@ -144,7 +153,7 @@ describe('audit export worker', () => {
       id: 'op-export-1',
       afterDiff: {
         displayName: 'Acme Legal Entity Full Name',
-        fingerprint: 'keep-on-export',
+        nested: {},
       },
       beforeDiff: { displayName: 'Old Name' },
     });
@@ -249,6 +258,35 @@ describe('audit export worker', () => {
     expect(got.status).toBe('failed');
     expect(got.error?.code).toBe('MAX_EXPORT_ROWS_EXCEEDED');
     expect(storage.objects.size).toBe(0);
+  });
+
+  it('rejects before staging exceeds the remaining artifact byte budget', async () => {
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      afterDiff: { body: 'x'.repeat(4096) },
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-staging-budget',
+      result: 'success',
+      targetType: 'settings',
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), 'audit-staging-budget-'));
+    const stagingPath = path.join(directory, 'snapshot.ndjson');
+    try {
+      await expect(
+        materializeExportSnapshot(serverDB, {
+          filter: {},
+          includeBodies: false,
+          kind: 'operation_logs',
+          maxExportRows: 10,
+          maxStagingBytes: 256,
+          stagingPath,
+          window,
+        }),
+      ).rejects.toMatchObject({ name: 'AuditExportArtifactTooLargeError' });
+      expect((await stat(stagingPath)).size).toBeLessThanOrEqual(256);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it('exports conversation messages with credential masking only when allowed', async () => {
@@ -1202,6 +1240,60 @@ describe('audit export worker', () => {
     expect(outcomes.some((o) => o.result === 'success')).toBe(true);
   });
 
+  it('rolls back export dead-letter state when its required audit append fails', async () => {
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.settings.publish',
+      createdAt: new Date('2026-01-05T12:00:00.000Z'),
+      id: 'op-dead-audit-rollback',
+      result: 'success',
+      targetType: 'settings',
+    });
+    const service = new AdminAuditExportService(serverDB, { storage });
+    const created = await service.create({
+      actorPermissions: ['platform_audit:export:all'],
+      actorUserId: actor,
+      input: {
+        from: window.from,
+        includeMessageBodies: false,
+        kind: 'operation_logs',
+        reason: 'dead audit rollback',
+        to: window.to,
+      },
+    });
+    await serverDB
+      .update(platformJobs)
+      .set({ maxAttempts: 1 })
+      .where(eq(platformJobs.id, created.jobId!));
+    const failingStorage = new InMemoryAuditExportArtifactStorage();
+    failingStorage.uploadArtifact = async () => {
+      throw new Error('S3_TRANSIENT');
+    };
+    const append = vi
+      .spyOn(PlatformAuditService.prototype, 'append')
+      .mockRejectedValueOnce(new Error('AUDIT_TABLE_UNAVAILABLE'));
+    try {
+      await expect(
+        processNextAuditExportJob(serverDB, {
+          storage: failingStorage,
+          workerId: 'export-dead-audit-rollback',
+        }),
+      ).rejects.toThrow('AUDIT_TABLE_UNAVAILABLE');
+    } finally {
+      append.mockRestore();
+    }
+
+    const [domain] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, created.id));
+    const [job] = await serverDB
+      .select()
+      .from(platformJobs)
+      .where(eq(platformJobs.id, created.jobId!));
+    expect(domain?.status).toBe('running');
+    expect(job?.status).toBe('running');
+  });
+
   it('SAO-006: stream error after write()=true follows bounded failure path (no unhandledRejection)', async () => {
     // Arm the failure from the materialization page-fetch seam (not a wall-clock
     // timer) so the error always lands while the worker still owns the stream.
@@ -1295,7 +1387,7 @@ describe('audit export worker', () => {
     await serverDB.insert(platformAuditPolicies).values({
       contentAccessMode: 'content_allowed',
       id: 'global',
-      messageBodyInExport: false,
+      messageBodyInExport: true,
       revision: 0,
     });
 
@@ -1345,7 +1437,7 @@ describe('audit export worker', () => {
       actorUserId: actor,
       input: {
         from: window.from,
-        includeMessageBodies: false,
+        includeMessageBodies: true,
         kind: 'conversations',
         reason: 'sao-005 query count conv',
         to: window.to,
@@ -1361,14 +1453,18 @@ describe('audit export worker', () => {
       workerId: 'export-qc-conv',
     });
     expect(convResult.outcome).toBe('completed');
-    // 200 topics / 100 = 2 listTopics — zero per-topic getTopic.
+    // 200 topics / 100 = 2 listTopics + one batched message query per topic page.
     const topicListCalls = convModelCalls.filter((c) => c.method === 'listTopics');
     expect(topicListCalls).toHaveLength(2);
     expect(convModelCalls.some((c) => c.method === 'getTopic')).toBe(false);
+    const messageListCalls = convModelCalls.filter(
+      (c) => c.method === 'listMessageDetailsForTopics',
+    );
+    expect(messageListCalls).toHaveLength(2);
+    expect(convModelCalls.some((c) => c.method === 'listMessageDetails')).toBe(false);
     const topicPages = Math.ceil(200 / AUDIT_EXPORT_BATCH_LIMIT);
-    // includeBodies=false → only listTopics; +smallConstant for noise.
-    expect(convModelCalls.length).toBeLessThanOrEqual(topicPages + 2);
-    // Would go red if getTopic were re-added per row (200 extra calls).
+    expect(convModelCalls.length).toBeLessThanOrEqual(topicPages * 2 + 2);
+    // Would go red if per-topic message queries were reintroduced (200 extra calls).
     expect(convModelCalls.length).toBeLessThan(200);
   });
 

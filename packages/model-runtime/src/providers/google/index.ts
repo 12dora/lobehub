@@ -302,18 +302,22 @@ export class LobeGoogleAI implements LobeRuntimeAI {
   ): Promise<CreateImageResponse> {
     const requestPayload = withMappedModelId(payload, this.modelIdMappingOptions);
 
-    return createGoogleImage(this.client, this.provider, requestPayload, {
-      pricingContext: options?.pricingContext,
-      pricingModel: payload.model,
-      routingModel: payload.model,
-    });
+    return this.withTransport(() =>
+      createGoogleImage(this.client, this.provider, requestPayload, {
+        pricingContext: options?.pricingContext,
+        pricingModel: payload.model,
+        routingModel: payload.model,
+      }),
+    );
   }
 
   async createVideo(payload: CreateVideoPayload): Promise<CreateVideoResponse> {
-    return createGoogleVideo(
-      this.client,
-      this.provider,
-      withMappedModelId(payload, this.modelIdMappingOptions),
+    return this.withTransport(() =>
+      createGoogleVideo(
+        this.client,
+        this.provider,
+        withMappedModelId(payload, this.modelIdMappingOptions),
+      ),
     );
   }
 
@@ -322,6 +326,10 @@ export class LobeGoogleAI implements LobeRuntimeAI {
    * @see https://ai.google.dev/gemini-api/docs/audio
    */
   async transcribe(payload: ASRPayload, options?: ASROptions): Promise<ASRResponse> {
+    return this.withTransport(() => this.transcribeUnbound(payload, options));
+  }
+
+  private async transcribeUnbound(payload: ASRPayload, options?: ASROptions): Promise<ASRResponse> {
     try {
       return await createGoogleTranscription(
         this.client,
@@ -348,7 +356,9 @@ export class LobeGoogleAI implements LobeRuntimeAI {
   }
 
   async handlePollVideoStatus(inferenceId: string) {
-    return pollGoogleVideoOperation(this.client, inferenceId, this.provider, this.apiKey!);
+    return this.withTransport(() =>
+      pollGoogleVideoOperation(this.client, inferenceId, this.provider, this.apiKey!),
+    );
   }
 
   /**
@@ -357,6 +367,13 @@ export class LobeGoogleAI implements LobeRuntimeAI {
    * @see https://ai.google.dev/gemini-api/docs/function-calling
    */
   async generateObject(payload: GenerateObjectPayload, options?: GenerateObjectOptions) {
+    return this.withTransport(() => this.generateObjectUnbound(payload, options));
+  }
+
+  private async generateObjectUnbound(
+    payload: GenerateObjectPayload,
+    options?: GenerateObjectOptions,
+  ) {
     // Convert OpenAI messages to Google format
     const contents = await buildGoogleMessages(payload.messages, { model: payload.model });
     const pricing = await getModelPricing(payload.model, this.provider, options?.pricingContext);

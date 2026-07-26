@@ -52,6 +52,7 @@ export {
   postBaselineEntries,
   scanExpandOnlySql,
   verifyExpandOnlyPostBaselineSql,
+  verifyNoTopLevelTransactionControl,
 } from './migrations';
 export { isOwnedResourceToken } from './ownedPostgres';
 export {

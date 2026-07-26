@@ -656,6 +656,18 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     reason: 'Mocks/asserts runtime branding provider at consumer surface',
   },
   {
+    file: 'src/features/ChatInput/ActionBar/Tools/useControls.test.tsx',
+    importSpecifier: '@/enterprise/client/features/skills',
+    owner: 'M08',
+    reason: 'Mocks the managed skill catalog seam while testing the ordinary-user retry menu item',
+  },
+  {
+    file: 'src/features/ChatInput/ActionBar/Tools/useControls.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Mocks runtime branding required by the Chat tools menu hook under test',
+  },
+  {
     file: 'src/features/PlatformSettingSourceBadge/controlWiring.test.ts',
     importSpecifier: '@/server/enterprise/services/settings/registry',
     owner: 'M05',

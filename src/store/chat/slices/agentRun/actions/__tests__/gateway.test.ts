@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as ConstVersion from '@/const/version';
 import { aiAgentService } from '@/services/aiAgent';
+import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 
@@ -22,6 +23,12 @@ vi.mock('@/services/message', () => ({
   messageService: {
     getMessages: vi.fn().mockResolvedValue([]),
   },
+}));
+
+const warning = vi.hoisted(() => vi.fn());
+
+vi.mock('@/components/AntdStaticMethods', () => ({
+  message: { warning },
 }));
 
 vi.mock('@/services/topic', () => ({
@@ -1163,6 +1170,8 @@ describe('GatewayActionImpl', () => {
     function createReconnectTestAction(assistantMessage: any) {
       const startOperation = vi.fn(() => ({ operationId: 'gw-op-reconnect' }));
       const mockClient = createMockClient();
+      const captured: { onEvent?: (event: AgentStreamEvent) => void } = {};
+      const replaceMessages = vi.fn();
       const state: Record<string, any> = {
         activeAgentId: 'agent-1',
         gatewayConnections: {},
@@ -1178,9 +1187,12 @@ describe('GatewayActionImpl', () => {
       const get = vi.fn(() => ({
         ...state,
         associateMessageWithOperation: vi.fn(),
-        connectToGateway: vi.fn(),
+        connectToGateway: vi.fn((params: any) => {
+          captured.onEvent = params.onEvent;
+        }),
         internal_updateTopicLoading: vi.fn(),
         onOperationCancel: vi.fn(),
+        replaceMessages,
         startOperation,
       })) as any;
 
@@ -1197,7 +1209,7 @@ describe('GatewayActionImpl', () => {
       const action = new GatewayActionImpl(set as any, get, undefined);
       action.createClient = vi.fn(() => mockClient);
 
-      return { action, startOperation };
+      return { action, captured, replaceMessages, startOperation };
     }
 
     afterEach(() => {
@@ -1246,6 +1258,43 @@ describe('GatewayActionImpl', () => {
         }),
       );
     });
+
+    it.each(['accepted', 'already_consumed', 'mismatch', 'stale'] as const)(
+      'replays and reconciles the %s intervention outcome after reconnect',
+      async (outcome) => {
+        warning.mockClear();
+        const { action, captured, replaceMessages } = createReconnectTestAction({
+          createdAt: 1,
+          id: 'ast-1',
+        });
+        vi.mocked(messageService.getMessages).mockResolvedValueOnce([]);
+
+        await action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        });
+        captured.onEvent?.({
+          data: { outcome, toolMessageId: 'tool-msg-1' },
+          id: `outcome-${outcome}`,
+          operationId: 'server-op-1',
+          stepIndex: 1,
+          timestamp: 1,
+          type: 'human_intervention_outcome',
+        });
+        for (let index = 0; index < 5; index += 1) await Promise.resolve();
+
+        expect(messageService.getMessages).toHaveBeenCalled();
+        expect(replaceMessages).toHaveBeenCalledWith([], {
+          context: expect.objectContaining({ topicId: 'topic-1' }),
+        });
+        if (outcome === 'accepted') {
+          expect(warning).not.toHaveBeenCalled();
+        } else {
+          expect(warning).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
 
     // Captures the onSessionComplete handed to connectToGateway so we can drive
     // both close paths directly. Provides the methods that callback reaches.

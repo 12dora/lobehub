@@ -79,6 +79,25 @@ describe('SkillCatalogReadService historical resolution', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('returns isolated pinned clones without retaining caller mutations', async () => {
+    const { version } = await publish({ skillKey: 'clone.bound', version: '1.0.0' });
+    const service = new SkillCatalogReadService(db);
+    const ref = {
+      checksum: version.checksum,
+      skillKey: 'clone.bound',
+      version: '1.0.0',
+    };
+    const first = await service.resolvePinnedForExecution(ref);
+    expect(first).toBeDefined();
+    first!.content = 'caller mutation';
+    first!.resources[0]!.content = 'caller resource mutation';
+
+    await expect(service.resolvePinnedForExecution(ref)).resolves.toMatchObject({
+      content: '# 1.0.0',
+      resources: [{ content: 'reference' }],
+    });
+  });
+
   describe('resolvePinnedPlatformSkillRuntimeSnapshot exact historical (SKILL-EXACT)', () => {
     const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_SKILLS: true };
     const identity = { agentId: 'agent-1', operationId: 'op-1', userId: 'user-1' };

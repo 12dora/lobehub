@@ -24,11 +24,12 @@ export const FAILURE_DRILL_SCENARIOS = [
       { expectedAssertions: 4, reportFile: 'postgres-identity-attempt.json' },
       { expectedAssertions: 5, reportFile: 'postgres-secret-rewrap.json' },
       { expectedAssertions: 1, reportFile: 'postgres-platform-instance.json' },
-      // SAO-008: audit export publication + retention lease multi-connection suites.
+      // SAO-008 / D5-03: audit publication, lease, and purge-attribution concurrency.
       // Counts must match top-level `it(` / `it.skipIf(` in the wired multiconn files
       // (enforced by runner.test.ts "expectedAssertions match wired test files").
       { expectedAssertions: 5, reportFile: 'postgres-audit-export-publication.json' },
       { expectedAssertions: 1, reportFile: 'postgres-audit-retention-lease.json' },
+      { expectedAssertions: 1, reportFile: 'postgres-audit-retention-attribution.json' },
       // SAI-005: AI catalog publication advisory-lock concurrency.
       { expectedAssertions: 2, reportFile: 'postgres-ai-catalog-publication.json' },
     ],

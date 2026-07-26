@@ -1,8 +1,18 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
+  ACTIVE_BASELINE_TAG,
   BASELINE_COMMIT,
   BASELINE_LAST_TAG,
   BASELINE_MIGRATION_COUNT,
@@ -33,6 +43,11 @@ export interface BaselineVerification {
   reasons: string[];
 }
 
+export interface HistoricalBaselineFixture {
+  cleanup: () => void;
+  migrationsFolder: string;
+}
+
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8')) as T;
 
 const gitShowText = (commit: string, relativePath: string, repoRoot: string): string | null => {
@@ -46,6 +61,58 @@ const gitShowText = (commit: string, relativePath: string, repoRoot: string): st
     });
   } catch {
     return null;
+  }
+};
+
+/**
+ * Materialize the immutable v2.2.10 migration chain outside the worktree.
+ * Upgrade verification must run these historical migrations; the active
+ * squashed baseline is only valid for fresh databases.
+ */
+export const materializeHistoricalBaselineFixture = (
+  repoRoot: string,
+): HistoricalBaselineFixture => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'lobehub-migration-baseline-'));
+  try {
+    const relativePaths = execFileSync(
+      'git',
+      ['ls-tree', '-r', '--name-only', BASELINE_COMMIT, '--', MIGRATIONS_DIR],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        maxBuffer: 8 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60_000,
+      },
+    )
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (const relativePath of relativePaths) {
+      const source = gitShowText(BASELINE_COMMIT, relativePath, repoRoot);
+      if (source === null) throw new Error('HistoricalBaselineFixtureReadFailed');
+      const destination = path.join(root, relativePath);
+      mkdirSync(path.dirname(destination), { recursive: true });
+      writeFileSync(destination, source, 'utf8');
+    }
+
+    const migrationsFolder = path.join(root, MIGRATIONS_DIR);
+    const journal = readJson<JournalFile>(path.join(root, JOURNAL_RELATIVE_PATH));
+    if (
+      journal.entries.length !== BASELINE_MIGRATION_COUNT ||
+      journal.entries.at(-1)?.tag !== BASELINE_LAST_TAG
+    ) {
+      throw new Error('HistoricalBaselineFixtureInvalid');
+    }
+
+    return {
+      cleanup: () => rmSync(root, { force: true, recursive: true }),
+      migrationsFolder,
+    };
+  } catch (error) {
+    rmSync(root, { force: true, recursive: true });
+    throw error;
   }
 };
 
@@ -105,40 +172,10 @@ export const verifyBaselineMigrationsMatch = (
   repoRoot: string,
 ): { fileMatchCount: number; match: boolean; reasons: string[] } => {
   const reasons: string[] = [];
-  const files = listBaselineMigrationFiles(repoRoot);
-  const fileMatchCount = files.length;
+  let fileMatchCount = 0;
 
-  if (files.length === 0) {
-    reasons.push('missing-local-baseline-file');
-  }
-
-  // Bulk content equality: any diff under baseline-range SQL/snapshots is a mismatch.
-  try {
-    // Working tree (and index) vs baseline commit — catches committed and local drift.
-    const changed = execFileSync(
-      'git',
-      ['diff', '--name-only', BASELINE_COMMIT, '--', MIGRATIONS_DIR],
-      {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        maxBuffer: 8 * 1024 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 60_000,
-      },
-    )
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((relativePath) => isBaselineMigrationPath(relativePath));
-
-    if (changed.length > 0) {
-      reasons.push('baseline-file-hash-mismatch');
-    }
-  } catch {
-    reasons.push('baseline-git-diff-failed');
-  }
-
-  // Ensure every baseline-range file still exists at the baseline commit (no local-only drift).
+  // The historical v2.2.10 fixture is immutable in the pinned Git object. It is
+  // intentionally independent of the active squashed fresh-install chain.
   try {
     const baselineTree = execFileSync(
       'git',
@@ -154,21 +191,8 @@ export const verifyBaselineMigrationsMatch = (
       .split('\n')
       .map((line) => line.trim())
       .filter((relativePath) => isBaselineMigrationPath(relativePath));
-
-    const localSet = new Set(files.map((file) => file.replaceAll('\\', '/')));
-    const baselineSet = new Set(baselineTree);
-    for (const relativePath of baselineSet) {
-      if (!localSet.has(relativePath)) {
-        reasons.push('missing-local-baseline-file');
-        break;
-      }
-    }
-    for (const relativePath of localSet) {
-      if (!baselineSet.has(relativePath)) {
-        reasons.push('missing-baseline-git-object');
-        break;
-      }
-    }
+    fileMatchCount = baselineTree.length;
+    if (baselineTree.length === 0) reasons.push('missing-baseline-git-object');
   } catch {
     reasons.push('baseline-git-list-failed');
   }
@@ -182,21 +206,18 @@ export const verifyBaselineMigrationsMatch = (
     if (baselineJournal.entries.length !== BASELINE_MIGRATION_COUNT) {
       reasons.push('baseline-journal-count-mismatch');
     }
-    for (let idx = 0; idx <= BASELINE_MIGRATION_LAST_IDX; idx += 1) {
-      const current = journal.entries[idx];
-      const baseline = baselineJournal.entries[idx];
-      if (!current || !baseline || current.tag !== baseline.tag || current.idx !== baseline.idx) {
-        reasons.push('baseline-journal-tag-mismatch');
-        break;
-      }
-    }
     if (baselineJournal.entries[BASELINE_MIGRATION_LAST_IDX]?.tag !== BASELINE_LAST_TAG) {
       reasons.push('baseline-last-tag-mismatch');
     }
   }
 
-  if (journal.entries[BASELINE_MIGRATION_LAST_IDX]?.tag !== BASELINE_LAST_TAG) {
-    reasons.push('current-last-baseline-tag-mismatch');
+  const activeBaseline = journal.entries[0];
+  if (
+    !activeBaseline ||
+    activeBaseline.tag !== ACTIVE_BASELINE_TAG ||
+    !existsSync(path.join(repoRoot, MIGRATIONS_DIR, `${ACTIVE_BASELINE_TAG}.sql`))
+  ) {
+    reasons.push('active-baseline-missing');
   }
 
   // De-dupe reasons while preserving order
@@ -217,16 +238,43 @@ export const verifyJournalSnapshotAlignment = (
   const expected = journal.entries.map(
     ({ idx }) => `${String(idx).padStart(4, '0')}_snapshot.json`,
   );
-  const indexesOk = journal.entries.every((entry, index) => entry.idx === index);
+  const indexesOk = journal.entries.every(
+    (entry, index) => index === 0 || entry.idx > journal.entries[index - 1]!.idx,
+  );
   const tagsUnique = new Set(journal.entries.map(({ tag }) => tag)).size === journal.entries.length;
   const tagsPrefixed = journal.entries.every(({ idx, tag }) =>
     tag.startsWith(`${String(idx).padStart(4, '0')}_`),
   );
+  const snapshotFilesOk = snapshots.toSorted().join('\0') === expected.toSorted().join('\0');
+  const orderedSnapshots = snapshotFilesOk
+    ? expected.map((name) =>
+        readJson<{
+          id: string;
+          prevId: string;
+          tables: Record<string, unknown>;
+        }>(path.join(metaDir, name)),
+      )
+    : [];
+  const idsUnique = new Set(orderedSnapshots.map(({ id }) => id)).size === orderedSnapshots.length;
+  const ancestryOk = orderedSnapshots.every(
+    (snapshot, index) =>
+      index === 0 ||
+      (snapshot.prevId === orderedSnapshots[index - 1]?.id && snapshot.id !== snapshot.prevId),
+  );
+  const representativeTablesOk = orderedSnapshots.every(
+    ({ tables }) =>
+      'public.users' in tables &&
+      'public.messages' in tables &&
+      'public.platform_audit_exports' in tables,
+  );
   const snapshotsOk =
-    snapshots.toSorted().join('\0') === expected.toSorted().join('\0') &&
+    snapshotFilesOk &&
     indexesOk &&
     tagsUnique &&
-    tagsPrefixed;
+    tagsPrefixed &&
+    idsUnique &&
+    ancestryOk &&
+    representativeTablesOk;
 
   return { match: snapshotsOk, totalEntries: journal.entries.length };
 };

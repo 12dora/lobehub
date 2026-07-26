@@ -112,7 +112,7 @@ describe('catalog authority persisted generation reconcile', () => {
     expect(peekGeneration).toHaveBeenCalledWith('ai_catalog');
     expect(mock.selectCount).toBe(1);
     expect(aiCatalogAuthorityToken.stats.rebuilds).toBe(1);
-    expect(aiCatalogAuthorityToken.stats.pkReads).toBe(1);
+    expect(aiCatalogAuthorityToken.stats.pkReads).toBe(2);
     expect(first).toEqual(
       buildAiCatalogRevisionToken([
         {
@@ -137,7 +137,7 @@ describe('catalog authority persisted generation reconcile', () => {
     expect(mock.selectCount).toBe(0);
     expect(aiCatalogAuthorityToken.stats.rebuilds).toBe(rebuilds);
     expect(aiCatalogAuthorityToken.stats.rowsScanned).toBe(rowsScanned);
-    expect(aiCatalogAuthorityToken.stats.pkReads).toBe(26);
+    expect(aiCatalogAuthorityToken.stats.pkReads).toBe(27);
 
     // Second instance (fresh in-memory cache) observes bumped generation via one PK read.
     aiCatalogAuthorityToken.clear();
@@ -158,7 +158,7 @@ describe('catalog authority persisted generation reconcile', () => {
     expect(second.value).not.toBe(first.value);
     expect(instanceB.selectCount).toBe(1);
     expect(aiCatalogAuthorityToken.stats.rebuilds).toBe(1);
-    expect(aiCatalogAuthorityToken.stats.pkReads).toBe(1);
+    expect(aiCatalogAuthorityToken.stats.pkReads).toBe(2);
 
     instanceB.resetSelectCount();
     for (let i = 0; i < 10; i += 1) {
@@ -176,11 +176,11 @@ describe('catalog authority persisted generation reconcile', () => {
 
     const platformRows = [
       {
-        allowBuiltinOverride: false,
         checksum: checksum('b'),
         currentVersionId: 'v1',
-        enabled: true,
         pointerRevision: 1,
+        publishedEnabled: true,
+        publishedTombstone: false,
         publishedVersionId: 'v1',
         revisionNumber: 1,
         skillId: 'skill-1',
@@ -226,6 +226,72 @@ describe('catalog authority persisted generation reconcile', () => {
     expect(skillCatalogAuthorityToken.stats.rebuilds).toBe(1);
   });
 
+  it('coalesces concurrent cold target misses into one catalog scan', async () => {
+    peekGeneration.mockResolvedValue({
+      generation: 12,
+      tokenKind: 'immutable_id',
+      tokenValue: checksum('c'),
+    });
+    const mock = createCatalogDb([
+      {
+        checksum: checksum('a'),
+        pointerRevision: 1,
+        providerId: 'p1',
+        providerKey: 'alpha',
+        revisionNumber: 1,
+        secretFingerprint: null,
+        status: 'published' as const,
+      },
+    ]);
+
+    const tokens = await Promise.all(
+      Array.from({ length: 12 }, () => loadCurrentAiCatalogTargetToken(mock.db)),
+    );
+    expect(new Set(tokens.map(({ value }) => value)).size).toBe(1);
+    expect(mock.selectCount).toBe(1);
+    expect(aiCatalogAuthorityToken.stats.rebuilds).toBe(1);
+  });
+
+  it('uses immutable tombstone state when an archived builtin override pointer is disabled', async () => {
+    peekGeneration.mockResolvedValue({
+      generation: 13,
+      tokenKind: 'immutable_id',
+      tokenValue: checksum('d'),
+    });
+    const mock = createCatalogDb([
+      {
+        checksum: checksum('b'),
+        currentVersionId: 'v1',
+        pointerRevision: 2,
+        publishedEnabled: true,
+        publishedTombstone: true,
+        publishedVersionId: 'v1',
+        revisionNumber: 2,
+        skillId: 'skill-1',
+        skillKey: 'builtin.core',
+        status: 'archived' as const,
+        versionId: 'v1',
+      },
+    ]);
+
+    const token = await loadCurrentSkillCatalogTargetToken(mock.db, () => []);
+    expect(token).toEqual(
+      buildSkillCatalogRevisionToken({
+        builtins: [],
+        platform: [
+          {
+            checksum: checksum('b'),
+            currentVersionId: 'v1',
+            revision: 2,
+            skillId: 'skill-1',
+            skillKey: 'builtin.core',
+            tombstone: true,
+          },
+        ],
+      }),
+    );
+  });
+
   it('skill cache-miss rebuild fails closed when published versionId mismatches currentVersionId', async () => {
     peekGeneration.mockResolvedValue({
       generation: 3,
@@ -235,11 +301,11 @@ describe('catalog authority persisted generation reconcile', () => {
     // Retargeted pointer: join still finds version v2, but published snapshot points at v1.
     const mock = createCatalogDb([
       {
-        allowBuiltinOverride: false,
         checksum: checksum('b'),
         currentVersionId: 'v2',
-        enabled: true,
         pointerRevision: 1,
+        publishedEnabled: true,
+        publishedTombstone: false,
         publishedVersionId: 'v1',
         revisionNumber: 1,
         skillId: 'skill-1',

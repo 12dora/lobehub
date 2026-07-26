@@ -8,10 +8,10 @@ official better-auth credential login, randomized user namespace, exact cleanup.
 
 ```text
 e2e/enterprise-admin/
-├── playwright.config.ts   # suite-local Playwright config (not shared CI workflow)
+├── playwright.config.ts   # suite-local config used by enterprise-admin-gates.yml
 ├── tsconfig.json
 ├── README.md
-├── CI.md                  # CI boundary contract (opt-in; no root workflow edits)
+├── CI.md                  # authoritative CI schedule, labels, and gate contract
 ├── scripts/
 │   └── preflight.ts       # hard-fail missing Docker / browser / env
 ├── support/
@@ -75,5 +75,5 @@ cd e2e && bun run test:enterprise-admin:external
 
 ## Non-goals (later waves)
 
-User admin CRUD journeys, OIDC, Branding screenshots, Agent Inbox, full
-permission matrix expansion, wiring into shared GitHub `e2e.yml`.
+User admin CRUD journeys, OIDC, Branding screenshots, Agent Inbox, and full
+permission matrix expansion. See `CI.md` for the active dedicated workflow.

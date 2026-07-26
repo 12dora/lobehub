@@ -12,7 +12,12 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { PlatformSecretService } from '../../security/secret';
 import { AUDIT_ACTION, AUDIT_TARGET_TYPE } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
-import { advanceIdentityProviderLkgAfterTombstone } from './lkg';
+import {
+  advanceIdentityProviderLkgAfterTombstone,
+  clearIdentityProviderRevocation,
+  finalizeIdentityProviderRevocation,
+  recordIdentityProviderRevocation,
+} from './lkg';
 import { assertReason } from './publicationIdempotency';
 import {
   IdentityProviderPublicationError,
@@ -34,8 +39,9 @@ type LockedDraftLoader = (
 ) => Promise<{ draft: PlatformIdentityProviderInternalDraft; secretRef: string | null }>;
 
 /**
- * Publish a signed tombstone revision and mark the provider disabled, then advance
- * local LKG best-effort so a total-DB outage cannot resurrect the provider.
+ * Persist an out-of-database fail-closed denial, publish the signed tombstone,
+ * then advance the main LKG. An ordinary success is never returned unless an
+ * outage-time startup can enforce the denial independently of the database.
  */
 export const disableIdentityProvider = async (
   db: LobeChatDatabase,
@@ -44,7 +50,18 @@ export const disableIdentityProvider = async (
   lockedDraft: LockedDraftLoader,
 ): Promise<DisableIdentityProviderResult> => {
   const reason = assertReason(input.reason);
+  const secrets = PlatformSecretService.tryFromEnv(process.env);
+  if (!secrets) {
+    throw new Error('PLATFORM_IDENTITY_PROVIDER_REVOCATION_JOURNAL_SECRET_UNAVAILABLE');
+  }
+  let revocationToken: string | null = null;
+  let tombstoneCommitted = false;
   try {
+    revocationToken = await recordIdentityProviderRevocation({
+      env: process.env,
+      providerId: input.id,
+      secrets,
+    });
     const committed = await db.transaction(async (tx) => {
       await acquireIdentityProviderPublishedRevisionLock(tx);
       const { draft } = await lockedDraft(tx, input.id);
@@ -168,44 +185,66 @@ export const disableIdentityProvider = async (
         tombstoneGeneration: `${tombstoneRow.publishedAt.toISOString()}:${tombstoneRow.id}`,
       };
     });
+    tombstoneCommitted = true;
+
+    try {
+      await finalizeIdentityProviderRevocation({
+        env: process.env,
+        generation: committed.tombstoneGeneration,
+        secrets,
+        token: revocationToken,
+      });
+    } catch (journalError) {
+      // The pending entry is stricter than the finalized form and remains
+      // fail-closed. Keep going so a healthy main-LKG advance can recover it.
+      console.error('[admin.identityProviders] revocation journal finalize unavailable', {
+        errorClass: journalError instanceof Error ? journalError.name : 'UnknownError',
+        removedProviderId: input.id,
+      });
+    }
 
     let lkgAdvance: DisableIdentityProviderLkgAdvance;
     try {
-      const secrets = PlatformSecretService.tryFromEnv(process.env);
-      if (!secrets) {
-        lkgAdvance = { outcome: 'skipped', reason: 'missing_secret' };
-        console.warn('[admin.identityProviders] LKG advance after disable skipped', {
-          reason: 'missing_secret',
-          removedProviderId: input.id,
-        });
+      const advanceResult = await advanceIdentityProviderLkgAfterTombstone({
+        env: process.env,
+        removedProviderId: input.id,
+        secrets,
+        tombstoneGeneration: committed.tombstoneGeneration,
+      });
+      if (
+        advanceResult === 'written' ||
+        advanceResult === 'unchanged' ||
+        advanceResult === 'rejected'
+      ) {
+        lkgAdvance = { outcome: advanceResult };
+      } else if (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped') {
+        lkgAdvance = { outcome: 'skipped', reason: advanceResult.reason };
       } else {
-        const advanceResult = await advanceIdentityProviderLkgAfterTombstone({
-          env: process.env,
+        lkgAdvance = { outcome: 'skipped', reason: 'unknown' };
+      }
+      if (
+        advanceResult === 'rejected' ||
+        (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped')
+      ) {
+        console.warn('[admin.identityProviders] LKG advance after disable not applied', {
+          reason: typeof advanceResult === 'object' ? advanceResult.reason : 'rejected',
           removedProviderId: input.id,
-          secrets,
-          tombstoneGeneration: committed.tombstoneGeneration,
+          result: advanceResult,
         });
-        if (
-          advanceResult === 'written' ||
-          advanceResult === 'unchanged' ||
-          advanceResult === 'rejected'
-        ) {
-          lkgAdvance = { outcome: advanceResult };
-        } else if (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped') {
-          lkgAdvance = { outcome: 'skipped', reason: advanceResult.reason };
-        } else {
-          lkgAdvance = { outcome: 'skipped', reason: 'unknown' };
-        }
-        if (
-          advanceResult === 'rejected' ||
-          (typeof advanceResult === 'object' && advanceResult.outcome === 'skipped')
-        ) {
-          console.warn('[admin.identityProviders] LKG advance after disable not applied', {
-            reason: typeof advanceResult === 'object' ? advanceResult.reason : 'rejected',
-            removedProviderId: input.id,
-            result: advanceResult,
-          });
-        }
+      }
+      const safeToClearJournal =
+        advanceResult === 'written' ||
+        advanceResult === 'unchanged' ||
+        advanceResult === 'rejected' ||
+        (typeof advanceResult === 'object' &&
+          advanceResult.outcome === 'skipped' &&
+          advanceResult.reason === 'stale_tombstone');
+      if (safeToClearJournal) {
+        await clearIdentityProviderRevocation({
+          env: process.env,
+          secrets,
+          token: revocationToken,
+        });
       }
     } catch (lkgError) {
       lkgAdvance = {
@@ -245,6 +284,20 @@ export const disableIdentityProvider = async (
 
     return { ...committed.result, lkgAdvance };
   } catch (error) {
+    if (revocationToken && !tombstoneCommitted) {
+      try {
+        await clearIdentityProviderRevocation({
+          env: process.env,
+          secrets,
+          token: revocationToken,
+        });
+      } catch (cleanupError) {
+        console.error('[admin.identityProviders] revocation journal cleanup unavailable', {
+          errorClass: cleanupError instanceof Error ? cleanupError.name : 'UnknownError',
+          removedProviderId: input.id,
+        });
+      }
+    }
     try {
       await new PlatformAuditService(db).append({
         action: AUDIT_ACTION.IDENTITY_PROVIDERS_DISABLE,

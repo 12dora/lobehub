@@ -29,13 +29,73 @@ export const createSettingsSlice = (set: Setter, get: () => UserStore, _api?: un
 
 export class UserSettingsActionImpl {
   readonly #get: () => UserStore;
+  readonly #pendingSettingGroups = new Set<keyof UserSettings>();
+  readonly #pendingSettingValues = new Map<keyof UserSettings, unknown>();
   readonly #set: Setter;
+  #resetPromise: Promise<void> | null = null;
 
   constructor(set: Setter, get: () => UserStore, _api?: unknown) {
     void _api;
     this.#set = set;
     this.#get = get;
   }
+
+  #restorePendingSettingGroups = (): void => {
+    const pendingSettings = Object.fromEntries(
+      [...this.#pendingSettingGroups].flatMap((key) =>
+        this.#pendingSettingValues.has(key)
+          ? [[key, this.#pendingSettingValues.get(key)] as const]
+          : [],
+      ),
+    ) as PartialDeep<UserSettings>;
+
+    if (Object.keys(pendingSettings).length === 0) return;
+
+    this.#set(
+      { settings: merge(this.#get().settings, pendingSettings) },
+      false,
+      'restore_pendingSettings_after_staleRefresh',
+    );
+  };
+
+  #runReset = async (): Promise<void> => {
+    const previousSettings = this.#get().settings;
+    const previousPendingGroups = new Set(this.#pendingSettingGroups);
+    const previousPendingValues = new Map(this.#pendingSettingValues);
+    const resetController = this.internal_createSignal();
+
+    this.#pendingSettingGroups.clear();
+    this.#pendingSettingValues.clear();
+    this.#set({ settings: {} }, false, 'resetSettings/clearPending');
+
+    try {
+      await userService.resetUserSettings();
+    } catch (error) {
+      // The server rejected the reset, so {} is not an authoritative local state. Restore the
+      // previous view immediately, then prefer a fresh server snapshot. If reconciliation also
+      // fails, restore the prior pending queue so its optimistic values remain retryable.
+      this.#set({ settings: previousSettings }, false, 'resetSettings/rollback');
+      try {
+        await this.#get().refreshUserState();
+      } catch {
+        this.#pendingSettingGroups.clear();
+        this.#pendingSettingValues.clear();
+        for (const key of previousPendingGroups) this.#pendingSettingGroups.add(key);
+        for (const [key, value] of previousPendingValues) {
+          this.#pendingSettingValues.set(key, value);
+        }
+        this.#restorePendingSettingGroups();
+      }
+      throw error;
+    }
+
+    if (this.#get().updateSettingsSignal !== resetController) return;
+
+    await this.#get().refreshUserState();
+    if (this.#get().updateSettingsSignal !== resetController) {
+      this.#restorePendingSettingGroups();
+    }
+  };
 
   addToolToAllowList = async (toolKey: string): Promise<void> => {
     const currentAllowList = this.#get().settings.tool?.humanIntervention?.allowList || [];
@@ -82,11 +142,30 @@ export class UserSettingsActionImpl {
   };
 
   resetSettings = async (): Promise<void> => {
-    await userService.resetUserSettings();
-    await this.#get().refreshUserState();
+    if (this.#resetPromise) {
+      await this.#resetPromise;
+      return;
+    }
+
+    const resetPromise = this.#runReset();
+    this.#resetPromise = resetPromise;
+    try {
+      await resetPromise;
+    } finally {
+      if (this.#resetPromise === resetPromise) this.#resetPromise = null;
+    }
   };
 
   setSettings = async (settings: PartialDeep<UserSettings>): Promise<void> => {
+    // Reset is a write barrier. Deriving or sending an update before resetUserSettings settles
+    // lets a delayed reset erase a newer server write.
+    if (this.#resetPromise) await this.#resetPromise;
+
+    // A refresh applies its snapshot before its promise continuation can observe a generation
+    // change. Reapply pending values synchronously before deriving the next mutation so a user
+    // action in that narrow window cannot prune an optimistic group from the coalesced write.
+    this.#restorePendingSettingGroups();
+
     const { settings: prevSetting, defaultSettings } = this.#get();
 
     const nextSettings = merge(prevSetting, settings);
@@ -188,26 +267,73 @@ export class UserSettingsActionImpl {
 
     this.#set({ settings: diffs }, false, 'optimistic_updateSettings');
 
-    // Persist only the top-level setting groups touched by this mutation.
+    const carriedGroups = new Set(this.#pendingSettingGroups);
+    const carriedValues = new Map(
+      [...carriedGroups].flatMap((key) =>
+        this.#pendingSettingValues.has(key)
+          ? [[key, this.#pendingSettingValues.get(key)] as const]
+          : [],
+      ),
+    );
+    for (const key of Object.keys(changedFields) as (keyof UserSettings)[]) {
+      if (Object.hasOwn(diffs, key)) {
+        this.#pendingSettingGroups.add(key);
+        this.#pendingSettingValues.set(key, diffs[key]);
+      }
+    }
+
+    // Persist only pending top-level setting groups. A newer mutation aborts the prior request,
+    // so it must also carry every still-pending group or a cross-group edit can be lost.
     // `diffs` is the complete local override state and can include unrelated
     // credential-bearing groups (for example `languageModel`). Sending that
     // entire object makes a harmless general-settings update fail the managed
     // settings policy before it reaches the intended field.
+    const groupsInRequest = [...this.#pendingSettingGroups];
     const updates = Object.fromEntries(
-      Object.keys(changedFields)
-        .filter((key) => Object.hasOwn(diffs, key))
-        .map((key) => [key, diffs[key]]),
+      groupsInRequest.flatMap((key) =>
+        this.#pendingSettingValues.has(key)
+          ? [[key, this.#pendingSettingValues.get(key)] as const]
+          : [],
+      ),
     ) as PartialDeep<UserSettings>;
 
     const abortController = this.#get().internal_createSignal();
     try {
       await userService.updateUserSettings(updates, abortController.signal);
+      // An adapter can still resolve after its signal was aborted. Only the request that still
+      // owns the store controller may clear pending groups or refresh from the server; otherwise
+      // an obsolete response can replace a newer optimistic edit with stale persisted state.
+      if (this.#get().updateSettingsSignal !== abortController) return;
+
       await this.#get().refreshUserState();
+      if (this.#get().updateSettingsSignal !== abortController) {
+        // refreshUserState applies its snapshot before resolving. If a newer edit took ownership
+        // while this refresh was in flight, restore every still-pending optimistic group that the
+        // stale snapshot may have overwritten.
+        this.#restorePendingSettingGroups();
+        return;
+      }
+
+      for (const key of groupsInRequest) {
+        this.#pendingSettingGroups.delete(key);
+        this.#pendingSettingValues.delete(key);
+      }
     } catch (error) {
       // Only the latest mutation owns the optimistic state. An older request can
       // reject after internal_createSignal aborts it, but rolling that request
       // back would overwrite the newer mutation that superseded it.
       if (this.#get().updateSettingsSignal === abortController) {
+        // Keep groups inherited from an aborted older request pending. They have never received a
+        // definitive persistence result and must ride the next write even when this coalesced
+        // request fails. Only groups introduced by the failed latest invocation are rolled back.
+        for (const key of groupsInRequest) {
+          if (carriedGroups.has(key)) {
+            if (carriedValues.has(key)) this.#pendingSettingValues.set(key, carriedValues.get(key));
+          } else {
+            this.#pendingSettingGroups.delete(key);
+            this.#pendingSettingValues.delete(key);
+          }
+        }
         this.#set({ settings: prevSetting }, false, 'rollback_updateSettings');
       }
 

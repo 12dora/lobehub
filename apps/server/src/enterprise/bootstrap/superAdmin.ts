@@ -24,12 +24,11 @@
 import { randomBytes } from 'node:crypto';
 
 import { hashPassword } from 'better-auth/crypto';
-import { eq } from 'drizzle-orm';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { AdminUserModel } from '@/database/models/adminUser';
 import { RbacModel } from '@/database/models/rbac';
-import { account, users } from '@/database/schemas';
+import { account } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { authEnv } from '@/envs/auth';
@@ -91,12 +90,12 @@ export const bootstrapSuperAdmin = async (
   await seedPlatformRoles(db);
 
   let userId = params.userId?.trim() || null;
+  const adminUserModel = new AdminUserModel(db);
+  const requestedEmail =
+    params.email?.trim() || (params.allowCreate ? 'breakglass@localhost' : null);
 
-  if (!userId && params.email) {
-    const found = await db.query.users.findFirst({
-      where: eq(users.email, params.email.trim()),
-    });
-    userId = found?.id ?? null;
+  if (!userId && requestedEmail) {
+    userId = await adminUserModel.findUserIdByEmail(requestedEmail);
   }
 
   if (!userId && params.allowCreate) {
@@ -108,7 +107,8 @@ export const bootstrapSuperAdmin = async (
     }
 
     const id = `breakglass_${Date.now().toString(36)}`;
-    const email = params.email?.trim() || `breakglass+${id}@localhost`;
+    const email = requestedEmail!;
+    const normalizedEmail = email.toLowerCase();
     const username = params.username?.trim() || `breakglass`;
     // Password: preserve exact bytes (no trim). Empty/undefined → generate one-time secret.
     const suppliedPassword =
@@ -129,7 +129,7 @@ export const bootstrapSuperAdmin = async (
         accountId: generateEntityId('acct_'),
         email,
         fullName: 'Break-glass Super Admin',
-        normalizedEmail: email,
+        normalizedEmail,
         passwordHash,
         userId: id,
         username,

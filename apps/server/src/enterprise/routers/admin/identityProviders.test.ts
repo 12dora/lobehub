@@ -31,10 +31,17 @@ const createCaller = createCallerFactory(adminRouter);
 const ids = {
   creator: 'm11-idp-creator',
   deleter: 'm11-idp-deleter',
+  publisher: 'm11-idp-publisher',
   reader: 'm11-idp-reader',
   updater: 'm11-idp-updater',
 };
-const roleNames = ['m11_idp_reader', 'm11_idp_updater', 'm11_idp_deleter', 'm11_idp_creator'];
+const roleNames = [
+  'm11_idp_reader',
+  'm11_idp_updater',
+  'm11_idp_deleter',
+  'm11_idp_creator',
+  'm11_idp_publisher',
+];
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
@@ -85,6 +92,7 @@ beforeEach(async () => {
   await grant(ids.updater, roleNames[1], PLATFORM_PERMISSIONS.IDENTITY_UPDATE);
   await grant(ids.deleter, roleNames[2], PLATFORM_PERMISSIONS.IDENTITY_DELETE);
   await grant(ids.creator, roleNames[3], PLATFORM_PERMISSIONS.IDENTITY_CREATE);
+  await grant(ids.publisher, roleNames[4], PLATFORM_PERMISSIONS.IDENTITY_PUBLISH);
 });
 
 afterEach(async () => {
@@ -316,6 +324,67 @@ describe('admin.identityProviders RBAC and feature gate', () => {
         .where(eq(platformIdentityProviders.id, provider.id)),
     ).toEqual([{ revision: provider.revision }]);
     consoleError.mockRestore();
+  });
+
+  it('redacts the opaque current secret for every existing-provider denied mutation', async () => {
+    const currentSecret = 'opaque-existing-provider-secret-7319';
+    const provider = await (
+      await callerFor(ids.creator)
+    ).create(
+      identityInput('all-existing-mutations', { operation: 'replace', value: currentSecret }),
+    );
+    const staleAuth = {
+      authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      authMethod: 'better-auth' as const,
+    };
+    const publisher = await callerFor(ids.publisher, staleAuth);
+    const deleter = await callerFor(ids.deleter, staleAuth);
+    const requests = [
+      () =>
+        deleter.delete({
+          expectedRevision: provider.revision,
+          id: provider.id,
+          reason: `delete ${currentSecret}`,
+        }),
+      () =>
+        publisher.disable({
+          expectedRevision: provider.revision,
+          id: provider.id,
+          reason: `disable ${currentSecret}`,
+        }),
+      () =>
+        publisher.publish({
+          expectedRevision: provider.revision,
+          id: provider.id,
+          reason: `publish ${currentSecret}`,
+          requestId: '550e8400-e29b-41d4-a716-446655440071',
+        }),
+      () =>
+        publisher.rollback({
+          expectedRevision: provider.revision,
+          id: provider.id,
+          reason: `rollback ${currentSecret}`,
+          requestId: '550e8400-e29b-41d4-a716-446655440072',
+          targetRevision: 1,
+        }),
+    ];
+    for (const request of requests) {
+      await expect(request()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    }
+
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      ({ action, result, targetId }) =>
+        action.startsWith('admin.identityProviders.') &&
+        result === 'denied' &&
+        targetId === provider.id,
+    );
+    expect(audits.map(({ reason }) => reason)).toEqual([
+      'delete [REDACTED]',
+      'disable [REDACTED]',
+      'publish [REDACTED]',
+      'rollback [REDACTED]',
+    ]);
+    expect(JSON.stringify(audits)).not.toContain(currentSecret);
   });
 
   it('redacts opaque replacement and current secrets from success and failure mutation audits', async () => {
@@ -584,7 +653,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
         .where(eq(platformIdentityProviders.id, provider.id)),
     ).resolves.toHaveLength(1);
     expect(consoleError).toHaveBeenCalledWith(
-      '[admin.identityProviders] reauth denied audit unavailable',
+      '[admin.reauth] reauth denied audit failed',
       expect.objectContaining({
         action: 'admin.identityProviders.delete',
         errorClass: 'Error',

@@ -34,46 +34,11 @@ export interface CollectedPages<T> {
   truncated: boolean;
 }
 
-/**
- * Hard cap on cursor-followed collection drains (detail aggregate + catalog preflights).
- * 20 pages × 100 items = 2,000 rows max per collection — enough for admin surfaces without
- * unbounded memory growth or a stuck cursor cycle. Callers MUST surface {@link CollectedPages.truncated}
- * so operators never treat a partial array as complete.
- */
-export const ADMIN_AGENT_COLLECTION_PAGE_LIMIT = 20;
-
-const collectPages = async <T>(
-  fetchPage: (cursor?: string) => Promise<CursorPage<T>>,
-): Promise<CollectedPages<T>> => {
-  const items: T[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-  let pages = 0;
-  let truncated = false;
-  /** Residual nextCursor when the drain stops early (page ceiling or cycle). */
-  let residualCursor: string | null | undefined;
-  do {
-    if (cursor) {
-      // Cycle-safe: a repeating opaque cursor must not spin forever.
-      if (seenCursors.has(cursor)) {
-        truncated = true;
-        residualCursor = cursor;
-        break;
-      }
-      seenCursors.add(cursor);
-    }
-    const page = await fetchPage(cursor);
-    items.push(...page.items);
-    residualCursor = page.nextCursor ?? null;
-    cursor = page.nextCursor ?? undefined;
-    pages += 1;
-    if (cursor && pages >= ADMIN_AGENT_COLLECTION_PAGE_LIMIT) {
-      truncated = true;
-      break;
-    }
-  } while (cursor);
-  return { items, nextCursor: truncated ? (residualCursor ?? null) : null, truncated };
-};
+const toCollectedPage = <T>({ items, nextCursor }: CursorPage<T>): CollectedPages<T> => ({
+  items,
+  nextCursor,
+  truncated: nextCursor !== null,
+});
 
 /**
  * Dedicated default-inbox pointer read — single list request with `isDefault: true`.
@@ -111,16 +76,22 @@ export const fetchAdminAgentDetail = async (
 ): Promise<AdminAgentDetailOutput> => {
   const [detail, assignments, rollouts, versions] = await Promise.all([
     client.get({ id }),
-    collectPages((cursor) => client.listAssignments({ agentId: id, cursor, limit: 100 })),
+    client
+      .listAssignments({ agentId: id, limit: 100 })
+      .then(toCollectedPage<AdminAgentDetailOutput['assignments'][number]>),
     // Skip the read entirely when the server capability is off, rather than touching a gated API.
     rolloutsEnabled
-      ? collectPages((cursor) => client.listRollouts({ agentId: id, cursor, limit: 100 }))
+      ? client
+          .listRollouts({ agentId: id, limit: 100 })
+          .then(toCollectedPage<AdminAgentDetailOutput['rollouts'][number]>)
       : Promise.resolve({
           items: [] as AdminAgentDetailOutput['rollouts'],
           nextCursor: null,
           truncated: false,
         }),
-    collectPages((cursor) => client.listVersions({ agentId: id, cursor, limit: 100 })),
+    client
+      .listVersions({ agentId: id, limit: 100 })
+      .then(toCollectedPage<AdminAgentDetailOutput['versions'][number]>),
   ]);
 
   const collectionMeta: AdminAgentCollectionMeta = {
@@ -159,8 +130,9 @@ export const selectActiveRolloutJobIds = (detail?: AdminAgentDetailOutput): stri
 ];
 
 /**
- * One list-status poll for an Agent's rollouts (page-walked, capped). Prefer this over N×getRollout
- * so a single interval produces one bounded request chain and every returned job is merged.
+ * One bounded list-status poll for an Agent's active rollouts. Prefer this over N×getRollout
+ * for rows returned on the first page; known active jobs omitted by that page are fetched in
+ * parallel so polling never serially drains the full rollout history.
  * Server-side `status: ['pending','running']` keeps the walk off completed history.
  * When the list drain truncates, remaining jobIds from the poll key are fetched individually so
  * already-loaded active jobs never go stale silently.
@@ -170,11 +142,13 @@ export const fetchActiveAdminAgentRollouts = async (
   jobIds: string[],
   client: AdminAgentsClient,
 ): Promise<AdminAgentDetailOutput['rollouts']> => {
-  const listed = await collectPages((cursor) =>
-    client.listRollouts({ agentId, cursor, limit: 100, status: ['pending', 'running'] }),
-  );
+  const listed = await client.listRollouts({
+    agentId,
+    limit: 100,
+    status: ['pending', 'running'],
+  });
   const byId = new Map(listed.items.map((rollout) => [rollout.jobId, rollout]));
-  // Cover every job the poll key already tracks that the list page-walk omitted.
+  // Cover every job the poll key already tracks that the bounded list omitted.
   const missing = jobIds.filter((jobId) => !byId.has(jobId));
   if (missing.length > 0) {
     const extras = await Promise.all(missing.map((jobId) => client.getRollout({ agentId, jobId })));

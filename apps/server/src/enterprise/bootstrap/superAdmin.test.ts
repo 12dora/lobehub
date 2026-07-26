@@ -31,6 +31,7 @@ const STRONG_PASSWORD = 'break-glass-secret-password';
 const USER_EMAIL = 'sg07-admin@example.com';
 const FIXTURE_EMAILS = [
   USER_EMAIL,
+  'breakglass@localhost',
   'break@localhost',
   'weak@localhost',
   'long@localhost',
@@ -125,9 +126,32 @@ describe('bootstrapSuperAdmin', () => {
 
   it('can resolve user by email', async () => {
     const result = await bootstrapSuperAdmin(db, {
-      email: USER_EMAIL,
+      email: `  ${USER_EMAIL.toUpperCase()}  `,
     });
     expect(result.userId).toBe(userId);
+  });
+
+  it('is idempotent when creating the default break-glass identity without selectors', async () => {
+    await cleanup();
+    const first = await bootstrapSuperAdmin(db, {
+      allowCreate: true,
+      password: STRONG_PASSWORD,
+    });
+    const second = await bootstrapSuperAdmin(db, {
+      allowCreate: true,
+      password: 'different-password-not-applied',
+    });
+
+    expect(first).toMatchObject({ createdUser: true, roleAssigned: true });
+    expect(second).toMatchObject({
+      alreadySuperAdmin: true,
+      createdUser: false,
+      roleAssigned: false,
+      userId: first.userId,
+    });
+    expect(
+      await db.select({ id: users.id }).from(users).where(eq(users.email, 'breakglass@localhost')),
+    ).toHaveLength(1);
   });
 
   it('promotes OIDC-only user without requiring a credential account', async () => {

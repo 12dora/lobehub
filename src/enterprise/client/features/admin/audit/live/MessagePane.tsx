@@ -100,35 +100,31 @@ const MessagePane = memo<MessagePaneProps>(
     const wasLoadingOlderRef = useRef(false);
     const anchorScrollHeightRef = useRef(0);
     const anchorScrollTopRef = useRef(0);
-    // Track which message IDs may play an entrance animation (tail appends only).
-    // Updated during render (via useMemo) so a newly mounted m.div gets `initial` on first paint.
-    const knownIdsRef = useRef(new Set<string>());
-    const isFirstPaintRef = useRef(true);
-    const topicIdRef = useRef(topic?.id);
+    // Last committed stream snapshot. Render only reads it; abandoned/concurrent renders
+    // must not consume a message's one-time entrance animation.
+    const committedStreamRef = useRef<{
+      committed: boolean;
+      ids: string[];
+      topicId?: string;
+    }>({ committed: false, ids: [], topicId: undefined });
 
     const ordered = useMemo(() => sortMessagesChronological(messages), [messages]);
 
-    // Reset identity tracking when the selected topic changes (before enter-set computation).
-    if (topicIdRef.current !== topic?.id) {
-      topicIdRef.current = topic?.id;
-      knownIdsRef.current = new Set();
-      isFirstPaintRef.current = true;
-    }
-
-    // Decide entrance during render — framer captures `initial` once at mount (useConstant).
-    // Post-commit state updates are too late and leave the animation inert.
+    // Framer captures `initial` on mount, so entrance candidates are derived during render
+    // from the last committed snapshot. The snapshot itself advances after commit.
     const enterIds = useMemo(() => {
-      const known = knownIdsRef.current;
+      const committed = committedStreamRef.current;
       const currentIds = ordered.map((msg) => msg.id);
-      const knownList = [...known];
+      const sameCommittedTopic = committed.committed && committed.topicId === topic?.id;
+      const knownList = sameCommittedTopic ? committed.ids : [];
+      const known = new Set(knownList);
       const fresh = currentIds.filter((id) => !known.has(id));
-      const nextKnown = new Set(currentIds);
 
       let nextEnter = new Set<string>();
       if (
         !reduceMotion &&
         !loadingOlder &&
-        !isFirstPaintRef.current &&
+        sameCommittedTopic &&
         knownList.length > 0 &&
         fresh.length > 0
       ) {
@@ -139,10 +135,16 @@ const MessagePane = memo<MessagePaneProps>(
         if (isAppend) nextEnter = new Set(fresh);
       }
 
-      knownIdsRef.current = nextKnown;
-      isFirstPaintRef.current = false;
       return nextEnter;
-    }, [loadingOlder, ordered, reduceMotion]);
+    }, [loadingOlder, ordered, reduceMotion, topic?.id]);
+
+    useLayoutEffect(() => {
+      committedStreamRef.current = {
+        committed: true,
+        ids: ordered.map((message) => message.id),
+        topicId: topic?.id,
+      };
+    }, [ordered, topic?.id]);
 
     const scrollToBottom = useCallback(() => {
       const el = scrollRef.current;
@@ -195,7 +197,7 @@ const MessagePane = memo<MessagePaneProps>(
     }, [loadingOlder, ordered.length, scrollToBottom]);
 
     useEffect(() => {
-      // Reset stickiness when topic changes (identity tracking resets during render above).
+      // Reset stickiness when topic changes.
       stickToBottomRef.current = true;
       prevCountRef.current = 0;
       anchorScrollHeightRef.current = 0;

@@ -35,6 +35,11 @@ const evidence = vi.hoisted(() => ({
   listMock: vi.fn(),
   statsMock: vi.fn(),
   facetsMock: vi.fn(),
+  facetsError: undefined as unknown,
+  facetsMutate: vi.fn(),
+  statsError: undefined as unknown,
+  statsMutate: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 evidence.listMock.mockImplementation((input?: unknown) => {
@@ -67,10 +72,10 @@ vi.mock('@/libs/swr', () => ({
     if (key0 === 'admin.audit.events.stats') {
       return {
         data: { denied: 1, failure: 2, success: 10, total: 13 },
-        error: undefined,
+        error: evidence.statsError,
         isLoading: false,
         isValidating: false,
-        mutate: vi.fn(),
+        mutate: evidence.statsMutate,
       };
     }
     if (key0 === 'admin.audit.events.facets') {
@@ -79,10 +84,10 @@ vi.mock('@/libs/swr', () => ({
           actions: [{ count: 3, value: 'admin.users.ban' }],
           results: [{ count: 10, value: 'success' }],
         },
-        error: undefined,
+        error: evidence.facetsError,
         isLoading: false,
         isValidating: false,
-        mutate: vi.fn(),
+        mutate: evidence.facetsMutate,
       };
     }
     return {
@@ -152,6 +157,7 @@ vi.mock('@lobehub/ui/base-ui', async (importOriginal) => {
       </div>
     ),
     Select: ({ placeholder }: any) => <div data-testid="select">{placeholder}</div>,
+    toast: { error: (...args: unknown[]) => evidence.toastError(...args) },
   };
 });
 
@@ -169,6 +175,11 @@ describe('OperationLogsPage', () => {
     evidence.swrKeys.length = 0;
     evidence.lastSerializedSwrKey = null;
     evidence.actorPermissions = ['platform_audit:read:all'];
+    evidence.facetsError = undefined;
+    evidence.facetsMutate.mockReset();
+    evidence.statsError = undefined;
+    evidence.statsMutate.mockReset();
+    evidence.toastError.mockReset();
   });
 
   it('renders stats and list rows when AUDIT_READ is granted', async () => {
@@ -196,5 +207,23 @@ describe('OperationLogsPage', () => {
       (k) => Array.isArray(k) && k[0] === 'admin.audit.events.list',
     );
     expect(listKeys).toHaveLength(0);
+  });
+
+  it('surfaces partial stats/facet failures and retries both missing sections', async () => {
+    evidence.statsError = new Error('stats unavailable');
+    evidence.facetsError = new Error('facets unavailable');
+
+    render(
+      <MemoryRouter>
+        <OperationLogsPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('audit.logs.summaryUnavailable')).toBeTruthy();
+    expect(evidence.toastError).toHaveBeenCalledWith('audit.shared.summaryLoadFailed');
+
+    screen.getByText('audit.shared.retryMissingSections').click();
+    expect(evidence.statsMutate).toHaveBeenCalledTimes(1);
+    expect(evidence.facetsMutate).toHaveBeenCalledTimes(1);
   });
 });

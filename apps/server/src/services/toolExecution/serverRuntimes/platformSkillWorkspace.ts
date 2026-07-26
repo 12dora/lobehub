@@ -3,6 +3,7 @@ import type { CommandResult, ExecScriptActivatedSkill } from '@lobechat/builtin-
 import type { SkillRuntimeService } from '@lobechat/builtin-tool-skills/executionRuntime';
 import type { PlatformSkillOperationSnapshot } from '@lobechat/context-engine';
 import { validateInlineSkillOperationPayloads } from '@lobechat/device-control';
+import debug from 'debug';
 
 import type { LobeChatDatabase } from '@/database/type';
 import {
@@ -18,6 +19,11 @@ import { MarketService } from '@/server/services/market';
 import { createSandboxService, normalizeSandboxCommandResult } from '@/server/services/sandbox';
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const log = debug('lobe-server:managed-skill-runtime');
+const MANAGED_SKILL_RUN_FAILED =
+  'This Skill couldn’t run. Start a new run and try again. If the problem continues, contact your administrator.';
+const MANAGED_SKILL_UNAVAILABLE =
+  'This Skill is no longer available. Start a new run or ask your administrator to republish it.';
 
 export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
   private readonly catalog: SkillCatalogReadService;
@@ -43,7 +49,8 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
       !options.operationId ||
       options.snapshot.operationId !== options.operationId
     ) {
-      throw new Error('Managed Skill operation context does not match its signed snapshot');
+      log('operation context rejected reason=snapshot_mismatch');
+      throw new Error(MANAGED_SKILL_RUN_FAILED);
     }
     this.catalog = new SkillCatalogReadService(options.serverDB, {
       builtinSkills: getBuiltinSkillDefinitions(),
@@ -59,15 +66,24 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
 
   private resolveActivated = async (activatedSkills?: ExecScriptActivatedSkill[]) => {
     if (!activatedSkills?.length) {
-      throw new Error('Managed Skill execScript requires an activated operation Skill');
+      log('activated Skill resolution rejected reason=missing_activation');
+      throw new Error(MANAGED_SKILL_RUN_FAILED);
     }
     const resolved = [];
     for (const activated of activatedSkills) {
       const ref = this.refsByKey.get(activated.name);
-      if (!ref)
-        throw new Error(`Managed Skill is not in the operation snapshot: ${activated.name}`);
+      if (!ref) {
+        log(
+          'activated Skill resolution rejected reason=reference_missing skill=%s',
+          activated.name,
+        );
+        throw new Error(MANAGED_SKILL_UNAVAILABLE);
+      }
       const skill = await this.catalog.resolvePinnedForExecution(ref);
-      if (!skill) throw new Error(`Managed Skill could not be resolved exactly: ${ref.skillKey}`);
+      if (!skill) {
+        log('activated Skill resolution rejected reason=revision_missing skill=%s', ref.skillKey);
+        throw new Error(MANAGED_SKILL_UNAVAILABLE);
+      }
       resolved.push({ ref, skill });
     }
     const payloads = validateInlineSkillOperationPayloads(
@@ -113,7 +129,8 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
     options: { activatedSkills?: ExecScriptActivatedSkill[]; description: string },
   ): Promise<CommandResult> => {
     if (!this.options.operationId) {
-      return { exitCode: 1, output: '', stderr: 'operationId is required', success: false };
+      log('execScript rejected reason=operation_missing');
+      return { exitCode: 1, output: '', stderr: MANAGED_SKILL_RUN_FAILED, success: false };
     }
     const skills = await this.resolveActivated(options.activatedSkills);
     return this.options.activeDeviceId

@@ -25,8 +25,9 @@ describe('managed resource policy actions', () => {
 
   it('keeps one immutable publish payload through reauth and refreshes capabilities after success', async () => {
     const publish = vi.fn().mockResolvedValue({
-      draftToken: 'draft-4',
-      publishedRevision: 4,
+      auditId: 'a0',
+      revision: 4,
+      runtimeTransition: 'finalized' as const,
     });
     const refreshCapabilities = vi.fn().mockResolvedValue(undefined);
     const withReauthRetry = vi.fn(async (fn: () => ReturnType<typeof publish>) => {
@@ -89,6 +90,7 @@ describe('managed resource policy actions', () => {
     const publish = vi.fn().mockResolvedValue({
       auditId: 'a1',
       revision: 4,
+      runtimeTransition: 'finalized' as const,
     });
     const refreshCapabilities = vi.fn().mockRejectedValue(new Error('refresh blew up'));
     const withReauthRetry = vi.fn(async (fn: () => ReturnType<typeof publish>) => fn());
@@ -107,13 +109,17 @@ describe('managed resource policy actions', () => {
 
     expect(result).toEqual({
       capabilityRefreshFailed: true,
-      output: { auditId: 'a1', revision: 4 },
+      output: { auditId: 'a1', revision: 4, runtimeTransition: 'finalized' },
     });
     expect(refreshCapabilities).toHaveBeenCalledTimes(1);
   });
 
   it('returns capabilityRefreshFailed false when refresh succeeds', async () => {
-    const publish = vi.fn().mockResolvedValue({ auditId: 'a2', revision: 5 });
+    const publish = vi.fn().mockResolvedValue({
+      auditId: 'a2',
+      revision: 5,
+      runtimeTransition: 'finalized' as const,
+    });
     const refreshCapabilities = vi.fn().mockResolvedValue(undefined);
     const withReauthRetry = vi.fn(async (fn: () => ReturnType<typeof publish>) => fn());
 
@@ -131,7 +137,7 @@ describe('managed resource policy actions', () => {
 
     expect(result).toEqual({
       capabilityRefreshFailed: false,
-      output: { auditId: 'a2', revision: 5 },
+      output: { auditId: 'a2', revision: 5, runtimeTransition: 'finalized' },
     });
   });
 });

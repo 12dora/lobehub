@@ -21,6 +21,9 @@ import {
   withReauth,
 } from './shared';
 
+const normalizeContextWindowTokens = (value: number | null | undefined) =>
+  value === 0 ? null : value;
+
 /**
  * Admin adapter for AI model mutations/list — same surface as user AiModelService.
  * Lives in its own module (#49); barrel re-exports from index.ts.
@@ -38,7 +41,7 @@ export class AdminAiModelService {
     return withReauth(async () => {
       const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
         abilities: params.abilities as Record<string, unknown> | undefined,
-        contextWindowTokens: params.contextWindowTokens ?? null,
+        contextWindowTokens: normalizeContextWindowTokens(params.contextWindowTokens) ?? null,
         displayName: params.displayName ?? null,
         enabled: true,
         expectedDraftToken: detail.draftToken,
@@ -112,7 +115,7 @@ export class AdminAiModelService {
       const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
         abilities: value.abilities as Record<string, unknown> | undefined,
         config: value.config as Record<string, unknown> | null | undefined,
-        contextWindowTokens: value.contextWindowTokens ?? undefined,
+        contextWindowTokens: normalizeContextWindowTokens(value.contextWindowTokens),
         displayName: value.displayName ?? undefined,
         expectedDraftToken: detail.draftToken,
         expectedRevision: model.revision,
@@ -135,7 +138,7 @@ export class AdminAiModelService {
       return {
         abilities: m.abilities as Record<string, unknown> | undefined,
         config: m.config as Record<string, unknown> | null | undefined,
-        contextWindowTokens: m.contextWindowTokens ?? null,
+        contextWindowTokens: normalizeContextWindowTokens(m.contextWindowTokens) ?? null,
         displayName: m.displayName ?? null,
         enabled: m.enabled,
         id: existing?.id ?? m.id,

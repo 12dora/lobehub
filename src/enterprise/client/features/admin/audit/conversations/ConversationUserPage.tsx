@@ -1,7 +1,7 @@
 'use client';
 
-import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs from 'dayjs';
@@ -100,6 +100,7 @@ const ConversationUserPage = memo(() => {
   const [timelineCursorStack, setTimelineCursorStack] = useState<(string | null)[]>([]);
   const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
   const debounceRef = useRef<number | null>(null);
+  const summaryFailureNotifiedRef = useRef(false);
   const currentCursor = cursorStack.at(-1) ?? null;
   const timelineCursor = timelineCursorStack.at(-1) ?? null;
 
@@ -137,6 +138,16 @@ const ConversationUserPage = memo(() => {
   const isForbidden = useMemo(() => {
     return [list.error, timeline.error].some(isForbiddenError);
   }, [list.error, timeline.error]);
+  const summaryFailed = Boolean(summary.error);
+
+  useEffect(() => {
+    if (summaryFailed && !summaryFailureNotifiedRef.current) {
+      summaryFailureNotifiedRef.current = true;
+      toast.error(t('audit.shared.summaryLoadFailed'));
+    } else if (!summaryFailed) {
+      summaryFailureNotifiedRef.current = false;
+    }
+  }, [summaryFailed, t]);
 
   const columns: TableColumnsType<AdminAuditConversationListItem> = useMemo(
     () => [
@@ -238,6 +249,19 @@ const ConversationUserPage = memo(() => {
       }
     >
       <div className={styles.summary}>
+        {summaryFailed ? (
+          <Alert
+            showIcon
+            message={t('audit.conversations.user.summaryUnavailable')}
+            style={{ gridColumn: '1 / -1' }}
+            type="warning"
+            action={
+              <Button size="small" onClick={() => void summary.mutate()}>
+                {t('audit.shared.retryMissingSections')}
+              </Button>
+            }
+          />
+        ) : null}
         <div>
           <Text type="secondary">{t('audit.conversations.user.email')}</Text>
           <div>{user?.email ?? '—'}</div>

@@ -370,8 +370,14 @@ describe('PlatformAuditExportModel', () => {
       storageKey: 'purge-key/z',
     });
     // Claim into purge outbox
-    const claimed = await model.claimArtifactStorageForPurge(created.id);
+    const claimed = await model.claimArtifactStorageForPurge(
+      created.id,
+      undefined,
+      'retention-run-1',
+    );
     expect(claimed?.storageKey).toBe('purge-key/z');
+    const pending = await model.listPendingArtifactPurges({ limit: 10 });
+    expect(pending.find((item) => item.id === created.id)?.purgeRunId).toBe('retention-run-1');
 
     // Phase 1 under lock; external delete succeeds; finalize is NOT called (crash).
     const phase1 = await model.authorizeAndMarkDeletingUnderHoldLock([created.id], {

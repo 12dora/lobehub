@@ -9,6 +9,7 @@ import { INBOX_SESSION_ID } from '@lobechat/const';
 import type { AgentRankItem, ModelRankItem, TopicRankItem } from '@lobechat/types';
 import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
 import { and, asc, count, desc, eq, gt, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type { MessageMetadata } from '@/types/message';
@@ -20,6 +21,8 @@ import { agentOperations } from '../../schemas/agentOperations';
 import type { LobeChatDatabase } from '../../type';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../../utils/genWhere';
 import { normalizeInboxAgentMeta } from '../../utils/inboxAgent';
+
+dayjs.extend(utc);
 
 /**
  * Parse a calendar day (`YYYY-MM-DD`) as UTC midnight.
@@ -123,6 +126,15 @@ type GroupByDayDimRow = {
   userId: string;
 };
 
+const asRows = <T>(result: unknown): T[] => {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result) {
+    const rows = (result as { rows?: unknown }).rows;
+    return Array.isArray(rows) ? (rows as T[]) : [];
+  }
+  return [];
+};
+
 /**
  * Cap day-level chart series: top-N users by tokens + `__other__`, and
  * model/provider cardinality. Never emits blank userId (GroupBy.User).
@@ -216,7 +228,7 @@ const capGroupByDayRecords = (day: string, rows: GroupByDayDimRow[]): GlobalUsag
     }
   }
 
-  const dayAt = dayjs(day).startOf('day').toDate();
+  const dayAt = dayjs.utc(day).startOf('day').toDate();
   return [...buckets.values()].map((b) => {
     const totalInputTokens = b.totalInputTokens;
     const totalOutputTokens = b.totalOutputTokens;
@@ -399,7 +411,7 @@ export class PlatformGlobalStatsModel {
       (${messages.metadata}->>'totalOutputTokens')::double precision,
       0
     )`;
-    const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt}), 'YYYY-MM-DD')`;
+    const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt} AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
 
     const rangeWhere = genWhere([
       eq(messages.role, 'assistant'),
@@ -418,8 +430,8 @@ export class PlatformGlobalStatsModel {
       .orderBy(asc(dayExpr));
 
     const byDay = new Map(dayTotals.map((row) => [row.day, row.totalTokens]));
-    const startDate = dayjs(startAt).startOf('day');
-    const endDate = dayjs(endAt).startOf('day');
+    const startDate = dayjs.utc(startAt).startOf('day');
+    const endDate = dayjs.utc(endAt).startOf('day');
     const padded: Array<{ day: string; totalTokens: number }> = [];
     for (let date = startDate; !date.isAfter(endDate, 'day'); date = date.add(1, 'day')) {
       const key = date.format('YYYY-MM-DD');
@@ -868,7 +880,7 @@ export class PlatformGlobalStatsModel {
       (${messages.metadata}->>'totalOutputTokens')::double precision,
       0
     )`;
-    const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt}), 'YYYY-MM-DD')`;
+    const dayExpr = sql<string>`to_char(date_trunc('day', ${messages.createdAt} AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
     const modelExpr = sql<string>`COALESCE(${messages.model}, '')`;
     const providerExpr = sql<string>`COALESCE(${messages.provider}, '')`;
 
@@ -877,7 +889,7 @@ export class PlatformGlobalStatsModel {
       genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
     ]);
 
-    const [dayTotals, dimRows] = await Promise.all([
+    const [dayTotals, dimResult] = await Promise.all([
       this.db
         .select({
           day: dayExpr.as('day'),
@@ -890,24 +902,105 @@ export class PlatformGlobalStatsModel {
         .where(rangeWhere)
         .groupBy(dayExpr)
         .orderBy(asc(dayExpr)),
-      // day × user × model × provider — capped in memory (top-N users + other).
-      this.db
-        .select({
-          day: dayExpr.as('day'),
-          model: modelExpr.as('model'),
-          provider: providerExpr.as('provider'),
-          spend: sql<number>`COALESCE(SUM(${costExpr}), 0)`.mapWith(Number),
-          totalInputTokens: sql<number>`COALESCE(SUM(${inputTokensExpr}), 0)`.mapWith(Number),
-          totalOutputTokens: sql<number>`COALESCE(SUM(${outputTokensExpr}), 0)`.mapWith(Number),
-          userDisplay: userDisplaySql,
-          userId: messages.userId,
-        })
-        .from(messages)
-        .leftJoin(users, eq(messages.userId, users.id))
-        .where(rangeWhere)
-        .groupBy(dayExpr, messages.userId, userDisplaySql, modelExpr, providerExpr)
-        .orderBy(asc(dayExpr)),
+      // Rank and fold every dimension before rows cross the DB boundary. The
+      // second aggregation gives the result a hard day × capped-dimension bound.
+      this.db.execute(sql`
+        WITH base AS (
+          SELECT
+            ${dayExpr} AS day,
+            COALESCE(${messages.userId}, ${GROUP_BY_DAY_OTHER_USER_ID}) AS user_id,
+            ${userDisplaySql} AS user_display,
+            ${modelExpr} AS model,
+            ${providerExpr} AS provider,
+            COALESCE(SUM(${costExpr}), 0)::double precision AS spend,
+            COALESCE(SUM(${inputTokensExpr}), 0)::double precision AS input_tokens,
+            COALESCE(SUM(${outputTokensExpr}), 0)::double precision AS output_tokens
+          FROM ${messages}
+          LEFT JOIN ${users} ON ${messages.userId} = ${users.id}
+          WHERE ${rangeWhere}
+          GROUP BY ${dayExpr}, ${messages.userId}, ${userDisplaySql}, ${modelExpr}, ${providerExpr}
+        ),
+        user_ranked AS (
+          SELECT
+            day,
+            user_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY day
+              ORDER BY SUM(input_tokens + output_tokens) DESC, user_id ASC
+            ) AS rank
+          FROM base
+          GROUP BY day, user_id
+        ),
+        model_ranked AS (
+          SELECT
+            day,
+            model,
+            ROW_NUMBER() OVER (
+              PARTITION BY day
+              ORDER BY SUM(input_tokens + output_tokens) DESC, model ASC
+            ) AS rank
+          FROM base
+          GROUP BY day, model
+        ),
+        provider_ranked AS (
+          SELECT
+            day,
+            provider,
+            ROW_NUMBER() OVER (
+              PARTITION BY day
+              ORDER BY SUM(input_tokens + output_tokens) DESC, provider ASC
+            ) AS rank
+          FROM base
+          GROUP BY day, provider
+        ),
+        labeled AS (
+          SELECT
+            base.day,
+            CASE
+              WHEN user_ranked.rank <= ${GROUP_BY_DAY_TOP_USERS} THEN base.user_id
+              ELSE ${GROUP_BY_DAY_OTHER_USER_ID}
+            END AS user_id,
+            CASE
+              WHEN user_ranked.rank <= ${GROUP_BY_DAY_TOP_USERS}
+                THEN COALESCE(NULLIF(TRIM(base.user_display), ''), base.user_id)
+              ELSE 'Other'
+            END AS user_display,
+            CASE
+              WHEN base.model = '' OR model_ranked.rank <= ${GROUP_BY_DAY_MAX_MODELS}
+                THEN base.model
+              ELSE '__other__'
+            END AS model,
+            CASE
+              WHEN base.provider = '' OR provider_ranked.rank <= ${GROUP_BY_DAY_MAX_PROVIDERS}
+                THEN base.provider
+              ELSE '__other__'
+            END AS provider,
+            base.spend,
+            base.input_tokens,
+            base.output_tokens
+          FROM base
+          INNER JOIN user_ranked
+            ON base.day = user_ranked.day AND base.user_id = user_ranked.user_id
+          INNER JOIN model_ranked
+            ON base.day = model_ranked.day AND base.model = model_ranked.model
+          INNER JOIN provider_ranked
+            ON base.day = provider_ranked.day AND base.provider = provider_ranked.provider
+        )
+        SELECT
+          day,
+          model,
+          provider,
+          SUM(spend)::double precision AS spend,
+          SUM(input_tokens)::double precision AS "totalInputTokens",
+          SUM(output_tokens)::double precision AS "totalOutputTokens",
+          MAX(user_display) AS "userDisplay",
+          user_id AS "userId"
+        FROM labeled
+        GROUP BY day, user_id, model, provider
+        ORDER BY day, user_id, model, provider
+      `),
     ]);
+    const dimRows = asRows<GroupByDayDimRow>(dimResult);
 
     type DimRow = (typeof dimRows)[number];
     const rowsByDay = new Map<string, DimRow[]>();
@@ -926,7 +1019,7 @@ export class PlatformGlobalStatsModel {
       dayTotals.map((row) => [
         row.day,
         {
-          date: dayjs(row.day).toDate().getTime(),
+          date: dayjs.utc(row.day).toDate().getTime(),
           day: row.day,
           records: recordsByDay.get(row.day) ?? [],
           totalRequests: row.totalRequests,
@@ -937,8 +1030,8 @@ export class PlatformGlobalStatsModel {
     );
 
     // Inclusive end day (was exclusive isBefore → dropped last calendar day).
-    const startDate = dayjs(startAt).startOf('day');
-    const endDate = dayjs(endAt).startOf('day');
+    const startDate = dayjs.utc(startAt).startOf('day');
+    const endDate = dayjs.utc(endAt).startOf('day');
     const padded: GlobalUsageLog[] = [];
     for (let date = startDate; !date.isAfter(endDate, 'day'); date = date.add(1, 'day')) {
       const key = date.format('YYYY-MM-DD');
@@ -960,15 +1053,15 @@ export class PlatformGlobalStatsModel {
   };
 
   private resolveMonthRange = (mo?: string): { endAt: string; startAt: string } => {
-    if (mo && dayjs(mo, 'YYYY-MM', true).isValid()) {
+    if (mo && dayjs.utc(mo, 'YYYY-MM', true).isValid()) {
       return {
-        endAt: dayjs(mo, 'YYYY-MM').endOf('month').format('YYYY-MM-DD'),
-        startAt: dayjs(mo, 'YYYY-MM').startOf('month').format('YYYY-MM-DD'),
+        endAt: dayjs.utc(mo, 'YYYY-MM').endOf('month').format('YYYY-MM-DD'),
+        startAt: dayjs.utc(mo, 'YYYY-MM').startOf('month').format('YYYY-MM-DD'),
       };
     }
     return {
-      endAt: dayjs().endOf('month').format('YYYY-MM-DD'),
-      startAt: dayjs().startOf('month').format('YYYY-MM-DD'),
+      endAt: dayjs.utc().endOf('month').format('YYYY-MM-DD'),
+      startAt: dayjs.utc().startOf('month').format('YYYY-MM-DD'),
     };
   };
 }

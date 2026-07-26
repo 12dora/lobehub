@@ -4,6 +4,10 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
+import {
+  type PersistentWorkerScheduler,
+  startPersistentWorkerScheduler,
+} from './persistentWorkerScheduler';
 
 const DEFAULT_BATCH_LIMIT = 5;
 const DEFAULT_INTERVAL_MS = 3000;
@@ -24,9 +28,12 @@ export const runPlatformAuditRetentionBatches = async (
 };
 
 let workerStarted = false;
+let workerScheduler: PersistentWorkerScheduler | undefined;
 
 /** Test-only: reset module timer latch between behavioral cases. */
 export const __resetPlatformAuditRetentionWorkerForTests = (): void => {
+  workerScheduler?.stop();
+  workerScheduler = undefined;
   workerStarted = false;
 };
 
@@ -44,24 +51,15 @@ export const isPlatformAuditRetentionWorkerRuntime = (
 export const ensurePlatformAuditRetentionWorkerStarted = (): void => {
   if (workerStarted || !isPlatformAuditRetentionWorkerRuntime()) return;
   workerStarted = true;
-  const schedule = () => {
-    const timer = setTimeout(run, DEFAULT_INTERVAL_MS);
-    timer.unref();
-  };
-  const run = async () => {
-    try {
+  workerScheduler = startPersistentWorkerScheduler({
+    baseIntervalMs: DEFAULT_INTERVAL_MS,
+    namespace: 'audit-retention',
+    run: async () => {
       // Re-check flag each batch so closing the flag stops work without restart.
       if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_ADMIN) return;
       // Lazy DB adaptor: never acquire a connection while the feature is closed.
       const { getServerDB } = await import('@/database/core/db-adaptor');
       await runPlatformAuditRetentionBatches(await getServerDB());
-    } catch (error) {
-      console.error('[platform-audit-retention-worker] batch failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
-    } finally {
-      schedule();
-    }
-  };
-  void run();
+    },
+  });
 };

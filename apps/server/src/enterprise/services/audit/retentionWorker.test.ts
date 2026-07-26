@@ -4,7 +4,7 @@
  * Sequential — shared real DB.
  */
 import { eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { messages, sessions, topics, users } from '@/database/schemas';
@@ -18,6 +18,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { PlatformAuditService } from '../platformAudit';
 import {
   AdminAuditRetentionService,
   InMemoryAuditExportArtifactStorage,
@@ -1088,6 +1089,174 @@ describe('audit retention worker', () => {
     // No double count: 50 + 5, not 50+55 or 110
     expect(done.counts.operationLogsDeleted).toBe(55);
     expect(done.counts.operationLogsScanned).toBe(55);
+  });
+
+  it('credits recovered post-checkpoint artifact deletion to its originating run once', async () => {
+    const exportId = 'export-artifact-checkpoint-recovery';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"manifest"}\n'));
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 20,
+      artifactChecksum: 'sha256:checkpoint',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      filterSnapshot: { userId: userA },
+      finishedAt: oldDate,
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'conversations',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'artifact checkpoint recovery', scope: 'export_artifacts' },
+    });
+    const runId = created.items[0]!.id;
+
+    const first = await processNextAuditRetentionJob(serverDB, {
+      afterBatchCheckpoint: async () => {
+        throw new Error('CRASH_AFTER_ARTIFACT_CHECKPOINT');
+      },
+      storage,
+      workerId: 'artifact-checkpoint-first',
+    });
+    expect(first.outcome).toBe('retry');
+    expect(storage.objects.has(storageKey)).toBe(true);
+
+    const second = await processNextAuditRetentionJob(serverDB, {
+      storage,
+      workerId: 'artifact-checkpoint-second',
+    });
+    expect(second.outcome).toBe('completed');
+    const done = await service.getRun({ actorUserId: actor, id: runId });
+    expect(done.counts.exportArtifactsScanned).toBe(1);
+    expect(done.counts.exportArtifactsDeleted).toBe(1);
+    expect(storage.objects.has(storageKey)).toBe(false);
+  });
+
+  it('keeps purge intent pending when delete and metadata probe fail transiently', async () => {
+    const exportId = 'export-transient-head';
+    const storageKey = `platform-audit-exports/${exportId}/evidence.ndjson`;
+    storage.objects.set(storageKey, Buffer.from('{"type":"manifest"}\n'));
+    await serverDB.insert(platformAuditExports).values({
+      artifactBytes: 20,
+      artifactChecksum: 'sha256:head',
+      createdAt: oldDate,
+      expiresAt: oldDate,
+      finishedAt: oldDate,
+      id: exportId,
+      includesMessageBodies: false,
+      kind: 'operation_logs',
+      requestedBy: actor,
+      rowCount: 1,
+      status: 'completed',
+      storageKey,
+    });
+    const transientStorage = new InMemoryAuditExportArtifactStorage();
+    transientStorage.objects.set(storageKey, storage.objects.get(storageKey)!);
+    transientStorage.deleteObject = async () => {
+      throw new Error('S3_TIMEOUT');
+    };
+    transientStorage.getObjectMetadata = async () => {
+      throw Object.assign(new Error('Access denied'), {
+        $metadata: { httpStatusCode: 403 },
+        name: 'AccessDenied',
+      });
+    };
+    const service = new AdminAuditRetentionService(serverDB, { storage: transientStorage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'transient head', scope: 'export_artifacts' },
+    });
+    await processNextAuditRetentionJob(serverDB, {
+      storage: transientStorage,
+      workerId: 'transient-head-worker',
+    });
+
+    const run = await service.getRun({ actorUserId: actor, id: created.items[0]!.id });
+    const [artifact] = await serverDB
+      .select()
+      .from(platformAuditExports)
+      .where(eq(platformAuditExports.id, exportId));
+    expect(run.counts.exportArtifactsDeleted ?? 0).toBe(0);
+    expect(transientStorage.objects.has(storageKey)).toBe(true);
+    expect(artifact?.error?.purgeStorageKey).toBe(storageKey);
+    expect(artifact?.error?.purgeStatus).toBe('deleting');
+  });
+
+  it('rolls back contract-error terminal state when its required audit append fails', async () => {
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'contract audit rollback', scope: 'operation_logs' },
+    });
+    const runId = created.items[0]!.id;
+    const jobId = created.items[0]!.jobId!;
+    await serverDB
+      .update(platformJobs)
+      .set({ cursor: { invalid: true } })
+      .where(eq(platformJobs.id, jobId));
+    const append = vi
+      .spyOn(PlatformAuditService.prototype, 'append')
+      .mockRejectedValueOnce(new Error('AUDIT_TABLE_UNAVAILABLE'));
+    try {
+      await expect(
+        processNextAuditRetentionJob(serverDB, {
+          storage,
+          workerId: 'contract-audit-rollback',
+        }),
+      ).rejects.toThrow('AUDIT_TABLE_UNAVAILABLE');
+    } finally {
+      append.mockRestore();
+    }
+
+    const run = await service.getRun({ actorUserId: actor, id: runId });
+    const [job] = await serverDB.select().from(platformJobs).where(eq(platformJobs.id, jobId));
+    expect(run.status).toBe('running');
+    expect(job?.status).toBe('running');
+  });
+
+  it('rolls back dead-letter terminal state when its required audit append fails', async () => {
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.test.action',
+      createdAt: oldDate,
+      id: 'oplog-dead-audit-rollback',
+      result: 'success',
+      targetType: 'settings',
+    });
+    const service = new AdminAuditRetentionService(serverDB, { storage });
+    const created = await service.run({
+      actorUserId: actor,
+      input: { reason: 'dead audit rollback', scope: 'operation_logs' },
+    });
+    const runId = created.items[0]!.id;
+    const jobId = created.items[0]!.jobId!;
+    await serverDB.update(platformJobs).set({ maxAttempts: 1 }).where(eq(platformJobs.id, jobId));
+    const append = vi
+      .spyOn(PlatformAuditService.prototype, 'append')
+      .mockRejectedValueOnce(new Error('AUDIT_TABLE_UNAVAILABLE'));
+    try {
+      await expect(
+        processNextAuditRetentionJob(serverDB, {
+          afterBatchCheckpoint: async () => {
+            throw new Error('TRANSIENT_AFTER_CHECKPOINT');
+          },
+          storage,
+          workerId: 'dead-audit-rollback',
+        }),
+      ).rejects.toThrow('AUDIT_TABLE_UNAVAILABLE');
+    } finally {
+      append.mockRestore();
+    }
+
+    const run = await service.getRun({ actorUserId: actor, id: runId });
+    const [job] = await serverDB.select().from(platformJobs).where(eq(platformJobs.id, jobId));
+    expect(run.status).toBe('running');
+    expect(job?.status).toBe('running');
   });
 
   it('lease loss does not cancel domain run or platform job', async () => {

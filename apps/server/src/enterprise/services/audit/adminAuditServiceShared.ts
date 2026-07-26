@@ -11,6 +11,7 @@ import {
 } from '@/database/models/platform';
 
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
+import { toPublicPlatformAuditItem } from '../platformAudit';
 
 export type ConversationsGetInput = { topicId: string; userId: string };
 export type EventsStatsInput = { from?: Date; to?: Date };
@@ -46,12 +47,15 @@ export const toEventListItem = (row: PlatformAuditLogItem) => ({
   userAgent: row.userAgent,
 });
 
-/** Detail: stored diffs as-is (write-time redaction only — no extra read-time pass). */
-export const toEventDetail = (row: PlatformAuditLogItem) => ({
-  ...toEventListItem(row),
-  afterDiff: row.afterDiff,
-  beforeDiff: row.beforeDiff,
-});
+/** Detail projection shares the read-time security boundary used by all audit reads. */
+export const toEventDetail = (row: PlatformAuditLogItem) => {
+  const publicRow = toPublicPlatformAuditItem(row);
+  return {
+    ...toEventListItem(publicRow),
+    afterDiff: publicRow.afterDiff,
+    beforeDiff: publicRow.beforeDiff,
+  };
+};
 
 /**
  * Project elapsed holds as `expired` even while the stored row is still `active`.

@@ -68,7 +68,10 @@ export const adminAuditEventsGetInputSchema = z
   })
   .strict();
 
-/** Detail preserves full stored diffs (no additional read-time redaction). */
+/**
+ * Detail recursively removes fingerprint-named fields at read time while preserving
+ * all other non-credential evidence from the stored diffs.
+ */
 export const adminAuditEventDetailSchema = adminAuditEventListItemSchema
   .extend({
     afterDiff: z.record(z.unknown()).nullable(),

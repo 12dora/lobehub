@@ -6,6 +6,9 @@
  */
 import { createHash } from 'node:crypto';
 
+import type { OAuthConnection, SkillCredStatus } from '@lobechat/types';
+
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import {
   fingerprintPayload,
   PlatformGlobalCredentialConflictError,
@@ -22,10 +25,13 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import { PLATFORM_GLOBAL_CREDENTIAL_MASK } from '../../contracts/adminCreds';
 import type { PlatformSecretService } from '../../security/secret';
 import { PlatformAuditService } from '../platformAudit';
 
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
+type PlatformGlobalCredentialPublicMaskValue =
+  typeof PLATFORM_GLOBAL_CREDENTIAL_MASK | 'configured' | 'not_configured';
 
 /** Canonical base64 only — Node's Buffer decoder is lenient with invalid chars. */
 const isCanonicalBase64 = (value: string, bytes: Buffer): boolean => {
@@ -35,8 +41,7 @@ const isCanonicalBase64 = (value: string, bytes: Buffer): boolean => {
   return bytes.toString('base64') === value;
 };
 
-/** Fixed mask returned by get(decrypt) — never accept as a real secret value. */
-export const PLATFORM_GLOBAL_CREDENTIAL_MASK = '••••••••';
+export { PLATFORM_GLOBAL_CREDENTIAL_MASK };
 
 export class PlatformGlobalCredentialOauthUnsupportedError extends Error {
   readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_OAUTH_UNSUPPORTED';
@@ -69,7 +74,7 @@ export interface PlatformGlobalCredentialGetDto extends PlatformGlobalCredential
    * When decrypt=true: public key names → fixed mask (M13: no plaintext echo).
    * When decrypt=false/undefined: omitted.
    */
-  plaintext?: Record<string, string>;
+  plaintext?: Record<string, PlatformGlobalCredentialPublicMaskValue>;
 }
 
 const toIso = (d: Date) => d.toISOString();
@@ -90,7 +95,7 @@ const toSummary = (
   updatedAt: toIso(row.updatedAt),
 });
 
-const maskValue = (): string => PLATFORM_GLOBAL_CREDENTIAL_MASK;
+const maskValue = (): typeof PLATFORM_GLOBAL_CREDENTIAL_MASK => PLATFORM_GLOBAL_CREDENTIAL_MASK;
 
 /** Reject any field whose value is the public mask string (prevents silent secret destruction). */
 export const assertNoMaskedSecretValues = (values: Record<string, string>): void => {
@@ -243,7 +248,10 @@ export class PlatformGlobalCredentialAdminService {
   }): Promise<{ fileHashId: string; fileName: string }> => {
     const bytes = Buffer.from(params.fileBase64, 'base64');
     if (!isCanonicalBase64(params.fileBase64, bytes) || bytes.byteLength === 0) {
-      throw new PlatformGlobalCredentialValidationError('Invalid base64 file payload');
+      throw new PlatformGlobalCredentialValidationError(
+        PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID,
+        PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID,
+      );
     }
     if (bytes.byteLength > PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES) {
       throw new PlatformGlobalCredentialFileTooLargeError();
@@ -514,10 +522,12 @@ export class PlatformGlobalCredentialAdminService {
     });
 
   /** Honest empty skill status — runtime inject is out of scope for this wave. */
-  getSkillCredStatus = async (_skillIdentifier: string): Promise<unknown[]> => [];
+  getSkillCredStatus = async (_skillIdentifier: string): Promise<SkillCredStatus[]> => [];
 
   /** OAuth is disabled for platform global credentials. */
-  listOAuthConnections = async (): Promise<{ connections: unknown[] }> => ({ connections: [] });
+  listOAuthConnections = async (): Promise<{ connections: OAuthConnection[] }> => ({
+    connections: [],
+  });
 
   createOAuth = async (): Promise<never> => {
     throw new PlatformGlobalCredentialOauthUnsupportedError();
@@ -568,7 +578,7 @@ export class PlatformGlobalCredentialAdminService {
     }
 
     const keys = row.valueKeys ?? [];
-    const plaintext: Record<string, string> = {};
+    const plaintext: Record<string, PlatformGlobalCredentialPublicMaskValue> = {};
     for (const k of keys) {
       plaintext[k] = maskValue();
     }

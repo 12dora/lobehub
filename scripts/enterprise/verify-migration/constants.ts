@@ -9,6 +9,11 @@ export const BASELINE_MIGRATION_COUNT =
   BASELINE_MIGRATION_LAST_IDX - BASELINE_MIGRATION_FIRST_IDX + 1;
 
 export const BASELINE_LAST_TAG = '0116_add_task_connector_message_and_verify_updates' as const;
+/** First entry of the active fresh-install chain. */
+export const ACTIVE_BASELINE_TAG = '0000_squash_baseline' as const;
+export const ACTIVE_BASELINE_ENTRY_COUNT = 1 as const;
+/** Baseline plus the idempotent v2.2.10 upgrade bridge. */
+export const ACTIVE_FOUNDATION_ENTRY_COUNT = 2 as const;
 
 export const MIGRATIONS_DIR = 'packages/database/migrations' as const;
 export const JOURNAL_RELATIVE_PATH = `${MIGRATIONS_DIR}/meta/_journal.json` as const;

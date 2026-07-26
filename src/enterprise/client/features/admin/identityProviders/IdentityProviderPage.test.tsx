@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { AdminReauthCancelledError } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 
 import IdentityProviderPage from './IdentityProviderPage';
 import { openIdentityProviderWizardModal } from './openIdentityProviderWizardModal';
@@ -15,7 +16,9 @@ const mocks = vi.hoisted(() => ({
     permissions: [] as string[],
     status: 'allowed' as const,
   },
+  confirmModal: vi.fn(),
   listPublishedRevisions: vi.fn(),
+  requestAdminReauth: vi.fn(),
   providers: {
     data: undefined as { items: unknown[]; nextCursor?: string | null } | undefined,
     error: undefined as unknown,
@@ -35,6 +38,7 @@ const mocks = vi.hoisted(() => ({
     isLoading: false,
     mutate: vi.fn(),
   },
+  toastError: vi.fn(),
 }));
 
 vi.mock('antd-style', () => ({
@@ -61,8 +65,9 @@ vi.mock('@/enterprise/client/services/adminIdentityProviders', () => ({
   },
 }));
 
-vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', () => ({
-  requestAdminReauth: vi.fn(),
+vi.mock('@/enterprise/client/features/admin/reauth/requestAdminReauth', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestAdminReauth: (...args: unknown[]) => mocks.requestAdminReauth(...args),
 }));
 
 vi.mock('../users/modals/openReasonModal', () => ({
@@ -112,6 +117,7 @@ vi.mock('@lobehub/ui', () => ({
     </div>
   ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  NeuralNetworkLoading: () => <span data-testid="restart-progress" />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children, ...rest }: { children?: ReactNode }) => <span {...rest}>{children}</span>,
 }));
@@ -122,23 +128,26 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
-  confirmModal: vi.fn(),
-  toast: { error: vi.fn(), success: vi.fn() },
+  confirmModal: (props: unknown) => mocks.confirmModal(props),
+  toast: { error: (...args: unknown[]) => mocks.toastError(...args), success: vi.fn() },
 }));
 
 vi.mock('../primitives/AdminPageTemplate', () => ({
   default: ({
     actions,
+    banner,
     children,
     title,
   }: {
     actions?: ReactNode;
+    banner?: ReactNode;
     children?: ReactNode;
     title?: ReactNode;
   }) => (
     <main>
       <h1>{title}</h1>
       <div data-testid="page-actions">{actions}</div>
+      {banner}
       {children}
     </main>
   ),
@@ -251,6 +260,10 @@ describe('IdentityProviderPage rendering rules', () => {
     mocks.runtime.data = undefined;
     mocks.runtime.error = undefined;
     mocks.restartLifecycle.phase = 'idle';
+    mocks.confirmModal.mockReset();
+    mocks.requestAdminReauth.mockReset();
+    mocks.requestAdminReauth.mockResolvedValue(undefined);
+    mocks.toastError.mockReset();
     cursorStack.cursor = undefined;
     cursorStack.hasPrevious = false;
   });
@@ -264,6 +277,36 @@ describe('IdentityProviderPage rendering rules', () => {
     expect(screen.queryByText('New')).toBeNull();
     expect(screen.queryByText('identityProviders.actions.create')).toBeNull();
     expect(screen.queryByTestId('provider-table')).toBeNull();
+  });
+
+  it('treats closing reauthentication as a benign cancellation', async () => {
+    mocks.providers.data = {
+      items: [{ ...sampleProvider, hasPublishedHistory: true, status: 'published' }],
+    };
+    mocks.requestAdminReauth.mockRejectedValue(new AdminReauthCancelledError());
+
+    render(<IdentityProviderPage />);
+
+    fireEvent.click(screen.getByText('Disable'));
+    const confirm = mocks.confirmModal.mock.calls[0]?.[0] as { onOk?: () => Promise<void> };
+    await confirm.onOk?.();
+
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it('shows active monitoring while an accepted restart is polling', () => {
+    mocks.restartLifecycle.phase = 'accepted';
+    mocks.runtime.data = {
+      pendingRestart: true,
+      restart: { supported: true },
+    };
+
+    render(<IdentityProviderPage />);
+
+    expect(
+      screen.getByRole('status', { name: 'identityProviders.restart.monitoring' }),
+    ).toBeTruthy();
+    expect(screen.getByTestId('restart-progress')).toBeTruthy();
   });
 
   it('shows the create action and opens the create modal only when no provider exists yet', () => {

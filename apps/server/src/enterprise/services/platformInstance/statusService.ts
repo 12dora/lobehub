@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, not, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 
 import {
   PLATFORM_INSTANCE_FRESH_DIAGNOSTIC_CANDIDATE_LIMIT,
@@ -383,8 +383,11 @@ export class PlatformInstanceStatusService {
       : null;
     const targetRevision = target.token?.kind === 'immutable_id' ? target.token.value : null;
     const matches = targetRevision
-      ? eq(platformIdentityProviderInstances.activeIdentityRevision, targetRevision)
+      ? sql<boolean>`${platformIdentityProviderInstances.activeIdentityRevision} is not distinct from ${targetRevision}`
       : isNull(platformIdentityProviderInstances.activeIdentityRevision);
+    const mismatches = targetRevision
+      ? sql<boolean>`${platformIdentityProviderInstances.activeIdentityRevision} is distinct from ${targetRevision}`
+      : sql<boolean>`${platformIdentityProviderInstances.activeIdentityRevision} is not null`;
     const fallback = inArray(platformIdentityProviderInstances.startupSource, [
       'break_glass',
       'lkg',
@@ -395,7 +398,7 @@ export class PlatformInstanceStatusService {
     const [aggregate] = await tx
       .select({
         degraded: sql<number>`count(*) filter (where ${platformIdentityProviderInstances.health} = 'degraded' or ${fallback})`,
-        diverged: sql<number>`count(*) filter (where ${platformIdentityProviderInstances.health} = 'healthy' and not (${fallback}) and not (${matches}))`,
+        diverged: sql<number>`count(*) filter (where ${platformIdentityProviderInstances.health} = 'healthy' and not (${fallback}) and ${mismatches})`,
         fresh: count(),
         matching: sql<number>`count(*) filter (where ${platformIdentityProviderInstances.health} = 'healthy' and not (${fallback}) and ${matches})`,
       })
@@ -411,7 +414,7 @@ export class PlatformInstanceStatusService {
       .where(
         and(
           fresh,
-          or(eq(platformIdentityProviderInstances.health, 'degraded'), fallback, not(matches)),
+          or(eq(platformIdentityProviderInstances.health, 'degraded'), fallback, mismatches),
         ),
       )
       .orderBy(

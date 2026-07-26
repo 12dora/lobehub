@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadSkillLocalDraft, saveSkillLocalDraft } from '../localDraftStorage';
 import type { AdminSkillGetOutput } from '../types';
@@ -17,6 +17,7 @@ type BlockerPredicate = (args: {
 
 const mocks = vi.hoisted(() => ({
   confirmModal: vi.fn((_options: ConfirmOptions) => ({ close: vi.fn(), destroy: vi.fn() })),
+  createModal: vi.fn((_options: any) => ({ close: vi.fn(), destroy: vi.fn() })),
   useBlocker: vi.fn((_condition?: boolean | BlockerPredicate): any => ({ state: 'unblocked' })),
 }));
 
@@ -24,8 +25,10 @@ vi.mock('react-router', () => ({
   useBlocker: mocks.useBlocker,
 }));
 
-vi.mock('@lobehub/ui/base-ui', () => ({
+vi.mock('@lobehub/ui/base-ui', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   confirmModal: mocks.confirmModal,
+  createModal: mocks.createModal,
 }));
 
 const snapshot = (
@@ -64,10 +67,42 @@ const editable = (id = 'skill-1') => ({
   versionDraft: null,
 });
 
+const versionDraft = () => ({
+  content: '# Safe Skill',
+  contentRef: '',
+  manifestText: JSON.stringify({
+    description: 'Safe Skill',
+    displayName: 'Safe Skill',
+    localizedDescriptions: {},
+    localizedDisplayNames: {},
+    permissions: {
+      filesystem: 'none',
+      network: { allowedHosts: [], enabled: false },
+      tools: { allow: [] },
+    },
+    skillDependencies: [],
+    toolDependencies: [],
+  }),
+  resourcesText: '[]',
+  version: '1.0.0',
+});
+
+const flushPersistence = () => {
+  act(() => {
+    vi.advanceTimersByTime(400);
+  });
+};
+
 describe('useSkillEditor durable drafts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
     window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
   });
 
   it('restores a safe per-Skill draft and marks stale revision recovery as conflict', () => {
@@ -115,10 +150,112 @@ describe('useSkillEditor durable drafts', () => {
       initialProps: { current: 'skill-1' },
     });
     act(() => result.current.updateIdentity('displayName', 'Unsaved first Skill'));
+    flushPersistence();
     rerender({ current: 'skill-2' });
     expect(result.current.draft?.identity.displayName).toBe('Skill skill-2');
     rerender({ current: 'skill-1' });
     expect(result.current.draft?.identity.displayName).toBe('Unsaved first Skill');
+  });
+
+  it('coalesces rapid draft edits into one trailing recovery write', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    const { result } = renderHook(() => useSkillEditor(snapshot()));
+
+    act(() => {
+      result.current.updateIdentity('displayName', 'First');
+      result.current.updateIdentity('displayName', 'Second');
+      result.current.updateIdentity('displayName', 'Final');
+    });
+
+    expect(setItem).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(399);
+    });
+    expect(setItem).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(loadSkillLocalDraft('skill-1')?.draft.identity.displayName).toBe('Final');
+  });
+
+  it('resets persistence state through the real discard callback', () => {
+    const { result } = renderHook(() => useSkillEditor(snapshot()));
+    act(() => result.current.updateIdentity('displayName', 'Discard me'));
+    flushPersistence();
+    expect(loadSkillLocalDraft('skill-1')).not.toBeNull();
+
+    act(() => result.current.discardLocal());
+
+    expect(result.current.dirty).toBe(false);
+    expect(result.current.saveState).toBe('idle');
+    expect(result.current.persistenceStatus).toBe('saved');
+    expect(result.current.draft?.identity.displayName).toBe('Skill skill-1');
+    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+  });
+
+  it('clears recovery state through the real successful identity commit callback', () => {
+    const { result } = renderHook(() => useSkillEditor(snapshot()));
+    act(() => result.current.updateIdentity('displayName', 'Committed name'));
+    flushPersistence();
+    expect(loadSkillLocalDraft('skill-1')).not.toBeNull();
+
+    act(() => result.current.markSaved());
+
+    expect(result.current.dirty).toBe(false);
+    expect(result.current.saveState).toBe('saved');
+    expect(result.current.persistenceStatus).toBe('saved');
+    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+  });
+
+  it('clears the version draft through the real successful version commit callback', () => {
+    const { result } = renderHook(() => useSkillEditor(snapshot()));
+    act(() => result.current.updateVersionDraft(versionDraft()));
+    flushPersistence();
+    expect(loadSkillLocalDraft('skill-1')?.draft.versionDraft).not.toBeNull();
+
+    act(() => result.current.markVersionSaved());
+
+    expect(result.current.draft?.versionDraft).toBeNull();
+    expect(result.current.dirty).toBe(false);
+    expect(result.current.saveState).toBe('saved');
+    expect(result.current.persistenceStatus).toBe('saved');
+    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+  });
+
+  it('flushes a pending recovery write before an accepted Skill identity change', () => {
+    const { rerender, result } = renderHook(({ current }) => useSkillEditor(snapshot(current)), {
+      initialProps: { current: 'skill-1' },
+    });
+    act(() => result.current.updateIdentity('displayName', 'Pending first Skill'));
+
+    rerender({ current: 'skill-2' });
+    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
+    act(() => mocks.confirmModal.mock.calls[0][0].onOk());
+
+    expect(result.current.activeSkillId).toBe('skill-2');
+    expect(loadSkillLocalDraft('skill-1')?.draft.identity.displayName).toBe('Pending first Skill');
+  });
+
+  it('flushes a pending recovery write on pagehide before the debounce elapses', () => {
+    const { result } = renderHook(() => useSkillEditor(snapshot()));
+    act(() => result.current.updateIdentity('displayName', 'Pending page hide'));
+
+    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+    act(() => window.dispatchEvent(new Event('pagehide')));
+
+    expect(loadSkillLocalDraft('skill-1')?.draft.identity.displayName).toBe('Pending page hide');
+  });
+
+  it('flushes a pending recovery write on unmount before the debounce elapses', () => {
+    const { result, unmount } = renderHook(() => useSkillEditor(snapshot()));
+    act(() => result.current.updateIdentity('displayName', 'Pending unmount'));
+
+    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+    unmount();
+
+    expect(loadSkillLocalDraft('skill-1')?.draft.identity.displayName).toBe('Pending unmount');
   });
 
   it('keeps suspicious content in memory only and reports the persistence boundary', () => {
@@ -144,6 +281,7 @@ describe('useSkillEditor durable drafts', () => {
         version: '1.0.0',
       }),
     );
+    flushPersistence();
     expect(result.current.draft?.versionDraft?.content).toContain('PRIVATE KEY');
     expect(result.current.persistenceStatus).toBe('sensitive');
     expect(localStorage.getItem('aihub.admin.skills.draft.skill-1')).toBeNull();
@@ -174,6 +312,7 @@ describe('useSkillEditor durable drafts', () => {
         version: '1.0.0',
       }),
     );
+    flushPersistence();
     expect(result.current.persistenceStatus).toBe('sensitive');
 
     rerender({ current: 'skill-2' });
@@ -229,6 +368,7 @@ describe('useSkillEditor durable drafts', () => {
         version: '1.0.0',
       }),
     );
+    flushPersistence();
 
     const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
     if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
@@ -247,8 +387,11 @@ describe('useSkillEditor durable drafts', () => {
 
     mocks.useBlocker.mockReturnValue({ proceed, reset, state: 'blocked' });
     rerender({ current: snapshot('skill-1') });
-    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
-    act(() => mocks.confirmModal.mock.calls[0][0].onOk());
+    expect(mocks.createModal).toHaveBeenCalledTimes(1);
+    const leaveModalContent = mocks.createModal.mock.calls[0][0].content as any;
+    const footer = leaveModalContent.props.children[1];
+    const proceedButton = footer.props.children[1];
+    act(() => proceedButton.props.onClick());
     expect(proceed).toHaveBeenCalledTimes(1);
 
     mocks.useBlocker.mockReturnValue({ state: 'unblocked' });
@@ -260,12 +403,12 @@ describe('useSkillEditor durable drafts', () => {
     });
     expect(result.current.activeSkillId).toBe('skill-1');
     expect(result.current.draft?.versionDraft?.content).toContain('PRIVATE KEY');
-    expect(mocks.confirmModal).toHaveBeenCalledTimes(2);
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
 
     rerender({ current: snapshot('skill-2') });
     expect(result.current.activeSkillId).toBe('skill-2');
     expect(result.current.draft?.versionDraft).toBeNull();
-    expect(mocks.confirmModal).toHaveBeenCalledTimes(2);
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
   });
 
   it('ignores recovery drafts and mutations for read-only auditors', () => {

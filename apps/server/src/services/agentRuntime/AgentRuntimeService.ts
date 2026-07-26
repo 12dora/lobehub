@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import type { HumanInterventionOutcomeData } from '@lobechat/agent-gateway-client';
 import type {
   Agent,
   AgentRuntimeContext,
@@ -1042,6 +1043,14 @@ export class AgentRuntimeService {
           });
           currentState = interventionResult.newState;
           currentContext = interventionResult.nextContext;
+          await this.streamManager.publishStreamEvent(operationId, {
+            data: {
+              outcome: interventionResult.outcome,
+              ...(toolMessageId ? { toolMessageId } : {}),
+            } satisfies HumanInterventionOutcomeData,
+            stepIndex,
+            type: 'human_intervention_outcome',
+          });
         }
 
         // Resume from a parked async-tool wait (server sub-agent completion
@@ -1772,7 +1781,7 @@ export class AgentRuntimeService {
         });
         log('Scheduled execution for operation %s (messageId: %s)', operationId, messageId);
       } else {
-        log('Queue service disabled, skipping schedule for operation %s', operationId);
+        throw new Error('Agent execution queue is unavailable');
       }
 
       return {

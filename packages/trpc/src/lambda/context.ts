@@ -290,10 +290,12 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
           tokenInfo.tokenData as Record<string, unknown>,
         );
 
-        if (securityOn) {
-          const db = await getServerDB();
-          await assertUserActive(db, userId, { credentialIssuedAt });
-        }
+        // Preserve the upstream OIDC revocation invariant in every deployment.
+        // Platform-admin flags may gate stronger session controls, but must never
+        // allow a banned, deleted, or invalidated OIDC subject to keep using an
+        // already-issued token.
+        const db = await getServerDB();
+        await assertUserActive(db, userId, { credentialIssuedAt });
         log('OIDC authentication successful, userId: %s', userId);
 
         const authenticatedAt = extractOidcAuthenticatedAt(

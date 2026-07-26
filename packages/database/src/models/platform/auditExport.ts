@@ -49,6 +49,8 @@ export type ExportErrorPayload = {
   purgeStorageKey?: string;
   /** All attempt keys that may still exist (append-on-record). */
   purgeStorageKeys?: string[];
+  /** Retention run that durably claimed this object for purge. */
+  purgeRunId?: string;
   /** Immutable token for the current purge authorization epoch. */
   purgeToken?: string;
 } | null;
@@ -92,12 +94,19 @@ export const buildPurgeOutboxFields = (
   opts?: {
     code?: string;
     message?: string;
+    purgeRunId?: string;
     purgeStatus?: 'pending' | 'deleting';
     purgeToken?: string;
   },
 ): Pick<
   NonNullable<ExportErrorPayload>,
-  'code' | 'message' | 'purgeStatus' | 'purgeStorageKey' | 'purgeStorageKeys' | 'purgeToken'
+  | 'code'
+  | 'message'
+  | 'purgeRunId'
+  | 'purgeStatus'
+  | 'purgeStorageKey'
+  | 'purgeStorageKeys'
+  | 'purgeToken'
 > => {
   const unique = mergePurgeStorageKeys(keys);
   if (unique.length === 0) {
@@ -109,6 +118,7 @@ export const buildPurgeOutboxFields = (
   return {
     code: opts?.code,
     message: opts?.message,
+    purgeRunId: opts?.purgeRunId,
     purgeStatus: opts?.purgeStatus ?? 'pending',
     purgeStorageKey: unique[0],
     purgeStorageKeys: unique,
@@ -780,6 +790,7 @@ export class PlatformAuditExportModel {
   claimArtifactStorageForPurge = async (
     id: string,
     executor: LobeChatDatabase | Transaction = this.db,
+    purgeRunId?: string,
   ): Promise<{ id: string; storageKey: string } | undefined> => {
     const [existing] = await executor
       .select({
@@ -820,6 +831,7 @@ export class PlatformAuditExportModel {
             ),
             {
               code: ARTIFACT_PURGE_PENDING_CODE,
+              purgeRunId,
               purgeStatus: 'pending',
             },
           ),
@@ -950,6 +962,7 @@ export class PlatformAuditExportModel {
               ...buildPurgeOutboxFields(allKeys, {
                 code: domainCode,
                 message: prior?.message,
+                purgeRunId: prior?.purgeRunId,
                 purgeStatus: 'deleting',
                 purgeToken,
               }),
@@ -1384,7 +1397,7 @@ export class PlatformAuditExportModel {
    */
   listPendingArtifactPurges = async (params?: {
     limit?: number;
-  }): Promise<Array<{ id: string; storageKey: string }>> => {
+  }): Promise<Array<{ id: string; purgeRunId: string | null; storageKey: string }>> => {
     const limit = clampListLimit(params?.limit);
     const rows = await this.db
       .select({
@@ -1426,9 +1439,14 @@ export class PlatformAuditExportModel {
             ? raw.filter((k) => k !== row.storageKey)
             : raw;
         const storageKey = keys[0] ?? null;
-        return storageKey ? { id: row.id, storageKey } : null;
+        const error = row.error as ExportErrorPayload;
+        return storageKey
+          ? { id: row.id, purgeRunId: error?.purgeRunId ?? null, storageKey }
+          : null;
       })
-      .filter((row): row is { id: string; storageKey: string } => row !== null);
+      .filter(
+        (row): row is { id: string; purgeRunId: string | null; storageKey: string } => row !== null,
+      );
   };
 
   /**
@@ -1532,6 +1550,7 @@ export class PlatformAuditExportModel {
             ...buildPurgeOutboxFields(remaining, {
               code: domainCode ?? ARTIFACT_PURGE_PENDING_CODE,
               message: domainMessage,
+              purgeRunId: prior?.purgeRunId,
               purgeStatus: prior?.purgeStatus === 'deleting' ? 'deleting' : 'pending',
               purgeToken: prior?.purgeStatus === 'deleting' ? prior.purgeToken : undefined,
             }),

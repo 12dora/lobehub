@@ -50,12 +50,13 @@ afterEach(async () => {
 });
 
 describe('AdminAuditService', () => {
-  it('returns operation detail stored diffs without extra read-time redaction', async () => {
+  it('redacts fingerprint fields from operation detail reads', async () => {
     await serverDB.insert(platformAuditLogs).values({
       action: 'admin.settings.publish',
       afterDiff: {
         displayName: 'Acme Corp Legal Entity',
-        fingerprint: 'should-remain-on-read-for-admin-audit',
+        nested: { certificateFingerprint: 'legacy-sensitive-metadata' },
+        fingerprint: 'legacy-sensitive-metadata',
       },
       beforeDiff: { displayName: 'Old Name' },
       id: 'op-detail-1',
@@ -65,9 +66,9 @@ describe('AdminAuditService', () => {
     });
 
     const detail = await service.getEvent({ actorUserId: actor, id: 'op-detail-1' });
-    expect(detail.afterDiff).toMatchObject({
+    expect(detail.afterDiff).toEqual({
       displayName: 'Acme Corp Legal Entity',
-      fingerprint: 'should-remain-on-read-for-admin-audit',
+      nested: {},
     });
     expect(detail.beforeDiff).toMatchObject({ displayName: 'Old Name' });
 

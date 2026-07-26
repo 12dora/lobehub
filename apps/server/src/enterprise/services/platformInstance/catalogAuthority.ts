@@ -41,6 +41,9 @@ type CatalogDatabase = LobeChatDatabase | Transaction;
 const isChecksum = (value: string | null | undefined): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
+const aiTargetRebuilds = new Map<string, Promise<PlatformRevisionToken>>();
+const skillTargetRebuilds = new Map<string, Promise<PlatformRevisionToken>>();
+
 export interface CurrentAiCatalogSnapshot {
   revisions: PlatformResourceRevisionItem[];
   token: ReturnType<typeof buildAiCatalogRevisionToken>;
@@ -311,12 +314,30 @@ export const loadCurrentAiCatalogTargetToken = async (
   const hit = aiCatalogAuthorityToken.peekAt(generation);
   if (hit) return hit;
 
-  const tokenEntries = await loadCurrentAiCatalogTargetTokenEntries(db);
-  return aiCatalogAuthorityToken.put(
-    buildAiCatalogRevisionToken(tokenEntries),
-    { entryHashes: 1, rowsScanned: tokenEntries.length },
-    generation,
-  );
+  const epoch = aiCatalogAuthorityToken.epoch;
+  const rebuildKey = `${generation}:${epoch}`;
+  const inFlight = aiTargetRebuilds.get(rebuildKey);
+  if (inFlight) return inFlight;
+
+  const rebuild = (async () => {
+    const tokenEntries = await loadCurrentAiCatalogTargetTokenEntries(db);
+    aiCatalogAuthorityToken.recordPkRead();
+    const current = await new PlatformCatalogAuthorityModel(db).peekGeneration('ai_catalog');
+    if (current.generation !== generation || aiCatalogAuthorityToken.epoch !== epoch) {
+      return loadCurrentAiCatalogTargetToken(db);
+    }
+    return aiCatalogAuthorityToken.put(
+      buildAiCatalogRevisionToken(tokenEntries),
+      { entryHashes: 1, rowsScanned: tokenEntries.length },
+      generation,
+    );
+  })();
+  aiTargetRebuilds.set(rebuildKey, rebuild);
+  try {
+    return await rebuild;
+  } finally {
+    if (aiTargetRebuilds.get(rebuildKey) === rebuild) aiTargetRebuilds.delete(rebuildKey);
+  }
 };
 
 /**
@@ -327,8 +348,7 @@ export const loadCurrentAiCatalogTargetToken = async (
  * - never rehashes revision payloads; only extracts the scalar `payload.versionId`
  *   so a retargeted `currentVersionId` still fails closed (matches full-snapshot authority)
  * - trusts stored version checksums (full rehash stays on publish/runtime)
- * - tombstone uses pointer columns only (archive always publishes
- *   `builtinOverrideTombstone = allowBuiltinOverride`)
+ * - effective enabled/tombstone state comes from scalar immutable-payload fields
  *
  * Called only on catalog-authority cache miss / rebuild — not on the O(1) steady-state path.
  */
@@ -337,11 +357,15 @@ export const loadCurrentSkillCatalogTargetTokenEntries = async (
 ): Promise<SkillCatalogTokenEntry[]> => {
   const rows = await db
     .select({
-      allowBuiltinOverride: platformSkills.allowBuiltinOverride,
       checksum: platformSkillVersions.checksum,
       currentVersionId: platformSkills.currentVersionId,
-      enabled: platformSkills.enabled,
       pointerRevision: platformSkills.revision,
+      publishedEnabled: sql<
+        boolean | null
+      >`(${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean`,
+      publishedTombstone: sql<
+        boolean | null
+      >`(${platformResourceRevisions.payload}->>'builtinOverrideTombstone')::boolean`,
       // Scalar extract only — not a full payload load/rehash; restores fail-closed
       // when currentVersionId is retargeted away from the published snapshot.
       publishedVersionId: sql<string | null>`(${platformResourceRevisions.payload}->>'versionId')`,
@@ -386,10 +410,11 @@ export const loadCurrentSkillCatalogTargetTokenEntries = async (
     ) {
       throw new PlatformCatalogTokenInvariantError();
     }
-    // Archive publication sets payload.builtinOverrideTombstone = allowBuiltinOverride;
-    // pointer columns alone are enough for the health-poll token projection.
-    const tombstone = row.status === 'archived' && row.enabled && row.allowBuiltinOverride;
-    const active = row.status === 'published' && row.enabled;
+    // Effective state belongs to the immutable publication. A disabled mutable
+    // pointer can still publish an enabled builtin-override tombstone.
+    const tombstone =
+      row.status === 'archived' && row.publishedTombstone === true && row.publishedEnabled === true;
+    const active = row.status === 'published' && row.publishedEnabled === true;
     if (!active && !tombstone) continue;
     tokenEntries.push({
       checksum: row.checksum,
@@ -428,11 +453,29 @@ export const loadCurrentSkillCatalogTargetToken = async (
   const hit = skillCatalogAuthorityToken.peekAt(generation);
   if (hit) return hit;
 
-  const builtins = loadBuiltins();
-  const platform = await loadCurrentSkillCatalogTargetTokenEntries(db);
-  return skillCatalogAuthorityToken.put(
-    buildSkillCatalogRevisionToken({ builtins, platform }),
-    { entryHashes: 1, rowsScanned: builtins.length + platform.length },
-    generation,
-  );
+  const epoch = skillCatalogAuthorityToken.epoch;
+  const rebuildKey = `${generation}:${epoch}`;
+  const inFlight = skillTargetRebuilds.get(rebuildKey);
+  if (inFlight) return inFlight;
+
+  const rebuild = (async () => {
+    const builtins = loadBuiltins();
+    const platform = await loadCurrentSkillCatalogTargetTokenEntries(db);
+    skillCatalogAuthorityToken.recordPkRead();
+    const current = await new PlatformCatalogAuthorityModel(db).peekGeneration('skill_catalog');
+    if (current.generation !== generation || skillCatalogAuthorityToken.epoch !== epoch) {
+      return loadCurrentSkillCatalogTargetToken(db, loadBuiltins);
+    }
+    return skillCatalogAuthorityToken.put(
+      buildSkillCatalogRevisionToken({ builtins, platform }),
+      { entryHashes: 1, rowsScanned: builtins.length + platform.length },
+      generation,
+    );
+  })();
+  skillTargetRebuilds.set(rebuildKey, rebuild);
+  try {
+    return await rebuild;
+  } finally {
+    if (skillTargetRebuilds.get(rebuildKey) === rebuild) skillTargetRebuilds.delete(rebuildKey);
+  }
 };

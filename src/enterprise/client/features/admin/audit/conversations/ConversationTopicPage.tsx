@@ -1,10 +1,10 @@
 'use client';
 
-import { Flexbox, Skeleton, Tag, Text } from '@lobehub/ui';
-import { Button, Switch } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, Skeleton, Tag, Text } from '@lobehub/ui';
+import { Button, Switch, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { useReducedMotion } from 'motion/react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
@@ -89,6 +89,7 @@ const ConversationTopicPage = memo(() => {
 
   const [includeBody, setIncludeBody] = useState(false);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const detailFailureNotifiedRef = useRef(false);
   const currentCursor = cursorStack.at(-1) ?? null;
 
   const policy = useFetchAuditPolicy(canAuditRead);
@@ -117,6 +118,16 @@ const ConversationTopicPage = memo(() => {
       return data?.code === 'FORBIDDEN';
     });
   }, [detail.error, messages.error]);
+  const detailFailed = Boolean(detail.error) && !detail.data && !isForbidden;
+
+  useEffect(() => {
+    if (detailFailed && !detailFailureNotifiedRef.current) {
+      detailFailureNotifiedRef.current = true;
+      toast.error(t('audit.shared.summaryLoadFailed'));
+    } else if (!detailFailed) {
+      detailFailureNotifiedRef.current = false;
+    }
+  }, [detailFailed, t]);
 
   // Prefer contentAccessMode from conversation/messages (available with CONVERSATION_READ).
   const contentAccessMode =
@@ -189,6 +200,19 @@ const ConversationTopicPage = memo(() => {
         ) : null
       }
     >
+      {detailFailed ? (
+        <Alert
+          showIcon
+          message={t('audit.conversations.topic.detailUnavailable')}
+          style={{ marginBlockEnd: 12 }}
+          type="warning"
+          action={
+            <Button size="small" onClick={() => void detail.mutate()}>
+              {t('audit.shared.retryMissingSections')}
+            </Button>
+          }
+        />
+      ) : null}
       <Flexbox gap={8} style={{ marginBlockEnd: 12 }}>
         <Text type="secondary">
           {[topic?.provider, topic?.model, topic?.agentId].filter(Boolean).join(' · ') || '—'}

@@ -243,10 +243,15 @@ export const useAgentActions = ({
         },
         onSubmit: async (input) => {
           if (!lock.beginWrite(writeToken)) return;
+          let invalidationDeferred: boolean;
           try {
-            await adminAgentsService.publish(
+            const result = await adminAgentsService.publish(
               input as Parameters<typeof adminAgentsService.publish>[0],
             );
+            invalidationDeferred = result.invalidationStatus === 'deferred';
+            if (invalidationDeferred) {
+              toast.warning(t('agentCatalog.toast.refreshDeferred'));
+            }
           } catch (cause) {
             if (isAdminReauthRequiredError(cause)) throw cause;
             lock.abortWrite(writeToken);
@@ -255,7 +260,9 @@ export const useAgentActions = ({
           // publish output carries no draftToken → refresh; stays locked on a non-advanced refresh.
           lock.markCommitted(writeToken);
           await lock.commitWrite(writeToken);
-          toast.success(t('agentCatalog.toast.published'));
+          if (!invalidationDeferred) {
+            toast.success(t('agentCatalog.toast.published'));
+          }
         },
         submitLabel: t('agentCatalog.publish.submit'),
         targetLabel: snapshot.identity.agentKey,
@@ -285,10 +292,15 @@ export const useAgentActions = ({
         },
         onSubmit: async (input) => {
           if (!lock.beginWrite(writeToken)) return;
+          let invalidationDeferred: boolean;
           try {
-            await adminAgentsService.rollback(
+            const result = await adminAgentsService.rollback(
               input as Parameters<typeof adminAgentsService.rollback>[0],
             );
+            invalidationDeferred = result.invalidationStatus === 'deferred';
+            if (invalidationDeferred) {
+              toast.warning(t('agentCatalog.toast.refreshDeferred'));
+            }
           } catch (cause) {
             if (isAdminReauthRequiredError(cause)) throw cause;
             lock.abortWrite(writeToken);
@@ -296,7 +308,7 @@ export const useAgentActions = ({
           }
           lock.markCommitted(writeToken);
           await lock.commitWrite(writeToken);
-          toast.success(t('agentCatalog.toast.rolledBack'));
+          if (!invalidationDeferred) toast.success(t('agentCatalog.toast.rolledBack'));
         },
         submitLabel: t('agentCatalog.rollback.submit'),
         targetLabel: snapshot.identity.agentKey,

@@ -238,6 +238,28 @@ describe('PlatformGlobalStatsModel', () => {
       vi.useRealTimers();
     });
 
+    it('folds high-cardinality model dimensions before returning database rows', async () => {
+      const createdAt = new Date('2024-06-10T12:00:00.000Z');
+      await serverDB.insert(messages).values(
+        Array.from({ length: 40 }, (_, index) => ({
+          content: `model-${index}`,
+          createdAt,
+          id: `cardinality-${index}`,
+          model: `model-${index}`,
+          provider: 'provider',
+          role: 'assistant' as const,
+          usage: { totalInputTokens: 1, totalOutputTokens: index + 1 },
+          userId: USER_A,
+        })),
+      );
+
+      const logs = await globalStats.findAndGroupByDay('2024-06');
+      const day = logs.find((item) => item.day === '2024-06-10');
+      expect(day?.records.length).toBeLessThanOrEqual(31);
+      expect(day?.records.some((record) => record.model === '__other__')).toBe(true);
+      expect(day?.totalRequests).toBe(40);
+    });
+
     it('includes the final calendar day of the month in daily grouping', async () => {
       vi.useFakeTimers();
       const fixedDate = new Date('2024-06-15T12:00:00Z');

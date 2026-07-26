@@ -60,6 +60,8 @@ export default {
   'agentCatalog.collection.truncatedVersions':
     'Only the first pages of versions were loaded. Load more to see the rest, or treat this list as partial.',
   'agentCatalog.collection.loadMore': 'Load more',
+  'agentCatalog.collection.loadFailed': 'Couldn’t load more items. Try again.',
+  'agentCatalog.collection.retry': 'Retry',
   'agentCatalog.dependency.catalogTruncated':
     'More published catalog entries match this search. Refine the query to find a specific item.',
   'agentCatalog.dependency.model.providerSearch': 'Search providers',
@@ -237,8 +239,12 @@ export default {
   'agentCatalog.toast.created': 'Agent draft created.',
   'agentCatalog.toast.deleted': 'Assistant deleted.',
   'agentCatalog.toast.published': 'Agent version published.',
+  'agentCatalog.toast.refreshDeferred':
+    'Agent saved, but some servers are still refreshing. Wait a moment before starting new runs.',
   'agentCatalog.toast.rolledBack': 'Agent version rolled back.',
   'agentCatalog.toast.saved': 'Agent version saved.',
+  'globalCredentials.validation.filePayloadInvalid':
+    'The file data is invalid. Select the file again and retry.',
   'agentCatalog.unsaved.description':
     'This Agent version is stored as a local recovery draft. Leaving keeps the recovery copy but does not publish it.',
   'agentCatalog.unsaved.leave': 'Leave editor',
@@ -519,6 +525,8 @@ export default {
     'Saved successfully, but the latest policy could not be refreshed. Reload if the view looks stale.',
   'managedResources.errors.publishedRefreshFailed':
     'Published successfully, but capability refresh failed. Reload if managed flags look stale.',
+  'managedResources.errors.publishedRuntimeRecovering':
+    'Published, but Connector activation is still recovering. Reload in a moment.',
   'managedResources.errors.savedWithLocalEdits':
     'Draft saved. Your later edits were kept — save again to persist them.',
   'managedResources.draftPendingPublish':
@@ -1361,6 +1369,11 @@ export default {
   'users.modals.create.credentialPassword': 'Password',
   'users.modals.create.copy': 'Copy',
   'users.modals.create.done': 'Done',
+  'users.modals.create.unsaved.description':
+    'This user draft contains unsaved details or a generated password. Discarding it cannot be undone.',
+  'users.modals.create.unsaved.discard': 'Discard draft',
+  'users.modals.create.unsaved.stay': 'Continue editing',
+  'users.modals.create.unsaved.title': 'Discard user draft?',
   'users.toast.createSuccess': 'User created',
   'users.errors.emailTaken': 'A user with this email already exists.',
   'users.errors.usernameTaken': 'A user with this username already exists.',
@@ -1930,6 +1943,14 @@ export default {
     'Some provider model catalogs failed to load ({{count}}). Model lists stay unchanged until you retry.',
   'enterprise.error.PLATFORM_CONFIG_VALIDATION_FAILED':
     'Configuration validation failed. Check your input and try again.',
+  'enterprise.error.PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE':
+    'This Agent cannot start because a required resource is unavailable. Ask an administrator to review its setup.',
+  'enterprise.error.PLATFORM_AGENT_START_FAILED':
+    'This Agent could not start. Try again. If the problem continues, contact your administrator.',
+  'enterprise.error.PLATFORM_AGENT_UNAVAILABLE':
+    'This Agent is no longer available. Return to the Agent list and choose another.',
+  'enterprise.error.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID':
+    'The file data is invalid. Select the file again and retry.',
   'enterprise.error.PLATFORM_DEFAULT_AGENT_REQUIRED': 'A default agent must be designated first.',
   'enterprise.error.PLATFORM_FEATURE_DISABLED':
     'This feature has been disabled by an administrator.',
@@ -2028,7 +2049,7 @@ export default {
   'identityProviders.disable.cancel': 'Cancel',
   'identityProviders.disable.confirm': 'Disable provider',
   'identityProviders.disable.impact':
-    'This publishes a signed tombstone revision. The provider will stop accepting logins after instances reload. This cannot be undone without republishing a new configuration.',
+    'Disabling this sign-in method stops new logins after all running instances reload. To restore it later, publish a new configuration.',
   'identityProviders.disable.success': 'Provider disabled — restart required',
   'identityProviders.disable.committedRefreshFailed':
     'Provider disabled, but runtime status could not be refreshed. Retry status — do not disable again.',
@@ -2112,6 +2133,7 @@ export default {
   'identityProviders.restart.reauthFailed': 'Recent authentication is required before restart.',
   'identityProviders.restart.reconnecting':
     'Restart accepted. The server is reconnecting; status checks will resume automatically.',
+  'identityProviders.restart.monitoring': 'Monitoring restart progress',
   'identityProviders.restart.failed':
     'The controlled restart was not accepted. Review the runtime status and retry the restart.',
   'identityProviders.restart.failedAccepted':
@@ -2716,6 +2738,8 @@ export default {
   'audit.conversations.user.timelineNext': 'Next',
   'audit.conversations.user.timelineStale':
     'Showing the last loaded timeline — the latest refresh failed.',
+  'audit.conversations.user.summaryUnavailable':
+    'User summary data is temporarily unavailable. Conversation evidence remains available.',
   'audit.conversations.topic.title': 'Conversation',
   'audit.conversations.topic.desc': 'Message stream for this topic.',
   'audit.conversations.topic.back': 'Back to user',
@@ -2727,6 +2751,8 @@ export default {
     'Loading full message bodies will be recorded in the audit trail. Continue?',
   'audit.conversations.topic.bodyNotLoaded': 'Body not loaded',
   'audit.conversations.topic.emptyMessages': 'No messages in this conversation.',
+  'audit.conversations.topic.detailUnavailable':
+    'Conversation details are temporarily unavailable. The message evidence below may still be available.',
   'audit.conversations.disabled.title': 'Conversation history is disabled by policy',
   'audit.conversations.disabled.desc':
     'Conversation content access is currently turned off. Open General settings to adjust the audit policy if you have permission.',
@@ -2768,11 +2794,16 @@ export default {
   'audit.exports.detail.title': 'Export detail',
   'audit.exports.detail.error': 'Error',
   'audit.exports.error.AUDIT_APPEND_FAILED': 'Failed to record the export audit event',
+  'audit.exports.error.ARTIFACT_TOO_LARGE':
+    'The export file is too large. Narrow the date range and create a new export.',
+  'audit.exports.error.CONTENT_ACCESS_DISABLED':
+    'Conversation content access is disabled by your audit policy. Update the policy or export metadata only.',
   'audit.exports.error.ENQUEUE_FAILED': 'Failed to queue the export job',
   'audit.exports.error.EXPORT_FAILED': 'Export failed',
   'audit.exports.error.EXPORT_TERMINAL': 'Export already finished',
   'audit.exports.error.INVALID_FILTER_SNAPSHOT': 'Invalid export filter snapshot',
   'audit.exports.error.INVALID_INPUT': 'Invalid export job input',
+  'audit.exports.error.INTERNAL_ERROR': 'The export couldn’t be completed. Try creating it again.',
   'audit.exports.error.MAX_EXPORT_ROWS_EXCEEDED': 'Export exceeds the maximum row limit',
   'audit.exports.error.NOT_FOUND': 'Export job not found',
   'audit.exports.error.unknown': 'Export failed',
@@ -2906,6 +2937,14 @@ export default {
   'audit.retention.runs.cancel': 'Cancel',
   'audit.retention.runs.cancelTitle': 'Cancel retention run',
   'audit.retention.runs.detailTitle': 'Run counts',
+  'audit.retention.runs.error.INTERNAL_ERROR':
+    'The cleanup could not be completed. Check the current policy and try a dry run.',
+  'audit.retention.runs.error.RETENTION_FAILED':
+    'The cleanup failed. Run a dry check to review the current scope before trying again.',
+  'audit.retention.runs.error.unknown': 'The cleanup failed. Run a dry check before trying again.',
+  'audit.retention.runs.failureTitle': 'Cleanup failed',
+  'audit.retention.runs.failureToast': 'A retention cleanup failed: {{reason}}',
+  'audit.retention.runs.runDryCheck': 'Run dry check',
   'audit.retention.runs.countMetric': 'Metric',
   'audit.retention.redaction.strict': 'Strict',
   'audit.retention.redaction.standard': 'Standard',
@@ -2919,6 +2958,14 @@ export default {
   'audit.retention.runs.highlighted': 'New run(s): {{ids}}',
   'errors.revisionConflict': 'This record was changed by someone else. Refresh and try again.',
   'audit.retention.policy.loadError': 'Could not load audit policy.',
+  'audit.retention.policy.conflictDescription':
+    'The policy changed on the server. Your draft is preserved and the next retry will use the latest revision. Review your values before saving again.',
+  'audit.retention.policy.conflictTitle': 'Policy changed while you were editing',
+  'audit.logs.summaryUnavailable':
+    'Some audit totals or filter options could not be loaded. The event list remains available.',
+  'audit.shared.retryMissingSections': 'Retry missing sections',
+  'audit.shared.summaryLoadFailed':
+    'Some audit summary data couldn’t be loaded. Retry to refresh the missing sections.',
   'audit.shared.userSearchNoPermission': 'No search permission — you can still enter a user ID.',
   'audit.shared.userSearchFailed': 'User search failed. You can still enter a user ID.',
   'audit.shared.userSearchUseId': 'Use ID: {{id}}',

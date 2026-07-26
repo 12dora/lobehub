@@ -66,10 +66,18 @@ export const mapCredsServiceError = (error: unknown): never => {
     });
   }
   if (error instanceof PlatformGlobalCredentialValidationError) {
+    if (
+      error.validationCode === PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID
+    ) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID,
+        httpCode: 'BAD_REQUEST',
+      });
+    }
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+      details: error.validationCode ? { validationCode: error.validationCode } : undefined,
       httpCode: 'BAD_REQUEST',
-      message: error.message,
     });
   }
   throw error;

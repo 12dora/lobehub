@@ -193,6 +193,45 @@ describe('resolvePlatformSkillRuntimeSnapshot', () => {
       content: '# inline',
     });
   });
+
+  it('bounds the aggregate expanded payload of an enforced catalog operation', async () => {
+    const heavyContent = 'x'.repeat(4_300_000);
+    const heavySigner = vi.fn().mockResolvedValue('heavy-proof');
+    const skills = ['heavy.one', 'heavy.two'].map((skillKey, index) => ({
+      checksum: String(index + 1).repeat(64),
+      description: skillKey,
+      displayName: skillKey,
+      distribution: 'mandatory' as const,
+      skillKey,
+      source: 'uploaded' as const,
+      version: '1.0.0',
+    }));
+    const resolvePinnedForExecution = vi.fn(async (ref) => ({
+      ...ref,
+      content: heavyContent,
+      contentRef: null,
+      resources: [],
+    }));
+
+    await expect(
+      resolvePlatformSkillRuntimeSnapshot({
+        db: {} as never,
+        effectiveMode: 'enforced',
+        flags: flags(true),
+        identity,
+        options: {
+          catalogService: {
+            getPublishedCatalog: vi.fn().mockResolvedValue({ revision: 'heavy-r1', skills }),
+            isPublishedCatalogExecutionReady: vi.fn(() => true),
+            resolvePinnedForExecution,
+          },
+          signProof: heavySigner,
+        },
+      }),
+    ).rejects.toThrow('operation payload limit');
+    expect(resolvePinnedForExecution).toHaveBeenCalledTimes(2);
+    expect(heavySigner).not.toHaveBeenCalled();
+  });
 });
 
 describe('resolvePinnedPlatformSkillRuntimeSnapshot (SKILL-EXACT)', () => {
@@ -305,5 +344,33 @@ describe('resolvePinnedPlatformSkillRuntimeSnapshot (SKILL-EXACT)', () => {
     expect(result.catalog).toMatchObject({ proof: 'empty-pinned-proof', refs: [] });
     expect(catalogService.resolvePinnedForExecution).not.toHaveBeenCalled();
     expect(catalogService.getPublishedCatalog).not.toHaveBeenCalled();
+  });
+
+  it('bounds the aggregate expanded payload of historical Agent-pinned Skills', async () => {
+    const heavyContent = 'x'.repeat(4_300_000);
+    const heavySigner = vi.fn().mockResolvedValue('heavy-proof');
+    const catalogService = historicalCatalog();
+    catalogService.resolvePinnedForExecution.mockImplementation(async (ref) => ({
+      ...ref,
+      content: heavyContent,
+      contentRef: null,
+      description: 'heavy historical skill',
+      resources: [],
+    }));
+
+    await expect(
+      resolvePinnedPlatformSkillRuntimeSnapshot({
+        db: {} as never,
+        flags: flags(true),
+        identity,
+        options: { catalogService, signProof: heavySigner },
+        pinnedSkills: [
+          { checksum: 'a'.repeat(64), skillKey: 'heavy.one', version: '1.0.0' },
+          { checksum: 'b'.repeat(64), skillKey: 'heavy.two', version: '1.0.0' },
+        ],
+      }),
+    ).rejects.toThrow('operation payload limit');
+    expect(catalogService.resolvePinnedForExecution).toHaveBeenCalledTimes(2);
+    expect(heavySigner).not.toHaveBeenCalled();
   });
 });

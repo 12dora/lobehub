@@ -24,9 +24,11 @@ import type { LobeChatDatabase } from '@/database/type';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import {
+  finalizeIdentityProviderRevocation,
   identityProviderLkgGeneration,
   identityProviderLkgIdentity,
   readIdentityProviderLkg,
+  recordIdentityProviderRevocation,
 } from './lkg';
 import type { PublishedIdentityProviderPayload } from './publicationService';
 import {
@@ -556,6 +558,82 @@ describe('identity provider startup snapshot', () => {
     });
     expect(fallback).toMatchObject({ health: 'degraded', source: 'lkg' });
     expect(fallback.databaseProviders[0]?.clientSecret).toBe(clientSecret);
+  });
+
+  it('folds same-provider durable revocations fail-closed regardless of UUID order', async () => {
+    const env = await baseEnv();
+    const { provider } = await seedPublished(env, 'work');
+    const { provider: pendingProvider } = await seedPublished(env, 'pending-work');
+    await loadSnapshot({ cache: false, db, env });
+    const secretService = PlatformSecretService.tryFromEnv(env)!;
+    const lkg = await readIdentityProviderLkg({ env, secrets: secretService });
+    const staleGeneration = lkg!.providers.find(
+      ({ providerId }) => providerId === provider.id,
+    )!.generation;
+    const olderGeneration = `2000-01-01T00:00:00.000Z:${provider.id}`;
+    const newerGeneration = `2999-01-01T00:00:00.000Z:${provider.id}`;
+    expect(olderGeneration < staleGeneration && staleGeneration < newerGeneration).toBe(true);
+
+    const finalizedTokens = await Promise.all([
+      recordIdentityProviderRevocation({
+        env,
+        providerId: provider.id,
+        secrets: secretService,
+      }),
+      recordIdentityProviderRevocation({
+        env,
+        providerId: provider.id,
+        secrets: secretService,
+      }),
+    ]);
+    const [lowerFinalizedToken, higherFinalizedToken] = [...finalizedTokens].sort();
+    // The journal serializes by token. Put G3 first and G1 last so a
+    // last-entry-wins Map would incorrectly retain G1 and resurrect stale G2.
+    await finalizeIdentityProviderRevocation({
+      env,
+      generation: newerGeneration,
+      secrets: secretService,
+      token: lowerFinalizedToken,
+    });
+    await finalizeIdentityProviderRevocation({
+      env,
+      generation: olderGeneration,
+      secrets: secretService,
+      token: higherFinalizedToken,
+    });
+
+    const pendingTokens = await Promise.all([
+      recordIdentityProviderRevocation({
+        env,
+        providerId: pendingProvider.id,
+        secrets: secretService,
+      }),
+      recordIdentityProviderRevocation({
+        env,
+        providerId: pendingProvider.id,
+        secrets: secretService,
+      }),
+    ]);
+    const [, higherPendingToken] = [...pendingTokens].sort();
+    // Leave the lower token pending and finalize the later token to G1. A
+    // pending entry must dominate even when serialization places G1 last.
+    await finalizeIdentityProviderRevocation({
+      env,
+      generation: olderGeneration,
+      secrets: secretService,
+      token: higherPendingToken,
+    });
+    const unavailableDb = new Proxy({} as LobeChatDatabase, {
+      get: () => {
+        throw new Error('DATABASE_UNAVAILABLE');
+      },
+    });
+
+    const fallback = await loadSnapshot({ cache: false, db: unavailableDb, env });
+    expect(fallback).toMatchObject({ health: 'degraded', source: 'lkg' });
+    expect(fallback.databaseProviders).toEqual([]);
+    expect(fallback.providerIds).not.toContain(provider.providerKey);
+    expect(fallback.providerIds).not.toContain(pendingProvider.providerKey);
   });
 
   it('recomputes LKG identity and generation after an environment override filters a provider', async () => {

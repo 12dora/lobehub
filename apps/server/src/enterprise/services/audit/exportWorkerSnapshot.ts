@@ -1,28 +1,4 @@
-/**
- * Export evidence inventory materialization + staging stream (SAO-009).
- */
-/**
- * Functional worker for platform.audit.export.v1 jobs.
- * Keyset-batched DB reads, lease renewal, cancellation checks.
- * Builds NDJSON (manifest + evidence). Hard-fails if maxExportRows+1 would be written.
- * No generic redaction / summarization / body truncation; credential-only masking for messages.
- *
- * Evidence is materialised under a PostgreSQL REPEATABLE READ snapshot (plus an
- * export-start watermark on `to`) into a staging temp file so concurrent mutations
- * cannot reshape content after freeze. Staging lines are then copied into the
- * artifact with heartbeats outside the snapshot TX. NDJSON streams to a temp file
- * with incremental SHA-256 — O(batch) memory during write.
- *
- * Publication is a durable two-phase fenced state machine (SAO-001/002):
- * each attempt binds a fencing token, uploads to an attempt-unique object key,
- * renews the lease across remote I/O, and completes only if the token still owns
- * the row. Losers never delete a key they do not own.
- *
- * Reliability: unknown/transient storage/DB errors requeue via platform_jobs (maxAttempts);
- * domain stays `running` and only the attempt's own object is cleaned. Domain is marked
- * failed only when the job becomes `dead`. Contract/data errors are terminal immediately.
- * Terminal domain/job outcomes append a required audit event in the same DB transaction.
- */
+/** Repeatable-read export evidence materialization into a bounded staging stream. */
 
 import { createReadStream, createWriteStream } from 'node:fs';
 import { finished } from 'node:stream/promises';
@@ -38,8 +14,13 @@ import {
 } from '@/database/models/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { toPublicPlatformAuditItem } from '../platformAudit';
 import { AUDIT_EXPORT_BATCH_LIMIT } from './exportConstants';
-import { AuditExportInvalidFilterError, AuditExportMaxRowsError } from './exportWorkerErrors';
+import {
+  AuditExportArtifactTooLargeError,
+  AuditExportInvalidFilterError,
+  AuditExportMaxRowsError,
+} from './exportWorkerErrors';
 import { type ExportTimeWindow, jsonlLine, toIso } from './exportWorkerShared';
 
 /** Wrap a model so every method call is tallied (SAO-005 N+1 regression guard). */
@@ -69,6 +50,8 @@ export const materializeExportSnapshot = async (
     filter: PlatformAuditExportFilterSnapshot;
     includeBodies: boolean;
     kind: PlatformAuditExportItem['kind'];
+    /** Remaining artifact bytes after the manifest has been written. */
+    maxStagingBytes: number;
     maxExportRows: number;
     /**
      * Test seam (SAO-005): fired for every model method call during materialisation
@@ -86,7 +69,7 @@ export const materializeExportSnapshot = async (
     stagingPath: string;
     window: ExportTimeWindow;
   },
-): Promise<{ evidenceCount: number }> => {
+): Promise<{ evidenceCount: number; stagingBytes: number }> => {
   const staging = createWriteStream(params.stagingPath, { flags: 'w' });
   // SAO-006: record stream errors — never rethrow into an unhandled rejection
   // while the snapshot TX awaits further DB pages.
@@ -97,6 +80,7 @@ export const materializeExportSnapshot = async (
     stagingError = err instanceof Error ? err : new Error(String(err));
   });
   let evidenceCount = 0;
+  let stagingBytes = 0;
 
   const writeStaging = async (row: Record<string, unknown>) => {
     if (stagingError) throw stagingError;
@@ -105,6 +89,10 @@ export const materializeExportSnapshot = async (
       throw new AuditExportMaxRowsError(params.maxExportRows);
     }
     const buf = Buffer.from(jsonlLine(row), 'utf8');
+    if (stagingBytes + buf.byteLength > params.maxStagingBytes) {
+      throw new AuditExportArtifactTooLargeError();
+    }
+    stagingBytes += buf.byteLength;
     if (!staging.write(buf)) {
       await new Promise<void>((resolve, reject) => {
         const onDrain = () => {
@@ -152,22 +140,23 @@ export const materializeExportSnapshot = async (
             to: params.window.to,
           });
           for (const row of page.items) {
+            const publicRow = toPublicPlatformAuditItem(row);
             await writeStaging({
-              action: row.action,
-              actorUserId: row.actorUserId,
-              afterDiff: row.afterDiff,
-              beforeDiff: row.beforeDiff,
-              configRevision: row.configRevision,
-              createdAt: toIso(row.createdAt),
-              id: row.id,
-              ipHash: row.ipHash,
-              reason: row.reason,
-              requestId: row.requestId,
-              result: row.result,
-              targetId: row.targetId,
-              targetType: row.targetType,
+              action: publicRow.action,
+              actorUserId: publicRow.actorUserId,
+              afterDiff: publicRow.afterDiff,
+              beforeDiff: publicRow.beforeDiff,
+              configRevision: publicRow.configRevision,
+              createdAt: toIso(publicRow.createdAt),
+              id: publicRow.id,
+              ipHash: publicRow.ipHash,
+              reason: publicRow.reason,
+              requestId: publicRow.requestId,
+              result: publicRow.result,
+              targetId: publicRow.targetId,
+              targetType: publicRow.targetType,
               type: 'operation_log',
-              userAgent: row.userAgent,
+              userAgent: publicRow.userAgent,
             });
           }
           if (!page.nextCursor) break;
@@ -201,9 +190,11 @@ export const materializeExportSnapshot = async (
             userId,
           });
 
-          for (const topic of topicPage.items) {
-            if (params.filter.topicId && topic.id !== params.filter.topicId) continue;
+          const topics = params.filter.topicId
+            ? topicPage.items.filter((topic) => topic.id === params.filter.topicId)
+            : topicPage.items;
 
+          for (const topic of topics) {
             // listTopics already selects every field written to staging — no
             // per-topic getTopic (SAO-005 N+1). Same-RR visibility makes a second
             // probe redundant; write straight from the list row + mask.
@@ -222,19 +213,18 @@ export const materializeExportSnapshot = async (
               updatedAt: toIso(topic.updatedAt),
               userId: topic.userId,
             });
+          }
 
-            if (!params.includeBodies) continue;
-
+          if (params.includeBodies && topics.length > 0) {
             let msgCursor: string | undefined;
             for (;;) {
-              // Full message bodies under the same RR snapshot (batched).
               params.onPageFetch?.({ kind: 'conversations_messages' });
-              const msgPage = await model.listMessageDetails({
+              const msgPage = await model.listMessageDetailsForTopics({
                 cursor: msgCursor,
                 from: params.window.from,
                 limit: AUDIT_EXPORT_BATCH_LIMIT,
                 to: params.window.to,
-                topicId: topic.id,
+                topicIds: topics.map((topic) => topic.id),
                 userId,
               });
               for (const msg of msgPage.items) {
@@ -312,7 +302,7 @@ export const materializeExportSnapshot = async (
     staging.end();
     await stagingFinished;
     if (stagingError) throw stagingError;
-    return { evidenceCount };
+    return { evidenceCount, stagingBytes };
   } catch (error) {
     stagingClosedIntentionally = true;
     if (!staging.destroyed) staging.destroy();

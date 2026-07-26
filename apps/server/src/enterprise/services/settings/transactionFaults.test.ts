@@ -269,6 +269,38 @@ describe('M05 transaction fault injection', () => {
     expect(invalidation.events).toEqual([]);
   });
 
+  it('rolls back legacy backfill overrides and revision when durable cleanup fails', async () => {
+    const user = new UserModel(serverDB, 'u-fault');
+    await user.updateSetting({
+      general: { fontSize: 17 },
+      hotkey: { search: 'keep' },
+      keyVaults: 'encrypted-keep',
+    });
+    await expect(
+      new EffectiveSettingsService(serverDB, undefined, {
+        beforeLegacyBackfillCleanup: async () => {
+          throw new Error('backfill cleanup fault');
+        },
+      }).getEffectiveSettings({
+        legacyUserSettings: { general: { fontSize: 17 } },
+        userId: 'u-fault',
+      }),
+    ).rejects.toThrow('backfill cleanup fault');
+
+    const [settings, overrides, revisions] = await Promise.all([
+      user.getUserSettings(),
+      serverDB.select().from(userSettingOverrides),
+      serverDB.select().from(userSettingOverrideRevisions),
+    ]);
+    expect(settings).toMatchObject({
+      general: { fontSize: 17 },
+      hotkey: { search: 'keep' },
+      keyVaults: 'encrypted-keep',
+    });
+    expect(overrides).toEqual([]);
+    expect(revisions).toEqual([]);
+  });
+
   it('rolls back both managed overrides when faulted after the second override write', async () => {
     const user = new UserModel(serverDB, 'u-fault');
     await user.updateSetting({ hotkey: { search: 'old' }, keyVaults: 'encrypted-old' });

@@ -1,9 +1,12 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, renderHook } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { createElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useManagedSkillMenuSections } from './ManagedSkillToolItems';
 import { useManagedAgentSkills } from './useManagedAgentSkills';
 
 const mocks = vi.hoisted(() => {
@@ -12,6 +15,7 @@ const mocks = vi.hoisted(() => {
     async (_agentId: string, _config: { plugins?: unknown }) => undefined,
   );
   const mutate = vi.fn();
+  const toastError = vi.fn();
   const toolState = {
     installedBuiltinSkills: [{ identifier: 'builtin-a' }],
     marketAgentSkills: [{ identifier: 'market-a' }],
@@ -33,8 +37,37 @@ const mocks = vi.hoisted(() => {
     platformSkillRuntimeStatus: 'ready' as string,
     userAgentSkills: [{ identifier: 'user-a' }],
   };
-  return { mutate, toolState, updateAgentConfigById };
+  return { mutate, toastError, toolState, updateAgentConfigById };
 });
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
+
+vi.mock('@lobehub/ui/base-ui', () => ({
+  Button: ({
+    children,
+    disabled,
+    loading,
+    onClick,
+  }: {
+    children?: ReactNode;
+    disabled?: boolean;
+    loading?: boolean;
+    onClick?: (event: { stopPropagation: () => void }) => Promise<void>;
+  }) =>
+    createElement(
+      'button',
+      {
+        'data-loading': loading ? 'true' : 'false',
+        disabled,
+        'onClick': () => void onClick?.({ stopPropagation: vi.fn() }),
+        'type': 'button',
+      },
+      children,
+    ),
+  toast: { error: mocks.toastError },
+}));
 
 vi.mock('@/store/agent', () => ({
   useAgentStore: (
@@ -148,11 +181,50 @@ describe('useManagedAgentSkills', () => {
     expect(JSON.stringify(patch.plugins)).toContain('approved.skill');
   });
 
-  it('retryPlatformCatalog calls catalog SWR mutate', () => {
+  it('retryPlatformCatalog returns the catalog SWR mutation promise', async () => {
+    mocks.mutate.mockResolvedValueOnce('refreshed');
     const { result } = renderHook(() => useManagedAgentSkills('agent-1', { plugins: [] }, true));
-    act(() => {
-      result.current.retryPlatformCatalog();
+    await act(async () => {
+      await expect(result.current.retryPlatformCatalog()).resolves.toBe('refreshed');
     });
     expect(mocks.mutate).toHaveBeenCalled();
+  });
+
+  it('wires retry pending and failure feedback through the Profile managed-skill menu item', async () => {
+    mocks.toolState.platformSkillRuntimeStatus = 'error';
+    let rejectRetry!: (cause: unknown) => void;
+    mocks.mutate.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRetry = reject;
+        }),
+    );
+
+    const { result: managedResult } = renderHook(() =>
+      useManagedAgentSkills('agent-1', { plugins: [] }, true),
+    );
+    const { result: sectionsResult } = renderHook(() =>
+      useManagedSkillMenuSections({
+        canEdit: true,
+        config: { plugins: [] },
+        managed: managedResult.current,
+        setUpdating: vi.fn(),
+      }),
+    );
+    const retryItem = sectionsResult.current.platformSkillUnavailableItems[0];
+    expect(retryItem?.key).toBe('platform-skill-runtime-unavailable');
+    render(createElement('div', null, retryItem?.label));
+
+    const retryButton = screen.getByText('retry');
+    fireEvent.click(retryButton);
+    await waitFor(() => {
+      expect(retryButton).toBeDisabled();
+      expect(retryButton).toHaveAttribute('data-loading', 'true');
+    });
+    await act(async () => rejectRetry(new Error('profile refresh failed')));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    expect(mocks.toastError).toHaveBeenCalledWith('platformSkills.runtime.refreshFailed');
   });
 });

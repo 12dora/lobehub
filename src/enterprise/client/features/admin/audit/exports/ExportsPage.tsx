@@ -318,7 +318,7 @@ const ExportsPage = memo(() => {
                 <span className={styles.mono}>
                   {detail.error.code
                     ? t(`audit.exports.error.${detail.error.code}` as never, {
-                        defaultValue: detail.error.code,
+                        defaultValue: t('audit.exports.error.unknown'),
                       })
                     : t('audit.exports.error.unknown')}
                 </span>

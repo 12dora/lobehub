@@ -17,6 +17,7 @@ import { agentSkillsSelectors } from '@/store/tool/selectors';
 import { type DiscoverSkillItem } from '@/types/discover';
 import { downloadFile } from '@/utils/client/downloadFile';
 
+import { resolveSkillStoreCapabilities } from '../../skillStorePolicy';
 import { itemStyles } from '../style';
 
 const MarketSkillDetail = lazy(() => import('../MarketSkills/MarketSkillDetail'));
@@ -51,6 +52,11 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
   // Admin org scope: install/uninstall targets the platform catalog instead of
   // the signed-in user's skills.
   const adminScope = useAdminToolScope();
+  const { canCreate: resolvedCanCreate, canDelete: resolvedCanDelete } =
+    resolveSkillStoreCapabilities(adminScope?.capabilities, {
+      canCreate,
+      canDelete: canEdit,
+    });
   const storeInstalled = useToolStore(agentSkillsSelectors.isAgentSkill(identifier));
   const storeInstalledSkill = useToolStore(
     agentSkillsSelectors.getAgentSkillByIdentifier(identifier),
@@ -64,7 +70,7 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
   ]);
 
   const handleInstall = useCallback(async () => {
-    if (!canCreate || installing || installed) return;
+    if (!resolvedCanCreate || installing || installed) return;
     setInstalling(true);
     try {
       if (adminScope) {
@@ -78,10 +84,10 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
     } finally {
       setInstalling(false);
     }
-  }, [adminScope, canCreate, identifier, installing, installed, refreshAgentSkills]);
+  }, [adminScope, identifier, installing, installed, refreshAgentSkills, resolvedCanCreate]);
 
   const handleUninstall = useCallback(() => {
-    if (!canEdit || !installedSkill) return;
+    if (!resolvedCanDelete || !installedSkill) return;
     confirmModal({
       cancelText: tc('cancel'),
       content: t('store.actions.confirmUninstall'),
@@ -96,7 +102,7 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
       },
       title: t('store.actions.uninstall'),
     });
-  }, [adminScope, canEdit, installedSkill, deleteAgentSkill, t, tc]);
+  }, [adminScope, deleteAgentSkill, installedSkill, resolvedCanDelete, t, tc]);
 
   const handleDownload = useCallback(async () => {
     if (!installedSkill?.zipFileHash) return;
@@ -131,7 +137,7 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
               : []),
             {
               danger: true,
-              disabled: !canEdit,
+              disabled: !resolvedCanDelete,
               icon: <Icon icon={Trash2} />,
               key: 'uninstall',
               label: t('store.actions.uninstall'),
@@ -139,7 +145,7 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
             },
           ]}
         >
-          <ActionIcon disabled={!canEdit} icon={MoreVerticalIcon} loading={loading} />
+          <ActionIcon disabled={!resolvedCanDelete} icon={MoreVerticalIcon} loading={loading} />
         </DropdownMenu>
       );
     }
@@ -148,7 +154,7 @@ const MarketSkillItem = memo<DiscoverSkillItem>(({ name, icon, description, iden
 
     return (
       <ActionIcon
-        disabled={!canCreate}
+        disabled={!resolvedCanCreate}
         icon={Plus}
         title={t('store.actions.install')}
         onClick={handleInstall}

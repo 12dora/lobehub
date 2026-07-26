@@ -59,6 +59,7 @@ vi.mock('@lobehub/ui/base-ui', async () => {
         children,
       ),
     createModal: vi.fn(),
+    confirmModal: vi.fn(),
     toast: { success: (...args: unknown[]) => toastSuccess(...args) },
     useModalContext: () => ({ close: mockClose }),
   };

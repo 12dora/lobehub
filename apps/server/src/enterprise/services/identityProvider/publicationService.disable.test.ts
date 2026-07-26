@@ -4,9 +4,12 @@ import { randomUUID } from 'node:crypto';
 
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { platformIdentityProviderSecrets } from '@/database/schemas/platform';
+import {
+  platformIdentityProviders,
+  platformIdentityProviderSecrets,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
@@ -18,7 +21,6 @@ import {
   recordSuccessfulTest,
   registerPublicationServiceTestHooks,
   requestId,
-  selectFixtureAudits,
   selectFixtureRevisions,
   startupEnv,
 } from './publicationService.test.harness';
@@ -26,6 +28,23 @@ import { loadIdentityProviderStartupSnapshot } from './startupSnapshot';
 
 describe('IdentityProviderPublicationService — disable + revocation', () => {
   registerPublicationServiceTestHooks();
+  let previousEnvironment: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    const environment = await startupEnv();
+    previousEnvironment = Object.fromEntries(
+      Object.keys(environment).map((key) => [key, process.env[key]]),
+    );
+    Object.assign(process.env, environment);
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
   it('publishes a signed tombstone and excludes the provider from startup selection', async () => {
     const draft = await createDraft();
     await recordSuccessfulTest(draft.id);
@@ -298,7 +317,7 @@ describe('IdentityProviderPublicationService — disable + revocation', () => {
     expect(outageStartup.providerIds).not.toContain('revoked-immediate');
   });
 
-  it('appends a failure audit for LKG advance when secrets are unavailable', async () => {
+  it('refuses disable before commit when the durable revocation journal cannot be signed', async () => {
     const draft = await createDraft('lkg-audit-failure');
     await recordSuccessfulTest(draft.id);
     const published = await publication.publish('admin-1', {
@@ -315,12 +334,13 @@ describe('IdentityProviderPublicationService — disable + revocation', () => {
     delete process.env.PLATFORM_MASTER_KEY_ID;
     delete process.env.PLATFORM_OIDC_LKG_PATH;
     try {
-      const disabled = await publication.disable('admin-1', {
-        expectedRevision: published.revision,
-        id: draft.id,
-        reason: 'revoke without lkg secrets',
-      });
-      expect(disabled.lkgAdvance).toMatchObject({ outcome: 'skipped', reason: 'missing_secret' });
+      await expect(
+        publication.disable('admin-1', {
+          expectedRevision: published.revision,
+          id: draft.id,
+          reason: 'revoke without lkg secrets',
+        }),
+      ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_REVOCATION_JOURNAL_SECRET_UNAVAILABLE');
     } finally {
       if (previousMaster === undefined) delete process.env.PLATFORM_MASTER_KEY;
       else process.env.PLATFORM_MASTER_KEY = previousMaster;
@@ -329,14 +349,14 @@ describe('IdentityProviderPublicationService — disable + revocation', () => {
       if (previousLkg === undefined) delete process.env.PLATFORM_OIDC_LKG_PATH;
       else process.env.PLATFORM_OIDC_LKG_PATH = previousLkg;
     }
-    // Operator-facing signal: router drops lkgAdvance via toPublicIdentityProviderDraft,
-    // so the failure audit row is the only durable visibility.
-    expect(await selectFixtureAudits()).toContainEqual(
-      expect.objectContaining({
-        action: 'admin.identityProviders.disable.lkgAdvance',
-        result: 'failure',
-        targetId: draft.id,
-      }),
-    );
+    expect(
+      await db
+        .select({
+          enabled: platformIdentityProviders.enabled,
+          revision: platformIdentityProviders.revision,
+        })
+        .from(platformIdentityProviders)
+        .where(eq(platformIdentityProviders.id, draft.id)),
+    ).toEqual([{ enabled: true, revision: published.revision }]);
   });
 });

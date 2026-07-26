@@ -27,6 +27,7 @@ const getStatus = (errorType: ILobeAgentRuntimeErrorType | ErrorType) => {
 
     // TODO: Need to refactor to Invalid OpenAI API Key
     case AgentRuntimeErrorType.InvalidProviderAPIKey:
+    case AgentRuntimeErrorType.OAuthAuthorizationExpired:
     case AgentRuntimeErrorType.NoOpenAIAPIKey: {
       return 401;
     }

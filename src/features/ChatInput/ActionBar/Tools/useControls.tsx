@@ -16,7 +16,7 @@ import {
   Tag,
   Tooltip,
 } from '@lobehub/ui';
-import { Button, confirmModal } from '@lobehub/ui/base-ui';
+import { confirmModal } from '@lobehub/ui/base-ui';
 import { McpIcon, SkillsIcon } from '@lobehub/ui/icons';
 import { Switch } from 'antd';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
@@ -46,6 +46,7 @@ import {
 } from '@/enterprise/client/features/skills';
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { CustomConnectorModal } from '@/features/Connectors';
+import { ManagedSkillRetryButton } from '@/features/ManagedSkills/ManagedSkillRetryButton';
 import DevModal from '@/features/PluginDevModal';
 import { createSkillStoreModal } from '@/features/SkillStore';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
@@ -841,6 +842,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
     (state) => state.platformSkillRuntimeStatus ?? 'unmanaged',
   );
   const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeManaged);
+  const mutatePlatformCatalog = platformCatalogSWR.mutate;
   const skillRuntimeSources = useMemo(
     () =>
       selectSkillRuntimeSources({
@@ -1440,22 +1442,13 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
             <span>
               {t(loading ? 'platformSkills.runtime.loading' : 'platformSkills.runtime.unavailable')}
             </span>
-            <Button
-              disabled={loading}
-              size="small"
-              onClick={(event) => {
-                event.stopPropagation();
-                void platformCatalogSWR.mutate();
-              }}
-            >
-              {t('retry', { ns: 'common' })}
-            </Button>
+            <ManagedSkillRetryButton disabled={loading} onRetry={mutatePlatformCatalog} />
           </Flexbox>
         ),
         searchText: t('platformSkills.runtime.unavailable'),
       },
     ];
-  }, [platformCatalogSWR, platformSkillRuntimeManaged, platformSkillRuntimeStatus, t]);
+  }, [mutatePlatformCatalog, platformSkillRuntimeManaged, platformSkillRuntimeStatus, t]);
 
   // Custom connector list items (user-added OAuth MCP servers).
   // Toggling adds the connector identifier to agents.plugins[] — the same field
