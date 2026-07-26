@@ -119,4 +119,22 @@ describe('DraftPublishBanner (AI-02)', () => {
     expect(screen.getByText('aiSettings.draftBanner.error.validation_failed')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Retry publish' })).toBeTruthy();
   });
+
+  it('keeps the active Provider failure when another Provider records a later outcome', async () => {
+    render(<DraftPublishBanner />);
+
+    act(() => {
+      recordPublishOutcome('openai', {
+        published: false,
+        publishError: 'validation_failed',
+      });
+      recordPublishOutcome('anthropic', {
+        published: true,
+        publishError: null,
+      });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('draft-banner-warning')).toBeTruthy());
+    expect(screen.getByText('aiSettings.draftBanner.error.validation_failed')).toBeTruthy();
+  });
 });

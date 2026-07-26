@@ -54,7 +54,7 @@ const styles = createStaticStyles(({ css }) => ({
 const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
   const reduceMotion = useReducedMotion();
-  const editor = useSettingsPolicyEditor();
+  const editor = useSettingsPolicyEditor({ embedded });
   const {
     activeBaseRevision,
     activeDraftToken,
@@ -305,9 +305,7 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
           {saveState === 'saved' && t('settingsPolicy.saveState.saved')}
           {saveState === 'failed' && (saveError || t('settingsPolicy.saveState.failed'))}
           {saveState === 'idle' &&
-            (dirty ? t('settingsPolicy.saveState.dirty') : t('settingsPolicy.saveState.idle'))}
-          {' · '}
-          {t('settingsPolicy.revision', { revision: activeBaseRevision })}
+            (dirty ? t('settingsPolicy.saveState.dirty') : t('settingsPolicy.upToDate'))}
         </span>
         <Flexbox horizontal gap={8}>
           {primaryButton}

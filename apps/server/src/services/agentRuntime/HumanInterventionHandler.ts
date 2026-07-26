@@ -46,6 +46,16 @@ const toInterventionResult = (
   return { newState, nextContext, outcome };
 };
 
+const correlateInterventionResult = (
+  result: InterventionResult,
+  toolMessageId: string | undefined,
+): InterventionResult => {
+  if (!toolMessageId || !result.newState.metadata?.interventionOutcome) return result;
+
+  result.newState.metadata.interventionOutcome.toolMessageId = toolMessageId;
+  return result;
+};
+
 /**
  * Owns the three branches of human intervention on a `waiting_for_human`
  * operation, mirroring `conversationControl.ts` on the client side:
@@ -73,21 +83,33 @@ export class HumanInterventionHandler {
       intervention;
 
     if (approvedToolCall && state.status === 'waiting_for_human') {
-      return this.approve(state, approvedToolCall, toolMessageId);
+      return correlateInterventionResult(
+        await this.approve(state, approvedToolCall, toolMessageId),
+        toolMessageId,
+      );
     }
 
     if (rejectionReason && state.status === 'waiting_for_human') {
-      return this.reject(state, { rejectAndContinue, rejectionReason, toolMessageId });
+      return correlateInterventionResult(
+        await this.reject(state, { rejectAndContinue, rejectionReason, toolMessageId }),
+        toolMessageId,
+      );
     }
 
     // human_prompt / human_select (submitToolInteraction) — out of scope for
     // this codepath; the call site treats unrecognized intervention inputs as
     // a no-op and lets the regular step loop run.
     if (humanInput) {
-      return toInterventionResult(state, undefined, 'mismatch');
+      return correlateInterventionResult(
+        toInterventionResult(state, undefined, 'mismatch'),
+        toolMessageId,
+      );
     }
 
-    return toInterventionResult(state, undefined, 'stale');
+    return correlateInterventionResult(
+      toInterventionResult(state, undefined, 'stale'),
+      toolMessageId,
+    );
   }
 
   private async approve(

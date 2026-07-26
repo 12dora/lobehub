@@ -345,6 +345,8 @@
   "providerModels.tabs.image": "图片",
   "providerModels.tabs.tts": "TTS",
   "providerModels.tabs.video": "视频",
+  "sortModal.failure": "无法更新服务商顺序，请重试。",
+  "sortModal.partialFailure": "{{count}} 个服务商的更改已保存为草稿：{{providers}}。请重试以发布完整顺序。",
   "sortModal.success": "排序更新成功",
   "sortModal.title": "自定义排序",
   "sortModal.update": "更新",

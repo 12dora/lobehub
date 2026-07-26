@@ -62,8 +62,8 @@ export interface SettingsPolicyCasBindings {
 export interface SettingsPolicyDraftBindings {
   dirty: boolean;
   draft: DraftMap;
-  hydratedRef: MutableRefObject<boolean>;
   isServiceModelPublishedPath: (path: string) => boolean;
+  observedServerSnapshotRef: MutableRefObject<string | null>;
   originalBaseDraftRef: MutableRefObject<DraftMap>;
   setDirty: (dirty: boolean) => void;
   setDraft: Dispatch<SetStateAction<DraftMap>>;
@@ -158,8 +158,8 @@ export const useSettingsPolicyPersistence = (params: SettingsPolicyPersistencePa
   const {
     dirty,
     draft,
-    hydratedRef,
     isServiceModelPublishedPath,
+    observedServerSnapshotRef,
     originalBaseDraftRef,
     setDirty,
     setDraft,
@@ -192,13 +192,13 @@ export const useSettingsPolicyPersistence = (params: SettingsPolicyPersistencePa
     if (result.ok) {
       // Only allow hydration from SWR after a successful refresh so stale data cannot
       // overwrite the committed local revision/token.
-      hydratedRef.current = false;
+      observedServerSnapshotRef.current = null;
       setRefreshError(null);
       return true;
     }
     setRefreshError(result.error);
     return false;
-  }, [hydratedRef, mutate, setRefreshError, t]);
+  }, [mutate, observedServerSnapshotRef, setRefreshError, t]);
 
   const retryRefresh = useCallback(async () => {
     await refreshAfterCommit();

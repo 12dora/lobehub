@@ -1,8 +1,8 @@
 import { toast } from '@lobehub/ui/base-ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AdminAiProviderService } from './index';
-import { getDetail } from './shared';
+import { AdminAiProviderOrderPublishError, AdminAiProviderService } from './index';
+import { adminPublishOutcomeStore, clearLastAdminPublishOutcome, getDetail } from './shared';
 
 const mocks = vi.hoisted(() => ({
   applyImmediate: vi.fn(),
@@ -90,6 +90,7 @@ describe('AdminAiProviderService adapter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    clearLastAdminPublishOutcome();
     mocks.list.mockResolvedValue({
       items: [
         {
@@ -337,6 +338,49 @@ describe('AdminAiProviderService adapter', () => {
       expect.objectContaining({ id: 'uuid-p', sort: 1 }),
     );
   });
+
+  it.each([0, 1, 2])(
+    'aggregates a soft provider-order publish failure at position %i without losing it',
+    async (failureIndex) => {
+      const providerIds = ['provider-a', 'provider-b', 'provider-c'];
+      mocks.get.mockImplementation(async ({ providerKey }: { providerKey: string }) => ({
+        ...detailFixture,
+        draft: {
+          ...detailFixture.draft,
+          id: `uuid-${providerKey}`,
+          providerKey,
+        },
+      }));
+      mocks.applyImmediate.mockImplementation(async (_input: unknown) => {
+        const callIndex = mocks.applyImmediate.mock.calls.length - 1;
+        return {
+          auditId: `audit-${callIndex}`,
+          draft: detailFixture.draft,
+          published: callIndex !== failureIndex,
+          publishError: callIndex === failureIndex ? 'connection_test_required' : null,
+          revision: 2,
+        };
+      });
+
+      const operation = service.updateAiProviderOrder(
+        providerIds.map((id, sort) => ({ id, sort })),
+      );
+
+      await expect(operation).rejects.toEqual(
+        new AdminAiProviderOrderPublishError([
+          {
+            providerId: providerIds[failureIndex]!,
+            publishError: 'connection_test_required',
+          },
+        ]),
+      );
+      expect(mocks.applyImmediate).toHaveBeenCalledTimes(3);
+      expect(adminPublishOutcomeStore.get(providerIds[failureIndex])).toMatchObject({
+        providerId: providerIds[failureIndex],
+        published: false,
+      });
+    },
+  );
 
   it('reauth retry succeeds after one reauth', async () => {
     let calls = 0;

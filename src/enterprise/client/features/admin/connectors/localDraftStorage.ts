@@ -32,6 +32,13 @@ export interface StoredAdminConnectorDraft {
   secretIntent?: StoredConnectorSecretIntent;
 }
 
+export type SaveAdminConnectorDraftResult =
+  | { status: 'saved' }
+  | {
+      reason: 'oversized' | 'serialization' | 'storage' | 'unsafe';
+      status: 'unavailable';
+    };
+
 const keyFor = (id: string) => `${STORAGE_PREFIX}${id}`;
 const legacyKeyFor = (id: string) => `${LEGACY_STORAGE_PREFIX}${id}`;
 
@@ -132,27 +139,39 @@ export const saveAdminConnectorDraft = (
   id: string,
   value: StoredAdminConnectorDraft,
   options?: { secretLeaves?: Iterable<string> },
-) => {
+): SaveAdminConnectorDraftResult => {
+  purgeLegacyDraft(id);
+  const sanitized = sanitizeStoredDraft(value);
+  if (
+    carriesLocalDraftSecretMaterial(sanitized, {
+      benignKeys: CONNECTOR_DRAFT_BENIGN_KEYS,
+      secretLeaves: options?.secretLeaves,
+    })
+  ) {
+    safeRemove(id);
+    return { reason: 'unsafe', status: 'unavailable' };
+  }
+
+  let serialized: string;
   try {
-    purgeLegacyDraft(id);
-    const sanitized = sanitizeStoredDraft(value);
-    if (
-      carriesLocalDraftSecretMaterial(sanitized, {
-        benignKeys: CONNECTOR_DRAFT_BENIGN_KEYS,
-        secretLeaves: options?.secretLeaves,
-      })
-    ) {
-      safeRemove(id);
-      return;
-    }
-    const serialized = JSON.stringify(sanitized);
-    if (utf8ByteLength(serialized) > MAX_CONNECTOR_DRAFT_BYTES) {
-      safeRemove(id);
-      return;
-    }
+    serialized = JSON.stringify(sanitized);
+  } catch {
+    safeRemove(id);
+    return { reason: 'serialization', status: 'unavailable' };
+  }
+
+  if (utf8ByteLength(serialized) > MAX_CONNECTOR_DRAFT_BYTES) {
+    safeRemove(id);
+    return { reason: 'oversized', status: 'unavailable' };
+  }
+
+  try {
     localStorage.setItem(keyFor(id), serialized);
+    return { status: 'saved' };
   } catch {
     // Quota exceeded / private-mode SecurityError — fail closed without crashing the editor.
+    safeRemove(id);
+    return { reason: 'storage', status: 'unavailable' };
   }
 };
 

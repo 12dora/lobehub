@@ -48,7 +48,9 @@ const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ canCreate,
 
     try {
       await runSkillImport({
-        importSkill: () => (onImport ?? importAgentSkillFromGitHub)({ gitUrl: trimmed }),
+        importSkill: async () => {
+          await (onImport ?? importAgentSkillFromGitHub)({ gitUrl: trimmed });
+        },
         onComplete: close,
         onPersonalSuccess: () => message.success(t('agentSkillModal.importSuccess')),
         platformOverride: Boolean(onImport),

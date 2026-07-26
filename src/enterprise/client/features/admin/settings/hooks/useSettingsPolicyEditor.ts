@@ -10,7 +10,7 @@ import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/
 
 import { useUnsavedChangesGuard } from '../../primitives/useUnsavedChangesGuard';
 import { initialConflictState, reduceConflict } from '../conflictStateMachine';
-import { loadLocalDraft, saveLocalDraft } from '../localDraftStorage';
+import { loadLocalDraft, pruneLocalDrafts, saveLocalDraft } from '../localDraftStorage';
 import type { DraftMap, DraftPolicy, SaveState } from '../settingsPolicyController';
 import {
   buildChangePreview,
@@ -28,7 +28,7 @@ import { useSettingsPolicyPersistence } from './useSettingsPolicyPersistence';
 
 export type SettingsPolicyRegistryEntry = AdminSettingsGetDraftOutput['registry'][number];
 
-export const useSettingsPolicyEditor = () => {
+export const useSettingsPolicyEditor = ({ embedded = false }: { embedded?: boolean } = {}) => {
   const { t } = useTranslation('admin');
   const platform = useEnterprisePlatform();
   const policyEnabled = platform.capabilities.userSettingsPolicyEnabled === true;
@@ -64,7 +64,7 @@ export const useSettingsPolicyEditor = () => {
     undefined,
     initialConflictState,
   );
-  const hydratedRef = useRef(false);
+  const observedServerSnapshotRef = useRef<string | null>(null);
   const originalBaseDraftRef = useRef<DraftMap>({});
 
   const revisionConflict =
@@ -101,9 +101,12 @@ export const useSettingsPolicyEditor = () => {
   // Guard when the draft diverges from published policy (preview is the effective change set).
   const hasUnsavedChanges = dirty && preview.length > 0;
   const shouldBlockPageExit = useCallback<BlockerFunction>(
-    ({ currentLocation, nextLocation }) =>
-      hasUnsavedChanges && currentLocation.pathname !== nextLocation.pathname,
-    [hasUnsavedChanges],
+    ({ currentLocation, nextLocation }) => {
+      if (!hasUnsavedChanges) return false;
+      if (currentLocation.pathname !== nextLocation.pathname) return true;
+      return embedded && currentLocation.search !== nextLocation.search;
+    },
+    [embedded, hasUnsavedChanges],
   );
   const unsavedMessages = useMemo(
     () => ({
@@ -122,8 +125,41 @@ export const useSettingsPolicyEditor = () => {
 
   // Hydrate editor from server + local durable draft / conflict draft
   useEffect(() => {
-    if (!data || hydratedRef.current) return;
-    hydratedRef.current = true;
+    if (!data) return;
+    const snapshotIdentity = `${data.registryVersion}:${data.baseRevision}:${data.draftToken}`;
+    if (observedServerSnapshotRef.current === snapshotIdentity) return;
+    const isInitialSnapshot = observedServerSnapshotRef.current === null;
+    observedServerSnapshotRef.current = snapshotIdentity;
+
+    if (!isInitialSnapshot) {
+      if (dirty) {
+        dispatchConflict({
+          localBaseRevision: activeBaseRevision,
+          localDraft: draft,
+          localDraftToken: activeDraftToken,
+          originalBaseDraft: originalBaseDraftRef.current,
+          type: 'CONFLICT_DETECTED',
+        });
+        dispatchConflict({
+          serverBaseRevision: data.baseRevision,
+          serverDraft: data.draft,
+          serverDraftToken: data.draftToken,
+          type: 'REFRESH_SERVER_SUCCEEDED',
+        });
+        return;
+      }
+      originalBaseDraftRef.current = data.draft;
+      setActiveBaseRevision(data.baseRevision);
+      setActiveDraftToken(data.draftToken);
+      dispatchConflict({ type: 'CLEAR' });
+      setDraft(data.draft ?? {});
+      setDirty(false);
+      setSaveState('idle');
+      resetValidation();
+      pruneLocalDrafts(data.registryVersion, data.baseRevision);
+      return;
+    }
+
     const conflict = loadConflictDraft();
     if (conflict && conflict.registryVersion === data.registryVersion) {
       originalBaseDraftRef.current = conflict.originalBaseDraft;
@@ -177,8 +213,9 @@ export const useSettingsPolicyEditor = () => {
       dispatchConflict({ type: 'CLEAR' });
       setDraft(data.draft ?? {});
       setDirty(false);
+      pruneLocalDrafts(data.registryVersion, data.baseRevision);
     }
-  }, [data]);
+  }, [activeBaseRevision, activeDraftToken, data, dirty, draft, resetValidation]);
 
   // Persist dirty draft locally
   useEffect(() => {
@@ -320,8 +357,8 @@ export const useSettingsPolicyEditor = () => {
     draftEditor: {
       dirty,
       draft,
-      hydratedRef,
       isServiceModelPublishedPath,
+      observedServerSnapshotRef,
       originalBaseDraftRef,
       setDirty,
       setDraft,

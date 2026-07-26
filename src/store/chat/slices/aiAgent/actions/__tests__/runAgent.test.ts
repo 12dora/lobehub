@@ -2,8 +2,15 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type StreamEvent } from '@/services/agentRuntime';
+import { agentRuntimeService } from '@/services/agentRuntime';
 import { useChatStore } from '@/store/chat/store';
 import { notifyDesktopHumanApprovalRequired } from '@/store/chat/utils/desktopNotification';
+
+const warning = vi.hoisted(() => vi.fn());
+
+vi.mock('@/components/AntdStaticMethods', () => ({
+  message: { warning },
+}));
 
 // Keep zustand mock as it's needed globally
 vi.mock('zustand/traditional');
@@ -63,6 +70,7 @@ const createStreamStartEvent = (overrides = {}): StreamEvent => ({
 describe('runAgent actions', () => {
   beforeEach(() => {
     resetTestEnvironment();
+    warning.mockClear();
 
     // Setup default mocks for store methods
     act(() => {
@@ -320,6 +328,73 @@ describe('runAgent actions', () => {
         // Should not process event
         expect(result.current.internal_dispatchMessage).not.toHaveBeenCalled();
       });
+    });
+
+    describe('human_intervention_outcome event', () => {
+      it.each(['accepted', 'already_consumed', 'mismatch', 'stale'] as const)(
+        'reconciles a replayed %s outcome without clearing pending state early',
+        async (outcome) => {
+          const refreshMessages = vi.fn().mockResolvedValue(undefined);
+          const updateOperationMetadata = vi.fn();
+          act(() => {
+            useChatStore.setState({
+              operations: {
+                [TEST_IDS.OPERATION_ID]: {
+                  abortController: new AbortController(),
+                  context: { agentId: 'agent-1', topicId: 'topic-1' },
+                  id: TEST_IDS.OPERATION_ID,
+                  metadata: {
+                    lastEventId: '0',
+                    needsHumanInput: true,
+                    pendingApproval: [{ id: 'tool-1' }],
+                    startTime: Date.now(),
+                    stepCount: 0,
+                  },
+                  status: 'running',
+                  type: 'groupAgentGenerate',
+                },
+              },
+              refreshMessages,
+              updateOperationMetadata,
+            });
+          });
+          const { result } = renderHook(() => useChatStore());
+
+          await act(async () => {
+            await result.current.internal_handleAgentStreamEvent(
+              TEST_IDS.OPERATION_ID,
+              {
+                data: { outcome, toolMessageId: 'tool-message-1' },
+                operationId: TEST_IDS.OPERATION_ID,
+                stepIndex: 2,
+                timestamp: Date.now(),
+                type: 'human_intervention_outcome',
+              },
+              createStreamingContext({ assistantId: TEST_IDS.ASSISTANT_MESSAGE_ID }),
+            );
+          });
+
+          expect(refreshMessages).toHaveBeenCalledWith({
+            agentId: 'agent-1',
+            topicId: 'topic-1',
+          });
+          if (outcome === 'accepted') {
+            expect(updateOperationMetadata).toHaveBeenCalledWith(TEST_IDS.OPERATION_ID, {
+              needsHumanInput: false,
+              pendingApproval: undefined,
+              pendingPrompt: undefined,
+              pendingSelect: undefined,
+            });
+            expect(warning).not.toHaveBeenCalled();
+          } else {
+            expect(updateOperationMetadata).not.toHaveBeenCalledWith(
+              TEST_IDS.OPERATION_ID,
+              expect.objectContaining({ needsHumanInput: false }),
+            );
+            expect(warning).toHaveBeenCalledTimes(1);
+          }
+        },
+      );
     });
 
     describe('step_start event', () => {
@@ -603,6 +678,67 @@ describe('runAgent actions', () => {
 
         expect(result.current.refreshMessages).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('internal_handleHumanIntervention', () => {
+    it('keeps the approval pending after the queue mutation until an accepted outcome arrives', async () => {
+      const updateOperationMetadata = vi.fn();
+      const approvedToolCall = {
+        apiName: 'search',
+        arguments: '{}',
+        id: 'tool-1',
+        identifier: 'web-search',
+        type: 'default',
+      };
+      const handleHumanIntervention = vi
+        .spyOn(agentRuntimeService, 'handleHumanIntervention')
+        .mockResolvedValue({ success: true });
+      act(() => {
+        useChatStore.setState({
+          messageOperationMap: {
+            [TEST_IDS.ASSISTANT_MESSAGE_ID]: TEST_IDS.OPERATION_ID,
+          },
+          operations: {
+            [TEST_IDS.OPERATION_ID]: {
+              abortController: new AbortController(),
+              context: { agentId: 'agent-1', topicId: 'topic-1' },
+              id: TEST_IDS.OPERATION_ID,
+              metadata: {
+                lastEventId: '0',
+                needsHumanInput: true,
+                pendingApproval: [{ id: 'tool-1' }],
+                startTime: Date.now(),
+                stepCount: 0,
+              },
+              status: 'running',
+              type: 'groupAgentGenerate',
+            },
+          },
+          updateOperationMetadata,
+        });
+      });
+      const { result } = renderHook(() => useChatStore());
+
+      await act(async () => {
+        await result.current.internal_handleHumanIntervention(
+          TEST_IDS.ASSISTANT_MESSAGE_ID,
+          'approve',
+          { approvedToolCall },
+          'tool-msg-1',
+        );
+      });
+
+      expect(handleHumanIntervention).toHaveBeenCalledWith({
+        action: 'approve',
+        data: { approvedToolCall },
+        operationId: TEST_IDS.OPERATION_ID,
+        toolMessageId: 'tool-msg-1',
+      });
+      expect(updateOperationMetadata).not.toHaveBeenCalledWith(
+        TEST_IDS.OPERATION_ID,
+        expect.objectContaining({ needsHumanInput: false }),
+      );
     });
   });
 });

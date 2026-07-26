@@ -40,6 +40,20 @@ export {
 export type { AdminPublishOutcome } from './shared';
 export { clearLastAdminPublishOutcome, useAdminPublishOutcome } from './shared';
 
+export interface AdminAiProviderOrderPublishFailure {
+  providerId: string;
+  publishError: string | null;
+}
+
+export class AdminAiProviderOrderPublishError extends Error {
+  code = 'ADMIN_AI_PROVIDER_ORDER_PARTIAL_PUBLISH' as const;
+
+  constructor(public failures: AdminAiProviderOrderPublishFailure[]) {
+    super('ADMIN_AI_PROVIDER_ORDER_PARTIAL_PUBLISH');
+    this.name = 'AdminAiProviderOrderPublishError';
+  }
+}
+
 /**
  * Admin adapter implementing the same surface as user AiProviderService.
  * Writes = draft mutation + immediate publish via applyImmediate.
@@ -230,6 +244,7 @@ export class AdminAiProviderService {
         item,
       })),
     );
+    const failures: AdminAiProviderOrderPublishFailure[] = [];
     for (const { detail, item } of details) {
       await withReauth(async () => {
         const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
@@ -241,9 +256,16 @@ export class AdminAiProviderService {
           sort: item.sort,
         });
         recordPublishOutcome(item.id, result);
+        if (result.published === false) {
+          failures.push({
+            providerId: item.id,
+            publishError: result.publishError ?? null,
+          });
+        }
         return result;
       });
     }
+    if (failures.length > 0) throw new AdminAiProviderOrderPublishError(failures);
   };
 
   deleteAiProvider = async (id: string) => {

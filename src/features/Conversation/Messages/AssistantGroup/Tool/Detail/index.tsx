@@ -5,6 +5,7 @@ import { Flexbox } from '@lobehub/ui';
 import { memo, Suspense } from 'react';
 
 import AbortResponse from './AbortResponse';
+import { ConnectorToolErrorResponse, getConnectorToolErrorCode } from './ErrorResponse';
 import LoadingPlaceholder from './LoadingPlaceholder';
 import RejectedResponse from './RejectedResponse';
 import ToolRender from './Render';
@@ -98,6 +99,10 @@ const Render = memo<RenderProps>(
     );
 
     if (isToolCalling) return placeholder;
+
+    if (getConnectorToolErrorCode(result.error)) {
+      return <ConnectorToolErrorResponse error={result.error} />;
+    }
 
     return (
       <Suspense fallback={placeholder}>

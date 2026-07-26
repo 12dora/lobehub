@@ -35,7 +35,7 @@ describe('Connector local draft storage', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('persists only public draft fields and never accepts a secret slot', () => {
-    saveAdminConnectorDraft('connector-1', baseValue());
+    expect(saveAdminConnectorDraft('connector-1', baseValue())).toEqual({ status: 'saved' });
 
     const raw = localStorage.getItem(key);
     expect(raw).toBeTruthy();
@@ -54,7 +54,9 @@ describe('Connector local draft storage', () => {
         secret: 'must-not-persist',
       },
     } as unknown as StoredAdminConnectorDraft;
-    saveAdminConnectorDraft('connector-1', value);
+    expect(saveAdminConnectorDraft('connector-1', value)).toEqual({
+      status: 'saved',
+    });
     expect(localStorage.getItem(key)).not.toContain('must-not-persist');
 
     localStorage.setItem(key, JSON.stringify(value));
@@ -65,7 +67,10 @@ describe('Connector local draft storage', () => {
   it('fails closed when a secret value is pasted into a public field', () => {
     const value = baseValue();
     value.draft.description = 'rotate with AKIA1234567890ABCD99 immediately';
-    saveAdminConnectorDraft('connector-1', value);
+    expect(saveAdminConnectorDraft('connector-1', value)).toEqual({
+      reason: 'unsafe',
+      status: 'unavailable',
+    });
     expect(localStorage.getItem(key)).toBeNull();
     expect(loadAdminConnectorDraft('connector-1')).toBeNull();
   });
@@ -73,9 +78,11 @@ describe('Connector local draft storage', () => {
   it('local_draft_rejects_arbitrary_current_secret_in_public_field', () => {
     const value = baseValue();
     value.draft.description = 'note: correct-horse-battery-staple is temporary';
-    saveAdminConnectorDraft('connector-1', value, {
-      secretLeaves: ['correct-horse-battery-staple'],
-    });
+    expect(
+      saveAdminConnectorDraft('connector-1', value, {
+        secretLeaves: ['correct-horse-battery-staple'],
+      }),
+    ).toEqual({ reason: 'unsafe', status: 'unavailable' });
     expect(localStorage.getItem(key)).toBeNull();
     expect(loadAdminConnectorDraft('connector-1')).toBeNull();
   });
@@ -83,14 +90,14 @@ describe('Connector local draft storage', () => {
   it('restored_clear_secret_intent_is_preserved', () => {
     const value = baseValue();
     value.secretIntent = 'clear';
-    saveAdminConnectorDraft('connector-1', value);
+    expect(saveAdminConnectorDraft('connector-1', value)).toEqual({ status: 'saved' });
     expect(loadAdminConnectorDraft('connector-1')?.secretIntent).toBe('clear');
   });
 
   it('preserves replace_requires_reentry intent without secret bytes', () => {
     const value = baseValue();
     value.secretIntent = 'replace_requires_reentry';
-    saveAdminConnectorDraft('connector-1', value);
+    expect(saveAdminConnectorDraft('connector-1', value)).toEqual({ status: 'saved' });
     const loaded = loadAdminConnectorDraft('connector-1');
     expect(loaded?.secretIntent).toBe('replace_requires_reentry');
     // Intent metadata only — never a replacement secret value.
@@ -117,14 +124,20 @@ describe('Connector local draft storage', () => {
     expect(new TextEncoder().encode(JSON.stringify(value)).length).toBeLessThanOrEqual(
       MAX_CONNECTOR_DRAFT_BYTES,
     );
-    saveAdminConnectorDraft('connector-1', value);
+    expect(saveAdminConnectorDraft('connector-1', value)).toEqual({
+      reason: 'unsafe',
+      status: 'unavailable',
+    });
     expect(localStorage.getItem(key)).toBeNull();
   });
 
   it('fails closed on oversized recovery payloads', () => {
     const value = baseValue();
     value.draft.description = 'x'.repeat(MAX_CONNECTOR_DRAFT_BYTES);
-    saveAdminConnectorDraft('connector-1', value);
+    expect(saveAdminConnectorDraft('connector-1', value)).toEqual({
+      reason: 'oversized',
+      status: 'unavailable',
+    });
     expect(localStorage.getItem(key)).toBeNull();
   });
 
@@ -132,7 +145,10 @@ describe('Connector local draft storage', () => {
     vi.spyOn(JSON, 'stringify').mockImplementation(() => {
       throw new TypeError('Converting circular structure to JSON');
     });
-    saveAdminConnectorDraft('connector-1', baseValue());
+    expect(saveAdminConnectorDraft('connector-1', baseValue())).toEqual({
+      reason: 'serialization',
+      status: 'unavailable',
+    });
     expect(localStorage.getItem(key)).toBeNull();
   });
 
@@ -140,7 +156,10 @@ describe('Connector local draft storage', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('QuotaExceededError');
     });
-    saveAdminConnectorDraft('connector-1', baseValue());
+    expect(saveAdminConnectorDraft('connector-1', baseValue())).toEqual({
+      reason: 'storage',
+      status: 'unavailable',
+    });
     expect(localStorage.getItem(key)).toBeNull();
   });
 

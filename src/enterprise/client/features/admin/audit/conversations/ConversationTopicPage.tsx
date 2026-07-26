@@ -118,7 +118,9 @@ const ConversationTopicPage = memo(() => {
       return data?.code === 'FORBIDDEN';
     });
   }, [detail.error, messages.error]);
-  const detailFailed = Boolean(detail.error) && !detail.data && !isForbidden;
+  // A revalidation failure with cached detail is still degraded: preserve the stale
+  // evidence, but make its freshness failure explicit and retryable.
+  const detailFailed = Boolean(detail.error) && !isForbidden;
 
   useEffect(() => {
     if (detailFailed && !detailFailureNotifiedRef.current) {

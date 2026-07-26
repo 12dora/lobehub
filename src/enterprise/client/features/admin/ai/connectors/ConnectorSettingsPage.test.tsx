@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { MotionProvider } from '@lobehub/ui';
-import { render, screen } from '@testing-library/react';
+import { toast } from '@lobehub/ui/base-ui';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { motion } from 'motion/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
@@ -37,6 +38,12 @@ const mocks = vi.hoisted(() => ({
     parseImportSource: vi.fn(),
   },
 }));
+
+const governanceFixture = {
+  doc: { builtinToolPolicies: {}, sharedAuthorization: { ownerUserId: null } },
+  managedActive: false,
+  revision: 0,
+};
 
 vi.mock('@/enterprise/client/services/adminSkills', () => ({
   adminSkillsService: mocks.skills,
@@ -82,6 +89,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.skills.list.mockResolvedValue({ items: [], nextCursor: null });
   mocks.connectors.list.mockResolvedValue({ items: [], nextCursor: null });
+  mocks.connectors.getGovernance.mockResolvedValue(governanceFixture);
 });
 
 describe('Admin ConnectorSettingsPage', () => {
@@ -106,6 +114,61 @@ describe('Admin ConnectorSettingsPage', () => {
 
       // Platform connector catalog was fetched through the admin connectors service.
       expect(mocks.connectors.list).toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'keeps a governance failure actionable with built-ins, dedupes its toast, and clears it after Retry',
+    { timeout: 30_000 },
+    async () => {
+      const governanceErrorA = new Error('governance unavailable A');
+      const governanceErrorB = new Error('governance unavailable B');
+      mocks.connectors.getGovernance
+        .mockRejectedValueOnce(governanceErrorA)
+        .mockRejectedValueOnce(governanceErrorB)
+        .mockResolvedValueOnce(governanceFixture);
+      const toastError = vi.spyOn(toast, 'error').mockImplementation(() => '' as never);
+
+      render(<ConnectorSettingsPage />, { wrapper: AppProviders });
+
+      expect(
+        await screen.findByText(
+          'Connector permissions could not be loaded. Retry before making changes.',
+          {},
+          { timeout: 10_000 },
+        ),
+      ).toBeInTheDocument();
+      expect(await screen.findByText('Built-in Tools')).toBeInTheDocument();
+      // Governance is absent, so builtin fallback rows stay display-only.
+      expect(screen.queryByRole('button', { name: 'Reset permissions' })).toBeNull();
+      await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+
+      const retry = screen.getByRole('button', { name: 'Retry permissions' });
+      const callsBeforeFailedRetry = mocks.connectors.getGovernance.mock.calls.length;
+      const listCallsBeforeRetry = mocks.connectors.list.mock.calls.length;
+      fireEvent.click(retry);
+      await waitFor(() =>
+        expect(mocks.connectors.getGovernance.mock.calls.length).toBeGreaterThan(
+          callsBeforeFailedRetry,
+        ),
+      );
+      expect(
+        screen.getByText('Connector permissions could not be loaded. Retry before making changes.'),
+      ).toBeInTheDocument();
+      expect(mocks.connectors.list).toHaveBeenCalledTimes(listCallsBeforeRetry);
+      // A fresh Error instance in the same visible failure episode must not create another toast.
+      expect(toastError).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(retry);
+      await waitFor(() =>
+        expect(
+          screen.queryByText(
+            'Connector permissions could not be loaded. Retry before making changes.',
+          ),
+        ).toBeNull(),
+      );
+      expect(mocks.connectors.list).toHaveBeenCalledTimes(listCallsBeforeRetry);
+      toastError.mockRestore();
     },
   );
 });

@@ -1,7 +1,10 @@
+import type { HumanInterventionOutcomeData } from '@lobechat/agent-gateway-client';
 import { type ChatToolPayload } from '@lobechat/types';
 import debug from 'debug';
+import { t } from 'i18next';
 
-import { type StreamEvent } from '@/services/agentRuntime';
+import { message as antdMessage } from '@/components/AntdStaticMethods';
+import type { HumanInterventionRequest, StreamEvent } from '@/services/agentRuntime';
 import { agentRuntimeService } from '@/services/agentRuntime';
 import { type ChatStore } from '@/store/chat/store';
 import {
@@ -345,6 +348,31 @@ export class AgentActionImpl {
         break;
       }
 
+      case 'human_intervention_outcome': {
+        const { outcome } = event.data as HumanInterventionOutcomeData;
+
+        // The persisted tool message is authoritative for both accepted and
+        // rejected decisions. Keep the approval UI pending while it refreshes;
+        // only an accepted worker outcome is allowed to clear the pending tray.
+        await this.#get()
+          .refreshMessages(operation.context)
+          .catch((error) => {
+            console.error('[runAgent] failed to refresh intervention outcome:', error);
+          });
+
+        if (outcome === 'accepted') {
+          this.#get().updateOperationMetadata(operationId, {
+            needsHumanInput: false,
+            pendingApproval: undefined,
+            pendingPrompt: undefined,
+            pendingSelect: undefined,
+          });
+        } else {
+          antdMessage.warning(t('tool.intervention.outcomeNotAccepted', { ns: 'chat' }));
+        }
+        break;
+      }
+
       case 'error': {
         const { error, message, phase } = event.data || {};
         log(`Error in ${phase} for ${assistantId}:`, error);
@@ -364,8 +392,9 @@ export class AgentActionImpl {
 
   internal_handleHumanIntervention = async (
     assistantId: string,
-    action: string,
+    action: HumanInterventionRequest['action'],
     data?: any,
+    toolMessageId?: string,
   ): Promise<void> => {
     // Find operation by messageId (assistantId)
     const messageOpId = this.#get().messageOperationMap[assistantId];
@@ -384,21 +413,28 @@ export class AgentActionImpl {
       log(`Handling human intervention ${action} for operation ${messageOpId}:`, data);
 
       // Send human intervention request
-      await agentRuntimeService.handleHumanIntervention({
-        action: action as any,
-        data,
-        operationId: messageOpId,
-      });
+      if (action === 'approve' || action === 'reject' || action === 'reject_continue') {
+        if (!toolMessageId) {
+          throw new Error(`A persisted tool message target is required for ${action}`);
+        }
+        await agentRuntimeService.handleHumanIntervention({
+          action,
+          data,
+          operationId: messageOpId,
+          toolMessageId,
+        });
+      } else {
+        await agentRuntimeService.handleHumanIntervention({
+          action,
+          data,
+          operationId: messageOpId,
+          toolMessageId,
+        });
+      }
 
-      // Clear human intervention state
-      this.#get().updateOperationMetadata(messageOpId, {
-        needsHumanInput: false,
-        pendingApproval: undefined,
-        pendingPrompt: undefined,
-        pendingSelect: undefined,
-      });
-
-      log(`Human intervention ${action} processed for operation ${messageOpId}`);
+      // The mutation only queues worker execution. The replayable
+      // human_intervention_outcome event owns the pending-state transition.
+      log(`Human intervention ${action} queued for operation ${messageOpId}`);
     } catch (error) {
       log(`Failed to handle human intervention for operation ${messageOpId}:`, error);
       this.#get().internal_handleAgentError(

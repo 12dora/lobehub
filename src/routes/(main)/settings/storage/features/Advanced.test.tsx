@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +7,12 @@ import { initServerConfigStore, Provider } from '@/store/serverConfig/store';
 import { useUserStore } from '@/store/user';
 
 import AdvancedActions from './Advanced';
+
+const mocks = vi.hoisted(() => ({
+  confirmModal: vi.fn(),
+  messageError: vi.fn(),
+  messageSuccess: vi.fn(),
+}));
 
 vi.hoisted(() => {
   Object.defineProperty(globalThis, 'localStorage', {
@@ -57,7 +63,7 @@ vi.mock('@lobehub/ui', () => ({
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
-  confirmModal: vi.fn(),
+  confirmModal: mocks.confirmModal,
   Switch: ({
     checked,
     disabled,
@@ -81,7 +87,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 vi.mock('antd', () => ({
   App: {
     useApp: () => ({
-      message: { success: vi.fn() },
+      message: { error: mocks.messageError, success: mocks.messageSuccess },
       modal: { confirm: vi.fn() },
     }),
   },
@@ -125,6 +131,7 @@ const createWrapper = (hideDocs: boolean) => {
 const initialUserStoreState = useUserStore.getState();
 
 afterEach(() => {
+  vi.clearAllMocks();
   useUserStore.setState(initialUserStoreState, true);
 });
 
@@ -152,5 +159,49 @@ describe('AdvancedActions', () => {
     // Even with telemetry:true in the store, the anonymous-usage switch renders OFF because the
     // telemetry selector is hard-forced to false (built-in telemetry removed).
     expect(screen.getByRole('switch')).not.toBeChecked();
+  });
+
+  it('awaits reset completion before showing success feedback', async () => {
+    let resolveReset!: () => void;
+    const resetSettings = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveReset = resolve;
+        }),
+    );
+    useUserStore.setState({ resetSettings });
+    render(<AdvancedActions />, { wrapper: createWrapper(false) });
+
+    fireEvent.click(screen.getByText('danger.reset.action'));
+    const onOk = mocks.confirmModal.mock.calls[0][0].onOk as () => Promise<void>;
+    let confirmation: Promise<void> = Promise.resolve();
+    act(() => {
+      confirmation = onOk();
+    });
+
+    expect(resetSettings).toHaveBeenCalledTimes(1);
+    expect(mocks.messageSuccess).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveReset();
+      await confirmation;
+    });
+    expect(mocks.messageSuccess).toHaveBeenCalledWith('danger.reset.success');
+    expect(mocks.messageError).not.toHaveBeenCalled();
+  });
+
+  it('surfaces reset failure without reporting success or rejecting the confirmation', async () => {
+    const resetFailure = new Error('Reset failed');
+    const resetSettings = vi.fn().mockRejectedValue(resetFailure);
+    useUserStore.setState({ resetSettings });
+    render(<AdvancedActions />, { wrapper: createWrapper(false) });
+
+    fireEvent.click(screen.getByText('danger.reset.action'));
+    const onOk = mocks.confirmModal.mock.calls[0][0].onOk as () => Promise<void>;
+    await expect(onOk()).resolves.toBeUndefined();
+
+    expect(resetSettings).toHaveBeenCalledTimes(1);
+    expect(mocks.messageError).toHaveBeenCalledWith('danger.reset.error');
+    expect(mocks.messageSuccess).not.toHaveBeenCalled();
   });
 });

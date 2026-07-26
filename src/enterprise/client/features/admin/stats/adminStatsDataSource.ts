@@ -6,22 +6,28 @@ import type { UsageLog, UsageRecordItem } from '@/types/usage/usageRecord';
 /** Cap identity labels retained for GroupBy.User charts (LRU by Map insertion order). */
 export const ADMIN_STATS_USER_DISPLAY_CACHE_MAX = 500;
 
-/** Filled as global usage rows stream in — drives resolveUser for GroupBy.User. */
+/** Historical labels retained across queries for transient partial responses. */
 const userDisplayCache = new Map<string, UserDisplay>();
 
+/** Every identity returned by the currently rendered grouped-usage query. */
+const currentUserDisplayMap = new Map<string, UserDisplay>();
+
+/** Stable aliases for identities without a display name in the current query. */
+const unknownUserIndexes = new Map<string, number>();
+
 /**
- * Remember/update user display labels from authoritative usage rows.
+ * Remember/update historical user display labels from authoritative usage rows.
  * Always overwrites existing entries so renames are visible without reload.
  * Evicts the least-recently-used key when the cache exceeds the cap.
  */
-export const rememberUsersFromUsage = (
+const rememberHistoricalUsersFromUsage = (
   records: Array<{ userDisplay?: string; userId?: string }>,
 ) => {
   for (const row of records) {
-    if (!row.userId) continue;
+    if (!row.userId || !row.userDisplay) continue;
     const next: UserDisplay = {
       avatar: null,
-      name: row.userDisplay || row.userId,
+      name: row.userDisplay,
     };
     // Re-insert to mark as most recently used.
     if (userDisplayCache.has(row.userId)) {
@@ -36,13 +42,35 @@ export const rememberUsersFromUsage = (
   }
 };
 
+/**
+ * Replace labels for the currently rendered grouped-usage result.
+ * This map is intentionally unbounded by the historical LRU cap: every label
+ * returned for one response must remain available while that response is shown.
+ */
+export const rememberCurrentUsersFromUsage = (
+  records: Array<{ userDisplay?: string; userId?: string }>,
+) => {
+  currentUserDisplayMap.clear();
+  unknownUserIndexes.clear();
+  for (const row of records) {
+    if (!row.userId || !row.userDisplay) continue;
+    currentUserDisplayMap.set(row.userId, { avatar: null, name: row.userDisplay });
+  }
+  rememberHistoricalUsersFromUsage(records);
+};
+
 /** Clear the display cache (account/scope transition or tests). */
 export const resetAdminStatsUserDisplayCache = () => {
+  currentUserDisplayMap.clear();
+  unknownUserIndexes.clear();
   userDisplayCache.clear();
 };
 
 /** Test / diagnostics helper — current bounded cache size. */
 export const getAdminStatsUserDisplayCacheSize = () => userDisplayCache.size;
+
+/** Test / diagnostics helper — identities retained for the active grouped result. */
+export const getAdminStatsCurrentUserDisplaySize = () => currentUserDisplayMap.size;
 
 /** Platform-global stats data source for admin.stats (scoped SWR keys). */
 export const adminGlobalStatsDataSource: StatsDataSource = {
@@ -51,15 +79,13 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
   countTopics: (params) => adminStatsService.countTopics(params),
   findAndGroupByDay: async (mo) => {
     const logs = await adminStatsService.usageFindAndGroupByDay(mo);
-    for (const log of logs) {
-      rememberUsersFromUsage(log.records ?? []);
-    }
+    rememberCurrentUsersFromUsage(logs.flatMap((log) => log.records ?? []));
     // Rows are UsageRecordItem & { userDisplay }; assignable to UsageLog.
     return logs as UsageLog[];
   },
   findByMonth: async (mo) => {
     const rows = await adminStatsService.usageFindByMonth(mo);
-    rememberUsersFromUsage(rows);
+    rememberHistoricalUsersFromUsage(rows);
     return rows as UsageRecordItem[];
   },
   getHeatmaps: () => adminStatsService.getHeatmaps(),
@@ -76,9 +102,20 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
  * Resolve userId → display for admin GroupBy.User.
  * Populated when usage rows are fetched (userDisplay joined server-side).
  */
-export const resolveAdminStatsUser = (userId: string): UserDisplay => {
+export const resolveAdminStatsUser = (
+  userId: string,
+  unknownUserLabel: (index: number) => string,
+): UserDisplay => {
+  const current = currentUserDisplayMap.get(userId);
+  if (current) return current;
+
   const hit = userDisplayCache.get(userId);
-  if (!hit) return { avatar: null, name: userId };
+  if (!hit) {
+    const existingIndex = unknownUserIndexes.get(userId);
+    const index = existingIndex ?? unknownUserIndexes.size + 1;
+    unknownUserIndexes.set(userId, index);
+    return { avatar: null, name: unknownUserLabel(index) };
+  }
   // Touch LRU order on read.
   userDisplayCache.delete(userId);
   userDisplayCache.set(userId, hit);

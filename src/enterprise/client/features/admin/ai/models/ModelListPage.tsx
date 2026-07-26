@@ -148,6 +148,7 @@ const ModelListPage = memo(() => {
         dataIndex: 'type',
         key: 'type',
         title: t('aiCatalog.models.columns.type'),
+        render: (value: string) => t(`aiCatalog.modelTypes.${value}` as never),
       },
       {
         dataIndex: 'status',
@@ -297,10 +298,13 @@ const ModelListPage = memo(() => {
           <Select
             allowClear
             aria-label={t('aiCatalog.models.filters.type')}
-            options={MODEL_TYPES.map((value) => ({ label: value, value }))}
             placeholder={t('aiCatalog.models.filters.type')}
             style={{ minWidth: 130 }}
             value={type || undefined}
+            options={MODEL_TYPES.map((value) => ({
+              label: t(`aiCatalog.modelTypes.${value}` as never),
+              value,
+            }))}
             onChange={(value) => patchFilter('type', value as string | undefined)}
           />
           <Select

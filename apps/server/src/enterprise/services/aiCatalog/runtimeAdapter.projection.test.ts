@@ -4,6 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import { PlatformCatalogAuthorityModel } from '@/database/models/platform';
 import { checksumPayload } from '@/database/models/platform/checksum';
 import {
   platformAiProviders,
@@ -12,7 +13,10 @@ import {
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { loadCurrentAiCatalogSnapshot } from '../platformInstance/catalogAuthority';
+import {
+  invalidateAiCatalogAuthorityToken,
+  loadCurrentAiCatalogSnapshot,
+} from '../platformInstance/catalogAuthority';
 import { PlatformCatalogTokenInvariantError } from '../platformInstance/catalogTokens';
 import { PlatformDomainTargetResolver } from '../platformInstance/domainTargets';
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
@@ -41,6 +45,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await cleanup();
 });
+
+const advanceAiCatalogAuthority = async () => {
+  await new PlatformCatalogAuthorityModel(db).bumpGeneration('ai_catalog');
+  invalidateAiCatalogAuthorityToken();
+};
 
 describe('AiCatalogRuntimeAdapter', () => {
   it('flag-off returns the exact upstream state without reading the catalog', async () => {
@@ -97,6 +106,7 @@ describe('AiCatalogRuntimeAdapter', () => {
       .update(platformAiProviders)
       .set({ revision: 2 })
       .where(eq(platformAiProviders.id, provider.id));
+    await advanceAiCatalogAuthority();
     await adapter.resolve({ flags, upstreamState });
     const changedTarget = await new PlatformDomainTargetResolver(db, {
       env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
@@ -136,6 +146,7 @@ describe('AiCatalogRuntimeAdapter', () => {
       .update(platformAiProviders)
       .set({ revision: 2 })
       .where(eq(platformAiProviders.id, provider.id));
+    await advanceAiCatalogAuthority();
     clearAiCatalogRuntimeCache();
     const forward = await loadCurrentAiCatalogSnapshot(db);
     expect(forward.revisions[0]?.revision).toBe(2);
@@ -148,6 +159,7 @@ describe('AiCatalogRuntimeAdapter', () => {
       .update(platformAiProviders)
       .set({ revision: 1 })
       .where(eq(platformAiProviders.id, provider.id));
+    await advanceAiCatalogAuthority();
     clearAiCatalogRuntimeCache();
     const rolledBack = await loadCurrentAiCatalogSnapshot(db);
     const target = await new PlatformDomainTargetResolver(db, {
@@ -184,6 +196,7 @@ describe('AiCatalogRuntimeAdapter', () => {
           ),
         );
     });
+    await advanceAiCatalogAuthority();
     const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
     const adapter = new AiCatalogRuntimeAdapter(db, { reportRuntimeState });
 
@@ -198,6 +211,7 @@ describe('AiCatalogRuntimeAdapter', () => {
     expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual(['unavailable']);
 
     await db.insert(platformResourceRevisions).values(savedRevision!);
+    await advanceAiCatalogAuthority();
     const repairedTarget = await new PlatformDomainTargetResolver(db, {
       env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
     }).resolve('ai_catalog');
@@ -605,6 +619,7 @@ describe('AiCatalogRuntimeAdapter', () => {
         status: 'published',
       },
     ]);
+    await advanceAiCatalogAuthority();
 
     const state = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
     expect(state.enabledAiModels.find((model) => model.id === 'gpt-5.4')).toMatchObject({

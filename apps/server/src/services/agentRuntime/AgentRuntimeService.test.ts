@@ -10,6 +10,7 @@ import { AgentOperationModel } from '@/database/models/agentOperation';
 
 import { AgentRuntimeService } from './AgentRuntimeService';
 import { hookDispatcher } from './hooks';
+import { HumanInterventionHandler } from './HumanInterventionHandler';
 import {
   type AgentExecutionParams,
   type OperationCreationParams,
@@ -1250,6 +1251,27 @@ describe('AgentRuntimeService', () => {
       expect(result?.recentEvents).toEqual(mockEvents.slice(0, 10));
     });
 
+    it('projects the authoritative intervention outcome for status recovery', async () => {
+      const interventionOutcome = {
+        message: 'not exposed to the UI',
+        occurredAt: '2026-07-26T10:00:00.000Z',
+        status: 'already_consumed',
+        toolMessageId: 'tool-msg-1',
+      };
+      mockCoordinator.loadAgentState.mockResolvedValue({
+        ...mockState,
+        metadata: { interventionOutcome },
+        pendingHumanToolMessages: [{ messageId: 'tool-msg-1' }, { messageId: 'tool-msg-2' }],
+      });
+
+      const result = await service.getOperationStatus({
+        operationId: 'test-operation-1',
+      });
+
+      expect(result?.currentState.metadata).toEqual({ interventionOutcome });
+      expect(result?.currentState.pendingHumanToolMessageIds).toEqual(['tool-msg-1', 'tool-msg-2']);
+    });
+
     it('should return null for missing operation', async () => {
       mockCoordinator.loadAgentState.mockResolvedValue(null);
       mockCoordinator.getOperationMetadata.mockResolvedValue(null);
@@ -1510,12 +1532,20 @@ describe('AgentRuntimeService', () => {
   describe('processHumanIntervention', () => {
     it('should process human intervention successfully', async () => {
       mockQueueService.scheduleMessage.mockResolvedValue('message-789');
+      const approvedToolCall = {
+        apiName: 'calculator',
+        arguments: '{}',
+        id: 'tool-call-1',
+        identifier: 'calculator',
+        type: 'default',
+      };
 
       const result = await service.processHumanIntervention({
+        action: 'approve',
+        approvedToolCall,
         operationId: 'test-operation-1',
         stepIndex: 2,
-        action: 'approve',
-        approvedToolCall: { toolName: 'calculator', args: {} },
+        toolMessageId: 'tool-msg-1',
       });
 
       expect(result).toEqual({
@@ -1530,11 +1560,37 @@ describe('AgentRuntimeService', () => {
         priority: 'high',
         delay: 100,
         payload: {
-          approvedToolCall: { toolName: 'calculator', args: {} },
+          approvedToolCall,
           humanInput: undefined,
+          rejectAndContinue: undefined,
           rejectionReason: undefined,
+          toolMessageId: 'tool-msg-1',
         },
       });
+
+      const messageModel = {
+        approvePendingMessagePlugin: vi.fn().mockResolvedValue(true),
+        findMessagePlugin: vi.fn().mockResolvedValue({
+          apiName: 'calculator',
+          arguments: '{}',
+          identifier: 'calculator',
+          intervention: { kind: 'approval', status: 'pending' },
+          toolCallId: 'tool-call-1',
+          type: 'default',
+        }),
+      };
+      const handler = new HumanInterventionHandler(mockDb, messageModel as any);
+      const scheduledPayload = mockQueueService.scheduleMessage.mock.calls[0][0].payload;
+      const handlerResult = await handler.process(
+        {
+          pendingToolsCalling: [approvedToolCall],
+          status: 'waiting_for_human',
+        },
+        scheduledPayload,
+      );
+
+      expect(handlerResult.outcome).toBe('accepted');
+      expect(messageModel.approvePendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1');
     });
 
     it('should handle different intervention actions', async () => {

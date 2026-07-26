@@ -520,10 +520,10 @@ describe('SettingsAction', () => {
         });
       vi.mocked(userService.resetUserSettings).mockImplementationOnce(
         () =>
-          new Promise<void>((resolve) => {
+          new Promise<Awaited<ReturnType<typeof userService.resetUserSettings>>>((resolve) => {
             resolveReset = () => {
               serverSettings = {};
-              resolve();
+              resolve(undefined);
             };
           }),
       );
@@ -552,6 +552,67 @@ describe('SettingsAction', () => {
         await Promise.all([resetRequest, toolRequest]);
       });
 
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        { tool: { humanIntervention: { approvalMode: 'manual' } } },
+        expect.any(AbortSignal),
+      );
+      expect(serverSettings).toEqual({
+        tool: { humanIntervention: { approvalMode: 'manual' } },
+      });
+      expect(useUserStore.getState().settings).toEqual(serverSettings);
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('persists a queued post-reset edit when the reset freshness refresh fails', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const refreshFailure = new Error('Reset refresh failed');
+      let resolveReset!: () => void;
+      let serverSettings: PartialDeep<UserSettings> = {
+        memory: { enabled: false },
+      };
+      act(() => {
+        useUserStore.setState({ settings: serverSettings });
+      });
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockRejectedValueOnce(refreshFailure)
+        .mockImplementationOnce(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
+      vi.mocked(userService.resetUserSettings).mockImplementationOnce(
+        () =>
+          new Promise<Awaited<ReturnType<typeof userService.resetUserSettings>>>((resolve) => {
+            resolveReset = () => {
+              serverSettings = {};
+              resolve(undefined);
+            };
+          }),
+      );
+      vi.mocked(userService.updateUserSettings).mockImplementationOnce(async (updates) => {
+        serverSettings = merge(serverSettings, updates);
+        return { appliedPaths: [] };
+      });
+      const updateCallCountBeforeReset = vi.mocked(userService.updateUserSettings).mock.calls
+        .length;
+
+      let resetRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        resetRequest = result.current.resetSettings().catch((error) => error);
+      });
+      let toolRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        toolRequest = useUserStore.getState().setSettings({
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        });
+      });
+      expect(userService.updateUserSettings).toHaveBeenCalledTimes(updateCallCountBeforeReset);
+
+      await act(async () => {
+        resolveReset();
+        await Promise.all([resetRequest, toolRequest]);
+      });
+
+      expect(await resetRequest).toBe(refreshFailure);
       expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
         { tool: { humanIntervention: { approvalMode: 'manual' } } },
         expect.any(AbortSignal),

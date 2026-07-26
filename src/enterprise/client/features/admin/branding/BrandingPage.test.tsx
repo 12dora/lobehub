@@ -177,9 +177,18 @@ describe('BrandingPage interactions', () => {
     expect(screen.getByText('primitives.status.pending')).toBeInTheDocument();
   });
 
-  it('publishes a saved draft and refreshes both admin and anonymous snapshots', async () => {
+  it('locks after publish when a fulfilled admin refresh is older than the committed revision', async () => {
     mocks.fetch.data = data({ draftMatchesPublished: false });
     mocks.publish.mockResolvedValue({ auditId: 'audit-1', revision: 3 });
+    const staleSnapshot = data({
+      draft: draft('Stale Refresh'),
+      draftMatchesPublished: false,
+      draftToken: 'd'.repeat(64),
+    });
+    mocks.fetch.mutate.mockImplementationOnce(async () => {
+      mocks.fetch.data = staleSnapshot;
+      return staleSnapshot;
+    });
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: 'branding.actions.publish' }));
     const modal = latestModal();
@@ -188,6 +197,111 @@ describe('BrandingPage interactions', () => {
     expect(mocks.publish).toHaveBeenCalledOnce();
     expect(mocks.fetch.mutate).toHaveBeenCalled();
     expect(mocks.platformRefresh).toHaveBeenCalled();
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      baseRevision: 2,
+      draft: { name: 'Published Brand' },
+      draftToken: 'a'.repeat(64),
+      editorState: 'committedRefresh',
+    });
+    expect(screen.queryByDisplayValue('Stale Refresh')).not.toBeInTheDocument();
+    expect(screen.getByText('branding.refresh.committedFailed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'branding.actions.publish' })).toBeDisabled();
+  });
+
+  it('locks mutations until both admin and runtime refresh succeed after publish', async () => {
+    mocks.fetch.data = data({ draftMatchesPublished: false });
+    mocks.publish.mockResolvedValue({ auditId: 'audit-1', revision: 3 });
+    const refreshedSnapshot = data({
+      baseRevision: 3,
+      draftMatchesPublished: true,
+      draftToken: 'b'.repeat(64),
+      published: { ...draft(), name: 'Published Brand', revision: 3 },
+    });
+    mocks.fetch.mutate.mockImplementationOnce(async () => {
+      mocks.fetch.data = refreshedSnapshot;
+      return refreshedSnapshot;
+    });
+    mocks.platformRefresh.mockRejectedValueOnce(new Error('runtime refresh failed'));
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'branding.actions.publish' }));
+    const modal = latestModal();
+    await act(() => modal.onSubmit(modal.buildPayload('publish reason')));
+
+    expect(mocks.publish).toHaveBeenCalledOnce();
+    expect(screen.getByText('branding.refresh.postCommitFailed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'branding.refresh.retry' })).toBeInTheDocument();
+    expect(useBrandingEditorStore.getState().editorState).toBe('idle');
+
+    const modalCountAfterPublish = mocks.modalCalls.length;
+    const saveButton = screen.getByRole('button', { name: 'branding.actions.save' });
+    const restoreButton = screen.getByRole('button', {
+      name: 'branding.actions.restoreDraft',
+    });
+    expect(screen.getByLabelText('branding.fields.name')).toBeDisabled();
+    expect(saveButton).toBeDisabled();
+    expect(restoreButton).toBeDisabled();
+    fireEvent.click(saveButton);
+    fireEvent.click(restoreButton);
+    expect(mocks.modalCalls).toHaveLength(modalCountAfterPublish);
+    expect(mocks.saveDraft).not.toHaveBeenCalled();
+    expect(mocks.rollback).not.toHaveBeenCalled();
+    expect(screen.getByText('branding.refresh.postCommitFailed')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'branding.refresh.retry' }));
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText('branding.refresh.postCommitFailed')).not.toBeInTheDocument(),
+    );
+    expect(mocks.fetch.mutate).toHaveBeenCalledTimes(2);
+    expect(mocks.platformRefresh).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText('branding.fields.name')).not.toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'branding.actions.restoreDraft' }),
+    ).not.toBeDisabled();
+  });
+
+  it('surfaces post-save refresh failure without losing the committed CAS token', async () => {
+    mocks.saveDraft.mockResolvedValue({
+      baseRevision: 3,
+      draftToken: 'b'.repeat(64),
+      ok: true,
+    });
+    mocks.fetch.mutate.mockRejectedValueOnce(new Error('save refresh failed'));
+    renderPage();
+    fireEvent.change(await screen.findByLabelText('branding.fields.name'), {
+      target: { value: 'Saved Draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'branding.actions.save' }));
+    const modal = latestModal();
+    await act(() => modal.onSubmit(modal.buildPayload('save reason')));
+
+    expect(screen.getByText('branding.status.draftSaved')).toBeInTheDocument();
+    expect(screen.getByText('branding.refresh.postCommitFailed')).toBeInTheDocument();
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      baseRevision: 3,
+      draftToken: 'b'.repeat(64),
+      editorState: 'idle',
+    });
+  });
+
+  it('surfaces post-rollback refresh failure while retaining the restored draft', async () => {
+    mocks.rollback.mockResolvedValue({
+      baseRevision: 3,
+      draft: draft('Restored'),
+      draftToken: 'c'.repeat(64),
+      restoredFromRevision: 1,
+    });
+    mocks.fetch.mutate.mockRejectedValueOnce(new Error('rollback refresh failed'));
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'branding.actions.restoreDraft' }));
+    const modal = latestModal();
+    await act(() => modal.onSubmit(modal.buildPayload('restore reason')));
+
+    expect(screen.getByDisplayValue('Restored')).toBeInTheDocument();
+    expect(screen.getByText('branding.status.restoredDraft')).toBeInTheDocument();
+    expect(screen.getByText('branding.refresh.postCommitFailed')).toBeInTheDocument();
   });
 
   it('restores history into a dirty draft and surfaces a conflict without overwriting it', async () => {

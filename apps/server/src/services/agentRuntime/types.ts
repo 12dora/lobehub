@@ -1,3 +1,4 @@
+import type { HumanInterventionOutcome } from '@lobechat/agent-gateway-client';
 import { type AgentRuntimeContext, type AgentState } from '@lobechat/agent-runtime';
 import type {
   AgentGroupConfig,
@@ -485,6 +486,15 @@ export interface OperationStatusResult {
     interruption?: any;
     lastModified: string;
     maxSteps?: number;
+    metadata?: {
+      interventionOutcome?: {
+        message?: string;
+        occurredAt: string;
+        status: HumanInterventionOutcome;
+        toolMessageId?: string;
+      };
+    };
+    pendingHumanToolMessageIds?: string[];
     pendingHumanPrompt?: any;
     pendingHumanSelect?: any;
     pendingToolsCalling?: any;

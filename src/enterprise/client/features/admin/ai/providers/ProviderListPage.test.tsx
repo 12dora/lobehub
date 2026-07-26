@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,9 +14,12 @@ const mocks = vi.hoisted(() => ({
     items: [] as AdminAiProviderListItem[],
     nextCursor: null as string | null,
   },
+  createProvider: vi.fn(),
   mutate: vi.fn(),
+  openCreateProviderModal: vi.fn(),
   openDeleteProviderModal: vi.fn(),
   permissions: [] as string[],
+  refreshProviderLists: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -46,7 +49,7 @@ vi.mock('@lobehub/ui', () => ({
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
-  Button: ({ children, onClick, ...props }: any) => (
+  Button: ({ children, loading: _loading, onClick, ...props }: any) => (
     <button type="button" onClick={onClick} {...props}>
       {children}
     </button>
@@ -76,7 +79,7 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 }));
 
 vi.mock('../hooks/useAdminAiCatalog', () => ({
-  refreshAdminAiProviderLists: vi.fn(),
+  refreshAdminAiProviderLists: mocks.refreshProviderLists,
   useFetchAdminAiProviders: () => ({
     data: mocks.listData,
     error: undefined,
@@ -87,14 +90,14 @@ vi.mock('../hooks/useAdminAiCatalog', () => ({
 
 vi.mock('@/enterprise/client/services/adminAiCatalog', () => ({
   adminAiCatalogService: {
-    createProvider: vi.fn(),
+    createProvider: mocks.createProvider,
     getProvider: vi.fn(),
     listProviders: vi.fn(),
   },
 }));
 
 vi.mock('./openCreateProviderModal', () => ({
-  openCreateProviderModal: vi.fn(),
+  openCreateProviderModal: mocks.openCreateProviderModal,
 }));
 
 vi.mock('./openDeleteProviderModal', () => ({
@@ -242,5 +245,62 @@ describe('ProviderListPage hard-delete gate wiring', () => {
 
     expect(screen.queryByTestId('provider-actions-draft-provider')).toBeNull();
     expect(screen.queryByRole('button', { name: 'aiCatalog.providers.actions.delete' })).toBeNull();
+  });
+});
+
+describe('ProviderListPage committed refresh lock', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+      PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
+    ];
+    mocks.listData = { items: [], nextCursor: null };
+    mocks.createProvider.mockResolvedValue({ id: 'provider-new' });
+  });
+
+  it('locks Create until the committed refresh settles', async () => {
+    let resolveRefresh: (() => void) | undefined;
+    mocks.refreshProviderLists.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    renderPage();
+
+    const createButton = screen.getByRole('button', {
+      name: 'aiCatalog.providers.actions.create',
+    });
+    fireEvent.click(createButton);
+    const { onSubmit } = mocks.openCreateProviderModal.mock.calls[0]![0] as {
+      onSubmit: (input: Record<string, unknown>) => Promise<void>;
+    };
+    await onSubmit({});
+
+    await waitFor(() => expect(createButton).toBeDisabled());
+    fireEvent.click(createButton);
+    expect(mocks.openCreateProviderModal).toHaveBeenCalledTimes(1);
+
+    resolveRefresh?.();
+    await waitFor(() => expect(createButton).not.toBeDisabled());
+  });
+
+  it('keeps Create locked after refresh failure and exposes Retry', async () => {
+    mocks.refreshProviderLists.mockRejectedValueOnce(new Error('refresh failed'));
+    renderPage();
+
+    const createButton = screen.getByRole('button', {
+      name: 'aiCatalog.providers.actions.create',
+    });
+    fireEvent.click(createButton);
+    const { onSubmit } = mocks.openCreateProviderModal.mock.calls[0]![0] as {
+      onSubmit: (input: Record<string, unknown>) => Promise<void>;
+    };
+    await onSubmit({});
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'aiCatalog.refresh.retry' })).toBeTruthy(),
+    );
+    expect(createButton).toBeDisabled();
   });
 });

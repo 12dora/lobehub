@@ -26,6 +26,28 @@ export interface SystemAgentModelItem {
   modelType?: 'chat' | 'embedding';
 }
 
+export interface SystemAgentPolicyMetas {
+  contextLimit?: PlatformSettingMetaState;
+  enabled?: PlatformSettingMetaState;
+  modelProvider: readonly PlatformSettingMetaState[];
+}
+
+export const getSystemAgentPatchMetas = (
+  policy: SystemAgentPolicyMetas | undefined,
+  value: Partial<SystemAgentItem>,
+): PlatformSettingMetaState[] => [
+  ...('model' in value || 'provider' in value ? (policy?.modelProvider ?? []) : []),
+  ...('enabled' in value && policy?.enabled ? [policy.enabled] : []),
+  ...('contextLimit' in value && policy?.contextLimit ? [policy.contextLimit] : []),
+];
+
+export const isSystemAgentPolicyRowHidden = (policy: SystemAgentPolicyMetas | undefined) =>
+  Boolean(
+    policy?.modelProvider.some((meta) => meta.hidden) ||
+    policy?.enabled?.hidden ||
+    policy?.contextLimit?.hidden,
+  );
+
 type LoadingKey = 'defaultAgent' | UserServiceModelConfigKey;
 type SavingGroup = 'assignments' | 'memory' | 'optional';
 
@@ -106,9 +128,7 @@ export interface ModelAssignmentsFormViewProps {
     value: Partial<SystemAgentItem>,
   ) => Promise<void> | void;
   saveState: Pick<ReturnType<typeof useSaveState>, 'lastSavedAt' | 'retry' | 'save' | 'status'>;
-  systemAgentMetas?: Partial<
-    Record<UserServiceModelConfigKey, readonly PlatformSettingMetaState[]>
-  >;
+  systemAgentMetas?: Partial<Record<UserServiceModelConfigKey, SystemAgentPolicyMetas>>;
   systemAgentSettings: Record<UserServiceModelConfigKey, SystemAgentItem>;
 }
 
@@ -176,7 +196,8 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
       key: UserServiceModelConfigKey,
       value: Partial<SystemAgentItem>,
     ) => {
-      const managedMetas = systemAgentMetas[key] ?? [];
+      const policy = systemAgentMetas[key];
+      const managedMetas = getSystemAgentPatchMetas(policy, value);
       if (!canManage || managedMetas.some((meta) => !isPlatformSettingMetaWritable(meta))) return;
 
       setSavingGroup(groupOfKey(key));
@@ -223,9 +244,10 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
 
     const systemModelItems: FormItemProps[] = SYSTEM_AGENT_MODEL_ITEMS.map(({ key }) => {
       const value = systemAgentSettings[key];
-      const managedMetas = systemAgentMetas[key] ?? [];
+      const policy = systemAgentMetas[key];
+      const managedMetas = policy?.modelProvider ?? [];
 
-      if (managedMetas.some((meta) => meta.hidden)) return null;
+      if (isSystemAgentPolicyRowHidden(policy)) return null;
 
       const control = (
         <Tooltip title={disabledReason}>
@@ -280,24 +302,40 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
     const memoryModelItems: FormItemProps[] = MEMORY_MODEL_ITEMS.map(
       ({ contextLimit, key, modelType }) => {
         const value = systemAgentSettings[key];
+        const policy = systemAgentMetas[key];
+        const modelProviderMetas = policy?.modelProvider ?? [];
+        if (isSystemAgentPolicyRowHidden(policy)) return null;
 
         return {
           children: (
             <Flexbox direction="vertical" gap={8} style={{ width: 448 }}>
-              <ModelSelect
-                modelType={modelType}
-                showAbility={false}
-                style={{ minWidth: 0, width: '100%' }}
-                value={value}
-                onChange={(props) => updateSystemAgentModel(key, props)}
-              />
+              <ManagedCompositeSettingFieldContent metas={modelProviderMetas}>
+                {({ disabled }) => (
+                  <ModelSelect
+                    disabled={disabled || !canManage}
+                    modelType={modelType}
+                    showAbility={false}
+                    style={{ minWidth: 0, width: '100%' }}
+                    value={value}
+                    onChange={(props) => updateSystemAgentModel(key, props)}
+                  />
+                )}
+              </ManagedCompositeSettingFieldContent>
               {contextLimit && (
-                <ContextLimitInput
-                  canManage={canManage}
-                  placeholder={t('serviceModel.contextLimit.placeholder')}
-                  value={value.contextLimit}
-                  onCommit={(nextLimit) => updateSystemAgentModel(key, { contextLimit: nextLimit })}
-                />
+                <ManagedCompositeSettingFieldContent
+                  metas={policy?.contextLimit ? [policy.contextLimit] : []}
+                >
+                  {({ disabled }) => (
+                    <ContextLimitInput
+                      canManage={canManage && !disabled}
+                      placeholder={t('serviceModel.contextLimit.placeholder')}
+                      value={value.contextLimit}
+                      onCommit={(nextLimit) =>
+                        updateSystemAgentModel(key, { contextLimit: nextLimit })
+                      }
+                    />
+                  )}
+                </ManagedCompositeSettingFieldContent>
               )}
             </Flexbox>
           ),
@@ -305,11 +343,14 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
           label: t(`systemAgent.${key}.title`),
         } satisfies FormItemProps;
       },
-    );
+    ).filter(Boolean) as FormItemProps[];
 
     const optionalFeatureItems: FormItemProps[] = OPTIONAL_FEATURE_ITEMS.map(({ key }) => {
       const value = systemAgentSettings[key];
       const featureDisabled = value.enabled === false;
+      const policy = systemAgentMetas[key];
+      const modelProviderMetas = policy?.modelProvider ?? [];
+      if (isSystemAgentPolicyRowHidden(policy)) return null;
 
       return {
         children: (
@@ -320,22 +361,30 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
               gap={12}
               style={{ width: 'min(100%, 448px)' }}
             >
-              <ModelSelect
-                disabled={!canManage}
-                showAbility={false}
-                style={{ minWidth: 0, width: '100%' }}
-                value={value}
-                onChange={(props) => updateSystemAgentModel(key, props)}
-              />
-              <Flexbox align="center" direction="horizontal" gap={8}>
-                <Switch
-                  aria-label={t(`systemAgent.${key}.title`)}
-                  checked={value.enabled}
-                  disabled={!canManage}
-                  loading={loadingKey === key}
-                  onChange={(enabled) => updateSystemAgentModel(key, { enabled })}
-                />
-              </Flexbox>
+              <ManagedCompositeSettingFieldContent metas={modelProviderMetas}>
+                {({ disabled }) => (
+                  <ModelSelect
+                    disabled={disabled || !canManage}
+                    showAbility={false}
+                    style={{ minWidth: 0, width: '100%' }}
+                    value={value}
+                    onChange={(props) => updateSystemAgentModel(key, props)}
+                  />
+                )}
+              </ManagedCompositeSettingFieldContent>
+              <ManagedCompositeSettingFieldContent metas={policy?.enabled ? [policy.enabled] : []}>
+                {({ disabled }) => (
+                  <Flexbox align="center" direction="horizontal" gap={8}>
+                    <Switch
+                      aria-label={t(`systemAgent.${key}.title`)}
+                      checked={value.enabled}
+                      disabled={disabled || !canManage}
+                      loading={loadingKey === key}
+                      onChange={(enabled) => updateSystemAgentModel(key, { enabled })}
+                    />
+                  </Flexbox>
+                )}
+              </ManagedCompositeSettingFieldContent>
             </Flexbox>
           </Tooltip>
         ),
@@ -350,7 +399,7 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
           </span>
         ),
       } satisfies FormItemProps;
-    });
+    }).filter(Boolean) as FormItemProps[];
 
     const renderSaveHint = (group: SavingGroup) =>
       savingGroup === group && (

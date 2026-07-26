@@ -208,6 +208,51 @@ describe('AdminAiModelService CAS and publish contract', () => {
     );
   });
 
+  it('normalizes the Unlimited sentinel to null when creating a model', async () => {
+    await service.createAiModel({
+      contextWindowTokens: 0,
+      id: 'unlimited-model',
+      providerId: 'openai',
+      type: 'chat',
+    } as never);
+
+    expect(mocks.applyImmediate).toHaveBeenCalledWith(
+      expect.objectContaining({ contextWindowTokens: null }),
+    );
+  });
+
+  it.each([
+    ['Unlimited sentinel', 0, null],
+    ['explicit clear', null, null],
+    ['positive limit', 32_768, 32_768],
+    ['omitted limit', undefined, undefined],
+  ])('preserves the admin contract for %s', async (_case, input, expected) => {
+    await service.updateAiModel('m1', 'openai', {
+      contextWindowTokens: input,
+    } as never);
+
+    expect(mocks.applyImmediate).toHaveBeenCalledWith(
+      expect.objectContaining({ contextWindowTokens: expected }),
+    );
+  });
+
+  it('normalizes Unlimited in a batch update', async () => {
+    await service.batchUpdateAiModels('openai', [
+      {
+        ...detailFixture.draft.models[0],
+        contextWindowTokens: 0,
+        id: 'm1',
+        providerId: 'openai',
+        source: 'custom',
+      },
+    ] as never);
+
+    const payload = mocks.applyImmediate.mock.calls[0]![0] as {
+      models: { contextWindowTokens: number | null }[];
+    };
+    expect(payload.models[0]?.contextWindowTokens).toBeNull();
+  });
+
   it('getAiProviderModelList merges builtin+db and honors enabled/pagination filters', async () => {
     // Custom provider with no builtin list — DB models only.
     mocks.get.mockResolvedValue({

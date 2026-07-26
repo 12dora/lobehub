@@ -153,6 +153,8 @@ describe('HumanInterventionHandler.process', () => {
       });
 
       expect(mockMessageModel.approvePendingMessagePlugin).not.toHaveBeenCalled();
+      expect(result.outcome).toBe('stale');
+      expect(result.newState.metadata.interventionOutcome.status).toBe('stale');
       expect(result.nextContext).toBeUndefined();
     });
 
@@ -174,6 +176,8 @@ describe('HumanInterventionHandler.process', () => {
           approvedToolCall: { ...pendingTool, source: 'composio', type: 'mcp' },
           toolMessageId: 'tool-msg-1',
         });
+        expect(result.outcome).toBe('mismatch');
+        expect(result.newState.metadata.interventionOutcome.status).toBe('mismatch');
         expect(result.nextContext).toBeUndefined();
       }
       expect(mockMessageModel.approvePendingMessagePlugin).not.toHaveBeenCalled();
@@ -346,6 +350,7 @@ describe('HumanInterventionHandler.process', () => {
         metadata: {
           interventionOutcome: {
             status: 'already_consumed',
+            toolMessageId: 'tool-msg-1',
           },
         },
       });

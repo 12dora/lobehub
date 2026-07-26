@@ -25,7 +25,10 @@ let policyData = {
   redactionProfile: 'standard' as const,
   revision: 1,
 };
-let runsData: { items: any[]; nextCursor: null } = { items: [], nextCursor: null };
+let runsData: { items: any[]; nextCursor: null } | undefined = {
+  items: [],
+  nextCursor: null,
+};
 const policyListeners = new Set<() => void>();
 
 vi.mock('react-i18next', () => ({
@@ -207,7 +210,7 @@ vi.mock('../shared/useCursorPagination', () => ({
   useCursorPagination: () => ({
     cursor: null,
     limit: 20,
-    resetCursor: vi.fn(),
+    reset: vi.fn(),
     setLimit: vi.fn(),
   }),
 }));
@@ -319,7 +322,7 @@ describe('RetentionPage execute confirmation payload', () => {
     });
   });
 
-  it('toasts only an observed in-flight to failed transition and shows drawer recovery', () => {
+  it('reports a mutation-seeded run that fails in the first list response exactly once', async () => {
     const pendingRun = {
       counts: {},
       createdAt: new Date(),
@@ -330,11 +333,17 @@ describe('RetentionPage execute confirmation payload', () => {
       progressTotal: 1,
       requestedBy: 'admin',
       scope: 'conversations',
-      status: 'running',
+      status: 'pending',
     };
-    runsData = { items: [pendingRun], nextCursor: null };
+    runsData = undefined;
+    retentionDryRun.mockResolvedValue({ items: [pendingRun] });
     render(<RetentionPage />);
     expect(toastError).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('audit.retention.cleanup.dryRun'));
+    await act(async () => {
+      await openAuditReasonModal.mock.results[0]!.value;
+    });
 
     runsData = {
       items: [
@@ -354,5 +363,10 @@ describe('RetentionPage execute confirmation payload', () => {
     fireEvent.click(screen.getByText('run-failed'));
     expect(screen.getByRole('alert').textContent).toContain('audit.retention.runs.failureTitle');
     expect(screen.getByText('audit.retention.runs.runDryCheck')).toBeTruthy();
+
+    fireEvent.change(screen.getByTestId('scope-select'), {
+      target: { value: 'all' },
+    });
+    expect(toastError).toHaveBeenCalledTimes(1);
   });
 });

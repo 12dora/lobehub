@@ -4,7 +4,7 @@ import { LOADING_FLAT } from '@lobechat/const';
 import { AccordionItem, Flexbox, Skeleton } from '@lobehub/ui';
 import { Divider } from 'antd';
 import isEqual from 'fast-deep-equal';
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 
 import SafeBoundary from '@/components/ErrorBoundary';
 import dynamic from '@/libs/next/dynamic';
@@ -62,7 +62,8 @@ const Tool = memo<GroupToolProps>(({ assistantMessageId, disableEditing, id }) =
   const isPending = intervention?.status === 'pending';
   const isReject = intervention?.status === 'rejected';
   const isAbort = intervention?.status === 'aborted';
-  const needExpand = renderDisplayControl !== 'collapsed' || isPending;
+  const hasError = !!result?.error;
+  const needExpand = renderDisplayControl !== 'collapsed' || isPending || hasError;
   const isAlwaysExpand = renderDisplayControl === 'alwaysExpand';
 
   let isArgumentsStreaming = false;
@@ -87,7 +88,6 @@ const Tool = memo<GroupToolProps>(({ assistantMessageId, disableEditing, id }) =
     operationSelectors.isMessageProcessing(assistantMessageId),
   );
 
-  const hasError = !!result?.error;
   // This tool's own result is the source of truth for completion. The
   // message-level toolCalling flag stays true while sibling tools are still
   // running, so without this guard a finished tool flips back into "loading".
@@ -103,23 +103,27 @@ const Tool = memo<GroupToolProps>(({ assistantMessageId, disableEditing, id }) =
   const canToggleCustomToolRender = hasCustomRender && !isPending && !isReject && !isAbort;
 
   // Handle expand state changes
-  const handleExpand = (expand?: boolean) => {
-    // Block collapse action when alwaysExpand is set
-    if (isAlwaysExpand && expand === false) {
-      return;
-    }
-    // When collapsing, also turn off debug mode so the accordion can actually collapse
-    if (expand === false) {
-      setShowDebug(false);
-    }
-    setShowToolRender(!!expand);
-  };
+  const handleExpand = useCallback(
+    (expand?: boolean) => {
+      // Block collapse action when alwaysExpand is set
+      if (isAlwaysExpand && expand === false) {
+        return;
+      }
+      // When collapsing, also turn off debug mode so the accordion can actually collapse
+      if (expand === false) {
+        setShowDebug(false);
+      }
+      setShowToolRender(!!expand);
+    },
+    [isAlwaysExpand],
+  );
 
   useEffect(() => {
-    if (needExpand) {
-      setTimeout(() => handleExpand(true), 100);
-    }
-  }, [needExpand]);
+    if (!needExpand) return;
+
+    const timer = setTimeout(() => handleExpand(true), 100);
+    return () => clearTimeout(timer);
+  }, [handleExpand, needExpand]);
 
   if (!tool) return null;
 

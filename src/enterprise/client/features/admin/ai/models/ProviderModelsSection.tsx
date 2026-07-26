@@ -37,6 +37,15 @@ const styles = createStaticStyles(({ css }) => ({
     padding: 12px;
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
 
+    transition:
+      opacity ${cssVar.motionDurationFast} ${cssVar.motionEaseInOut},
+      background-color ${cssVar.motionDurationFast} ${cssVar.motionEaseInOut};
+
+    &[data-loading='true'] {
+      opacity: 0.72;
+      background: ${cssVar.colorFillQuaternary};
+    }
+
     @media (width <= 900px) {
       grid-template-columns: 1fr;
     }
@@ -99,12 +108,12 @@ const ProviderModelsSection = memo<ProviderModelsSectionProps>(
           sorted.map((model, index) => {
             const loading = actionLoadingId === 'models' || actionLoadingId === model.id;
             return (
-              <div className={styles.item} key={model.id}>
+              <div className={styles.item} data-loading={loading} key={model.id}>
                 <Flexbox gap={2}>
                   <Text strong>{model.displayName || model.modelKey}</Text>
                   <Text type="secondary">{model.modelKey}</Text>
                 </Flexbox>
-                <Text>{model.type}</Text>
+                <Text>{t(`aiCatalog.modelTypes.${model.type}` as never)}</Text>
                 <Tag color={model.enabled ? 'success' : 'default'}>
                   {t(`aiCatalog.common.boolean.${model.enabled}` as never)}
                 </Tag>
@@ -115,6 +124,7 @@ const ProviderModelsSection = memo<ProviderModelsSectionProps>(
                         <ActionIcon
                           disabled={loading || index === 0}
                           icon={ArrowUpIcon}
+                          loading={loading}
                           size="small"
                           onClick={() => move(index, -1)}
                         />
@@ -123,6 +133,7 @@ const ProviderModelsSection = memo<ProviderModelsSectionProps>(
                         <ActionIcon
                           disabled={loading || index === sorted.length - 1}
                           icon={ArrowDownIcon}
+                          loading={loading}
                           size="small"
                           onClick={() => move(index, 1)}
                         />

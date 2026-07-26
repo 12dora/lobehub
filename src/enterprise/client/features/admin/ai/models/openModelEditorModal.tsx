@@ -234,7 +234,10 @@ const ModelEditorContent = memo<ModelEditorContentProps>(
                 'text2music',
                 'tts',
                 'video',
-              ].map((value) => ({ label: value, value }))}
+              ].map((value) => ({
+                label: t(`aiCatalog.modelTypes.${value}` as never),
+                value,
+              }))}
               onChange={(value) =>
                 dispatch({ type: 'modelType', value: value as AdminAiModelDraft['type'] })
               }

@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminConnectorGetOutput } from './types';
 import { useConnectorEditor } from './useConnectorEditor';
@@ -7,6 +7,7 @@ import { useConnectorEditor } from './useConnectorEditor';
 const mocks = vi.hoisted(() => ({
   confirmModal: vi.fn(),
   i18n: { language: 'en' },
+  toastWarning: vi.fn(),
   useBlocker: vi.fn((): { state: 'unblocked' } => ({ state: 'unblocked' })),
   t: vi.fn((key: string) => key),
 }));
@@ -17,6 +18,7 @@ vi.mock('react-router', () => ({
 
 vi.mock('@lobehub/ui/base-ui', () => ({
   confirmModal: mocks.confirmModal,
+  toast: { warning: mocks.toastWarning },
 }));
 
 vi.mock('react-i18next', () => ({
@@ -53,6 +55,9 @@ describe('useConnectorEditor', () => {
     localStorage.clear();
     vi.clearAllMocks();
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it('supplies_edited_secret_as_secretLeaves_and_rejects_localStorage_write', () => {
     const { result } = renderHook(() => useConnectorEditor(snapshot(), true));
@@ -75,6 +80,24 @@ describe('useConnectorEditor', () => {
       result.current.updateDraft('description', `note: ${secret}`);
     });
     expect(localStorage.getItem(key)).toBeNull();
+    expect(mocks.toastWarning).toHaveBeenCalledWith('connectorCatalog.unsaved.recoveryUnavailable');
+  });
+
+  it('warns only once per editing session when recovery writes remain unavailable', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('QuotaExceededError');
+    });
+    const { result } = renderHook(() => useConnectorEditor(snapshot(), true));
+
+    act(() => {
+      result.current.updateDraft('description', 'First edit');
+    });
+    act(() => {
+      result.current.updateDraft('description', 'Second edit');
+    });
+
+    expect(mocks.toastWarning).toHaveBeenCalledTimes(1);
+    expect(mocks.toastWarning).toHaveBeenCalledWith('connectorCatalog.unsaved.recoveryUnavailable');
   });
 
   it('restored_replace_requires_reentry_blocks_save_until_reentered_or_dismissed', () => {

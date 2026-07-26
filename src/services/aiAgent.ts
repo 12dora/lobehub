@@ -106,6 +106,12 @@ export interface GetSubAgentTaskStatusParams {
   threadId: string;
 }
 
+export interface GetOperationStatusParams {
+  historyLimit?: number;
+  includeHistory?: boolean;
+  operationId: string;
+}
+
 export interface InterruptTaskParams {
   operationId?: string;
   threadId?: string;
@@ -195,6 +201,13 @@ class AiAgentService {
    */
   async getSubAgentTaskStatus(params: GetSubAgentTaskStatusParams) {
     return await lambdaClient.aiAgent.getSubAgentTaskStatus.query(params);
+  }
+
+  /**
+   * Get the authoritative persisted state for a running Gateway operation.
+   */
+  async getOperationStatus(params: GetOperationStatusParams) {
+    return await lambdaClient.aiAgent.getOperationStatus.query(params);
   }
 
   /**

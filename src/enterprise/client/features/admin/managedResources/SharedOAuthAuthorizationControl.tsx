@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
+import { Alert, Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { cssVar } from 'antd-style';
 import debug from 'debug';
@@ -56,6 +56,7 @@ const SharedOAuthAuthorizationControl = memo<SharedOAuthAuthorizationControlProp
     const { t } = useTranslation('admin');
     const myUserId = useUserStore((s) => s.user?.id);
     const [busy, setBusy] = useState(false);
+    const [refreshFailed, setRefreshFailed] = useState(false);
     const { data, error, isLoading, mutate } = useClientDataSWR(
       canRead ? 'admin-managed-resources/connector-governance' : null,
       () => adminConnectorsService.getGovernance(),
@@ -90,10 +91,12 @@ const SharedOAuthAuthorizationControl = memo<SharedOAuthAuthorizationControlProp
     if (!data) return null;
 
     const ownerUserId = data.doc.sharedAuthorization.ownerUserId ?? null;
-    const actionsDisabled = disabled || busy || !canUpdate;
+    // A successful mutation followed by a failed refresh leaves the rendered
+    // revision stale. Only a refresh retry is safe until current state arrives.
+    const actionsDisabled = disabled || busy || refreshFailed || !canUpdate;
 
     const setOwner = (next: string | null) => {
-      if (!canUpdate) return;
+      if (!canUpdate || refreshFailed) return;
       confirmModal({
         content: next
           ? t('managedResources.sharedOAuth.enableConfirm', {
@@ -119,16 +122,21 @@ const SharedOAuthAuthorizationControl = memo<SharedOAuthAuthorizationControlProp
               },
             });
             if (refreshFailed) {
-              toast.success(
-                t('managedResources.sharedOAuth.savedRefreshFailed', {
-                  defaultValue: 'Shared authorization updated, but the view could not refresh.',
-                }),
-              );
+              setRefreshFailed(true);
+              toast.warning(t('managedResources.sharedOAuth.savedRefreshFailed'));
               return;
             }
+            setRefreshFailed(false);
             toast.success(
               t('managedResources.sharedOAuth.saved', {
                 defaultValue: 'Shared authorization updated',
+              }),
+            );
+          } catch (cause) {
+            log('setSharedAuthorization failed: %O', cause);
+            toast.error(
+              t('managedResources.sharedOAuth.mutationFailed', {
+                defaultValue: 'Shared authorization could not be updated. Try again.',
               }),
             );
           } finally {
@@ -141,6 +149,29 @@ const SharedOAuthAuthorizationControl = memo<SharedOAuthAuthorizationControlProp
 
     return (
       <Flexbox gap={6} style={{ marginBlockStart: 10 }}>
+        {refreshFailed ? (
+          <Alert
+            showIcon
+            message={t('managedResources.sharedOAuth.savedRefreshFailed')}
+            type="warning"
+            extra={
+              <Button
+                size="small"
+                onClick={async () => {
+                  try {
+                    await mutate();
+                    setRefreshFailed(false);
+                  } catch (cause) {
+                    log('shared OAuth retry refresh failed: %O', cause);
+                    toast.error(t('managedResources.sharedOAuth.refreshRetryFailed'));
+                  }
+                }}
+              >
+                {t('managedResources.sharedOAuth.refreshRetry')}
+              </Button>
+            }
+          />
+        ) : null}
         <Flexbox horizontal align="center" gap={8} justify="space-between">
           <Flexbox horizontal align="center" gap={6}>
             <Text strong style={{ fontSize: 13 }}>

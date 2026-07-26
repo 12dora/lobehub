@@ -9,8 +9,10 @@ import { CONFLICT_DRAFT_KEY } from './settingsPolicyController';
 import SettingsPolicyPage from './SettingsPolicyPage';
 
 const mocks = vi.hoisted(() => {
-  const defaultT = (key: string, values?: Record<string, unknown>) =>
-    values ? `${key}:${Object.values(values).join('|')}` : key;
+  const defaultT = (key: string, values?: Record<string, unknown>) => {
+    if (key === 'settingsPolicy.unknownSetting') return `Setting ${values?.index}`;
+    return values ? `${key}:${Object.values(values).join('|')}` : key;
+  };
   return {
     blocker: { proceed: vi.fn(), reset: vi.fn(), state: 'unblocked' },
     capability: true,
@@ -262,7 +264,7 @@ describe('SettingsPolicyPage', () => {
     async (_role, permissions, editorsDisabled, canValidate, canSave) => {
       mocks.permissions = permissions as string[];
       render(<SettingsPolicyPage />);
-      const editor = await screen.findByLabelText('editor-font.title:general.fontSize');
+      const editor = await screen.findByLabelText('editor-font.title:Setting 1');
       expect(editor).toHaveProperty('disabled', editorsDisabled);
       expect(screen.getByLabelText('settingsPolicy.uiMode.label')).toHaveProperty(
         'disabled',
@@ -299,7 +301,7 @@ describe('SettingsPolicyPage', () => {
     expect(screen.queryByLabelText('visibility-toggle')).toBeNull();
 
     // Touch value so draft is dirty and save is primary
-    fireEvent.change(screen.getByLabelText('editor-font.title:general.fontSize'), {
+    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'kept' },
     });
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
@@ -347,7 +349,7 @@ describe('SettingsPolicyPage', () => {
     });
 
     render(<SettingsPolicyPage />);
-    fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'local' },
     });
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
@@ -367,7 +369,7 @@ describe('SettingsPolicyPage', () => {
     expect(window.localStorage.getItem(CONFLICT_DRAFT_KEY)).toBeNull();
 
     await waitFor(() => expect(mocks.data.draftToken).toBe(savedDraftToken));
-    fireEvent.change(screen.getByLabelText('editor-font.title:general.fontSize'), {
+    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'local-again' },
     });
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
@@ -386,7 +388,7 @@ describe('SettingsPolicyPage', () => {
     });
 
     render(<SettingsPolicyPage />);
-    fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'local' },
     });
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
@@ -491,7 +493,7 @@ describe('SettingsPolicyPage', () => {
     mocks.mutate.mockImplementation(async () => mocks.data);
 
     render(<SettingsPolicyPage />);
-    fireEvent.change(screen.getByLabelText('editor-font.title:general.fontSize'), {
+    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'local-only' },
     });
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
@@ -583,7 +585,7 @@ describe('SettingsPolicyPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
   });
 
-  it('disables publish and restore-defaults when the active token is stale', async () => {
+  it('adopts a newer clean token and requires validation before publish', async () => {
     mocks.permissions = [
       PLATFORM_PERMISSIONS.SETTINGS_READ,
       PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
@@ -595,19 +597,17 @@ describe('SettingsPolicyPage', () => {
     expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeEnabled();
 
     mocks.data = makeData(1, 'server', latestDraftToken);
-    rerender(<SettingsPolicyPage />);
-    fireEvent.change(screen.getByPlaceholderText('settingsPolicy.searchPlaceholder'), {
-      target: { value: 'font' },
-    });
-    expect(screen.getByRole('button', { name: 'settingsPolicy.publish' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
+    rerender(<SettingsPolicyPage embedded />);
+    expect(screen.queryByRole('button', { name: 'settingsPolicy.publish' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'settingsPolicy.validate' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeEnabled();
   });
 
   it('protects dirty drafts from SPA navigation', async () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
     mocks.blocker.state = 'blocked';
     render(<SettingsPolicyPage />);
-    fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'local' },
     });
     await waitFor(() => expect(mocks.createModal).toHaveBeenCalled());
@@ -631,7 +631,7 @@ describe('SettingsPolicyPage', () => {
     mocks.refreshAdminSettingsDraft.mockResolvedValue(undefined);
 
     render(<SettingsPolicyPage />);
-    fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'local' },
     });
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
@@ -644,7 +644,7 @@ describe('SettingsPolicyPage', () => {
     });
     // Save still reported success — not a mutation failure.
     expect(screen.getByText(/settingsPolicy\.saveState\.saved/)).toBeTruthy();
-    expect(screen.getByText(/settingsPolicy\.revision:2/)).toBeTruthy();
+    expect(screen.queryByText(/settingsPolicy\.revision/)).toBeNull();
 
     mocks.mutate.mockResolvedValueOnce(makeData(2, 'local', savedDraftToken));
     fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.refresh.retry' }));
@@ -842,10 +842,43 @@ describe('SettingsPolicyPage', () => {
     expect(screen.getByText('settingsPolicy.noResults')).toBeTruthy();
   });
 
+  it('uses a localized safe label when registry title metadata is missing', async () => {
+    const sentinelPath = 'machine.private.sentinel';
+    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    mocks.data = {
+      ...makeData(1),
+      draft: { [sentinelPath]: oldPolicy },
+      publishedPolicies: { [sentinelPath]: oldPolicy },
+      registry: [
+        {
+          control: 'text',
+          descriptionKey: 'missing.description',
+          group: 'general',
+          path: sentinelPath,
+          schemaVersion: 1,
+          titleKey: 'missing.title',
+        },
+      ],
+    };
+    mocks.t = (key, values) => {
+      if (key === 'settingsPolicy.unknownSetting') return `Localized setting ${values?.index}`;
+      if (key === 'missing.title' || key === 'missing.description') {
+        return String(values?.defaultValue ?? '');
+      }
+      return mocks.defaultT(key, values);
+    };
+
+    const { container } = render(<SettingsPolicyPage />);
+
+    expect(await screen.findByText('Localized setting 1')).toBeInTheDocument();
+    expect(screen.getByLabelText('editor-Localized setting 1')).toBeInTheDocument();
+    expect(container.textContent).not.toContain(sentinelPath);
+  });
+
   it('only guards the exit while the draft actually diverges from the published policy', async () => {
     mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
     render(<SettingsPolicyPage />);
-    const editor = await screen.findByLabelText('editor-font.title:general.fontSize');
+    const editor = await screen.findByLabelText('editor-font.title:Setting 1');
 
     // The latest blocker predicate, evaluated for a real cross-page navigation.
     const blocksPageExit = () => {
@@ -868,5 +901,50 @@ describe('SettingsPolicyPage', () => {
     // the sticky `dirty` flag is still set.
     fireEvent.change(editor, { target: { value: 'old' } });
     await waitFor(() => expect(blocksPageExit()).toBe(false));
+  });
+
+  it('guards embedded same-path tab switches while preserving standalone query changes', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    const { rerender } = render(<SettingsPolicyPage embedded />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
+      target: { value: 'edited' },
+    });
+
+    const evaluateLatestBlocker = () => {
+      const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
+      if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
+      return shouldBlock({
+        currentLocation: { pathname: '/admin/unified', search: '?tab=settings' },
+        nextLocation: { pathname: '/admin/unified', search: '?tab=managed' },
+      });
+    };
+
+    await waitFor(() => expect(evaluateLatestBlocker()).toBe(true));
+
+    rerender(<SettingsPolicyPage />);
+    await waitFor(() => expect(evaluateLatestBlocker()).toBe(false));
+  });
+
+  it('adopts a newer SWR snapshot when clean and preserves local edits when dirty', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    const { rerender } = render(<SettingsPolicyPage />);
+    await screen.findByLabelText('editor-font.title:Setting 1');
+
+    mocks.data = makeData(2, 'server-clean', latestDraftToken);
+    rerender(<SettingsPolicyPage embedded />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('editor-font.title:Setting 1')).toHaveValue('server-clean'),
+    );
+
+    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
+      target: { value: 'local-dirty' },
+    });
+    mocks.data = makeData(3, 'server-newer', savedDraftToken);
+    rerender(<SettingsPolicyPage />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('editor-font.title:Setting 1')).toHaveValue('local-dirty'),
+    );
+    expect(screen.getByText('settingsPolicy.conflict.title')).toBeInTheDocument();
   });
 });
