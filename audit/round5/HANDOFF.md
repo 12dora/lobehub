@@ -6,12 +6,12 @@
 
 **Remediation state:** implementation and independent verification complete
 
-**Publication state:** final documentation, commit, and push are still pending
+**Publication state:** completed and pushed to `origin/agent/round5-remediation-handoff`
 
-Round 5 is ready for final review and publication. Every implementation bundle reached an
-independent high-effort verifier PASS after any required rework. The original audit reports and
-adversarial verification reports remain the evidence source; [`REMEDIATION.md`](./REMEDIATION.md)
-records the execution ledger.
+Round 5 is published and ready for final review. Every implementation bundle reached an independent
+high-effort verifier PASS after any required rework. The original audit reports and adversarial
+verification reports remain the evidence source; [`REMEDIATION.md`](./REMEDIATION.md) records the
+execution ledger.
 
 ## Executive disposition
 
@@ -191,17 +191,15 @@ unresolved product defect.
 - `origin` now contains only `main` and `agent/round5-remediation-handoff`, as explicitly requested.
   `upstream` was not modified.
 - Draft PR #1 closed automatically when its `canary` base branch was deleted.
-- The remote current branch still points at the earlier checkpoint. The completed remediation and
-  this final documentation are **not claimed committed or pushed here**.
+- The completed remediation was committed as `fcd49ec347` and pushed to
+  `origin/agent/round5-remediation-handoff`.
+- This handoff status update is the final documentation-only follow-up on the same remote branch.
 
-Final owner steps:
+Review/continuation steps:
 
-1. Inspect `git status` and the complete diff, especially generated migration artifacts.
-2. Re-run `git diff --check` and any release-specific CI gate desired beyond the recorded scoped
-   evidence.
-3. Commit the completed Round-5 remediation and documentation on the current branch.
-4. Push `agent/round5-remediation-handoff`.
-5. If a PR is wanted, open it against `main`; the previous `canary`-based PR cannot be reused.
+1. Review the complete branch diff, especially generated migration artifacts.
+2. Run any release-specific CI gate desired beyond the recorded scoped evidence.
+3. If a PR is wanted, open it against `main`; the previous `canary`-based PR cannot be reused.
 
 Useful evidence:
 
