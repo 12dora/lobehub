@@ -6,6 +6,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { parsePlatformKeyProviderName, PlatformSecretService } from '../security/secret';
 import { processNextPlatformSecretRewrapBatch } from '../services/secretRewrap';
 import { isPersistentEnterpriseWorkerRuntime } from './persistentWorkerRuntime';
+import { startPersistentWorkerScheduler } from './persistentWorkerScheduler';
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_INTERVAL_MS = 2000;
@@ -44,22 +45,13 @@ export const isPlatformSecretRewrapWorkerRuntime = (
 export const ensurePlatformSecretRewrapWorkerStarted = (): void => {
   if (workerStarted || !isPlatformSecretRewrapWorkerRuntime()) return;
   workerStarted = true;
-  const schedule = () => {
-    const timer = setTimeout(run, DEFAULT_INTERVAL_MS);
-    timer.unref();
-  };
-  const run = async () => {
-    try {
+  startPersistentWorkerScheduler({
+    baseIntervalMs: DEFAULT_INTERVAL_MS,
+    namespace: 'secret-rewrap',
+    run: async () => {
       const secrets = PlatformSecretService.tryFromEnv(process.env);
       if (!secrets || secrets.keyProviderId !== 'vault') return;
       await runPlatformSecretRewrapBatches(await getServerDB(), secrets);
-    } catch (error) {
-      console.error('[platform-secret-rewrap-worker] batch failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
-    } finally {
-      schedule();
-    }
-  };
-  void run();
+    },
+  });
 };

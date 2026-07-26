@@ -1,3 +1,4 @@
+import type { HumanInterventionOutcome } from '@lobechat/agent-gateway-client';
 import type { AgentRuntimeContext } from '@lobechat/agent-runtime';
 import type { ChatToolPayload, ToolSource } from '@lobechat/types';
 import debug from 'debug';
@@ -20,7 +21,30 @@ export interface InterventionInput {
 export interface InterventionResult {
   newState: any;
   nextContext: AgentRuntimeContext | undefined;
+  outcome: InterventionOutcome;
 }
+
+export type InterventionOutcome = HumanInterventionOutcome;
+
+const toInterventionResult = (
+  state: any,
+  nextContext: AgentRuntimeContext | undefined,
+  outcome: InterventionOutcome,
+): InterventionResult => {
+  const newState = structuredClone(state);
+  newState.metadata = {
+    ...newState.metadata,
+    interventionOutcome: {
+      message:
+        outcome === 'accepted'
+          ? undefined
+          : 'This approval is no longer current. Refresh the conversation and try again.',
+      occurredAt: new Date().toISOString(),
+      status: outcome,
+    },
+  };
+  return { newState, nextContext, outcome };
+};
 
 /**
  * Owns the three branches of human intervention on a `waiting_for_human`
@@ -60,10 +84,10 @@ export class HumanInterventionHandler {
     // this codepath; the call site treats unrecognized intervention inputs as
     // a no-op and lets the regular step loop run.
     if (humanInput) {
-      return { newState: state, nextContext: undefined };
+      return toInterventionResult(state, undefined, 'mismatch');
     }
 
-    return { newState: state, nextContext: undefined };
+    return toInterventionResult(state, undefined, 'stale');
   }
 
   private async approve(
@@ -73,7 +97,7 @@ export class HumanInterventionHandler {
   ): Promise<InterventionResult> {
     if (!toolMessageId) {
       log('approve requires toolMessageId, got undefined');
-      return { newState: state, nextContext: undefined };
+      return toInterventionResult(state, undefined, 'stale');
     }
 
     const plugin = await this.messageModel.findMessagePlugin(toolMessageId);
@@ -90,7 +114,7 @@ export class HumanInterventionHandler {
       typeof plugin.identifier !== 'string'
     ) {
       log('approve tool receipt mismatch');
-      return { newState: state, nextContext: undefined };
+      return toInterventionResult(state, undefined, !plugin || !pendingTool ? 'stale' : 'mismatch');
     }
     const persistedType = plugin.type ?? 'default';
     if (
@@ -100,7 +124,7 @@ export class HumanInterventionHandler {
       pendingTool.type !== persistedType
     ) {
       log('approve pending tool differs from persisted plugin');
-      return { newState: state, nextContext: undefined };
+      return toInterventionResult(state, undefined, 'mismatch');
     }
     const source = this.resolvePersistedToolSource(state, plugin.identifier);
     const persistedToolCall: ChatToolPayload = {
@@ -112,7 +136,7 @@ export class HumanInterventionHandler {
       type: persistedType as ChatToolPayload['type'],
     };
     const approved = await this.messageModel.approvePendingMessagePlugin(toolMessageId);
-    if (!approved) return { newState: state, nextContext: undefined };
+    if (!approved) return toInterventionResult(state, undefined, 'already_consumed');
 
     const newState = structuredClone(state);
     newState.lastModified = new Date().toISOString();
@@ -142,9 +166,9 @@ export class HumanInterventionHandler {
       )
       .catch(() => {});
 
-    return {
+    return toInterventionResult(
       newState,
-      nextContext: {
+      {
         payload: {
           approvedToolCall: persistedToolCall,
           parentMessageId: toolMessageId,
@@ -152,7 +176,8 @@ export class HumanInterventionHandler {
         },
         phase: 'human_approved_tool',
       },
-    };
+      'accepted',
+    );
   }
 
   private resolvePersistedToolSource = (state: any, identifier: string): ToolSource | undefined => {
@@ -175,7 +200,7 @@ export class HumanInterventionHandler {
 
     if (!toolMessageId) {
       log('reject requires toolMessageId, got undefined');
-      return { newState: state, nextContext: undefined };
+      return toInterventionResult(state, undefined, 'stale');
     }
 
     const rejectionContent = rejectionReason
@@ -191,13 +216,13 @@ export class HumanInterventionHandler {
         (tool: ChatToolPayload) => tool.id === rejectedToolCallId,
       )
     ) {
-      return { newState: state, nextContext: undefined };
+      return toInterventionResult(state, undefined, 'stale');
     }
     const rejected = await this.messageModel.rejectPendingMessagePlugin(toolMessageId, {
       content: rejectionContent,
       rejectedReason: rejectionReason,
     });
-    if (!rejected) return { newState: state, nextContext: undefined };
+    if (!rejected) return toInterventionResult(state, undefined, 'already_consumed');
 
     const newState = structuredClone(state);
     newState.lastModified = new Date().toISOString();
@@ -242,11 +267,11 @@ export class HumanInterventionHandler {
 
     if (newState.pendingToolsCalling.length > 0) {
       newState.status = 'waiting_for_human';
-      return { newState, nextContext: undefined };
+      return toInterventionResult(newState, undefined, 'accepted');
     }
 
     newState.status = 'running';
-    return { newState, nextContext: { phase: 'user_input' } };
+    return toInterventionResult(newState, { phase: 'user_input' }, 'accepted');
   }
 
   /**
@@ -279,6 +304,6 @@ export class HumanInterventionHandler {
       interruptedAt: new Date().toISOString(),
       reason: 'human_rejected',
     };
-    return { newState, nextContext: undefined };
+    return toInterventionResult(newState, undefined, 'accepted');
   }
 }

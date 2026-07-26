@@ -2607,7 +2607,8 @@ export class AiAgentService {
       );
 
       // ── Org connector governance (org-mandate layer) ──────────────────────
-      // Resolved ONCE per run; the resolver fails open to per-user behavior.
+      // Resolved once per run. Inactive governance preserves per-user behavior;
+      // resolution failures return the deny-all sentinel and stay fail-closed.
       // While active:
       //  - builtin manifests are patched from the org builtin tool permission
       //    matrix (`applyBuiltinGovernance` below) — REPLACING per-user

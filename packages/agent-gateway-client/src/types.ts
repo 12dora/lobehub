@@ -39,6 +39,12 @@ export type AgentStreamEventType =
    * cancellation marker.
    */
   | 'agent_intervention_response'
+  /**
+   * Authoritative result of applying a persisted human approval/rejection.
+   * Replayed like every other stream event so reconnecting clients reconcile
+   * the pending intervention from the database.
+   */
+  | 'human_intervention_outcome'
   | 'step_start'
   | 'step_complete'
   /**
@@ -162,6 +168,13 @@ export interface AgentInterventionResponseData {
   /** User-supplied answer (JSON-serializable). Absent when cancelled. */
   result?: unknown;
   toolCallId: string;
+}
+
+export type HumanInterventionOutcome = 'accepted' | 'already_consumed' | 'mismatch' | 'stale';
+
+export interface HumanInterventionOutcomeData {
+  outcome: HumanInterventionOutcome;
+  toolMessageId?: string;
 }
 
 /**

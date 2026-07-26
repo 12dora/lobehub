@@ -85,6 +85,31 @@ const callerFor = async (
   } as never);
 
 describe('admin.creds router', () => {
+  it('keeps invalid upload payload errors as stable presentation codes', async () => {
+    const caller = await callerFor(ids.aiAdmin);
+    await expect(
+      caller.creds.uploadFile({
+        file: 'YWJj!!!!',
+        fileName: 'bad.bin',
+        fileType: 'application/octet-stream',
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringContaining('PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID'),
+    });
+    // Empty base64 passes the canonical alphabet contract and reaches the service mapper.
+    await expect(
+      caller.creds.uploadFile({
+        file: '',
+        fileName: 'empty.bin',
+        fileType: 'application/octet-stream',
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID',
+    });
+  });
+
   it('get returns configured masks without plaintext secret material', async () => {
     const caller = await callerFor(ids.aiAdmin);
     const created = await caller.creds.createKV({

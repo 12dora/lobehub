@@ -144,23 +144,25 @@ export const terminalFailExport = async (
     exportId: string;
     jobId: string;
     requestedBy: string;
-    skipJobFail?: boolean;
     terminal: boolean;
     workerId: string;
   },
-): Promise<void> => {
-  await db.transaction(async (tx) => {
+): Promise<boolean> => {
+  return db.transaction(async (tx) => {
     const exportsTx = new PlatformAuditExportModel(tx);
     const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
-    await exportsTx.fail(params.exportId, { code: params.code });
-    if (!params.skipJobFail) {
-      await jobsTx.fail({
-        error: { code: params.code },
-        jobId: params.jobId,
-        terminal: params.terminal,
-        workerId: params.workerId,
-      });
+    const failedJob = await jobsTx.fail({
+      error: { code: params.code },
+      jobId: params.jobId,
+      terminal: params.terminal,
+      workerId: params.workerId,
+    });
+    if (!failedJob) {
+      throw new AuditExportLeaseLostError();
     }
+    if (failedJob.status !== 'dead') return false;
+
+    await exportsTx.fail(params.exportId, { code: params.code });
     await appendExportWorkerOutcome(tx, {
       errorCode: params.code,
       exportId: params.exportId,
@@ -169,6 +171,7 @@ export const terminalFailExport = async (
       required: true,
       result: 'failure',
     });
+    return true;
   });
 };
 

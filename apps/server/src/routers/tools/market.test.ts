@@ -444,7 +444,10 @@ describe('tools marketRouter', () => {
         topicId: 'topic-1',
       }),
     ).resolves.toMatchObject({
-      error: { message: 'Managed Skill execution failed' },
+      error: {
+        message:
+          'This Skill couldn’t run. Start a new run and try again. If the problem continues, contact your administrator.',
+      },
       success: false,
     });
     const logs = JSON.stringify(managedSkillMocks.debugLog.mock.calls);

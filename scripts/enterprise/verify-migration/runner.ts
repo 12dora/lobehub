@@ -1,6 +1,11 @@
 import { execFileSync } from 'node:child_process';
 
-import { allJournalEntries, verifyBaseline, verifyJournalSnapshotAlignment } from './baseline';
+import {
+  allJournalEntries,
+  materializeHistoricalBaselineFixture,
+  verifyBaseline,
+  verifyJournalSnapshotAlignment,
+} from './baseline';
 import {
   BASELINE_COMMIT,
   BASELINE_LAST_TAG,
@@ -24,12 +29,13 @@ import {
   verifySecretReferenceInvariants,
 } from './invariants';
 import {
-  applyOfficialBaselineMigrations,
-  applyOfficialPostBaselineMigrations,
   countAppliedMigrations,
   loadOfficialMigrations,
   postBaselineEntries,
+  runOfficialNodePostgresMigrator,
+  runOfficialNodePostgresMigratorFromFolder,
   verifyExpandOnlyPostBaselineSql,
+  verifyNoTopLevelTransactionControl,
   verifyOfficialMigratorRerun,
 } from './migrations';
 import type { OwnedPostgresLifecycle } from './ownedPostgres';
@@ -110,6 +116,7 @@ export const runMigrationCompatVerification = async (
   let fixtureStatus: 'failed' | 'loaded' | 'skipped' = 'skipped';
   let fixtureRowCounts: Record<string, number> = {};
   let ownedLifecycle: OwnedPostgresLifecycle | undefined;
+  let historicalFixture: ReturnType<typeof materializeHistoricalBaselineFixture> | undefined;
   const provisionOwnedPostgres = options.createOwnedPostgres ?? createOwnedPostgres;
 
   // Privacy first — fail closed before any owned DB is created.
@@ -142,8 +149,9 @@ export const runMigrationCompatVerification = async (
     checks.push(journalCheck);
 
     const expandOnlyCheck = await timed('expand-only', async () => {
-      const result = verifyExpandOnlyPostBaselineSql(repoRoot);
-      return result.match;
+      const expandResult = verifyExpandOnlyPostBaselineSql(repoRoot);
+      const transactionResult = verifyNoTopLevelTransactionControl(repoRoot);
+      return expandResult.match && transactionResult.match;
     });
     checks.push(expandOnlyCheck);
 
@@ -184,13 +192,17 @@ export const runMigrationCompatVerification = async (
         });
       }
     } else {
+      historicalFixture = materializeHistoricalBaselineFixture(repoRoot);
       ownedLifecycle = await provisionOwnedPostgres();
       resourceId = ownedLifecycle.handle.resourceToken;
 
       const applyBaselineCheck = await timed('apply-baseline', async () =>
-        ownedLifecycle!.handle.withClient(async (client) => {
-          const summary = await applyOfficialBaselineMigrations(client, repoRoot);
-          return summary.appliedCount === BASELINE_MIGRATION_COUNT;
+        ownedLifecycle!.handle.withPool(async (pool, client) => {
+          await runOfficialNodePostgresMigratorFromFolder(
+            pool,
+            historicalFixture!.migrationsFolder,
+          );
+          return (await countAppliedMigrations(client)) === BASELINE_MIGRATION_COUNT;
         }),
       );
       checks.push(applyBaselineCheck);
@@ -209,14 +221,14 @@ export const runMigrationCompatVerification = async (
       fixtureStatus = loadFixtureCheck.result === 'passed' ? 'loaded' : 'failed';
 
       const applyPostCheck = await timed('apply-post-baseline', async () =>
-        ownedLifecycle!.handle.withClient(async (client) => {
-          const summary = await applyOfficialPostBaselineMigrations(client, repoRoot);
+        ownedLifecycle!.handle.withPool(async (pool, client) => {
+          // Production upgrade seam: the squash timestamp predates the
+          // v2.2.10 journal head, so Drizzle skips it and applies follow-ups.
+          await runOfficialNodePostgresMigrator(pool, repoRoot);
           const applied = await countAppliedMigrations(client);
           // Seed platform probes after post-baseline tables exist.
           await seedPlatformProbes(client);
-          return (
-            summary.appliedCount === postBaseline.length && applied === officialMigrations.length
-          );
+          return applied === BASELINE_MIGRATION_COUNT + postBaseline.length;
         }),
       );
       checks.push(applyPostCheck);
@@ -279,7 +291,9 @@ export const runMigrationCompatVerification = async (
 
         return ownedLifecycle!.handle.withPool(async (pool) => {
           const result = await verifyOfficialMigratorRerun(pool, repoRoot);
-          return result.match && result.beforeCount === officialMigrations.length;
+          return (
+            result.match && result.beforeCount === BASELINE_MIGRATION_COUNT + postBaseline.length
+          );
         });
       });
       checks.push(rerunCheck);
@@ -330,6 +344,8 @@ export const runMigrationCompatVerification = async (
     ] as const) {
       ensureCheck(checks, category, { category, durationMs: 0, result: 'skipped' });
     }
+  } finally {
+    historicalFixture?.cleanup();
   }
 
   const overall = deriveOverallResult({

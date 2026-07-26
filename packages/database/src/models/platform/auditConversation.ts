@@ -7,7 +7,7 @@
  * - Does not apply credential masking — service layer owns content policy + masking.
  */
 
-import { and, desc, eq, gte, ilike, lt, or, type SQL, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, lt, or, type SQL, sql } from 'drizzle-orm';
 
 import { escapeLike } from '../../repositories/platformSearch';
 import { messages } from '../../schemas/message';
@@ -68,6 +68,14 @@ export interface PlatformAuditConversationMessageListParams {
   topicId: string;
   /** Required. */
   userId: string;
+}
+
+export interface PlatformAuditConversationMessageBatchListParams extends Omit<
+  PlatformAuditConversationMessageListParams,
+  'topicId'
+> {
+  /** Non-empty topic batch from the current keyset page. */
+  topicIds: string[];
 }
 
 export interface PlatformAuditConversationMessageItem {
@@ -327,6 +335,64 @@ export class PlatformAuditConversationModel {
     const conditions: SQL[] = [
       eq(messages.userId, params.userId),
       eq(messages.topicId, params.topicId),
+    ];
+
+    if (params.from) conditions.push(gte(messages.createdAt, params.from));
+    if (params.to) conditions.push(lt(messages.createdAt, params.to));
+
+    const parsed = parseCursor(params.cursor);
+    if (parsed) {
+      conditions.push(
+        or(
+          lt(messages.createdAt, parsed.createdAt),
+          and(eq(messages.createdAt, parsed.createdAt), lt(messages.id, parsed.id)),
+        )!,
+      );
+    }
+
+    const rows = await this.db
+      .select({
+        agentId: messages.agentId,
+        content: messages.content,
+        createdAt: messages.createdAt,
+        editorData: messages.editorData,
+        error: messages.error,
+        id: messages.id,
+        model: messages.model,
+        parentId: messages.parentId,
+        provider: messages.provider,
+        role: messages.role,
+        sessionId: messages.sessionId,
+        topicId: messages.topicId,
+        updatedAt: messages.updatedAt,
+        userId: messages.userId,
+      })
+      .from(messages)
+      .where(and(...conditions))
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items.at(-1);
+    return { items, nextCursor: hasMore && last ? encodeCursor(last) : null };
+  };
+
+  /**
+   * Full message evidence across a bounded topic page. One keyset query per message
+   * page avoids issuing an empty/detail query for every topic in an export.
+   */
+  listMessageDetailsForTopics = async (
+    params: PlatformAuditConversationMessageBatchListParams,
+  ): Promise<{ items: PlatformAuditConversationMessageItem[]; nextCursor: string | null }> => {
+    if (!params.userId || params.topicIds.length === 0) {
+      throw new Error('userId and topicIds are required for platform audit message detail list');
+    }
+
+    const limit = clampListLimit(params.limit);
+    const conditions: SQL[] = [
+      eq(messages.userId, params.userId),
+      inArray(messages.topicId, params.topicIds),
     ];
 
     if (params.from) conditions.push(gte(messages.createdAt, params.from));

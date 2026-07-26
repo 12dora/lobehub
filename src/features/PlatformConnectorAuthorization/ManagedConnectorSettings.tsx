@@ -3,20 +3,36 @@
 import type { ReactNode } from 'react';
 import { memo } from 'react';
 
-import { ManagedResourceBoundary } from '@/features/ManagedResources';
+import AsyncError from '@/components/AsyncError';
+import Loading from '@/components/Loading/BrandTextLoading';
+import { ManagedResourceTransition, useManagedResource } from '@/features/ManagedResources';
+
+import PlatformConnectorAuthorization from './PlatformConnectorAuthorization';
 
 interface ManagedConnectorSettingsProps {
   fallback: ReactNode;
 }
 
 /**
- * Guard for user/workspace connector settings routes.
- * When connectors are platform-managed, blocks the ordinary settings surface
- * (ManagedResourceNotice). Per-user OAuth must not stay on this entry path —
- * ship a dedicated surface later if needed.
+ * Managed Connectors still require each user to authorize per-user OAuth credentials.
+ * Keep that authorization surface on the canonical Connector settings route while
+ * preserving the ordinary Tool settings fallback for unmanaged deployments.
  */
 const ManagedConnectorSettings = memo<ManagedConnectorSettingsProps>(({ fallback }) => {
-  return <ManagedResourceBoundary resource="connectors">{fallback}</ManagedResourceBoundary>;
+  const { error, loading, managed, refresh } = useManagedResource('connectors');
+
+  const state = error ? 'error' : loading ? 'loading' : managed ? 'managed' : 'content';
+  const content = error ? (
+    <AsyncError error={error} variant="page" onRetry={() => void refresh()} />
+  ) : loading ? (
+    <Loading debugId="ManagedConnectorSettings" />
+  ) : managed ? (
+    <PlatformConnectorAuthorization />
+  ) : (
+    fallback
+  );
+
+  return <ManagedResourceTransition state={state}>{content}</ManagedResourceTransition>;
 });
 
 ManagedConnectorSettings.displayName = 'ManagedConnectorSettings';

@@ -48,6 +48,33 @@ describe('LobeGoogleAI', () => {
 
       // expect(instance.baseURL).toEqual(defaultBaseURL);
     });
+
+    it('routes every non-chat SDK method family through the configured transport', async () => {
+      const customFetch = vi.fn();
+      const localInstance = new LobeGoogleAI({ apiKey: 'test_api_key', fetch: customFetch });
+      const transportSpy = vi
+        .spyOn(localInstance as any, 'withTransport')
+        .mockResolvedValue({ routed: true });
+
+      expect((localInstance as any).boundFetch).toBe(customFetch);
+      await localInstance.createImage!({ model: 'imagen', params: { prompt: 'sunset' } });
+      await localInstance.createVideo!({ model: 'veo', params: { prompt: 'waves' } } as never);
+      await localInstance.transcribe!({
+        file: new File([new Uint8Array([1])], 'speech.wav', { type: 'audio/wav' }),
+        model: 'gemini',
+      });
+      await localInstance.generateObject({
+        messages: [],
+        model: 'gemini',
+        schema: { name: 'result', schema: { type: 'object' } },
+      } as never);
+      await localInstance.handlePollVideoStatus('operations/video-1');
+
+      expect(transportSpy).toHaveBeenCalledTimes(5);
+      for (const [callback] of transportSpy.mock.calls) {
+        expect(callback).toEqual(expect.any(Function));
+      }
+    });
   });
 
   describe('chat', () => {

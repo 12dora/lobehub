@@ -69,6 +69,7 @@ export const adminManagedResourcesPublishOutputSchema = z
   .object({
     auditId: z.string().min(1),
     revision: z.number().int().positive(),
+    runtimeTransition: z.enum(['finalized', 'pending_recovery']),
   })
   .strict();
 

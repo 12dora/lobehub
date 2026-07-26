@@ -257,6 +257,24 @@ describe('composioRouter.updateComposioPlugin dual-write', () => {
     ]);
   });
 
+  it('fails a hanging owner lookup within the end-to-end deadline', async () => {
+    vi.useFakeTimers();
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
+    mocks.connectedAccountsList.mockReturnValue(new Promise(() => {}));
+
+    try {
+      const request = caller().updateComposioPlugin(input);
+      const rejection = expect(request).rejects.toMatchObject({ code: 'TIMEOUT' });
+      await vi.advanceTimersByTimeAsync(15_001);
+
+      await rejection;
+      expect(mocks.getRawComposioTools).not.toHaveBeenCalled();
+      expect(mocks.connectorUpdate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('prunes all connector tools when the refreshed list is empty', async () => {
     mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
     mocks.getRawComposioTools.mockResolvedValue({ items: [] });
@@ -367,6 +385,31 @@ describe('composioRouter.getConnection owner-safe polling', () => {
     await expect(caller().getConnection({ identifier: 'gmail' })).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
+  });
+
+  it('bounds unique-cursor pagination', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([ownedConnector]);
+    mocks.connectedAccountsList.mockImplementation(async ({ cursor }: { cursor?: string }) => ({
+      items: [],
+      nextCursor: `cursor-${Number(cursor?.split('-')[1] ?? 0) + 1}`,
+    }));
+
+    await expect(caller().getConnection({ identifier: 'gmail' })).rejects.toMatchObject({
+      code: 'TIMEOUT',
+    });
+    expect(mocks.connectedAccountsList).toHaveBeenCalledTimes(10);
+  });
+
+  it('rejects a repeated vendor cursor without another request', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([ownedConnector]);
+    mocks.connectedAccountsList
+      .mockResolvedValueOnce({ items: [], nextCursor: 'repeat' })
+      .mockResolvedValueOnce({ items: [], nextCursor: 'repeat' });
+
+    await expect(caller().getConnection({ identifier: 'gmail' })).rejects.toMatchObject({
+      code: 'INTERNAL_SERVER_ERROR',
+    });
+    expect(mocks.connectedAccountsList).toHaveBeenCalledTimes(2);
   });
 
   it('rejects connector/plugin projection mismatch before remote lookup', async () => {

@@ -147,33 +147,36 @@ describe('inline Skill operation workspace', () => {
     expect(cancelSchedule).toHaveBeenCalledWith(timers[0]);
   });
 
-  it('contains TTL cleanup failures without unhandled rejections', async () => {
+  it('retries a transient TTL cleanup failure and removes registry state', async () => {
     const root = await makeRoot();
-    const removePath = vi.fn().mockRejectedValue(new Error('EPERM'));
-    let ttlCallback: (() => void) | undefined;
+    const removePath = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('EPERM'))
+      .mockResolvedValue(undefined);
+    const callbacks: Array<() => void> = [];
     const schedule = vi.fn((callback: () => void) => {
-      ttlCallback = callback;
+      callbacks.push(callback);
       return setTimeout(() => undefined, 60_000) as ReturnType<typeof setTimeout>;
     });
 
     const result = await prepareInlineSkillWorkspace(params(), {
       cacheRoot: root,
+      cleanupRetryBaseMs: 5,
       removePath,
       schedule,
       ttlMs: 1,
     });
     expect(result.success).toBe(true);
-    expect(ttlCallback).toBeTypeOf('function');
+    callbacks[0]!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(schedule).toHaveBeenNthCalledWith(2, expect.any(Function), 5);
 
-    // Fire the scheduled TTL path; the rejection must be swallowed.
-    await expect(
-      (async () => {
-        ttlCallback!();
-        // Allow the fire-and-forget promise to settle.
-        await new Promise((resolve) => setImmediate(resolve));
-      })(),
-    ).resolves.toBeUndefined();
-    expect(removePath).toHaveBeenCalled();
+    callbacks[1]!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(removePath).toHaveBeenCalledTimes(2);
+
+    await cleanupInlineSkillWorkspace({ workspaceId: result.workspaceId! }, { removePath });
+    expect(removePath).toHaveBeenCalledTimes(2);
   });
 
   it.each([

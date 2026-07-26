@@ -10,7 +10,8 @@ import type { Pool, PoolClient } from 'pg';
 import type { JournalEntry } from './baseline';
 import { allJournalEntries } from './baseline';
 import {
-  BASELINE_MIGRATION_LAST_IDX,
+  ACTIVE_BASELINE_ENTRY_COUNT,
+  ACTIVE_FOUNDATION_ENTRY_COUNT,
   EXPAND_ONLY_PROTECTED_TABLES,
   MIGRATIONS_DIR,
 } from './constants';
@@ -121,14 +122,14 @@ export const applyOfficialBaselineMigrations = async (
   client: PoolClient,
   repoRoot: string,
 ): Promise<AppliedMigrationSummary> =>
-  applyOfficialMigrationRange(client, repoRoot, 0, BASELINE_MIGRATION_LAST_IDX);
+  applyOfficialMigrationRange(client, repoRoot, 0, ACTIVE_BASELINE_ENTRY_COUNT - 1);
 
 export const applyOfficialPostBaselineMigrations = async (
   client: PoolClient,
   repoRoot: string,
 ): Promise<AppliedMigrationSummary> => {
   const total = loadOfficialMigrations(repoRoot).length;
-  return applyOfficialMigrationRange(client, repoRoot, BASELINE_MIGRATION_LAST_IDX + 1, total - 1);
+  return applyOfficialMigrationRange(client, repoRoot, ACTIVE_BASELINE_ENTRY_COUNT, total - 1);
 };
 
 export const snapshotMigrationJournal = async (
@@ -169,8 +170,15 @@ export const runOfficialNodePostgresMigrator = async (
   pool: Pool,
   repoRoot: string,
 ): Promise<void> => {
+  await runOfficialNodePostgresMigratorFromFolder(pool, migrationsFolderFor(repoRoot));
+};
+
+export const runOfficialNodePostgresMigratorFromFolder = async (
+  pool: Pool,
+  migrationsFolder: string,
+): Promise<void> => {
   const db = drizzle(pool);
-  await nodeMigrate(db, { migrationsFolder: migrationsFolderFor(repoRoot) });
+  await nodeMigrate(db, { migrationsFolder });
 };
 
 /**
@@ -221,10 +229,13 @@ export const countAppliedMigrations = async (client: PoolClient): Promise<number
 };
 
 export const baselineEntries = (repoRoot: string): JournalEntry[] =>
-  allJournalEntries(repoRoot).filter(({ idx }) => idx <= BASELINE_MIGRATION_LAST_IDX);
+  allJournalEntries(repoRoot).slice(0, ACTIVE_BASELINE_ENTRY_COUNT);
 
 export const postBaselineEntries = (repoRoot: string): JournalEntry[] =>
-  allJournalEntries(repoRoot).filter(({ idx }) => idx > BASELINE_MIGRATION_LAST_IDX);
+  allJournalEntries(repoRoot).slice(ACTIVE_BASELINE_ENTRY_COUNT);
+
+export const expandOnlyEntries = (repoRoot: string): JournalEntry[] =>
+  allJournalEntries(repoRoot).slice(ACTIVE_FOUNDATION_ENTRY_COUNT);
 
 export const readMigrationSql = (repoRoot: string, tag: string): string =>
   readFileSync(path.join(repoRoot, MIGRATIONS_DIR, `${tag}.sql`), 'utf8');
@@ -232,6 +243,23 @@ export const readMigrationSql = (repoRoot: string, tag: string): string =>
 /** Strip SQL line/block comments before expand-only scanning. */
 const stripSqlComments = (sql: string): string =>
   sql.replaceAll(/\/\*[\s\S]*?\*\//gu, ' ').replaceAll(/--[^\n]*/gu, ' ');
+
+/** Reject top-level transaction control that can escape Drizzle's transaction. */
+export const verifyNoTopLevelTransactionControl = (
+  repoRoot: string,
+): { match: boolean; reasons: string[] } => {
+  const reasons: string[] = [];
+  for (const entry of allJournalEntries(repoRoot)) {
+    const chunks = readMigrationSql(repoRoot, entry.tag).split('--> statement-breakpoint');
+    for (const chunk of chunks) {
+      const statement = stripSqlComments(chunk).trim();
+      if (/^(?:BEGIN|COMMIT)\s*;?$/iu.test(statement)) {
+        reasons.push(`${entry.tag}:top-level-transaction-control`);
+      }
+    }
+  }
+  return { match: reasons.length === 0, reasons };
+};
 
 /**
  * Conservative expand-only tokenizer over SQL text.
@@ -337,13 +365,15 @@ export const scanExpandOnlySql = (sql: string): { match: boolean; reasons: strin
 };
 
 /**
- * Expand-only invariant over post-baseline SQL text:
+ * Expand-only invariant over SQL after the fresh baseline and compatibility
+ * bridge. The bridge intentionally preserves historical contract migrations;
+ * all subsequent migrations must remain expand-only.
  * reject destructive contract changes (DROP TABLE/COLUMN/CONSTRAINT, renames, narrowing).
  */
 export const verifyExpandOnlyPostBaselineSql = (
   repoRoot: string,
 ): { match: boolean; scannedMigrations: number; reasons?: string[] } => {
-  const entries = postBaselineEntries(repoRoot);
+  const entries = expandOnlyEntries(repoRoot);
   const allReasons: string[] = [];
   for (const entry of entries) {
     const sql = readMigrationSql(repoRoot, entry.tag);

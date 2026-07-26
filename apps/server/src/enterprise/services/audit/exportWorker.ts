@@ -62,7 +62,7 @@ import {
   isTerminalContractError,
 } from './exportWorkerErrors';
 import type { ExportTimeWindow } from './exportWorkerShared';
-import { jsonlLine, toIso } from './exportWorkerShared';
+import { jsonlLine, runWithPeriodicLeaseMaintenance, toIso } from './exportWorkerShared';
 import { materializeExportSnapshot, streamStagingIntoArtifact } from './exportWorkerSnapshot';
 import {
   safeDeleteOwned,
@@ -422,19 +422,25 @@ export const processNextAuditExportJob = async (
         }),
       );
 
-      // Phase 1: materialise immutable evidence under one RR snapshot into staging
-      // (SAO-003). Heartbeats must NOT run against the outer connection while this
-      // TX is open (single-connection engines deadlock).
-      const snapshot = await materializeExportSnapshot(db, {
-        filter,
-        includeBodies: exportRow.includesMessageBodies,
-        kind: exportRow.kind,
-        maxExportRows,
-        onModelCall: options.onSnapshotModelCall,
-        onPageFetch: options.onSnapshotPageFetch,
-        stagingPath,
-        window: snapshotWindow,
-      });
+      // Phase 1: materialise immutable evidence under one RR snapshot. The lease
+      // maintainer uses the outer pool while the snapshot transaction owns another
+      // connection, preventing a long scan from becoming reclaimable.
+      const snapshot = await runWithPeriodicLeaseMaintenance(
+        () =>
+          materializeExportSnapshot(db, {
+            filter,
+            includeBodies: exportRow.includesMessageBodies,
+            kind: exportRow.kind,
+            maxExportRows,
+            maxStagingBytes: Math.max(0, maxArtifactBytes - totalBytes),
+            onModelCall: options.onSnapshotModelCall,
+            onPageFetch: options.onSnapshotPageFetch,
+            stagingPath,
+            window: snapshotWindow,
+          }),
+        assertNotCancelled,
+        Math.max(1, Math.floor(leaseMs / 3)),
+      );
       evidenceCount = snapshot.evidenceCount;
 
       await assertNotCancelled();
@@ -603,27 +609,19 @@ export const processNextAuditExportJob = async (
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
     }
 
-    // Transient / unknown: requeue job (or dead when maxAttempts exhausted).
-    // Best-effort delete of attempt key only — domain still running.
+    // Transient / unknown: atomically requeue, or terminalize domain/job/audit
+    // together when this attempt exhausts the budget.
     await safeDeleteOwned(storage, storageKey);
-
-    const failedJob = await jobs.fail({
-      error: { code },
+    const terminal = await terminalFailExport(db, {
+      code,
+      exportId,
       jobId: claimed.id,
+      requestedBy,
+      terminal: false,
       workerId: options.workerId,
     });
 
-    if (failedJob?.status === 'dead') {
-      await terminalFailExport(db, {
-        code,
-        exportId,
-        jobId: claimed.id,
-        requestedBy,
-        terminal: true,
-        workerId: options.workerId,
-        // Job already dead — do not re-fail the job inside terminalFailExport.
-        skipJobFail: true,
-      });
+    if (terminal) {
       await safeDeleteOwned(storage, storageKey, exportsModel, exportId);
       return { claimed: true, exportId, jobId: claimed.id, outcome: 'failed' };
     }

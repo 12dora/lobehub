@@ -19,11 +19,13 @@ import { decodePlatformAgentListId, fingerprintResumeToolCall } from '@lobechat/
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import type { AgentModel } from '@/database/models/agent';
 import type { AgentOperationModel } from '@/database/models/agentOperation';
 import type { MessageModel } from '@/database/models/message';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { throwEnterpriseError } from '@/server/enterprise/guards/enterpriseErrors';
 import type { AgentConfigWithId } from '@/server/services/agent';
 
 import { PlatformDefaultInboxService } from './defaultInbox';
@@ -40,6 +42,12 @@ import {
 import { PlatformAgentMaterializationService } from './materialization';
 
 const log = debug('lobe-server:platform-agent-execution');
+
+const throwAgentUnavailable = (): never =>
+  throwEnterpriseError({
+    code: PLATFORM_ERROR_CODES.PLATFORM_AGENT_UNAVAILABLE,
+    httpCode: 'NOT_FOUND',
+  });
 
 /** Audited builtins allowed under a managed platform operation (exact allowlist). */
 export const PLATFORM_AUDITED_BUILTIN_TOOL_IDS = [
@@ -170,7 +178,7 @@ export class PlatformAgentExecutionResolver {
           pausedResume.threadId,
         );
         if (!pin) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+          return throwAgentUnavailable();
         }
         return {
           capturedResumePin: pin,
@@ -225,7 +233,7 @@ export class PlatformAgentExecutionResolver {
           resumeContext.threadId,
         ));
       if (!pin || pin.platformAgentId !== platformAgentId) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+        return throwAgentUnavailable();
       }
       let entitled: boolean;
       try {
@@ -234,7 +242,7 @@ export class PlatformAgentExecutionResolver {
         return this.mapPlatformConfigError(error, platformAgentId, identifier);
       }
       if (!entitled) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+        return throwAgentUnavailable();
       }
       try {
         const materialized = resumeContext.existingAgentId
@@ -263,10 +271,10 @@ export class PlatformAgentExecutionResolver {
       resumeContext.capturedHandle ??
       (await effectiveResolver.beginOperation(this.userId, platformAgentId));
     if (!handle) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      return throwAgentUnavailable();
     }
     if (handle.platformAgentId !== platformAgentId) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      return throwAgentUnavailable();
     }
     try {
       const snapshot = handle.getSnapshot();
@@ -331,30 +339,30 @@ export class PlatformAgentExecutionResolver {
   private mapPlatformConfigError = (
     error: unknown,
     platformAgentId: string | undefined,
-    identifier: string,
+    _identifier: string,
   ): never => {
     if (error instanceof PlatformAgentNotFoundError) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      return throwAgentUnavailable();
     }
     if (error instanceof PlatformAgentDependencyValidationError) {
       log('platform dependency validation failed for %s', platformAgentId);
-      throw new TRPCError({
-        code: 'PRECONDITION_FAILED',
-        message: 'Platform agent dependencies are unavailable',
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE,
+        httpCode: 'PRECONDITION_FAILED',
       });
     }
     if (error instanceof PlatformAgentMaterializationError) {
       log('platform materialization failed for %s: %O', platformAgentId, error);
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to start platform agent',
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_AGENT_START_FAILED,
+        httpCode: 'INTERNAL_SERVER_ERROR',
       });
     }
     if (error instanceof TRPCError) throw error;
     log('unexpected platform config error for %s: %O', platformAgentId, error);
-    throw new TRPCError({
-      code: 'INTERNAL_SERVER_ERROR',
-      message: 'Failed to start platform agent',
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_AGENT_START_FAILED,
+      httpCode: 'INTERNAL_SERVER_ERROR',
     });
   };
 

@@ -201,7 +201,7 @@ describe('AgentRuntimeService', () => {
     it('should initialize with default base URL', () => {
       delete process.env.AGENT_RUNTIME_BASE_URL;
       const newService = new AgentRuntimeService(mockDb, mockUserId);
-      expect((newService as any).baseURL).toBe('http://localhost:3210/api/agent');
+      expect((newService as any).baseURL).toBe('http://localhost:3010/api/agent');
     });
 
     it('should initialize with custom base URL from environment', () => {
@@ -902,40 +902,51 @@ describe('AgentRuntimeService', () => {
       );
     });
 
-    it('should handle human intervention', async () => {
-      const paramsWithIntervention = {
-        ...mockParams,
-        humanInput: { type: 'text', content: 'user input' },
-        approvedToolCall: { toolName: 'calculator', args: {} },
-        rejectionReason: 'Not safe',
-      };
+    it.each(['accepted', 'already_consumed', 'mismatch', 'stale'] as const)(
+      'publishes the authoritative %s human intervention outcome',
+      async (outcome) => {
+        const paramsWithIntervention = {
+          ...mockParams,
+          humanInput: { type: 'text', content: 'user input' },
+          approvedToolCall: { toolName: 'calculator', args: {} },
+          rejectionReason: 'Not safe',
+        };
 
-      const mockStepResult = {
-        newState: { ...mockState, stepCount: 2, status: 'done' },
-        nextContext: null,
-        events: [],
-      };
+        const mockStepResult = {
+          newState: { ...mockState, stepCount: 2, status: 'done' },
+          nextContext: null,
+          events: [],
+        };
 
-      const mockRuntime = { step: vi.fn().mockResolvedValue(mockStepResult) };
-      vi.spyOn(service as any, 'createAgentRuntime').mockReturnValue({ runtime: mockRuntime });
-      const processSpy = vi.spyOn((service as any).humanIntervention, 'process').mockResolvedValue({
-        newState: mockState,
-        nextContext: mockParams.context,
-      });
+        const mockRuntime = { step: vi.fn().mockResolvedValue(mockStepResult) };
+        vi.spyOn(service as any, 'createAgentRuntime').mockReturnValue({ runtime: mockRuntime });
+        const processSpy = vi
+          .spyOn((service as any).humanIntervention, 'process')
+          .mockResolvedValue({
+            newState: mockState,
+            nextContext: mockParams.context,
+            outcome,
+          });
 
-      const result = await service.executeStep(paramsWithIntervention);
+        const result = await service.executeStep(paramsWithIntervention);
 
-      expect(processSpy).toHaveBeenCalledWith(mockState, {
-        approvedToolCall: paramsWithIntervention.approvedToolCall,
-        humanInput: paramsWithIntervention.humanInput,
-        rejectAndContinue: undefined,
-        rejectionReason: paramsWithIntervention.rejectionReason,
-        toolMessageId: undefined,
-      });
+        expect(processSpy).toHaveBeenCalledWith(mockState, {
+          approvedToolCall: paramsWithIntervention.approvedToolCall,
+          humanInput: paramsWithIntervention.humanInput,
+          rejectAndContinue: undefined,
+          rejectionReason: paramsWithIntervention.rejectionReason,
+          toolMessageId: undefined,
+        });
+        expect(mockStreamManager.publishStreamEvent).toHaveBeenCalledWith('test-operation-1', {
+          data: { outcome },
+          stepIndex: 1,
+          type: 'human_intervention_outcome',
+        });
 
-      expect(result.success).toBe(true);
-      expect(result.nextStepScheduled).toBe(false); // Should not schedule next step when status is 'done'
-    });
+        expect(result.success).toBe(true);
+        expect(result.nextStepScheduled).toBe(false); // Should not schedule next step when status is 'done'
+      },
+    );
 
     it('should detect interruption that occurred during step execution', async () => {
       const mockStepResult = {

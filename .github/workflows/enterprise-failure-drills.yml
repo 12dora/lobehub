@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/enterprise-failure-drills.yml'
       - 'apps/server/src/enterprise/**'
+      - 'apps/server/src/services/agentRuntime/**'
       - 'packages/database/**'
       - 'scripts/enterprise/failure-drills/**'
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - '.github/workflows/enterprise-failure-drills.yml'
       - 'apps/server/src/enterprise/**'
+      - 'apps/server/src/services/agentRuntime/**'
       - 'packages/database/**'
       - 'scripts/enterprise/failure-drills/**'
   workflow_dispatch: {}
@@ -114,22 +116,48 @@ jobs:
             "$FAILURE_DRILL_RAW_DIR/postgres-agent-rollout.json" \
             apps/server/src/enterprise/services/agentCatalog/rolloutService.multiconn.pg.test.ts
           run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-admin.json" \
+            apps/server/src/enterprise/services/agentCatalog/adminService.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-admin-constraints.json" \
+            apps/server/src/enterprise/services/agentCatalog/adminService.constraints.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-dependency-lock.json" \
+            apps/server/src/enterprise/services/agentCatalog/dependencyLock.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-effective-resolver.json" \
+            apps/server/src/enterprise/services/agentCatalog/effectiveResolver.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-effective-resolver-f5.json" \
+            apps/server/src/enterprise/services/agentCatalog/effectiveResolver.f5.pg.test.ts
+          run_suite \
             "$FAILURE_DRILL_RAW_DIR/postgres-identity-attempt.json" \
             apps/server/src/enterprise/services/identityProvider/testAttemptStore.multiconn.pg.test.ts
           run_suite \
             "$FAILURE_DRILL_RAW_DIR/postgres-secret-rewrap.json" \
             apps/server/src/enterprise/services/secretRewrap/worker.multiconn.pg.test.ts
-          # SAO-008 — audit export publication + retention lease multi-connection suites
+          # SAO-008 / D5-03 — audit publication, lease, and purge-attribution concurrency
           run_suite \
             "$FAILURE_DRILL_RAW_DIR/postgres-audit-export-publication.json" \
             apps/server/src/enterprise/services/audit/exportPublication.multiconn.pg.test.ts
           run_suite \
             "$FAILURE_DRILL_RAW_DIR/postgres-audit-retention-lease.json" \
             apps/server/src/enterprise/services/audit/retentionWorker.multiconn.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-audit-retention-attribution.json" \
+            apps/server/src/enterprise/services/audit/retentionWorker.attribution.multiconn.pg.test.ts
           # SAI-005 — AI catalog publication advisory-lock concurrency
           run_suite \
             "$FAILURE_DRILL_RAW_DIR/postgres-ai-catalog-publication.json" \
             apps/server/src/enterprise/services/aiCatalog/publication.pgConcurrency.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-runtime-record-start-conflict.json" \
+            apps/server/src/services/agentRuntime/__tests__/recordStartConflict.multiconn.pg.test.ts
+          bun -e '
+            const report = await Bun.file(process.argv[1]).json();
+            if ((report.numPendingTests ?? 0) > 0 || (report.numPassedTests ?? 0) === 0) process.exit(1);
+          ' "$FAILURE_DRILL_RAW_DIR/postgres-agent-runtime-record-start-conflict.json"
+          if [ "$?" -ne 0 ]; then status=1; fi
           exit "$status"
 
       - name: Run database server-config multi-connection assertion
@@ -141,6 +169,16 @@ jobs:
             --hookTimeout=60000 --reporter=json --testTimeout=60000 \
             --outputFile="$FAILURE_DRILL_RAW_DIR/postgres-platform-instance.json" \
             src/repositories/platformInstance/index.multiconn.pg.test.ts
+
+      - name: Run database UTC-bucket PostgreSQL assertion
+        id: pg_database_utc
+        continue-on-error: true
+        working-directory: packages/database
+        run: |
+          bunx vitest run --config vitest.config.server.mts --silent='passed-only' \
+            --hookTimeout=60000 --reporter=json --testTimeout=60000 \
+            --outputFile="$FAILURE_DRILL_RAW_DIR/postgres-platform-global-stats-utc.json" \
+            src/models/__tests__/platform.globalStats.pg.test.ts
 
       - name: Run identity convergence assertions
         id: identity_convergence
@@ -281,6 +319,7 @@ jobs:
 
           test '${{ steps.pg_server.outcome }}' = success
           test '${{ steps.pg_database.outcome }}' = success
+          test '${{ steps.pg_database_utc.outcome }}' = success
           test '${{ steps.identity_convergence.outcome }}' = success
           test '${{ steps.identity_startup_lock.outcome }}' = success
           test '${{ steps.identity_publish_lock.outcome }}' = success

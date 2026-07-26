@@ -6,16 +6,35 @@ import type { ReactNode } from 'react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import PlatformConnectorAuthorization from './PlatformConnectorAuthorization';
+import WorkspaceConnectorSettings from '@/routes/(main)/[workspaceSlug]/settings/connector';
+import PersonalConnectorSettings from '@/routes/(main)/settings/connector';
+
 import { buildManagedConnectorListKey } from './swrKeys';
 
 const listManaged = vi.fn();
 const mutate = vi.fn();
+const managedResource = vi.hoisted(() => ({ managed: true }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
+}));
+
+vi.mock('@/features/ManagedResources', () => ({
+  ManagedResourceTransition: ({ children, state }: { children: ReactNode; state: string }) => (
+    <div data-managed-resource-state={state}>{children}</div>
+  ),
+  useManagedResource: () => ({
+    error: undefined,
+    loading: false,
+    managed: managedResource.managed,
+    refresh: vi.fn(),
+  }),
+}));
+
+vi.mock('@/routes/(main)/settings/skill', () => ({
+  ToolSettings: () => <div data-testid="ordinary-tool-settings">ordinary-tool-settings</div>,
 }));
 
 // Stub base-ui Button — it needs MotionProvider the app sets up globally.
@@ -91,12 +110,12 @@ vi.mock('./ConnectorCard', () => ({
   ),
 }));
 
-const renderAt = (path: string) => {
+const renderAt = (path: string, element: ReactNode = <PersonalConnectorSettings />) => {
   const router = createMemoryRouter(
     [
       {
-        path: '/settings/connector',
-        element: <PlatformConnectorAuthorization />,
+        path: '*',
+        element,
       },
     ],
     { initialEntries: [path] },
@@ -107,6 +126,7 @@ const renderAt = (path: string) => {
 
 describe('PlatformConnectorAuthorization search sync', () => {
   beforeEach(() => {
+    managedResource.managed = true;
     listManaged.mockClear();
     mutate.mockClear();
   });
@@ -151,5 +171,26 @@ describe('PlatformConnectorAuthorization search sync', () => {
     expect(listManaged).toHaveBeenLastCalledWith(
       expect.objectContaining({ query: undefined, limit: 50 }),
     );
+  });
+
+  it('renders authorization from both production routes only when Connectors are managed', () => {
+    const personal = renderAt('/settings/connector');
+    expect(screen.getByTestId('connector-card')).toBeTruthy();
+    expect(
+      personal.container.querySelector('[data-managed-resource-state="managed"]'),
+    ).toBeTruthy();
+    personal.unmount();
+
+    const workspace = renderAt('/acme/settings/connector', <WorkspaceConnectorSettings />);
+    expect(screen.getByTestId('connector-card')).toBeTruthy();
+    workspace.unmount();
+
+    managedResource.managed = false;
+    const unmanaged = renderAt('/settings/connector');
+    expect(screen.getByTestId('ordinary-tool-settings')).toBeTruthy();
+    expect(screen.queryByTestId('connector-card')).toBeNull();
+    expect(
+      unmanaged.container.querySelector('[data-managed-resource-state="content"]'),
+    ).toBeTruthy();
   });
 });

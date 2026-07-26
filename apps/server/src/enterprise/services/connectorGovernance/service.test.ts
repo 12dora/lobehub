@@ -115,6 +115,91 @@ describe('resolvePublishedConnectorGovernance', () => {
       sharedAuthOwnerUserId: 'gov-owner',
     });
   });
+  it.each([
+    ['permanent', null],
+    ['active temporary', new Date(Date.now() + 60_000)],
+  ])('fails closed when the shared owner has a %s ban', async (_label, banExpires) => {
+    await publishEnforcedConnectorPolicy();
+    await publishGovernanceDoc();
+    await db
+      .update(users)
+      .set({ banExpires, banned: true })
+      .where(sql`${users.id} = 'gov-owner'`);
+    const { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER } = await import('./types');
+    await expect(resolvePublishedConnectorGovernance(db, { env: flagOn })).resolves.toMatchObject({
+      active: true,
+      sharedAuthOwnerUserId: CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER,
+    });
+  });
+  it('treats an expired temporary ban as active again', async () => {
+    await publishEnforcedConnectorPolicy();
+    await publishGovernanceDoc();
+    await db
+      .update(users)
+      .set({ banExpires: new Date(Date.now() - 60_000), banned: true })
+      .where(sql`${users.id} = 'gov-owner'`);
+    await expect(resolvePublishedConnectorGovernance(db, { env: flagOn })).resolves.toMatchObject({
+      active: true,
+      sharedAuthOwnerUserId: 'gov-owner',
+    });
+  });
+  it('rechecks shared-owner bans on a warm governance cache and honors temporary expiry', async () => {
+    await publishEnforcedConnectorPolicy();
+    await publishGovernanceDoc();
+    const epoch = async () => 'stable-governance-epoch';
+    const now = Date.now();
+    await expect(
+      resolvePublishedConnectorGovernance(db, {
+        env: flagOn,
+        getCacheEpoch: epoch,
+        now: () => now,
+      }),
+    ).resolves.toMatchObject({ sharedAuthOwnerUserId: 'gov-owner' });
+
+    await db
+      .update(users)
+      .set({ banExpires: new Date(Date.now() + 60_000), banned: true })
+      .where(sql`${users.id} = 'gov-owner'`);
+    const { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER } = await import('./types');
+    await expect(
+      resolvePublishedConnectorGovernance(db, {
+        env: flagOn,
+        getCacheEpoch: epoch,
+        now: () => now + 1000,
+      }),
+    ).resolves.toMatchObject({
+      sharedAuthOwnerUserId: CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER,
+    });
+
+    await db
+      .update(users)
+      .set({ banExpires: new Date(Date.now() - 60_000), banned: true })
+      .where(sql`${users.id} = 'gov-owner'`);
+    await expect(
+      resolvePublishedConnectorGovernance(db, {
+        env: flagOn,
+        getCacheEpoch: epoch,
+        now: () => now + 2000,
+      }),
+    ).resolves.toMatchObject({ sharedAuthOwnerUserId: 'gov-owner' });
+  });
+  it('rejects assigning an effectively banned shared owner', async () => {
+    await db
+      .update(users)
+      .set({ banExpires: null, banned: true })
+      .where(sql`${users.id} = 'gov-owner'`);
+    await expect(
+      new ConnectorGovernanceAdminService(db, {
+        env: flagOn,
+        invalidation: publisher,
+      }).setSharedAuthorization({
+        actorUserId: 'gov-admin',
+        expectedRevision: 0,
+        ownerUserId: 'gov-owner',
+        reason: 'must reject inactive owner',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_INVALID_INPUT' });
+  });
 
   it('deactivates when the feature flag is off even with an enforced policy', async () => {
     await publishEnforcedConnectorPolicy();

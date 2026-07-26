@@ -94,6 +94,11 @@ export class IncrementalCatalogAuthorityToken {
     };
   }
 
+  /** Snapshot the local invalidation epoch for in-flight rebuild coalescing. */
+  get epoch(): number {
+    return this.localEpoch;
+  }
+
   clear = (): void => {
     this.localEpoch = 0;
     this.slot = null;

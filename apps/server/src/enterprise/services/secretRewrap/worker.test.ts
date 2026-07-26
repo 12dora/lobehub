@@ -728,7 +728,7 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
     expect(await secrets.decrypt(connector.ciphertext)).toBe('connector-secret');
   });
 
-  it('rolls back data and checkpoint together, then reclaims an expired lease', async () => {
+  it('keeps per-candidate checkpoints when finalization fails, then resumes after lease expiry', async () => {
     await seedFiveDomains();
     const job = await enqueue();
     await expect(
@@ -742,12 +742,12 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
     ).rejects.toThrow('injected checkpoint failure');
     const claimed = await getJob(job.jobId);
     expect(claimed.status).toBe('running');
-    expect(claimed.cursor).toBeNull();
+    expect(claimed.cursor).not.toBeNull();
     const [connector] = await db
       .select()
       .from(platformConnectorSecrets)
       .where(eq(platformConnectorSecrets.id, 'connector-secret-a'));
-    expect(connector.keyId).toBe(oldKeyId);
+    expect(connector.keyId).toBe(targetKeyId);
 
     await expireLease(job.jobId);
     await drain();

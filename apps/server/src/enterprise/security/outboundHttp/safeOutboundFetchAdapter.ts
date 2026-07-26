@@ -48,22 +48,45 @@ const throwIfAborted = (signal: AbortSignal | null | undefined): void => {
   }
 };
 
-/** Promise that rejects when `signal` aborts (including if already aborted). */
-const abortPromise = (signal: AbortSignal): Promise<never> =>
-  new Promise((_, reject) => {
-    const rejectWithAbort = () => {
+/** Race one task against abort and remove the listener as soon as either settles. */
+const raceWithAbort = async <T>(
+  task: Promise<T>,
+  signal: AbortSignal,
+  onAbort?: () => void,
+): Promise<T> => {
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', handleAbort);
+    const handleAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      onAbort?.();
       try {
         throwIfAborted(signal);
       } catch (error) {
         reject(error);
       }
     };
-    if (signal.aborted) {
-      rejectWithAbort();
-      return;
-    }
-    signal.addEventListener('abort', rejectWithAbort, { once: true });
+    signal.addEventListener('abort', handleAbort, { once: true });
+    if (signal.aborted) handleAbort();
+    task.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
   });
+};
 
 const appendChunk = (
   chunks: Uint8Array[],
@@ -92,18 +115,6 @@ const readStreamBody = async (
   let total = 0;
   const signal = options.signal ?? null;
 
-  const onAbort = () => {
-    void reader.cancel(signal?.reason).catch(() => undefined);
-  };
-  if (signal) {
-    if (signal.aborted) {
-      onAbort();
-      throwIfAborted(signal);
-    } else {
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-  }
-
   try {
     for (;;) {
       throwIfAborted(signal);
@@ -113,7 +124,9 @@ const readStreamBody = async (
       let value: Uint8Array | undefined;
       try {
         const result = signal
-          ? await Promise.race([reader.read(), abortPromise(signal)])
+          ? await raceWithAbort(reader.read(), signal, () => {
+              void reader.cancel(signal.reason).catch(() => undefined);
+            })
           : await reader.read();
         done = result.done;
         value = result.value;
@@ -126,9 +139,6 @@ const readStreamBody = async (
       if (value) total = appendChunk(chunks, total, value, options.maxBytes);
     }
   } finally {
-    if (signal) {
-      signal.removeEventListener('abort', onAbort);
-    }
     try {
       reader.releaseLock();
     } catch {
@@ -169,7 +179,7 @@ const bodyToBuffer = async (
     }
     throwIfAborted(options.signal);
     if (options.signal) {
-      return Buffer.from(await Promise.race([body.arrayBuffer(), abortPromise(options.signal)]));
+      return Buffer.from(await raceWithAbort(body.arrayBuffer(), options.signal));
     }
     return Buffer.from(await body.arrayBuffer());
   }

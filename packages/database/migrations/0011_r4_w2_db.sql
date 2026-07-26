@@ -23,10 +23,9 @@ CREATE INDEX IF NOT EXISTS "platform_audit_exports_retention_sort_at_id_idx"
 
 -- Purge-outbox recovery: terminal rows with storage_key cleared and purge key(s) present.
 -- Predicate must imply listPendingArtifactPurges (A OR B for single key / keys array).
--- DROP first: an earlier revision of this migration shipped a narrower single-conjunct
--- predicate, and CREATE INDEX IF NOT EXISTS would silently leave it in place.
-DROP INDEX IF EXISTS "platform_audit_exports_purge_outbox_updated_at_id_idx";--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "platform_audit_exports_purge_outbox_updated_at_id_idx"
+-- Use a versioned name so a corrected predicate can be prebuilt concurrently.
+-- The obsolete name is retired separately after validity is verified.
+CREATE INDEX IF NOT EXISTS "platform_audit_exports_purge_outbox_updated_at_id_v2_idx"
   ON "platform_audit_exports" ("updated_at", "id")
   WHERE "storage_key" IS NULL
     AND "status" IN ('expired', 'failed', 'cancelled')

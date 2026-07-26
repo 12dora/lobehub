@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
@@ -10,10 +11,22 @@ import { deriveAdminAgentPermissions } from './controller';
 import type { AdminAgentDetailOutput, AdminAgentDraft } from './types';
 
 const validityMock = vi.hoisted(() => ({ value: { issues: [] as string[], ready: true } }));
+const mocks = vi.hoisted(() => ({
+  listVersions: vi.fn(),
+  toastError: vi.fn(),
+}));
+
+beforeEach(() => {
+  mocks.listVersions.mockReset();
+  mocks.toastError.mockReset();
+});
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
-  adminAgentsService: { capabilities: { rollouts: false } },
+  adminAgentsService: {
+    capabilities: { rollouts: false },
+    listVersions: mocks.listVersions,
+  },
 }));
 vi.mock('./useAgentActions', () => ({
   useAgentActions: () => ({
@@ -58,7 +71,12 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 }));
 vi.mock('../primitives/StatusBadge', () => ({ default: () => <span>status</span> }));
 vi.mock('@lobehub/ui', () => ({
-  Alert: ({ message }: { message?: ReactNode }) => <div>{message}</div>,
+  Alert: ({ action, message }: { action?: ReactNode; message?: ReactNode }) => (
+    <div>
+      {message}
+      {action}
+    </div>
+  ),
   Block: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
@@ -66,7 +84,7 @@ vi.mock('@lobehub/ui', () => ({
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: mocks.toastError, success: vi.fn() },
 }));
 
 const model = {
@@ -134,16 +152,40 @@ const createEditor = (dirty: boolean): any => ({
   updateDraft: vi.fn(),
 });
 
-const renderView = (editorDirty: boolean, permissionKeys: string[]) =>
+const renderView = (
+  editorDirty: boolean,
+  permissionKeys: string[],
+  detail: AdminAgentDetailOutput = snapshot,
+) =>
   render(
     <AgentDetailView
       authMethod={null}
       editor={createEditor(editorDirty)}
       mutate={vi.fn() as any}
       permissions={deriveAdminAgentPermissions(permissionKeys)}
-      snapshot={snapshot}
+      snapshot={detail}
     />,
   );
+
+const StatefulDetailView = ({ initial }: { initial: AdminAgentDetailOutput }) => {
+  const [detail, setDetail] = useState(initial);
+  const mutate = vi.fn(async (updater: unknown) => {
+    if (typeof updater === 'function') {
+      setDetail((current) => updater(current));
+    }
+    return undefined;
+  });
+
+  return (
+    <AgentDetailView
+      authMethod={null}
+      editor={createEditor(false)}
+      mutate={mutate as any}
+      permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_READ])}
+      snapshot={detail}
+    />
+  );
+};
 
 describe('AgentDetailView write gating', () => {
   it('keeps a read-only auditor on a real detail surface without mutation buttons', () => {
@@ -169,5 +211,70 @@ describe('AgentDetailView write gating', () => {
     validityMock.value = { issues: ['agentCatalog.dependency.issues.modelStale'], ready: false };
     renderView(true, [PLATFORM_PERMISSIONS.AGENT_UPDATE]);
     expect(screen.getByText('agentCatalog.action.saveVersion')).toBeDisabled();
+  });
+
+  it('keeps a retry action and surfaces feedback when loading more versions fails', async () => {
+    mocks.listVersions.mockRejectedValueOnce(new Error('offline'));
+    const partialSnapshot: AdminAgentDetailOutput = {
+      ...snapshot,
+      collectionMeta: {
+        assignmentsNextCursor: null,
+        assignmentsTruncated: false,
+        rolloutsNextCursor: null,
+        rolloutsTruncated: false,
+        versionsNextCursor: 'next-page',
+        versionsTruncated: true,
+      },
+    };
+    renderView(false, [PLATFORM_PERMISSIONS.AGENT_READ], partialSnapshot);
+
+    fireEvent.click(screen.getByText('agentCatalog.collection.loadMore'));
+
+    await waitFor(() => {
+      expect(mocks.toastError).toHaveBeenCalledWith('agentCatalog.collection.loadFailed');
+    });
+    expect(screen.getByText('agentCatalog.collection.retry')).toBeTruthy();
+    expect(mocks.listVersions).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      cursor: 'next-page',
+      limit: 100,
+    });
+  });
+
+  it('advances the real version cursor once, dedupes rows, and removes load-more at the end', async () => {
+    const nextVersion = {
+      ...snapshot.versions[0],
+      checksum: 'd'.repeat(64),
+      createdAt: new Date('2026-07-18T00:00:00Z'),
+      id: 'version-2',
+      version: '1.0.1',
+    };
+    mocks.listVersions.mockResolvedValueOnce({
+      items: [snapshot.versions[0], nextVersion],
+      nextCursor: null,
+    });
+    const partialSnapshot: AdminAgentDetailOutput = {
+      ...snapshot,
+      collectionMeta: {
+        assignmentsNextCursor: null,
+        assignmentsTruncated: false,
+        rolloutsNextCursor: null,
+        rolloutsTruncated: false,
+        versionsNextCursor: 'next-page',
+        versionsTruncated: true,
+      },
+    };
+    render(<StatefulDetailView initial={partialSnapshot} />);
+
+    const loadMore = screen.getByText('agentCatalog.collection.loadMore');
+    fireEvent.click(loadMore);
+    fireEvent.click(loadMore);
+
+    await waitFor(() => {
+      expect(screen.getByText('1.0.1')).toBeTruthy();
+      expect(screen.queryByText('agentCatalog.collection.loadMore')).toBeNull();
+    });
+    expect(mocks.listVersions).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText('1.0.0')).toHaveLength(1);
   });
 });

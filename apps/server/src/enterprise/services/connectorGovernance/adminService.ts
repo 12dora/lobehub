@@ -7,6 +7,7 @@ import {
 } from '@/database/models/platform';
 import { users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
+import { isEffectivelyBanned } from '@/database/utils/userBan';
 import {
   CONNECTOR_GOVERNANCE_RESOURCE_ID,
   CONNECTOR_GOVERNANCE_RESOURCE_TYPE,
@@ -105,11 +106,13 @@ export class ConnectorGovernanceAdminService {
   }): Promise<{ revision: number }> => {
     if (params.ownerUserId !== null) {
       const [owner] = await this.db
-        .select({ id: users.id })
+        .select({ banExpires: users.banExpires, banned: users.banned, id: users.id })
         .from(users)
         .where(eq(users.id, params.ownerUserId))
         .limit(1);
-      if (!owner) throw new ConnectorGovernanceOwnerNotFoundError(params.ownerUserId);
+      if (!owner || isEffectivelyBanned(owner)) {
+        throw new ConnectorGovernanceOwnerNotFoundError(params.ownerUserId);
+      }
     }
     const current = await this.model.getOrCreate();
     return this.publish({

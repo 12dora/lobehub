@@ -11,12 +11,16 @@ import { useTranslation } from 'react-i18next';
 import { usePermission } from '@/hooks/usePermission';
 import { useToolStore } from '@/store/tool';
 
+import { resolveSkillImportCapability, runSkillImport } from '../skillStorePolicy';
+
 export interface ImportFromGithubModalOptions {
+  /** Resolved platform capability when an admin persistence override is active. */
+  canCreate?: boolean;
   /** Persistence override (admin org catalog); default imports into the user's skills. */
   onImport?: (input: { gitUrl: string }) => Promise<void>;
 }
 
-const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ onImport }) => {
+const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ canCreate, onImport }) => {
   const { t } = useTranslation(['setting', 'common']);
   const { close, setCanDismissByClickOutside } = useModalContext();
   const { message } = App.useApp();
@@ -24,7 +28,12 @@ const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ onImport }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState('');
-  const { allowed: canCreate } = usePermission('create_content');
+  const { allowed: canCreatePersonalSkill } = usePermission('create_content');
+  const resolvedCanCreate = resolveSkillImportCapability(
+    Boolean(onImport),
+    canCreate,
+    canCreatePersonalSkill,
+  );
 
   useEffect(() => {
     setCanDismissByClickOutside(!loading);
@@ -32,15 +41,18 @@ const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ onImport }
 
   const handleImport = async () => {
     const trimmed = url.trim();
-    if (!canCreate || !trimmed) return;
+    if (!resolvedCanCreate || !trimmed) return;
 
     setLoading(true);
     setError(null);
 
     try {
-      await (onImport ?? importAgentSkillFromGitHub)({ gitUrl: trimmed });
-      message.success(t('agentSkillModal.importSuccess'));
-      close();
+      await runSkillImport({
+        importSkill: () => (onImport ?? importAgentSkillFromGitHub)({ gitUrl: trimmed }),
+        onComplete: close,
+        onPersonalSuccess: () => message.success(t('agentSkillModal.importSuccess')),
+        platformOverride: Boolean(onImport),
+      });
     } catch (err: any) {
       setError(err?.message || String(err));
     } finally {
@@ -76,7 +88,7 @@ const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ onImport }
       <Flexbox gap={8}>
         <Typography.Text strong>URL</Typography.Text>
         <Input
-          disabled={!canCreate}
+          disabled={!resolvedCanCreate}
           placeholder={t('agentSkillModal.github.urlPlaceholder')}
           value={url}
           onPressEnter={handleImport}
@@ -87,7 +99,13 @@ const ImportFromGithubContent = memo<ImportFromGithubModalOptions>(({ onImport }
         />
       </Flexbox>
 
-      <Button block disabled={!canCreate} loading={loading} type="primary" onClick={handleImport}>
+      <Button
+        block
+        disabled={!resolvedCanCreate}
+        loading={loading}
+        type="primary"
+        onClick={handleImport}
+      >
         {t('common:import')}
       </Button>
     </Flexbox>
@@ -98,7 +116,9 @@ ImportFromGithubContent.displayName = 'ImportFromGithubContent';
 
 export const openImportFromGithubModal = (options?: ImportFromGithubModalOptions): ModalInstance =>
   createModal({
-    content: <ImportFromGithubContent onImport={options?.onImport} />,
+    content: (
+      <ImportFromGithubContent canCreate={options?.canCreate} onImport={options?.onImport} />
+    ),
     footer: null,
     maskClosable: true,
     styles: { header: { display: 'none' } },

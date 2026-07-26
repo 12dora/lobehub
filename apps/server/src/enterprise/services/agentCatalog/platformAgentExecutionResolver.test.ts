@@ -255,7 +255,10 @@ describe('PlatformAgentExecutionResolver.resolveExecutionPlan', () => {
         threadId: null,
         topicId: null,
       }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Agent not found: id' });
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'PLATFORM_AGENT_UNAVAILABLE',
+    });
   });
 
   it('maps PlatformAgentDependencyValidationError → PRECONDITION_FAILED', async () => {
@@ -278,7 +281,7 @@ describe('PlatformAgentExecutionResolver.resolveExecutionPlan', () => {
       }),
     ).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
-      message: 'Platform agent dependencies are unavailable',
+      message: 'PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE',
     });
   });
 
@@ -296,7 +299,7 @@ describe('PlatformAgentExecutionResolver.resolveExecutionPlan', () => {
       }),
     ).rejects.toMatchObject({
       code: 'INTERNAL_SERVER_ERROR',
-      message: 'Failed to start platform agent',
+      message: 'PLATFORM_AGENT_START_FAILED',
     });
   });
 
@@ -331,7 +334,7 @@ describe('PlatformAgentExecutionResolver.resolveExecutionPlan', () => {
       }),
     ).rejects.toMatchObject({
       code: 'INTERNAL_SERVER_ERROR',
-      message: 'Failed to start platform agent',
+      message: 'PLATFORM_AGENT_START_FAILED',
     });
   });
 

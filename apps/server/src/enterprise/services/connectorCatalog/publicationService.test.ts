@@ -649,8 +649,36 @@ describe('ConnectorCatalogPublicationService', () => {
     ).resolves.toMatchObject({ revision: 3 });
     const [connector] = await db.select().from(platformConnectors);
     expect(connector).toMatchObject({
-      sharedSecretFingerprint: first.draft.sharedSecret.fingerprint,
+      sharedSecretFingerprint: null,
       status: 'archived',
+    });
+  });
+  it('archives while current and published Secret decryption are unavailable', async () => {
+    const harness = createHarness();
+    const draft = await createSharedDraft(harness, 'archive-kms-outage', 'archive-kms-connector');
+    await publish(harness, 'admin-user', {
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: 0,
+      id: draft.draft.id,
+      reason: 'publish before outage',
+    });
+    const published = await harness.drafts.getDraft(draft.draft.id);
+    vi.spyOn(harness.secrets, 'loadCurrentSecretSources').mockRejectedValue(
+      new Error('kms unavailable'),
+    );
+    vi.spyOn(harness.secrets, 'resolveSecretVersion').mockRejectedValue(
+      new Error('kms unavailable'),
+    );
+    await expect(
+      harness.publication.archive('admin-user', {
+        expectedDraftToken: published.draftToken,
+        expectedRevision: 1,
+        id: draft.draft.id,
+        reason: 'emergency archive',
+      }),
+    ).resolves.toMatchObject({ revision: 2 });
+    await expect(harness.read.getTrustedPublished(draft.draft.id)).rejects.toMatchObject({
+      code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
     });
   });
 
@@ -709,6 +737,9 @@ describe('ConnectorCatalogPublicationService', () => {
       })),
     );
     const revokeSecret = vi.spyOn(harness.secrets, 'revokeSecretRef');
+    vi.spyOn(harness.secrets, 'loadCurrentSecretSources').mockRejectedValue(
+      new Error('kms unavailable during emergency revocation'),
+    );
     await expect(
       harness.publication.revokeAllBindings('admin-user', {
         expectedRevision: 1,

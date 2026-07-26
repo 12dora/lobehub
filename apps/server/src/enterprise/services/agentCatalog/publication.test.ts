@@ -96,7 +96,12 @@ describe('PlatformAgentPublicationService', () => {
       invalidation: { publish },
     }).publish('admin-id', input);
 
-    expect(result).toEqual({ agentId: 'agent-id', revision: 1, versionId: 'version-id' });
+    expect(result).toEqual({
+      agentId: 'agent-id',
+      invalidationStatus: 'delivered',
+      revision: 1,
+      versionId: 'version-id',
+    });
     expect(mocks.lockIdentity).toHaveBeenCalledBefore(mocks.acquireLock);
     expect(mocks.acquireLock).toHaveBeenCalledBefore(mocks.assertDependencies);
     expect(mocks.getExactVersion).toHaveBeenCalledWith('agent-id', 'version-id');
@@ -153,7 +158,12 @@ describe('PlatformAgentPublicationService', () => {
         'admin-id',
         input,
       ),
-    ).resolves.toEqual({ agentId: 'agent-id', revision: 1, versionId: 'version-id' });
+    ).resolves.toEqual({
+      agentId: 'agent-id',
+      invalidationStatus: 'deferred',
+      revision: 1,
+      versionId: 'version-id',
+    });
     expect(mocks.appendAudit).toHaveBeenCalledTimes(1);
     expect(observed).toHaveLength(1);
     expect(observed[0]).toMatchObject({ outcome: 'success' });
@@ -221,7 +231,12 @@ describe('PlatformAgentPublicationService', () => {
 
     await expect(
       new PlatformAgentPublicationService(db).publish('admin-id', input),
-    ).resolves.toEqual({ agentId: 'agent-id', revision: 1, versionId: 'version-id' });
+    ).resolves.toEqual({
+      agentId: 'agent-id',
+      invalidationStatus: 'delivered',
+      revision: 1,
+      versionId: 'version-id',
+    });
     expect(consoleError).toHaveBeenCalledWith(
       '[enterprise-observability] metric sink failed',
       expect.objectContaining({ errorClass: 'UnexpectedError' }),

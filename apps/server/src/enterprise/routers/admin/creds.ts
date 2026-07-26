@@ -3,20 +3,33 @@
  * Procedure names and inputs mirror market.creds subset for CredsApi UI reuse.
  * M13: get never returns plaintext secret material.
  */
-import { z } from 'zod';
-
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES } from '@/database/schemas/platform';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
+import {
+  adminCredsCreateFileInputSchema,
+  adminCredsCreateKvInputSchema,
+  adminCredsCreateOauthInputSchema,
+  adminCredsDeleteOutputSchema,
+  adminCredsGetByKeyInputSchema,
+  adminCredsGetInputSchema,
+  adminCredsGetOutputSchema,
+  adminCredsIdInputSchema,
+  adminCredsKeyInputSchema,
+  adminCredsListOutputSchema,
+  adminCredsOauthConnectionsOutputSchema,
+  adminCredsSkillStatusInputSchema,
+  adminCredsSkillStatusOutputSchema,
+  adminCredsSummaryOutputSchema,
+  adminCredsUpdateInputSchema,
+  adminCredsUploadFileInputSchema,
+  adminCredsUploadFileOutputSchema,
+} from '../../contracts/adminCreds';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertDangerousReauth, createCredsService, mapCredsServiceError } from './credsSupport';
-
-/** Base64 expands 3 bytes → 4 chars; bound encoded length before Buffer.from. */
-const MAX_UPLOAD_BASE64_CHARS = Math.ceil(PLATFORM_GLOBAL_CREDENTIAL_MAX_FILE_BYTES / 3) * 4;
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -30,15 +43,8 @@ const deleteProcedure = adminBase.use(withPlatformPermission(PLATFORM_PERMISSION
 
 export const adminCredsRouter = router({
   createFile: createProcedure
-    .input(
-      z.object({
-        description: z.string().optional(),
-        fileHashId: z.string().length(64),
-        fileName: z.string().min(1),
-        key: z.string().min(1).max(100),
-        name: z.string().min(1).max(255),
-      }),
-    )
+    .input(adminCredsCreateFileInputSchema)
+    .output(adminCredsSummaryOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
         action: 'admin.creds.createFile',
@@ -63,15 +69,8 @@ export const adminCredsRouter = router({
     }),
 
   createKV: createProcedure
-    .input(
-      z.object({
-        description: z.string().optional(),
-        key: z.string().min(1).max(100),
-        name: z.string().min(1).max(255),
-        type: z.enum(['kv-env', 'kv-header']),
-        values: z.record(z.string()),
-      }),
-    )
+    .input(adminCredsCreateKvInputSchema)
+    .output(adminCredsSummaryOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
         action: 'admin.creds.createKV',
@@ -96,14 +95,8 @@ export const adminCredsRouter = router({
     }),
 
   createOAuth: createProcedure
-    .input(
-      z.object({
-        description: z.string().optional(),
-        key: z.string().min(1).max(100),
-        name: z.string().min(1).max(255),
-        oauthConnectionId: z.number(),
-      }),
-    )
+    .input(adminCredsCreateOauthInputSchema)
+    .output(adminCredsSummaryOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
         action: 'admin.creds.createOAuth',
@@ -120,27 +113,31 @@ export const adminCredsRouter = router({
       }
     }),
 
-  delete: deleteProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
-    await assertDangerousReauth({
-      action: 'admin.creds.delete',
-      actorUserId: ctx.userId!,
-      authenticatedAt: ctx.authenticatedAt,
-      authMethod: ctx.authMethod,
-      serverDB: ctx.serverDB,
-      targetId: String(input.id),
-    });
-    try {
-      return await createCredsService(ctx.serverDB).delete({
+  delete: deleteProcedure
+    .input(adminCredsIdInputSchema)
+    .output(adminCredsDeleteOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertDangerousReauth({
+        action: 'admin.creds.delete',
         actorUserId: ctx.userId!,
-        id: input.id,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        serverDB: ctx.serverDB,
+        targetId: String(input.id),
       });
-    } catch (error) {
-      return mapCredsServiceError(error);
-    }
-  }),
+      try {
+        return await createCredsService(ctx.serverDB).delete({
+          actorUserId: ctx.userId!,
+          id: input.id,
+        });
+      } catch (error) {
+        return mapCredsServiceError(error);
+      }
+    }),
 
   deleteByKey: deleteProcedure
-    .input(z.object({ key: z.string() }))
+    .input(adminCredsKeyInputSchema)
+    .output(adminCredsDeleteOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
         action: 'admin.creds.deleteByKey',
@@ -161,12 +158,8 @@ export const adminCredsRouter = router({
     }),
 
   get: readProcedure
-    .input(
-      z.object({
-        decrypt: z.boolean().optional(),
-        id: z.number(),
-      }),
-    )
+    .input(adminCredsGetInputSchema)
+    .output(adminCredsGetOutputSchema)
     .query(async ({ ctx, input }) => {
       try {
         return await createCredsService(ctx.serverDB).get(input);
@@ -176,12 +169,8 @@ export const adminCredsRouter = router({
     }),
 
   getByKey: readProcedure
-    .input(
-      z.object({
-        decrypt: z.boolean().optional(),
-        key: z.string(),
-      }),
-    )
+    .input(adminCredsGetByKeyInputSchema)
+    .output(adminCredsGetOutputSchema)
     .query(async ({ ctx, input }) => {
       try {
         return await createCredsService(ctx.serverDB).getByKey(input);
@@ -191,32 +180,23 @@ export const adminCredsRouter = router({
     }),
 
   getSkillCredStatus: readProcedure
-    .input(z.object({ skillIdentifier: z.string() }))
+    .input(adminCredsSkillStatusInputSchema)
+    .output(adminCredsSkillStatusOutputSchema)
     .query(async ({ ctx, input }) => {
       return createCredsService(ctx.serverDB).getSkillCredStatus(input.skillIdentifier);
     }),
 
-  list: readProcedure.query(async ({ ctx }) => {
+  list: readProcedure.output(adminCredsListOutputSchema).query(async ({ ctx }) => {
     return createCredsService(ctx.serverDB).list();
   }),
 
-  listOAuthConnections: readProcedure.query(async ({ ctx }) => {
-    return createCredsService(ctx.serverDB).listOAuthConnections();
-  }),
+  listOAuthConnections: readProcedure
+    .output(adminCredsOauthConnectionsOutputSchema)
+    .query(async ({ ctx }) => createCredsService(ctx.serverDB).listOAuthConnections()),
 
   update: updateProcedure
-    .input(
-      z.object({
-        description: z.string().optional(),
-        expectedRevision: z.number().int().min(0),
-        /** Owner-bound staged upload id (SHA-256) for file secret rotation. */
-        fileHashId: z.string().length(64).optional(),
-        fileName: z.string().min(1).optional(),
-        id: z.number(),
-        name: z.string().optional(),
-        values: z.record(z.string()).optional(),
-      }),
-    )
+    .input(adminCredsUpdateInputSchema)
+    .output(adminCredsSummaryOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
         action: 'admin.creds.update',
@@ -243,19 +223,8 @@ export const adminCredsRouter = router({
     }),
 
   uploadFile: createProcedure
-    .input(
-      z.object({
-        file: z
-          .string()
-          .max(MAX_UPLOAD_BASE64_CHARS)
-          .regex(
-            /^(?:[A-Z\d+/]{4})*(?:[A-Z\d+/]{2}==|[A-Z\d+/]{3}=)?$/i,
-            'Invalid base64 file payload',
-          ),
-        fileName: z.string().min(1),
-        fileType: z.string().min(1),
-      }),
-    )
+    .input(adminCredsUploadFileInputSchema)
+    .output(adminCredsUploadFileOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
         action: 'admin.creds.uploadFile',

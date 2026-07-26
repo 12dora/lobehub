@@ -21,6 +21,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
+import { skillResourceContentChecksum } from '../../contracts/skillCatalog';
 import { AiCatalogAdminService } from '../aiCatalog/adminService';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { SkillCatalogAdminService } from '../skillCatalog/adminService';
@@ -190,11 +191,11 @@ describe('catalog authority publication atomicity', () => {
 
     const resources = [
       {
-        checksum: 'a'.repeat(64),
+        checksum: skillResourceContentChecksum('reference'),
         content: 'reference',
         mediaType: 'text/plain',
         path: 'references/source.txt',
-        sizeBytes: 9,
+        sizeBytes: new TextEncoder().encode('reference').byteLength,
       },
     ];
     const version = await service.createVersion('admin', {

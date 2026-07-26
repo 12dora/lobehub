@@ -289,11 +289,13 @@ export class ToolExecutionService {
       }
 
       if (mcpParams.type === 'stdio') {
+        const message =
+          'This integration must run on a connected desktop device. Connect a device and try again.';
         return {
-          content: 'Stdio MCP requires an isolated device',
+          content: message,
           error: {
             code: 'MCP_STDIO_DEVICE_REQUIRED',
-            message: 'Stdio MCP requires an isolated device',
+            message,
           },
           success: false,
         };

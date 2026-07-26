@@ -508,6 +508,38 @@ describe('PlatformSystemAdminService status', () => {
     }
   });
 
+  it('counts only 24-hour publication failures and includes managed policy failures', async () => {
+    const now = new Date('2026-07-26T12:00:00.000Z');
+    await db.insert(platformAuditLogs).values([
+      {
+        action: 'admin.managedResources.publish',
+        actorUserId: 'admin-1',
+        afterDiff: { error: 'operation failed' },
+        createdAt: new Date(now.getTime() - 60_000),
+        result: 'failure',
+        targetType: 'managed_policy',
+      },
+      {
+        action: 'admin.settings.publish',
+        actorUserId: 'admin-1',
+        afterDiff: { error: 'historical failure' },
+        createdAt: new Date(now.getTime() - 24 * 60 * 60 * 1000 - 1),
+        result: 'failure',
+        targetType: 'settings',
+      },
+    ]);
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: { ENABLE_DATABASE_OIDC: '0' },
+      now: () => now,
+    }).getStatus();
+    expect(status.recentPublishFailures).toMatchObject({
+      count: 1,
+      items: [{ category: 'operation_unavailable', domain: 'managed_policy' }],
+      status: 'healthy',
+    });
+  });
+
   it('reports unavailable aggregates distinctly and rejects an invalid env KEK as healthy', async () => {
     const service = new PlatformSystemAdminService(db, {
       env: {

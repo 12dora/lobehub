@@ -1,7 +1,7 @@
 'use client';
 
 import { Alert, Block, Flexbox, Tag, Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { memo, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
@@ -38,6 +38,9 @@ interface AgentDetailViewProps {
   rolloutsEnabled?: boolean;
   snapshot: AdminAgentDetailOutput;
 }
+
+type CollectionKind = 'assignments' | 'rollouts' | 'versions';
+type CollectionLoadState = Record<CollectionKind, 'error' | 'idle' | 'loading'>;
 
 const PERSIST_HINT_KEY = {
   blocked: 'agentCatalog.recovery.blocked',
@@ -119,9 +122,20 @@ export const AgentDetailView = memo(
       isFresh: isAgentDetailFresh,
     });
     const actions = useAgentActions({ authMethod, editor, lock, mutate, permissions, snapshot });
+    const [collectionLoadState, setCollectionLoadState] = useState<CollectionLoadState>({
+      assignments: 'idle',
+      rollouts: 'idle',
+      versions: 'idle',
+    });
+    const collectionLoadingRef = useRef<Record<CollectionKind, boolean>>({
+      assignments: false,
+      rollouts: false,
+      versions: false,
+    });
 
     const loadMoreCollection = useCallback(
-      async (kind: 'assignments' | 'rollouts' | 'versions') => {
+      async (kind: CollectionKind) => {
+        if (collectionLoadingRef.current[kind]) return;
         const meta = snapshot.collectionMeta;
         if (!meta) return;
         const cursorKey =
@@ -130,105 +144,107 @@ export const AgentDetailView = memo(
             : kind === 'rollouts'
               ? 'rolloutsNextCursor'
               : 'versionsNextCursor';
-        const truncKey =
-          kind === 'assignments'
-            ? 'assignmentsTruncated'
-            : kind === 'rollouts'
-              ? 'rolloutsTruncated'
-              : 'versionsTruncated';
         const cursor = meta[cursorKey];
         if (!cursor) return;
         const agentId = snapshot.identity.id;
-        // Separate awaits so each page.items type stays distinct (union would lose id/jobId).
-        if (kind === 'assignments') {
-          const page = await adminAgentsService.listAssignments({ agentId, cursor, limit: 100 });
-          await mutate(
-            (current): AdminAgentDetailOutput | undefined => {
-              if (!current) return current;
-              const baseMeta = current.collectionMeta ?? {
-                assignmentsNextCursor: null,
-                assignmentsTruncated: false,
-                rolloutsNextCursor: null,
-                rolloutsTruncated: false,
-                versionsNextCursor: null,
-                versionsTruncated: false,
-              };
-              const seen = new Set(current.assignments.map((row) => row.id));
-              const appended = page.items.filter((item) => !seen.has(item.id));
-              return {
-                ...current,
-                assignments: [...current.assignments, ...appended],
-                collectionMeta: {
-                  ...baseMeta,
-                  assignmentsNextCursor: page.nextCursor,
-                  assignmentsTruncated: page.nextCursor !== null,
-                },
-              };
-            },
-            { revalidate: false },
-          );
-          return;
-        }
-        if (kind === 'rollouts') {
-          const page = await adminAgentsService.listRollouts({ agentId, cursor, limit: 100 });
-          await mutate(
-            (current): AdminAgentDetailOutput | undefined => {
-              if (!current) return current;
-              const baseMeta = current.collectionMeta ?? {
-                assignmentsNextCursor: null,
-                assignmentsTruncated: false,
-                rolloutsNextCursor: null,
-                rolloutsTruncated: false,
-                versionsNextCursor: null,
-                versionsTruncated: false,
-              };
-              const seen = new Set(current.rollouts.map((row) => row.jobId));
-              const appended = page.items.filter((item) => !seen.has(item.jobId));
-              return {
-                ...current,
-                collectionMeta: {
-                  ...baseMeta,
-                  rolloutsNextCursor: page.nextCursor,
-                  rolloutsTruncated: page.nextCursor !== null,
-                },
-                rollouts: [...current.rollouts, ...appended],
-              };
-            },
-            { revalidate: false },
-          );
-          return;
-        }
-        const page = await adminAgentsService.listVersions({ agentId, cursor, limit: 100 });
-        await mutate(
-          (current): AdminAgentDetailOutput | undefined => {
-            if (!current) return current;
-            const baseMeta = current.collectionMeta ?? {
-              assignmentsNextCursor: null,
-              assignmentsTruncated: false,
-              rolloutsNextCursor: null,
-              rolloutsTruncated: false,
-              versionsNextCursor: null,
-              versionsTruncated: false,
-            };
-            const seen = new Set(current.versions.map((row) => row.id));
-            const appended = page.items.filter((item) => !seen.has(item.id));
-            return {
-              ...current,
-              collectionMeta: {
-                ...baseMeta,
-                versionsNextCursor: page.nextCursor,
-                versionsTruncated: page.nextCursor !== null,
+        collectionLoadingRef.current[kind] = true;
+        setCollectionLoadState((current) => ({ ...current, [kind]: 'loading' }));
+        try {
+          // Separate awaits so each page.items type stays distinct (union would lose id/jobId).
+          if (kind === 'assignments') {
+            const page = await adminAgentsService.listAssignments({ agentId, cursor, limit: 100 });
+            await mutate(
+              (current): AdminAgentDetailOutput | undefined => {
+                if (!current) return current;
+                const baseMeta = current.collectionMeta ?? {
+                  assignmentsNextCursor: null,
+                  assignmentsTruncated: false,
+                  rolloutsNextCursor: null,
+                  rolloutsTruncated: false,
+                  versionsNextCursor: null,
+                  versionsTruncated: false,
+                };
+                const seen = new Set(current.assignments.map((row) => row.id));
+                const appended = page.items.filter((item) => !seen.has(item.id));
+                return {
+                  ...current,
+                  assignments: [...current.assignments, ...appended],
+                  collectionMeta: {
+                    ...baseMeta,
+                    assignmentsNextCursor: page.nextCursor,
+                    assignmentsTruncated: page.nextCursor !== null,
+                  },
+                };
               },
-              versions: sortPlatformAgentVersionsDesc([
-                ...current.versions,
-                ...appended,
-              ] as AdminAgentDetailOutput['versions']),
-            };
-          },
-          { revalidate: false },
-        );
+              { revalidate: false },
+            );
+          } else if (kind === 'rollouts') {
+            const page = await adminAgentsService.listRollouts({ agentId, cursor, limit: 100 });
+            await mutate(
+              (current): AdminAgentDetailOutput | undefined => {
+                if (!current) return current;
+                const baseMeta = current.collectionMeta ?? {
+                  assignmentsNextCursor: null,
+                  assignmentsTruncated: false,
+                  rolloutsNextCursor: null,
+                  rolloutsTruncated: false,
+                  versionsNextCursor: null,
+                  versionsTruncated: false,
+                };
+                const seen = new Set(current.rollouts.map((row) => row.jobId));
+                const appended = page.items.filter((item) => !seen.has(item.jobId));
+                return {
+                  ...current,
+                  collectionMeta: {
+                    ...baseMeta,
+                    rolloutsNextCursor: page.nextCursor,
+                    rolloutsTruncated: page.nextCursor !== null,
+                  },
+                  rollouts: [...current.rollouts, ...appended],
+                };
+              },
+              { revalidate: false },
+            );
+          } else {
+            const page = await adminAgentsService.listVersions({ agentId, cursor, limit: 100 });
+            await mutate(
+              (current): AdminAgentDetailOutput | undefined => {
+                if (!current) return current;
+                const baseMeta = current.collectionMeta ?? {
+                  assignmentsNextCursor: null,
+                  assignmentsTruncated: false,
+                  rolloutsNextCursor: null,
+                  rolloutsTruncated: false,
+                  versionsNextCursor: null,
+                  versionsTruncated: false,
+                };
+                const seen = new Set(current.versions.map((row) => row.id));
+                const appended = page.items.filter((item) => !seen.has(item.id));
+                return {
+                  ...current,
+                  collectionMeta: {
+                    ...baseMeta,
+                    versionsNextCursor: page.nextCursor,
+                    versionsTruncated: page.nextCursor !== null,
+                  },
+                  versions: sortPlatformAgentVersionsDesc([
+                    ...current.versions,
+                    ...appended,
+                  ] as AdminAgentDetailOutput['versions']),
+                };
+              },
+              { revalidate: false },
+            );
+          }
+          setCollectionLoadState((current) => ({ ...current, [kind]: 'idle' }));
+        } catch {
+          setCollectionLoadState((current) => ({ ...current, [kind]: 'error' }));
+          toast.error(t('agentCatalog.collection.loadFailed'));
+        } finally {
+          collectionLoadingRef.current[kind] = false;
+        }
       },
-      [mutate, snapshot.collectionMeta, snapshot.identity.id],
+      [mutate, snapshot.collectionMeta, snapshot.identity.id, t],
     );
 
     return (
@@ -375,8 +391,16 @@ export const AgentDetailView = memo(
                 type="warning"
                 action={
                   snapshot.collectionMeta.versionsNextCursor ? (
-                    <Button size="small" onClick={() => void loadMoreCollection('versions')}>
-                      {t('agentCatalog.collection.loadMore')}
+                    <Button
+                      loading={collectionLoadState.versions === 'loading'}
+                      size="small"
+                      onClick={() => void loadMoreCollection('versions')}
+                    >
+                      {t(
+                        collectionLoadState.versions === 'error'
+                          ? 'agentCatalog.collection.retry'
+                          : 'agentCatalog.collection.loadMore',
+                      )}
                     </Button>
                   ) : undefined
                 }
@@ -424,6 +448,8 @@ export const AgentDetailView = memo(
           <AssignmentPanel
             assignmentsTruncated={Boolean(snapshot.collectionMeta?.assignmentsTruncated)}
             authMethod={authMethod}
+            loadMoreError={collectionLoadState.assignments === 'error'}
+            loadingMore={collectionLoadState.assignments === 'loading'}
             lock={lock}
             permissions={permissions}
             refresh={mutate}
@@ -438,6 +464,8 @@ export const AgentDetailView = memo(
           <RolloutPanel
             authMethod={authMethod}
             enabled={rolloutsEnabled}
+            loadMoreError={collectionLoadState.rollouts === 'error'}
+            loadingMore={collectionLoadState.rollouts === 'loading'}
             lock={lock}
             permissions={permissions}
             pollError={pollError}

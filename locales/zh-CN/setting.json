@@ -646,6 +646,7 @@
   "platformSkills.pagination.previous": "上一页",
   "platformSkills.pagination.status": "第 {{page}} / {{pages}} 页",
   "platformSkills.runtime.loading": "正在加载组织技能…",
+  "platformSkills.runtime.refreshFailed": "无法刷新组织技能，请重试。",
   "platformSkills.runtime.unavailable": "组织技能暂时不可用。",
   "platformSkills.search.emptyDesc": "请尝试其他名称或清除搜索条件。",
   "platformSkills.search.emptyTitle": "没有匹配的 Skill",
@@ -783,6 +784,7 @@
   "settingGraphRuntime.enabled.desc": "使用下方保存的快照，让该助理通过 Graph 运行时执行。",
   "settingGraphRuntime.enabled.title": "启用 Graph 运行时",
   "settingGraphRuntime.snapshot.desc": "粘贴完整的 ReasoningGraph JSON 快照。它会随当前助理保存，并在运行时直接使用。",
+  "settingGraphRuntime.snapshot.placeholder": "粘贴 ReasoningGraph JSON 快照，例如：{\"name\":\"...\",\"nodes\":{...},\"terminal\":\"...\",\"edges\":[]}",
   "settingGraphRuntime.snapshot.title": "Graph 快照",
   "settingGraphRuntime.validation.invalidGraph": "Graph 快照无效：{{error}}",
   "settingGraphRuntime.validation.invalidJson": "Graph 快照必须是合法 JSON。",
@@ -2632,6 +2634,7 @@
   "workspaceSetting.storage.telemetry.desc": "通过匿名工作区使用数据帮助我们改进 {{appName}}",
   "workspaceSetting.storage.telemetry.title": "发送匿名工作区使用数据",
   "workspaceSetting.tab.auditLog": "审计日志",
+  "workspaceSetting.tab.connector": "连接器",
   "workspaceSetting.tab.general": "通用",
   "workspaceSetting.tab.members": "成员",
   "workspaceSetting.tab.skill": "技能"

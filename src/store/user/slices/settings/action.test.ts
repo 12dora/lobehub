@@ -149,12 +149,15 @@ describe('SettingsAction', () => {
       refreshUserStateSpy.mockRestore();
     });
 
-    it('should not let an aborted older request roll back a newer optimistic update', async () => {
+    it('coalesces an aborted cross-group edit into the newest persisted request', async () => {
       const { result } = renderHook(() => useUserStore());
       const aborted = new Error('Request aborted');
+      let serverSettings: PartialDeep<UserSettings> = {};
       const refreshUserStateSpy = vi
         .spyOn(result.current, 'refreshUserState')
-        .mockResolvedValue(undefined);
+        .mockImplementation(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
 
       vi.mocked(userService.updateUserSettings)
         .mockImplementationOnce(
@@ -163,12 +166,15 @@ describe('SettingsAction', () => {
               signal?.addEventListener('abort', () => reject(aborted), { once: true });
             }),
         )
-        .mockResolvedValueOnce({ appliedPaths: [] });
+        .mockImplementationOnce(async (updates) => {
+          serverSettings = merge(serverSettings, updates);
+          return { appliedPaths: [] };
+        });
 
       let olderRequest: Promise<unknown> = Promise.resolve();
       act(() => {
         olderRequest = result.current
-          .setSettings({ general: { fontSize: 17 } })
+          .setSettings({ memory: { enabled: false } })
           .catch((error) => error);
       });
 
@@ -177,10 +183,456 @@ describe('SettingsAction', () => {
       });
 
       expect(await olderRequest).toBe(aborted);
-      expect(useUserStore.getState().settings.general).toMatchObject({
-        fontSize: 17,
-        responseLanguage: 'zh-CN',
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        {
+          general: { responseLanguage: 'zh-CN' },
+          memory: { enabled: false },
+        },
+        expect.any(AbortSignal),
+      );
+      expect(useUserStore.getState().settings).toMatchObject({
+        general: { responseLanguage: 'zh-CN' },
+        memory: { enabled: false },
       });
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('ignores an obsolete successful response while a newer optimistic edit is pending', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const aborted = new Error('Request aborted');
+      let resolveMemoryRequest!: () => void;
+      let serverSettings: PartialDeep<UserSettings> = {};
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockImplementation(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
+
+      vi.mocked(userService.updateUserSettings)
+        // Deliberately ignore abort: some adapters can finish a commit after cancellation.
+        .mockImplementationOnce(
+          (updates) =>
+            new Promise((resolve) => {
+              resolveMemoryRequest = () => {
+                serverSettings = merge(serverSettings, updates);
+                resolve({ appliedPaths: [] });
+              };
+            }),
+        )
+        // Keep the superseding general-settings request pending until the third edit aborts it.
+        .mockImplementationOnce(
+          (_updates, signal) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(aborted), { once: true });
+            }),
+        )
+        .mockImplementationOnce(async (updates) => {
+          serverSettings = merge(serverSettings, updates);
+          return { appliedPaths: [] };
+        });
+
+      let memoryRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        memoryRequest = result.current
+          .setSettings({ memory: { enabled: false } })
+          .catch((error) => error);
+      });
+
+      let generalRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        generalRequest = useUserStore
+          .getState()
+          .setSettings({ general: { responseLanguage: 'zh-CN' } })
+          .catch((error) => error);
+      });
+
+      await act(async () => {
+        resolveMemoryRequest();
+        await memoryRequest;
+      });
+
+      expect(refreshUserStateSpy).not.toHaveBeenCalled();
+      expect(useUserStore.getState().settings).toMatchObject({
+        general: { responseLanguage: 'zh-CN' },
+        memory: { enabled: false },
+      });
+
+      await act(async () => {
+        await useUserStore.getState().setSettings({
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        });
+      });
+
+      expect(await generalRequest).toBe(aborted);
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        {
+          general: { responseLanguage: 'zh-CN' },
+          memory: { enabled: false },
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        },
+        expect.any(AbortSignal),
+      );
+      expect(refreshUserStateSpy).toHaveBeenCalledTimes(1);
+      expect(useUserStore.getState().settings).toMatchObject({
+        general: { responseLanguage: 'zh-CN' },
+        memory: { enabled: false },
+        tool: { humanIntervention: { approvalMode: 'manual' } },
+      });
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('restores a newer optimistic edit overwritten by an in-flight stale refresh', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const aborted = new Error('Request aborted');
+      let resolveFirstRefresh!: () => void;
+      let signalFirstRefreshStarted!: () => void;
+      const firstRefreshStarted = new Promise<void>((resolve) => {
+        signalFirstRefreshStarted = resolve;
+      });
+      let serverSettings: PartialDeep<UserSettings> = {};
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              const staleSnapshot = serverSettings;
+              signalFirstRefreshStarted();
+              resolveFirstRefresh = () => {
+                useUserStore.setState({ settings: staleSnapshot });
+                resolve();
+              };
+            }),
+        )
+        .mockImplementationOnce(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
+
+      vi.mocked(userService.updateUserSettings)
+        .mockImplementationOnce(async (updates) => {
+          serverSettings = merge(serverSettings, updates);
+          return { appliedPaths: [] };
+        })
+        .mockImplementationOnce(
+          (_updates, signal) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(aborted), { once: true });
+            }),
+        )
+        .mockImplementationOnce(async (updates) => {
+          serverSettings = merge(serverSettings, updates);
+          return { appliedPaths: [] };
+        });
+
+      let memoryRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        memoryRequest = result.current
+          .setSettings({ memory: { enabled: false } })
+          .catch((error) => error);
+      });
+      await act(async () => firstRefreshStarted);
+
+      let generalRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        generalRequest = useUserStore
+          .getState()
+          .setSettings({ general: { responseLanguage: 'zh-CN' } })
+          .catch((error) => error);
+      });
+
+      let toolRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        // Resolve the stale refresh and start a third edit in the same turn, before the older
+        // setSettings continuation has a chance to restore the optimistic general group.
+        resolveFirstRefresh();
+        toolRequest = useUserStore
+          .getState()
+          .setSettings({
+            tool: { humanIntervention: { approvalMode: 'manual' } },
+          })
+          .catch((error) => error);
+      });
+
+      await act(async () => {
+        await Promise.all([memoryRequest, toolRequest]);
+      });
+
+      expect(await generalRequest).toBe(aborted);
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        {
+          general: { responseLanguage: 'zh-CN' },
+          memory: { enabled: false },
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        },
+        expect.any(AbortSignal),
+      );
+      expect(useUserStore.getState().settings).toMatchObject({
+        general: { responseLanguage: 'zh-CN' },
+        memory: { enabled: false },
+        tool: { humanIntervention: { approvalMode: 'manual' } },
+      });
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('retains carried groups when the coalesced latest request fails', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const aborted = new Error('Request aborted');
+      const coalescedFailure = new Error('Coalesced request failed');
+      let serverSettings: PartialDeep<UserSettings> = {};
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockImplementation(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
+
+      vi.mocked(userService.updateUserSettings)
+        .mockImplementationOnce(
+          (_settings, signal) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(aborted), { once: true });
+            }),
+        )
+        .mockRejectedValueOnce(coalescedFailure)
+        .mockImplementationOnce(async (updates) => {
+          serverSettings = merge(serverSettings, updates);
+          return { appliedPaths: [] };
+        });
+
+      let memoryRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        memoryRequest = result.current
+          .setSettings({ memory: { enabled: false } })
+          .catch((error) => error);
+      });
+
+      let failedRequest: Promise<unknown> = Promise.resolve();
+      await act(async () => {
+        failedRequest = useUserStore
+          .getState()
+          .setSettings({ general: { responseLanguage: 'zh-CN' } })
+          .catch((error) => error);
+        await failedRequest;
+      });
+
+      expect(await memoryRequest).toBe(aborted);
+      expect(await failedRequest).toBe(coalescedFailure);
+      expect(useUserStore.getState().settings.memory?.enabled).toBe(false);
+      expect(useUserStore.getState().settings.general?.responseLanguage).toBeUndefined();
+
+      await act(async () => {
+        await useUserStore.getState().setSettings({
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        });
+      });
+
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        {
+          memory: { enabled: false },
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        },
+        expect.any(AbortSignal),
+      );
+      expect(useUserStore.getState().settings).toMatchObject({
+        memory: { enabled: false },
+        tool: { humanIntervention: { approvalMode: 'manual' } },
+      });
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('clears retained pending groups when settings are reset', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const aborted = new Error('Request aborted');
+      const coalescedFailure = new Error('Coalesced request failed');
+      let serverSettings: PartialDeep<UserSettings> = {};
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockImplementation(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
+
+      vi.mocked(userService.updateUserSettings)
+        .mockImplementationOnce(
+          (_settings, signal) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(aborted), { once: true });
+            }),
+        )
+        .mockRejectedValueOnce(coalescedFailure)
+        .mockImplementationOnce(async (updates) => {
+          serverSettings = merge(serverSettings, updates);
+          return { appliedPaths: [] };
+        });
+      vi.mocked(userService.resetUserSettings).mockImplementationOnce(async () => {
+        serverSettings = {};
+      });
+
+      let memoryRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        memoryRequest = result.current
+          .setSettings({ memory: { enabled: false } })
+          .catch((error) => error);
+      });
+
+      let failedRequest: Promise<unknown> = Promise.resolve();
+      await act(async () => {
+        failedRequest = useUserStore
+          .getState()
+          .setSettings({ general: { responseLanguage: 'zh-CN' } })
+          .catch((error) => error);
+        await failedRequest;
+      });
+
+      expect(await memoryRequest).toBe(aborted);
+      expect(await failedRequest).toBe(coalescedFailure);
+      expect(useUserStore.getState().settings.memory?.enabled).toBe(false);
+
+      await act(async () => {
+        await useUserStore.getState().resetSettings();
+      });
+      expect(useUserStore.getState().settings).toEqual({});
+
+      await act(async () => {
+        await useUserStore.getState().setSettings({
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        });
+      });
+
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        { tool: { humanIntervention: { approvalMode: 'manual' } } },
+        expect.any(AbortSignal),
+      );
+      expect(useUserStore.getState().settings.memory).toBeUndefined();
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('queues a post-reset edit until a delayed server reset completes', async () => {
+      const { result } = renderHook(() => useUserStore());
+      let resolveReset!: () => void;
+      let serverSettings: PartialDeep<UserSettings> = {
+        memory: { enabled: false },
+      };
+      act(() => {
+        useUserStore.setState({ settings: serverSettings });
+      });
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockImplementation(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
+      vi.mocked(userService.resetUserSettings).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveReset = () => {
+              serverSettings = {};
+              resolve();
+            };
+          }),
+      );
+      vi.mocked(userService.updateUserSettings).mockImplementationOnce(async (updates) => {
+        serverSettings = merge(serverSettings, updates);
+        return { appliedPaths: [] };
+      });
+      const updateCallCountBeforeReset = vi.mocked(userService.updateUserSettings).mock.calls
+        .length;
+
+      let resetRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        resetRequest = result.current.resetSettings();
+      });
+      let toolRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        toolRequest = useUserStore.getState().setSettings({
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        });
+      });
+
+      expect(userService.updateUserSettings).toHaveBeenCalledTimes(updateCallCountBeforeReset);
+
+      await act(async () => {
+        resolveReset();
+        await Promise.all([resetRequest, toolRequest]);
+      });
+
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        { tool: { humanIntervention: { approvalMode: 'manual' } } },
+        expect.any(AbortSignal),
+      );
+      expect(serverSettings).toEqual({
+        tool: { humanIntervention: { approvalMode: 'manual' } },
+      });
+      expect(useUserStore.getState().settings).toEqual(serverSettings);
+      refreshUserStateSpy.mockRestore();
+    });
+
+    it('reconciles server state and surfaces a failed reset after clearing an old pending edit', async () => {
+      const { result } = renderHook(() => useUserStore());
+      const aborted = new Error('Request aborted');
+      const coalescedFailure = new Error('Coalesced request failed');
+      const resetFailure = new Error('Reset failed');
+      let serverSettings: PartialDeep<UserSettings> = {
+        memory: { enabled: true },
+      };
+      act(() => {
+        useUserStore.setState({ settings: serverSettings });
+      });
+      const refreshUserStateSpy = vi
+        .spyOn(result.current, 'refreshUserState')
+        .mockImplementation(async () => {
+          useUserStore.setState({ settings: serverSettings });
+        });
+      vi.mocked(userService.updateUserSettings)
+        .mockImplementationOnce(
+          (_settings, signal) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(aborted), { once: true });
+            }),
+        )
+        .mockRejectedValueOnce(coalescedFailure)
+        .mockImplementationOnce(async (updates) => {
+          serverSettings = merge(serverSettings, updates);
+          return { appliedPaths: [] };
+        });
+      vi.mocked(userService.resetUserSettings).mockRejectedValueOnce(resetFailure);
+
+      let memoryRequest: Promise<unknown> = Promise.resolve();
+      act(() => {
+        memoryRequest = result.current
+          .setSettings({ memory: { enabled: false } })
+          .catch((error) => error);
+      });
+      let failedRequest: Promise<unknown> = Promise.resolve();
+      await act(async () => {
+        failedRequest = useUserStore
+          .getState()
+          .setSettings({ general: { responseLanguage: 'zh-CN' } })
+          .catch((error) => error);
+        await failedRequest;
+      });
+      expect(await memoryRequest).toBe(aborted);
+      expect(await failedRequest).toBe(coalescedFailure);
+      expect(useUserStore.getState().settings.memory?.enabled).toBe(false);
+
+      let caughtResetError: unknown;
+      await act(async () => {
+        try {
+          await useUserStore.getState().resetSettings();
+        } catch (error) {
+          caughtResetError = error;
+        }
+      });
+
+      expect(caughtResetError).toBe(resetFailure);
+      expect(useUserStore.getState().settings).toEqual(serverSettings);
+
+      await act(async () => {
+        await useUserStore.getState().setSettings({
+          tool: { humanIntervention: { approvalMode: 'manual' } },
+        });
+      });
+      expect(userService.updateUserSettings).toHaveBeenLastCalledWith(
+        { tool: { humanIntervention: { approvalMode: 'manual' } } },
+        expect.any(AbortSignal),
+      );
+      expect(useUserStore.getState().settings).toEqual(serverSettings);
       refreshUserStateSpy.mockRestore();
     });
 

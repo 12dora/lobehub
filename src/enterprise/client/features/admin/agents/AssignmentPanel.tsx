@@ -17,6 +17,8 @@ interface AssignmentPanelProps {
   /** True when the detail aggregate hit the page ceiling for assignments. */
   assignmentsTruncated?: boolean;
   authMethod: AdminReauthAuthMethod | null;
+  loadingMore?: boolean;
+  loadMoreError?: boolean;
   /** Shared refresh gate; when a committed agent/assignment change awaits refresh, writes lock. */
   lock: RefreshLock;
   onLoadMoreAssignments?: () => Promise<void>;
@@ -35,6 +37,8 @@ export const AssignmentPanel = ({
   assignmentsTruncated = false,
   authMethod,
   lock,
+  loadMoreError = false,
+  loadingMore = false,
   onLoadMoreAssignments,
   permissions,
   refresh,
@@ -92,8 +96,16 @@ export const AssignmentPanel = ({
           type="warning"
           action={
             onLoadMoreAssignments ? (
-              <Button size="small" onClick={() => void onLoadMoreAssignments()}>
-                {t('agentCatalog.collection.loadMore')}
+              <Button
+                loading={loadingMore}
+                size="small"
+                onClick={() => void onLoadMoreAssignments()}
+              >
+                {t(
+                  loadMoreError
+                    ? 'agentCatalog.collection.retry'
+                    : 'agentCatalog.collection.loadMore',
+                )}
               </Button>
             ) : undefined
           }

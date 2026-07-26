@@ -1,13 +1,16 @@
 import type { LobeChatDatabase } from '@lobechat/database';
+import { eq } from 'drizzle-orm';
 
 import {
   PlatformConnectorGovernanceModel,
   PlatformManagedResourcePolicyModel,
 } from '@/database/models/platform';
+import { users } from '@/database/schemas';
+import { isEffectivelyBanned } from '@/database/utils/userBan';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
-import type { ResolvedConnectorGovernance } from './types';
+import { CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER, type ResolvedConnectorGovernance } from './types';
 
 /**
  * Invalidation scope bumped on every governance publish. The resolver cache
@@ -39,6 +42,23 @@ const readCacheEpoch = async (): Promise<string> => {
     getPlatformConfigScopeVersion(CONNECTOR_GOVERNANCE_INVALIDATION_SCOPE),
   ]);
   return `${policyEpoch}:${governanceEpoch}`;
+};
+
+const enforceSharedOwnerLiveness = async (
+  db: LobeChatDatabase,
+  resolved: ResolvedConnectorGovernance,
+): Promise<ResolvedConnectorGovernance> => {
+  if (!resolved.active || !resolved.sharedAuthOwnerUserId) return resolved;
+  const [owner] = await db
+    .select({ banExpires: users.banExpires, banned: users.banned })
+    .from(users)
+    .where(eq(users.id, resolved.sharedAuthOwnerUserId))
+    .limit(1);
+  if (owner && !isEffectivelyBanned(owner)) return resolved;
+  return {
+    ...resolved,
+    sharedAuthOwnerUserId: CONNECTOR_GOVERNANCE_DENY_SHARED_OWNER,
+  };
 };
 
 export interface ResolveConnectorGovernanceOptions {
@@ -74,7 +94,9 @@ export const resolvePublishedConnectorGovernance = async (
   }
   if (epoch) {
     const cached = resolvedCache.get(sourceId);
-    if (cached && cached.epoch === epoch && cached.expiresAt > now) return cached.resolved;
+    if (cached && cached.epoch === epoch && cached.expiresAt > now) {
+      return enforceSharedOwnerLiveness(db, cached.resolved);
+    }
   }
 
   const flags = parseEnterpriseFeatureFlags(options.env ?? process.env);
@@ -103,7 +125,7 @@ export const resolvePublishedConnectorGovernance = async (
       resolved,
     });
   }
-  return resolved;
+  return enforceSharedOwnerLiveness(db, resolved);
 };
 
 export const resetConnectorGovernanceCacheForTest = () => {

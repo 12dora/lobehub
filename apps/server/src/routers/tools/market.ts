@@ -552,14 +552,31 @@ const execInSandboxHandler = async ({
       managedCorrelationId ?? 'none',
     );
 
-    // Re-throw TRPCError as-is (e.g., UNAUTHORIZED from above)
+    // Managed execution details stay server-side. Users get an actionable,
+    // stable message without operation proofs, snapshots, references, or IDs.
     if (error instanceof TRPCError) {
+      if (managedRequest && error.code !== 'UNAUTHORIZED') {
+        const unavailable = error.message.includes('reference is unavailable');
+        log(
+          'managed Skill request rejected code=%s reason=%s correlation=%s',
+          error.code,
+          error.message,
+          managedCorrelationId ?? 'none',
+        );
+        throw new TRPCError({
+          cause: error,
+          code: error.code,
+          message: unavailable
+            ? 'This Skill is no longer available. Start a new run or ask your administrator to republish it.'
+            : 'This Skill couldn’t run. Start a new run and try again. If the problem continues, contact your administrator.',
+        });
+      }
       throw error;
     }
 
     const rawErrorMessage = error instanceof Error ? error.message : String(error);
     const errorMessage = managedRequest
-      ? `Managed Skill execution failed${managedCorrelationId ? ` (${managedCorrelationId})` : ''}`
+      ? 'This Skill couldn’t run. Start a new run and try again. If the problem continues, contact your administrator.'
       : String(redactForLog(rawErrorMessage)).slice(0, 1000);
 
     // Check for authentication errors thrown as exceptions

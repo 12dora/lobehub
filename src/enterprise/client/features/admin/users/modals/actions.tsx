@@ -107,7 +107,7 @@ const BanExtraFields = memo<{
           showTime
           aria-label={tr('users.modals.ban.expiryLabel')}
           disabled={locked}
-          disabledDate={(d) => d.isBefore(dayjs())}
+          disabledDate={(d) => d.isBefore(dayjs(), 'day')}
           value={expiresAt}
           onChange={(v) => onExpiresAtChange(v as Dayjs | null)}
         />
@@ -363,7 +363,7 @@ const RolesExtra = memo<{
             showTime
             aria-label={tr('users.modals.roles.expiryOptional')}
             disabled={locked}
-            disabledDate={(d) => d.isBefore(dayjs())}
+            disabledDate={(d) => d.isBefore(dayjs(), 'day')}
             value={expiresAt}
             onChange={(v) => onExpiresAtChange(v as Dayjs | null)}
           />

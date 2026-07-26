@@ -36,7 +36,7 @@ import {
 } from './retentionWorkerErrors';
 import { processConversations, processOperationLogs } from './retentionWorkerScopes';
 import { progressFromCounts } from './retentionWorkerShared';
-import { appendWorkerOutcome } from './retentionWorkerTerminal';
+import { appendWorkerOutcome, failRetentionAttempt } from './retentionWorkerTerminal';
 
 export interface ProcessNextAuditRetentionOptions {
   /**
@@ -420,51 +420,26 @@ export const processNextAuditRetentionJob = async (
         : mapRetentionFailureCode(error);
 
     if (isTerminalContractError(error)) {
-      await runsModel.fail(runId, { code });
-      await jobs.fail({
-        error: { code },
+      await failRetentionAttempt(db, {
+        code,
         jobId: claimed.id,
+        runId,
         terminal: true,
         workerId: options.workerId,
       });
-      const run = await runsModel.get(runId);
-      if (run) {
-        await appendWorkerOutcome(db, {
-          errorCode: code,
-          mode: run.mode,
-          outcome: 'failed',
-          requestedBy: run.requestedBy,
-          required: true,
-          result: 'failure',
-          runId,
-          scope: run.scope,
-        });
-      }
       return { claimed: true, jobId: claimed.id, outcome: 'failed', runId };
     }
 
-    // Transient: requeue job (or dead when maxAttempts exhausted). Domain stays running.
-    const failedJob = await jobs.fail({
-      error: { code },
+    // Transient: requeue, or atomically terminalize all evidence when exhausted.
+    const terminal = await failRetentionAttempt(db, {
+      code,
       jobId: claimed.id,
+      runId,
+      terminal: false,
       workerId: options.workerId,
     });
 
-    if (failedJob?.status === 'dead') {
-      await runsModel.fail(runId, { code });
-      const run = await runsModel.get(runId);
-      if (run) {
-        await appendWorkerOutcome(db, {
-          errorCode: code,
-          mode: run.mode,
-          outcome: 'failed',
-          requestedBy: run.requestedBy,
-          required: true,
-          result: 'failure',
-          runId,
-          scope: run.scope,
-        });
-      }
+    if (terminal) {
       return { claimed: true, jobId: claimed.id, outcome: 'failed', runId };
     }
 

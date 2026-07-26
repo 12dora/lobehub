@@ -134,4 +134,6 @@ AIHub 二开的表统一位于**平台域**，以 `platform_` 前缀与上游用
 - **密钥零明文**：密钥列仅存 `kms://` / `vault://` 引用与 fingerprint，明文 / 密文不进入普通表、版本、绑定、OAuth state 或审计日志。
 - **显式 onDelete**：外键显式声明删除语义（CASCADE / RESTRICT），依赖 DB 触发器兜住跨表不变式（如物化行不得孤立于 assignment/user）。
 - **游标索引优先**：列表查询走 `(created_at, id)` 等复合游标索引，优先于 OFFSET 分页。
-- **单一 baseline 迁移**：迁移压缩为单一基线 `0000_squash_baseline`（`packages/database/migrations/`，journal 仅此一条）。后续演进遵循 expand/contract—— 先加列 / 加表并双写，DROP 或改名延后一个稳定版本，避免与运行中的旧进程产生 schema 冲突。
+- **压缩基线与有序后续迁移**：`0000_squash_baseline` 表达新安装基线，后续变更按
+  [`meta/_journal.json`](../../../packages/database/migrations/meta/_journal.json)
+  的顺序应用。演进遵循 expand/contract—— 先加列 / 加表并双写，DROP 或改名延后一个稳定版本，避免与运行中的旧进程产生 schema 冲突；不要在文档中复制固定迁移数量。

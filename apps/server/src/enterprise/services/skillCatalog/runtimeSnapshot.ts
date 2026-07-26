@@ -13,6 +13,7 @@ import { SkillCatalogReadService } from './readService';
 import { isPublishedSkillCatalogExecutionReady } from './runtimeReadiness';
 
 const MAX_OPERATION_SKILLS = 10_000;
+const MAX_OPERATION_SKILL_PAYLOAD_BYTES = 8 * 1024 * 1024;
 
 export interface PlatformSkillRuntimeSnapshot {
   catalog: PlatformSkillOperationSnapshot;
@@ -57,6 +58,18 @@ const buildResolvedContent = (
   return `${resolved.content}\n\n${resourcesTreePrompt(resolved.displayName, resources)}`;
 };
 
+const createOperationPayloadAccumulator = () => {
+  let payloadBytes = 0;
+
+  return (skill: SkillMeta): SkillMeta => {
+    payloadBytes += Buffer.byteLength(JSON.stringify(skill), 'utf8');
+    if (payloadBytes > MAX_OPERATION_SKILL_PAYLOAD_BYTES) {
+      throw new Error('Platform Skill operation payload limit was exceeded');
+    }
+    return skill;
+  };
+};
+
 /**
  * Resolve the operation-level managed Skill boundary.
  *
@@ -91,21 +104,30 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
     throw new Error('Published Skill catalog is not execution-ready');
   }
   const selected = selectPlatformOperationSkills(published.skills, params.agentPlugins);
-  const skills = await Promise.all(
-    selected.map(async ({ selection, skill }) => {
-      const meta = toSkillMeta(skill);
-      if (!selection.activated) return meta;
-      const resolved = await catalogService.resolvePinnedForExecution({
-        checksum: skill.checksum,
-        skillKey: skill.skillKey,
-        version: skill.version,
-      });
-      // RR2-5: fail closed WITHOUT naming the Skill — the skillKey is an internal catalog
-      // identifier and must never surface to the caller.
-      if (!resolved) throw new Error('A published platform Skill could not be resolved');
-      return { ...meta, activated: true, content: buildResolvedContent(resolved) };
-    }),
-  );
+  const accumulatePayload = createOperationPayloadAccumulator();
+  const skills: SkillMeta[] = [];
+  for (const { selection, skill } of selected) {
+    const meta = toSkillMeta(skill);
+    if (!selection.activated) {
+      skills.push(accumulatePayload(meta));
+      continue;
+    }
+    const resolved = await catalogService.resolvePinnedForExecution({
+      checksum: skill.checksum,
+      skillKey: skill.skillKey,
+      version: skill.version,
+    });
+    // RR2-5: fail closed WITHOUT naming the Skill — the skillKey is an internal catalog
+    // identifier and must never surface to the caller.
+    if (!resolved) throw new Error('A published platform Skill could not be resolved');
+    skills.push(
+      accumulatePayload({
+        ...meta,
+        activated: true,
+        content: buildResolvedContent(resolved),
+      }),
+    );
+  }
 
   const refs = selected.map(({ skill: { checksum, skillKey, version } }) => ({
     checksum,
@@ -197,23 +219,25 @@ export const resolvePinnedPlatformSkillRuntimeSnapshot = async (params: {
     skillKey,
     version,
   }));
-  const skills = await Promise.all(
-    refs.map(async (ref): Promise<SkillMeta> => {
-      const resolved = await catalogService.resolvePinnedForExecution(ref);
-      // RR2-5: fail closed WITHOUT naming the Skill — `skillKey@version` is an internal pinned
-      // identifier and must never surface to the caller.
-      if (!resolved) {
-        throw new Error('A pinned platform Skill could not be resolved');
-      }
-      return {
+  const accumulatePayload = createOperationPayloadAccumulator();
+  const skills: SkillMeta[] = [];
+  for (const ref of refs) {
+    const resolved = await catalogService.resolvePinnedForExecution(ref);
+    // RR2-5: fail closed WITHOUT naming the Skill — `skillKey@version` is an internal pinned
+    // identifier and must never surface to the caller.
+    if (!resolved) {
+      throw new Error('A pinned platform Skill could not be resolved');
+    }
+    skills.push(
+      accumulatePayload({
         activated: true,
         content: buildResolvedContent(resolved),
         description: resolved.description ?? resolved.displayName,
         identifier: resolved.skillKey,
         name: resolved.skillKey,
-      };
-    }),
-  );
+      }),
+    );
+  }
   const proof = await signProof({
     ...params.identity,
     refs,

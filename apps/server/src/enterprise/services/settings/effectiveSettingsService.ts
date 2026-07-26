@@ -12,7 +12,7 @@
 import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { checksumPayload, PlatformSettingsModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type {
   EffectiveSettingsResult,
   SettingClientSurface,
@@ -188,6 +188,7 @@ export interface SettingsMutationLifecycle {
   afterManagedOverrideWrite?: (operation: 'legacyUpdate', index: number) => Promise<void>;
   afterManagedWrites?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
   beforeBundleLock?: (operation: 'fullReset' | 'legacyUpdate' | 'patch' | 'reset') => Promise<void>;
+  beforeLegacyBackfillCleanup?: () => Promise<void>;
   beforeLegacyWrite?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
   beforeOverrideRevisionBump?: (operation: 'legacyUpdate') => Promise<void>;
 }
@@ -524,12 +525,22 @@ export class EffectiveSettingsService {
     }
     if (ops.length === 0) return null;
 
-    const { insertedPaths, revision } = await this.model.insertUserOverridesIfAbsent({
-      ops,
-      source: 'legacy_migration',
-      userId: params.userId,
+    const migrated = await this.db.transaction(async (tx) => {
+      const { insertedPaths, revision } = await new PlatformSettingsModel(
+        tx,
+      ).insertUserOverridesIfAbsent({
+        alreadyInTransaction: true,
+        ops,
+        source: 'legacy_migration',
+        userId: params.userId,
+      });
+      if (insertedPaths.length === 0) return null;
+      await this.lifecycle.beforeLegacyBackfillCleanup?.();
+      await this.stripRegisteredLegacyLeaves(params.userId, insertedPaths, tx);
+      return { insertedPaths, revision };
     });
-    if (insertedPaths.length === 0) return null;
+    if (!migrated) return null;
+    const { insertedPaths, revision } = migrated;
 
     const nextOverrides = { ...params.overrides };
     for (const path of insertedPaths) {
@@ -537,16 +548,16 @@ export class EffectiveSettingsService {
       if (op) nextOverrides[path] = { value: op.value };
     }
 
-    // Strip migrated registered leaves from durable legacy so reset cannot re-backfill them.
-    // Always load the full user_settings row — callers often pass partial legacy slices.
-    await this.stripRegisteredLegacyLeaves(params.userId, insertedPaths);
-
     return { overrides: nextOverrides, revision };
   };
 
-  private stripRegisteredLegacyLeaves = async (userId: string, paths: string[]): Promise<void> => {
+  private stripRegisteredLegacyLeaves = async (
+    userId: string,
+    paths: string[],
+    db: LobeChatDatabase | Transaction = this.db,
+  ): Promise<void> => {
     if (paths.length === 0) return;
-    const userModel = new UserModel(this.db, userId);
+    const userModel = new UserModel(db as LobeChatDatabase, userId);
     const row = await userModel.getUserSettings();
     if (!row) return;
 

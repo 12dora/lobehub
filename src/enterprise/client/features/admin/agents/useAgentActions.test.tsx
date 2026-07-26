@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   fetchPublishedAdminAgentReplacements: vi.fn(),
   findDefaultAdminAgent: vi.fn(),
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastWarning: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -37,7 +39,11 @@ vi.mock('@lobehub/ui', () => ({ Flexbox: () => null, Text: () => null }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Input: () => null,
   Select: () => null,
-  toast: { error: mocks.toastError, success: vi.fn() },
+  toast: {
+    error: mocks.toastError,
+    success: mocks.toastSuccess,
+    warning: mocks.toastWarning,
+  },
 }));
 
 const snapshot = {
@@ -142,6 +148,8 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     mocks.findDefaultAdminAgent.mockReset().mockResolvedValue(undefined);
     mocks.fetchPublishedAdminAgentReplacements.mockReset().mockResolvedValue([]);
     mocks.toastError.mockReset();
+    mocks.toastSuccess.mockReset();
+    mocks.toastWarning.mockReset();
   });
 
   it('routes publish through the shared reauth modal with authMethod and a frozen CAS payload', async () => {
@@ -173,6 +181,33 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
       await config.onSubmit(config.buildPayload('do it'));
     });
     expect(mocks.service.publish).toHaveBeenCalledOnce();
+  });
+
+  it('warns on deferred publish invalidation without showing contradictory success', async () => {
+    mocks.service.publish.mockResolvedValue({
+      agentId: 'agent-1',
+      invalidationStatus: 'deferred',
+      revision: 8,
+      versionId: 'v1',
+    });
+    const { result } = renderHook(() =>
+      useAgentActions({
+        authMethod: null,
+        editor: makeEditor(),
+        lock: makeLock('ok'),
+        mutate: vi.fn(),
+        permissions,
+        snapshot,
+      }),
+    );
+
+    act(() => result.current.publish('v1'));
+    await act(async () => {
+      await lastModalConfig().onSubmit(lastModalConfig().buildPayload('publish'));
+    });
+
+    expect(mocks.toastWarning).toHaveBeenCalledWith('agentCatalog.toast.refreshDeferred');
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });
 
   it('locks a second write after a refresh-failed publish; the re-enabled write uses the NEW CAS', async () => {

@@ -37,7 +37,7 @@ export interface UseManagedAgentSkillsResult {
   rawMarketSkills: MarketSkill[];
   rawPlatformCatalog: PlatformCatalog | null;
   rawUserSkills: UserSkill[];
-  retryPlatformCatalog: () => void;
+  retryPlatformCatalog: () => Promise<unknown>;
   togglePlatformSkill: (skill: PlatformPublishedSkill) => Promise<void>;
   useLegacySkills: boolean;
   userAgentSkills: UserSkill[];
@@ -110,9 +110,7 @@ export const useManagedAgentSkills = (
 
   // SWR returns a fresh response object every render; only `mutate` is stable.
   const mutateCatalog = platformCatalogSWR.mutate;
-  const retryPlatformCatalog = useCallback(() => {
-    void mutateCatalog();
-  }, [mutateCatalog]);
+  const retryPlatformCatalog = useCallback(() => mutateCatalog(), [mutateCatalog]);
 
   return useMemo(
     () => ({

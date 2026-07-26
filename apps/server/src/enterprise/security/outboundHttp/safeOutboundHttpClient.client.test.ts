@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 
-import { SafeOutboundHttpClient, SafeOutboundHttpError, stripCredentialHeaders } from './index';
+import { SafeOutboundHttpClient, SafeOutboundHttpError } from './index';
 import type { DnsResolver, PinnedTransport, PinnedTransportResponse } from './types';
 
 const okResponse = (overrides: Partial<PinnedTransportResponse> = {}): PinnedTransportResponse => ({
@@ -600,17 +600,46 @@ describe('SafeOutboundHttpClient', () => {
     expect(transport).toHaveBeenCalledOnce();
   });
 
-  it('strips built-in and custom credential headers while retaining benign headers', () => {
-    const headers = {
-      'Authorization': 'Bearer fake',
-      'Cookie': 'sid=fake',
-      'X-Api-Key': 'fake-key',
-      'X-Custom': 'keep',
-      'X-Service-Secret': 'fake-secret',
-    };
-    stripCredentialHeaders(headers);
-    expect(headers).toEqual({ 'X-Custom': 'keep' });
-  });
+  it.each([301, 302, 303])(
+    'drops entity and framing headers when same-origin POST redirects to GET (%s)',
+    async (status) => {
+      const transport = vi.fn<PinnedTransport>(async (request) => {
+        if (request.url.pathname === '/start') {
+          expect(request.method).toBe('POST');
+          return okResponse({
+            headers: { location: 'https://a.example/next' },
+            status,
+            statusText: 'Redirect',
+          });
+        }
+        expect(request.method).toBe('GET');
+        expect(request.body).toBeUndefined();
+        expect(Object.keys(request.headers).map((key) => key.toLowerCase())).not.toEqual(
+          expect.arrayContaining(['content-length', 'content-type', 'transfer-encoding']),
+        );
+        expect(request.headers['X-Custom']).toBe('keep');
+        return okResponse({ body: Buffer.from('done') });
+      });
+      const client = new SafeOutboundHttpClient({
+        mode: 'allow-private',
+        resolve: resolveTo([{ address: '1.1.1.1' }]),
+        transport,
+      });
+
+      const response = await client.fetch('https://a.example/start', {
+        body: 'payload',
+        headers: {
+          'Content-Length': '7',
+          'Content-Type': 'text/plain',
+          'Transfer-Encoding': 'chunked',
+          'X-Custom': 'keep',
+        },
+        method: 'POST',
+      });
+      expect(await response.text()).toBe('done');
+      expect(transport).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it.each([307, 308])('rejects secret POST body on cross-origin %s redirect', async (status) => {
     const transport = vi.fn<PinnedTransport>(async () =>

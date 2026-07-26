@@ -15,6 +15,7 @@ import {
   type AuditExportArtifactStorage,
   buildAuditExportStorageKey,
   isAuditExportAttemptsPrefix,
+  isAuditExportObjectNotFoundError,
 } from './exportStorage';
 import { AUDIT_RETENTION_BATCH_LIMIT } from './retentionConstants';
 import {
@@ -119,8 +120,9 @@ export const deleteAuthorizedExportArtifacts = async (params: {
         try {
           await params.storage.getObjectMetadata(storageKey);
           return true;
-        } catch {
-          return false;
+        } catch (error) {
+          if (isAuditExportObjectNotFoundError(error)) return false;
+          throw error;
         }
       },
       // Attribute accounting with outbox complete so a slow delete that outlives
@@ -163,9 +165,8 @@ export const processExportArtifacts = async (
   let counts = params.counts;
 
   // Crash recovery: claim clears storageKey, so candidates never re-scan pending
-  // outboxes. Drain them under the same lock-held purge protocol.
-  // Do NOT attribute recovered deletions to this run's counts — the outbox has no
-  // originating run id (would mis-credit another run's destruction).
+  // outboxes. Each intent carries its originating run id; finalize and count credit
+  // therefore remain atomic even after a crash between checkpoint and deletion.
   if (params.execute) {
     if (!params.storage) {
       throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
@@ -183,15 +184,26 @@ export const processExportArtifacts = async (
       });
       if (pending.length === 0) break;
 
-      const drained = await deleteAuthorizedExportArtifacts({
-        afterArtifactAuthorize: params.afterArtifactAuthorize,
-        ids: pending.map((p) => p.id),
-        repo: params.repo,
-        // No runId — recovery drains are not attributed to this run.
-        storage: params.storage,
-      });
-      // Integrity recovery only — skip count merge for foreign outboxes.
-      if (drained.deleted === 0 && drained.skippedHold === pending.length) break;
+      let drainedDeleted = 0;
+      let drainedSkippedHold = 0;
+      const grouped = new Map<string | null, string[]>();
+      for (const item of pending) {
+        const ids = grouped.get(item.purgeRunId) ?? [];
+        ids.push(item.id);
+        grouped.set(item.purgeRunId, ids);
+      }
+      for (const [purgeRunId, ids] of grouped) {
+        const drained = await deleteAuthorizedExportArtifacts({
+          afterArtifactAuthorize: params.afterArtifactAuthorize,
+          ids,
+          repo: params.repo,
+          runId: purgeRunId ?? undefined,
+          storage: params.storage,
+        });
+        drainedDeleted += drained.deleted;
+        drainedSkippedHold += drained.skippedHold;
+      }
+      if (drainedDeleted === 0 && drainedSkippedHold === pending.length) break;
       if (pending.length < AUDIT_RETENTION_BATCH_LIMIT) break;
     }
   }
@@ -255,6 +267,7 @@ export const processExportArtifacts = async (
         cutoffAt: params.cutoffAt,
         ids: freeIds,
         resolveHeldIds: resolveExportArtifactHeldIds,
+        runId: params.runId,
       });
       claimedIds = claimed.map((c) => c.id);
 

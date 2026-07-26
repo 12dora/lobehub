@@ -30,7 +30,12 @@ const redactFingerprintFields = (value: unknown): unknown => {
   );
 };
 
-const toPublicAuditItem = (item: PlatformAuditLogItem): PlatformAuditLogItem => ({
+/**
+ * Canonical projection for every audit row that crosses a public admin/export boundary.
+ * Legacy or directly inserted rows may predate write-time sanitization, so callers must
+ * not project stored diffs themselves.
+ */
+export const toPublicPlatformAuditItem = (item: PlatformAuditLogItem): PlatformAuditLogItem => ({
   ...item,
   afterDiff: redactFingerprintFields(item.afterDiff) as Record<string, unknown> | null,
   beforeDiff: redactFingerprintFields(item.beforeDiff) as Record<string, unknown> | null,
@@ -59,13 +64,13 @@ export class PlatformAuditService {
     });
   };
 
-  append = async (params: AppendPlatformAuditLogParams): Promise<PlatformAuditLogItem> => {
+  append(params: AppendPlatformAuditLogParams): Promise<PlatformAuditLogItem> {
     return this.model.append(params);
-  };
+  }
 
   findById = async (id: string): Promise<PlatformAuditLogItem | undefined> => {
     const item = await this.model.findById(id);
-    return item ? toPublicAuditItem(item) : undefined;
+    return item ? toPublicPlatformAuditItem(item) : undefined;
   };
 
   /**
@@ -76,6 +81,6 @@ export class PlatformAuditService {
     params: ListPlatformAuditLogParams = {},
   ): Promise<{ items: PlatformAuditLogItem[]; nextCursor: string | null }> => {
     const page = await this.model.list(params);
-    return { ...page, items: page.items.map(toPublicAuditItem) };
+    return { ...page, items: page.items.map(toPublicPlatformAuditItem) };
   };
 }

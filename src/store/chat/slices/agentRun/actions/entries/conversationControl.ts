@@ -373,18 +373,6 @@ export class ConversationControlActionImpl {
       runtimeType: shouldUseGatewayResume ? 'gateway' : 'client',
     });
 
-    // 2. Update intervention status to approved
-    await this.#get().optimisticUpdateMessagePlugin(
-      toolMessageId,
-      { intervention: { status: 'approved' } },
-      optimisticContext,
-    );
-
-    // NOTE: intentionally do NOT bail on Stop here. `intervention: approved` is
-    // already persisted above; returning early would leave the tool marked
-    // approved but never executed — a stuck conversation. Stop pressed in this
-    // sub-second window is best-effort (the paused run can't be aborted yet);
-    // let the approval complete atomically and honor the next Stop normally.
     const requestMetadata = this.#getRequestMetadataFromMessageChain(toolMessageId);
 
     // 2.5. Server-mode: start a **new** Gateway op carrying the approval
@@ -431,6 +419,21 @@ export class ConversationControlActionImpl {
       }
       return;
     }
+
+    // Client runtime owns the persisted optimistic write. Gateway resumes keep
+    // the approval pending until the worker publishes an authoritative
+    // human_intervention_outcome and the stream handler refreshes from DB.
+    await this.#get().optimisticUpdateMessagePlugin(
+      toolMessageId,
+      { intervention: { status: 'approved' } },
+      optimisticContext,
+    );
+
+    // NOTE: intentionally do NOT bail on Stop here. `intervention: approved` is
+    // already persisted above; returning early would leave the tool marked
+    // approved but never executed — a stuck conversation. Stop pressed in this
+    // sub-second window is best-effort (the paused run can't be aborted yet);
+    // let the approval complete atomically and honor the next Stop normally.
 
     // 3. Get current messages for state construction using context
     const chatKey = messageMapKey({ agentId, topicId, threadId, scope });
@@ -1168,27 +1171,15 @@ export class ConversationControlActionImpl {
 
     if (!shouldUseGatewayResume) this.#writeTopicStatus(effectiveContext, 'active');
 
-    // Optimistic update - update status to rejected and save reason
     const intervention = {
       rejectedReason: reason,
       status: 'rejected',
     } as const;
-    await this.#get().optimisticUpdateMessagePlugin(
-      toolMessage.id,
-      { intervention },
-      optimisticContext,
-    );
 
     const toolContent = !!reason
       ? `User reject this tool calling with reason: ${reason}`
       : 'User reject this tool calling without reason';
 
-    await this.#get().optimisticUpdateMessageContent(
-      messageId,
-      toolContent,
-      undefined,
-      optimisticContext,
-    );
     const requestMetadata = this.#getRequestMetadataFromMessageChain(messageId);
 
     // Server-mode: start a **new** Gateway op carrying the rejection.
@@ -1230,7 +1221,21 @@ export class ConversationControlActionImpl {
       } catch (error) {
         console.error('[rejectToolCalling][server] Gateway resume failed:', error);
       }
+      completeOperation(operationId);
+      return;
     }
+
+    await this.#get().optimisticUpdateMessagePlugin(
+      toolMessage.id,
+      { intervention },
+      optimisticContext,
+    );
+    await this.#get().optimisticUpdateMessageContent(
+      messageId,
+      toolContent,
+      undefined,
+      optimisticContext,
+    );
 
     completeOperation(operationId);
   };
@@ -1282,28 +1287,12 @@ export class ConversationControlActionImpl {
         },
       });
 
-      const optimisticContext = { operationId };
       // Park → resume: the new gateway op continues the run paused on this tool.
       this.#emitRunResumed(effectiveContext, {
         operationId,
         parentMessageId: messageId,
         runtimeType: 'gateway',
       });
-      await this.#get().optimisticUpdateMessagePlugin(
-        messageId,
-        { intervention: { rejectedReason: reason, status: 'rejected' } as any },
-        optimisticContext,
-      );
-      const toolContent = reason
-        ? `User reject this tool calling with reason: ${reason}`
-        : 'User reject this tool calling without reason';
-      await this.#get().optimisticUpdateMessageContent(
-        messageId,
-        toolContent,
-        undefined,
-        optimisticContext,
-      );
-
       try {
         await this.#get().executeGatewayAgent({
           context: effectiveContext,

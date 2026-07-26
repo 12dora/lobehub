@@ -69,8 +69,9 @@ export class BuiltinToolsExecutor implements IToolExecutor {
    * owner, LobeHub Skill / Composio executions run under the OWNER's
    * authorizations instead of the invoking user's. The constructor is sync,
    * so governance is resolved lazily here — once per Skill/Composio execution
-   * (the resolver fails open to per-user behavior). User rows / bindings are
-   * never written by this substitution.
+   * Inactive governance preserves per-user behavior. Resolution failures
+   * return the deny-all sentinel, so personal credentials must never be
+   * substituted. User rows / bindings are never written by this substitution.
    */
   private async resolveEffectiveServices(): Promise<{
     composioService: ComposioService;

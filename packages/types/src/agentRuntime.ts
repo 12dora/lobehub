@@ -70,6 +70,7 @@ export const AgentRuntimeErrorType = {
   ExceededContextWindow: 'ExceededContextWindow',
 
   InvalidProviderAPIKey: 'InvalidProviderAPIKey',
+  OAuthAuthorizationExpired: 'OAuthAuthorizationExpired',
   ProviderBizError: 'ProviderBizError',
 
   // —— Added by unified error scheme (additive, all attribution-tagged in spec table) ——

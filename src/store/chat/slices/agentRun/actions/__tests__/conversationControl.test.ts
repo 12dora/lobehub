@@ -773,6 +773,7 @@ describe('ConversationControl actions', () => {
             metadata: { trigger: RequestTrigger.Onboarding },
           }),
         );
+        expect(result.current.optimisticUpdateMessagePlugin).not.toHaveBeenCalled();
         expect(executeClientAgentSpy).not.toHaveBeenCalled();
         expect(updateTopicStatusMock).toHaveBeenCalledWith(
           expect.objectContaining({ agentId, status: 'active', topicId }),
@@ -1093,6 +1094,8 @@ describe('ConversationControl actions', () => {
           },
         }),
       );
+      expect(result.current.optimisticUpdateMessagePlugin).not.toHaveBeenCalled();
+      expect(result.current.optimisticUpdateMessageContent).not.toHaveBeenCalled();
 
       executeGatewayAgentSpy.mockRestore();
     });
@@ -1161,6 +1164,8 @@ describe('ConversationControl actions', () => {
       );
       expect(executeClientAgentSpy).not.toHaveBeenCalled();
       expect(rejectToolCallingSpy).not.toHaveBeenCalled();
+      expect(result.current.optimisticUpdateMessagePlugin).not.toHaveBeenCalled();
+      expect(result.current.optimisticUpdateMessageContent).not.toHaveBeenCalled();
 
       executeGatewayAgentSpy.mockRestore();
     });

@@ -18,6 +18,8 @@ interface RolloutPanelProps {
   authMethod: AdminReauthAuthMethod | null;
   /** Whether the adapter exposes a real Rollout backend (PR-052). Off ⇒ full-surface defer gate. */
   enabled: boolean;
+  loadingMore?: boolean;
+  loadMoreError?: boolean;
   /**
    * Shared detail refresh gate. Identity-changing rollback must run through begin/commit so a
    * failed post-commit refresh locks publish/assignment writes on the stale snapshot.
@@ -37,6 +39,8 @@ export const RolloutPanel = ({
   authMethod,
   enabled,
   lock,
+  loadMoreError = false,
+  loadingMore = false,
   onLoadMoreRollouts,
   permissions,
   pollError,
@@ -48,7 +52,6 @@ export const RolloutPanel = ({
   const { t } = useTranslation('admin');
   const busyJobRef = useRef<string | null>(null);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
   // Local refresh failure for cancel/retry (job-only CAS). Rollback uses the shared lock instead.
   const [localRefreshFailed, setLocalRefreshFailed] = useState(false);
   const retryLocalRefresh = async () => {
@@ -133,16 +136,21 @@ export const RolloutPanel = ({
             );
           } else {
             if (!rollout.previousVersionId) return;
-            await adminAgentsService.rollbackRollout(
+            const result = await adminAgentsService.rollbackRollout(
               input as Parameters<typeof adminAgentsService.rollbackRollout>[0],
             );
+            if (result.invalidationStatus === 'deferred') {
+              toast.warning(t('agentCatalog.toast.refreshDeferred'));
+            }
             // Identity CAS advanced server-side — commit through the shared freshness lock.
             if (writeToken) {
               lock.markCommitted(writeToken);
               await lock.commitWrite(writeToken);
               if (lock.isLocked()) return; // refreshFailed banner lives on the shared lock surface
             }
-            toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
+            if (result.invalidationStatus !== 'deferred') {
+              toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
+            }
             return;
           }
 
@@ -202,15 +210,12 @@ export const RolloutPanel = ({
           type="warning"
           action={
             onLoadMoreRollouts ? (
-              <Button
-                loading={loadingMore}
-                size="small"
-                onClick={() => {
-                  setLoadingMore(true);
-                  void onLoadMoreRollouts().finally(() => setLoadingMore(false));
-                }}
-              >
-                {t('agentCatalog.collection.loadMore')}
+              <Button loading={loadingMore} size="small" onClick={() => void onLoadMoreRollouts()}>
+                {t(
+                  loadMoreError
+                    ? 'agentCatalog.collection.retry'
+                    : 'agentCatalog.collection.loadMore',
+                )}
               </Button>
             ) : undefined
           }

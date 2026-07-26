@@ -1,6 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 
-import debug from 'debug';
 import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 
 import {
@@ -20,8 +19,6 @@ import type {
   ConnectorStoredSecret,
 } from './catalogTypes';
 import { PlatformConnectorContractError } from './errors';
-
-const log = debug('lobe-server:connector-secret-store');
 
 const MAX_SECRET_JSON_BYTES = 64 * 1024;
 const ORPHAN_GRACE_MS = 15 * 60 * 1000;
@@ -174,16 +171,6 @@ export class PlatformConnectorSecretStore implements ConnectorCatalogSecretStore
     },
     transaction?: Transaction,
   ): Promise<ConnectorStoredSecret> => {
-    if (!transaction) {
-      try {
-        await this.garbageCollectOrphanedSecrets();
-      } catch (error) {
-        log(
-          'opportunistic orphan cleanup failed errorClass=%s',
-          error instanceof Error ? error.name : 'UnknownError',
-        );
-      }
-    }
     const serialized = serializeSecret(params.value);
     const fingerprint = fingerprintSecret(serialized);
     const ciphertext = await this.secretService.encrypt(sealSecretPayload(fingerprint, serialized));

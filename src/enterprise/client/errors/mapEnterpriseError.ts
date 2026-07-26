@@ -21,6 +21,9 @@ const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError[
   [PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED]: 'contact_admin',
   [PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT]: 'retry',
   [PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE]: 'retry',
+  [PLATFORM_ERROR_CODES.PLATFORM_AGENT_DEPENDENCY_UNAVAILABLE]: 'contact_admin',
+  [PLATFORM_ERROR_CODES.PLATFORM_AGENT_START_FAILED]: 'retry',
+  [PLATFORM_ERROR_CODES.PLATFORM_AGENT_UNAVAILABLE]: 'retry',
   [PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED]: 'none',
   [PLATFORM_ERROR_CODES.PLATFORM_LAST_SUPER_ADMIN]: 'none',
   [PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED]: 'none',
@@ -116,6 +119,14 @@ const readDetailsReason = (details: EnterpriseErrorBody['details']): string | un
 export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null => {
   const body = extractBody(error);
   if (body && isEnterpriseErrorCode(body.code)) {
+    if (body.code === PLATFORM_ERROR_CODES.PLATFORM_GLOBAL_CREDENTIAL_FILE_PAYLOAD_INVALID) {
+      return {
+        action: 'none',
+        code: body.code,
+        details: body.details,
+        i18nKey: 'globalCredentials.validation.filePayloadInvalid',
+      };
+    }
     const reason = readDetailsReason(body.details);
     if (reason && isSkillImportReason(reason)) {
       return {

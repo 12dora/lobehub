@@ -2,7 +2,7 @@
  * Execute-mode retention confirmation builds the expected mutation payload.
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RetentionPage from './RetentionPage';
@@ -11,6 +11,22 @@ const retentionRun = vi.fn();
 const retentionDryRun = vi.fn();
 const openAuditReasonModal = vi.fn();
 const openDangerConfirm = vi.fn();
+const refreshAuditPolicy = vi.fn();
+const toastError = vi.fn();
+const updatePolicy = vi.fn();
+let policyData = {
+  contentAccessMode: 'metadata_only' as const,
+  conversationRetentionDays: 90,
+  exportArtifactRetentionDays: 30,
+  maxExportRows: 10_000,
+  maxListWindowDays: 30,
+  messageBodyInExport: false,
+  operationLogRetentionDays: 90,
+  redactionProfile: 'standard' as const,
+  revision: 1,
+};
+let runsData: { items: any[]; nextCursor: null } = { items: [], nextCursor: null };
+const policyListeners = new Set<() => void>();
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -24,8 +40,29 @@ vi.mock('antd-style', () => ({
 }));
 
 vi.mock('@lobehub/ui', () => ({
+  Alert: ({
+    action,
+    description,
+    message,
+  }: {
+    action?: React.ReactNode;
+    description?: React.ReactNode;
+    message?: React.ReactNode;
+  }) => (
+    <div role="alert">
+      {message}
+      {description}
+      {action}
+    </div>
+  ),
   Flexbox: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-  InputNumber: () => <input data-testid="input-number" />,
+  InputNumber: ({ onChange, value }: { onChange?: (value: number) => void; value?: number }) => (
+    <input
+      data-testid="input-number"
+      value={value}
+      onChange={(event) => onChange?.(Number(event.target.value))}
+    />
+  ),
   Tag: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
 }));
@@ -44,8 +81,23 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
-  Modal: ({ children, open }: { children?: React.ReactNode; open?: boolean }) =>
-    open ? <div data-testid="modal">{children}</div> : null,
+  Modal: ({
+    children,
+    onOk,
+    open,
+  }: {
+    children?: React.ReactNode;
+    onOk?: () => void;
+    open?: boolean;
+  }) =>
+    open ? (
+      <div data-testid="modal">
+        {children}
+        <button data-testid="policy-save" type="button" onClick={onOk}>
+          save
+        </button>
+      </div>
+    ) : null,
   Select: ({ onChange, value }: { onChange?: (v: string) => void; value?: string }) => (
     <select data-testid="scope-select" value={value} onChange={(e) => onChange?.(e.target.value)}>
       <option value="all">all</option>
@@ -53,6 +105,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
     </select>
   ),
   Switch: () => <input type="checkbox" />,
+  toast: { error: (...args: unknown[]) => toastError(...args) },
 }));
 
 vi.mock('antd', () => ({
@@ -73,38 +126,42 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   }),
 }));
 
-vi.mock('../hooks/useAdminAudit', () => ({
-  refreshAuditPolicy: vi.fn(),
-  useAdminAuditMutations: () => ({
-    cancelRetentionRun: vi.fn(),
-    retentionDryRun: (...args: unknown[]) => retentionDryRun(...args),
-    retentionRun: (...args: unknown[]) => retentionRun(...args),
-    updatePolicy: vi.fn(),
-  }),
-  useFetchAuditPolicy: () => ({
-    data: {
-      contentAccessMode: 'metadata_only',
-      conversationRetentionDays: 90,
-      expectedRevision: 1,
-      exportArtifactRetentionDays: 30,
-      maxExportRows: 10_000,
-      maxListWindowDays: 30,
-      operationLogRetentionDays: 90,
-      revision: 1,
+vi.mock('../hooks/useAdminAudit', async () => {
+  const React = await import('react');
+  return {
+    refreshAuditPolicy: (...args: unknown[]) => refreshAuditPolicy(...args),
+    useAdminAuditMutations: () => ({
+      cancelRetentionRun: vi.fn(),
+      retentionDryRun: (...args: unknown[]) => retentionDryRun(...args),
+      retentionRun: (...args: unknown[]) => retentionRun(...args),
+      updatePolicy: (...args: unknown[]) => updatePolicy(...args),
+    }),
+    useFetchAuditPolicy: () => {
+      const data = React.useSyncExternalStore(
+        (listener) => {
+          policyListeners.add(listener);
+          return () => policyListeners.delete(listener);
+        },
+        () => policyData,
+        () => policyData,
+      );
+      return {
+        data,
+        error: undefined,
+        isLoading: false,
+        isValidating: false,
+        mutate: vi.fn(),
+      };
     },
-    error: undefined,
-    isLoading: false,
-    isValidating: false,
-    mutate: vi.fn(),
-  }),
-  useFetchAuditRetentionRuns: () => ({
-    data: { items: [], nextCursor: null },
-    error: undefined,
-    isLoading: false,
-    isValidating: false,
-    mutate: vi.fn(),
-  }),
-}));
+    useFetchAuditRetentionRuns: () => ({
+      data: runsData,
+      error: undefined,
+      isLoading: false,
+      isValidating: false,
+      mutate: vi.fn(),
+    }),
+  };
+});
 
 vi.mock('../shared/openAuditReasonModal', () => ({
   openAuditReasonModal: (opts: unknown) => openAuditReasonModal(opts),
@@ -128,7 +185,21 @@ vi.mock('../../primitives/AdminPageTemplate', () => ({
 }));
 
 vi.mock('../../primitives/DataTable', () => ({
-  default: () => <div data-testid="runs-table" />,
+  default: ({
+    dataSource,
+    onRowActivate,
+  }: {
+    dataSource?: Array<{ id: string }>;
+    onRowActivate?: (row: { id: string }) => void;
+  }) => (
+    <div data-testid="runs-table">
+      {(dataSource ?? []).map((row) => (
+        <button key={row.id} type="button" onClick={() => onRowActivate?.(row)}>
+          {row.id}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 vi.mock('../shared/useCursorPagination', () => ({
@@ -147,7 +218,22 @@ describe('RetentionPage execute confirmation payload', () => {
     retentionDryRun.mockReset();
     openAuditReasonModal.mockReset();
     openDangerConfirm.mockReset();
-    retentionRun.mockResolvedValue({ items: [{ id: 'run-1' }] });
+    refreshAuditPolicy.mockReset();
+    toastError.mockReset();
+    updatePolicy.mockReset();
+    policyData = {
+      contentAccessMode: 'metadata_only',
+      conversationRetentionDays: 90,
+      exportArtifactRetentionDays: 30,
+      maxExportRows: 10_000,
+      maxListWindowDays: 30,
+      messageBodyInExport: false,
+      operationLogRetentionDays: 90,
+      redactionProfile: 'standard',
+      revision: 1,
+    };
+    runsData = { items: [], nextCursor: null };
+    retentionRun.mockResolvedValue({ items: [{ id: 'run-1', status: 'pending' }] });
 
     openDangerConfirm.mockImplementation((opts: { onConfirm?: () => void }) => {
       opts.onConfirm?.();
@@ -184,5 +270,89 @@ describe('RetentionPage execute confirmation payload', () => {
     // Modal was opened in danger mode for execute.
     const modalOpts = openAuditReasonModal.mock.calls[0]![0] as { danger?: boolean };
     expect(modalOpts.danger).toBe(true);
+  });
+
+  it('preserves policy fields and retries a conflict with the refreshed revision', async () => {
+    openAuditReasonModal.mockReset();
+    updatePolicy
+      .mockRejectedValueOnce(new Error('revision conflict'))
+      .mockResolvedValueOnce(undefined);
+    refreshAuditPolicy.mockImplementation(async () => {
+      policyData = {
+        ...policyData,
+        conversationRetentionDays: 365,
+        revision: 2,
+      };
+      for (const listener of policyListeners) listener();
+    });
+
+    render(<RetentionPage />);
+    fireEvent.click(screen.getByText('audit.retention.policy.edit'));
+    fireEvent.change(screen.getAllByTestId('input-number')[0], { target: { value: '45' } });
+    fireEvent.click(screen.getByTestId('policy-save'));
+
+    const reasonOptions = openAuditReasonModal.mock.calls[0]![0] as {
+      buildPayload: (reason: string) => {
+        conversationRetentionDays: number;
+        expectedRevision: number;
+      };
+      onSubmit: (payload: unknown) => Promise<void>;
+    };
+    const firstPayload = reasonOptions.buildPayload('change retention');
+    expect(firstPayload).toMatchObject({
+      conversationRetentionDays: 45,
+      expectedRevision: 1,
+    });
+    await act(async () => {
+      await expect(reasonOptions.onSubmit(firstPayload)).rejects.toThrow('revision conflict');
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toContain(
+        'audit.retention.policy.conflictTitle',
+      ),
+    );
+    expect((screen.getAllByTestId('input-number')[0] as HTMLInputElement).value).toBe('45');
+    expect(reasonOptions.buildPayload('retry')).toMatchObject({
+      conversationRetentionDays: 45,
+      expectedRevision: 2,
+    });
+  });
+
+  it('toasts only an observed in-flight to failed transition and shows drawer recovery', () => {
+    const pendingRun = {
+      counts: {},
+      createdAt: new Date(),
+      cutoffAt: new Date(),
+      error: null,
+      id: 'run-failed',
+      progressDone: 0,
+      progressTotal: 1,
+      requestedBy: 'admin',
+      scope: 'conversations',
+      status: 'running',
+    };
+    runsData = { items: [pendingRun], nextCursor: null };
+    render(<RetentionPage />);
+    expect(toastError).not.toHaveBeenCalled();
+
+    runsData = {
+      items: [
+        {
+          ...pendingRun,
+          error: { code: 'RETENTION_FAILED' },
+          status: 'failed',
+        },
+      ],
+      nextCursor: null,
+    };
+    fireEvent.change(screen.getByTestId('scope-select'), {
+      target: { value: 'operation_logs' },
+    });
+
+    expect(toastError).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText('run-failed'));
+    expect(screen.getByRole('alert').textContent).toContain('audit.retention.runs.failureTitle');
+    expect(screen.getByText('audit.retention.runs.runDryCheck')).toBeTruthy();
   });
 });

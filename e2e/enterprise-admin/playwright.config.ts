@@ -2,7 +2,8 @@ import { defineConfig } from '@playwright/test';
 
 /**
  * Suite-local Playwright config for enterprise-admin E2E.
- * Not referenced by shared GitHub workflows in this batch (see CI.md).
+ * CI scheduling and gate policy are defined in CI.md and
+ * .github/workflows/enterprise-admin-gates.yml.
  */
 export default defineConfig({
   expect: { timeout: 20_000 },

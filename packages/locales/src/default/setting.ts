@@ -1012,6 +1012,7 @@ export default {
   'platformSkills.pagination.previous': 'Previous page',
   'platformSkills.pagination.status': 'Page {{page}} of {{pages}}',
   'platformSkills.runtime.loading': 'Loading organization Skills…',
+  'platformSkills.runtime.refreshFailed': 'Couldn’t refresh organization skills. Try again.',
   'platformSkills.runtime.unavailable': 'Organization Skills are temporarily unavailable.',
   'platformSkills.search.emptyDesc': 'Try another name or clear the search.',
   'platformSkills.search.emptyTitle': 'No matching Skills',

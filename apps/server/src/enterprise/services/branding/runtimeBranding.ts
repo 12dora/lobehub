@@ -6,6 +6,7 @@ import { resolveRuntimeBranding, type RuntimeBranding } from '@/types/platform/b
 import type { PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
+import { buildPlatformPublicSnapshot } from '../platformPublicSnapshot';
 import { resolvePlatformPublicSnapshot } from './resolvePublicSnapshot';
 
 export interface ResolveServerRuntimeBrandingOptions {
@@ -29,8 +30,16 @@ export const resolveServerRuntimeBrandingFromPublicSnapshot = (
 export const resolveServerRuntimeBrandingSnapshot = async (
   options: ResolveServerRuntimeBrandingOptions = {},
 ): Promise<ServerRuntimeBrandingSnapshot> => {
+  const flags = options.flags ?? parseEnterpriseFeatureFlags(process.env);
+  if (!flags.ENABLE_RUNTIME_BRANDING) {
+    const publicSnapshot = buildPlatformPublicSnapshot({ flags });
+    return {
+      branding: resolveServerRuntimeBrandingFromPublicSnapshot(publicSnapshot),
+      publicSnapshot,
+    };
+  }
   const publicSnapshot = await resolvePlatformPublicSnapshot({
-    flags: options.flags ?? parseEnterpriseFeatureFlags(process.env),
+    flags,
     getDatabase: options.getDatabase,
     getPublishedBranding: options.getPublishedBranding,
   });

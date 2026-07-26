@@ -14,54 +14,66 @@ import { lambdaClient } from '@/libs/trpc/client/lambda';
 import { uploadService } from '@/services/upload';
 import { useToolStore } from '@/store/tool';
 
+import { resolveSkillImportCapability, runSkillImport } from '../skillStorePolicy';
+
 export interface UploadSkillModalOptions {
+  /** Resolved platform capability when an admin persistence override is active. */
+  canCreate?: boolean;
   /** Persistence override (admin org catalog): receives the raw File before any user-scoped upload. */
   onImportFile?: (file: File) => Promise<void>;
 }
 
-const UploadSkillContent = memo<UploadSkillModalOptions>(({ onImportFile }) => {
+const UploadSkillContent = memo<UploadSkillModalOptions>(({ canCreate, onImportFile }) => {
   const { t } = useTranslation(['setting', 'common']);
   const { close, setCanDismissByClickOutside } = useModalContext();
   const { message } = App.useApp();
   const importAgentSkillFromZip = useToolStore((s) => s.importAgentSkillFromZip);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { allowed: canCreate } = usePermission('create_content');
+  const { allowed: canCreatePersonalSkill } = usePermission('create_content');
+  const resolvedCanCreate = resolveSkillImportCapability(
+    Boolean(onImportFile),
+    canCreate,
+    canCreatePersonalSkill,
+  );
 
   useEffect(() => {
     setCanDismissByClickOutside(!loading);
   }, [loading, setCanDismissByClickOutside]);
 
   const handleUploadFile = async (file: File) => {
-    if (!canCreate) return;
+    if (!resolvedCanCreate) return;
     setLoading(true);
     setError(null);
 
     try {
-      if (onImportFile) {
-        await onImportFile(file);
-        message.success(t('agentSkillModal.importSuccess'));
-        close();
-        return;
-      }
-      const { data: metadata } = await uploadService.uploadFileToS3(file, {
-        directory: 'skills',
+      await runSkillImport({
+        importSkill: async () => {
+          if (onImportFile) {
+            await onImportFile(file);
+            return;
+          }
+          const { data: metadata } = await uploadService.uploadFileToS3(file, {
+            directory: 'skills',
+          });
+
+          const hash = sha256(await file.arrayBuffer());
+
+          const result = await lambdaClient.file.createFile.mutate({
+            fileType: file.type || 'application/zip',
+            hash,
+            metadata: {},
+            name: file.name,
+            size: file.size,
+            url: metadata.path,
+          });
+
+          await importAgentSkillFromZip({ zipFileId: result.id });
+        },
+        onComplete: close,
+        onPersonalSuccess: () => message.success(t('agentSkillModal.importSuccess')),
+        platformOverride: Boolean(onImportFile),
       });
-
-      const hash = sha256(await file.arrayBuffer());
-
-      const result = await lambdaClient.file.createFile.mutate({
-        fileType: file.type || 'application/zip',
-        hash,
-        metadata: {},
-        name: file.name,
-        size: file.size,
-        url: metadata.path,
-      });
-
-      await importAgentSkillFromZip({ zipFileId: result.id });
-      message.success(t('agentSkillModal.importSuccess'));
-      close();
     } catch (err: any) {
       setError(err?.message || String(err));
     } finally {
@@ -94,10 +106,10 @@ const UploadSkillContent = memo<UploadSkillModalOptions>(({ onImportFile }) => {
 
       <Upload.Dragger
         accept=".zip,.skill"
-        disabled={loading || !canCreate}
+        disabled={loading || !resolvedCanCreate}
         showUploadList={false}
         beforeUpload={(file) => {
-          if (!canCreate) return false;
+          if (!resolvedCanCreate) return false;
           handleUploadFile(file);
           return false;
         }}
@@ -148,7 +160,9 @@ UploadSkillContent.displayName = 'UploadSkillContent';
 
 export const openUploadSkillModal = (options?: UploadSkillModalOptions): ModalInstance =>
   createModal({
-    content: <UploadSkillContent onImportFile={options?.onImportFile} />,
+    content: (
+      <UploadSkillContent canCreate={options?.canCreate} onImportFile={options?.onImportFile} />
+    ),
     footer: null,
     maskClosable: true,
     styles: { header: { display: 'none' } },

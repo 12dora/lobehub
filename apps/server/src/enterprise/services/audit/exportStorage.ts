@@ -19,6 +19,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { isRecord } from '@lobechat/utils/object';
 
 import { fileEnv } from '@/envs/file';
 import { S3 } from '@/server/modules/S3';
@@ -71,6 +72,23 @@ export interface AuditExportObjectMetadata {
   contentLength: number;
   contentType?: string;
 }
+
+/** Stable local not-found error for storage adapters that do not expose Smithy metadata. */
+export class AuditExportObjectNotFoundError extends Error {
+  constructor(storageKey: string) {
+    super(`Audit export object not found: ${storageKey}`);
+    this.name = 'AuditExportObjectNotFoundError';
+  }
+}
+
+/** Only structured 404/not-found errors prove that a private object is absent. */
+export const isAuditExportObjectNotFoundError = (error: unknown): boolean => {
+  if (error instanceof AuditExportObjectNotFoundError) return true;
+  if (!isRecord(error)) return false;
+  if (error.name === 'NotFound' || error.name === 'NoSuchKey') return true;
+  const metadata = error.$metadata;
+  return isRecord(metadata) && metadata.httpStatusCode === 404;
+};
 
 export interface AuditExportObjectHash {
   artifactBytes: number;
@@ -377,13 +395,13 @@ export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactSt
 
   getObjectMetadata = async (storageKey: string): Promise<AuditExportObjectMetadata> => {
     const body = this.objects.get(storageKey);
-    if (!body) throw new Error(`Object not found: ${storageKey}`);
+    if (!body) throw new AuditExportObjectNotFoundError(storageKey);
     return { contentLength: body.byteLength, contentType: AUDIT_EXPORT_CONTENT_TYPE };
   };
 
   hashObject = async (storageKey: string): Promise<AuditExportObjectHash> => {
     const body = this.objects.get(storageKey);
-    if (!body) throw new Error(`Object not found: ${storageKey}`);
+    if (!body) throw new AuditExportObjectNotFoundError(storageKey);
     // Simulate streaming: hash in fixed-size windows rather than one-shot over the
     // whole buffer (same digest as sha256Hex(body)).
     const hasher = createHash('sha256');
@@ -398,7 +416,7 @@ export class InMemoryAuditExportArtifactStorage implements AuditExportArtifactSt
   };
 
   getSignedDownloadUrl = async (storageKey: string, expiresInSeconds: number): Promise<string> => {
-    if (!this.objects.has(storageKey)) throw new Error(`Object not found: ${storageKey}`);
+    if (!this.objects.has(storageKey)) throw new AuditExportObjectNotFoundError(storageKey);
     // Synthetic URL for tests — never used as a storageKey in API outputs.
     return `https://audit-export.test/signed/${encodeURIComponent(storageKey)}?exp=${expiresInSeconds}`;
   };

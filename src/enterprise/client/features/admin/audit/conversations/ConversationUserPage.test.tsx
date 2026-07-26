@@ -31,6 +31,7 @@ const evidence = vi.hoisted(() => ({
   listError: undefined as unknown,
   summaryData: undefined as unknown,
   summaryError: undefined as unknown,
+  summaryMutate: vi.fn(),
   timelineData: {
     items: [
       {
@@ -47,6 +48,7 @@ const evidence = vi.hoisted(() => ({
   timelineMutate: vi.fn(),
   isLoadingTimeline: false,
   isValidatingTimeline: false,
+  toastError: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -61,6 +63,12 @@ vi.mock('antd-style', () => ({
 }));
 
 vi.mock('@lobehub/ui', () => ({
+  Alert: ({ action, message }: { action?: React.ReactNode; message?: React.ReactNode }) => (
+    <div role="alert">
+      {message}
+      {action}
+    </div>
+  ),
   Flexbox: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
   Tag: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
@@ -88,6 +96,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       {children}
     </button>
   ),
+  toast: { error: (...args: unknown[]) => evidence.toastError(...args) },
 }));
 
 vi.mock('antd', () => ({
@@ -122,7 +131,7 @@ vi.mock('../hooks/useAdminAudit', () => ({
       error: evidence.summaryError,
       isLoading: false,
       isValidating: false,
-      mutate: vi.fn(),
+      mutate: evidence.summaryMutate,
     };
   },
   useFetchAuditUserTimeline: (params: unknown, enabled: boolean) => {
@@ -183,6 +192,7 @@ describe('ConversationUserPage', () => {
     evidence.summaryError = undefined;
     evidence.timelineError = undefined;
     evidence.summaryData = undefined;
+    evidence.summaryMutate.mockReset();
     evidence.timelineData = {
       items: [
         {
@@ -209,6 +219,7 @@ describe('ConversationUserPage', () => {
       nextCursor: null,
     };
     evidence.timelineMutate.mockReset();
+    evidence.toastError.mockReset();
     evidence.isLoadingTimeline = false;
     evidence.isValidatingTimeline = false;
   });
@@ -238,6 +249,20 @@ describe('ConversationUserPage', () => {
 
     fireEvent.click(screen.getByText('audit.conversations.user.timelineRetry'));
     expect(evidence.timelineMutate).toHaveBeenCalled();
+  });
+
+  it('shows and retries an unavailable user summary without hiding conversation evidence', () => {
+    evidence.actorPermissions = ['platform_audit:conversation_read:all', 'platform_audit:read:all'];
+    evidence.summaryError = new Error('summary unavailable');
+
+    renderPage();
+
+    expect(screen.getByText('audit.conversations.user.summaryUnavailable')).toBeTruthy();
+    expect(screen.getByTestId('topic-topic-1')).toBeTruthy();
+    expect(evidence.toastError).toHaveBeenCalledWith('audit.shared.summaryLoadFailed');
+
+    fireEvent.click(screen.getByText('audit.shared.retryMissingSections'));
+    expect(evidence.summaryMutate).toHaveBeenCalledTimes(1);
   });
 
   it('exposes next/previous page controls and walks the cursor stack both ways', () => {

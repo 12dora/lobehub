@@ -770,6 +770,7 @@ export class PlatformAgentRolloutService {
       }),
       targetId: input.agentId,
     });
+    let invalidationStatus: 'deferred' | 'delivered' = 'delivered';
     try {
       await this.invalidation.publish({
         at: new Date().toISOString(),
@@ -779,12 +780,13 @@ export class PlatformAgentRolloutService {
         scopes: ['agent-catalog', 'agent-runtime'],
       });
     } catch (error) {
+      invalidationStatus = 'deferred';
       log(
         'rollback invalidation failed errorClass=%s',
         error instanceof Error ? error.name : 'UnknownError',
       );
     }
-    return projectPlatformAgentRollout(result.job);
+    return { ...projectPlatformAgentRollout(result.job), invalidationStatus };
   };
 
   private transition = async (

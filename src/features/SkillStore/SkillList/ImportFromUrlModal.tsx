@@ -10,12 +10,16 @@ import { useTranslation } from 'react-i18next';
 import { usePermission } from '@/hooks/usePermission';
 import { useToolStore } from '@/store/tool';
 
+import { resolveSkillImportCapability, runSkillImport } from '../skillStorePolicy';
+
 export interface ImportFromUrlModalOptions {
+  /** Resolved platform capability when an admin persistence override is active. */
+  canCreate?: boolean;
   /** Persistence override (admin org catalog); default imports into the user's skills. */
   onImport?: (input: { url: string }) => Promise<void>;
 }
 
-const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ onImport }) => {
+const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ canCreate, onImport }) => {
   const { t } = useTranslation(['setting', 'common']);
   const { close, setCanDismissByClickOutside } = useModalContext();
   const { message } = App.useApp();
@@ -23,7 +27,12 @@ const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ onImport }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState('');
-  const { allowed: canCreate } = usePermission('create_content');
+  const { allowed: canCreatePersonalSkill } = usePermission('create_content');
+  const resolvedCanCreate = resolveSkillImportCapability(
+    Boolean(onImport),
+    canCreate,
+    canCreatePersonalSkill,
+  );
 
   useEffect(() => {
     setCanDismissByClickOutside(!loading);
@@ -31,15 +40,18 @@ const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ onImport }) => {
 
   const handleImport = async () => {
     const trimmed = url.trim();
-    if (!canCreate || !trimmed) return;
+    if (!resolvedCanCreate || !trimmed) return;
 
     setLoading(true);
     setError(null);
 
     try {
-      await (onImport ?? importAgentSkillFromUrl)({ url: trimmed });
-      message.success(t('agentSkillModal.importSuccess'));
-      close();
+      await runSkillImport({
+        importSkill: () => (onImport ?? importAgentSkillFromUrl)({ url: trimmed }),
+        onComplete: close,
+        onPersonalSuccess: () => message.success(t('agentSkillModal.importSuccess')),
+        platformOverride: Boolean(onImport),
+      });
     } catch (err: any) {
       setError(err?.message || String(err));
     } finally {
@@ -73,7 +85,7 @@ const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ onImport }) => {
       <Flexbox gap={8}>
         <Typography.Text strong>URL</Typography.Text>
         <Input
-          disabled={!canCreate}
+          disabled={!resolvedCanCreate}
           placeholder={t('agentSkillModal.url.urlPlaceholder')}
           value={url}
           onPressEnter={handleImport}
@@ -84,7 +96,13 @@ const ImportFromUrlContent = memo<ImportFromUrlModalOptions>(({ onImport }) => {
         />
       </Flexbox>
 
-      <Button block disabled={!canCreate} loading={loading} type="primary" onClick={handleImport}>
+      <Button
+        block
+        disabled={!resolvedCanCreate}
+        loading={loading}
+        type="primary"
+        onClick={handleImport}
+      >
         {t('common:import')}
       </Button>
     </Flexbox>
@@ -95,7 +113,7 @@ ImportFromUrlContent.displayName = 'ImportFromUrlContent';
 
 export const openImportFromUrlModal = (options?: ImportFromUrlModalOptions): ModalInstance =>
   createModal({
-    content: <ImportFromUrlContent onImport={options?.onImport} />,
+    content: <ImportFromUrlContent canCreate={options?.canCreate} onImport={options?.onImport} />,
     footer: null,
     maskClosable: true,
     styles: { header: { display: 'none' } },

@@ -110,8 +110,16 @@ const throwInvalidGrant = (providerId: string): never => {
   // Deliberately do NOT clear keyVaults here: the stored state is the only
   // evidence for debugging, and the user just needs to re-connect from the
   // provider settings page (which overwrites it).
+  log('OAuth authorization expired provider=%s reason=invalid_grant', providerId);
+  throw AgentRuntimeError.createError(AgentRuntimeErrorType.OAuthAuthorizationExpired, {
+    message:
+      'Your connection to this provider has expired. Reconnect it in Provider settings, then try again.',
+  });
+};
+
+const throwRefreshPersistenceFailure = (providerId: string): never => {
   throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey, {
-    message: `OAuth refresh token for provider "${providerId}" is no longer valid, please re-connect`,
+    message: `OAuth tokens for provider "${providerId}" could not be saved`,
   });
 };
 
@@ -175,7 +183,7 @@ const persistRotatedKeyVaults = async (
     `[oauth-token-refresh] failed to persist rotated tokens for ${providerId}; requiring re-connect:`,
     lastError,
   );
-  return throwInvalidGrant(providerId);
+  return throwRefreshPersistenceFailure(providerId);
 };
 
 const refreshAndPersist = async (
@@ -243,7 +251,7 @@ const refreshAndPersist = async (
  *   self-healing for multi-instance rotation races
  *
  * Returns the key vaults to use for this request (possibly refreshed).
- * Throws `InvalidProviderAPIKey` when the grant is irrecoverably invalid.
+ * Throws `OAuthAuthorizationExpired` when the grant is irrecoverably invalid.
  */
 export const ensureFreshOAuthToken = async (
   params: EnsureFreshOAuthTokenParams,

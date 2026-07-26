@@ -79,6 +79,7 @@ export const installReadServiceTestLifecycle = () => {
 export const publishReadServiceSkill = async (params: {
   allowBuiltinOverride?: boolean;
   contentRef?: string | null;
+  distribution?: 'default' | 'mandatory' | 'optional';
   revision?: number;
   skillId?: string;
   skillKey: string;
@@ -125,7 +126,7 @@ export const publishReadServiceSkill = async (params: {
       allowBuiltinOverride: params.allowBuiltinOverride ?? false,
       description: 'Immutable published description',
       displayName: 'Immutable published name',
-      distribution: 'default',
+      distribution: params.distribution ?? 'default',
       enabled: true,
       skillKey: params.skillKey,
       source: 'uploaded',

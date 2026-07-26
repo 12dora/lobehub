@@ -387,6 +387,27 @@ describe('createLambdaContext', () => {
     expect(mockGetSession).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['unset', undefined],
+    ['zero', '0'],
+    ['false-like', 'false'],
+  ])('rejects inactive OIDC auth when platform admin is %s', async (_label, flag) => {
+    vi.unstubAllEnvs();
+    if (flag !== undefined) vi.stubEnv('ENABLE_PLATFORM_ADMIN', flag);
+    const inactiveError = new Error('OIDC user is no longer active');
+    mockAssertOIDCUserActive.mockRejectedValueOnce(inactiveError);
+    mockIsOIDCUserInactiveError.mockReturnValueOnce(true);
+
+    const request = new NextRequest('https://example.com/trpc/lambda', {
+      headers: { 'Oidc-Auth': 'oidc-token' },
+    });
+    const context = await createLambdaContext(request);
+
+    expect(context.userId).toBeNull();
+    expect(mockAssertOIDCUserActive).toHaveBeenCalledOnce();
+    expect(mockGetSession).not.toHaveBeenCalled();
+  });
+
   it('should leave anonymous requests without auth metadata', async () => {
     mockGetSession.mockResolvedValueOnce(null);
     const request = new NextRequest('https://example.com/trpc/lambda');

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditRetentionRun,
@@ -239,33 +239,35 @@ export class PlatformAuditRetentionRunModel {
     delta: PlatformAuditRetentionCounts,
     executor: LobeChatDatabase | Transaction = this.db,
   ): Promise<PlatformAuditRetentionRunItem | undefined> => {
-    const existing = await executor
-      .select()
-      .from(platformAuditRetentionRuns)
-      .where(eq(platformAuditRetentionRuns.id, id))
-      .limit(1)
-      .then((rows) => rows[0]);
-    if (!existing) return undefined;
-    if (
-      existing.status === 'completed' ||
-      existing.status === 'failed' ||
-      existing.status === 'cancelled'
-    ) {
-      return undefined;
-    }
+    const increments = Object.entries(delta).flatMap(([key, value]) =>
+      typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? [[key, Math.floor(value)] as const]
+        : [],
+    );
+    if (increments.length === 0) return undefined;
 
-    const next: PlatformAuditRetentionCounts = { ...existing.counts };
-    for (const [key, value] of Object.entries(delta)) {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
-      const k = key as keyof PlatformAuditRetentionCounts;
-      next[k] = (next[k] ?? 0) + Math.floor(value);
+    // Keep each increment inside this one UPDATE expression. Concurrent updates
+    // serialize on the run row and PostgreSQL evaluates the expression against
+    // the latest committed row version, avoiding a stale JSONB read/replace.
+    let countsExpression = sql`coalesce(${platformAuditRetentionRuns.counts}, '{}'::jsonb)`;
+    for (const [key, value] of increments) {
+      countsExpression = sql`
+        jsonb_set(
+          ${countsExpression},
+          ARRAY[${key}]::text[],
+          to_jsonb(
+            coalesce((${platformAuditRetentionRuns.counts}->>${key})::bigint, 0) + ${value}
+          ),
+          true
+        )
+      `;
     }
 
     const now = new Date();
     const [row] = await executor
       .update(platformAuditRetentionRuns)
       .set({
-        counts: next,
+        counts: countsExpression,
         // progressDone tracks scanned work, not delete attribution — leave as-is.
         updatedAt: now,
       })

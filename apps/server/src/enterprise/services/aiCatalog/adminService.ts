@@ -70,6 +70,7 @@ export interface AiCatalogAdminServiceOptions {
     afterModelDependencyCheck?: () => Promise<void>;
     afterPublishLock?: (tx: Transaction) => Promise<void>;
   };
+  resolveDependentsForModels?: typeof resolveAiCatalogDependentsForModels;
 }
 
 /**
@@ -106,6 +107,7 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
     this.publication = new AiCatalogPublicationService(db, this.secrets, {
       invalidation: options.invalidation,
       lifecycle: options.lifecycle,
+      resolveDependentsForModels: options.resolveDependentsForModels,
     });
   }
 

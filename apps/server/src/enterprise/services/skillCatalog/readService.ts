@@ -61,18 +61,22 @@ export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
   .strict();
 export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
 const MAX_PUBLISHED_SKILLS = 10_000;
+const MAX_PUBLISHED_SKILL_PAYLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_RETAINED_PROJECTION_BYTES = 32 * 1024 * 1024;
 const MAX_READINESS_REVISIONS = 32;
 const SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE = 'skill-catalog-active-projection';
 const readinessByRevision = new Map<string, boolean>();
 
 interface CachedPublishedProjection {
   catalog: { revision: string; skills: PublishedSkill[] };
-  executionIndex: Map<string, ResolvedSkill>;
+  executionIndex: ReadonlyMap<string, ResolvedSkill>;
   executionReady: boolean;
+  payloadBytes: number;
   targetRevisionId: string;
 }
 
 const projectionByRevision = new Map<string, CachedPublishedProjection>();
+let retainedProjectionBytes = 0;
 const sourceIds = new WeakMap<object, number>();
 let nextSourceId = 1;
 
@@ -85,9 +89,6 @@ const getSourceId = (source: object) => {
   sourceIds.set(source, id);
   return id;
 };
-
-const cloneExecutionIndex = (index: Map<string, ResolvedSkill>) =>
-  new Map([...index].map(([key, value]) => [key, structuredClone(value)]));
 
 const cloneCatalog = (catalog: CachedPublishedProjection['catalog']) => structuredClone(catalog);
 
@@ -103,6 +104,7 @@ export const invalidatePublishedSkillCatalogReadCache = () => {
 export const resetPublishedSkillCatalogReadCacheForTest = () => {
   invalidatePublishedSkillCatalogReadCache();
   projectionByRevision.clear();
+  retainedProjectionBytes = 0;
   readinessByRevision.clear();
 };
 
@@ -142,7 +144,7 @@ export class SkillCatalogReadService {
     PlatformSkillCatalogModel,
     'resolvePublishedVersion' | 'resolvePublishedVersionsExact'
   >;
-  private publishedExecutionIndex = new Map<string, ResolvedSkill>();
+  private publishedExecutionIndex: ReadonlyMap<string, ResolvedSkill> = new Map();
   private readonly projectionSource: string;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
@@ -229,6 +231,7 @@ export class SkillCatalogReadService {
     for (const skillKey of snapshot.builtinOverrideTombstones) builtins.delete(skillKey);
     const platformSkills: PublishedSkill[] = [];
     const platformResolvedByKey = new Map<string, ResolvedSkill>();
+    let projectionContainsInvalidItems = false;
     for (const item of platformItems) {
       if (builtins.has(item.skillKey) && !item.allowBuiltinOverride) continue;
       // Per-item resilience: one corrupt published skill must not take down the entire
@@ -252,6 +255,7 @@ export class SkillCatalogReadService {
           versionId: item.version.id,
         });
       } catch {
+        projectionContainsInvalidItems = true;
         continue;
       }
       platformSkills.push({
@@ -291,7 +295,8 @@ export class SkillCatalogReadService {
       platform: catalogTokenEntries,
     }).value;
     const executionIndex = new Map<string, ResolvedSkill>();
-    let executionReady = true;
+    let executionReady = !projectionContainsInvalidItems;
+    let payloadBytes = 0;
     for (const skill of skills) {
       const builtin = this.builtinSkills.find((item) => item.skillKey === skill.skillKey);
       const resolved =
@@ -326,6 +331,11 @@ export class SkillCatalogReadService {
         executionReady = false;
         continue;
       }
+      const resolvedBytes = Buffer.byteLength(JSON.stringify(resolved), 'utf8');
+      payloadBytes += resolvedBytes;
+      if (payloadBytes > MAX_PUBLISHED_SKILL_PAYLOAD_BYTES) {
+        throw new Error('Published Skill aggregate payload limit was exceeded');
+      }
       executionIndex.set(exactRefKey(ref), structuredClone(resolved));
     }
     const ready = executionReady && executionIndex.size === skills.length;
@@ -335,17 +345,26 @@ export class SkillCatalogReadService {
       skills,
     };
     const projectionKey = `${this.projectionSource}:${revision}`;
+    const previous = projectionByRevision.get(projectionKey);
+    if (previous) retainedProjectionBytes -= previous.payloadBytes;
     projectionByRevision.delete(projectionKey);
     projectionByRevision.set(projectionKey, {
       catalog: cloneCatalog(catalog),
-      executionIndex: cloneExecutionIndex(executionIndex),
+      executionIndex,
       executionReady: ready,
+      payloadBytes,
       targetRevisionId: revision,
     });
-    while (projectionByRevision.size > MAX_READINESS_REVISIONS) {
+    retainedProjectionBytes += payloadBytes;
+    while (
+      projectionByRevision.size > MAX_READINESS_REVISIONS ||
+      retainedProjectionBytes > MAX_RETAINED_PROJECTION_BYTES
+    ) {
       const oldest = projectionByRevision.keys().next().value;
       if (!oldest) break;
+      const evicted = projectionByRevision.get(oldest);
       projectionByRevision.delete(oldest);
+      if (evicted) retainedProjectionBytes -= evicted.payloadBytes;
     }
     return projectionKey;
   };
@@ -363,7 +382,7 @@ export class SkillCatalogReadService {
     }
     if (!cached) throw new Error('Published Skill projection could not be rebuilt');
 
-    this.publishedExecutionIndex = cloneExecutionIndex(cached.executionIndex);
+    this.publishedExecutionIndex = cached.executionIndex;
     cacheReadiness(cached.catalog.revision, cached.executionReady);
     return cloneCatalog(cached.catalog);
   };

@@ -39,7 +39,7 @@ import { invalidateAiCatalogAuthorityToken } from '../platformInstance/catalogTo
 import { PlatformPublisherService } from '../platformPublisher';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
-import { resolveAiCatalogDependents } from './dependencies';
+import { resolveAiCatalogDependentsForModels } from './dependencies';
 import {
   AiCatalogNotFoundError,
   AiCatalogResourceInUseError,
@@ -64,6 +64,7 @@ export interface AiCatalogPublicationOptions {
     afterModelDependencyCheck?: () => Promise<void>;
     afterPublishLock?: (tx: Transaction) => Promise<void>;
   };
+  resolveDependentsForModels?: typeof resolveAiCatalogDependentsForModels;
 }
 
 const enabledModelReferences = (payload: Record<string, unknown> | null): Set<string> => {
@@ -85,21 +86,29 @@ const assertRemovedModelsUnused = async (
   tx: Transaction,
   currentPayload: Record<string, unknown> | null,
   targetPayload: Record<string, unknown> | null,
+  resolveDependentsForModels: typeof resolveAiCatalogDependentsForModels,
 ): Promise<boolean> => {
   const current = enabledModelReferences(currentPayload);
   const target = enabledModelReferences(targetPayload);
   const removed = [...current].filter((reference) => !target.has(reference));
   if (removed.length === 0) return false;
+  const byProvider = new Map<string, string[]>();
+  for (const reference of removed) {
+    const separator = reference.indexOf(':');
+    const providerKey = reference.slice(0, separator);
+    const modelKey = reference.slice(separator + 1);
+    const modelKeys = byProvider.get(providerKey);
+    if (modelKeys) {
+      modelKeys.push(modelKey);
+    } else {
+      byProvider.set(providerKey, [modelKey]);
+    }
+  }
   const dependents = (
     await Promise.all(
-      removed.map((reference) => {
-        const separator = reference.indexOf(':');
-        return resolveAiCatalogDependents(
-          tx,
-          reference.slice(0, separator),
-          reference.slice(separator + 1),
-        );
-      }),
+      [...byProvider].map(([providerKey, modelKeys]) =>
+        resolveDependentsForModels(tx, providerKey, modelKeys),
+      ),
     )
   ).flat();
   if (dependents.some((item) => item.blocking)) {
@@ -112,6 +121,7 @@ export class AiCatalogPublicationService {
   private readonly db: LobeChatDatabase;
   private readonly lifecycle: NonNullable<AiCatalogPublicationOptions['lifecycle']>;
   private readonly publisher: PlatformPublisherService;
+  private readonly resolveDependentsForModels: typeof resolveAiCatalogDependentsForModels;
   private readonly secrets: AiCatalogSecretManager;
 
   constructor(
@@ -122,6 +132,8 @@ export class AiCatalogPublicationService {
     this.db = db;
     this.lifecycle = options.lifecycle ?? {};
     this.publisher = new PlatformPublisherService(db, options.invalidation);
+    this.resolveDependentsForModels =
+      options.resolveDependentsForModels ?? resolveAiCatalogDependentsForModels;
     this.secrets = secrets;
   }
 
@@ -213,17 +225,20 @@ export class AiCatalogPublicationService {
     const provider = await repository.getProvider(providerId);
     if (!provider) throw new AiCatalogNotFoundError();
     try {
-      const keyVaults = provider.encryptedKeyVaults
-        ? await this.secrets.decrypt(provider.encryptedKeyVaults)
-        : {};
+      const keyVaults =
+        provider.encryptedKeyVaults && !isDeactivatingPublished
+          ? await this.secrets.decrypt(provider.encryptedKeyVaults)
+          : {};
       assertAiCatalogPublicFieldsExcludeCredentials(draft, keyVaults);
-      normalizeAiCatalogExecutionCredentials({
-        config: draft.config,
-        keyVaults,
-        providerKey: draft.providerKey,
-        source: draft.source,
-        settings: draft.settings,
-      });
+      if (!isDeactivatingPublished) {
+        normalizeAiCatalogExecutionCredentials({
+          config: draft.config,
+          keyVaults,
+          providerKey: draft.providerKey,
+          source: draft.source,
+          settings: draft.settings,
+        });
+      }
     } catch (error) {
       if (error instanceof AiCatalogValidationError) issues.push(...error.issues);
       else issues.push('Provider secret must be readable');
@@ -258,7 +273,12 @@ export class AiCatalogPublicationService {
           currentPublishedPayload = current?.status === 'published' ? current.payload : null;
         }
         if (validateArchiveDependents) {
-          await assertRemovedModelsUnused(tx, currentPublishedPayload, null);
+          await assertRemovedModelsUnused(
+            tx,
+            currentPublishedPayload,
+            null,
+            this.resolveDependentsForModels,
+          );
           await this.lifecycle.afterArchiveDependencyCheck?.();
         }
       },
@@ -277,16 +297,28 @@ export class AiCatalogPublicationService {
         const provider = payload.provider;
         const models = payload.models.map((model) => aiModelDraftSchema.parse(model));
         const repository = new PlatformAiCatalogRepository(tx);
+        const storedProvider = await repository.getProvider(providerId);
+        if (!storedProvider) throw new AiCatalogNotFoundError();
         const secretVersion = secretFingerprint
           ? await repository.getProviderSecretVersion(providerId, secretFingerprint)
           : undefined;
         if (secretFingerprint && !secretVersion) {
           throw new AiCatalogValidationError(['Referenced provider secret version is unavailable']);
         }
-        const keyVaults = secretVersion ? await this.secrets.decrypt(secretVersion.ciphertext) : {};
+        const isDeactivatingPublished =
+          operation === 'publish' && provider.enabled === false && currentPublishedPayload !== null;
+        const keyVaults =
+          secretVersion && !isDeactivatingPublished
+            ? await this.secrets.decrypt(secretVersion.ciphertext)
+            : {};
         assertAiCatalogPublicFieldsExcludeCredentials(payload, keyVaults);
         if (operation === 'rollback') {
-          const removed = await assertRemovedModelsUnused(tx, currentPublishedPayload, payload);
+          const removed = await assertRemovedModelsUnused(
+            tx,
+            currentPublishedPayload,
+            payload,
+            this.resolveDependentsForModels,
+          );
           if (removed) await this.lifecycle.afterModelDependencyCheck?.();
         }
         await repository.updateProvider(providerId, {
@@ -301,9 +333,17 @@ export class AiCatalogPublicationService {
           logo: typeof provider.logo === 'string' ? provider.logo : null,
           revision,
           secretFingerprint: secretVersion?.fingerprint ?? null,
-          secretKeyId: secretVersion ? this.secrets.peekKeyId(secretVersion.ciphertext) : null,
-          secretKeyVersion: secretVersion?.keyVersion ?? null,
-          secretUpdatedAt: secretVersion?.createdAt ?? null,
+          secretKeyId: isDeactivatingPublished
+            ? storedProvider.secretKeyId
+            : secretVersion
+              ? this.secrets.peekKeyId(secretVersion.ciphertext)
+              : null,
+          secretKeyVersion: isDeactivatingPublished
+            ? storedProvider.secretKeyVersion
+            : (secretVersion?.keyVersion ?? null),
+          secretUpdatedAt: isDeactivatingPublished
+            ? storedProvider.secretUpdatedAt
+            : (secretVersion?.createdAt ?? null),
           settings: isRecord(provider.settings)
             ? (provider.settings as PlatformAiProviderSettings)
             : {},
@@ -351,6 +391,7 @@ export class AiCatalogPublicationService {
             tx,
             currentPublishedPayload,
             payload as unknown as Record<string, unknown>,
+            this.resolveDependentsForModels,
           );
           if (removed) await this.lifecycle.afterModelDependencyCheck?.();
         }

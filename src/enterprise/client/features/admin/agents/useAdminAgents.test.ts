@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockAdminAgentsClient } from './__tests__/mockAdminAgents';
 import {
-  ADMIN_AGENT_COLLECTION_PAGE_LIMIT,
   fetchActiveAdminAgentRollouts,
   fetchAdminAgentDetail,
   fetchPublishedAdminAgentReplacements,
@@ -61,17 +60,14 @@ describe('Admin Agent hook adapter injection', () => {
     expect(get).toHaveBeenCalledWith({ id: 'agent-inbox' });
     expect(assignments).toHaveBeenCalledWith({
       agentId: 'agent-inbox',
-      cursor: undefined,
       limit: 100,
     });
     expect(rollouts).toHaveBeenCalledWith({
       agentId: 'agent-inbox',
-      cursor: undefined,
       limit: 100,
     });
     expect(versions).toHaveBeenCalledWith({
       agentId: 'agent-inbox',
-      cursor: undefined,
       limit: 100,
     });
     expect((detail as { versions: unknown[] }).versions).toHaveLength(1);
@@ -117,21 +113,19 @@ describe('Admin Agent hook adapter injection', () => {
     expect(detail.rollouts[0]!.completed).toBe(running.completed);
   });
 
-  it('reports collection truncation after the page ceiling and keeps a nextCursor for load-more', async () => {
+  it('loads only the first collection page and preserves its next cursor for load-more', async () => {
     const client = createMockAdminAgentsClient();
     const version = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
-    const listVersions = vi.spyOn(client, 'listVersions');
-    for (let i = 0; i < ADMIN_AGENT_COLLECTION_PAGE_LIMIT; i += 1) {
-      listVersions.mockResolvedValueOnce({
-        items: [{ ...version, id: `version-page-${i}` }],
-        nextCursor: i === ADMIN_AGENT_COLLECTION_PAGE_LIMIT - 1 ? 'still-more' : `cursor-${i + 1}`,
-      });
-    }
+    const listVersions = vi.spyOn(client, 'listVersions').mockResolvedValueOnce({
+      items: [{ ...version, id: 'version-page-1' }],
+      nextCursor: 'still-more',
+    });
 
     const detail = await fetchAdminAgentDetail('agent-inbox', client);
     expect(detail.collectionMeta?.versionsTruncated).toBe(true);
     expect(detail.collectionMeta?.versionsNextCursor).toBe('still-more');
-    expect(listVersions).toHaveBeenCalledTimes(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
+    expect(detail.versions).toHaveLength(1);
+    expect(listVersions).toHaveBeenCalledTimes(1);
   });
 
   it('skips rollout reads when the authoritative platform capability is off', async () => {
@@ -145,57 +139,30 @@ describe('Admin Agent hook adapter injection', () => {
     expect(detail.versions.length).toBeGreaterThan(0);
   });
 
-  it('follows opaque cursors up to the page ceiling and stops on repeated cursors', async () => {
+  it('sorts the bounded version page without following its opaque cursor', async () => {
     const client = createMockAdminAgentsClient();
     const version = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
-    const listVersions = vi
-      .spyOn(client, 'listVersions')
-      .mockResolvedValueOnce({
-        // Older page-1 row first in opaque cursor order — aggregate must re-sort by createdAt.
-        items: [
-          { ...version, createdAt: new Date('2026-07-16T06:00:00.000Z'), id: 'version-inbox-1' },
-        ],
-        nextCursor: 'next-page',
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            ...version,
-            createdAt: new Date('2026-07-17T06:00:00.000Z'),
-            id: 'version-inbox-2',
-            version: '1.0.1',
-          },
-        ],
-        nextCursor: null,
-      });
+    const listVersions = vi.spyOn(client, 'listVersions').mockResolvedValueOnce({
+      // Older page-1 row first in opaque cursor order — aggregate must re-sort by createdAt.
+      items: [
+        { ...version, createdAt: new Date('2026-07-16T06:00:00.000Z'), id: 'version-inbox-1' },
+        {
+          ...version,
+          createdAt: new Date('2026-07-17T06:00:00.000Z'),
+          id: 'version-inbox-2',
+          version: '1.0.1',
+        },
+      ],
+      nextCursor: 'next-page',
+    });
 
     const detail = await fetchAdminAgentDetail('agent-inbox', client);
 
     // Canonical aggregate order: newest createdAt first (not opaque page/id order).
     expect(detail.versions.map(({ id }) => id)).toEqual(['version-inbox-2', 'version-inbox-1']);
-    expect(listVersions).toHaveBeenNthCalledWith(1, {
-      agentId: 'agent-inbox',
-      cursor: undefined,
-      limit: 100,
-    });
-    expect(listVersions).toHaveBeenNthCalledWith(2, {
-      agentId: 'agent-inbox',
-      cursor: 'next-page',
-      limit: 100,
-    });
-
-    // Cycle guard: a stuck cursor must not spin past the hard page ceiling, and must flag truncation.
-    listVersions.mockReset();
-    for (let i = 0; i < ADMIN_AGENT_COLLECTION_PAGE_LIMIT + 5; i += 1) {
-      listVersions.mockResolvedValueOnce({
-        items: [{ ...version, id: `version-cycle-${i}` }],
-        nextCursor: 'same-cursor',
-      });
-    }
-    const cycled = await fetchAdminAgentDetail('agent-inbox', client);
-    expect(listVersions.mock.calls.length).toBeLessThanOrEqual(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
-    expect(cycled.versions.length).toBeLessThanOrEqual(ADMIN_AGENT_COLLECTION_PAGE_LIMIT);
-    expect(cycled.collectionMeta?.versionsTruncated).toBe(true);
+    expect(listVersions).toHaveBeenCalledTimes(1);
+    expect(listVersions).toHaveBeenCalledWith({ agentId: 'agent-inbox', limit: 100 });
+    expect(detail.collectionMeta?.versionsNextCursor).toBe('next-page');
   });
 
   it('resolves the default inbox via a dedicated isDefault list filter (no catalog drain)', async () => {

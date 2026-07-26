@@ -76,7 +76,7 @@ export class SafeOutboundHttpClient {
    * - http/https only
    * - DNS resolve → policy check → pin connect
    * - each redirect re-validates host + resolved IPs
-   * - cross-origin redirects strip Authorization/Cookie
+   * - secret-bearing cross-origin redirects fail closed
    * - metadata endpoints never allowed
    * - maxResponseBytes enforced during stream read (not post-buffer trim)
    */
@@ -129,7 +129,6 @@ export class SafeOutboundHttpClient {
 
       const hop = this.resolveRedirectHop({
         current,
-        headers: baseHeaders,
         location: headerGet(response.headers, 'location'),
         maxRedirects,
         redirects,
@@ -145,6 +144,7 @@ export class SafeOutboundHttpClient {
       if (hop.forceGet) {
         method = 'GET';
         body = undefined;
+        stripEntityHeadersForGet(baseHeaders);
       }
     }
   };
@@ -186,7 +186,6 @@ export class SafeOutboundHttpClient {
       try {
         const hop = this.resolveRedirectHop({
           current,
-          headers,
           location: response.headers.get('location'),
           maxRedirects,
           redirects,
@@ -204,6 +203,7 @@ export class SafeOutboundHttpClient {
         if (hop.forceGet) {
           method = 'GET';
           body = undefined;
+          stripEntityHeadersForGet(headers);
         }
       } catch (error) {
         // Cancel the unused body before propagating redirect/limit rejections.
@@ -221,7 +221,6 @@ export class SafeOutboundHttpClient {
    */
   private resolveRedirectHop(params: {
     current: URL;
-    headers: Record<string, string>;
     location: string | null | undefined;
     maxRedirects: number;
     redirects: number;
@@ -243,14 +242,11 @@ export class SafeOutboundHttpClient {
     }
 
     const next = this.parseUrl(new URL(params.location, params.current));
-    if (!isSameOrigin(params.current, next)) {
-      if (params.secretBearing) {
-        throw ssrfBlocked(
-          'secret_redirect',
-          'cross-origin redirect rejected for secret-bearing request',
-        );
-      }
-      stripCredentialHeaders(params.headers);
+    if (!isSameOrigin(params.current, next) && params.secretBearing) {
+      throw ssrfBlocked(
+        'secret_redirect',
+        'cross-origin redirect rejected for secret-bearing request',
+      );
     }
 
     // RFC: 303 switches to GET; 301/302 historically do for browsers — follow GET for 301/302/303
@@ -453,13 +449,20 @@ const headerGet = (
 export const isSameOrigin = (a: URL, b: URL): boolean =>
   a.protocol === b.protocol && a.host === b.host;
 
-/** Strip credential headers in place (case-insensitive key match). */
-export const stripCredentialHeaders = (headers: Record<string, string>): void => {
+/** Remove entity/framing headers when redirect semantics discard the request body. */
+const stripEntityHeadersForGet = (headers: Record<string, string>): void => {
   for (const key of Object.keys(headers)) {
     if (
-      CREDENTIAL_HEADER_NAMES.has(key.toLowerCase()) ||
-      isSensitiveKey(key) ||
-      containsSensitiveMaterial(headers[key])
+      [
+        'content-encoding',
+        'content-language',
+        'content-length',
+        'content-location',
+        'content-md5',
+        'content-type',
+        'digest',
+        'transfer-encoding',
+      ].includes(key.toLowerCase())
     ) {
       delete headers[key];
     }

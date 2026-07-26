@@ -32,7 +32,6 @@ export {
   createSafeOutboundHttpClient,
   isSameOrigin,
   SafeOutboundHttpClient,
-  stripCredentialHeaders,
 } from './safeOutboundHttpClient';
 export type {
   DnsResolver,

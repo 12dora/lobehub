@@ -10,6 +10,8 @@ import {
 } from './inlineSkillResources';
 
 const DEFAULT_WORKSPACE_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_CLEANUP_RETRY_BASE_MS = 1000;
+const DEFAULT_CLEANUP_RETRY_COUNT = 3;
 
 interface ActiveWorkspaceEntry {
   timer: ReturnType<typeof setTimeout>;
@@ -38,6 +40,10 @@ export interface InlineSkillWorkspaceDeps {
   cacheRoot?: string;
   /** Injectable for tests — defaults to clearTimeout. */
   cancelSchedule?: (timer: ReturnType<typeof setTimeout>) => void;
+  /** Base delay for bounded exponential cleanup retries. */
+  cleanupRetryBaseMs?: number;
+  /** Number of cleanup retries after the initial TTL attempt. */
+  cleanupRetryCount?: number;
   now?: () => number;
   /** Injectable for tests — defaults to recursive force-rm. */
   removePath?: (target: string) => Promise<void>;
@@ -95,6 +101,39 @@ const sweepExpiredWorkspaces = async (root: string, now: number, ttlMs: number) 
 
 const defaultRemovePath = (target: string) => rm(target, { force: true, recursive: true });
 
+const scheduleWorkspaceCleanup = (
+  workspaceId: string,
+  delayMs: number,
+  attempt: number,
+  deps: Required<Pick<InlineSkillWorkspaceDeps, 'cancelSchedule' | 'removePath' | 'schedule'>> & {
+    cleanupRetryBaseMs: number;
+    cleanupRetryCount: number;
+  },
+) => {
+  const timer = deps.schedule(() => {
+    void cleanupInlineSkillWorkspace(
+      { workspaceId },
+      { cancelSchedule: deps.cancelSchedule, removePath: deps.removePath },
+    ).catch((error: unknown) => {
+      const entry = activeWorkspaces.get(workspaceId);
+      if (!entry) return;
+
+      if (attempt >= deps.cleanupRetryCount) {
+        console.error('[InlineSkillWorkspace] TTL cleanup retries exhausted', {
+          attempt,
+          errorName: error instanceof Error ? error.name : 'UnknownError',
+        });
+        return;
+      }
+
+      const retryDelay = deps.cleanupRetryBaseMs * 2 ** attempt;
+      entry.timer = scheduleWorkspaceCleanup(workspaceId, retryDelay, attempt + 1, deps);
+    });
+  }, delayMs);
+  timer.unref?.();
+  return timer;
+};
+
 export const prepareInlineSkillWorkspace = async (
   params: PrepareInlineSkillWorkspaceParams,
   deps: InlineSkillWorkspaceDeps = {},
@@ -144,14 +183,13 @@ export const prepareInlineSkillWorkspace = async (
     }
 
     const workspaceId = randomUUID();
-    const timer = schedule(() => {
-      void cleanupInlineSkillWorkspace({ workspaceId }, { removePath, cancelSchedule }).catch(
-        () => {
-          // TTL cleanup failures must not become unhandled rejections. Paths stay redacted.
-        },
-      );
-    }, deps.ttlMs ?? DEFAULT_WORKSPACE_TTL_MS);
-    timer.unref?.();
+    const timer = scheduleWorkspaceCleanup(workspaceId, deps.ttlMs ?? DEFAULT_WORKSPACE_TTL_MS, 0, {
+      cancelSchedule,
+      cleanupRetryBaseMs: deps.cleanupRetryBaseMs ?? DEFAULT_CLEANUP_RETRY_BASE_MS,
+      cleanupRetryCount: deps.cleanupRetryCount ?? DEFAULT_CLEANUP_RETRY_COUNT,
+      removePath,
+      schedule,
+    });
     activeWorkspaces.set(workspaceId, { timer, workspaceDir });
     return { success: true, workspaceDir, workspaceId };
   } catch (error) {

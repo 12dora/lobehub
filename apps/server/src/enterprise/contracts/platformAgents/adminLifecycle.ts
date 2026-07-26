@@ -144,6 +144,7 @@ export const platformAgentDependencyValidationOutputSchema = z
 export const platformAgentPublicationOutputSchema = z
   .object({
     agentId: idSchema,
+    invalidationStatus: z.enum(['deferred', 'delivered']),
     revision: positiveRevisionSchema,
     versionId: idSchema,
   })

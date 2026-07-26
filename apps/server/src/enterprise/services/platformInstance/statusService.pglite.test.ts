@@ -188,6 +188,17 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
         startupGeneration: 'generation-stale',
         startupSource: 'database',
       },
+      {
+        activeIdentityRevision: null,
+        health: 'healthy',
+        hostnameHash: checksum('f'),
+        instanceId: identityId('d'),
+        lastHeartbeat: now,
+        loadedAt: new Date(now.getTime() - 900),
+        startedAt: new Date(now.getTime() - 60_000),
+        startupGeneration: 'generation-unreported',
+        startupSource: 'database',
+      },
     ]);
     const snapshot = await new PlatformInstanceStatusService(db, {
       env: { ENABLE_DATABASE_OIDC: '1' },
@@ -210,7 +221,7 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
     const identity = snapshot.domains.find(({ domain }) => domain === 'identity');
 
     expect(identity).toMatchObject({
-      counts: { degraded: 1, diverged: 0, fresh: 2, matching: 1, stale: 1, unreported: 0 },
+      counts: { degraded: 1, diverged: 1, fresh: 3, matching: 1, stale: 1, unreported: 0 },
       status: 'degraded',
     });
     const local = snapshot.freshDiagnostics.find(

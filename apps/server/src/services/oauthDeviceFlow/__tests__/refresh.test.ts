@@ -365,7 +365,7 @@ describe('ensureFreshOAuthToken', () => {
       expect(retryInit.body).toContain('refresh_token=rotated-refresh');
     });
 
-    it('throws InvalidProviderAPIKey when the stored refresh token matches the rejected one', async () => {
+    it('throws OAuthAuthorizationExpired when the stored refresh token matches the rejected one', async () => {
       mockFetch.mockResolvedValueOnce(tokenResponse({ error: 'invalid_grant' }, false));
       mockGetAiProviderById.mockResolvedValueOnce({
         keyVaults: {
@@ -382,13 +382,13 @@ describe('ensureFreshOAuthToken', () => {
             oauthTokenExpiresAt: String(Date.now() - 1000),
           }),
         ),
-      ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.InvalidProviderAPIKey });
+      ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.OAuthAuthorizationExpired });
 
       // keyVaults must NOT be cleared on failure
       expect(mockUpdateConfig).not.toHaveBeenCalled();
     });
 
-    it('throws InvalidProviderAPIKey when the retry also gets invalid_grant', async () => {
+    it('throws OAuthAuthorizationExpired when the retry also gets invalid_grant', async () => {
       mockFetch
         .mockResolvedValueOnce(tokenResponse({ error: 'invalid_grant' }, false))
         .mockResolvedValueOnce(tokenResponse({ error: 'invalid_grant' }, false));
@@ -408,7 +408,7 @@ describe('ensureFreshOAuthToken', () => {
             oauthTokenExpiresAt: String(Date.now() - 1000),
           }),
         ),
-      ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.InvalidProviderAPIKey });
+      ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.OAuthAuthorizationExpired });
     });
   });
 });

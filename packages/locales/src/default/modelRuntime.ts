@@ -37,6 +37,8 @@ export default {
     'Invalid Ollama configuration, please check Ollama configuration and try again',
   InvalidProviderAPIKey:
     '{{provider}} API Key is incorrect or empty, please check your {{provider}} API Key and try again',
+  OAuthAuthorizationExpired:
+    'Your connection to {{provider}} has expired. Reconnect it in Provider Settings, then try again.',
   InvalidRequestFormat:
     'Sorry, the upstream provider rejected the request as malformed. Please check the input or try a different model.',
   InvalidVertexCredentials:

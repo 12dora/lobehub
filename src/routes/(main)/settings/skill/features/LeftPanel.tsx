@@ -84,7 +84,10 @@ const LeftPanel = memo<LeftPanelProps>(
                         onClick: () =>
                           openImportFromUrlModal(
                             adminScope
-                              ? { onImport: ({ url }) => adminScope.importFromUrl(url) }
+                              ? {
+                                  canCreate: adminScope.capabilities.canCreateSkill,
+                                  onImport: ({ url }) => adminScope.importFromUrl(url),
+                                }
                               : undefined,
                           ),
                       },
@@ -102,7 +105,10 @@ const LeftPanel = memo<LeftPanelProps>(
                         onClick: () =>
                           openImportFromGithubModal(
                             adminScope
-                              ? { onImport: ({ gitUrl }) => adminScope.importFromGithub(gitUrl) }
+                              ? {
+                                  canCreate: adminScope.capabilities.canCreateSkill,
+                                  onImport: ({ gitUrl }) => adminScope.importFromGithub(gitUrl),
+                                }
                               : undefined,
                           ),
                       },
@@ -120,7 +126,10 @@ const LeftPanel = memo<LeftPanelProps>(
                         onClick: () =>
                           openUploadSkillModal(
                             adminScope
-                              ? { onImportFile: (file) => adminScope.importFromZip(file) }
+                              ? {
+                                  canCreate: adminScope.capabilities.canCreateSkill,
+                                  onImportFile: (file) => adminScope.importFromZip(file),
+                                }
                               : undefined,
                           ),
                       },

@@ -20,7 +20,9 @@ import {
   identityProviderLkgGeneration,
   identityProviderLkgIdentity,
   type IdentityProviderLkgPayload,
+  type IdentityProviderRevocationJournalEntry,
   readIdentityProviderLkg,
+  readIdentityProviderRevocationJournal,
   writeIdentityProviderLkg,
 } from './lkg';
 import { resolveIdentityProviderOutboundMode } from './outboundMode';
@@ -344,11 +346,39 @@ const fromLkgPayload = (
    * resurrect a provider that already has a signed revoke in the database.
    */
   validatedTombstones: ValidatedTombstone[] = [],
+  durableRevocations: IdentityProviderRevocationJournalEntry[] = [],
 ): DatabasePayload => {
   const removedProviderIds = new Set(validatedTombstones.map((entry) => entry.providerId));
+  const durableByProviderId = new Map<string, string | undefined>();
+  for (const entry of durableRevocations) {
+    if (!durableByProviderId.has(entry.providerId)) {
+      durableByProviderId.set(entry.providerId, entry.generation);
+      continue;
+    }
+    const currentGeneration = durableByProviderId.get(entry.providerId);
+    // A pending journal entry is an unresolved revoke and must dominate every
+    // finalized entry regardless of token/serialization order.
+    if (currentGeneration === undefined || entry.generation === undefined) {
+      durableByProviderId.set(entry.providerId, undefined);
+      continue;
+    }
+    durableByProviderId.set(
+      entry.providerId,
+      entry.generation > currentGeneration ? entry.generation : currentGeneration,
+    );
+  }
   return {
     rows: payload.providers.flatMap((provider) => {
       if (removedProviderIds.has(provider.providerId)) return [];
+      const durableGeneration = durableByProviderId.get(provider.providerId);
+      // Pending entries have no generation and always fail closed. Finalized
+      // entries filter only snapshots at or before the committed tombstone, so
+      // a later published re-enable remains recoverable.
+      if (
+        durableByProviderId.has(provider.providerId) &&
+        (durableGeneration === undefined || provider.generation <= durableGeneration)
+      )
+        return [];
       const rawProviderKey = provider.payload.providerKey;
       if (
         typeof rawProviderKey === 'string' &&
@@ -417,6 +447,14 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
   /** Tombstones validated before a later live-provider failure — applied to LKG fallback. */
   let validatedTombstones: ValidatedTombstone[] = [];
   if (secrets) {
+    let durableRevocations: IdentityProviderRevocationJournalEntry[] | null = null;
+    try {
+      durableRevocations = await readIdentityProviderRevocationJournal({ env, secrets });
+    } catch (error) {
+      console.error('[identityProviderStartup] revocation journal unavailable', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
     try {
       const db = options.db ?? (await loadDatabase());
       const environmentProviderIdSet = new Set(environmentProviderIds);
@@ -500,10 +538,18 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
     }
 
     try {
+      if (!durableRevocations) {
+        throw new Error('PLATFORM_IDENTITY_PROVIDER_REVOCATION_JOURNAL_UNAVAILABLE');
+      }
       const lkg = await readIdentityProviderLkg({ env, secrets });
       if (lkg) {
         // Apply validated tombstone removals even when live materialization failed.
-        const payload = fromLkgPayload(lkg, new Set(environmentProviderIds), validatedTombstones);
+        const payload = fromLkgPayload(
+          lkg,
+          new Set(environmentProviderIds),
+          validatedTombstones,
+          durableRevocations,
+        );
         const databaseProviders = await enrichRuntimeProviders(
           await materializeProviders(payload.rows, secrets),
           discovery,

@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 
 import { CURRENT_VERSION } from '@lobechat/const';
-import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, notInArray, sql } from 'drizzle-orm';
 
 import { PlatformJobModel } from '@/database/models/platform';
 import {
@@ -59,6 +59,8 @@ import {
 
 const CONNECTOR_RUNTIME_JOB_TYPE = 'connector.runtime.shared-call.v1';
 const DEFAULT_PAGE_SIZE = 50;
+/** Operator health treats publication failures in the last 24 hours as recent. */
+export const RECENT_PUBLISH_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type DependencyHealth = {
   errorCategory:
@@ -277,6 +279,7 @@ const publicationDomains = {
   'admin.branding.publish': 'branding',
   'admin.connectors.publish': 'connector_catalog',
   'admin.identityProviders.publish': 'identity',
+  'admin.managedResources.publish': 'managed_policy',
   'admin.settings.publish': 'settings',
   'admin.skills.publish': 'skill_catalog',
 } as const;
@@ -547,6 +550,7 @@ export class PlatformSystemAdminService {
   };
 
   private getRecentPublishFailures = async () => {
+    const since = new Date(this.now().getTime() - RECENT_PUBLISH_FAILURE_WINDOW_MS);
     const rows = await this.db
       .select({
         action: platformAuditLogs.action,
@@ -559,6 +563,7 @@ export class PlatformSystemAdminService {
         and(
           eq(platformAuditLogs.result, 'failure'),
           inArray(platformAuditLogs.action, Object.keys(publicationDomains)),
+          gte(platformAuditLogs.createdAt, since),
         ),
       )
       .orderBy(desc(platformAuditLogs.createdAt), desc(platformAuditLogs.id))

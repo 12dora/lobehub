@@ -80,6 +80,7 @@ export const adminManagedResourcesRouter = router({
       let connectorTransitionToken: string | null = null;
       // Track commit stage (not error class): cancel the transition whenever publish did not commit.
       let publishCommitted = false;
+      let committedResult: { auditId: string; revision: number } | null = null;
       try {
         const flags = parseEnterpriseFeatureFlags(process.env);
         connectorTransitionToken = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
@@ -99,6 +100,7 @@ export const adminManagedResourcesRouter = router({
           reason: input.reason,
         });
         publishCommitted = true;
+        committedResult = result;
         const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
         const policy = managed.published.connectors;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
@@ -114,8 +116,15 @@ export const adminManagedResourcesRouter = router({
           });
           connectorTransitionToken = null;
         }
-        return result;
+        return { ...result, runtimeTransition: 'finalized' as const };
       } catch (error) {
+        if (publishCommitted && committedResult) {
+          console.error('[admin.managedResources.publish] runtime transition pending recovery', {
+            errorClass: error instanceof Error ? error.name : 'UnknownError',
+            revision: committedResult.revision,
+          });
+          return { ...committedResult, runtimeTransition: 'pending_recovery' as const };
+        }
         if (error instanceof PlatformRevisionConflictError) {
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,

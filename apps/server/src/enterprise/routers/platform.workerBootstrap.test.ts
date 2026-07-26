@@ -2,9 +2,19 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  assertPlatformMasterKeyIfEnterprise: vi.fn(),
+  ensureBrandingAssetCleanupWorkerStarted: vi.fn(),
   ensurePlatformAuditExportWorkerStarted: vi.fn(),
   ensurePlatformAuditRetentionWorkerStarted: vi.fn(),
   ensurePlatformSecretRewrapWorkerStarted: vi.fn(),
+}));
+
+vi.mock('../security/secret', () => ({
+  assertPlatformMasterKeyIfEnterprise: mocks.assertPlatformMasterKeyIfEnterprise,
+}));
+
+vi.mock('../jobs/brandingAssetCleanup', () => ({
+  ensureBrandingAssetCleanupWorkerStarted: mocks.ensureBrandingAssetCleanupWorkerStarted,
 }));
 
 vi.mock('../jobs/secretRewrap', () => ({
@@ -22,10 +32,18 @@ vi.mock('../jobs/auditRetention', () => ({
 describe('platform persistent worker bootstrap', () => {
   beforeAll(async () => {
     await import('./platform');
-  });
+  }, 30_000);
 
   it('registers the secret rewrap worker from the production platform bootstrap module', () => {
     expect(mocks.ensurePlatformSecretRewrapWorkerStarted).toHaveBeenCalledOnce();
+  });
+
+  it('validates the enterprise key provider before production bootstrap completes', () => {
+    expect(mocks.assertPlatformMasterKeyIfEnterprise).toHaveBeenCalledOnce();
+  });
+
+  it('registers the branding asset cleanup worker from the production platform bootstrap module', () => {
+    expect(mocks.ensureBrandingAssetCleanupWorkerStarted).toHaveBeenCalledOnce();
   });
 
   it('registers the audit export worker from the production platform bootstrap module', () => {

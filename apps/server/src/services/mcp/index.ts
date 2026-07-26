@@ -287,7 +287,8 @@ export class MCPService {
     if (params.type === 'stdio' && this.options.allowStdio !== true) {
       throw new TRPCError({
         code: 'BAD_REQUEST',
-        message: 'Stdio MCP requires an explicitly isolated worker capability',
+        message:
+          'This integration must run on a connected desktop device. Connect a device and try again.',
       });
     }
     const key = this.serializeParams(params); // Use custom serialization

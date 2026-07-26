@@ -20,7 +20,12 @@ vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () =>
 }));
 vi.mock('./useAssignmentEditor', () => ({ useAssignmentEditor: () => editorMock.value }));
 vi.mock('@lobehub/ui', () => ({
-  Alert: ({ message }: { message?: ReactNode }) => <div>{message}</div>,
+  Alert: ({ action, message }: { action?: ReactNode; message?: ReactNode }) => (
+    <div>
+      {message}
+      {action}
+    </div>
+  ),
   Block: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Input: (props: any) => <input {...props} />,
@@ -29,7 +34,15 @@ vi.mock('@lobehub/ui', () => ({
   Tooltip: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
-  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+  Button: ({ children, loading, ...props }: any) => (
+    <button
+      {...props}
+      data-loading={loading ? 'true' : 'false'}
+      disabled={props.disabled || loading}
+    >
+      {children}
+    </button>
+  ),
   Select: (props: any) => <select {...props} />,
   Switch: (props: any) => <input type="checkbox" {...props} />,
   toast: { error: vi.fn(), success: vi.fn() },
@@ -153,6 +166,28 @@ describe('AssignmentPanel', () => {
       />,
     );
     expect(screen.getByText('agentCatalog.recovery.refreshFailed')).toBeTruthy();
+  });
+
+  it('keeps assignment pagination retry visible and pending after a failure', () => {
+    const loadMore = vi.fn();
+    render(
+      <AssignmentPanel
+        assignmentsTruncated
+        loadMoreError
+        loadingMore
+        authMethod={null}
+        lock={lock}
+        permissions={permissions}
+        refresh={vi.fn()}
+        rolloutsEnabled={false}
+        snapshot={snapshot}
+        onLoadMoreAssignments={loadMore}
+      />,
+    );
+
+    const retry = screen.getByText('agentCatalog.collection.retry');
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAttribute('data-loading', 'true');
   });
 
   it('disables Start while the shared identity lock is active without entering commitWrite', async () => {

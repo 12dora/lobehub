@@ -86,7 +86,10 @@ export class PlatformAgentPublicationService {
       options.validateDependencies ?? assertExactPlatformAgentDependencies;
   }
 
-  private invalidate = async (agentId: string, revision: number): Promise<void> => {
+  private invalidate = async (
+    agentId: string,
+    revision: number,
+  ): Promise<'deferred' | 'delivered'> => {
     try {
       await this.invalidation.publish({
         at: new Date().toISOString(),
@@ -95,6 +98,7 @@ export class PlatformAgentPublicationService {
         revision,
         scopes: ['agent-catalog', 'agent-runtime'],
       });
+      return 'delivered';
     } catch (error) {
       log(
         'post-commit invalidation failed agent=%s revision=%d class=%s',
@@ -102,6 +106,7 @@ export class PlatformAgentPublicationService {
         revision,
         error instanceof Error ? error.name : 'UnknownError',
       );
+      return 'deferred';
     }
   };
 
@@ -205,9 +210,9 @@ export class PlatformAgentPublicationService {
         });
         return { agentId: locked.id, revision: identity.revision, versionId: version.id };
       });
-      await this.invalidate(result.agentId, result.revision);
+      const invalidationStatus = await this.invalidate(result.agentId, result.revision);
       this.observePublication({ operation: 'publish', startedAt });
-      return result;
+      return { ...result, invalidationStatus };
     } catch (error) {
       await this.appendFailureAudit({
         action: 'admin.agents.publish',
@@ -269,9 +274,9 @@ export class PlatformAgentPublicationService {
         });
         return { agentId: locked.id, revision: identity.revision, versionId: target.id };
       });
-      await this.invalidate(result.agentId, result.revision);
+      const invalidationStatus = await this.invalidate(result.agentId, result.revision);
       this.observePublication({ operation: 'rollback', startedAt });
-      return result;
+      return { ...result, invalidationStatus };
     } catch (error) {
       await this.appendFailureAudit({
         action: 'admin.agents.rollback',

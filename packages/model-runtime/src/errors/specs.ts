@@ -155,6 +155,17 @@ export const ERROR_CODE_SPECS: SpecMap = {
     countAsFailure: false,
     description: 'Provider unavailable from the caller geographic region.',
   },
+  [AgentRuntimeErrorType.OAuthAuthorizationExpired]: {
+    code: AgentRuntimeErrorType.OAuthAuthorizationExpired,
+    numericId: 1009,
+    category: 'auth',
+    severity: 'warning',
+    attribution: 'user',
+    httpStatus: 401,
+    retryable: false,
+    countAsFailure: false,
+    description: 'The provider OAuth authorization expired or was revoked.',
+  },
 
   // ─── 2xxx Quota / Billing ─────────────────────────────────────────────
   [AgentRuntimeErrorType.InsufficientQuota]: {

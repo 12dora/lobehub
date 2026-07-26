@@ -86,6 +86,34 @@ describe('PlatformAuditConversationModel', () => {
     expect(ok.items[0]!.content).toBe('body-a');
   });
 
+  it('batches message details across topic ids while preserving user isolation', async () => {
+    await serverDB.insert(topics).values([
+      { id: 'topic-batch-a', title: 'A', userId: userA },
+      { id: 'topic-batch-b', title: 'B', userId: userA },
+      { id: 'topic-batch-other', title: 'Other', userId: userB },
+    ]);
+    await serverDB.insert(messages).values([
+      { content: 'a', id: 'msg-batch-a', role: 'user', topicId: 'topic-batch-a', userId: userA },
+      { content: 'b', id: 'msg-batch-b', role: 'user', topicId: 'topic-batch-b', userId: userA },
+      {
+        content: 'other',
+        id: 'msg-batch-other',
+        role: 'user',
+        topicId: 'topic-batch-other',
+        userId: userB,
+      },
+    ]);
+
+    const page = await model.listMessageDetailsForTopics({
+      topicIds: ['topic-batch-a', 'topic-batch-b', 'topic-batch-other'],
+      userId: userA,
+    });
+    expect(page.items.map((item) => item.id).sort()).toEqual(['msg-batch-a', 'msg-batch-b']);
+    await expect(
+      model.listMessageDetailsForTopics({ topicIds: [], userId: userA }),
+    ).rejects.toThrow(/userId and topicIds/);
+  });
+
   it('title-only q never matches message body text', async () => {
     await serverDB.insert(topics).values({
       id: 'topic-title',

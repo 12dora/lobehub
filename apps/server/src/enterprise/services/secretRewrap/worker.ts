@@ -33,6 +33,7 @@ import { PlatformSecretRewrapInvalidError, PlatformSecretRewrapProviderError } f
 
 const DEFAULT_LEASE_MS = 60_000;
 const failureRowId = sql<string>`${platformJobs.input}->>'rowId'`;
+type RewrapDatabase = LobeChatDatabase | Transaction;
 
 class PlatformSecretRewrapLeaseLostError extends Error {
   constructor() {
@@ -42,20 +43,14 @@ class PlatformSecretRewrapLeaseLostError extends Error {
 }
 
 /**
- * Extend the job lease on the same transaction connection.
- *
- * Crypto (Vault) work can exceed DEFAULT_LEASE_MS while the batch transaction is
- * still open. Mid-batch + post-provider renewals keep wall-clock leases fresh for
- * observers; checkpoint itself only verifies ownership (not leaseUntil > now).
- * The batch already holds `FOR UPDATE` on the job row, so reclaimers using
- * `SKIP LOCKED` cannot steal it even if the wall-clock lease expired between
- * heartbeats — therefore renew does **not** require `leaseUntil > now`.
+ * Extend the job lease in a short statement between remote crypto calls.
+ * No Vault call runs while a database transaction or row lock is held.
  */
 const renewLease = async (
-  tx: Transaction,
+  db: RewrapDatabase,
   params: { jobId: string; leaseMs: number; revision: number; workerId: string },
 ) => {
-  const [renewed] = await tx
+  const [renewed] = await db
     .update(platformJobs)
     .set({
       heartbeatAt: sql`clock_timestamp()`,
@@ -83,7 +78,7 @@ export interface PlatformSecretRewrapWorkerLifecycle {
     candidate: PlatformSecretRotationCandidate;
     db: Transaction;
   }) => Promise<void>;
-  /** Test/fault seam proving data/ledger/checkpoint rollback as one transaction. */
+  /** Test/fault seam immediately before the short final checkpoint transaction commits. */
   beforeCheckpoint?: (params: { db: Transaction; job: PlatformJobItem }) => Promise<void>;
 }
 
@@ -114,6 +109,13 @@ type CandidateOutcome =
   | { kind: 'failed'; category: PlatformSecretRewrapFailureCategory }
   | { kind: 'no_op' }
   | { kind: 'rotated' };
+
+type PreparedCandidate =
+  | CandidateOutcome
+  | {
+      ciphertext: string;
+      kind: 'prepared';
+    };
 
 /**
  * S02c1-specific claim lane. Eligibility and every lease timestamp use the
@@ -233,13 +235,12 @@ const isAlreadyTarget = (
 ) =>
   candidate.storedKeyId === targetKeyId && secrets.peekKeyId(candidate.ciphertext) === targetKeyId;
 
-const processCandidate = async (
-  tx: Transaction,
+/** Remote-only phase. No database transaction or lock is held here. */
+const prepareCandidate = async (
   secrets: PlatformSecretService,
   candidate: PlatformSecretRotationCandidate,
   targetKeyId: string,
-  lifecycle?: PlatformSecretRewrapWorkerLifecycle,
-): Promise<CandidateOutcome> => {
+): Promise<PreparedCandidate> => {
   try {
     if (isAlreadyTarget(secrets, candidate, targetKeyId)) return { kind: 'no_op' };
   } catch (error) {
@@ -253,9 +254,26 @@ const processCandidate = async (
     return { category: await classifyCryptoFailure(secrets, targetKeyId, error), kind: 'failed' };
   }
 
+  return { ciphertext, kind: 'prepared' };
+};
+
+/** Short transactional phase: exact CAS plus conflict classification. */
+const commitPreparedCandidate = async (
+  tx: Transaction,
+  secrets: PlatformSecretService,
+  candidate: PlatformSecretRotationCandidate,
+  prepared: PreparedCandidate,
+  targetKeyId: string,
+  lifecycle?: PlatformSecretRewrapWorkerLifecycle,
+): Promise<CandidateOutcome> => {
+  if (prepared.kind !== 'prepared') return prepared;
   await lifecycle?.beforeCandidateCas?.({ candidate, db: tx });
   const repository = PlatformSecretRotationRepository.forTransaction(tx);
-  const updated = await repository.rotateExact({ candidate, ciphertext, targetKeyId });
+  const updated = await repository.rotateExact({
+    candidate,
+    ciphertext: prepared.ciphertext,
+    targetKeyId,
+  });
   if (updated.updated) return { kind: 'rotated' };
 
   const current = await repository.getById(candidate.domain, candidate.id);
@@ -274,7 +292,7 @@ const processCandidate = async (
 };
 
 const listFailedLedgers = async (
-  tx: Transaction,
+  db: RewrapDatabase,
   params: {
     cursor: PlatformSecretRewrapCursor | null;
     input: PlatformSecretRewrapJobInput;
@@ -290,7 +308,7 @@ const listFailedLedgers = async (
   const items: FailedLedgerItem[] = [];
   for (let index = startIndex; index < PLATFORM_SECRET_ROTATION_DOMAINS.length; index += 1) {
     const domain = PLATFORM_SECRET_ROTATION_DOMAINS[index]!;
-    const rows = await tx
+    const rows = await db
       .select({ input: platformJobs.input })
       .from(platformJobs)
       .where(
@@ -478,7 +496,172 @@ export const processNextPlatformSecretRewrapBatch = async (
 
   await options.lifecycle?.afterClaim?.(claimed);
   try {
-    return await db.transaction(async (tx) => {
+    let cursor: PlatformSecretRewrapCursor | null;
+    try {
+      cursor = parsePlatformSecretRewrapCursor(claimed.cursor);
+    } catch {
+      throw new PlatformSecretRewrapInvalidError();
+    }
+    const repository = new PlatformSecretRotationRepository(db);
+
+    const commitCandidate = async (params: {
+      candidate: PlatformSecretRotationCandidate | null;
+      domain: PlatformSecretRotationDomain;
+      prepared: PreparedCandidate;
+      previousFailure?: PlatformSecretRewrapFailureCategory;
+      rowId: string;
+    }): Promise<void> =>
+      db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(platformJobs)
+          .where(
+            and(
+              eq(platformJobs.id, claimed.id),
+              eq(platformJobs.type, PLATFORM_SECRET_REWRAP_JOB_TYPE),
+              eq(platformJobs.status, 'running'),
+              eq(platformJobs.leaseOwner, workerId),
+              eq(platformSecretRewrapJobRevision, claimedInput.control.revision),
+            ),
+          )
+          .for('update')
+          .limit(1);
+        if (!current) throw new PlatformSecretRewrapLeaseLostError();
+
+        let input: PlatformSecretRewrapJobInput;
+        let result: PlatformSecretRewrapResult;
+        try {
+          input = parsePlatformSecretRewrapInput(current);
+          result = parsePlatformSecretRewrapResult(current.resultSummary);
+        } catch {
+          throw new PlatformSecretRewrapInvalidError();
+        }
+        const outcome = params.candidate
+          ? await commitPreparedCandidate(
+              tx,
+              secrets,
+              params.candidate,
+              params.prepared,
+              input.targetKeyId,
+              options.lifecycle,
+            )
+          : ({ kind: 'no_op' } as const);
+        result = applyOutcome(result, outcome, params.previousFailure);
+        if (outcome.kind === 'failed') {
+          await upsertFailureLedger(tx, {
+            category: outcome.category,
+            domain: params.domain,
+            input,
+            job: current,
+            rowId: params.rowId,
+          });
+        } else if (params.previousFailure) {
+          await markFailureResolved(tx, {
+            domain: params.domain,
+            jobId: current.id,
+            rowId: params.rowId,
+          });
+        }
+        const completed = result.rotated + result.noOp;
+        const [checkpointed] = await tx
+          .update(platformJobs)
+          .set({
+            cursor: { domain: params.domain, lastId: params.rowId },
+            heartbeatAt: sql`clock_timestamp()`,
+            leaseUntil: sql`clock_timestamp() + (${leaseMs} * interval '1 millisecond')`,
+            progressDone: completed,
+            resultSummary: result,
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .where(
+            and(
+              eq(platformJobs.id, current.id),
+              eq(platformJobs.status, 'running'),
+              eq(platformJobs.leaseOwner, workerId),
+              eq(platformSecretRewrapJobRevision, input.control.revision),
+            ),
+          )
+          .returning({ id: platformJobs.id });
+        if (!checkpointed) throw new PlatformSecretRewrapLeaseLostError();
+      });
+
+    const prepareAndCommit = async (params: {
+      candidate: PlatformSecretRotationCandidate | null;
+      domain: PlatformSecretRotationDomain;
+      previousFailure?: PlatformSecretRewrapFailureCategory;
+      rowId: string;
+    }) => {
+      await renewLease(db, {
+        jobId: claimed.id,
+        leaseMs,
+        revision: claimedInput.control.revision,
+        workerId,
+      });
+      const prepared = params.candidate
+        ? await prepareCandidate(secrets, params.candidate, claimedInput.targetKeyId)
+        : ({ kind: 'no_op' } as const);
+      // A slow provider call may outlive the lease. Renewing here proves another
+      // worker did not reclaim ownership while no row lock was held.
+      await renewLease(db, {
+        jobId: claimed.id,
+        leaseMs,
+        revision: claimedInput.control.revision,
+        workerId,
+      });
+      // Revalidate immediately before the short secret CAS transaction.
+      await assertActiveTarget(secrets, claimedInput.targetKeyId);
+      await commitCandidate({ ...params, prepared });
+    };
+
+    let terminal: boolean;
+    if (claimedInput.control.phase === 'scan') {
+      const page = await repository.listCandidates({
+        cursor: cursor ? { domain: cursor.domain, id: cursor.lastId } : undefined,
+        limit: batchSize,
+        targetKeyId: claimedInput.targetKeyId,
+      });
+      for (const candidate of page.items) {
+        await prepareAndCommit({
+          candidate,
+          domain: candidate.domain,
+          rowId: candidate.id,
+        });
+      }
+      terminal = page.nextCursor === null;
+    } else {
+      const page = await listFailedLedgers(db, {
+        cursor,
+        input: claimedInput,
+        jobId: claimed.id,
+        limit: batchSize,
+      });
+      for (const failure of page.items) {
+        const candidate = await repository.getById(failure.domain, failure.rowId);
+        await prepareAndCommit({
+          candidate: candidate ?? null,
+          domain: failure.domain,
+          previousFailure: failure.category,
+          rowId: failure.rowId,
+        });
+      }
+      terminal = page.nextCursor === null;
+    }
+
+    await renewLease(db, {
+      jobId: claimed.id,
+      leaseMs,
+      revision: claimedInput.control.revision,
+      workerId,
+    });
+    await assertActiveTarget(secrets, claimedInput.targetKeyId);
+    await renewLease(db, {
+      jobId: claimed.id,
+      leaseMs,
+      revision: claimedInput.control.revision,
+      workerId,
+    });
+
+    await db.transaction(async (tx) => {
       const [current] = await tx
         .select()
         .from(platformJobs)
@@ -489,138 +672,29 @@ export const processNextPlatformSecretRewrapBatch = async (
             eq(platformJobs.status, 'running'),
             eq(platformJobs.leaseOwner, workerId),
             eq(platformSecretRewrapJobRevision, claimedInput.control.revision),
-            gt(platformJobs.leaseUntil, sql`clock_timestamp()`),
           ),
         )
         .for('update')
         .limit(1);
       if (!current) throw new PlatformSecretRewrapLeaseLostError();
-
       let input: PlatformSecretRewrapJobInput;
-      let cursor: PlatformSecretRewrapCursor | null;
       let result: PlatformSecretRewrapResult;
       try {
         input = parsePlatformSecretRewrapInput(current);
-        cursor = parsePlatformSecretRewrapCursor(current.cursor);
         result = parsePlatformSecretRewrapResult(current.resultSummary);
       } catch {
         throw new PlatformSecretRewrapInvalidError();
       }
-      await assertActiveTarget(secrets, input.targetKeyId);
-
-      let terminal: boolean;
-      let checkpointCursor = cursor;
-      if (input.control.phase === 'scan') {
-        const page = await PlatformSecretRotationRepository.forTransaction(tx).listCandidates({
-          cursor: cursor ? { domain: cursor.domain, id: cursor.lastId } : undefined,
-          limit: batchSize,
-          targetKeyId: input.targetKeyId,
-        });
-        for (const candidate of page.items) {
-          // Renew before crypto so a slow Vault path cannot expire the lease
-          // before the first row finishes.
-          await renewLease(tx, {
-            jobId: current.id,
-            leaseMs,
-            revision: input.control.revision,
-            workerId,
-          });
-          const outcome = await processCandidate(
-            tx,
-            secrets,
-            candidate,
-            input.targetKeyId,
-            options.lifecycle,
-          );
-          result = applyOutcome(result, outcome);
-          if (outcome.kind === 'failed') {
-            await upsertFailureLedger(tx, {
-              category: outcome.category,
-              domain: candidate.domain,
-              input,
-              job: current,
-              rowId: candidate.id,
-            });
-          }
-          checkpointCursor = { domain: candidate.domain, lastId: candidate.id };
-        }
-        terminal = page.nextCursor === null;
-      } else {
-        const page = await listFailedLedgers(tx, {
-          cursor,
-          input,
-          jobId: current.id,
-          limit: batchSize,
-        });
-        const repository = PlatformSecretRotationRepository.forTransaction(tx);
-        for (const failure of page.items) {
-          await renewLease(tx, {
-            jobId: current.id,
-            leaseMs,
-            revision: input.control.revision,
-            workerId,
-          });
-          const candidate = await repository.getById(failure.domain, failure.rowId);
-          // Missing inventory row on retry = already out of rotation scope (revoked /
-          // expired). Mark resolved instead of looping concurrent_change forever.
-          const outcome = candidate
-            ? await processCandidate(tx, secrets, candidate, input.targetKeyId, options.lifecycle)
-            : ({ kind: 'no_op' } as const);
-          result = applyOutcome(result, outcome, failure.category);
-          if (outcome.kind === 'failed') {
-            await upsertFailureLedger(tx, {
-              category: outcome.category,
-              domain: failure.domain,
-              input,
-              job: current,
-              rowId: failure.rowId,
-            });
-          } else {
-            await markFailureResolved(tx, {
-              domain: failure.domain,
-              jobId: current.id,
-              rowId: failure.rowId,
-            });
-          }
-          checkpointCursor = { domain: failure.domain, lastId: failure.rowId };
-        }
-        terminal = page.nextCursor === null;
-      }
-
-      // Final renew before slow commit-boundary work (Vault revalidation / hooks).
-      await renewLease(tx, {
-        jobId: current.id,
-        leaseMs,
-        revision: input.control.revision,
-        workerId,
-      });
-      // Revalidate at the commit boundary. A Vault outage or active-key drift
-      // after the first row must roll back data, ledger, cursor, and checkpoint.
-      await assertActiveTarget(secrets, input.targetKeyId);
       await options.lifecycle?.beforeCheckpoint?.({ db: tx, job: current });
-      // Renew again after every potentially slow final operation. A single
-      // provider call longer than leaseMs must not make checkpoint fail and
-      // re-run the batch forever. Ownership is still verified below under FOR UPDATE.
-      await renewLease(tx, {
-        jobId: current.id,
-        leaseMs,
-        revision: input.control.revision,
-        workerId,
-      });
       const nextInput: PlatformSecretRewrapJobInput = {
         ...input,
         control: { ...input.control, revision: input.control.revision + 1 },
       };
       const completed = result.rotated + result.noOp;
-      const total = result.rotated + result.noOp + result.failed;
-      // Checkpoint ownership: status/owner/revision under the same FOR UPDATE
-      // connection. Do **not** require leaseUntil > now — a provider call that
-      // outlasts leaseMs already passed while we held the row lock; reclaimers
-      // use SKIP LOCKED and cannot steal this connection's lock.
+      const total = completed + result.failed;
       const [checkpointed] = await tx
         .update(platformJobs)
         .set({
-          cursor: checkpointCursor,
           ...(terminal
             ? {
                 finishedAt: sql`clock_timestamp()`,
@@ -638,13 +712,11 @@ export const processNextPlatformSecretRewrapBatch = async (
               }),
           input: nextInput,
           progressDone: completed,
-          resultSummary: result,
           updatedAt: sql`clock_timestamp()`,
         })
         .where(
           and(
             eq(platformJobs.id, current.id),
-            eq(platformJobs.type, PLATFORM_SECRET_REWRAP_JOB_TYPE),
             eq(platformJobs.status, 'running'),
             eq(platformJobs.leaseOwner, workerId),
             eq(platformSecretRewrapJobRevision, input.control.revision),
@@ -652,8 +724,8 @@ export const processNextPlatformSecretRewrapBatch = async (
         )
         .returning({ id: platformJobs.id });
       if (!checkpointed) throw new PlatformSecretRewrapLeaseLostError();
-      return { claimed: true, jobId: current.id, terminal };
     });
+    return { claimed: true, jobId: claimed.id, terminal };
   } catch (error) {
     if (error instanceof PlatformSecretRewrapLeaseLostError) {
       return { claimed: true, jobId: claimed.id, terminal: false };

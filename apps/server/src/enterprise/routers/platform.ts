@@ -15,8 +15,10 @@ import { resolveAccessStatus } from '../guards/accessGrant';
 import { ensurePlatformAgentRolloutWorkerStarted } from '../jobs/agentRollout';
 import { ensurePlatformAuditExportWorkerStarted } from '../jobs/auditExport';
 import { ensurePlatformAuditRetentionWorkerStarted } from '../jobs/auditRetention';
+import { ensureBrandingAssetCleanupWorkerStarted } from '../jobs/brandingAssetCleanup';
 import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identityProviderTestAttemptCleanup';
 import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
+import { assertPlatformMasterKeyIfEnterprise } from '../security/secret';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
 import { resolvePlatformPublicSnapshot } from '../services/branding';
 import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
@@ -30,6 +32,10 @@ import { platformAgentsRouter } from './platformAgents';
 import { platformSkillsRouter } from './platformSkills';
 
 ensureSkillCatalogReadinessRegistered();
+
+// Fail before any worker/router path can accept enterprise traffic with an
+// unusable key-provider configuration.
+assertPlatformMasterKeyIfEnterprise(process.env, parseEnterpriseFeatureFlags(process.env));
 
 ensureConnectorRuntimeAuditWorkerStarted();
 
@@ -47,6 +53,8 @@ ensurePlatformSecretRewrapWorkerStarted();
 ensurePlatformAuditExportWorkerStarted();
 
 ensurePlatformAuditRetentionWorkerStarted();
+
+ensureBrandingAssetCleanupWorkerStarted();
 
 /**
  * Platform router (M00 read-only + access status).

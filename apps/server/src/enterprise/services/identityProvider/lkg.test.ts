@@ -22,10 +22,14 @@ import { PlatformSecretService } from '../../security/secret';
 import type { IdentityProviderLkgPayload } from './lkg';
 import {
   advanceIdentityProviderLkgAfterTombstone,
+  clearIdentityProviderRevocation,
+  finalizeIdentityProviderRevocation,
   IDENTITY_PROVIDER_LKG_VERSION,
   IDENTITY_PROVIDER_LKG_VERSION_V1,
   identityProviderLkgIdentity,
   readIdentityProviderLkg,
+  readIdentityProviderRevocationJournal,
+  recordIdentityProviderRevocation,
   writeIdentityProviderLkg,
 } from './lkg';
 
@@ -346,6 +350,48 @@ describe('identity provider LKG', () => {
     await expect(
       writeIdentityProviderLkg({ env, payload: withProvider, secrets: secrets() }),
     ).resolves.toBe('rejected');
+  });
+
+  it('retains an independently signed revocation when the main LKG replacement fails', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    await writeIdentityProviderLkg({
+      env,
+      payload: payload(new Date().toISOString(), 3),
+      secrets: secrets(),
+    });
+    const token = await recordIdentityProviderRevocation({
+      env,
+      providerId: 'provider-1',
+      secrets: secrets(),
+    });
+    const generation = '2026-12-01T12:00:00.000Z:tombstone-row';
+    await finalizeIdentityProviderRevocation({ env, generation, secrets: secrets(), token });
+
+    await expect(
+      advanceIdentityProviderLkgAfterTombstone({
+        env,
+        removedProviderId: 'provider-1',
+        secrets: secrets(),
+        testHooks: {
+          beforeRename: async () => {
+            throw new Error('simulated pre-rename failure');
+          },
+        },
+        tombstoneGeneration: generation,
+      }),
+    ).resolves.toEqual({ outcome: 'skipped', reason: 'write_failed' });
+    await expect(
+      readIdentityProviderRevocationJournal({ env, secrets: secrets() }),
+    ).resolves.toEqual([{ generation, providerId: 'provider-1', token }]);
+    await expect(readIdentityProviderLkg({ env, secrets: secrets() })).resolves.toMatchObject({
+      providers: [expect.objectContaining({ providerId: 'provider-1' })],
+    });
+
+    await clearIdentityProviderRevocation({ env, secrets: secrets(), token });
+    await expect(
+      readIdentityProviderRevocationJournal({ env, secrets: secrets() }),
+    ).resolves.toEqual([]);
   });
 
   it('merges overlapping provider disables so neither provider is resurrected (identity/F10)', async () => {

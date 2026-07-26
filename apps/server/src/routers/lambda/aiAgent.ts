@@ -1581,8 +1581,9 @@ export const aiAgentRouter = router({
 
       return {
         action,
-        message: `Human intervention processed successfully. Execution resumed.`,
+        message: 'Human intervention queued. Waiting for execution confirmation.',
         operationId,
+        queued: true,
         scheduledMessageId: result.messageId,
         success: true,
         timestamp: new Date().toISOString(),
