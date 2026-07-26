@@ -4,8 +4,7 @@ Target: every finding kept by [`TRIAGE.md`](./TRIAGE.md), **113 total**. Dropped
 were reconsidered by independent verifiers and required no code change unless their rationale was
 disproved.
 
-Status: **implementation complete; every bundle independently passed**. Final commit and push remain
-the parent commander’s publication steps.
+Status: **implementation complete; every bundle independently passed; final branch pushed**.
 
 ## Bundle ledger
 
@@ -103,16 +102,15 @@ port 3010 was used to establish the valid result.
 - Intended review base after remote cleanup: `main`.
 - `origin` contains only `main` and the current branch. `upstream` is unchanged.
 - Draft PR #1 closed automatically when its `canary` base was deleted.
-- The remote current branch still contains the earlier checkpoint; this ledger does **not** claim
-  that the final working-tree changes have been committed or pushed.
+- The completed remediation was committed as `fcd49ec347` and pushed to
+  `origin/agent/round5-remediation-handoff`.
+- This ledger status update is the final documentation-only follow-up on the same branch.
 
-Remaining commander actions:
+Review/continuation actions:
 
-1. Review the complete working-tree diff and generated migration state.
-2. Confirm the recorded consolidated gates remain clean after documentation updates.
-3. Commit the final remediation on `agent/round5-remediation-handoff`.
-4. Push the current branch.
-5. Open a replacement PR against `main` only if requested.
+1. Review the complete branch diff and generated migration state.
+2. Run any release-specific CI gate beyond the recorded consolidated checks.
+3. Open a replacement PR against `main` only if requested.
 
 ## Verification contract used
 
