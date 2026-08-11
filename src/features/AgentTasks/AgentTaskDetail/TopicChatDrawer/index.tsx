@@ -2,15 +2,7 @@
 
 import type { ConversationContext } from '@lobechat/types';
 import type { DropdownItem } from '@lobehub/ui';
-import {
-  ActionIcon,
-  copyToClipboard,
-  DropdownMenu,
-  Flexbox,
-  Freeze,
-  Tag,
-  Text,
-} from '@lobehub/ui';
+import { ActionIcon, copyToClipboard, DropdownMenu, Flexbox, Freeze, Tag, Text } from '@lobehub/ui';
 import { FloatingPanel } from '@lobehub/ui/base-ui';
 import { Copy, MoreHorizontal, Share2 } from 'lucide-react';
 import { memo, useCallback, useMemo } from 'react';
@@ -67,7 +59,10 @@ const TopicChatDrawerBody = memo<TopicChatDrawerBodyProps>(({ agentId, topicId }
   const runningOperation = useTaskStore(
     (s) => taskActivitySelectors.activeDrawerTopicActivity(s)?.runningOperation,
   );
-  useGatewayReconnect(topicId, runningOperation);
+  useGatewayReconnect(topicId, runningOperation, {
+    agentId: runningOperation?.agentId ?? agentId,
+    groupId: runningOperation?.groupId,
+  });
 
   const itemContent = useCallback(
     (index: number, id: string) => (
@@ -204,14 +199,13 @@ const TopicChatDrawer = memo(() => {
     />
   );
 
-  const actions =
-    !topicId ? null : enableTopicLinkShare && canShare ? (
-      <SharePopover topicId={topicId} onOpenModal={openShareModal}>
-        {shareIcon}
-      </SharePopover>
-    ) : (
-      shareIcon
-    );
+  const actions = !topicId ? null : enableTopicLinkShare && canShare ? (
+    <SharePopover topicId={topicId} onOpenModal={openShareModal}>
+      {shareIcon}
+    </SharePopover>
+  ) : (
+    shareIcon
+  );
 
   // Freeze title/actions/body during the close animation so the panel keeps
   // its last rendered state instead of flashing to the empty/"untitled" view

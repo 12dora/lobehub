@@ -1,6 +1,6 @@
 import { ModelIcon } from '@lobehub/icons';
 import { Flexbox, Tag, Text, Tooltip, TooltipGroup } from '@lobehub/ui';
-import { Button, Select, type SelectProps, Switch } from '@lobehub/ui/base-ui';
+import { Select, type SelectProps, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { type ReactNode } from 'react';
 import { memo, useCallback, useMemo, useState } from 'react';
@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { message } from '@/components/AntdStaticMethods';
 import { ModelItemRender, ProviderItemRender, TAG_CLASSNAME } from '@/components/ModelSelect';
+import { useManagedResource } from '@/features/ManagedResources';
 // Scoped hook: defaults to the user singleton outside AdminProviderSettingsStoreProvider;
 // under admin platform pages it reads the published platform catalog.
 import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
@@ -25,17 +26,10 @@ const STALE_EXTRA_CLASSNAME = 'lobe-model-select-stale-extra';
 
 /**
  * Marks the stale-status Tag so the popup can hide it — inside the open list the
- * status is conveyed by the enable toggle (notEnabled) or the remedy row
- * (redirected), while the closed trigger keeps showing the Tag.
+ * status is conveyed by the enable toggle (notEnabled), while the closed
+ * trigger keeps showing the Tag.
  */
 const STALE_TAG_CLASSNAME = 'lobe-model-select-stale-tag';
-
-/**
- * Sentinel option value for the redirected-model remedy row ("update to
- * successor"). Intercepted in onChange so selecting it triggers the remedy
- * instead of a value change.
- */
-const STALE_ACTION_VALUE = '__lobe_model_select_stale_action__';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   popup: css`
@@ -110,13 +104,15 @@ const ModelSelect = memo<ModelSelectProps>(
   }) => {
     const { t } = useTranslation('components');
     const [enabling, setEnabling] = useState(false);
+    const { blocked: aiModelMutationBlocked } = useManagedResource('aiModels');
+    const { blocked: aiProviderMutationBlocked } = useManagedResource('aiProviders');
+    const canEnableStaleModel = !aiModelMutationBlocked && !aiProviderMutationBlocked;
     const enabledList = useAiInfraStore((s) =>
       modelType === 'embedding'
         ? aiProviderSelectors.enabledEmbeddingModelList(s)
         : s.enabledChatModelList || [],
     );
     const builtinAiModelList = useAiInfraStore((s) => s.builtinAiModelList);
-    const modelRedirects = useAiInfraStore((s) => s.modelRedirects);
     const enabledAiProviders = useAiInfraStore((s) => s.enabledAiProviders);
     const isInitAiProviderRuntimeState = useAiInfraStore((s) => s.isInitAiProviderRuntimeState);
     const toggleProviderModelEnabled = useAiInfraStore((s) => s.toggleProviderModelEnabled);
@@ -174,17 +170,9 @@ const ModelSelect = memo<ModelSelectProps>(
       return resolveStaleModelState(value, {
         builtinAiModelList,
         enabledList,
-        modelRedirects,
         modelType,
       });
-    }, [
-      builtinAiModelList,
-      enabledList,
-      isInitAiProviderRuntimeState,
-      modelRedirects,
-      modelType,
-      value,
-    ]);
+    }, [builtinAiModelList, enabledList, isInitAiProviderRuntimeState, modelType, value]);
 
     const handleEnable = useCallback(async () => {
       // Prefer the provider the selection is persisted under so every surface
@@ -195,7 +183,7 @@ const ModelSelect = memo<ModelSelectProps>(
         enabledList,
         metaProviderId: staleState?.meta?.providerId,
       });
-      if (!providerId || !value) return;
+      if (!canEnableStaleModel || !providerId || !value) return;
 
       setEnabling(true);
       try {
@@ -221,6 +209,7 @@ const ModelSelect = memo<ModelSelectProps>(
         setEnabling(false);
       }
     }, [
+      canEnableStaleModel,
       enabledAiProviders,
       enabledList,
       modelType,
@@ -236,7 +225,6 @@ const ModelSelect = memo<ModelSelectProps>(
       if (!staleState || !value) return options;
 
       const { meta, status } = staleState;
-      const successorName = staleState.successor?.displayName || staleState.successorId;
 
       const currentOption = {
         __stale: true,
@@ -248,7 +236,13 @@ const ModelSelect = memo<ModelSelectProps>(
               <Text ellipsis style={{ fontSize: 14 }}>
                 {meta?.displayName || value.model}
               </Text>
-              <Tooltip title={t(`ModelSelect.staleModel.${status}.tooltip`, { successorName })}>
+              <Tooltip
+                title={t(
+                  status === 'notEnabled' && !canEnableStaleModel
+                    ? 'ModelSelect.staleModel.notEnabled.managedTooltip'
+                    : `ModelSelect.staleModel.${status}.tooltip`,
+                )}
+              >
                 <Tag
                   className={STALE_TAG_CLASSNAME}
                   color={status === 'removed' ? 'warning' : undefined}
@@ -258,7 +252,7 @@ const ModelSelect = memo<ModelSelectProps>(
                   {t(`ModelSelect.staleModel.${status}.tag`)}
                 </Tag>
               </Tooltip>
-              {status === 'notEnabled' && (
+              {status === 'notEnabled' && canEnableStaleModel && (
                 <>
                   <span className={STALE_EXTRA_CLASSNAME} style={{ flex: 1 }} />
                   {/* The wrapper re-enables pointer events (the disabled option row
@@ -290,44 +284,25 @@ const ModelSelect = memo<ModelSelectProps>(
               )}
             </Flexbox>
             <span className={`${STALE_EXTRA_CLASSNAME} ${styles.staleHint}`}>
-              {t(`ModelSelect.staleModel.${status}.hint`, { successorName })}
+              {t(
+                status === 'notEnabled' && !canEnableStaleModel
+                  ? 'ModelSelect.staleModel.notEnabled.managedHint'
+                  : `ModelSelect.staleModel.${status}.hint`,
+              )}
             </span>
           </Flexbox>
         ),
         value: `${value.provider}/${value.model}`,
       };
 
-      // notEnabled recovers via the inline toggle above; only the redirected
-      // remedy ("update to successor") still needs a dedicated action row.
-      const actionLabel =
-        status === 'redirected'
-          ? t('ModelSelect.staleModel.redirected.action', { successorName })
-          : undefined;
-
-      const actionOption = actionLabel
-        ? {
-            __stale: true,
-            label: (
-              <Flexbox horizontal>
-                {/* Visual-only button: the sentinel option row owns the click (via
-                 * onChange), so pointer events are disabled to keep one hit target. */}
-                <Button size={'small'} style={{ pointerEvents: 'none' }}>
-                  {actionLabel}
-                </Button>
-              </Flexbox>
-            ),
-            value: STALE_ACTION_VALUE,
-          }
-        : undefined;
-
       return [
         {
           label: t('ModelSelect.staleModel.current'),
-          options: [currentOption, actionOption].filter(Boolean),
+          options: [currentOption],
         },
         ...(options ?? []),
       ] as SelectProps['options'];
-    }, [enabling, handleEnable, options, staleState, t, value]);
+    }, [canEnableStaleModel, enabling, handleEnable, options, staleState, t, value]);
 
     return (
       <TooltipGroup>
@@ -359,17 +334,6 @@ const ModelSelect = memo<ModelSelectProps>(
             ...style,
           }}
           onChange={(next, option) => {
-            if (next === STALE_ACTION_VALUE) {
-              if (
-                staleState?.status === 'redirected' &&
-                staleState.successorId &&
-                value?.provider
-              ) {
-                onChange?.({ model: staleState.successorId, provider: value.provider });
-              }
-              return;
-            }
-
             const model = next.split('/').slice(1).join('/');
             onChange?.({ model, provider: (option as unknown as ModelOption).provider });
           }}

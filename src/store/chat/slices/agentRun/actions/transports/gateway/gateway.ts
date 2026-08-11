@@ -158,6 +158,7 @@ export interface ConnectGatewayParams {
 // ─── Action Implementation ───
 
 export class GatewayActionImpl {
+  readonly #reconnectStatusFailureCounts = new Map<string, number>();
   readonly #get: () => ChatStore;
   readonly #set: Setter;
 
@@ -639,7 +640,9 @@ export class GatewayActionImpl {
             metadata: {
               ...existingTopic?.metadata,
               runningOperation: {
+                agentId: execContext.agentId,
                 assistantMessageId: result.assistantMessageId,
+                groupId: execContext.groupId,
                 operationId: result.operationId,
               },
             },
@@ -736,13 +739,23 @@ export class GatewayActionImpl {
    * and establishes a new WebSocket connection with event replay.
    */
   reconnectToGatewayOperation = async (params: {
+    agentId?: string;
     assistantMessageId: string;
+    groupId?: string;
     operationId: string;
     scope?: string;
     threadId?: string | null;
     topicId: string;
   }): Promise<void> => {
-    const { assistantMessageId, operationId, topicId, scope, threadId } = params;
+    const {
+      agentId: requestedAgentId,
+      assistantMessageId,
+      groupId,
+      operationId,
+      topicId,
+      scope,
+      threadId,
+    } = params;
 
     const agentGatewayUrl =
       window.global_serverConfigStore?.getState()?.serverConfig?.agentGatewayUrl;
@@ -790,8 +803,34 @@ export class GatewayActionImpl {
       const isConfirmedTerminal =
         status === 'done' || status === 'error' || status === 'interrupted';
       if (isConfirmedMissing || isConfirmedTerminal) {
-        this.clearLocalRunningOperation({ operationId, topicId });
+        this.#reconnectStatusFailureCounts.delete(operationId);
+        this.clearLocalRunningOperation({
+          agentId: requestedAgentId,
+          groupId,
+          operationId,
+          topicId,
+        });
         return;
+      }
+
+      if (statusResult.status === 'rejected') {
+        const failures = (this.#reconnectStatusFailureCounts.get(operationId) ?? 0) + 1;
+        this.#reconnectStatusFailureCounts.set(operationId, failures);
+        if (failures >= 3) {
+          this.#reconnectStatusFailureCounts.delete(operationId);
+          this.clearLocalRunningOperation({
+            agentId: requestedAgentId,
+            groupId,
+            operationId,
+            topicId,
+          });
+          throw new Error(
+            `Gateway operation ${operationId} could not be confirmed after ${failures} attempts`,
+            { cause: statusResult.reason },
+          );
+        }
+      } else {
+        this.#reconnectStatusFailureCounts.delete(operationId);
       }
 
       throw new Error(
@@ -807,6 +846,7 @@ export class GatewayActionImpl {
     }
     const { token } = refreshResult.value;
     const operationStatus = statusResult.status === 'fulfilled' ? statusResult.value : null;
+    this.#reconnectStatusFailureCounts.delete(operationId);
 
     // Re-check after the async token refresh: a newer executeGatewayAgent call may have
     // taken over for this topic while we were waiting. If so, bail to avoid a duplicate stream.
@@ -815,9 +855,20 @@ export class GatewayActionImpl {
       ?.runningOperation?.operationId;
     if (topicOpIdAfterRefresh && topicOpIdAfterRefresh !== operationId) return;
 
-    const agentId = this.#get().activeAgentId;
-    const context = {
-      agentId,
+    const statusMetadata = operationStatus?.metadata as
+      { agentId?: unknown; groupId?: unknown } | undefined;
+    const statusAgentId =
+      typeof statusMetadata?.agentId === 'string' ? statusMetadata.agentId : undefined;
+    const statusGroupId =
+      typeof statusMetadata?.groupId === 'string' ? statusMetadata.groupId : undefined;
+    const operationAgentId = requestedAgentId ?? statusAgentId;
+    const operationGroupId = groupId ?? statusGroupId;
+    const context: ConversationContext = {
+      // ConversationContext requires a string, but an empty identity remains
+      // deliberately unverifiable: client filesystem execution checks it and
+      // refuses instead of falling back to the active agent.
+      agentId: operationAgentId ?? '',
+      groupId: operationGroupId,
       scope: (scope ?? 'main') as ConversationContext['scope'],
       threadId: threadId ?? null,
       topicId,
@@ -935,6 +986,7 @@ export class GatewayActionImpl {
         if (viewing || !succeeded) {
           void this.#get().updateTopicStatus?.({
             agentId: context.agentId,
+            groupId: context.groupId,
             status: 'active',
             topicId,
           });
@@ -985,10 +1037,18 @@ export class GatewayActionImpl {
       });
   };
 
-  private clearLocalRunningOperation = (params: { operationId: string; topicId: string }): void => {
-    const { operationId, topicId } = params;
+  private clearLocalRunningOperation = (params: {
+    agentId?: string;
+    groupId?: string;
+    operationId: string;
+    topicId: string;
+  }): void => {
+    const { agentId, groupId, operationId, topicId } = params;
     const state = this.#get();
-    const key = topicMapKey({ agentId: state.activeAgentId, groupId: state.activeGroupId });
+    const key = topicMapKey({
+      agentId: agentId ?? state.activeAgentId,
+      groupId: groupId ?? state.activeGroupId,
+    });
     const existingTopic = state.topicDataMap[key]?.items?.find((topic) => topic.id === topicId);
     if (existingTopic?.metadata?.runningOperation?.operationId !== operationId) return;
 
@@ -997,6 +1057,9 @@ export class GatewayActionImpl {
       type: 'updateTopic',
       value: { metadata: { ...existingTopic.metadata, runningOperation: null } },
     });
+    void Promise.resolve(
+      topicService.updateTopicMetadata(topicId, { runningOperation: null }),
+    ).catch(() => {});
   };
 
   private internal_cleanupGatewayConnection = (operationId: string): void => {

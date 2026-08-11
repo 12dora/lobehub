@@ -1,7 +1,10 @@
 import { AgentRuntimeErrorType, RequestTrigger } from '@lobechat/types';
+import { ModelProvider } from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LobeRuntimeAI } from '../BaseAI';
+import * as openaiHelpers from '../contextBuilders/openai';
+import { createOpenAICompatibleRuntime } from '../openaiCompatibleFactory';
 import { createRouterRuntime } from './createRuntime';
 
 describe('createRouterRuntime', () => {
@@ -92,6 +95,41 @@ describe('createRouterRuntime', () => {
           apiKey: 'constructor-key',
           id: 'test-runtime',
         }),
+      );
+    });
+
+    it('suppresses reasoning persistence for RouterRuntime-created children', async () => {
+      const ChildRuntime = createOpenAICompatibleRuntime({
+        baseURL: 'https://api.openai.com/v1',
+        chatCompletion: { useResponse: true },
+        provider: ModelProvider.OpenAI,
+      });
+      const Runtime = createRouterRuntime({
+        id: 'router-provider',
+        routers: [
+          {
+            apiType: 'openai',
+            models: ['gpt-test'],
+            options: { apiKey: 'router-key', dangerouslyAllowBrowser: true },
+            runtime: ChildRuntime,
+          },
+        ],
+      });
+      const convertSpy = vi
+        .spyOn(openaiHelpers, 'convertOpenAIResponseInputs')
+        .mockRejectedValueOnce(new Error('stop after scope capture'));
+
+      await expect(
+        new Runtime().chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'gpt-test',
+          temperature: 0,
+        }),
+      ).rejects.toThrow('stop after scope capture');
+
+      expect(convertSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ reasoningSignatureScope: undefined }),
       );
     });
   });

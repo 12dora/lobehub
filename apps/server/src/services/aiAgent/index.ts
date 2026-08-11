@@ -2062,7 +2062,9 @@ export class AiAgentService {
       // boundary in queue mode.
       await this.topicModel.updateMetadata(topicId, {
         runningOperation: {
+          agentId: resolvedAgentId,
           assistantMessageId: assistantMessageRecord.id,
+          groupId: appContext?.groupId ?? undefined,
           hooks: serializedHooks,
           // Store deviceId + heteroType so interruptTask can cancel remote processes
           ...(isRemoteHetero && remoteDeviceId
@@ -4091,7 +4093,9 @@ export class AiAgentService {
       // Persist running operation to topic metadata for reconnect after page reload
       await this.topicModel.updateMetadata(topicId, {
         runningOperation: {
+          agentId: resolvedAgentId,
           assistantMessageId: assistantMessageRecord.id,
+          groupId: appContext?.groupId ?? undefined,
           operationId,
           scope: appContext?.scope ?? undefined,
           threadId: appContext?.threadId ?? undefined,

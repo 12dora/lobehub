@@ -157,9 +157,10 @@ const transformOpenAIStream = (
             : undefined;
           const hasSummaryText = chunk.item.summary?.some(({ text }) => !!text);
 
-          // Encrypted reasoning without a verifiable scope stays fail-closed (#17694):
-          // never expose the raw provider payload to persistence.
-          if (!scopedEncryptedContent && !hasSummaryText)
+          // Without a trustworthy channel scope, persistence and replay are both
+          // disabled, including summary-only response items. Visible reasoning
+          // deltas still stream through their dedicated events.
+          if (!payload?.reasoningSignatureScope || (!scopedEncryptedContent && !hasSummaryText))
             return { data: null, id: chunk.item.id, type: 'text' };
 
           const chunks: StreamProtocolChunk[] = [

@@ -104,7 +104,7 @@ describe('OpenAIResponsesStream', () => {
     expect(chunks.some((chunk) => chunk.includes('unscoped-encrypted'))).toBe(false);
   });
 
-  it('should retain summary-only reasoning without persisting raw encrypted content', async () => {
+  it('should not persist summary-only reasoning without a trustworthy channel scope', async () => {
     const mockOpenAIStream = createReadableStream([
       {
         item: {
@@ -120,8 +120,8 @@ describe('OpenAIResponsesStream', () => {
 
     const chunks = await readStreamChunk(OpenAIResponsesStream(mockOpenAIStream));
 
-    expect(chunks.some((chunk) => chunk.includes('event: reasoning_response_item'))).toBe(true);
-    expect(chunks.some((chunk) => chunk.includes('visible summary'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('event: reasoning_response_item'))).toBe(false);
+    expect(chunks.some((chunk) => chunk.includes('visible summary'))).toBe(false);
     expect(chunks.some((chunk) => chunk.includes('unscoped-encrypted'))).toBe(false);
   });
   it('should transform OpenAI stream to protocol stream', async () => {

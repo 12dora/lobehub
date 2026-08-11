@@ -1237,6 +1237,55 @@ describe('GatewayActionImpl', () => {
       } as any;
     }
 
+    it('anchors a reconnect to the requested operation agent instead of the active agent', async () => {
+      const { action, startOperation, state } = createReconnectTestAction({
+        createdAt: 1,
+        id: 'ast-1',
+      });
+      state.activeAgentId = 'agent-a';
+
+      await action.reconnectToGatewayOperation({
+        agentId: 'agent-b',
+        assistantMessageId: 'ast-1',
+        groupId: 'group-b',
+        operationId: 'server-op-1',
+        topicId: 'topic-1',
+      });
+
+      expect(startOperation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            agentId: 'agent-b',
+            groupId: 'group-b',
+            topicId: 'topic-1',
+          }),
+        }),
+      );
+    });
+
+    it('recovers operation identity from the authoritative status payload', async () => {
+      const { action, startOperation } = createReconnectTestAction({ createdAt: 1, id: 'ast-1' });
+      vi.mocked(aiAgentService.getOperationStatus).mockResolvedValueOnce({
+        currentState: { status: 'running' },
+        metadata: { agentId: 'agent-status', groupId: 'group-status' },
+      } as any);
+
+      await action.reconnectToGatewayOperation({
+        assistantMessageId: 'ast-1',
+        operationId: 'server-op-1',
+        topicId: 'topic-1',
+      });
+
+      expect(startOperation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            agentId: 'agent-status',
+            groupId: 'group-status',
+          }),
+        }),
+      );
+    });
+
     it('retains the marker and surfaces a retryable error when refresh is NOT_FOUND but status is running', async () => {
       const topicDataMap = {
         [topicMapKey({ agentId: 'agent-1' })]: {
@@ -1300,6 +1349,45 @@ describe('GatewayActionImpl', () => {
       ).rejects.toThrow('temporarily unavailable');
 
       expect(internalDispatchTopic).not.toHaveBeenCalled();
+    });
+
+    it('clears the marker and returns a terminal error after three failed status confirmations', async () => {
+      const topicDataMap = {
+        [topicMapKey({ agentId: 'agent-1' })]: {
+          items: [
+            {
+              id: 'topic-1',
+              metadata: { runningOperation: { operationId: 'server-op-1' } },
+            },
+          ],
+        },
+      };
+      const { action, internalDispatchTopic } = createReconnectTestAction(
+        { createdAt: 1, id: 'ast-1' },
+        [],
+        topicDataMap,
+      );
+      vi.mocked(aiAgentService.refreshGatewayToken).mockRejectedValue({
+        data: { code: 'NOT_FOUND' },
+      });
+      vi.mocked(aiAgentService.getOperationStatus).mockRejectedValue(new Error('offline'));
+      const reconnect = () =>
+        action.reconnectToGatewayOperation({
+          agentId: 'agent-1',
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        });
+
+      await expect(reconnect()).rejects.toThrow('temporarily unavailable');
+      await expect(reconnect()).rejects.toThrow('temporarily unavailable');
+      await expect(reconnect()).rejects.toThrow('could not be confirmed after 3 attempts');
+
+      expect(internalDispatchTopic).toHaveBeenCalledWith({
+        id: 'topic-1',
+        type: 'updateTopic',
+        value: { metadata: { runningOperation: null } },
+      });
     });
 
     it.each([

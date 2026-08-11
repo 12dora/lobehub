@@ -1,4 +1,5 @@
 import type { ToolExecuteData } from '@lobechat/agent-gateway-client';
+import { LocalSystemIdentifier } from '@lobechat/builtin-tool-local-system';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ClientToolExecutionActionImpl } from '../transports/client/clientToolExecution';
@@ -39,7 +40,7 @@ function makeData(overrides: Partial<ToolExecuteData> = {}): ToolExecuteData {
     apiName: 'readFile',
     arguments: '{"path":"/tmp/a.txt"}',
     executionTimeoutMs: 60_000,
-    identifier: 'local-system',
+    identifier: LocalSystemIdentifier,
     toolCallId: 'call_1',
     ...overrides,
   };
@@ -95,6 +96,7 @@ beforeEach(() => {
   invokeExecutorMock.mockReset();
   invokeMcpToolCallMock.mockReset();
   resolveEffectiveWorkingDirectoryMock.mockReset();
+  resolveEffectiveWorkingDirectoryMock.mockReturnValue('/workspace');
 });
 
 // ─── Tests ───
@@ -122,7 +124,7 @@ describe('internal_executeClientTool', () => {
         undefined,
       );
       expect(invokeExecutorMock).toHaveBeenCalledWith(
-        'local-system',
+        LocalSystemIdentifier,
         'readFile',
         { path: '/tmp/a.txt' },
         expect.objectContaining({
@@ -133,23 +135,41 @@ describe('internal_executeClientTool', () => {
       );
     });
 
-    it('fails closed when the operation cannot be mapped to a topic', async () => {
+    it('refuses filesystem execution when the operation cannot be mapped to a workspace', async () => {
       hasExecutorMock.mockReturnValue(true);
       invokeExecutorMock.mockResolvedValue({ content: 'ok', success: true });
-      const { action, state } = setup();
+      const { action, sendToolResult, state } = setup();
       state.activeTopicId = 'topic-a';
       delete state.operations['op-1'];
 
       await action.internal_executeClientTool(makeData(), { operationId: 'op-1' });
 
       expect(resolveEffectiveWorkingDirectoryMock).not.toHaveBeenCalled();
-      expect(invokeExecutorMock).toHaveBeenCalledWith(
-        'local-system',
-        'readFile',
-        { path: '/tmp/a.txt' },
+      expect(invokeExecutorMock).not.toHaveBeenCalled();
+      expect(sendToolResult).toHaveBeenCalledWith(
         expect.objectContaining({
-          topicId: undefined,
-          workingDirectory: undefined,
+          error: expect.objectContaining({ type: 'filesystem_scope_unavailable' }),
+          success: false,
+        }),
+      );
+    });
+
+    it('refuses filesystem execution when reconnect has no operation agent identity', async () => {
+      hasExecutorMock.mockReturnValue(true);
+      resolveEffectiveWorkingDirectoryMock.mockReturnValue('/workspace-from-topic');
+      const { action, sendToolResult, state } = setup();
+      delete state.operations['op-1'].context.agentId;
+
+      await action.internal_executeClientTool(makeData(), {
+        operationId: 'op-1',
+        topicId: 'topic-1',
+      });
+
+      expect(invokeExecutorMock).not.toHaveBeenCalled();
+      expect(sendToolResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.objectContaining({ type: 'filesystem_scope_unavailable' }),
+          success: false,
         }),
       );
     });
@@ -166,7 +186,7 @@ describe('internal_executeClientTool', () => {
       await action.internal_executeClientTool(makeData(), { operationId: 'op-1' });
 
       expect(invokeExecutorMock).toHaveBeenCalledWith(
-        'local-system',
+        LocalSystemIdentifier,
         'readFile',
         { path: '/tmp/a.txt' },
         expect.objectContaining({
@@ -215,7 +235,7 @@ describe('internal_executeClientTool', () => {
       });
 
       expect(invokeExecutorMock).toHaveBeenCalledWith(
-        'local-system',
+        LocalSystemIdentifier,
         'readFile',
         {},
         expect.anything(),
@@ -243,7 +263,7 @@ describe('internal_executeClientTool', () => {
       });
 
       expect(invokeExecutorMock).toHaveBeenCalledWith(
-        'local-system',
+        LocalSystemIdentifier,
         'readFile',
         { path: '/tmp/a.txt' },
         expect.objectContaining({ platformSkillSnapshot }),

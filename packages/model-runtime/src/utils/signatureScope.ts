@@ -19,6 +19,7 @@ const SIGNATURE_SCOPE_FINGERPRINT_LENGTH = 32;
  * cannot leak into provider SDKs through an options spread.
  */
 const runtimeSignatureScopeSources = new WeakMap<object, SignatureScopeSource>();
+const runtimesWithoutSignatureScopeChannel = new WeakSet<object>();
 
 const createFingerprint = async (identityParts: string[]) => {
   const digest = await crypto.subtle.digest(
@@ -37,6 +38,13 @@ export const setRuntimeSignatureScopeSource = (runtime: object, source: Signatur
 
 export const getRuntimeSignatureScopeSource = (runtime: object) =>
   runtimeSignatureScopeSources.get(runtime);
+
+export const markRuntimeWithoutSignatureScopeChannel = (runtime: object) => {
+  runtimesWithoutSignatureScopeChannel.add(runtime);
+};
+
+export const isRuntimeWithoutSignatureScopeChannel = (runtime: object) =>
+  runtimesWithoutSignatureScopeChannel.has(runtime);
 
 /**
  * Derive a stable channel identifier without persisting credentials or endpoint secrets.

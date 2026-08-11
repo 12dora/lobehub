@@ -162,7 +162,9 @@ export interface ChatTopicMetadata {
    * Used to reconnect WebSocket after page reload.
    */
   runningOperation?: {
+    agentId?: string;
     assistantMessageId: string;
+    groupId?: string;
     /**
      * Serialized lifecycle hooks (onComplete / onError) registered for this run.
      *

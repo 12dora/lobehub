@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import debug from 'debug';
 import type { AiFullModelCard, AiModelType } from 'model-bank';
-import { LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
+import { LOBE_DEFAULT_MODEL_LIST, ModelProvider } from 'model-bank';
 import type { ClientOptions } from 'openai';
 import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
@@ -46,7 +46,7 @@ import type {
   PollVideoStatusResult,
 } from '../../types/video';
 import { AgentRuntimeError } from '../../utils/createError';
-import { debugResponse, debugStream } from '../../utils/debugStream';
+import { debugResponse, debugStream, serializeDebugPayload } from '../../utils/debugStream';
 import { desensitizeUrl } from '../../utils/desensitizeUrl';
 import { getModelPropertyWithFallback } from '../../utils/getFallbackModelProperty';
 import { getModelPricing } from '../../utils/getModelPricing';
@@ -66,6 +66,7 @@ import {
   createSignatureChannelId,
   createSignatureScope,
   getRuntimeSignatureScopeSource,
+  isRuntimeWithoutSignatureScopeChannel,
 } from '../../utils/signatureScope';
 import type { LobeRuntimeAI } from '../BaseAI';
 import { normalizeToolsParameters } from '../contextBuilders/normalizeToolSchema';
@@ -401,28 +402,34 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
       protocol: 'chat_completions' | 'responses',
     ) {
       const runtimeSource = getRuntimeSignatureScopeSource(this);
-      let directChannelId: string | undefined;
-      if (!runtimeSource) {
-        if (this.subscriptionChannelId) {
-          directChannelId = await this.subscriptionChannelId;
-        } else if (this._options.apiKey) {
-          directChannelId = await createSignatureChannelId(this.baseURL, this._options.apiKey);
-        }
-      }
+      const subscriptionChannelId = this.subscriptionChannelId
+        ? await this.subscriptionChannelId
+        : undefined;
+      const suppressDirectChannel =
+        isRuntimeWithoutSignatureScopeChannel(this) || provider === ModelProvider.Azure;
+      const directChannelId =
+        !subscriptionChannelId && !runtimeSource && !suppressDirectChannel && this._options.apiKey
+          ? await createSignatureChannelId(this.baseURL, this._options.apiKey)
+          : undefined;
 
       return createSignatureScope({
         kind,
         model,
         protocol,
-        source:
-          runtimeSource ??
-          (directChannelId
-            ? {
-                apiType: 'openai',
-                channelId: directChannelId,
-                provider: this.id,
-              }
-            : undefined),
+        source: subscriptionChannelId
+          ? {
+              apiType: 'chatgpt',
+              channelId: subscriptionChannelId,
+              provider: this.id,
+            }
+          : (runtimeSource ??
+            (directChannelId
+              ? {
+                  apiType: 'openai',
+                  channelId: directChannelId,
+                  provider: this.id,
+                }
+              : undefined)),
       });
     }
 
@@ -1536,7 +1543,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         // eslint-disable-next-line no-console
         console.log('[requestPayload]');
         // eslint-disable-next-line no-console
-        console.log(JSON.stringify(requestPayload), '\n');
+        console.log(serializeDebugPayload(requestPayload), '\n');
       }
 
       log('sending responses.create request');

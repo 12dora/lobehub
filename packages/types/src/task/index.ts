@@ -385,7 +385,9 @@ export interface TaskDetailActivity {
    * a Gateway WebSocket reconnection without a separate topic lookup.
    */
   runningOperation?: {
+    agentId?: string;
     assistantMessageId: string;
+    groupId?: string;
     operationId: string;
     scope?: string;
     threadId?: string | null;

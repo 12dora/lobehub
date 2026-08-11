@@ -15,7 +15,7 @@ import { AnthropicStream, OpenAIResponsesStream, OpenAIStream } from '../../core
 import { type ChatMethodOptions, type ChatStreamPayload } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { AgentRuntimeError } from '../../utils/createError';
-import { debugResponse, debugStream } from '../../utils/debugStream';
+import { debugResponse, debugStream, serializeDebugPayload } from '../../utils/debugStream';
 import { getModelPricing } from '../../utils/getModelPricing';
 import { StreamingResponse } from '../../utils/response';
 import { assertToolLimits } from '../../utils/validateToolLimits';
@@ -313,7 +313,7 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
           // eslint-disable-next-line no-console
           console.log('[requestPayload]');
           // eslint-disable-next-line no-console
-          console.log(JSON.stringify(responsePayload), '\n');
+          console.log(serializeDebugPayload(responsePayload), '\n');
         }
 
         const response = await client.responses.create(responsePayload, {

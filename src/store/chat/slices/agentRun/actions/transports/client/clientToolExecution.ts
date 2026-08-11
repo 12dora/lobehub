@@ -1,4 +1,5 @@
 import { type ToolExecuteData, type ToolResultMessage } from '@lobechat/agent-gateway-client';
+import { LocalSystemIdentifier } from '@lobechat/builtin-tool-local-system';
 import { type BuiltinToolContext } from '@lobechat/types';
 import debug from 'debug';
 import { produce } from 'immer';
@@ -142,6 +143,33 @@ export class ClientToolExecutionActionImpl {
 
       // ─── Builtin dispatch (via registry) ───
       if (hasExecutor(identifier, apiName)) {
+        const workingDirectory = operationTopicId
+          ? resolveEffectiveWorkingDirectory(
+              this.#get(),
+              operationTopicId,
+              operationAgentId,
+              operationGroupId,
+            )
+          : undefined;
+
+        // The server has already completed its intervention decision before a
+        // client executor receives tool_execute, so this layer cannot safely
+        // synthesize a new approval request. Refuse filesystem execution when
+        // the operation identity cannot resolve a trusted working directory.
+        if (identifier === LocalSystemIdentifier && (!operationAgentId || !workingDirectory)) {
+          send({
+            content: null,
+            error: {
+              message:
+                'Filesystem tool execution was refused because the operation workspace could not be determined. Reconnect the operation and approve the tool again.',
+              type: 'filesystem_scope_unavailable',
+            },
+            success: false,
+            toolCallId,
+          });
+          return;
+        }
+
         const ctx: BuiltinToolContext = {
           agentId: operationAgentId,
           documentId: operation?.context?.documentId,
@@ -155,18 +183,7 @@ export class ClientToolExecutionActionImpl {
           signal: operation?.abortController?.signal,
           sourceMessageId: operation?.context?.messageId,
           topicId: operationTopicId ?? undefined,
-          // A missing operation→topic mapping is security-sensitive: do not
-          // fall back to the active topic/agent. `undefined` makes filesystem
-          // tools treat the directory as outside the trusted topic scope and
-          // request approval.
-          workingDirectory: operationTopicId
-            ? resolveEffectiveWorkingDirectory(
-                this.#get(),
-                operationTopicId,
-                operationAgentId,
-                operationGroupId,
-              )
-            : undefined,
+          workingDirectory,
         };
 
         log('[ClientToolCall] execute:start', {

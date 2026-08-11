@@ -5,7 +5,9 @@ import { useChatStore } from '@/store/chat';
 import { useServerConfigStore } from '@/store/serverConfig';
 
 interface RunningOperation {
+  agentId?: string;
   assistantMessageId: string;
+  groupId?: string;
   operationId: string;
   scope?: string;
   threadId?: string | null;
@@ -28,6 +30,7 @@ interface RunningOperation {
 export const useGatewayReconnect = (
   topicId: string | null | undefined,
   runningOperation: RunningOperation | null | undefined,
+  identity?: { agentId?: string; groupId?: string },
 ) => {
   const agentGatewayUrl = useServerConfigStore((s) => s.serverConfig.agentGatewayUrl);
 
@@ -39,7 +42,9 @@ export const useGatewayReconnect = (
       if (!runningOperation || !topicId) return;
 
       await useChatStore.getState().reconnectToGatewayOperation({
+        agentId: runningOperation.agentId ?? identity?.agentId,
         assistantMessageId: runningOperation.assistantMessageId,
+        groupId: runningOperation.groupId ?? identity?.groupId,
         operationId: runningOperation.operationId,
         scope: runningOperation.scope,
         threadId: runningOperation.threadId,

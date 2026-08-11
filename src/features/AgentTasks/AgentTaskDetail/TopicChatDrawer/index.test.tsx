@@ -5,6 +5,8 @@ import { render } from '@testing-library/react';
 import type { CSSProperties, ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useGatewayReconnect } from '@/hooks/useGatewayReconnect';
+
 import TopicChatDrawer from './index';
 
 const mocks = vi.hoisted(() => ({
@@ -226,14 +228,31 @@ describe('TopicChatDrawer', () => {
     mocks.chatState.replaceMessages.mockClear();
     mocks.taskState.closeTopicDrawer.mockClear();
     mocks.taskState.activeTopicDrawerTopicId = 'topic-1';
+    delete (mocks.taskState.taskDetailMap['T-1'].activities[0] as any).runningOperation;
     mocks.permission.allowed = true;
     mocks.serverConfigState.serverConfig.enableBusinessFeatures = false;
+    vi.mocked(useGatewayReconnect).mockClear();
   });
 
   it('hydrates the task assignee agent config for drawer messages', () => {
     render(<TopicChatDrawer />);
 
     expect(mocks.agentState.useHydrateAgentConfig).toHaveBeenCalledWith(true, 'agt_assignee');
+  });
+
+  it('reconnects the drawer operation with the task assignee identity', () => {
+    const activity = mocks.taskState.taskDetailMap['T-1'].activities[0] as any;
+    activity.runningOperation = {
+      assistantMessageId: 'ast-1',
+      operationId: 'op-1',
+    };
+
+    render(<TopicChatDrawer />);
+
+    expect(useGatewayReconnect).toHaveBeenCalledWith('topic-1', activity.runningOperation, {
+      agentId: 'agt_assignee',
+      groupId: undefined,
+    });
   });
 
   it('disables topic sharing for workspace viewers', () => {

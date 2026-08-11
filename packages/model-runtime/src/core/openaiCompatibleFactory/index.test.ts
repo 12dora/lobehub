@@ -1631,6 +1631,30 @@ describe('LobeOpenAICompatibleFactory', () => {
         convertSpy.mockRestore();
       });
 
+      it('should suppress reasoning scope for the Azure Responses path', async () => {
+        const Runtime = createOpenAICompatibleRuntime({
+          baseURL: 'https://example.openai.azure.com/openai',
+          chatCompletion: { useResponse: true },
+          provider: ModelProvider.Azure,
+        });
+        const convertSpy = vi
+          .spyOn(openaiHelpers, 'convertOpenAIResponseInputs')
+          .mockRejectedValueOnce(new Error('stop after scope capture'));
+
+        await expect(
+          new Runtime({ apiKey: 'azure-key' }).chat({
+            messages: [{ content: 'hi', role: 'user' }],
+            model: 'gpt-5',
+            temperature: 0,
+          }),
+        ).rejects.toThrow('stop after scope capture');
+
+        expect(convertSpy).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ reasoningSignatureScope: undefined }),
+        );
+      });
+
       it('should keep OpenRouter OpenAI slugs on chat completions for provider payload normalization', async () => {
         const LobeMockOpenRouter = createOpenAICompatibleRuntime({
           baseURL: 'https://openrouter.ai/api/v1',

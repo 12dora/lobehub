@@ -39,6 +39,7 @@ import { isNonRetryableRequestError } from '../../utils/isNonRetryableRequestErr
 import type { ModelIdMappingOptions } from '../../utils/modelIdMapping';
 import { postProcessModelList } from '../../utils/postProcessModelList';
 import { safeParseJSON } from '../../utils/safeParseJSON';
+import { markRuntimeWithoutSignatureScopeChannel } from '../../utils/signatureScope';
 import type { LobeRuntimeAI } from '../BaseAI';
 import type {
   CreateImageOptions,
@@ -475,6 +476,10 @@ export const createRouterRuntime = ({
           ? (router.runtime ?? baseRuntimeMap[resolvedApiType] ?? LobeOpenAI)
           : (baseRuntimeMap[resolvedApiType] ?? LobeOpenAI);
       const runtime: LobeRuntimeAI = new providerAI({ ...finalOptions, id: this._id });
+      // RouterRuntime can switch channel between attempts, but the child runtime
+      // has no authenticated channel provenance of its own. Explicitly suppress
+      // reasoning-state persistence instead of fingerprinting merged options.
+      markRuntimeWithoutSignatureScopeChannel(runtime);
 
       if (this._id === 'lobehub') {
         timing(
