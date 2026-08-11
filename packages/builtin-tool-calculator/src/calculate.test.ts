@@ -1,3 +1,4 @@
+// @ts-ignore - nerdamer doesn't have TypeScript definitions
 import nerdamer from 'nerdamer-prime/all';
 import { describe, expect, it, vi } from 'vitest';
 

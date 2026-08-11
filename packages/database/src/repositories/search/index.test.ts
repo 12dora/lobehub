@@ -1627,6 +1627,92 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
     });
   });
 
+  describe('search - saturated scoped recall', () => {
+    const insertMessagesInBatches = async (
+      rows: Array<typeof messages.$inferInsert>,
+      batchSize = 5000,
+    ) => {
+      for (let offset = 0; offset < rows.length; offset += batchSize) {
+        await serverDB.insert(messages).values(rows.slice(offset, offset + batchSize));
+      }
+    };
+
+    it('returns personal hits beyond a saturated workspace-heavy candidate pool', async () => {
+      const workspaceId = 'search-recall-workspace';
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Search Recall Workspace',
+        primaryOwnerId: userId,
+        slug: 'search-recall-workspace',
+      });
+
+      await insertMessagesInBatches([
+        ...Array.from({ length: 501 }, () => ({
+          content: 'scopedrecalltoken '.repeat(20),
+          role: 'user' as const,
+          userId,
+          workspaceId,
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          content: `scopedrecalltoken personal ${index}`,
+          role: 'user' as const,
+          userId,
+          workspaceId: null,
+        })),
+      ]);
+
+      const results = await searchRepo.search({
+        limitPerType: 3,
+        query: 'scopedrecalltoken',
+        type: 'message',
+      });
+
+      expect(results).toHaveLength(3);
+      expect(results.every((result) => result.title.includes('personal'))).toBe(true);
+    });
+
+    it('returns agent hits beyond a saturated 20k agent candidate pool', async () => {
+      const insertedAgents = await serverDB
+        .insert(agents)
+        .values([
+          { title: 'Recall Target Agent', userId },
+          { title: 'Recall Competing Agent', userId },
+        ])
+        .returning({ id: agents.id, title: agents.title });
+      const targetAgentId = insertedAgents.find((agent) => agent.title?.includes('Target'))!.id;
+      const competingAgentId = insertedAgents.find((agent) =>
+        agent.title?.includes('Competing'),
+      )!.id;
+
+      await insertMessagesInBatches([
+        ...Array.from({ length: 20_001 }, () => ({
+          agentId: competingAgentId,
+          content: 'agentrecalltoken '.repeat(20),
+          role: 'user' as const,
+          userId,
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          agentId: targetAgentId,
+          content: `agentrecalltoken target ${index}`,
+          role: 'user' as const,
+          userId,
+        })),
+      ]);
+
+      const results = await searchRepo.search({
+        agentId: targetAgentId,
+        limitPerType: 3,
+        query: 'agentrecalltoken',
+        type: 'message',
+      });
+
+      expect(results).toHaveLength(3);
+      expect(
+        results.every((result) => result.type === 'message' && result.agentId === targetAgentId),
+      ).toBe(true);
+    }, 120_000);
+  });
+
   // The workspace-scoping tests above pin *results*, and this change is
   // deliberately result-neutral — they pass against the pre-fix implementation
   // too. What actually fixes LOBE-12379 is the *shape* of the emitted SQL, so
@@ -1672,12 +1758,14 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
       return captured.filter(({ sql }) => sql.includes('@@@'));
     };
 
-    /** Body of the first parenthesised subquery, i.e. the isolated BM25 scan. */
-    const innerScanOf = (query: string): string | undefined => {
-      const open = query.indexOf('from (');
+    /** Body of a named CTE (or legacy FROM subquery), i.e. the isolated BM25 scan. */
+    const innerScanOf = (query: string, alias: string): string | undefined => {
+      const cteMarker = `"${alias}" as (`;
+      const cteOpen = query.indexOf(cteMarker);
+      const open = cteOpen === -1 ? query.indexOf('from (') : cteOpen + cteMarker.length - 1;
       if (open === -1) return undefined;
 
-      const start = open + 'from ('.length;
+      const start = open + (cteOpen === -1 ? 'from ('.length : 1);
       let depth = 1;
       for (let i = start; i < query.length; i++) {
         if (query[i] === '(') depth++;
@@ -1691,7 +1779,7 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
       const statement = statements.find(({ sql }) => sql.includes(`"${alias}"`));
       expect(statement, `no statement produced the ${alias} subquery`).toBeDefined();
 
-      const scan = innerScanOf(statement!.sql);
+      const scan = innerScanOf(statement!.sql, alias);
       expect(scan, `${alias}: BM25 scan is not isolated in a subquery`).toBeDefined();
 
       return scan!;
@@ -1787,7 +1875,9 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
         expect(statement.sql).toContain(`"${alias}"."agent_id" = `);
 
         // and the pool deepens so small agents survive the lifted filter
-        expect(statement.params, `${alias}: agent-scoped scan pool`).toContain(20_000);
+        // The scan asks for one marker row beyond the 20k base pool so the
+        // outer query can distinguish saturation without another round-trip.
+        expect(statement.params, `${alias}: agent-scoped scan pool`).toContain(20_001);
       }
     });
   });

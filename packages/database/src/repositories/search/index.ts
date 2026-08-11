@@ -260,19 +260,23 @@ const AGENT_SCOPE_CANDIDATE_POOL = 20_000;
  * adversarial mix (5k high-scoring workspace rows vs 20 low-scoring personal
  * ones) returned 0 of 12 rows.
  *
- * A generous pool is what makes that a non-issue, and it is measurably free:
- * once the scan is TopN, the pool size barely registers (same dataset, full
- * payload: 60 rows → 0.53s, 1000 → 0.46s, 2000 → 0.46s). The tantivy scan
+ * A generous initial pool keeps the common path to one round-trip, while the
+ * saturation marker + iterative deepening below makes the adversarial case
+ * exact. Once the scan is TopN, the pool size barely registers (same dataset,
+ * full payload: 60 rows → 0.53s, 1000 → 0.46s, 2000 → 0.46s). The tantivy scan
  * dominates; the extra heap fetches do not.
  */
 const WORKSPACE_FILTER_MIN_CANDIDATES = 500;
+
+/** Growth factor for a saturated scoped BM25 candidate pool. */
+const SCOPED_CANDIDATE_GROWTH_FACTOR = 4;
 
 /**
  * Flip to `true` once every BM25 index used by this repo carries `workspace_id`
  * as a fast keyword field (LOBE-12381). pg_search then pushes `workspace_id IS
  * NULL` down as `must_not: exists(workspace_id)` and `workspace_id = ?` as a
  * `term`, so the ownership predicate can stay inline and personal search becomes
- * exact again (no candidate over-fetch, no dropped rows) while workspace-mode
+ * single-pass again (no candidate over-fetch) while workspace-mode
  * search gets TopN for free.
  */
 const WORKSPACE_ID_IN_BM25_INDEX = false;
@@ -282,6 +286,10 @@ interface WorkspaceScopedColumns {
   visibility?: AnyPgColumn;
   workspaceId: AnyPgColumn;
 }
+
+type MatchedScopedRow<T, K extends keyof T> = Omit<T, 'candidateCount'> & {
+  [P in K]-?: NonNullable<T[P]>;
+};
 
 /**
  * Search Repository - provides unified search across Agents, Topics, and Files
@@ -347,15 +355,54 @@ export class SearchRepo {
   }
 
   /**
-   * Candidate pool for the inner scan. When the workspace filter is lifted, rows
-   * dropped above the scan would otherwise shrink the result set, so over-fetch.
-   * Personal search stays exact unless more than `WORKSPACE_FILTER_MIN_CANDIDATES`
-   * of the account's workspace rows outscore its personal matches.
+   * Initial candidate pool for the inner scan. When the workspace filter is
+   * lifted, rows dropped above the scan would otherwise shrink the result set,
+   * so over-fetch. `deepenScopedCandidates` expands a saturated pool until the
+   * requested scoped result set is filled or the entire match set is exhausted.
    */
   private scanCandidateLimit(limit: number) {
     if (!this.liftsWorkspaceFilter) return limit;
 
     return Math.max(limit * WORKSPACE_FILTER_CANDIDATE_MULTIPLIER, WORKSPACE_FILTER_MIN_CANDIDATES);
+  }
+
+  /**
+   * Re-run a scoped TopN scan only when its outer filter came up short and the
+   * inner candidate pool was actually saturated. Callers request `pool + 1`
+   * rows and report that CTE's count, so an exact saturation signal is
+   * available in the same round-trip even when every candidate is filtered out.
+   */
+  private async deepenScopedCandidates<T>(
+    initialCandidateLimit: number,
+    requiredRows: number,
+    run: (scanLimit: number) => Promise<{ candidateCount: number; rows: T[] }>,
+  ): Promise<T[]> {
+    let candidateLimit = initialCandidateLimit;
+
+    while (true) {
+      const { candidateCount, rows } = await run(candidateLimit + 1);
+      if (rows.length >= requiredRows || candidateCount <= candidateLimit) return rows;
+
+      candidateLimit *= SCOPED_CANDIDATE_GROWTH_FACTOR;
+    }
+  }
+
+  /** Remove the count-only sentinel and restore source-column nullability. */
+  private unpackScopedRows<
+    T extends { candidateCount: number; id: string | null },
+    K extends keyof T,
+  >(rawRows: T[], ..._matchedColumns: K[]) {
+    const rows = rawRows
+      .filter((row) => row.id !== null)
+      .map(({ candidateCount: _, ...row }) => row);
+
+    // A non-null hit id means the RIGHT JOIN matched the CTE row. The columns
+    // named by each caller come from that same source row and retain their
+    // schema-level NOT NULL guarantee; Drizzle cannot express that correlation.
+    return {
+      candidateCount: rawRows[0]?.candidateCount ?? 0,
+      rows: rows as MatchedScopedRow<T, K>[],
+    };
   }
 
   /**
@@ -541,48 +588,62 @@ export class SearchRepo {
   private async searchAgents(query: string, limit: number): Promise<AgentSearchResult[]> {
     const bm25Query = sanitizeBm25Query(query);
 
-    const hits = this.db
-      .select({
-        avatar: agents.avatar,
-        backgroundColor: agents.backgroundColor,
-        createdAt: agents.createdAt,
-        description: agents.description,
-        id: agents.id,
-        score: sql<number>`paradedb.score(${agents.id})`.as('score'),
-        slug: agents.slug,
-        tags: agents.tags,
-        title: agents.title,
-        updatedAt: agents.updatedAt,
-        workspaceId: agents.workspaceId,
-      })
-      .from(agents)
-      .where(
-        and(
-          this.scanScopeWhere(agents),
-          sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query} OR ${agents.slug} @@@ ${bm25Query} OR ${agents.tags} @@@ ${bm25Query} OR ${agents.systemRole} @@@ ${bm25Query})`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${agents.id}) DESC`)
-      .limit(this.scanCandidateLimit(limit))
-      .as('agent_hits');
+    const rows = await this.deepenScopedCandidates(
+      this.scanCandidateLimit(limit),
+      limit,
+      async (scanLimit) => {
+        const hits = this.db.$with('agent_hits').as(
+          this.db
+            .select({
+              avatar: agents.avatar,
+              backgroundColor: agents.backgroundColor,
+              createdAt: agents.createdAt,
+              description: agents.description,
+              id: agents.id,
+              score: sql<number>`paradedb.score(${agents.id})`.as('score'),
+              slug: agents.slug,
+              tags: agents.tags,
+              title: agents.title,
+              updatedAt: agents.updatedAt,
+              workspaceId: agents.workspaceId,
+            })
+            .from(agents)
+            .where(
+              and(
+                this.scanScopeWhere(agents),
+                sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query} OR ${agents.slug} @@@ ${bm25Query} OR ${agents.tags} @@@ ${bm25Query} OR ${agents.systemRole} @@@ ${bm25Query})`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${agents.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('agent_hit_count');
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            avatar: hits.avatar,
+            backgroundColor: hits.backgroundColor,
+            candidateCount: candidateCount.value,
+            createdAt: hits.createdAt,
+            description: hits.description,
+            id: hits.id,
+            score: hits.score,
+            slug: hits.slug,
+            tags: hits.tags,
+            title: hits.title,
+            updatedAt: hits.updatedAt,
+          })
+          .from(hits)
+          .rightJoin(candidateCount, this.liftedScopeWhere(hits.workspaceId) ?? sql`true`)
+          .orderBy(desc(hits.score))
+          .limit(limit);
 
-    const rows = await this.db
-      .select({
-        avatar: hits.avatar,
-        backgroundColor: hits.backgroundColor,
-        createdAt: hits.createdAt,
-        description: hits.description,
-        id: hits.id,
-        score: hits.score,
-        slug: hits.slug,
-        tags: hits.tags,
-        title: hits.title,
-        updatedAt: hits.updatedAt,
-      })
-      .from(hits)
-      .where(this.liftedScopeWhere(hits.workspaceId))
-      .orderBy(desc(hits.score))
-      .limit(limit);
+        return this.unpackScopedRows(rawRows, 'createdAt', 'id', 'score', 'updatedAt');
+      },
+    );
 
     return this.mapScoresToRelevance(rows).map((row) => {
       const meta = normalizeInboxAgentMeta(
@@ -618,72 +679,89 @@ export class SearchRepo {
 
     const candidateLimit = limit * RECENCY_CANDIDATE_MULTIPLIER;
 
-    const hits = this.db
-      .select({
-        agentId: topics.agentId,
-        content: topics.content,
-        createdAt: topics.createdAt,
-        favorite: topics.favorite,
-        groupId: topics.groupId,
-        id: topics.id,
-        score: sql<number>`paradedb.score(${topics.id})`.as('score'),
-        sessionId: topics.sessionId,
-        title: topics.title,
-        updatedAt: topics.updatedAt,
-        workspaceId: topics.workspaceId,
-      })
-      .from(topics)
-      .where(
-        and(
-          this.scanScopeWhere(topics),
-          agentId && !this.liftsAgentFilter ? eq(topics.agentId, agentId) : undefined,
-          sql`(${topics.title} @@@ ${bm25Query} OR ${topics.content} @@@ ${bm25Query} OR ${topics.description} @@@ ${bm25Query})`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${topics.id}) DESC`)
-      // `agent_id` is not a BM25 field, so where the scan's score order is real
-      // its filter lives above the scan and the pool deepens to compensate. See
-      // the scan-shape invariant and `liftsAgentFilter` above.
-      .limit(
-        agentId && this.liftsAgentFilter
-          ? AGENT_SCOPE_CANDIDATE_POOL
-          : this.scanCandidateLimit(candidateLimit),
-      )
-      .as('topic_hits');
+    const initialCandidateLimit =
+      agentId && this.liftsAgentFilter
+        ? AGENT_SCOPE_CANDIDATE_POOL
+        : this.scanCandidateLimit(candidateLimit);
 
-    const rows = await this.db
-      .select({
-        // agents.id is selected as a sentinel: non-null only when the JOIN
-        // matched an agent owned by this user. Topics carrying an agentId
-        // that points to another user's agent (possible via migrated/crafted
-        // data) yield null here, so the renderer falls back to the
-        // agent-less subtitle and never surfaces foreign metadata.
-        agentAvatar: agents.avatar,
-        agentBackgroundColor: agents.backgroundColor,
-        agentId: hits.agentId,
-        agentMatchedId: agents.id,
-        agentSlug: agents.slug,
-        agentTitle: agents.title,
-        content: hits.content,
-        createdAt: hits.createdAt,
-        favorite: hits.favorite,
-        groupId: hits.groupId,
-        id: hits.id,
-        score: hits.score,
-        sessionId: hits.sessionId,
-        title: hits.title,
-        updatedAt: hits.updatedAt,
-      })
-      .from(hits)
-      .leftJoin(agents, and(eq(hits.agentId, agents.id), buildWorkspaceWhere(this.scope, agents)))
-      .where(
-        and(
-          this.liftedScopeWhere(hits.workspaceId),
-          agentId ? eq(hits.agentId, agentId) : undefined,
-        ),
-      )
-      .orderBy(desc(hits.score))
-      .limit(candidateLimit);
+    const rows = await this.deepenScopedCandidates(
+      initialCandidateLimit,
+      candidateLimit,
+      async (scanLimit) => {
+        const hits = this.db.$with('topic_hits').as(
+          this.db
+            .select({
+              agentId: topics.agentId,
+              content: topics.content,
+              createdAt: topics.createdAt,
+              favorite: topics.favorite,
+              groupId: topics.groupId,
+              id: topics.id,
+              score: sql<number>`paradedb.score(${topics.id})`.as('score'),
+              sessionId: topics.sessionId,
+              title: topics.title,
+              updatedAt: topics.updatedAt,
+              workspaceId: topics.workspaceId,
+            })
+            .from(topics)
+            .where(
+              and(
+                this.scanScopeWhere(topics),
+                agentId && !this.liftsAgentFilter ? eq(topics.agentId, agentId) : undefined,
+                sql`(${topics.title} @@@ ${bm25Query} OR ${topics.content} @@@ ${bm25Query} OR ${topics.description} @@@ ${bm25Query})`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${topics.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('topic_hit_count');
+
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            candidateCount: candidateCount.value,
+            // agents.id is selected as a sentinel: non-null only when the JOIN
+            // matched an agent owned by this user. Topics carrying an agentId
+            // that points to another user's agent (possible via migrated/crafted
+            // data) yield null here, so the renderer falls back to the
+            // agent-less subtitle and never surfaces foreign metadata.
+            agentAvatar: agents.avatar,
+            agentBackgroundColor: agents.backgroundColor,
+            agentId: hits.agentId,
+            agentMatchedId: agents.id,
+            agentSlug: agents.slug,
+            agentTitle: agents.title,
+            content: hits.content,
+            createdAt: hits.createdAt,
+            favorite: hits.favorite,
+            groupId: hits.groupId,
+            id: hits.id,
+            score: hits.score,
+            sessionId: hits.sessionId,
+            title: hits.title,
+            updatedAt: hits.updatedAt,
+          })
+          .from(hits)
+          .rightJoin(
+            candidateCount,
+            and(
+              this.liftedScopeWhere(hits.workspaceId),
+              agentId ? eq(hits.agentId, agentId) : undefined,
+            ) ?? sql`true`,
+          )
+          .leftJoin(
+            agents,
+            and(eq(hits.agentId, agents.id), buildWorkspaceWhere(this.scope, agents)),
+          )
+          .orderBy(desc(hits.score))
+          .limit(candidateLimit);
+
+        return this.unpackScopedRows(rawRows, 'createdAt', 'id', 'score', 'updatedAt');
+      },
+    );
 
     return this.mapScoresToRelevance(rows)
       .map((row) => ({
@@ -727,65 +805,79 @@ export class SearchRepo {
 
     const candidateLimit = limit * RECENCY_CANDIDATE_MULTIPLIER;
 
-    const hits = this.db
-      .select({
-        agentId: messages.agentId,
-        content: messages.content,
-        createdAt: messages.createdAt,
-        groupId: messages.groupId,
-        id: messages.id,
-        model: messages.model,
-        role: messages.role,
-        score: sql<number>`paradedb.score(${messages.id})`.as('score'),
-        topicId: messages.topicId,
-        updatedAt: messages.updatedAt,
-        workspaceId: messages.workspaceId,
-      })
-      .from(messages)
-      .where(
-        and(
-          this.scanScopeWhere(messages),
-          ne(messages.role, 'tool'),
-          agentId && !this.liftsAgentFilter ? eq(messages.agentId, agentId) : undefined,
-          sql`${messages.content} @@@ ${bm25Query}`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${messages.id}) DESC`)
-      // `agent_id` is not a BM25 field, so where the scan's score order is real
-      // its filter lives above the scan and the pool deepens to compensate. See
-      // the scan-shape invariant and `liftsAgentFilter` above.
-      .limit(
-        agentId && this.liftsAgentFilter
-          ? AGENT_SCOPE_CANDIDATE_POOL
-          : this.scanCandidateLimit(candidateLimit),
-      )
-      .as('message_hits');
+    const initialCandidateLimit =
+      agentId && this.liftsAgentFilter
+        ? AGENT_SCOPE_CANDIDATE_POOL
+        : this.scanCandidateLimit(candidateLimit);
 
-    const rows = await this.db
-      .select({
-        agentId: hits.agentId,
-        agentSlug: agents.slug,
-        agentTitle: agents.title,
-        content: hits.content,
-        createdAt: hits.createdAt,
-        groupId: hits.groupId,
-        id: hits.id,
-        model: hits.model,
-        role: hits.role,
-        score: hits.score,
-        topicId: hits.topicId,
-        updatedAt: hits.updatedAt,
-      })
-      .from(hits)
-      .leftJoin(agents, eq(hits.agentId, agents.id))
-      .where(
-        and(
-          this.liftedScopeWhere(hits.workspaceId),
-          agentId ? eq(hits.agentId, agentId) : undefined,
-        ),
-      )
-      .orderBy(desc(hits.score))
-      .limit(candidateLimit);
+    const rows = await this.deepenScopedCandidates(
+      initialCandidateLimit,
+      candidateLimit,
+      async (scanLimit) => {
+        const hits = this.db.$with('message_hits').as(
+          this.db
+            .select({
+              agentId: messages.agentId,
+              content: messages.content,
+              createdAt: messages.createdAt,
+              groupId: messages.groupId,
+              id: messages.id,
+              model: messages.model,
+              role: messages.role,
+              score: sql<number>`paradedb.score(${messages.id})`.as('score'),
+              topicId: messages.topicId,
+              updatedAt: messages.updatedAt,
+              workspaceId: messages.workspaceId,
+            })
+            .from(messages)
+            .where(
+              and(
+                this.scanScopeWhere(messages),
+                ne(messages.role, 'tool'),
+                agentId && !this.liftsAgentFilter ? eq(messages.agentId, agentId) : undefined,
+                sql`${messages.content} @@@ ${bm25Query}`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${messages.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('message_hit_count');
+
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            candidateCount: candidateCount.value,
+            agentId: hits.agentId,
+            agentSlug: agents.slug,
+            agentTitle: agents.title,
+            content: hits.content,
+            createdAt: hits.createdAt,
+            groupId: hits.groupId,
+            id: hits.id,
+            model: hits.model,
+            role: hits.role,
+            score: hits.score,
+            topicId: hits.topicId,
+            updatedAt: hits.updatedAt,
+          })
+          .from(hits)
+          .rightJoin(
+            candidateCount,
+            and(
+              this.liftedScopeWhere(hits.workspaceId),
+              agentId ? eq(hits.agentId, agentId) : undefined,
+            ) ?? sql`true`,
+          )
+          .leftJoin(agents, eq(hits.agentId, agents.id))
+          .orderBy(desc(hits.score))
+          .limit(candidateLimit);
+
+        return this.unpackScopedRows(rawRows, 'createdAt', 'id', 'score', 'updatedAt');
+      },
+    );
 
     return this.mapScoresToRelevance(rows)
       .map((row) => ({
@@ -818,49 +910,72 @@ export class SearchRepo {
   private async searchFiles(query: string, limit: number): Promise<FileSearchResult[]> {
     const bm25Query = sanitizeBm25Query(query);
 
-    const hits = this.db
-      .select({
-        createdAt: files.createdAt,
-        fileType: files.fileType,
-        id: files.id,
-        name: files.name,
-        score: sql<number>`paradedb.score(${files.id})`.as('score'),
-        size: files.size,
-        updatedAt: files.updatedAt,
-        url: files.url,
-        workspaceId: files.workspaceId,
-      })
-      .from(files)
-      .where(
-        and(
-          this.scanScopeWhere(files),
-          ne(files.fileType, 'custom/document'),
-          sql`${files.name} @@@ ${bm25Query}`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${files.id}) DESC`)
-      .limit(this.scanCandidateLimit(limit))
-      .as('file_hits');
+    const rows = await this.deepenScopedCandidates(
+      this.scanCandidateLimit(limit),
+      limit,
+      async (scanLimit) => {
+        const hits = this.db.$with('file_hits').as(
+          this.db
+            .select({
+              createdAt: files.createdAt,
+              fileType: files.fileType,
+              id: files.id,
+              name: files.name,
+              score: sql<number>`paradedb.score(${files.id})`.as('score'),
+              size: files.size,
+              updatedAt: files.updatedAt,
+              url: files.url,
+              workspaceId: files.workspaceId,
+            })
+            .from(files)
+            .where(
+              and(
+                this.scanScopeWhere(files),
+                ne(files.fileType, 'custom/document'),
+                sql`${files.name} @@@ ${bm25Query}`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${files.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('file_hit_count');
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            candidateCount: candidateCount.value,
+            content: documents.content,
+            createdAt: hits.createdAt,
+            fileType: hits.fileType,
+            id: hits.id,
+            knowledgeBaseId: knowledgeBaseFiles.knowledgeBaseId,
+            name: hits.name,
+            score: hits.score,
+            size: hits.size,
+            updatedAt: hits.updatedAt,
+            url: hits.url,
+          })
+          .from(hits)
+          .rightJoin(candidateCount, this.liftedScopeWhere(hits.workspaceId) ?? sql`true`)
+          .leftJoin(documents, eq(hits.id, documents.fileId))
+          .leftJoin(knowledgeBaseFiles, eq(hits.id, knowledgeBaseFiles.fileId))
+          .orderBy(desc(hits.score))
+          .limit(limit);
 
-    const rows = await this.db
-      .select({
-        content: documents.content,
-        createdAt: hits.createdAt,
-        fileType: hits.fileType,
-        id: hits.id,
-        knowledgeBaseId: knowledgeBaseFiles.knowledgeBaseId,
-        name: hits.name,
-        score: hits.score,
-        size: hits.size,
-        updatedAt: hits.updatedAt,
-        url: hits.url,
-      })
-      .from(hits)
-      .leftJoin(documents, eq(hits.id, documents.fileId))
-      .leftJoin(knowledgeBaseFiles, eq(hits.id, knowledgeBaseFiles.fileId))
-      .where(this.liftedScopeWhere(hits.workspaceId))
-      .orderBy(desc(hits.score))
-      .limit(limit);
+        return this.unpackScopedRows(
+          rawRows,
+          'createdAt',
+          'fileType',
+          'id',
+          'name',
+          'score',
+          'size',
+          'updatedAt',
+        );
+      },
+    );
 
     return this.mapScoresToRelevance(rows).map((row) => ({
       createdAt: row.createdAt,
@@ -884,47 +999,61 @@ export class SearchRepo {
   private async searchFolders(query: string, limit: number): Promise<FolderSearchResult[]> {
     const bm25Query = sanitizeBm25Query(query);
 
-    const hits = this.db
-      .select({
-        createdAt: documents.createdAt,
-        description: documents.description,
-        filename: documents.filename,
-        id: documents.id,
-        knowledgeBaseId: documents.knowledgeBaseId,
-        score: sql<number>`paradedb.score(${documents.id})`.as('score'),
-        slug: documents.slug,
-        title: documents.title,
-        updatedAt: documents.updatedAt,
-        workspaceId: documents.workspaceId,
-      })
-      .from(documents)
-      .where(
-        and(
-          this.scanScopeWhere(documents),
-          eq(documents.fileType, DOCUMENT_FOLDER_TYPE),
-          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.description} @@@ ${bm25Query})`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${documents.id}) DESC`)
-      .limit(this.scanCandidateLimit(limit))
-      .as('folder_hits');
+    const rows = await this.deepenScopedCandidates(
+      this.scanCandidateLimit(limit),
+      limit,
+      async (scanLimit) => {
+        const hits = this.db.$with('folder_hits').as(
+          this.db
+            .select({
+              createdAt: documents.createdAt,
+              description: documents.description,
+              filename: documents.filename,
+              id: documents.id,
+              knowledgeBaseId: documents.knowledgeBaseId,
+              score: sql<number>`paradedb.score(${documents.id})`.as('score'),
+              slug: documents.slug,
+              title: documents.title,
+              updatedAt: documents.updatedAt,
+              workspaceId: documents.workspaceId,
+            })
+            .from(documents)
+            .where(
+              and(
+                this.scanScopeWhere(documents),
+                eq(documents.fileType, DOCUMENT_FOLDER_TYPE),
+                sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.description} @@@ ${bm25Query})`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${documents.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('folder_hit_count');
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            candidateCount: candidateCount.value,
+            createdAt: hits.createdAt,
+            description: hits.description,
+            filename: hits.filename,
+            id: hits.id,
+            knowledgeBaseId: hits.knowledgeBaseId,
+            score: hits.score,
+            slug: hits.slug,
+            title: hits.title,
+            updatedAt: hits.updatedAt,
+          })
+          .from(hits)
+          .rightJoin(candidateCount, this.liftedScopeWhere(hits.workspaceId) ?? sql`true`)
+          .orderBy(desc(hits.score))
+          .limit(limit);
 
-    const rows = await this.db
-      .select({
-        createdAt: hits.createdAt,
-        description: hits.description,
-        filename: hits.filename,
-        id: hits.id,
-        knowledgeBaseId: hits.knowledgeBaseId,
-        score: hits.score,
-        slug: hits.slug,
-        title: hits.title,
-        updatedAt: hits.updatedAt,
-      })
-      .from(hits)
-      .where(this.liftedScopeWhere(hits.workspaceId))
-      .orderBy(desc(hits.score))
-      .limit(limit);
+        return this.unpackScopedRows(rawRows, 'createdAt', 'id', 'score', 'updatedAt');
+      },
+    );
 
     return this.mapScoresToRelevance(rows).map((row) => {
       const title = row.title || row.filename || 'Untitled';
@@ -948,41 +1077,55 @@ export class SearchRepo {
   private async searchPages(query: string, limit: number): Promise<PageSearchResult[]> {
     const bm25Query = sanitizeBm25Query(query);
 
-    const hits = this.db
-      .select({
-        createdAt: documents.createdAt,
-        filename: documents.filename,
-        id: documents.id,
-        score: sql<number>`paradedb.score(${documents.id})`.as('score'),
-        title: documents.title,
-        updatedAt: documents.updatedAt,
-        workspaceId: documents.workspaceId,
-      })
-      .from(documents)
-      .where(
-        and(
-          this.scanScopeWhere(documents),
-          eq(documents.fileType, 'custom/document'),
-          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.content} @@@ ${bm25Query})`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${documents.id}) DESC`)
-      .limit(this.scanCandidateLimit(limit))
-      .as('page_hits');
+    const rows = await this.deepenScopedCandidates(
+      this.scanCandidateLimit(limit),
+      limit,
+      async (scanLimit) => {
+        const hits = this.db.$with('page_hits').as(
+          this.db
+            .select({
+              createdAt: documents.createdAt,
+              filename: documents.filename,
+              id: documents.id,
+              score: sql<number>`paradedb.score(${documents.id})`.as('score'),
+              title: documents.title,
+              updatedAt: documents.updatedAt,
+              workspaceId: documents.workspaceId,
+            })
+            .from(documents)
+            .where(
+              and(
+                this.scanScopeWhere(documents),
+                eq(documents.fileType, 'custom/document'),
+                sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.content} @@@ ${bm25Query})`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${documents.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('page_hit_count');
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            candidateCount: candidateCount.value,
+            createdAt: hits.createdAt,
+            filename: hits.filename,
+            id: hits.id,
+            score: hits.score,
+            title: hits.title,
+            updatedAt: hits.updatedAt,
+          })
+          .from(hits)
+          .rightJoin(candidateCount, this.liftedScopeWhere(hits.workspaceId) ?? sql`true`)
+          .orderBy(desc(hits.score))
+          .limit(limit);
 
-    const rows = await this.db
-      .select({
-        createdAt: hits.createdAt,
-        filename: hits.filename,
-        id: hits.id,
-        score: hits.score,
-        title: hits.title,
-        updatedAt: hits.updatedAt,
-      })
-      .from(hits)
-      .where(this.liftedScopeWhere(hits.workspaceId))
-      .orderBy(desc(hits.score))
-      .limit(limit);
+        return this.unpackScopedRows(rawRows, 'createdAt', 'id', 'score', 'updatedAt');
+      },
+    );
 
     return this.mapScoresToRelevance(rows).map((row) => {
       const title = row.title || row.filename || 'Untitled';
@@ -1153,44 +1296,58 @@ export class SearchRepo {
   private async searchChatGroups(query: string, limit: number): Promise<ChatGroupSearchResult[]> {
     const bm25Query = sanitizeBm25Query(query);
 
-    const hits = this.db
-      .select({
-        avatar: chatGroups.avatar,
-        backgroundColor: chatGroups.backgroundColor,
-        createdAt: chatGroups.createdAt,
-        description: chatGroups.description,
-        id: chatGroups.id,
-        score: sql<number>`paradedb.score(${chatGroups.id})`.as('score'),
-        title: chatGroups.title,
-        updatedAt: chatGroups.updatedAt,
-        workspaceId: chatGroups.workspaceId,
-      })
-      .from(chatGroups)
-      .where(
-        and(
-          this.scanScopeWhere(chatGroups),
-          sql`(${chatGroups.title} @@@ ${bm25Query} OR ${chatGroups.description} @@@ ${bm25Query})`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${chatGroups.id}) DESC`)
-      .limit(this.scanCandidateLimit(limit))
-      .as('chat_group_hits');
+    const rows = await this.deepenScopedCandidates(
+      this.scanCandidateLimit(limit),
+      limit,
+      async (scanLimit) => {
+        const hits = this.db.$with('chat_group_hits').as(
+          this.db
+            .select({
+              avatar: chatGroups.avatar,
+              backgroundColor: chatGroups.backgroundColor,
+              createdAt: chatGroups.createdAt,
+              description: chatGroups.description,
+              id: chatGroups.id,
+              score: sql<number>`paradedb.score(${chatGroups.id})`.as('score'),
+              title: chatGroups.title,
+              updatedAt: chatGroups.updatedAt,
+              workspaceId: chatGroups.workspaceId,
+            })
+            .from(chatGroups)
+            .where(
+              and(
+                this.scanScopeWhere(chatGroups),
+                sql`(${chatGroups.title} @@@ ${bm25Query} OR ${chatGroups.description} @@@ ${bm25Query})`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${chatGroups.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('chat_group_hit_count');
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            avatar: hits.avatar,
+            backgroundColor: hits.backgroundColor,
+            candidateCount: candidateCount.value,
+            createdAt: hits.createdAt,
+            description: hits.description,
+            id: hits.id,
+            score: hits.score,
+            title: hits.title,
+            updatedAt: hits.updatedAt,
+          })
+          .from(hits)
+          .rightJoin(candidateCount, this.liftedScopeWhere(hits.workspaceId) ?? sql`true`)
+          .orderBy(desc(hits.score))
+          .limit(limit);
 
-    const rows = await this.db
-      .select({
-        avatar: hits.avatar,
-        backgroundColor: hits.backgroundColor,
-        createdAt: hits.createdAt,
-        description: hits.description,
-        id: hits.id,
-        score: hits.score,
-        title: hits.title,
-        updatedAt: hits.updatedAt,
-      })
-      .from(hits)
-      .where(this.liftedScopeWhere(hits.workspaceId))
-      .orderBy(desc(hits.score))
-      .limit(limit);
+        return this.unpackScopedRows(rawRows, 'createdAt', 'id', 'score', 'updatedAt');
+      },
+    );
 
     return this.mapScoresToRelevance(rows).map((row) => ({
       avatar: row.avatar,
@@ -1214,42 +1371,56 @@ export class SearchRepo {
   ): Promise<KnowledgeBaseSearchResult[]> {
     const bm25Query = sanitizeBm25Query(query);
 
-    const hits = this.db
-      .select({
-        avatar: knowledgeBases.avatar,
-        createdAt: knowledgeBases.createdAt,
-        description: knowledgeBases.description,
-        id: knowledgeBases.id,
-        name: knowledgeBases.name,
-        score: sql<number>`paradedb.score(${knowledgeBases.id})`.as('score'),
-        updatedAt: knowledgeBases.updatedAt,
-        workspaceId: knowledgeBases.workspaceId,
-      })
-      .from(knowledgeBases)
-      .where(
-        and(
-          this.scanScopeWhere(knowledgeBases),
-          sql`(${knowledgeBases.name} @@@ ${bm25Query} OR ${knowledgeBases.description} @@@ ${bm25Query})`,
-        ),
-      )
-      .orderBy(sql`paradedb.score(${knowledgeBases.id}) DESC`)
-      .limit(this.scanCandidateLimit(limit))
-      .as('knowledge_base_hits');
+    const rows = await this.deepenScopedCandidates(
+      this.scanCandidateLimit(limit),
+      limit,
+      async (scanLimit) => {
+        const hits = this.db.$with('knowledge_base_hits').as(
+          this.db
+            .select({
+              avatar: knowledgeBases.avatar,
+              createdAt: knowledgeBases.createdAt,
+              description: knowledgeBases.description,
+              id: knowledgeBases.id,
+              name: knowledgeBases.name,
+              score: sql<number>`paradedb.score(${knowledgeBases.id})`.as('score'),
+              updatedAt: knowledgeBases.updatedAt,
+              workspaceId: knowledgeBases.workspaceId,
+            })
+            .from(knowledgeBases)
+            .where(
+              and(
+                this.scanScopeWhere(knowledgeBases),
+                sql`(${knowledgeBases.name} @@@ ${bm25Query} OR ${knowledgeBases.description} @@@ ${bm25Query})`,
+              ),
+            )
+            .orderBy(sql`paradedb.score(${knowledgeBases.id}) DESC`)
+            .limit(scanLimit),
+        );
+        const candidateCount = this.db
+          .select({ value: sql<number>`count(*)::integer`.as('value') })
+          .from(hits)
+          .as('knowledge_base_hit_count');
+        const rawRows = await this.db
+          .with(hits)
+          .select({
+            avatar: hits.avatar,
+            candidateCount: candidateCount.value,
+            createdAt: hits.createdAt,
+            description: hits.description,
+            id: hits.id,
+            name: hits.name,
+            score: hits.score,
+            updatedAt: hits.updatedAt,
+          })
+          .from(hits)
+          .rightJoin(candidateCount, this.liftedScopeWhere(hits.workspaceId) ?? sql`true`)
+          .orderBy(desc(hits.score))
+          .limit(limit);
 
-    const rows = await this.db
-      .select({
-        avatar: hits.avatar,
-        createdAt: hits.createdAt,
-        description: hits.description,
-        id: hits.id,
-        name: hits.name,
-        score: hits.score,
-        updatedAt: hits.updatedAt,
-      })
-      .from(hits)
-      .where(this.liftedScopeWhere(hits.workspaceId))
-      .orderBy(desc(hits.score))
-      .limit(limit);
+        return this.unpackScopedRows(rawRows, 'createdAt', 'id', 'name', 'score', 'updatedAt');
+      },
+    );
 
     return this.mapScoresToRelevance(rows).map((row) => ({
       avatar: row.avatar,

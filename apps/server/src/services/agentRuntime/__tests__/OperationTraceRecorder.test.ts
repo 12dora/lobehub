@@ -339,6 +339,50 @@ describe('OperationTraceRecorder', () => {
       expect(saved.error.body.diagnostics).toMatchObject({ attempt: 1, maxAttempts: 1 });
     });
 
+    it('preserves refusal diagnostics as terminal operation-trace evidence', async () => {
+      store.loadPartial.mockResolvedValue({ startedAt: 1000, steps: [] });
+
+      await recorder.finalize('op-model-refusal', {
+        completionReason: 'error',
+        error: {
+          body: {
+            diagnostics: {
+              attempt: 1,
+              finishReason: 'refusal',
+              model: 'test-model',
+              provider: 'test-provider',
+            },
+          },
+          countAsFailure: false,
+          message: 'The model declined to answer this request.',
+          retryable: false,
+          type: 'ModelRefusal',
+        },
+        failedStep: { startedAt: 5000, stepIndex: 0, stepType: 'call_llm' },
+        state: { metadata: {}, stepCount: 0 },
+      });
+
+      const saved = store.save.mock.calls[0][0];
+      expect(saved).toMatchObject({
+        completionReason: 'error',
+        error: {
+          body: {
+            diagnostics: {
+              finishReason: 'refusal',
+              model: 'test-model',
+              provider: 'test-provider',
+            },
+          },
+          countAsFailure: false,
+          type: 'ModelRefusal',
+        },
+      });
+      expect(saved.steps[0]).toMatchObject({
+        events: [{ error: { type: 'ModelRefusal' }, type: 'error' }],
+        stepType: 'call_llm',
+      });
+    });
+
     it('merges the error event into an existing step when stepIndex collides (success-path append landed before later failure)', async () => {
       // The success path may have already pushed step 1 to the partial before
       // a later failure (e.g. saveAgentState throws post-append). The recorder
