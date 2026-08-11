@@ -161,7 +161,7 @@ describe('QueueService', () => {
       delete process.env.QSTASH_TOKEN;
     });
 
-    it('should round sub-second delays up to 1s for QStash', async () => {
+    it('should publish sub-second delays immediately without a QStash delay', async () => {
       qstashMocks.publishJSON.mockResolvedValue({ messageId: 'msg-test' });
 
       const { QStashQueueServiceImpl } = await import('../impls/qstash');
@@ -178,7 +178,7 @@ describe('QueueService', () => {
       await expect(result).resolves.toBe('msg-test');
 
       const request = qstashMocks.publishJSON.mock.calls[0][0];
-      expect(request).toMatchObject({ delay: 1 });
+      expect(request).not.toHaveProperty('delay');
       expect(request.body.timestamp).toEqual(expect.any(Number));
     });
 

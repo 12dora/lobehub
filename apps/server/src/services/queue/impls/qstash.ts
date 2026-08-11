@@ -11,12 +11,12 @@ const log = debug('lobe-server:service:queue:qstash');
  * QStash's `delay` option is second-granularity — the `Duration` string form
  * (`10s`, `1m`, `2h`, `1d`) has no millisecond unit, and a bare number is
  * treated as seconds (so `100` would mean 100s, not 100ms). Positive
- * sub-second delays are rounded up to 1s.
+ * sub-second delays cannot be represented and are therefore dispatched immediately.
  */
 const toQStashDelaySeconds = (delayMs: number): number | undefined => {
-  if (delayMs <= 0) return undefined;
+  if (delayMs < 1000) return undefined;
 
-  return Math.max(1, Math.round(delayMs / 1000));
+  return Math.round(delayMs / 1000);
 };
 
 /**
