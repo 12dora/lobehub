@@ -9,6 +9,11 @@ import type { LobeOpenAICompatibleRuntime } from '../../core/BaseAI';
 import type { ChatStreamCallbacks, ChatStreamPayload } from '../../types/chat';
 import { AgentRuntimeErrorType } from '../../types/error';
 import * as debugStreamModule from '../../utils/debugStream';
+import {
+  createSignatureChannelId,
+  createSignatureScope,
+  serializeScopedSignature,
+} from '../../utils/signatureScope';
 import * as openaiHelpers from '../contextBuilders/openai';
 import { createOpenAICompatibleRuntime } from './index';
 
@@ -21,6 +26,28 @@ const provider = 'groq';
 const defaultBaseURL = 'https://api.groq.com/openai/v1';
 const bizErrorType = 'ProviderBizError';
 const invalidErrorType = 'InvalidProviderAPIKey';
+
+const createOpenAIReasoningSignatureScope = async ({
+  apiKey = 'test',
+  baseURL = 'https://api.test.com/v1',
+  model = 'upstream-model',
+  scopeProvider = 'mapped-provider',
+}: {
+  apiKey?: string;
+  baseURL?: string;
+  model?: string;
+  scopeProvider?: string;
+} = {}) =>
+  createSignatureScope({
+    kind: 'reasoning',
+    model,
+    protocol: 'responses',
+    source: {
+      apiType: 'openai',
+      channelId: await createSignatureChannelId(baseURL, apiKey),
+      provider: scopeProvider,
+    },
+  });
 
 // Mock the console.error to avoid polluting test output
 vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -1527,6 +1554,81 @@ describe('LobeOpenAICompatibleFactory', () => {
             strictToolPairing: true,
           }),
         );
+        convertSpy.mockRestore();
+      });
+
+      it('should replay encrypted reasoning scoped to the mapped upstream model', async () => {
+        const Runtime = createOpenAICompatibleRuntime({
+          baseURL: 'https://api.test.com/v1',
+          chatCompletion: { useResponse: true },
+          provider: 'mapped-provider',
+        });
+        const inst = new Runtime({
+          apiKey: 'test',
+          modelIdMapping: { 'logical-model': 'upstream-model' },
+        });
+        const create = vi
+          .spyOn(inst['client'].responses, 'create')
+          .mockResolvedValue(new ReadableStream() as any);
+        const scope = await createOpenAIReasoningSignatureScope();
+
+        await inst.chat({
+          messages: [
+            {
+              content: 'Answer',
+              reasoning: {
+                content: 'Summary',
+                signature: serializeScopedSignature(
+                  'upstream-encrypted-content',
+                  scope,
+                  'reasoning',
+                ),
+              },
+              role: 'assistant',
+            },
+          ],
+          model: 'logical-model',
+          temperature: 0,
+        });
+
+        const request = create.mock.calls[0][0];
+        expect(request.model).toBe('upstream-model');
+        expect(request.input?.[0]).toMatchObject({
+          encrypted_content: 'upstream-encrypted-content',
+          type: 'reasoning',
+        });
+      });
+
+      it('should bind encrypted reasoning to the ChatGPT subscription account', async () => {
+        const Runtime = createOpenAICompatibleRuntime({
+          baseURL: 'https://chatgpt.com/backend-api/codex',
+          chatCompletion: { useResponse: true },
+          provider: ModelProvider.ChatGPT,
+        });
+        const convertSpy = vi
+          .spyOn(openaiHelpers, 'convertOpenAIResponseInputs')
+          .mockRejectedValue({ status: 400 });
+
+        for (const chatgptAccountId of ['account-a', 'account-b']) {
+          const inst = new Runtime({ apiKey: 'oauth-token', chatgptAccountId });
+          await expect(
+            inst.chat({
+              messages: [{ content: 'hi', role: 'user' }],
+              model: 'gpt-5.6-sol',
+              temperature: 0,
+            }),
+          ).rejects.toBeDefined();
+        }
+
+        const fingerprints = convertSpy.mock.calls.map(
+          ([, options]) => options?.reasoningSignatureScope?.fingerprint,
+        );
+        expect(fingerprints[0]).toMatch(/^[\da-f]{32}$/);
+        expect(fingerprints[1]).toMatch(/^[\da-f]{32}$/);
+        expect(fingerprints[0]).not.toBe(fingerprints[1]);
+        expect(fingerprints).not.toContain('account-a');
+        expect(fingerprints).not.toContain('account-b');
+        convertSpy.mockRestore();
       });
 
       it('should keep OpenRouter OpenAI slugs on chat completions for provider payload normalization', async () => {

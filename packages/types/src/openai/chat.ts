@@ -1,5 +1,5 @@
 import type { LLMRoleType } from '../llm';
-import type { MessageToolCall } from '../message';
+import type { MessageToolCall, ModelReasoning } from '../message';
 import type { OpenAIFunctionCall } from './functionCall';
 
 export type ChatResponseFormat =
@@ -60,10 +60,7 @@ export interface OpenAIChatMessage {
    */
   function_call?: OpenAIFunctionCall;
   name?: string;
-  reasoning?: {
-    content?: string;
-    duration?: number;
-  };
+  reasoning?: ModelReasoning;
   reasoning_content?: string;
   /**
    * Role

@@ -743,6 +743,70 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
     // payload (state.messages). The DB copy powers UI display after refresh and
     // is always persisted regardless of the gate.
     describe('reasoning replay gate', () => {
+      it('should persist and replay complete reasoning response items from onCompletion', async () => {
+        const responseItem = {
+          encrypted_content: 'lobe-scoped-state-v1:reasoning:scope:encrypted',
+          id: 'rs_1',
+          summary: [{ text: 'preserved reasoning', type: 'summary_text' as const }],
+          type: 'reasoning' as const,
+        };
+        const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+          await options?.callback?.onThinking?.('preserved reasoning');
+          await options?.callback?.onText?.('answer');
+          await options?.callback?.onCompletion?.({
+            reasoning: {
+              content: 'preserved reasoning',
+              responseItems: [responseItem],
+              signature: 'scoped-signature',
+            },
+            usage: {
+              totalInputTokens: 1,
+              totalOutputTokens: 2,
+              totalTokens: 3,
+            },
+          });
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+        const executors = createRuntimeExecutors({
+          ...ctx,
+          agentConfig: {
+            chatConfig: { preserveThinking: true },
+            plugins: [],
+            systemRole: 'test',
+          },
+        });
+        const state = createMockState({
+          modelRuntimeConfig: { model: 'qwen3.6-plus', provider: 'qwen' },
+        });
+
+        const result = await executors.call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Hello', role: 'user' }],
+              model: 'qwen3.6-plus',
+              provider: 'qwen',
+            },
+            type: 'call_llm',
+          },
+          state,
+        );
+
+        const expectedReasoning = {
+          content: 'preserved reasoning',
+          responseItems: [responseItem],
+          signature: 'scoped-signature',
+        };
+        expect(mockMessageModel.update).toHaveBeenCalledWith(
+          'msg-123',
+          expect.objectContaining({ reasoning: expectedReasoning }),
+        );
+        expect(result.newState.messages.at(-1)).toEqual(
+          expect.objectContaining({ reasoning: expectedReasoning, role: 'assistant' }),
+        );
+      });
+
       it('should replay assistant reasoning with tool calls when preserveThinking is enabled on a supported model', async () => {
         const toolCallPayload = [
           {

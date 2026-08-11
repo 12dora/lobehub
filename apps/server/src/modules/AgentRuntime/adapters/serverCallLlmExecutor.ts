@@ -31,7 +31,7 @@ import {
   chatSpanName,
   tracer as agentRuntimeTracer,
 } from '@lobechat/observability-otel/modules/agent-runtime';
-import { type ChatToolPayload, type MessageToolCall } from '@lobechat/types';
+import { type ChatToolPayload, type MessageToolCall, type ModelReasoning } from '@lobechat/types';
 import { sanitizeToolCallArguments, serializePartsForStorage } from '@lobechat/utils';
 
 import { recordModelCompletionFailure } from '@/business/server/recordModelCompletionFailure';
@@ -261,6 +261,7 @@ export const callLlm =
             let currentStepSpeed: any = undefined;
             let currentStepFinishReason: string | undefined = undefined;
             let streamError: any = undefined;
+            let capturedReasoning: ModelReasoning | undefined;
             // Set when a terminal turn's answer was salvaged from the reasoning
             // channel (see the answer-in-thinking guard below) — surfaced in
             // message metadata for observability.
@@ -280,6 +281,7 @@ export const callLlm =
               const response = await modelRuntime.chat(chatPayload, {
                 callback: {
                   onCompletion: async (data) => {
+                    capturedReasoning = data.reasoning;
                     // Capture usage (may or may not include cost)
                     if (data.usage) {
                       currentStepUsage = data.usage;
@@ -652,12 +654,17 @@ export const callLlm =
                 : streamSink.content;
 
               // Determine final reasoning - handle multimodal reasoning
-              let finalReasoning: any = undefined;
+              let finalReasoning: ModelReasoning | undefined;
               if (streamSink.hasReasoningImages) {
                 // Has images, use multimodal format
                 finalReasoning = {
                   content: serializePartsForStorage(streamSink.reasoningParts),
                   isMultimodal: true,
+                };
+              } else if (capturedReasoning) {
+                finalReasoning = {
+                  ...capturedReasoning,
+                  content: streamSink.thinkingContent || capturedReasoning.content,
                 };
               } else if (streamSink.thinkingContent) {
                 // Has text from reasoning but no images
@@ -867,7 +874,10 @@ export const callLlm =
               // accumulated so that reload/end snapshots reflect actual progress.
               if (
                 interrupted &&
-                (streamSink.content || streamSink.thinkingContent || toolsCalling.length > 0)
+                (streamSink.content ||
+                  streamSink.thinkingContent ||
+                  toolsCalling.length > 0 ||
+                  capturedReasoning)
               ) {
                 try {
                   const persistedTools =
@@ -877,9 +887,14 @@ export const callLlm =
                           arguments: sanitizeToolCallArguments(t.arguments),
                         }))
                       : undefined;
-                  const interruptedReasoning = streamSink.thinkingContent
-                    ? { content: streamSink.thinkingContent }
-                    : undefined;
+                  const interruptedReasoning = capturedReasoning
+                    ? {
+                        ...capturedReasoning,
+                        content: streamSink.thinkingContent || capturedReasoning.content,
+                      }
+                    : streamSink.thinkingContent
+                      ? { content: streamSink.thinkingContent }
+                      : undefined;
                   const interruptedMetadata: Record<string, any> = { interruptedMidStream: true };
                   if (currentStepUsage && typeof currentStepUsage === 'object') {
                     Object.assign(interruptedMetadata, currentStepUsage);

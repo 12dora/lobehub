@@ -1,4 +1,9 @@
-import type { ModelPerformance, ModelTokensUsage, ModelUsage } from '@lobechat/types';
+import type {
+  ModelPerformance,
+  ModelReasoning,
+  ModelTokensUsage,
+  ModelUsage,
+} from '@lobechat/types';
 
 import type { ModelPricingContext } from './pricing';
 import type { MessageToolCall, MessageToolCallChunk } from './toolsCalling';
@@ -53,10 +58,7 @@ export type UserMessageContentPart =
 export interface OpenAIChatMessage {
   content: string | UserMessageContentPart[];
   name?: string;
-  reasoning?: {
-    content?: string;
-    duration?: number;
-  };
+  reasoning?: ModelReasoning;
   reasoning_content?: string;
   role: LLMRoleType;
   tool_call_id?: string;
@@ -244,6 +246,7 @@ export interface OnFinishData {
    */
   finishReason?: string;
   grounding?: any;
+  reasoning?: ModelReasoning;
   speed?: ModelPerformance;
   text: string;
   thinking?: string;
