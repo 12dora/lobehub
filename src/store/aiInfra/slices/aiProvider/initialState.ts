@@ -29,6 +29,12 @@ export interface AIProviderState {
   enabledVideoModelList?: EnabledProviderWithModels[];
   initAiProviderList: boolean;
   isInitAiProviderRuntimeState: boolean;
+  /**
+   * Retired `${providerId}/${modelId}` → successor model id (same provider).
+   * Delivered with the provider runtime state when the server exposes redirects;
+   * empty when none are available.
+   */
+  modelRedirects?: Record<string, string>;
   providerSearchKeyword: string;
 }
 

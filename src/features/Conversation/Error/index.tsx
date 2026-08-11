@@ -1,8 +1,10 @@
+import { CREDITS_PER_DOLLAR } from '@lobechat/const/currency';
 import { HeterogeneousAgentSessionErrorCode } from '@lobechat/electron-client-ipc';
 import { type ILobeAgentRuntimeErrorType } from '@lobechat/model-runtime';
 import { AgentRuntimeErrorType, getErrorCodeSpec } from '@lobechat/model-runtime';
 import { type ChatMessageError, type ErrorType, type IToolErrorType } from '@lobechat/types';
 import { ChatErrorType } from '@lobechat/types';
+import { isRecord } from '@lobechat/utils/object';
 import { type AlertProps } from '@lobehub/ui';
 import { Block, Highlighter, Skeleton } from '@lobehub/ui';
 import { memo, useCallback, useMemo } from 'react';
@@ -19,6 +21,7 @@ import { usePermission } from '@/hooks/usePermission';
 import { useProviderName } from '@/hooks/useProviderName';
 import dynamic from '@/libs/next/dynamic';
 import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
+import { formatIntergerNumber, formatNumber } from '@/utils/format';
 import { getRuntimeErrorMessage } from '@/utils/locale/runtimeErrorMessage';
 
 import ChatInvalidAPIKey from './ChatInvalidApiKey';
@@ -52,6 +55,38 @@ const getRawErrorMessage = (error?: ChatMessageError | null) => {
   }
 
   return;
+};
+
+/**
+ * Merge the human-readable message into the JSON details so users can still
+ * inspect the raw provider text under the localized headline.
+ */
+const getErrorDetails = (error?: ChatMessageError | null) => {
+  if (!error) return;
+
+  const rawErrorMessage = getRawErrorMessage(error);
+  if (!rawErrorMessage) return error.body;
+  if (isRecord(error.body)) return { ...error.body, message: rawErrorMessage };
+  if (error.body !== undefined) return { body: error.body, message: rawErrorMessage };
+
+  return { message: rawErrorMessage };
+};
+
+/** Format USD cost (diagnostics.cost) as a credits string, e.g. "5.98M". */
+const formatEmptyCompletionCredits = (costUsd: number): string => {
+  const credits = costUsd * CREDITS_PER_DOLLAR;
+  if (credits >= CREDITS_PER_DOLLAR) return `${formatNumber(credits / CREDITS_PER_DOLLAR, 2)}M`;
+  return formatIntergerNumber(credits);
+};
+
+const getEmptyCompletionCostUsd = (error?: ChatMessageError | null): number | undefined => {
+  if (!error || error.type !== AgentRuntimeErrorType.ModelEmptyCompletion) return;
+  const body = error.body;
+  if (!isRecord(body)) return;
+  const diagnostics = body.diagnostics;
+  if (!isRecord(diagnostics)) return;
+  const cost = diagnostics.cost;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost > 0 ? cost : undefined;
 };
 
 const loading = () => (
@@ -196,7 +231,13 @@ export const useErrorContent = (error: any) => {
   const { t } = useTranslation(['error', 'modelRuntime']);
   const providerName = useProviderName(error?.body?.provider || '');
   const businessAlertConfig = useBusinessErrorAlertConfig(error?.type);
-  const { errorType: businessErrorType, hideMessage } = useBusinessErrorContent(error?.type);
+  const {
+    errorType: businessErrorType,
+    hideMessage,
+    // Business builds may inject a pre-formatted cost message; open-source falls
+    // through to ModelEmptyCompletionWithCost below when cost diagnostics exist.
+    message: businessMessage,
+  } = useBusinessErrorContent(error?.type);
 
   return useMemo<AlertProps | undefined>(() => {
     if (!error) return;
@@ -217,15 +258,36 @@ export const useErrorContent = (error: any) => {
 
     // Use business error type if provided, otherwise use original
     const finalErrorType = businessErrorType ?? messageError.type;
-    const translatedMessage = hideMessage
-      ? undefined
-      : getRuntimeErrorMessage(t, finalErrorType, { provider: providerName });
+
+    let translatedMessage: string | undefined;
+    if (!hideMessage) {
+      const costUsd = getEmptyCompletionCostUsd(messageError);
+      if (
+        finalErrorType === AgentRuntimeErrorType.ModelEmptyCompletion &&
+        typeof costUsd === 'number'
+      ) {
+        // Prefer the cost-aware key when diagnostics.cost is populated.
+        translatedMessage = t('modelRuntime:ModelEmptyCompletionWithCost', {
+          credits: formatEmptyCompletionCredits(costUsd),
+        });
+      } else {
+        translatedMessage = getRuntimeErrorMessage(t, finalErrorType, { provider: providerName });
+      }
+    }
 
     return {
-      message: translatedMessage || rawErrorMessage,
+      message: businessMessage || translatedMessage || rawErrorMessage,
       ...alertConfig,
     };
-  }, [businessAlertConfig, businessErrorType, error, hideMessage, providerName, t]);
+  }, [
+    businessAlertConfig,
+    businessErrorType,
+    businessMessage,
+    error,
+    hideMessage,
+    providerName,
+    t,
+  ]);
 };
 
 interface ErrorExtraProps {
@@ -251,7 +313,15 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(
     );
     const { allowed: canCreate } = usePermission('create_content');
     const sessionErrorBody = error?.body;
-    const rawErrorMessage = getRawErrorMessage(error) || alertError?.message;
+    const rawErrorMessage = getRawErrorMessage(error);
+    const errorDetails = getErrorDetails(error);
+    // Prefer the localized / cost-aware headline from useErrorContent when the
+    // error type has a dedicated translation; keep the raw provider text in
+    // the expandable JSON details instead of overwriting the headline.
+    const localizedErrorMessage = hasLocalizedErrorMessage(error?.type)
+      ? alertError?.message
+      : undefined;
+    const displayMessage = localizedErrorMessage ?? rawErrorMessage ?? alertError?.message;
 
     const delAndRegenerateMessage = useConversationStore((s) => s.delAndRegenerateMessage);
     const resetHeteroOverloadRetry = useConversationStore((s) => s.resetHeteroOverloadRetry);
@@ -374,15 +444,15 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(
         id={data.id}
         error={{
           ...alertError,
-          ...(rawErrorMessage ? { message: rawErrorMessage } : {}),
-          extra: data.error?.body ? (
+          message: displayMessage,
+          extra: errorDetails ? (
             <Highlighter
               actionIconSize={'small'}
               language={'json'}
               padding={8}
               variant={'borderless'}
             >
-              {JSON.stringify(data.error?.body, null, 2)}
+              {JSON.stringify(errorDetails, null, 2)}
             </Highlighter>
           ) : undefined,
         }}

@@ -8,11 +8,19 @@ import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import ErrorMessageExtra from './index';
+import ErrorMessageExtra, { useErrorContent } from './index';
 
 const navigateMock = vi.fn();
 
 const serverConfigMock = vi.hoisted(() => ({ enableBusinessFeatures: false }));
+const missingTranslationKeys = vi.hoisted(() => new Set<string>());
+const businessErrorContentMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    errorType: undefined,
+    hideMessage: false,
+    message: undefined as string | undefined,
+  })),
+);
 
 vi.mock('@lobechat/business-const', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof businessConstModule;
@@ -62,7 +70,8 @@ vi.mock('@lobehub/ui', async (importOriginal) => {
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: (key: string, options?: Record<string, unknown>) =>
+      missingTranslationKeys.has(key) ? (options?.defaultValue ?? key) : key,
   }),
 }));
 
@@ -75,7 +84,7 @@ vi.mock('@/business/client/hooks/useBusinessErrorAlertConfig', () => ({
 }));
 
 vi.mock('@/business/client/hooks/useBusinessErrorContent', () => ({
-  default: () => ({ errorType: undefined, hideMessage: false }),
+  default: businessErrorContentMock,
 }));
 
 vi.mock('@/business/client/hooks/useRenderBusinessChatErrorMessageExtra', () => ({
@@ -130,9 +139,21 @@ vi.mock('@/features/Conversation/store', () => ({
     }),
 }));
 
+const ErrorMessageWithContent = ({ data }: { data: any }) => {
+  const error = useErrorContent(data.error);
+
+  return <ErrorMessageExtra data={data} error={error} />;
+};
+
 describe('ErrorMessageExtra', () => {
   beforeEach(() => {
+    missingTranslationKeys.clear();
     serverConfigMock.enableBusinessFeatures = false;
+    businessErrorContentMock.mockReturnValue({
+      errorType: undefined,
+      hideMessage: false,
+      message: undefined,
+    });
   });
 
   it('keeps the localized message for known error types even when a traceId exists', () => {
@@ -332,5 +353,93 @@ describe('ErrorMessageExtra', () => {
 
     expect(screen.getByText('Raw runtime error')).toBeInTheDocument();
     expect(screen.getByText(/"detail": "raw detail"/)).toBeInTheDocument();
+  });
+
+  it('shows the localized empty-completion message while retaining the raw error in details', () => {
+    render(
+      <ErrorMessageExtra
+        error={{ message: 'response.ModelEmptyCompletion' }}
+        data={{
+          error: {
+            body: { diagnostics: { attempt: 1, maxAttempts: 1, outputTokens: 25_617 } },
+            message: 'The model provider returned an empty completion.',
+            type: AgentRuntimeErrorType.ModelEmptyCompletion,
+          } as any,
+          id: 'msg-empty-completion',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('response.ModelEmptyCompletion')).toBeInTheDocument();
+    expect(
+      screen.getByText(/"message": "The model provider returned an empty completion\."/),
+    ).toBeInTheDocument();
+  });
+
+  it('uses the cost-aware empty-completion locale when diagnostics.cost is present', () => {
+    render(
+      <ErrorMessageWithContent
+        data={{
+          error: {
+            body: { diagnostics: { cost: 5.980_015, provider: 'lobehub' } },
+            message: 'The model provider returned an empty completion.',
+            type: AgentRuntimeErrorType.ModelEmptyCompletion,
+          } as any,
+          id: 'msg-empty-completion-cost',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('modelRuntime:ModelEmptyCompletionWithCost')).toBeInTheDocument();
+    expect(
+      screen.getByText(/"message": "The model provider returned an empty completion\."/),
+    ).toBeInTheDocument();
+  });
+
+  it('prefers the business message while retaining the standard error details', () => {
+    businessErrorContentMock.mockReturnValue({
+      errorType: undefined,
+      hideMessage: false,
+      message: 'This request cost 5.98M credits.',
+    });
+
+    render(
+      <ErrorMessageWithContent
+        data={{
+          error: {
+            body: { diagnostics: { cost: 5.980_015, provider: 'lobehub' } },
+            message: 'The model provider returned an empty completion.',
+            type: AgentRuntimeErrorType.ModelEmptyCompletion,
+          } as any,
+          id: 'msg-empty-completion-cost-business',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('This request cost 5.98M credits.')).toBeInTheDocument();
+    expect(
+      screen.getByText(/"message": "The model provider returned an empty completion\."/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the localized ModelRefusal message while retaining raw details', () => {
+    render(
+      <ErrorMessageExtra
+        error={{ message: 'response.ModelRefusal' }}
+        data={{
+          error: {
+            body: { diagnostics: { finishReason: 'content_filter' } },
+            message: 'The model declined to answer this request.',
+            type: AgentRuntimeErrorType.ModelRefusal,
+          } as any,
+          id: 'msg-refusal',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('response.ModelRefusal')).toBeInTheDocument();
+    expect(
+      screen.getByText(/"message": "The model declined to answer this request\."/),
+    ).toBeInTheDocument();
   });
 });

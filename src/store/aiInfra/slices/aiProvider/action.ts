@@ -660,6 +660,8 @@ export class AiProviderActionImpl {
           enabledImageModelList,
           enabledVideoAiProviders,
           enabledVideoModelList,
+          // without a server there is no routing layer, so no redirects exist
+          modelRedirects: {},
           runtimeConfig: {},
         };
       },
@@ -678,6 +680,8 @@ export class AiProviderActionImpl {
               enabledImageModelList: data.enabledImageModelList || [],
               enabledVideoModelList: data.enabledVideoModelList || [],
               isInitAiProviderRuntimeState: true,
+              // Prefer server-supplied redirects when present; otherwise keep empty.
+              modelRedirects: data.modelRedirects ?? {},
             },
             false,
             'useFetchAiProviderRuntimeState',
