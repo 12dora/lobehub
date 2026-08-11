@@ -1,7 +1,11 @@
 import { type AgentState } from '@lobechat/agent-runtime';
 import { BRANDING_PROVIDER } from '@lobechat/business-const';
 import { ToolNameResolver } from '@lobechat/context-engine';
-import { consumeStreamUntilDone, ModelEmptyError } from '@lobechat/model-runtime';
+import {
+  consumeStreamUntilDone,
+  ModelEmptyError,
+  ModelRefusalError,
+} from '@lobechat/model-runtime';
 import { fingerprintResumeToolCall, type ToolSource } from '@lobechat/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -77,16 +81,19 @@ vi.mock('@lobechat/model-runtime', async () => {
   // retry path and these tests share a single class identity for instanceof.
   const { isEmptyModelCompletion, ModelEmptyError } =
     await import('../../../../../../packages/model-runtime/src/errors/modelEmptyCompletion');
+  const { ModelRefusalError } =
+    await import('../../../../../../packages/model-runtime/src/errors/modelRefusal');
+  const errorCodeSpecs = {
+    ModelEmptyCompletion: { code: 'ModelEmptyCompletion', retryable: false },
+    ModelRefusal: { code: 'ModelRefusal', retryable: false },
+  };
   return {
     // The executor resolves extend params via this helper; an empty result keeps
     // the runtime payload unchanged, matching this suite's pre-existing behavior.
     applyModelExtendParams: vi.fn(() => ({})),
     consumeStreamUntilDone: vi.fn().mockResolvedValue(undefined),
-    // `llmErrorClassification.ts` reads these at module-load time; an empty
-    // spec map is fine here because this suite never exercises the runtime
-    // retry classifier path.
-    ERROR_CODE_SPECS: {},
-    getErrorCodeSpec: () => undefined,
+    ERROR_CODE_SPECS: errorCodeSpecs,
+    getErrorCodeSpec: (code: keyof typeof errorCodeSpecs) => errorCodeSpecs[code],
     isDeepSeekThinkingEligibleModel: (model: string) =>
       typeof model === 'string' &&
       (model.toLowerCase().includes('deepseek-reasoner') ||
@@ -97,6 +104,7 @@ vi.mock('@lobechat/model-runtime', async () => {
     isKimiAlwaysPreserveThinkingModel: (model: string) =>
       /^kimi-k2\.(?:[7-9]|\d{2,})-code(?:$|-)/.test(model),
     ModelEmptyError,
+    ModelRefusalError,
     refineErrorCode: () => undefined,
   };
 });
@@ -1067,63 +1075,50 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       });
     });
 
-    it('retries empty completions on the branded provider then throws ModelEmptyError', async () => {
-      // A "gave up" turn: no onText / onThinking / onToolsCalling and ~0 output
-      // tokens — mirrors the empty completion repro (provider=lobehub, `out=1 token`).
-      // The branded provider has 0 general retries, but empty completions get a
-      // dedicated budget so the request is still re-issued before failing.
-      vi.useFakeTimers();
-      try {
-        const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
-          await options?.callback?.onCompletion?.({
-            usage: { totalInputTokens: 100, totalOutputTokens: 1, totalTokens: 101 },
-          });
-          return new Response('done');
-        });
-        // initModelRuntimeFromDB resolves once before the retry loop; the same
-        // empty mockChat is then re-invoked on every attempt.
-        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
-
-        const executors = createRuntimeExecutors(ctx);
-        const state = createMockState();
-
-        const promise = executors.call_llm!(
-          {
-            payload: {
-              messages: [{ content: 'Hello', role: 'user' }],
-              model: 'deepseek-v4-pro',
-              provider: 'lobehub',
-              tools: [],
-            },
-            type: 'call_llm' as const,
+    it('stops immediately when the branded provider returns an empty completion', async () => {
+      const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        await options?.callback?.onCompletion?.({
+          usage: {
+            cost: 5.980_015,
+            totalInputTokens: 100,
+            totalOutputTokens: 25_617,
+            totalTokens: 25_717,
           },
-          state,
-        );
-        // Drive the retry backoff sleeps to completion.
-        const rejection = promise.catch((error) => error);
-        await vi.runAllTimersAsync();
-        // Must throw (so the harness records a readable error state) instead of
-        // silently finalizing to a completion with a blank assistant message.
-        const error = await rejection;
-        expect(error).toBeInstanceOf(ModelEmptyError);
-        // EMPTY_COMPLETION_MAX_RETRIES (2) retries → 3 total attempts.
-        expect(mockChat).toHaveBeenCalledTimes(3);
-        expect(error.diagnostics).toMatchObject({
-          attempt: 3,
-          maxAttempts: 3,
-          model: 'deepseek-v4-pro',
-          outputTokens: 1,
-          provider: 'lobehub',
-          retryBudget: 2,
-          retryEvents: [
-            expect.objectContaining({ attempt: 2, delayMs: 1000, maxAttempts: 3 }),
-            expect.objectContaining({ attempt: 3, delayMs: 2000, maxAttempts: 3 }),
-          ],
-          toolCallCount: 0,
         });
-      } finally {
-        vi.useRealTimers();
-      }
+        return new Response('done');
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+      const error = await createRuntimeExecutors(ctx).call_llm!(
+        {
+          payload: {
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'deepseek-v4-pro',
+            provider: 'lobehub',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        },
+        createMockState(),
+      ).catch((cause) => cause);
+
+      expect(error).toBeInstanceOf(ModelEmptyError);
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      expect(error.diagnostics).toMatchObject({
+        attempt: 1,
+        cost: 5.980_015,
+        maxAttempts: 1,
+        model: 'deepseek-v4-pro',
+        outputTokens: 25_617,
+        provider: 'lobehub',
+        toolCallCount: 0,
+      });
+      expect(error.diagnostics).not.toHaveProperty('retryBudget');
+      expect(error.diagnostics).not.toHaveProperty('retryEvents');
+      expect(mockStreamManager.publishStreamEvent).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ type: 'stream_retry' }),
+      );
     });
 
     it('does NOT treat a content-bearing completion as empty', async () => {
@@ -1157,6 +1152,124 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       expect(result.newState.messages.at(-1)).toEqual(
         expect.objectContaining({ content: 'Here is your answer.', role: 'assistant' }),
       );
+    });
+
+    it('allows a grounded high-token completion without visible text', async () => {
+      const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        await options?.callback?.onGrounding?.({ searches: [{ query: 'current weather' }] });
+        await options?.callback?.onCompletion?.({
+          usage: { totalInputTokens: 10, totalOutputTokens: 50_000, totalTokens: 50_010 },
+        });
+        return new Response('done');
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+      await expect(
+        createRuntimeExecutors(ctx).call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Search the web', role: 'user' }],
+              model: 'gpt-4',
+              provider: 'openai',
+              tools: [],
+            },
+            type: 'call_llm' as const,
+          },
+          createMockState(),
+        ),
+      ).resolves.toBeDefined();
+      expect(mockChat).toHaveBeenCalledTimes(1);
+    });
+
+    it('classifies a reasoning-only refusal as terminal ModelRefusalError', async () => {
+      const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        await options?.callback?.onThinking?.('Internal refusal reasoning');
+        await options?.callback?.onCompletion?.({
+          finishReason: 'refusal',
+          usage: { totalInputTokens: 10, totalOutputTokens: 20, totalTokens: 30 },
+        });
+        return new Response('done');
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+      const error = await createRuntimeExecutors(ctx).call_llm!(
+        {
+          payload: {
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'gpt-4',
+            provider: 'openai',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        },
+        createMockState(),
+      ).catch((cause) => cause);
+
+      expect(error).toBeInstanceOf(ModelRefusalError);
+      expect(error.diagnostics).toMatchObject({
+        attempt: 1,
+        finishReason: 'refusal',
+        reasoningLength: 'Internal refusal reasoning'.length,
+      });
+      expect(mockChat).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps refusal completions with visible content as successful output', async () => {
+      const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        await options?.callback?.onText?.('I cannot help with that request.');
+        await options?.callback?.onCompletion?.({
+          finishReason: 'refusal',
+          usage: { totalInputTokens: 10, totalOutputTokens: 8, totalTokens: 18 },
+        });
+        return new Response('done');
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+      const result = await createRuntimeExecutors(ctx).call_llm!(
+        {
+          payload: {
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'deepseek-v4-pro',
+            provider: 'lobehub',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        },
+        createMockState(),
+      );
+
+      expect(result.newState.messages.at(-1)).toEqual(
+        expect.objectContaining({ content: 'I cannot help with that request.' }),
+      );
+    });
+
+    it('does not throw an empty-completion error after a user interrupt', async () => {
+      const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        await options?.callback?.onCompletion?.({
+          usage: { totalInputTokens: 10, totalOutputTokens: 1, totalTokens: 11 },
+        });
+        return new Response('done');
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+      const interruptedCtx: RuntimeExecutorContext = {
+        ...ctx,
+        loadAgentState: vi.fn().mockResolvedValue({ status: 'interrupted' }),
+      };
+
+      await expect(
+        createRuntimeExecutors(interruptedCtx).call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Hello', role: 'user' }],
+              model: 'deepseek-v4-pro',
+              provider: 'lobehub',
+              tools: [],
+            },
+            type: 'call_llm' as const,
+          },
+          createMockState(),
+        ),
+      ).resolves.toBeDefined();
     });
 
     // Gemini 2.5+/3 thinking streams deliver assistant text/reasoning as
@@ -1251,6 +1364,37 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         expect(result.newState.messages.at(-1)).toEqual(
           expect.objectContaining({ content: 'Hello world.', role: 'assistant' }),
         );
+      });
+
+      it('treats an image-only content_part completion as non-empty', async () => {
+        mockUploadBase64.mockResolvedValue({
+          fileId: 'file-image-only',
+          key: 'files/generations/2026/image-only.png',
+          url: 'https://files.example/generations/image-only.png',
+        });
+        const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+          await options?.callback?.onContentPart?.({
+            content: 'IMAGEONLYBASE64',
+            mimeType: 'image/png',
+            partType: 'image',
+          });
+          await options?.callback?.onCompletion?.({
+            usage: { totalInputTokens: 10, totalOutputTokens: 1, totalTokens: 11 },
+          });
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+        await expect(
+          createRuntimeExecutors(ctx).call_llm!(geminiInstruction(), createMockState()),
+        ).resolves.toBeDefined();
+
+        const updateCall = mockMessageModel.update.mock.calls.find(
+          (call: any[]) => call[0] === 'msg-123' && typeof call[1]?.content === 'string',
+        );
+        expect(JSON.parse(updateCall![1].content)).toEqual([
+          { image: 'https://files.example/generations/image-only.png', type: 'image' },
+        ]);
       });
 
       it('uploads content_part images to object storage and serializes URLs, never base64', async () => {

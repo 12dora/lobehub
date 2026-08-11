@@ -17,6 +17,7 @@ import {
   consumeStreamUntilDone,
   isEmptyModelCompletion,
   ModelEmptyError,
+  ModelRefusalError,
 } from '@lobechat/model-runtime';
 import {
   context as otelContext,
@@ -32,6 +33,8 @@ import {
 } from '@lobechat/observability-otel/modules/agent-runtime';
 import { type ChatToolPayload, type MessageToolCall } from '@lobechat/types';
 import { sanitizeToolCallArguments, serializePartsForStorage } from '@lobechat/utils';
+
+import { recordModelCompletionFailure } from '@/business/server/recordModelCompletionFailure';
 
 import { type RuntimeExecutorContext } from '../context';
 import { isOperationInterrupted, log, sleep, timing } from '../executorHelpers';
@@ -54,7 +57,6 @@ interface PreparedCallLLMContext {
 }
 
 const SERVER_LLM_RETRY_POLICY = {
-  isEmptyCompletionError: (error: unknown) => error instanceof ModelEmptyError,
   noRetryProviders: [BRANDING_PROVIDER],
 };
 
@@ -446,29 +448,34 @@ export const callLlm =
                 currentStepUsage && typeof currentStepUsage === 'object'
                   ? (currentStepUsage as { totalOutputTokens?: unknown }).totalOutputTokens
                   : undefined;
+              const contentPartImageCount = streamSink.contentParts.filter(
+                (part) => part.type === 'image',
+              ).length;
+              const imageCount = imageList.length + contentPartImageCount;
+              const isRefusal = String(currentStepFinishReason).toLowerCase() === 'refusal';
+              const visibleReasoning = isRefusal ? '' : streamSink.thinkingContent;
 
               if (
                 isEmptyModelCompletion({
                   content: streamSink.content,
-                  imageCount: imageList.length,
+                  hasGrounding: !!grounding,
+                  imageCount,
                   outputTokens:
                     typeof reportedOutputTokens === 'number' ? reportedOutputTokens : undefined,
-                  reasoning: streamSink.thinkingContent,
+                  reasoning: visibleReasoning,
                   toolCallCount: toolsCalling.length + tool_calls.length,
                 }) &&
                 !(await isOperationInterrupted(ctx))
               ) {
-                log(
-                  '[%s] Model returned an empty completion (attempt %d/%d) — throwing ModelEmptyError to retry',
-                  operationLogId,
-                  attempt,
-                  maxAttempts,
-                );
-                throw new ModelEmptyError(undefined, {
+                const diagnostics = {
                   attempt,
                   contentLength: streamSink.content.length,
+                  cost:
+                    currentStepUsage && typeof currentStepUsage === 'object'
+                      ? (currentStepUsage as { cost?: number }).cost
+                      : undefined,
                   finishReason: currentStepFinishReason,
-                  imageCount: imageList.length,
+                  imageCount,
                   maxAttempts,
                   model,
                   outputTokens:
@@ -476,7 +483,61 @@ export const callLlm =
                   provider,
                   reasoningLength: streamSink.thinkingContent.length,
                   toolCallCount: toolsCalling.length + tool_calls.length,
-                });
+                };
+
+                try {
+                  await recordModelCompletionFailure({
+                    attempt,
+                    maxAttempts,
+                    model,
+                    operationId,
+                    operationLogId,
+                    provider,
+                    reason: isRefusal ? 'refusal' : 'empty_completion',
+                    request: chatPayload,
+                    response: {
+                      content: streamSink.content,
+                      contentParts: [...streamSink.contentParts],
+                      finishReason: currentStepFinishReason,
+                      grounding,
+                      imageList: [...imageList],
+                      reasoning: streamSink.thinkingContent,
+                      reasoningParts: [...streamSink.reasoningParts],
+                      toolCalls: [...tool_calls],
+                      toolsCalling: [...toolsCalling],
+                      usage: currentStepUsage,
+                    },
+                    stepIndex,
+                    topicId: state.metadata?.topicId,
+                    trigger: state.metadata?.trigger,
+                    userId: ctx.userId,
+                    workspaceId: ctx.workspaceId,
+                  });
+                } catch (error) {
+                  console.error('[ModelCompletionFailure] Failed to record completion evidence.', {
+                    error: error instanceof Error ? error.message : String(error),
+                    operationId,
+                    stepIndex,
+                  });
+                }
+
+                if (isRefusal) {
+                  log(
+                    '[%s] Model explicitly refused an empty completion (attempt %d/%d) — throwing terminal ModelRefusalError',
+                    operationLogId,
+                    attempt,
+                    maxAttempts,
+                  );
+                  throw new ModelRefusalError(undefined, diagnostics);
+                }
+
+                log(
+                  '[%s] Model returned an empty completion (attempt %d/%d) — throwing terminal ModelEmptyError',
+                  operationLogId,
+                  attempt,
+                  maxAttempts,
+                );
+                throw new ModelEmptyError(undefined, diagnostics);
               }
 
               // Answer-in-thinking salvage: some thinking-mode models — notably
@@ -756,7 +817,7 @@ export const callLlm =
               const classified = classifyLLMError(error);
               const interrupted = await isOperationInterrupted(ctx);
 
-              const retryBudget = resolveLLMRetryBudget(provider, error, SERVER_LLM_RETRY_POLICY);
+              const retryBudget = resolveLLMRetryBudget(provider, SERVER_LLM_RETRY_POLICY);
 
               if (!interrupted && shouldRetryLLM(classified.kind, attempt, retryBudget)) {
                 const delayMs = getLLMRetryDelayMs(attempt);
@@ -795,13 +856,6 @@ export const callLlm =
                 }
 
                 continue;
-              }
-
-              if (error instanceof ModelEmptyError && error.diagnostics) {
-                error.diagnostics.retryBudget = retryBudget;
-                error.diagnostics.retryEvents = events
-                  .filter((event) => event.type === 'stream_retry')
-                  .map((event) => event.data);
               }
 
               // Cancel/interrupt path: when the user stops mid-stream, the model-runtime

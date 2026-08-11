@@ -2,6 +2,7 @@ import type { GenerateContentResponse, Part } from '@google/genai';
 import type { GroundingSearch } from '@lobechat/types';
 
 import type { ChatStreamCallbacks } from '../../../types';
+import { AgentRuntimeErrorType } from '../../../types/error';
 import { nanoid } from '../../../utils/uuid';
 import { convertGoogleAIUsage } from '../../usageConverters/google-ai';
 import type {
@@ -58,6 +59,10 @@ const transformGoogleGenerativeAIStream = (
   // Handle promptFeedback with blockReason (e.g., PROHIBITED_CONTENT)
   if ('promptFeedback' in chunk && (chunk as any).promptFeedback?.blockReason) {
     const blockReason = (chunk as any).promptFeedback.blockReason;
+    const errorType =
+      blockReason === 'IMAGE_PROHIBITED_CONTENT'
+        ? AgentRuntimeErrorType.ProviderContentPolicyViolation
+        : AgentRuntimeErrorType.ProviderBizError;
     const humanFriendlyMessage = getBlockReasonMessage(blockReason);
 
     return {
@@ -69,7 +74,7 @@ const transformGoogleGenerativeAIStream = (
           message: humanFriendlyMessage,
           provider: 'google',
         },
-        type: 'ProviderBizError',
+        type: errorType,
       },
       id: context?.id || 'error',
       type: 'error',
@@ -86,6 +91,10 @@ const transformGoogleGenerativeAIStream = (
     const convertedUsage = usageMetadata
       ? convertGoogleAIUsage(usageMetadata, payload?.pricing)
       : undefined;
+    const errorType =
+      blockedReason === 'IMAGE_PROHIBITED_CONTENT'
+        ? AgentRuntimeErrorType.ProviderContentPolicyViolation
+        : AgentRuntimeErrorType.ProviderBizError;
     const humanFriendlyMessage = getBlockReasonMessage(blockedReason);
 
     return [
@@ -102,7 +111,7 @@ const transformGoogleGenerativeAIStream = (
             message: humanFriendlyMessage,
             provider: 'google',
           },
-          type: 'ProviderBizError',
+          type: errorType,
         },
         id: context?.id || 'error',
         type: 'error' as const,
@@ -142,18 +151,16 @@ const transformGoogleGenerativeAIStream = (
   if (functionCalls.length > 0) {
     return [
       {
-        data: functionCalls.map(
-          (value, index: number): StreamToolCallChunkData => ({
-            function: {
-              arguments: JSON.stringify(value.args),
-              name: value.name,
-            },
-            id: generateToolCallId(index, value.name),
-            index,
-            thoughtSignature: value.thoughtSignature,
-            type: 'function',
-          }),
-        ),
+        data: functionCalls.map((value, index: number): StreamToolCallChunkData => ({
+          function: {
+            arguments: JSON.stringify(value.args),
+            name: value.name,
+          },
+          id: generateToolCallId(index, value.name),
+          index,
+          thoughtSignature: value.thoughtSignature,
+          type: 'function',
+        })),
         id: context.id,
         type: 'tool_calls',
       },
