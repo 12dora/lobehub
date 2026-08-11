@@ -590,12 +590,19 @@ export class MessageModel {
           .leftJoin(messageTranslates, eq(messageTranslates.id, messages.id))
           .leftJoin(messageTTS, eq(messageTTS.id, messages.id))
           .leftJoin(users, eq(users.id, messages.userId))
-          .orderBy(asc(messages.createdAt))
+          .orderBy(desc(messages.createdAt), desc(messages.id))
           .limit(pageSize)
           .offset(offset),
       { current, pageSize },
     );
     logTiming(timing, 'db.message.queryWithWhere.baseSelect:rows', { rowCount: result.length });
+
+    result.reverse();
+
+    if (topicId && current === 0 && result.length >= pageSize) {
+      const firstRoundStart = result.findIndex((message) => message.role === 'user');
+      if (firstRoundStart > 0) result.splice(0, firstRoundStart);
+    }
 
     const messageIds = result.map((message) => message.id as string);
 

@@ -439,6 +439,87 @@ describe('MessageModel Query Tests', () => {
       expect(result3).toHaveLength(0);
     });
 
+    describe('newest-first pagination (LOBE-12011)', () => {
+      const seedRounds = async (topicId: string, rounds: number, stepsPerRound: number) => {
+        await serverDB.insert(topics).values([{ id: topicId, userId }]);
+        const rows: any[] = [];
+        let seq = 0;
+        let prevId: string | null = null;
+
+        for (let round = 1; round <= rounds; round += 1) {
+          const userMessageId = `${topicId}-u${round}`;
+          rows.push({
+            content: `q${round}`,
+            createdAt: new Date(2023, 0, 1, 0, seq),
+            id: userMessageId,
+            parentId: prevId,
+            role: 'user',
+            topicId,
+            userId,
+          });
+          seq += 1;
+          prevId = userMessageId;
+
+          for (let step = 1; step <= stepsPerRound; step += 1) {
+            const assistantMessageId = `${topicId}-a${round}-${step}`;
+            rows.push({
+              content: `a${round}.${step}`,
+              createdAt: new Date(2023, 0, 1, 0, seq),
+              id: assistantMessageId,
+              parentId: prevId,
+              role: 'assistant',
+              topicId,
+              userId,
+            });
+            seq += 1;
+            prevId = assistantMessageId;
+          }
+        }
+
+        await serverDB.insert(messages).values(rows);
+        return { lastId: prevId as string };
+      };
+
+      const isContiguousChain = (result: { id: string; parentId?: string | null }[]) => {
+        const ids = new Set(result.map((message) => message.id));
+        return result.every(
+          (message, index) => index === 0 || (!!message.parentId && ids.has(message.parentId)),
+        );
+      };
+
+      it('keeps the newest turns and final answer when truncated', async () => {
+        const topicId = 't-lobe12011-newest';
+        const { lastId } = await seedRounds(topicId, 5, 2);
+
+        const result = await messageModel.query({ current: 0, pageSize: 4, topicId });
+
+        expect(result.map((message) => message.id)).toContain(lastId);
+        expect(result.at(-1)!.id).toBe(lastId);
+      });
+
+      it('aligns the lower boundary to a user-message round start', async () => {
+        const topicId = 't-lobe12011-align';
+        const { lastId } = await seedRounds(topicId, 5, 2);
+
+        const result = await messageModel.query({ current: 0, pageSize: 4, topicId });
+
+        expect(result.map((message) => message.id)).toContain(lastId);
+        expect(result[0].role).toBe('user');
+        expect(isContiguousChain(result)).toBe(true);
+      });
+
+      it('keeps an oversized single round instead of trimming to empty', async () => {
+        const topicId = 't-lobe12011-huge';
+        const { lastId } = await seedRounds(topicId, 1, 6);
+
+        const result = await messageModel.query({ current: 0, pageSize: 4, topicId });
+
+        expect(result).toHaveLength(4);
+        expect(result.every((message) => message.role !== 'user')).toBe(true);
+        expect(result.at(-1)!.id).toBe(lastId);
+      });
+    });
+
     describe('query with messageQueries', () => {
       it('should include ragQuery, ragQueryId and ragRawQuery in query results', async () => {
         // Create test data
@@ -1144,8 +1225,8 @@ describe('MessageModel Query Tests', () => {
           pageSize: 2,
         });
         expect(result1).toHaveLength(2);
-        expect(result1[0].id).toBe('msg-page-1'); // ordered by createdAt asc
-        expect(result1[1].id).toBe('msg-page-2');
+        expect(result1[0].id).toBe('msg-page-2');
+        expect(result1[1].id).toBe('msg-page-3');
 
         const result2 = await messageModel.query({
           agentId: 'agent-page',
@@ -1153,7 +1234,7 @@ describe('MessageModel Query Tests', () => {
           pageSize: 2,
         });
         expect(result2).toHaveLength(1);
-        expect(result2[0].id).toBe('msg-page-3');
+        expect(result2[0].id).toBe('msg-page-1');
       });
 
       it('should work with agentId and topicId filters combined', async () => {
