@@ -173,6 +173,35 @@ describe('topicSelectors', () => {
     });
   });
 
+  describe('getTopicWorkingDirectory', () => {
+    const topics = [
+      { id: 'topicA', metadata: { workingDirectory: '/project-a' }, name: 'A' },
+      { id: 'topicB', metadata: { workingDirectory: '/project-b' }, name: 'B' },
+    ];
+    const state = merge(initialStore, {
+      activeAgentId: 'test',
+      activeTopicId: 'topicA',
+      topicDataMap: {
+        [topicMapKey({ agentId: 'test' })]: {
+          currentPage: 0,
+          hasMore: false,
+          items: topics,
+          pageSize: 20,
+          total: topics.length,
+        },
+      },
+    }) as ChatStore;
+
+    it('binds lookup to the requested topic instead of the active topic', () => {
+      expect(topicSelectors.getTopicWorkingDirectory('topicB')(state)).toBe('/project-b');
+      expect(topicSelectors.getTopicWorkingDirectory('topicA')(state)).toBe('/project-a');
+    });
+
+    it('falls back to the active topic when no id is provided', () => {
+      expect(topicSelectors.getTopicWorkingDirectory()(state)).toBe('/project-a');
+    });
+  });
+
   describe('groupedTopicsSelector', () => {
     it('should return empty array if there are no topics', () => {
       const state = merge(initialStore, { activeAgentId: 'test' });

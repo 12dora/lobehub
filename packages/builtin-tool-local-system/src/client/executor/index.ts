@@ -218,9 +218,13 @@ class LocalSystemExecutor extends BaseExecutor<typeof LocalSystemApiEnum> {
 
   // ==================== Search & Find ====================
 
-  grepContent = async (params: GrepContentParams): Promise<BuiltinToolResult> => {
+  grepContent = async (
+    params: GrepContentParams,
+    ctx?: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => {
     try {
-      const resolvedParams = resolveArgsWithScope(params, 'path');
+      const searchRoot = resolvePathWithScope(params.scope, ctx?.workingDirectory);
+      const resolvedParams = searchRoot ? { ...params, path: searchRoot } : params;
       // Forward the full IPC params (glob / output_mode / -i / -A / -B / -C / -n /
       // multiline / head_limit / type / tool) instead of stripping to {directory, pattern}.
       // ComputerRuntime.callService passes args through unchanged, so the runtime type

@@ -373,6 +373,18 @@ class CalculatorExecutor
         }
 
         const result = nerdamer.solveEquations(equation, solveVariables);
+
+        if (!result) {
+          return {
+            content: 'No solution found for the given system of equations',
+            error: {
+              message: 'No solution found',
+              type: 'SolveError',
+            },
+            success: false,
+          };
+        }
+
         const rawResult = result.toString();
 
         const pairs = rawResult.split(',');

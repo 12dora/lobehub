@@ -118,6 +118,55 @@ describe('localSystemExecutor.grepContent — params forwarding', () => {
   });
 });
 
+describe('localSystemExecutor.grepContent — working directory default', () => {
+  const mockRuntime = () => {
+    const runtime = (localSystemExecutor as any).runtime as {
+      grepContent: (args: any) => Promise<unknown>;
+    };
+    return vi.spyOn(runtime, 'grepContent').mockResolvedValue({
+      content: 'Found 0 matches in 0 locations:',
+      state: { matches: [], pattern: 'foo', totalMatches: 0 },
+      success: true,
+    });
+  };
+
+  it('defaults an omitted scope to ctx.workingDirectory', async () => {
+    const spy = mockRuntime();
+
+    await localSystemExecutor.grepContent({ pattern: 'foo' }, {
+      messageId: 'm1',
+      workingDirectory: '/Users/me/project',
+    } as never);
+
+    expect((spy.mock.calls[0][0] as { path?: string }).path).toBe('/Users/me/project');
+    spy.mockRestore();
+  });
+
+  it('anchors a relative scope onto ctx.workingDirectory', async () => {
+    const spy = mockRuntime();
+
+    await localSystemExecutor.grepContent({ pattern: 'foo', scope: '.' }, {
+      messageId: 'm1',
+      workingDirectory: '/Users/me/project',
+    } as never);
+
+    expect((spy.mock.calls[0][0] as { path?: string }).path).toBe('/Users/me/project');
+    spy.mockRestore();
+  });
+
+  it('keeps an absolute scope as-is', async () => {
+    const spy = mockRuntime();
+
+    await localSystemExecutor.grepContent({ pattern: 'foo', scope: '/abs/elsewhere' }, {
+      messageId: 'm1',
+      workingDirectory: '/Users/me/project',
+    } as never);
+
+    expect((spy.mock.calls[0][0] as { path?: string }).path).toBe('/abs/elsewhere');
+    spy.mockRestore();
+  });
+});
+
 describe('localSystemExecutor.listFiles — limit forwarding', () => {
   it('forwards the manifest-exposed `limit` to the runtime', async () => {
     const runtime = (localSystemExecutor as any).runtime as {

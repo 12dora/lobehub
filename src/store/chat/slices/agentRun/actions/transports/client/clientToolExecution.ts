@@ -3,6 +3,7 @@ import { type BuiltinToolContext } from '@lobechat/types';
 import debug from 'debug';
 import { produce } from 'immer';
 
+import { resolveEffectiveWorkingDirectory } from '@/helpers/effectiveWorkingDirectory';
 import { mcpService } from '@/services/mcp';
 import { type ChatStore } from '@/store/chat/store';
 import { hasExecutor, invokeExecutor } from '@/store/tool/slices/builtin/executors';
@@ -146,6 +147,10 @@ export class ClientToolExecutionActionImpl {
           signal: operation?.abortController?.signal,
           sourceMessageId: operation?.context?.messageId,
           topicId: operation?.context?.topicId ?? undefined,
+          workingDirectory: resolveEffectiveWorkingDirectory(
+            this.#get(),
+            operation?.context?.topicId,
+          ),
         };
 
         log('[ClientToolCall] execute:start', {

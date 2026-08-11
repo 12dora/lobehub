@@ -27,9 +27,11 @@ import { consumePendingTopicRepos, getPendingTopicRepos } from '@/store/chat/pen
 import { topicSelectors } from '@/store/chat/selectors';
 import type { ChatStore } from '@/store/chat/store';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 import type { StoreSetter } from '@/store/types';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors, toolInterventionSelectors } from '@/store/user/selectors';
+import { isTrpcErrorCode } from '@/utils/trpcError';
 
 import { buildRunLifecycle } from '../../lifecycle/buildRunLifecycle';
 import type { RunScope } from '../../lifecycle/types';
@@ -768,13 +770,25 @@ export class GatewayActionImpl {
     // Refresh the short-lived JWT and read the durable operation state in
     // parallel. The status read recovers a human-intervention outcome when the
     // Gateway's best-effort push was dropped before this reconnect.
-    const [{ token }, operationStatus] = await Promise.all([
-      aiAgentService.refreshGatewayToken(topicId),
-      aiAgentService.getOperationStatus({ operationId }).catch((error) => {
-        console.error('[Gateway] getOperationStatus failed during reconnect:', error);
-        return null;
-      }),
-    ]);
+    let reconnectData;
+    try {
+      reconnectData = await Promise.all([
+        aiAgentService.refreshGatewayToken(topicId),
+        aiAgentService.getOperationStatus({ operationId }).catch((error) => {
+          console.error('[Gateway] getOperationStatus failed during reconnect:', error);
+          return null;
+        }),
+      ]);
+    } catch (error) {
+      // NOT_FOUND means the server no longer has this operation. Clear the stale
+      // local marker and resolve normally so the reconnect caller cannot loop 404s.
+      if (isTrpcErrorCode(error, 'NOT_FOUND')) {
+        this.clearLocalRunningOperation({ operationId, topicId });
+        return;
+      }
+      throw error;
+    }
+    const [{ token }, operationStatus] = reconnectData;
 
     // Re-check after the async token refresh: a newer executeGatewayAgent call may have
     // taken over for this topic while we were waiting. If so, bail to avoid a duplicate stream.
@@ -951,6 +965,20 @@ export class GatewayActionImpl {
         memberOperationId,
         parentOperationId,
       });
+  };
+
+  private clearLocalRunningOperation = (params: { operationId: string; topicId: string }): void => {
+    const { operationId, topicId } = params;
+    const state = this.#get();
+    const key = topicMapKey({ agentId: state.activeAgentId, groupId: state.activeGroupId });
+    const existingTopic = state.topicDataMap[key]?.items?.find((topic) => topic.id === topicId);
+    if (existingTopic?.metadata?.runningOperation?.operationId !== operationId) return;
+
+    state.internal_dispatchTopic({
+      id: topicId,
+      type: 'updateTopic',
+      value: { metadata: { ...existingTopic.metadata, runningOperation: null } },
+    });
   };
 
   private internal_cleanupGatewayConnection = (operationId: string): void => {

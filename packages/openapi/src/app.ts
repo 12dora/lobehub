@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 
@@ -22,7 +23,11 @@ app.use('*', workspaceAuthMiddleware);
 // Error handling middleware
 app.onError((error: Error, c) => {
   console.error('Hono Error:', error);
-  return c.json({ error: error.message }, 500);
+  const status = error instanceof HTTPException ? error.status : 500;
+  return c.json(
+    { error: error.message, success: false, timestamp: new Date().toISOString() },
+    status,
+  );
 });
 
 // Health check endpoint

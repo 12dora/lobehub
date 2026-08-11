@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import nerdamer from 'nerdamer-prime/all';
+import { describe, expect, it, vi } from 'vitest';
 
 import { calculatorExecutor } from '../src/executor';
 
@@ -1321,6 +1322,23 @@ describe('Calculator Equation Solver', () => {
       const parsed = JSON.parse(result.content || '{}');
       expect(parsed.x).toBe('2');
       expect(parsed.y).toBe('1');
+    });
+
+    it('should report an unsolvable system instead of dereferencing an empty result', async () => {
+      const spy = vi.spyOn(nerdamer, 'solveEquations').mockReturnValue(null as never);
+
+      try {
+        const result = await calculatorExecutor.solve({
+          equation: ['x+y=1', 'x+y=2'],
+          variable: ['x', 'y'],
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error?.type).toBe('SolveError');
+        expect(result.content).toBe('No solution found for the given system of equations');
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('should solve system of two equations with default variables', async () => {

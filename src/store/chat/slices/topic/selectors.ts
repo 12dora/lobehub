@@ -87,25 +87,32 @@ const currentTopicMetadata = (s: ChatStoreState) => currentActiveTopic(s)?.metad
  * On desktop: local filesystem path.
  * On web (cloud): primary GitHub repo URL (repos[0]), or workingDirectory if set directly.
  */
-const currentTopicWorkingDirectory = (s: ChatStoreState): string | undefined => {
-  const activeTopic = currentActiveTopic(s);
-  if (!activeTopic) return;
+const extractTopicWorkingDirectory = (topic: ChatTopic | undefined): string | undefined => {
+  if (!topic) return;
 
   if (isDesktop) {
     return (
-      getWorkingDirEffectivePath(activeTopic.metadata?.workingDirectoryConfig) ??
-      activeTopic.metadata?.workingDirectory
+      getWorkingDirEffectivePath(topic.metadata?.workingDirectoryConfig) ??
+      topic.metadata?.workingDirectory
     );
   }
 
   // Web: return primary repo from repos list, or workingDirectory if set directly
-  const meta = activeTopic.metadata;
+  const meta = topic.metadata;
   return (
     meta?.repos?.[0] ??
     getWorkingDirEffectivePath(meta?.workingDirectoryConfig) ??
     meta?.workingDirectory
   );
 };
+
+const getTopicWorkingDirectory =
+  (id?: string | null) =>
+  (s: ChatStoreState): string | undefined =>
+    extractTopicWorkingDirectory(id ? getTopicById(id)(s) : currentActiveTopic(s));
+
+const currentTopicWorkingDirectory = (s: ChatStoreState): string | undefined =>
+  extractTopicWorkingDirectory(currentActiveTopic(s));
 
 const isCreatingTopic = (s: ChatStoreState) => s.creatingTopic;
 
@@ -276,6 +283,7 @@ export const topicSelectors = {
   displayTopics,
   displayTopicsForSidebar,
   getTopicById,
+  getTopicWorkingDirectory,
   getTopicsByAgentId,
   groupedTopicsForSidebar,
   groupedTopicsSelector,

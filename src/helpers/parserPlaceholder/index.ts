@@ -4,14 +4,17 @@ import { uuid } from '@lobechat/utils';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
-import { topicSelectors } from '@/store/chat/selectors';
-import { getElectronStoreState } from '@/store/electron';
 import { useUserStore } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
 
+import { resolveEffectiveWorkingDirectory } from '../effectiveWorkingDirectory';
 import { globalAgentContextManager } from '../GlobalAgentContextManager';
 
 const placeholderVariablesRegex = /\{\{(.*?)\}\}/g;
+const WORKING_DIRECTORY_UNSPECIFIED = '(not specified, use user Home directory as default)';
+
+export const getEffectiveWorkingDirectoryPath = (topicId?: string | null): string | undefined =>
+  resolveEffectiveWorkingDirectory(useChatStore.getState(), topicId);
 
 export const VARIABLE_GENERATORS = {
   /**
@@ -158,15 +161,7 @@ export const VARIABLE_GENERATORS = {
    */
   workingDirectory: () => {
     if (!isDesktop) return '';
-
-    const topicWorkingDir = topicSelectors.currentTopicWorkingDirectory(useChatStore.getState());
-    if (topicWorkingDir) return topicWorkingDir;
-
-    const currentDeviceId = getElectronStoreState().gatewayDeviceInfo?.deviceId;
-    const agentWorkingDir = agentSelectors.currentAgentWorkingDirectory(currentDeviceId)(
-      useAgentStore.getState(),
-    );
-    return agentWorkingDir ?? '(not specified, use user Home directory as default)';
+    return getEffectiveWorkingDirectoryPath() ?? WORKING_DIRECTORY_UNSPECIFIED;
   },
 } as Record<string, () => string>;
 

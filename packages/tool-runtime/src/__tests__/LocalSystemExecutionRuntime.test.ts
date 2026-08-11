@@ -94,3 +94,45 @@ describe('LocalSystemExecutionRuntime.globFiles', () => {
     });
   });
 });
+
+describe('LocalSystemExecutionRuntime.grepContent', () => {
+  it('forwards the full grep parameter set to the local-system service', async () => {
+    const service = createService({
+      grepContent: vi.fn().mockResolvedValue({
+        engine: 'rg',
+        matches: [],
+        success: true,
+        total_matches: 0,
+      }),
+    });
+    const runtime = new LocalSystemExecutionRuntime(service);
+
+    await runtime.grepContent({
+      '-A': 3,
+      '-i': true,
+      'glob': '**/*.ts',
+      'head_limit': 50,
+      'output_mode': 'content',
+      'path': '/repo',
+      'pattern': 'Foo',
+      'type': 'ts',
+    } as never);
+
+    expect(service.grepContent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        '-A': 3,
+        '-i': true,
+        'cwd': '/repo',
+        'glob': '**/*.ts',
+        'head_limit': 50,
+        'output_mode': 'content',
+        'path': '/repo',
+        'pattern': 'Foo',
+        'type': 'ts',
+      }),
+    );
+    expect((service.grepContent as ReturnType<typeof vi.fn>).mock.calls[0][0].filePattern).toBe(
+      undefined,
+    );
+  });
+});

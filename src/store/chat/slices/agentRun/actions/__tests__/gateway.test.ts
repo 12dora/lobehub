@@ -7,6 +7,7 @@ import { aiAgentService } from '@/services/aiAgent';
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 
 import type { GatewayConnection } from '../transports/gateway/gateway';
 import { GatewayActionImpl } from '../transports/gateway/gateway';
@@ -1170,10 +1171,15 @@ describe('GatewayActionImpl', () => {
   });
 
   describe('reconnectToGatewayOperation', () => {
-    function createReconnectTestAction(assistantMessage: any, extraMessages: any[] = []) {
+    function createReconnectTestAction(
+      assistantMessage: any,
+      extraMessages: any[] = [],
+      topicDataMap: Record<string, any> = {},
+    ) {
       const startOperation = vi.fn(() => ({ operationId: 'gw-op-reconnect' }));
       const mockClient = createMockClient();
       const captured: { onEvent?: (event: AgentStreamEvent) => void } = {};
+      const internalDispatchTopic = vi.fn();
       const replaceMessages = vi.fn();
       const state: Record<string, any> = {
         activeAgentId: 'agent-1',
@@ -1185,7 +1191,7 @@ describe('GatewayActionImpl', () => {
         },
         // getTopicById reads here; an empty map yields no running op so the
         // reconnect guards fall through to startOperation.
-        topicDataMap: {},
+        topicDataMap,
       };
       const set = vi.fn((updater: any) => {
         if (typeof updater === 'function') Object.assign(state, updater(state));
@@ -1197,6 +1203,7 @@ describe('GatewayActionImpl', () => {
         connectToGateway: vi.fn((params: any) => {
           captured.onEvent = params.onEvent;
         }),
+        internal_dispatchTopic: internalDispatchTopic,
         internal_updateTopicLoading: vi.fn(),
         onOperationCancel: vi.fn(),
         replaceMessages,
@@ -1216,11 +1223,50 @@ describe('GatewayActionImpl', () => {
       const action = new GatewayActionImpl(set as any, get, undefined);
       action.createClient = vi.fn(() => mockClient);
 
-      return { action, captured, replaceMessages, startOperation, state };
+      return { action, captured, internalDispatchTopic, replaceMessages, startOperation, state };
     }
 
     afterEach(() => {
       delete (globalThis as any).window;
+    });
+
+    it('clears a stale local marker and stops reconnecting when token refresh returns NOT_FOUND', async () => {
+      const topicDataMap = {
+        [topicMapKey({ agentId: 'agent-1' })]: {
+          items: [
+            {
+              id: 'topic-1',
+              metadata: {
+                model: 'gpt-4',
+                runningOperation: { operationId: 'server-op-1' },
+              },
+            },
+          ],
+        },
+      };
+      const { action, internalDispatchTopic, startOperation } = createReconnectTestAction(
+        { createdAt: 1, id: 'ast-1' },
+        [],
+        topicDataMap,
+      );
+      vi.mocked(aiAgentService.refreshGatewayToken).mockRejectedValueOnce({
+        data: { code: 'NOT_FOUND' },
+      });
+
+      await expect(
+        action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(internalDispatchTopic).toHaveBeenCalledWith({
+        id: 'topic-1',
+        type: 'updateTopic',
+        value: { metadata: { model: 'gpt-4', runningOperation: null } },
+      });
+      expect(startOperation).not.toHaveBeenCalled();
     });
 
     // After a DB rehydrate (e.g. quit + relaunch), `createdAt` can arrive as an
