@@ -1,12 +1,11 @@
 // @vitest-environment node
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { parse } from 'yaml';
 
 import { filterExistingLintablePaths } from './changedFiles';
 import { removePathExact } from './cleanup';
@@ -59,10 +58,8 @@ import {
   validateUpstreamRepository,
 } from './validateInputs';
 
-const WORKFLOW_PATH = path.resolve(
-  process.cwd(),
-  '.github/workflows/enterprise-upstream-rebase.yml',
-);
+const WORKFLOWS_PATH = path.resolve(process.cwd(), '.github/workflows');
+const UPSTREAM_REBASE_WORKFLOW_PATH = path.join(WORKFLOWS_PATH, 'enterprise-upstream-rebase.yml');
 const SYNC_WORKFLOW_PATH = path.resolve(process.cwd(), '.github/workflows/sync.yml');
 
 const FULL_SHA = 'a'.repeat(40);
@@ -143,21 +140,6 @@ const baseReport = () =>
       upstreamChangedPaths: 1,
     },
   });
-
-const extractRunBlocks = (workflowSource: string): string[] => {
-  const document = parse(workflowSource) as {
-    jobs: Record<string, { steps: Array<{ run?: string }> }>;
-  };
-  const blocks: string[] = [];
-  for (const job of Object.values(document.jobs)) {
-    for (const step of job.steps) {
-      if (typeof step.run === 'string' && step.run.trim().length > 0) {
-        blocks.push(step.run);
-      }
-    }
-  }
-  return blocks;
-};
 
 describe('validateUpstreamInputs', () => {
   it('accepts official owner/name defaults and builds a credential-free HTTPS URL', () => {
@@ -1021,115 +1003,21 @@ describe('source immutability snapshot', () => {
   });
 });
 
-describe('enterprise-upstream-rebase workflow', () => {
-  it('is read-only dry-run with integration-tree gates and pinned actions', async () => {
-    const source = await readFile(WORKFLOW_PATH, 'utf8');
-    const workflow = parse(source) as {
-      concurrency: { 'cancel-in-progress': boolean; 'group': string };
-      jobs: Record<
-        string,
-        {
-          'if'?: string;
-          'steps': Array<Record<string, unknown>>;
-          'timeout-minutes'?: number;
-        }
-      >;
-      on: Record<string, unknown>;
-      permissions: Record<string, string>;
-    };
+describe('GitHub Actions upstream isolation', () => {
+  it('does not ship automatic upstream sync or rebase workflow entrypoints', async () => {
+    await expect(access(SYNC_WORKFLOW_PATH)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(UPSTREAM_REBASE_WORKFLOW_PATH)).rejects.toMatchObject({ code: 'ENOENT' });
 
-    expect(workflow.permissions).toEqual({ contents: 'read' });
-    expect(workflow.concurrency['cancel-in-progress']).toBe(true);
-    expect(workflow.on).toHaveProperty('workflow_dispatch');
-    expect(workflow.on).toHaveProperty('schedule');
-
-    const job = workflow.jobs['dry-run'];
-    expect(job['timeout-minutes']).toBe(90);
-    const uses = job.steps
-      .map((step) => step.uses)
-      .filter((value): value is string => typeof value === 'string');
-    expect(uses).toContain('actions/checkout@v6');
-    expect(uses).toContain('actions/upload-artifact@v6');
-
-    const joined = extractRunBlocks(source).join('\n');
-    expect(joined).toContain('integrationRepository');
-    expect(joined).toContain('UPSTREAM_REBASE_INTEGRATION_REPO');
-    expect(joined).toContain('run-gates');
-    expect(joined).toContain('changed-paths');
-    expect(joined).toContain('UPSTREAM_REBASE_SOURCE_HEAD');
-    expect(joined).toContain('UPSTREAM_REBASE_SOURCE_STATUS_DIGEST');
-    expect(joined).toMatch(/git status --porcelain=v1 -z/);
-    expect(joined).toMatch(/sha256sum/);
-    expect(joined).not.toMatch(/\bwc\s+-c\b/u);
-    expect(joined).not.toContain('UPSTREAM_REBASE_SOURCE_STATUS_BYTES');
-    expect(joined).not.toMatch(/\bgit\s+push\b/u);
-    expect(joined).not.toContain('GITHUB_TOKEN');
-    expect(joined).toMatch(/rm_code=\$\?/);
-
-    // Gates must not run against GITHUB_WORKSPACE as the integration repo.
-    expect(joined).toContain('--repo "$UPSTREAM_REBASE_INTEGRATION_REPO"');
-    expect(joined).not.toMatch(
-      /run-gates \\[\t\v\f\r \xA0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]*\n\s*--repo "\$GITHUB_WORKSPACE"/u,
+    const workflowFiles = (await readdir(WORKFLOWS_PATH)).filter(
+      (filename) => filename.endsWith('.yml') || filename.endsWith('.yaml'),
     );
+    const workflowSources = await Promise.all(
+      workflowFiles.map(async (filename) => readFile(path.join(WORKFLOWS_PATH, filename), 'utf8')),
+    );
+    const allWorkflows = workflowSources.join('\n');
 
-    const syncSource = await readFile(SYNC_WORKFLOW_PATH, 'utf8');
-    expect(syncSource).toContain('Fork-Sync-With-Upstream-action');
-    expect(source).not.toContain('Fork-Sync-With-Upstream-action');
-    expect(source).not.toContain('contents: write');
-  });
-
-  it('captures pristine snapshot before setup-env and pnpm install with runner-native tools only', async () => {
-    const source = await readFile(WORKFLOW_PATH, 'utf8');
-    const workflow = parse(source) as {
-      jobs: Record<string, { steps: Array<{ name?: string; run?: string; uses?: string }> }>;
-    };
-    const steps = workflow.jobs['dry-run'].steps;
-    const names = steps.map((step) => step.name ?? '');
-    const checkout = names.indexOf('Checkout candidate');
-    const pristine = names.indexOf('Capture pristine source snapshot');
-    const setup = names.indexOf('Setup environment');
-    const install = names.findIndex((name) => name.includes('Install dependencies on candidate'));
-
-    expect(checkout).toBeGreaterThanOrEqual(0);
-    expect(pristine).toBe(checkout + 1);
-    expect(pristine).toBeLessThan(setup);
-    expect(pristine).toBeLessThan(install);
-
-    const pristineStep = steps[pristine];
-    expect(pristineStep.run).toBeDefined();
-    expect(pristineStep.uses).toBeUndefined();
-    // Runner-native only: no candidate-owned scripts, setup-env, bun, or node.
-    expect(pristineStep.run).not.toContain('bun ');
-    expect(pristineStep.run).not.toContain('node ');
-    expect(pristineStep.run).not.toContain('scripts/enterprise');
-    expect(pristineStep.run).not.toContain('setup-env');
-    expect(pristineStep.run).not.toContain('pnpm install');
-    expect(pristineStep.run).toContain('git status --porcelain=v1 -z');
-    expect(pristineStep.run).toContain('sha256sum');
-    expect(pristineStep.run).toContain('git rev-parse HEAD');
-
-    // Counterexample: a post-setup snapshot must not be the first trusted baseline.
-    // If setup/install ran first, a candidate hook could commit and re-baseline.
-    const firstCandidateAction = Math.min(setup, install);
-    expect(pristine).toBeLessThan(firstCandidateAction);
-    const prepareIndex = names.findIndex((name) => name.includes('Prepare isolated'));
-    expect(prepareIndex).toBeGreaterThan(install);
-    // Prepare must re-assert the *initial* digest, not capture a new baseline.
-    const prepareRun = steps[prepareIndex].run ?? '';
-    expect(prepareRun).toContain('UPSTREAM_REBASE_SOURCE_STATUS_DIGEST');
-    expect(prepareRun).not.toMatch(/snapshot-source/);
-  });
-
-  it('documents actionlint unavailability when the binary is missing', async () => {
-    const { spawnSync } = await import('node:child_process');
-    const probe = spawnSync('actionlint', ['-version'], { encoding: 'utf8' });
-    if (probe.error || probe.status !== 0) {
-      expect(probe.error?.message ?? probe.stderr ?? 'actionlint unavailable').toMatch(
-        /actionlint|ENOENT|not found|unavailable/i,
-      );
-      return;
-    }
-    const lint = spawnSync('actionlint', [WORKFLOW_PATH], { encoding: 'utf8' });
-    expect(lint.status).toBe(0);
+    expect(allWorkflows).not.toContain('aormsby/Fork-Sync-With-Upstream-action');
+    expect(allWorkflows).not.toContain('upstream_sync_repo');
+    expect(allWorkflows).not.toContain('scripts/enterprise/upstream-rebase-ci/index.ts');
   });
 });

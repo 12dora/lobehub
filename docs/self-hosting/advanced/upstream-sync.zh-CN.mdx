@@ -1,15 +1,14 @@
 ---
-title: LobeHub 启动自动更新 - Vercel / Zeabur 部署
-description: 按照指南重新部署项目以解决 LobeHub 在 Vercel 中默认创建新项目导致的“有可用更新”提示问题，并启用自动更新。
+title: LobeHub 手动更新 - Vercel / Zeabur 部署
+description: 按照指南重新部署项目，并由维护者按需手动合入上游更新。
 tags:
   - Vercel
   - Zeabur
-  - 自动更新
+  - 手动更新
   - Docker部署
-  - Github Actions
 ---
 
-# 启动自动更新
+# 手动更新
 
 ## `A` Vercel / Zeabur 部署
 
@@ -19,21 +18,26 @@ tags:
 - 使用页面右上角的 <kbd>Fork</kbd> 按钮，Fork 本项目；
 - 在 `Vercel` 上重新选择并部署。
 
-### 启动自动更新
+### 手动更新 Fork
 
-<Callout>如果你在执行 `Upstream Sync` 时遇到错误，请尝试手动执再行一次</Callout>
+<Callout type={'warning'}>
+  本仓库不包含自动拉取或合并上游改动的 GitHub Actions 工作流。上游更新必须由仓库维护者审核并明确发起。
+</Callout>
 
-当你 Fork 了项目后，由于 Github 的限制，你需要手动在你 Fork 的项目的 Actions 页面启用 Workflows，并启动 Upstream Sync Action。启用后，你可以设置每小时进行一次自动更新。
+对于没有冲突改动的 Fork，可以使用 GitHub 的 **Sync fork** 或 **Update branch** 功能。每次更新后请检查引入的提交和部署结果。
 
-<Image alt="启动自动更新 S1" src="https://github-production-user-asset-6210df.s3.amazonaws.com/17870709/266985117-4d48fe7b-0412-4667-8129-b25ebcf2c9de.png" />
+对于包含自定义改动的 Fork，请在本地克隆中更新，以便在推送前解决冲突并完成测试：
 
-<Image alt="启动自动更新 S2" src="https://github-production-user-asset-6210df.s3.amazonaws.com/17870709/266985177-7677b4ce-c348-4145-9f60-829d448d5be6.png" />
+```bash
+git remote add upstream https://github.com/lobehub/lobehub.git
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push origin main
+```
 
-如果你遇到了同步失败的情况，你需要手动重新点一次 「Update Branch」。
-
-<Image alt="GitHub Action 同步失败" src="/blog/assets195200c7bc42360675e78a6bfa9fe320.webp" />
-
-<Image alt="手动同步 「Update Branch」" src="/blog/assetsbeefe4dbe3e6f141e09c62064c6dc397.webp" />
+如果已经存在 `upstream` remote，请使用 `git remote set-url upstream
+https://github.com/lobehub/lobehub.git` 更新地址，不要重复添加。
 
 ## `B` Docker 部署
 

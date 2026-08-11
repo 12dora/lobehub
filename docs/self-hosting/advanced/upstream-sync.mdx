@@ -1,18 +1,16 @@
 ---
-title: LobeHub Upstream Sync and Docker Deployment Guide
+title: Manual Upstream Updates and Docker Deployment Guide
 description: >-
-  Learn how to enable automatic updates for LobeHub Vercel deployments and
-  upgrade Docker deployment versions easily. Follow step-by-step instructions
-  for a seamless deployment process.
+  Learn how to update a LobeHub fork manually for Vercel deployments and
+  upgrade Docker deployment versions.
 tags:
-  - Upstream Sync
+  - Manual Updates
   - Vercel Deployment
   - Docker Deployment
-  - Automatic Updates
   - Redeploy Docker Container
 ---
 
-# Upstream Sync
+# Manual Upstream Updates
 
 ## `A` Vercel / Zeabur Deployment
 
@@ -22,23 +20,29 @@ If you deployed your project according to the one-click deployment steps in the 
 - Use the <kbd>Fork</kbd> button in the top right corner of the page to fork the original project;
 - Redeploy on `Vercel`.
 
-### Enable Automatic Updates
+### Update a Fork Manually
 
-<Callout>
-  If you encounter an error when executing `Upstream Sync`, please try executing it manually again
+<Callout type={'warning'}>
+  This repository does not include a GitHub Actions workflow that fetches or merges upstream
+  changes. Upstream updates must be reviewed and started explicitly by a repository maintainer.
 </Callout>
 
-After forking the project, due to Github's limitations, you need to manually enable Workflows on the Actions page of your forked project and start the Upstream Sync Action. Once enabled, you can set up automatic updates to occur every hour.
+For a fork without conflicting changes, use GitHub's **Sync fork** or **Update branch** control.
+Review the incoming commits and deployment result after each update.
 
-<Image alt="Enable Automatic Updates S1" src="https://github-production-user-asset-6210df.s3.amazonaws.com/17870709/266985117-4d48fe7b-0412-4667-8129-b25ebcf2c9de.png" />
+For forks with custom changes, update from a local clone so conflicts can be resolved and tested
+before pushing:
 
-<Image alt="Enable Automatic Updates S2" src="https://github-production-user-asset-6210df.s3.amazonaws.com/17870709/266985177-7677b4ce-c348-4145-9f60-829d448d5be6.png" />
+```bash
+git remote add upstream https://github.com/lobehub/lobehub.git
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push origin main
+```
 
-If you encounter a sync failure, you need to manually click "Update Branch" once.
-
-<Image alt="GitHub Action Sync Failure" src="/blog/assets195200c7bc42360675e78a6bfa9fe320.webp" />
-
-<Image alt="Manually Sync 'Update Branch'" src="/blog/assetsbeefe4dbe3e6f141e09c62064c6dc397.webp" />
+If the `upstream` remote already exists, use `git remote set-url upstream
+https://github.com/lobehub/lobehub.git` instead of adding it again.
 
 ## `B` Docker Deployment
 
