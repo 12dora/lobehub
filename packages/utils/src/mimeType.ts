@@ -26,6 +26,8 @@ const CUSTOM_MIME_TYPES: Record<string, string> = {
  * @returns MIME type string
  */
 export const getMimeType = (path: string): string => {
-  const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
+  const fileName = path.replace(/^.*[/\\]/s, '');
+  const dotIndex = fileName.lastIndexOf('.');
+  const ext = dotIndex > 0 ? fileName.slice(dotIndex).toLowerCase() : '';
   return CUSTOM_MIME_TYPES[ext] || mime.getType(path) || 'application/octet-stream';
 };

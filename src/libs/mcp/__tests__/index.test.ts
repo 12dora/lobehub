@@ -1,14 +1,14 @@
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { MCPClient } from '../index';
 
 const require = createRequire(import.meta.url);
-const mcpHelloWorldRoot = dirname(require.resolve('mcp-hello-world/package.json'));
+const mcpHelloWorldRoot = path.dirname(require.resolve('mcp-hello-world/package.json'));
 /** Local stdio entry (see mcp-hello-world `bin`); avoids `npx` so npm never reads this repo's overrides. */
-const mcpHelloWorldStdio = join(mcpHelloWorldRoot, 'build', 'stdio.js');
+const mcpHelloWorldStdio = path.join(mcpHelloWorldRoot, 'build', 'stdio.js');
 
 describe('MCPClient', () => {
   // --- Updated Stdio Transport tests ---
@@ -85,6 +85,80 @@ describe('MCPClient', () => {
         expect(result).toEqual({
           content: [{ type: 'text', text: 'The sum is: 12' }],
         });
+      },
+      TIMEOUT,
+    );
+  });
+
+  // Regression for https://github.com/lobehub/lobehub/issues/17307:
+  // neither the main stdio transport nor the failure-path pre-check may spread
+  // the full server process.env into the spawned subprocess, otherwise
+  // server-side secrets leak to the MCP process.
+  describe('Stdio env isolation (#17307)', () => {
+    const TIMEOUT = 120_000;
+
+    it('does not pass server process.env secrets to the main stdio transport', () => {
+      const SECRET_KEY = 'LOBE_TEST_SECRET_LEAK';
+      const SECRET_VALUE = 'super-secret-should-not-leak-1234';
+      const ALLOWED_KEY = 'LOBE_TEST_USER_ENV';
+      const ALLOWED_VALUE = 'user-configured-value';
+
+      process.env[SECRET_KEY] = SECRET_VALUE;
+      try {
+        const mcpClient = new MCPClient({
+          id: 'env-leak-transport-test',
+          name: 'Env Leak Transport Test',
+          type: 'stdio',
+          command: process.execPath,
+          args: ['-e', ''],
+          env: { [ALLOWED_KEY]: ALLOWED_VALUE },
+        } as any);
+
+        const transportEnv: Record<string, string> = (mcpClient as any).transport?._serverParams
+          ?.env;
+
+        expect(transportEnv).toBeDefined();
+        expect(transportEnv[SECRET_KEY]).toBeUndefined();
+        expect(transportEnv[ALLOWED_KEY]).toBe(ALLOWED_VALUE);
+      } finally {
+        delete process.env[SECRET_KEY];
+      }
+    });
+
+    it(
+      'does not leak server process.env secrets to the pre-check subprocess',
+      async () => {
+        const SECRET_KEY = 'LOBE_TEST_SECRET_LEAK';
+        const SECRET_VALUE = 'super-secret-should-not-leak-1234';
+        const ALLOWED_KEY = 'LOBE_TEST_USER_ENV';
+        const ALLOWED_VALUE = 'user-configured-value';
+
+        process.env[SECRET_KEY] = SECRET_VALUE;
+        try {
+          const childScript = `console.error('${SECRET_KEY}=' + (process.env.${SECRET_KEY} ?? '') + '\\n${ALLOWED_KEY}=' + (process.env.${ALLOWED_KEY} ?? '')); process.exit(1);`;
+          const mcpClient = new MCPClient({
+            id: 'env-leak-test',
+            name: 'Env Leak Test',
+            type: 'stdio',
+            command: process.execPath,
+            args: ['-e', childScript],
+            env: { [ALLOWED_KEY]: ALLOWED_VALUE },
+          } as any);
+
+          let thrown: any;
+          try {
+            await mcpClient.initialize();
+          } catch (error) {
+            thrown = error;
+          }
+
+          expect(thrown).toBeDefined();
+          const errorLog: string = thrown?.data?.metadata?.errorLog ?? '';
+          expect(errorLog).not.toContain(SECRET_VALUE);
+          expect(errorLog).toContain(ALLOWED_VALUE);
+        } finally {
+          delete process.env[SECRET_KEY];
+        }
       },
       TIMEOUT,
     );

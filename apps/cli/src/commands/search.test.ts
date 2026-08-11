@@ -1,9 +1,15 @@
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { log } from '../utils/logger';
 import { registerSearchCommand } from './search';
 
-const { mockTrpcClient } = vi.hoisted(() => ({
+const { mockToolsTrpcClient, mockTrpcClient } = vi.hoisted(() => ({
+  mockToolsTrpcClient: {
+    search: {
+      webSearch: { query: vi.fn() },
+    },
+  },
   mockTrpcClient: {
     search: {
       query: { query: vi.fn() },
@@ -11,11 +17,17 @@ const { mockTrpcClient } = vi.hoisted(() => ({
   },
 }));
 
-const { getTrpcClient: mockGetTrpcClient } = vi.hoisted(() => ({
-  getTrpcClient: vi.fn(),
-}));
+const { getToolsTrpcClient: mockGetToolsTrpcClient, getTrpcClient: mockGetTrpcClient } = vi.hoisted(
+  () => ({
+    getToolsTrpcClient: vi.fn(),
+    getTrpcClient: vi.fn(),
+  }),
+);
 
-vi.mock('../api/client', () => ({ getTrpcClient: mockGetTrpcClient }));
+vi.mock('../api/client', () => ({
+  getToolsTrpcClient: mockGetToolsTrpcClient,
+  getTrpcClient: mockGetTrpcClient,
+}));
 vi.mock('../utils/logger', () => ({
   log: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
   setVerbose: vi.fn(),
@@ -29,7 +41,10 @@ describe('search command', () => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any);
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     mockGetTrpcClient.mockResolvedValue(mockTrpcClient);
+    mockGetToolsTrpcClient.mockResolvedValue(mockToolsTrpcClient);
     mockTrpcClient.search.query.query.mockReset();
+    mockToolsTrpcClient.search.webSearch.query.mockReset();
+    vi.mocked(log.error).mockClear();
   });
 
   afterEach(() => {
@@ -48,7 +63,7 @@ describe('search command', () => {
     mockTrpcClient.search.query.query.mockResolvedValue([]);
 
     const program = createProgram();
-    await program.parseAsync(['node', 'test', 'search', 'hello']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'hello']);
 
     expect(mockTrpcClient.search.query.query).toHaveBeenCalledWith(
       expect.objectContaining({ query: 'hello' }),
@@ -59,7 +74,7 @@ describe('search command', () => {
     mockTrpcClient.search.query.query.mockResolvedValue([]);
 
     const program = createProgram();
-    await program.parseAsync(['node', 'test', 'search', 'test', '--type', 'agent']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'test', '--type', 'agent']);
 
     expect(mockTrpcClient.search.query.query).toHaveBeenCalledWith(
       expect.objectContaining({ query: 'test', type: 'agent' }),
@@ -70,7 +85,7 @@ describe('search command', () => {
     mockTrpcClient.search.query.query.mockResolvedValue([]);
 
     const program = createProgram();
-    await program.parseAsync(['node', 'test', 'search', 'test', '-L', '5']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'test', '-L', '5']);
 
     expect(mockTrpcClient.search.query.query).toHaveBeenCalledWith(
       expect.objectContaining({ limitPerType: 5 }),
@@ -82,7 +97,7 @@ describe('search command', () => {
     mockTrpcClient.search.query.query.mockResolvedValue(results);
 
     const program = createProgram();
-    await program.parseAsync(['node', 'test', 'search', 'test', '--json']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'test', '--json']);
 
     expect(consoleSpy).toHaveBeenCalledWith(JSON.stringify(results, null, 2));
   });
@@ -91,7 +106,7 @@ describe('search command', () => {
     mockTrpcClient.search.query.query.mockResolvedValue([]);
 
     const program = createProgram();
-    await program.parseAsync(['node', 'test', 'search', 'nothing']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'nothing']);
 
     expect(consoleSpy).toHaveBeenCalledWith('No results found.');
   });
@@ -103,7 +118,7 @@ describe('search command', () => {
     ]);
 
     const program = createProgram();
-    await program.parseAsync(['node', 'test', 'search', 'test']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'test']);
 
     // Should display group headers
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('agent'));
@@ -117,7 +132,7 @@ describe('search command', () => {
     });
 
     const program = createProgram();
-    await program.parseAsync(['node', 'test', 'search', 'test']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'test']);
 
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('agents'));
   });
@@ -125,9 +140,43 @@ describe('search command', () => {
   it('should reject invalid type', async () => {
     const program = createProgram();
     const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await program.parseAsync(['node', 'test', 'search', 'test', '--type', 'invalid']);
+    await program.parseAsync(['node', 'test', 'search', '-q', 'test', '--type', 'invalid']);
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     stderrSpy.mockRestore();
+  });
+
+  it('should surface web search provider failures for non-JSON output', async () => {
+    mockToolsTrpcClient.search.webSearch.query.mockResolvedValue({
+      costTime: 0,
+      errorDetail: 'All search providers failed',
+      query: 'broken',
+      resultNumbers: 0,
+      results: [],
+    });
+
+    const program = createProgram();
+    await program.parseAsync(['node', 'test', 'search', '-w', '-q', 'broken']);
+
+    expect(log.error).toHaveBeenCalledWith('All search providers failed');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it('should keep JSON web search failure output and exit nonzero', async () => {
+    const failure = {
+      costTime: 0,
+      errorDetail: 'All search providers failed',
+      query: 'broken',
+      resultNumbers: 0,
+      results: [],
+    };
+    mockToolsTrpcClient.search.webSearch.query.mockResolvedValue(failure);
+
+    const program = createProgram();
+    await program.parseAsync(['node', 'test', 'search', '-w', '-q', 'broken', '--json']);
+
+    expect(consoleSpy).toHaveBeenCalledWith(JSON.stringify(failure, null, 2));
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

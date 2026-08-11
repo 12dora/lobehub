@@ -13,13 +13,13 @@ import type {
   WriteLocalFileParams,
 } from '@lobechat/electron-client-ipc';
 import { LocalSystemExecutionRuntime } from '@lobechat/tool-runtime';
-import type { BuiltinToolResult } from '@lobechat/types';
+import type { BuiltinToolContext, BuiltinToolResult } from '@lobechat/types';
 import { BaseExecutor } from '@lobechat/types';
 
 import { localFileService } from '@/services/electron/localFileService';
 
 import { LocalSystemIdentifier } from '../../types';
-import { resolveArgsWithScope } from '../../utils/path';
+import { resolveArgsWithScope, resolvePathWithScope } from '../../utils/path';
 
 const DEFAULT_FILE_SEARCH_LIMIT = 100;
 
@@ -122,9 +122,12 @@ class LocalSystemExecutor extends BaseExecutor<typeof LocalSystemApiEnum> {
     }
   };
 
-  searchFiles = async (params: LocalSearchFilesParams): Promise<BuiltinToolResult> => {
+  searchFiles = async (
+    params: LocalSearchFilesParams,
+    ctx?: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => {
     try {
-      const resolvedParams = resolveArgsWithScope(params, 'directory');
+      const resolvedParams = resolveArgsWithScope(params, 'directory', ctx?.workingDirectory);
       const result = await this.runtime.searchFiles({
         ...resolvedParams,
         directory: resolvedParams.directory || '',
@@ -230,10 +233,14 @@ class LocalSystemExecutor extends BaseExecutor<typeof LocalSystemApiEnum> {
     }
   };
 
-  globFiles = async (params: GlobFilesParams): Promise<BuiltinToolResult> => {
+  globFiles = async (
+    params: GlobFilesParams,
+    ctx?: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => {
     try {
+      const resolvedScope = resolvePathWithScope(params.scope, ctx?.workingDirectory);
       const result = await this.runtime.globFiles({
-        directory: params.scope,
+        directory: resolvedScope,
         limit:
           Number.isFinite(params.limit) && params.limit && params.limit > 0
             ? Math.floor(params.limit)
