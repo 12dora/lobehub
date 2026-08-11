@@ -770,25 +770,43 @@ export class GatewayActionImpl {
     // Refresh the short-lived JWT and read the durable operation state in
     // parallel. The status read recovers a human-intervention outcome when the
     // Gateway's best-effort push was dropped before this reconnect.
-    let reconnectData;
-    try {
-      reconnectData = await Promise.all([
-        aiAgentService.refreshGatewayToken(topicId),
-        aiAgentService.getOperationStatus({ operationId }).catch((error) => {
-          console.error('[Gateway] getOperationStatus failed during reconnect:', error);
-          return null;
-        }),
-      ]);
-    } catch (error) {
-      // NOT_FOUND means the server no longer has this operation. Clear the stale
-      // local marker and resolve normally so the reconnect caller cannot loop 404s.
-      if (isTrpcErrorCode(error, 'NOT_FOUND')) {
+    const [refreshResult, statusResult] = await Promise.allSettled([
+      aiAgentService.refreshGatewayToken(topicId),
+      aiAgentService.getOperationStatus({ operationId }),
+    ]);
+
+    if (refreshResult.status === 'rejected') {
+      if (!isTrpcErrorCode(refreshResult.reason, 'NOT_FOUND')) throw refreshResult.reason;
+
+      // A refresh 404 can be transient while durable operation state still
+      // exists. Only abandon reconnect when the independent status read proves
+      // the operation is absent or terminal; otherwise retain the marker and
+      // surface a generic retryable error to SWR.
+      const operationStatus = statusResult.status === 'fulfilled' ? statusResult.value : undefined;
+      const status = operationStatus?.currentState.status;
+      const isConfirmedMissing =
+        (statusResult.status === 'fulfilled' && !operationStatus) ||
+        (statusResult.status === 'rejected' && isTrpcErrorCode(statusResult.reason, 'NOT_FOUND'));
+      const isConfirmedTerminal =
+        status === 'done' || status === 'error' || status === 'interrupted';
+      if (isConfirmedMissing || isConfirmedTerminal) {
         this.clearLocalRunningOperation({ operationId, topicId });
         return;
       }
-      throw error;
+
+      throw new Error(
+        `Gateway operation ${operationId} token refresh was temporarily unavailable`,
+        {
+          cause: refreshResult.reason,
+        },
+      );
     }
-    const [{ token }, operationStatus] = reconnectData;
+
+    if (statusResult.status === 'rejected') {
+      console.error('[Gateway] getOperationStatus failed during reconnect:', statusResult.reason);
+    }
+    const { token } = refreshResult.value;
+    const operationStatus = statusResult.status === 'fulfilled' ? statusResult.value : null;
 
     // Re-check after the async token refresh: a newer executeGatewayAgent call may have
     // taken over for this topic while we were waiting. If so, bail to avoid a duplicate stream.

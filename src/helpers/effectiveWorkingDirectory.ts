@@ -1,7 +1,7 @@
 import { isDesktop } from '@lobechat/const';
 
 import { getAgentStoreState } from '@/store/agent';
-import { agentSelectors } from '@/store/agent/selectors';
+import { agentByIdSelectors, agentSelectors } from '@/store/agent/selectors';
 import type { ChatStoreState } from '@/store/chat/initialState';
 import { topicSelectors } from '@/store/chat/selectors';
 import { getElectronStoreState } from '@/store/electron';
@@ -14,13 +14,31 @@ import { getElectronStoreState } from '@/store/electron';
 export const resolveEffectiveWorkingDirectory = (
   chatState: ChatStoreState,
   topicId?: string | null,
+  agentId?: string,
+  groupId?: string,
 ): string | undefined => {
   if (!isDesktop) return undefined;
 
-  const topicWorkingDirectory = topicSelectors.getTopicWorkingDirectory(topicId)(chatState);
+  // Topic selectors normally read the active agent/group bucket. When an
+  // operation identity is supplied, scope the lookup to that operation's
+  // bucket instead of whichever conversation the user is currently viewing.
+  const operationScopedState = agentId
+    ? { ...chatState, activeAgentId: agentId, activeGroupId: groupId }
+    : chatState;
+  const topicWorkingDirectory =
+    topicSelectors.getTopicWorkingDirectory(topicId)(operationScopedState);
   if (topicWorkingDirectory) return topicWorkingDirectory;
 
   const currentDeviceId = getElectronStoreState().gatewayDeviceInfo?.deviceId;
+  if (agentId) {
+    return (
+      agentByIdSelectors.getAgentWorkingDirectoryById(
+        agentId,
+        currentDeviceId,
+      )(getAgentStoreState()) ?? undefined
+    );
+  }
+
   return (
     agentSelectors.currentAgentWorkingDirectory(currentDeviceId)(getAgentStoreState()) ?? undefined
   );

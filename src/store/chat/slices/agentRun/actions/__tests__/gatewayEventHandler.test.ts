@@ -612,7 +612,10 @@ describe('createGatewayEventHandler', () => {
       await flush();
 
       expect(store.internal_executeClientTool).toHaveBeenCalledWith(toolExecuteData, {
+        agentId: 'agent-1',
+        groupId: undefined,
         operationId: 'op-1',
+        topicId: 'topic-1',
       });
     });
 
@@ -628,7 +631,10 @@ describe('createGatewayEventHandler', () => {
       await flush();
 
       expect(store.internal_executeClientTool).toHaveBeenCalledWith(toolExecuteData, {
+        agentId: 'agent-1',
+        groupId: undefined,
         operationId: 'gw-op-server',
+        topicId: 'topic-1',
       });
     });
 

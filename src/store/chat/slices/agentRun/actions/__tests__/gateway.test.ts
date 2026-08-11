@@ -1230,7 +1230,82 @@ describe('GatewayActionImpl', () => {
       delete (globalThis as any).window;
     });
 
-    it('clears a stale local marker and stops reconnecting when token refresh returns NOT_FOUND', async () => {
+    function runningOperationStatus() {
+      return {
+        currentState: { metadata: undefined, status: 'running' },
+        isActive: true,
+      } as any;
+    }
+
+    it('retains the marker and surfaces a retryable error when refresh is NOT_FOUND but status is running', async () => {
+      const topicDataMap = {
+        [topicMapKey({ agentId: 'agent-1' })]: {
+          items: [
+            {
+              id: 'topic-1',
+              metadata: { runningOperation: { operationId: 'server-op-1' } },
+            },
+          ],
+        },
+      };
+      const { action, internalDispatchTopic, startOperation } = createReconnectTestAction(
+        { createdAt: 1, id: 'ast-1' },
+        [],
+        topicDataMap,
+      );
+      vi.mocked(aiAgentService.refreshGatewayToken).mockRejectedValueOnce({
+        data: { code: 'NOT_FOUND' },
+      });
+      vi.mocked(aiAgentService.getOperationStatus).mockResolvedValueOnce(runningOperationStatus());
+
+      await expect(
+        action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        }),
+      ).rejects.toThrow('temporarily unavailable');
+
+      expect(internalDispatchTopic).not.toHaveBeenCalled();
+      expect(startOperation).not.toHaveBeenCalled();
+    });
+
+    it('retains the marker and surfaces a retryable error when refresh is NOT_FOUND and status fails', async () => {
+      const topicDataMap = {
+        [topicMapKey({ agentId: 'agent-1' })]: {
+          items: [
+            {
+              id: 'topic-1',
+              metadata: { runningOperation: { operationId: 'server-op-1' } },
+            },
+          ],
+        },
+      };
+      const { action, internalDispatchTopic } = createReconnectTestAction(
+        { createdAt: 1, id: 'ast-1' },
+        [],
+        topicDataMap,
+      );
+      vi.mocked(aiAgentService.refreshGatewayToken).mockRejectedValueOnce({
+        data: { code: 'NOT_FOUND' },
+      });
+      vi.mocked(aiAgentService.getOperationStatus).mockRejectedValueOnce(new Error('offline'));
+
+      await expect(
+        action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        }),
+      ).rejects.toThrow('temporarily unavailable');
+
+      expect(internalDispatchTopic).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['missing', null],
+      ['terminal', { currentState: { status: 'done' } }],
+    ])('clears a stale marker when refresh is NOT_FOUND and status is %s', async (_, status) => {
       const topicDataMap = {
         [topicMapKey({ agentId: 'agent-1' })]: {
           items: [
@@ -1252,6 +1327,7 @@ describe('GatewayActionImpl', () => {
       vi.mocked(aiAgentService.refreshGatewayToken).mockRejectedValueOnce({
         data: { code: 'NOT_FOUND' },
       });
+      vi.mocked(aiAgentService.getOperationStatus).mockResolvedValueOnce(status as any);
 
       await expect(
         action.reconnectToGatewayOperation({
@@ -1267,6 +1343,79 @@ describe('GatewayActionImpl', () => {
         value: { metadata: { model: 'gpt-4', runningOperation: null } },
       });
       expect(startOperation).not.toHaveBeenCalled();
+    });
+
+    it('clears a stale marker when both refresh and status return NOT_FOUND', async () => {
+      const topicDataMap = {
+        [topicMapKey({ agentId: 'agent-1' })]: {
+          items: [
+            {
+              id: 'topic-1',
+              metadata: { runningOperation: { operationId: 'server-op-1' } },
+            },
+          ],
+        },
+      };
+      const { action, internalDispatchTopic } = createReconnectTestAction(
+        { createdAt: 1, id: 'ast-1' },
+        [],
+        topicDataMap,
+      );
+      const notFound = { data: { code: 'NOT_FOUND' } };
+      vi.mocked(aiAgentService.refreshGatewayToken).mockRejectedValueOnce(notFound);
+      vi.mocked(aiAgentService.getOperationStatus).mockRejectedValueOnce(notFound);
+
+      await expect(
+        action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(internalDispatchTopic).toHaveBeenCalled();
+    });
+
+    it('recovers when a transient refresh NOT_FOUND succeeds on retry', async () => {
+      const topicDataMap = {
+        [topicMapKey({ agentId: 'agent-1' })]: {
+          items: [
+            {
+              id: 'topic-1',
+              metadata: { runningOperation: { operationId: 'server-op-1' } },
+            },
+          ],
+        },
+      };
+      const { action, internalDispatchTopic, startOperation } = createReconnectTestAction(
+        { createdAt: 1, id: 'ast-1' },
+        [],
+        topicDataMap,
+      );
+      vi.mocked(aiAgentService.refreshGatewayToken)
+        .mockRejectedValueOnce({ data: { code: 'NOT_FOUND' } })
+        .mockResolvedValueOnce({ token: 'fresh-token' } as any);
+      vi.mocked(aiAgentService.getOperationStatus)
+        .mockResolvedValueOnce(runningOperationStatus())
+        .mockResolvedValueOnce(runningOperationStatus());
+
+      await expect(
+        action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        }),
+      ).rejects.toThrow('temporarily unavailable');
+      await expect(
+        action.reconnectToGatewayOperation({
+          assistantMessageId: 'ast-1',
+          operationId: 'server-op-1',
+          topicId: 'topic-1',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(internalDispatchTopic).not.toHaveBeenCalled();
+      expect(startOperation).toHaveBeenCalledTimes(1);
     });
 
     // After a DB rehydrate (e.g. quit + relaunch), `createdAt` can arrive as an

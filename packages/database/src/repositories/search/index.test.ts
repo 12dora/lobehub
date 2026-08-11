@@ -2,7 +2,7 @@
 import { eq } from 'drizzle-orm';
 import { drizzle as nodeDrizzle } from 'drizzle-orm/node-postgres';
 import { Pool as NodePool } from 'pg';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
 import * as schema from '../../schemas';
@@ -40,7 +40,9 @@ beforeEach(async () => {
 
   // Initialize repo
   searchRepo = new SearchRepo(serverDB, userId);
-});
+  // Cascade-deleting the high-cardinality recall fixtures (20k+ rows) can
+  // exceed vitest's default 10s hook timeout on a busy ParadeDB instance.
+}, 60_000);
 
 // BM25 search requires pg_search extension (ParadeDB), not available in PGlite
 const isServerDB = process.env.TEST_SERVER_DB === '1';
@@ -72,6 +74,27 @@ const SCAN_ALIASES = [
   'page_hits',
   'topic_hits',
 ];
+
+describe('SearchRepo scoped candidate deepening', () => {
+  it('bounds invocations when every candidate pool remains saturated', async () => {
+    const repo = new SearchRepo({} as LobeChatDatabase, userId);
+    const run = vi.fn(async (scanLimit: number) => ({ candidateCount: scanLimit, rows: [] }));
+    const deepen = (
+      repo as unknown as {
+        deepenScopedCandidates: <T>(
+          initialCandidateLimit: number,
+          requiredRows: number,
+          callback: (scanLimit: number) => Promise<{ candidateCount: number; rows: T[] }>,
+        ) => Promise<T[]>;
+      }
+    ).deepenScopedCandidates;
+
+    await expect(deepen(500, 5, run)).resolves.toEqual([]);
+
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(run.mock.calls.map(([scanLimit]) => scanLimit)).toEqual([501, 2001, 8001, 32_001]);
+  });
+});
 
 describe.skipIf(!isServerDB)('SearchRepo', () => {
   describe('search - empty query', () => {
@@ -1627,103 +1650,6 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
     });
   });
 
-  describe('search - saturated scoped recall', () => {
-    const insertMessagesInBatches = async (
-      rows: Array<typeof messages.$inferInsert>,
-      batchSize = 5000,
-    ) => {
-      for (let offset = 0; offset < rows.length; offset += batchSize) {
-        await serverDB.insert(messages).values(rows.slice(offset, offset + batchSize));
-      }
-    };
-
-    it('returns personal hits beyond a saturated workspace-heavy candidate pool', async () => {
-      const workspaceId = 'search-recall-workspace';
-      await serverDB.insert(workspaces).values({
-        id: workspaceId,
-        name: 'Search Recall Workspace',
-        primaryOwnerId: userId,
-        slug: 'search-recall-workspace',
-      });
-
-      await insertMessagesInBatches([
-        ...Array.from({ length: 501 }, () => ({
-          content: 'scopedrecalltoken '.repeat(20),
-          role: 'user' as const,
-          userId,
-          workspaceId,
-        })),
-        ...Array.from({ length: 3 }, (_, index) => ({
-          content: `scopedrecalltoken personal ${index}`,
-          role: 'user' as const,
-          userId,
-          workspaceId: null,
-        })),
-      ]);
-
-      const results = await searchRepo.search({
-        limitPerType: 3,
-        query: 'scopedrecalltoken',
-        type: 'message',
-      });
-
-      expect(results).toHaveLength(3);
-      expect(results.every((result) => result.title.includes('personal'))).toBe(true);
-    });
-
-    it('returns agent hits beyond a saturated 20k agent candidate pool', async () => {
-      const insertedAgents = await serverDB
-        .insert(agents)
-        .values([
-          { title: 'Recall Target Agent', userId },
-          { title: 'Recall Competing Agent', userId },
-        ])
-        .returning({ id: agents.id, title: agents.title });
-      const targetAgentId = insertedAgents.find((agent) => agent.title?.includes('Target'))!.id;
-      const competingAgentId = insertedAgents.find((agent) =>
-        agent.title?.includes('Competing'),
-      )!.id;
-
-      await insertMessagesInBatches([
-        ...Array.from({ length: 20_001 }, () => ({
-          agentId: competingAgentId,
-          content: 'agentrecalltoken '.repeat(20),
-          role: 'user' as const,
-          userId,
-        })),
-        ...Array.from({ length: 3 }, (_, index) => ({
-          agentId: targetAgentId,
-          content: `agentrecalltoken target ${index}`,
-          role: 'user' as const,
-          userId,
-        })),
-      ]);
-
-      const results = await searchRepo.search({
-        agentId: targetAgentId,
-        limitPerType: 3,
-        query: 'agentrecalltoken',
-        type: 'message',
-      });
-
-      expect(results).toHaveLength(3);
-      expect(
-        results.every((result) => result.type === 'message' && result.agentId === targetAgentId),
-      ).toBe(true);
-    }, 120_000);
-  });
-
-  // The workspace-scoping tests above pin *results*, and this change is
-  // deliberately result-neutral — they pass against the pre-fix implementation
-  // too. What actually fixes LOBE-12379 is the *shape* of the emitted SQL, so
-  // it needs its own guard: ParadeDB only picks `TopNScanExecState` when the
-  // scan node itself carries the whole `ORDER BY paradedb.score() LIMIT n`.
-  //
-  // Asserting the plan directly is not an option in CI: the container runs a
-  // newer pg_search than production, and its `heap_filter` keeps TopN even with
-  // a non-indexed qual — the exact regression would be invisible. So we assert
-  // the structural invariant that makes TopN reachable instead, which fails on
-  // the pre-fix single-level query regardless of engine version.
   describe('search - BM25 scan shape', () => {
     let loggingPool: NodePool | undefined;
 
@@ -1881,4 +1807,106 @@ describe.skipIf(!isServerDB)('SearchRepo', () => {
       }
     });
   });
+
+  // NOTE: keep this block LAST. Its fixtures insert/delete 20k+ rows; ParadeDB's
+  // BM25 index can hit "item_pointer_is_valid(ctid)" assertions when another
+  // scan runs immediately after the mass cascade delete, so no test may scan
+  // after this block within the same run.
+  describe('search - saturated scoped recall', () => {
+    const insertMessagesInBatches = async (
+      rows: Array<typeof messages.$inferInsert>,
+      batchSize = 5000,
+    ) => {
+      for (let offset = 0; offset < rows.length; offset += batchSize) {
+        await serverDB.insert(messages).values(rows.slice(offset, offset + batchSize));
+      }
+    };
+
+    it('returns personal hits beyond a saturated workspace-heavy candidate pool', async () => {
+      const workspaceId = 'search-recall-workspace';
+      await serverDB.insert(workspaces).values({
+        id: workspaceId,
+        name: 'Search Recall Workspace',
+        primaryOwnerId: userId,
+        slug: 'search-recall-workspace',
+      });
+
+      await insertMessagesInBatches([
+        ...Array.from({ length: 501 }, () => ({
+          content: 'scopedrecalltoken '.repeat(20),
+          role: 'user' as const,
+          userId,
+          workspaceId,
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          content: `scopedrecalltoken personal ${index}`,
+          role: 'user' as const,
+          userId,
+          workspaceId: null,
+        })),
+      ]);
+
+      const results = await searchRepo.search({
+        limitPerType: 3,
+        query: 'scopedrecalltoken',
+        type: 'message',
+      });
+
+      expect(results).toHaveLength(3);
+      expect(results.every((result) => result.title.includes('personal'))).toBe(true);
+    });
+
+    it('returns agent hits beyond a saturated 20k agent candidate pool', async () => {
+      const insertedAgents = await serverDB
+        .insert(agents)
+        .values([
+          { title: 'Recall Target Agent', userId },
+          { title: 'Recall Competing Agent', userId },
+        ])
+        .returning({ id: agents.id, title: agents.title });
+      const targetAgentId = insertedAgents.find((agent) => agent.title?.includes('Target'))!.id;
+      const competingAgentId = insertedAgents.find((agent) =>
+        agent.title?.includes('Competing'),
+      )!.id;
+
+      await insertMessagesInBatches([
+        ...Array.from({ length: 20_001 }, () => ({
+          agentId: competingAgentId,
+          content: 'agentrecalltoken '.repeat(20),
+          role: 'user' as const,
+          userId,
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          agentId: targetAgentId,
+          content: `agentrecalltoken target ${index}`,
+          role: 'user' as const,
+          userId,
+        })),
+      ]);
+
+      const results = await searchRepo.search({
+        agentId: targetAgentId,
+        limitPerType: 3,
+        query: 'agentrecalltoken',
+        type: 'message',
+      });
+
+      expect(results).toHaveLength(3);
+      expect(
+        results.every((result) => result.type === 'message' && result.agentId === targetAgentId),
+      ).toBe(true);
+    }, 120_000);
+  });
+
+  // The workspace-scoping tests above pin *results*, and this change is
+  // deliberately result-neutral — they pass against the pre-fix implementation
+  // too. What actually fixes LOBE-12379 is the *shape* of the emitted SQL, so
+  // it needs its own guard: ParadeDB only picks `TopNScanExecState` when the
+  // scan node itself carries the whole `ORDER BY paradedb.score() LIMIT n`.
+  //
+  // Asserting the plan directly is not an option in CI: the container runs a
+  // newer pg_search than production, and its `heap_filter` keeps TopN even with
+  // a non-indexed qual — the exact regression would be invisible. So we assert
+  // the structural invariant that makes TopN reachable instead, which fails on
+  // the pre-fix single-level query regardless of engine version.
 });

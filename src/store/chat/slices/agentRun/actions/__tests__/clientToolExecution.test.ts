@@ -5,10 +5,20 @@ import { ClientToolExecutionActionImpl } from '../transports/client/clientToolEx
 
 // ─── Hoisted mocks ───
 
-const { hasExecutorMock, invokeExecutorMock, invokeMcpToolCallMock } = vi.hoisted(() => ({
+const {
+  hasExecutorMock,
+  invokeExecutorMock,
+  invokeMcpToolCallMock,
+  resolveEffectiveWorkingDirectoryMock,
+} = vi.hoisted(() => ({
   hasExecutorMock: vi.fn(),
   invokeExecutorMock: vi.fn(),
   invokeMcpToolCallMock: vi.fn(),
+  resolveEffectiveWorkingDirectoryMock: vi.fn(),
+}));
+
+vi.mock('@/helpers/effectiveWorkingDirectory', () => ({
+  resolveEffectiveWorkingDirectory: resolveEffectiveWorkingDirectoryMock,
 }));
 
 vi.mock('@/store/tool/slices/builtin/executors', () => ({
@@ -84,12 +94,66 @@ beforeEach(() => {
   hasExecutorMock.mockReset();
   invokeExecutorMock.mockReset();
   invokeMcpToolCallMock.mockReset();
+  resolveEffectiveWorkingDirectoryMock.mockReset();
 });
 
 // ─── Tests ───
 
 describe('internal_executeClientTool', () => {
   describe('builtin dispatch', () => {
+    it("uses the operation topic's working directory when another topic is active", async () => {
+      hasExecutorMock.mockReturnValue(true);
+      invokeExecutorMock.mockResolvedValue({ content: 'ok', success: true });
+      resolveEffectiveWorkingDirectoryMock.mockReturnValue('/workspace-b');
+      const { action, state } = setup();
+      state.activeAgentId = 'agent-a';
+      state.activeTopicId = 'topic-a';
+
+      await action.internal_executeClientTool(makeData(), {
+        agentId: 'agent-b',
+        operationId: 'op-1',
+        topicId: 'topic-b',
+      });
+
+      expect(resolveEffectiveWorkingDirectoryMock).toHaveBeenCalledWith(
+        state,
+        'topic-b',
+        'agent-b',
+        undefined,
+      );
+      expect(invokeExecutorMock).toHaveBeenCalledWith(
+        'local-system',
+        'readFile',
+        { path: '/tmp/a.txt' },
+        expect.objectContaining({
+          agentId: 'agent-b',
+          topicId: 'topic-b',
+          workingDirectory: '/workspace-b',
+        }),
+      );
+    });
+
+    it('fails closed when the operation cannot be mapped to a topic', async () => {
+      hasExecutorMock.mockReturnValue(true);
+      invokeExecutorMock.mockResolvedValue({ content: 'ok', success: true });
+      const { action, state } = setup();
+      state.activeTopicId = 'topic-a';
+      delete state.operations['op-1'];
+
+      await action.internal_executeClientTool(makeData(), { operationId: 'op-1' });
+
+      expect(resolveEffectiveWorkingDirectoryMock).not.toHaveBeenCalled();
+      expect(invokeExecutorMock).toHaveBeenCalledWith(
+        'local-system',
+        'readFile',
+        { path: '/tmp/a.txt' },
+        expect.objectContaining({
+          topicId: undefined,
+          workingDirectory: undefined,
+        }),
+      );
+    });
+
     it('sends a successful tool_result when the executor returns content', async () => {
       hasExecutorMock.mockReturnValue(true);
       invokeExecutorMock.mockResolvedValue({

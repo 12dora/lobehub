@@ -64,7 +64,12 @@ export class ClientToolExecutionActionImpl {
 
   internal_executeClientTool = async (
     data: ToolExecuteData,
-    context: { operationId: string },
+    context: {
+      agentId?: string;
+      groupId?: string;
+      operationId: string;
+      topicId?: string | null;
+    },
   ): Promise<void> => {
     const { toolCallId, identifier, apiName, arguments: argsString, executionTimeoutMs } = data;
     const { operationId } = context;
@@ -131,13 +136,16 @@ export class ClientToolExecutionActionImpl {
       }
 
       const operation = this.#get().operations[operationId];
+      const operationAgentId = context.agentId ?? operation?.context?.agentId;
+      const operationGroupId = context.groupId ?? operation?.context?.groupId;
+      const operationTopicId = context.topicId ?? operation?.context?.topicId;
 
       // ─── Builtin dispatch (via registry) ───
       if (hasExecutor(identifier, apiName)) {
         const ctx: BuiltinToolContext = {
-          agentId: operation?.context?.agentId,
+          agentId: operationAgentId,
           documentId: operation?.context?.documentId,
-          groupId: operation?.context?.groupId,
+          groupId: operationGroupId,
           // Gateway-side tool messages are persisted on the server; the client
           // has no local message id, so reuse toolCallId as the context key.
           messageId: toolCallId,
@@ -146,11 +154,19 @@ export class ClientToolExecutionActionImpl {
           scope: operation?.context?.scope,
           signal: operation?.abortController?.signal,
           sourceMessageId: operation?.context?.messageId,
-          topicId: operation?.context?.topicId ?? undefined,
-          workingDirectory: resolveEffectiveWorkingDirectory(
-            this.#get(),
-            operation?.context?.topicId,
-          ),
+          topicId: operationTopicId ?? undefined,
+          // A missing operation→topic mapping is security-sensitive: do not
+          // fall back to the active topic/agent. `undefined` makes filesystem
+          // tools treat the directory as outside the trusted topic scope and
+          // request approval.
+          workingDirectory: operationTopicId
+            ? resolveEffectiveWorkingDirectory(
+                this.#get(),
+                operationTopicId,
+                operationAgentId,
+                operationGroupId,
+              )
+            : undefined,
         };
 
         log('[ClientToolCall] execute:start', {
@@ -212,7 +228,7 @@ export class ClientToolExecutionActionImpl {
               },
               {
                 signal: operation?.abortController?.signal,
-                topicId: operation?.context?.topicId ?? undefined,
+                topicId: operationTopicId ?? undefined,
               },
             )
             .catch((err) => {

@@ -1,3 +1,4 @@
+import debug from 'debug';
 import { and, desc, eq, inArray, isNull, ne, type SQL, sql, type SQLWrapper } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
@@ -17,6 +18,8 @@ import type { LobeChatDatabase } from '../../type';
 import { sanitizeBm25Query } from '../../utils/bm25';
 import { normalizeInboxAgentMeta, normalizeInboxAgentTitle } from '../../utils/inboxAgent';
 import { buildWorkspaceWhere } from '../../utils/workspace';
+
+const log = debug('lobe-db:search-repository');
 
 export type SearchResultType =
   | 'page'
@@ -271,6 +274,10 @@ const WORKSPACE_FILTER_MIN_CANDIDATES = 500;
 /** Growth factor for a saturated scoped BM25 candidate pool. */
 const SCOPED_CANDIDATE_GROWTH_FACTOR = 4;
 
+/** Hard stops for adversarially saturated scoped BM25 scans. */
+const MAX_SCOPED_CANDIDATE_DEEPENING_ROUNDS = 3;
+const MAX_SCOPED_CANDIDATES = 100_000;
+
 /**
  * Flip to `true` once every BM25 index used by this repo carries `workspace_id`
  * as a fast keyword field (LOBE-12381). pg_search then pushes `workspace_id IS
@@ -378,12 +385,31 @@ export class SearchRepo {
     run: (scanLimit: number) => Promise<{ candidateCount: number; rows: T[] }>,
   ): Promise<T[]> {
     let candidateLimit = initialCandidateLimit;
+    let deepeningRounds = 0;
 
     while (true) {
       const { candidateCount, rows } = await run(candidateLimit + 1);
       if (rows.length >= requiredRows || candidateCount <= candidateLimit) return rows;
 
-      candidateLimit *= SCOPED_CANDIDATE_GROWTH_FACTOR;
+      if (
+        candidateLimit >= MAX_SCOPED_CANDIDATES ||
+        deepeningRounds >= MAX_SCOPED_CANDIDATE_DEEPENING_ROUNDS
+      ) {
+        log(
+          'Scoped BM25 candidate deepening capped at %d candidates after %d rounds; returning %d/%d rows',
+          candidateLimit,
+          deepeningRounds,
+          rows.length,
+          requiredRows,
+        );
+        return rows;
+      }
+
+      candidateLimit = Math.min(
+        candidateLimit * SCOPED_CANDIDATE_GROWTH_FACTOR,
+        MAX_SCOPED_CANDIDATES,
+      );
+      deepeningRounds += 1;
     }
   }
 
