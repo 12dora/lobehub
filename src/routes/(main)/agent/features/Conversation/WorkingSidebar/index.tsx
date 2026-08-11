@@ -1,7 +1,7 @@
 import { ActionIcon, Flexbox } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { PanelRightCloseIcon } from 'lucide-react';
-import { lazy, memo, useEffect, useState } from 'react';
+import { lazy, memo, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DESKTOP_HEADER_ICON_SMALL_SIZE } from '@/const/layoutTokens';
@@ -35,8 +35,12 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     flex: 1;
     min-height: 0;
   `,
+  close: css`
+    flex-shrink: 0;
+  `,
   header: css`
     flex-shrink: 0;
+    min-width: 0;
   `,
   pane: css`
     overflow-y: auto;
@@ -49,13 +53,16 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   tab: css`
     cursor: pointer;
 
+    flex-shrink: 0;
+
     padding-block: 4px;
-    padding-inline: 10px;
+    padding-inline: 8px;
     border: none;
     border-radius: 6px;
 
-    font-size: 13px;
+    font-size: 12px;
     color: ${cssVar.colorTextTertiary};
+    white-space: nowrap;
 
     background: transparent;
 
@@ -72,9 +79,19 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     background: ${cssVar.colorFillTertiary};
   `,
   tabs: css`
+    scrollbar-width: none;
+
+    overflow-x: auto;
     display: flex;
+    flex: 1;
     gap: 4px;
     align-items: center;
+
+    min-width: 0;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
   `,
 }));
 
@@ -142,6 +159,14 @@ const AgentWorkingSidebar = memo(() => {
   const reviewAvailable =
     (isLocalSystemEnabled || isDeviceMode) && !!workingDirectory && !!repoType;
   const paramsAvailable = !isHetero;
+  // Signature of which tabs exist so a late-arriving tab (e.g. Review after
+  // repoType resolves) re-runs the overflow scroll-into-view effect.
+  const availableTabsSignature = JSON.stringify([
+    'resources',
+    ...(reviewAvailable ? ['review'] : []),
+    ...(filesAvailable ? ['files'] : []),
+    ...(paramsAvailable ? ['params'] : []),
+  ]);
   const resolveActiveTab = (): Tab => {
     if (storedTab === 'params' && paramsAvailable) return 'params';
     if (storedTab === 'review' && reviewAvailable) return 'review';
@@ -153,6 +178,7 @@ const AgentWorkingSidebar = memo(() => {
     return 'resources';
   };
   const activeTab: Tab = resolveActiveTab();
+  const tabsRef = useRef<HTMLDivElement>(null);
 
   // Review's tree-nav rail lives here (not inside Review) so the panel can widen
   // when the two-pane layout is on. Hidden by default — the panel shows only the
@@ -170,6 +196,22 @@ const AgentWorkingSidebar = memo(() => {
       typeof w === 'number' && w < TWO_PANE_MIN_WIDTH ? TWO_PANE_MIN_WIDTH : w,
     );
   }, [reviewTwoPane]);
+
+  // At the 300px min panel width, nowrap tab labels can overflow the strip.
+  // Scroll the active tab into view so a persisted end-of-strip tab stays visible.
+  useEffect(() => {
+    const tabs = tabsRef.current;
+    const activeTabButton = tabs?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]');
+    if (!tabs || !activeTabButton) return;
+
+    const tabsRect = tabs.getBoundingClientRect();
+    const activeTabRect = activeTabButton.getBoundingClientRect();
+    const isVisible = activeTabRect.left >= tabsRect.left && activeTabRect.right <= tabsRect.right;
+
+    if (!isVisible) {
+      activeTabButton.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [activeTab, availableTabsSignature, panelWidth]);
 
   return (
     <RightPanel
@@ -191,12 +233,14 @@ const AgentWorkingSidebar = memo(() => {
           horizontal
           align={'center'}
           className={styles.header}
+          gap={4}
           height={44}
           justify={'space-between'}
           paddingInline={4}
         >
-          <div className={styles.tabs}>
+          <div className={styles.tabs} ref={tabsRef}>
             <button
+              aria-pressed={activeTab === 'resources'}
               className={`${styles.tab} ${activeTab === 'resources' ? styles.tabActive : ''}`}
               type="button"
               onClick={() => setWorkingSidebarTab('resources')}
@@ -205,6 +249,7 @@ const AgentWorkingSidebar = memo(() => {
             </button>
             {reviewAvailable && (
               <button
+                aria-pressed={activeTab === 'review'}
                 className={`${styles.tab} ${activeTab === 'review' ? styles.tabActive : ''}`}
                 type="button"
                 onClick={() => setWorkingSidebarTab('review')}
@@ -214,6 +259,7 @@ const AgentWorkingSidebar = memo(() => {
             )}
             {filesAvailable && (
               <button
+                aria-pressed={activeTab === 'files'}
                 className={`${styles.tab} ${activeTab === 'files' ? styles.tabActive : ''}`}
                 type="button"
                 onClick={() => setWorkingSidebarTab('files')}
@@ -223,6 +269,7 @@ const AgentWorkingSidebar = memo(() => {
             )}
             {paramsAvailable && (
               <button
+                aria-pressed={activeTab === 'params'}
                 className={`${styles.tab} ${activeTab === 'params' ? styles.tabActive : ''}`}
                 type="button"
                 onClick={() => setWorkingSidebarTab('params')}
@@ -232,6 +279,7 @@ const AgentWorkingSidebar = memo(() => {
             )}
           </div>
           <ActionIcon
+            className={styles.close}
             icon={PanelRightCloseIcon}
             size={DESKTOP_HEADER_ICON_SMALL_SIZE}
             onClick={() => toggleRightPanel(false)}
