@@ -110,6 +110,107 @@ describe('LobeGoogleAI', () => {
       expect(getModelPricingMock).toHaveBeenCalledWith('gemini-logical', provider, undefined);
     });
 
+    it('should apply upstream model compatibility after model mapping', async () => {
+      const mappedInstance = new LobeGoogleAI({
+        apiKey: 'test',
+        modelIdMapping: { 'gemini-logical': 'gemini-3.6-flash' },
+      });
+      const mockStreamData = createEmptyAsyncGenerator<GenerateContentResponse>();
+      vi.spyOn(mappedInstance['client'].models, 'generateContentStream').mockResolvedValue(
+        mockStreamData,
+      );
+
+      await mappedInstance.chat({
+        messages: [
+          { content: 'Hello', role: 'user' },
+          { content: 'Prefilled answer', role: 'assistant' },
+        ],
+        model: 'gemini-logical',
+        temperature: 0.7,
+        thinkingBudget: 2048,
+        thinkingLevel: 'medium',
+        top_p: 0.9,
+      });
+
+      const callArgs = (mappedInstance['client'].models.generateContentStream as any).mock.calls[0];
+      const request = callArgs[0];
+
+      expect(request.model).toBe('gemini-3.6-flash');
+      expect(request.config).toMatchObject({
+        thinkingConfig: { thinkingBudget: undefined, thinkingLevel: 'medium' },
+      });
+      expect(request.config).not.toHaveProperty('temperature');
+      expect(request.config).not.toHaveProperty('topP');
+      expect(request.contents).toMatchObject([{ parts: [{ text: 'Hello' }], role: 'user' }]);
+      expect(getModelPricingMock).toHaveBeenCalledWith('gemini-logical', provider, undefined);
+    });
+
+    it.each([
+      ['gemini-3.6-flash', 'medium'],
+      ['gemini-3.5-flash-lite', 'minimal'],
+    ] as const)('should omit deprecated generation config for %s', async (model, thinkingLevel) => {
+      await instance.chat({
+        messages: [{ content: 'Hello', role: 'user' }],
+        model,
+        temperature: 0.7,
+        thinkingBudget: 2048,
+        thinkingLevel,
+        top_p: 0.9,
+      });
+
+      const callArgs = (instance['client'].models.generateContentStream as any).mock.calls[0];
+      const config = callArgs[0].config;
+
+      expect(config.temperature).toBeUndefined();
+      expect(config.topP).toBeUndefined();
+      expect(config.thinkingConfig).toMatchObject({
+        thinkingBudget: undefined,
+        thinkingLevel,
+      });
+    });
+
+    it.each(['gemini-3.6-flash', 'gemini-3.5-flash-lite'])(
+      'should drop assistant prefill turns for %s',
+      async (model) => {
+        await instance.chat({
+          messages: [
+            { content: 'Hello', role: 'user' },
+            { content: 'Prefilled answer', role: 'assistant' },
+          ],
+          model,
+        });
+
+        const callArgs = (instance['client'].models.generateContentStream as any).mock.calls[0];
+
+        expect(callArgs[0].contents).toHaveLength(1);
+        expect(callArgs[0].contents[0]).toMatchObject({
+          parts: [{ text: 'Hello' }],
+          role: 'user',
+        });
+      },
+    );
+
+    it('should retain assistant prefill turns and sampling config for earlier Gemini models', async () => {
+      await instance.chat({
+        messages: [
+          { content: 'Hello', role: 'user' },
+          { content: 'Prefilled answer', role: 'assistant' },
+        ],
+        model: 'gemini-3.5-flash',
+        temperature: 0.7,
+        top_p: 0.9,
+      });
+
+      const callArgs = (instance['client'].models.generateContentStream as any).mock.calls[0];
+
+      expect(callArgs[0].contents.at(-1)).toMatchObject({
+        parts: [{ text: 'Prefilled answer' }],
+        role: 'model',
+      });
+      expect(callArgs[0].config.temperature).toBe(0.7);
+      expect(callArgs[0].config.topP).toBe(0.9);
+    });
+
     it('should handle text messages correctly', async () => {
       // Mock Google AI SDK's generateContentStream method to return a successful response stream
       const mockStream = new ReadableStream({
@@ -1012,6 +1113,45 @@ describe('buildGoogleToolsWithSearch', () => {
     expect(config.temperature).toBe(1);
     expect(config.tools).toEqual([{ googleSearch: {} }]);
     expect(config.toolConfig).toBeUndefined();
+  });
+
+  it('should keep image resolution in imageConfig when aspect ratio is auto', async () => {
+    await instance.chat({
+      imageAspectRatio: 'auto',
+      imageResolution: '4K',
+      messages: [{ content: 'Hello', role: 'user' }],
+      model: 'gemini-3.5-pro-image-preview',
+      temperature: 1,
+    });
+
+    const callArgs = (instance['client'].models.generateContentStream as any).mock.calls[0];
+    expect(callArgs[0].config.imageConfig).toEqual({ imageSize: '4K' });
+  });
+
+  it('should omit imageConfig when aspect ratio is auto and no resolution is set', async () => {
+    await instance.chat({
+      imageAspectRatio: 'auto',
+      messages: [{ content: 'Hello', role: 'user' }],
+      model: 'gemini-3.5-pro-image-preview',
+      temperature: 1,
+    });
+
+    const callArgs = (instance['client'].models.generateContentStream as any).mock.calls[0];
+    expect(callArgs[0].config.imageConfig).toBeUndefined();
+  });
+
+  it('should not build imageConfig for non-image-response models', async () => {
+    await instance.chat({
+      imageAspectRatio: '16:9',
+      imageResolution: '2K',
+      messages: [{ content: 'Hello', role: 'user' }],
+      model: 'gemini-2.0-flash',
+      temperature: 1,
+    });
+
+    const callArgs = (instance['client'].models.generateContentStream as any).mock.calls[0];
+    expect(callArgs[0].config.imageConfig).toBeUndefined();
+    expect(callArgs[0].config.responseModalities).toBeUndefined();
   });
 
   it('should not set includeServerSideToolInvocations for Vertex AI', async () => {

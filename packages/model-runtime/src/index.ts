@@ -57,7 +57,7 @@ export { LobeMinimaxAI } from './providers/minimax';
 export { LobeMinimaxCodingPlanAI } from './providers/minimaxCodingPlan';
 export { LobeMistralAI } from './providers/mistral';
 export { LobeMoonshotAI } from './providers/moonshot';
-export { isKimiAlwaysPreserveThinkingModel } from './providers/moonshot/kimiModelId';
+export { isKimiAlwaysPreserveThinkingModel } from './providers/moonshot/modelId';
 export { LobeNebiusAI } from './providers/nebius';
 export { LobeNewAPIAI } from './providers/newapi';
 export { LobeOllamaAI } from './providers/ollama';
