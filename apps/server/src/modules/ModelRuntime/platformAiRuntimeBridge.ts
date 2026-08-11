@@ -1,11 +1,13 @@
 import type { ModelRuntimeHooks } from '@lobechat/model-runtime';
 import type { AiProviderRuntimeState } from '@lobechat/types';
-import type { EnabledAiModel } from 'model-bank';
+import type { EnabledAiModel, ModelSearchImplementType } from 'model-bank';
 
 import type { LobeChatDatabase } from '@/database/type';
 
 export interface PlatformAiExecutionModel {
+  abilities?: { search?: boolean };
   modelKey: string;
+  settings?: { searchImpl?: ModelSearchImplementType };
   type: string;
 }
 

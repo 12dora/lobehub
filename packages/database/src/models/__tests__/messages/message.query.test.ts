@@ -480,11 +480,15 @@ describe('MessageModel Query Tests', () => {
         return { lastId: prevId as string };
       };
 
-      const isContiguousChain = (result: { id: string; parentId?: string | null }[]) => {
-        const ids = new Set(result.map((message) => message.id));
-        return result.every(
-          (message, index) => index === 0 || (!!message.parentId && ids.has(message.parentId)),
-        );
+      const collectAllPageIds = async (options: { groupId?: string; topicId: string }) => {
+        const pageSize = 4;
+        const ids: string[] = [];
+
+        for (let current = 0; ; current += 1) {
+          const page = await messageModel.query({ ...options, current, pageSize });
+          ids.push(...page.map((message) => message.id));
+          if (page.length < pageSize) return ids;
+        }
       };
 
       it('keeps the newest turns and final answer when truncated', async () => {
@@ -497,15 +501,15 @@ describe('MessageModel Query Tests', () => {
         expect(result.at(-1)!.id).toBe(lastId);
       });
 
-      it('aligns the lower boundary to a user-message round start', async () => {
+      it('preserves every row in the fixed-size newest page', async () => {
         const topicId = 't-lobe12011-align';
         const { lastId } = await seedRounds(topicId, 5, 2);
 
         const result = await messageModel.query({ current: 0, pageSize: 4, topicId });
 
+        expect(result).toHaveLength(4);
         expect(result.map((message) => message.id)).toContain(lastId);
-        expect(result[0].role).toBe('user');
-        expect(isContiguousChain(result)).toBe(true);
+        expect(result[0].role).toBe('assistant');
       });
 
       it('keeps an oversized single round instead of trimming to empty', async () => {
@@ -517,6 +521,47 @@ describe('MessageModel Query Tests', () => {
         expect(result).toHaveLength(4);
         expect(result.every((message) => message.role !== 'user')).toBe(true);
         expect(result.at(-1)!.id).toBe(lastId);
+      });
+
+      it('returns every topic message across fixed-offset pages', async () => {
+        const topicId = 't-lobe12011-lossless';
+        await seedRounds(topicId, 2, 2);
+
+        const ids = await collectAllPageIds({ topicId });
+        const fullSet = await messageModel.query({ topicId });
+
+        expect(new Set(ids)).toEqual(new Set(fullSet.map((message) => message.id)));
+        expect(ids).toHaveLength(fullSet.length);
+      });
+
+      it('returns every group-chat message across fixed-offset pages', async () => {
+        const groupId = 'g-lobe12011-lossless';
+        const topicId = 't-lobe12011-group-lossless';
+        await serverDB.insert(chatGroups).values({ id: groupId, title: 'Lossless', userId });
+        await serverDB.insert(agents).values([
+          { id: 'agt-lobe12011-supervisor', title: 'Supervisor', userId },
+          { id: 'agt-lobe12011-member', title: 'Member', userId },
+        ]);
+        await serverDB.insert(topics).values({ groupId, id: topicId, userId });
+        await serverDB.insert(messages).values(
+          Array.from({ length: 6 }, (_, index) => ({
+            agentId: index % 2 === 0 ? 'agt-lobe12011-supervisor' : 'agt-lobe12011-member',
+            content: `group message ${index}`,
+            createdAt: new Date(2023, 0, 1, 0, index),
+            groupId,
+            id: `${topicId}-${index}`,
+            role: index === 0 ? 'user' : 'assistant',
+            targetId: index % 2 === 0 ? 'agt-lobe12011-member' : 'user',
+            topicId,
+            userId,
+          })),
+        );
+
+        const ids = await collectAllPageIds({ groupId, topicId });
+        const fullSet = await messageModel.query({ groupId, topicId });
+
+        expect(new Set(ids)).toEqual(new Set(fullSet.map((message) => message.id)));
+        expect(ids).toHaveLength(fullSet.length);
       });
     });
 

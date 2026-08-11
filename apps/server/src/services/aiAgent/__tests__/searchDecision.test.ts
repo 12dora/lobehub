@@ -3,6 +3,81 @@ import { describe, expect, it } from 'vitest';
 import { resolveServerSearchDecision } from '../searchDecision';
 
 describe('resolveServerSearchDecision', () => {
+  it('uses managed metadata to disable native search and fall back to application search', () => {
+    const result = resolveServerSearchDecision({
+      builtinModels: [
+        {
+          abilities: { search: true },
+          id: 'gpt-4o-search-preview',
+          providerId: 'openai',
+          settings: { searchImpl: 'internal' },
+        },
+      ],
+      chatConfig: { searchMode: 'on', useModelBuiltinSearch: true },
+      isManagedModel: true,
+      model: 'gpt-4o-search-preview',
+      modelSearchAbility: false,
+      provider: 'openai',
+    });
+
+    expect(result.useModelSearch).toBe(false);
+    expect(result.useApplicationBuiltinSearchTool).toBe(true);
+  });
+
+  it('fails closed when managed search metadata is missing', () => {
+    const result = resolveServerSearchDecision({
+      builtinModels: [
+        {
+          abilities: { search: true },
+          id: 'gpt-4o-search-preview',
+          providerId: 'openai',
+          settings: { searchImpl: 'internal' },
+        },
+      ],
+      chatConfig: { searchMode: 'on', useModelBuiltinSearch: true },
+      isManagedModel: true,
+      model: 'gpt-4o-search-preview',
+      provider: 'openai',
+    });
+
+    expect(result.useModelSearch).toBe(false);
+    expect(result.useApplicationBuiltinSearchTool).toBe(true);
+  });
+
+  it('allows native search when the managed revision explicitly enables it', () => {
+    const result = resolveServerSearchDecision({
+      builtinModels: [],
+      chatConfig: { searchMode: 'on', useModelBuiltinSearch: true },
+      isManagedModel: true,
+      model: 'managed-search-model',
+      modelSearchAbility: true,
+      modelSearchImpl: 'internal',
+      provider: 'managed-provider',
+    });
+
+    expect(result.useModelSearch).toBe(true);
+    expect(result.useApplicationBuiltinSearchTool).toBe(false);
+  });
+
+  it('keeps builtin fallback behavior for an unmanaged model', () => {
+    const result = resolveServerSearchDecision({
+      builtinModels: [
+        {
+          abilities: { search: true },
+          id: 'personal-model',
+          providerId: 'personal-provider',
+          settings: { searchImpl: 'internal' },
+        },
+      ],
+      chatConfig: { searchMode: 'on', useModelBuiltinSearch: true },
+      model: 'personal-model',
+      provider: 'personal-provider',
+    });
+
+    expect(result.useModelSearch).toBe(true);
+    expect(result.useApplicationBuiltinSearchTool).toBe(false);
+  });
+
   it('does not borrow native search capability from another provider with the same model id', () => {
     const result = resolveServerSearchDecision({
       builtinModels: [

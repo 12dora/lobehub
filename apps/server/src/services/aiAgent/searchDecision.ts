@@ -17,6 +17,7 @@ interface ResolveServerSearchDecisionInput {
     useModelBuiltinSearch?: boolean;
   };
   hasModelAbilitiesOverride?: boolean;
+  isManagedModel?: boolean;
   model: string;
   modelSearchAbility?: boolean;
   modelSearchImpl?: ModelSearchImplementType;
@@ -32,29 +33,38 @@ export const resolveServerSearchDecision = ({
   builtinModels,
   chatConfig,
   hasModelAbilitiesOverride,
+  isManagedModel,
   model,
   modelSearchAbility,
   modelSearchImpl,
   provider,
   providerSearchMode,
 }: ResolveServerSearchDecisionInput): SearchDecision => {
-  const builtinModel = builtinModels.find(
-    (item) =>
-      item.providerId === provider && (item.id === model || item.config?.deploymentName === model),
-  );
-  const resolvedModelSearchAbility = hasModelAbilitiesOverride
+  const builtinModel = isManagedModel
+    ? undefined
+    : builtinModels.find(
+        (item) =>
+          item.providerId === provider &&
+          (item.id === model || item.config?.deploymentName === model),
+      );
+  const resolvedModelSearchAbility = isManagedModel
     ? modelSearchAbility
-    : (modelSearchAbility ?? builtinModel?.abilities?.search);
-  const explicitModelSearchImpl = modelSearchImpl ?? builtinModel?.settings?.searchImpl;
+    : hasModelAbilitiesOverride
+      ? modelSearchAbility
+      : (modelSearchAbility ?? builtinModel?.abilities?.search);
+  const explicitModelSearchImpl = isManagedModel
+    ? modelSearchImpl
+    : (modelSearchImpl ?? builtinModel?.settings?.searchImpl);
   const resolvedModelSearchImpl =
     resolvedModelSearchAbility === false
       ? undefined
       : (explicitModelSearchImpl ??
-        (resolvedModelSearchAbility
+        (!isManagedModel && resolvedModelSearchAbility
           ? resolveModelSearchDefaultSettings(provider, builtinModel?.id ?? model).searchImpl
           : undefined));
-  const builtinProviderSearchMode = DEFAULT_MODEL_PROVIDER_LIST.find((item) => item.id === provider)
-    ?.settings.searchMode;
+  const builtinProviderSearchMode = isManagedModel
+    ? undefined
+    : DEFAULT_MODEL_PROVIDER_LIST.find((item) => item.id === provider)?.settings.searchMode;
 
   return resolveSearchDecision({
     modelSearchImpl: resolvedModelSearchImpl,

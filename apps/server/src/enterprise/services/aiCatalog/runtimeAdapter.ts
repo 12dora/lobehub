@@ -5,7 +5,8 @@ import type {
   EnabledProvider,
 } from '@lobechat/types';
 import { isRecord } from '@lobechat/utils/object';
-import { type EnabledAiModel, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
+import type { EnabledAiModel, ModelSearchImplementType } from 'model-bank';
+import { LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
@@ -338,7 +339,9 @@ export interface AiCatalogProviderExecutionConfig {
 }
 
 export interface AiCatalogPublishedExecutionModel {
+  abilities?: { search?: boolean };
   modelKey: string;
+  settings?: { searchImpl?: ModelSearchImplementType };
   type: string;
 }
 
@@ -467,7 +470,22 @@ export class AiCatalogExecutionResolver {
           model.enabled === true &&
           typeof model.modelKey === 'string' &&
           typeof model.type === 'string'
-            ? [{ modelKey: model.modelKey, type: model.type }]
+            ? [
+                {
+                  ...(isRecord(model.abilities) && typeof model.abilities.search === 'boolean'
+                    ? { abilities: { search: model.abilities.search } }
+                    : {}),
+                  modelKey: model.modelKey,
+                  ...(isRecord(model.settings) && typeof model.settings.searchImpl === 'string'
+                    ? {
+                        settings: {
+                          searchImpl: model.settings.searchImpl as ModelSearchImplementType,
+                        },
+                      }
+                    : {}),
+                  type: model.type,
+                },
+              ]
             : [],
         )
       : [];

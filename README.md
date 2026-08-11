@@ -222,7 +222,7 @@ LobeHub provides Self-Hosted Version with Vercel, Alibaba Cloud, and [Docker Ima
 
 #### After Fork
 
-After fork, only retain the upstream sync action and disable other actions in your repository on GitHub.
+After fork, disable GitHub Actions in your repository. This repository does not ship an automatic upstream sync workflow: upstream updates must be reviewed and applied explicitly by a repository maintainer.
 
 #### Keep Updated
 
@@ -230,7 +230,7 @@ If you have deployed your own project following the one-click deployment steps i
 
 > \[!TIP]
 >
-> We suggest you redeploy using the following steps, [📘 Auto Sync With Latest][docs-upstream-sync]
+> Upstream updates are applied manually after review, see [📘 Manual Upstream Updates][docs-upstream-sync]
 
 <br/>
 

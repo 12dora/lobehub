@@ -599,11 +599,6 @@ export class MessageModel {
 
     result.reverse();
 
-    if (topicId && current === 0 && result.length >= pageSize) {
-      const firstRoundStart = result.findIndex((message) => message.role === 'user');
-      if (firstRoundStart > 0) result.splice(0, firstRoundStart);
-    }
-
     const messageIds = result.map((message) => message.id as string);
 
     const messageGroupNodesPromise = this.queryMessageGroupNodesForPage({

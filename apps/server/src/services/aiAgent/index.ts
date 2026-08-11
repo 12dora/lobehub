@@ -136,6 +136,7 @@ import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import type { EvalContext, ServerAgentToolsContext } from '@/server/modules/Mecha';
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
 import type { ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
+import { resolvePlatformAiExecutionConfigAtRevision } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import type { AgentConfigWithId } from '@/server/services/agent';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -2517,34 +2518,49 @@ export class AiAgentService {
     // Model metadata is needed both for tool support checks and agent-management context.
     const { loadModels } = await import('@/business/client/model-bank/loadModels');
     const builtinModels = await loadModels();
-    const [modelMetadataResult, providerMetadataResult] = await Promise.allSettled([
-      new AiModelModel(this.db, this.userId, this.workspaceId).findByIdAndProvider(model, provider),
-      new AiProviderModel(this.db, this.userId, this.workspaceId).findById(provider),
-    ]);
-    if (modelMetadataResult.status === 'rejected') {
+    const managedModelMetadata = platformModelPin
+      ? (
+          await resolvePlatformAiExecutionConfigAtRevision(this.db, platformModelPin)
+        ).allowedModels.find((item) => item.modelKey === platformModelPin.modelKey)
+      : undefined;
+    const [modelMetadataResult, providerMetadataResult] = platformModelPin
+      ? []
+      : await Promise.allSettled([
+          new AiModelModel(this.db, this.userId, this.workspaceId).findByIdAndProvider(
+            model,
+            provider,
+          ),
+          new AiProviderModel(this.db, this.userId, this.workspaceId).findById(provider),
+        ]);
+    if (modelMetadataResult?.status === 'rejected') {
       log('execAgent: failed to load active model search metadata: %O', modelMetadataResult.reason);
     }
-    if (providerMetadataResult.status === 'rejected') {
+    if (providerMetadataResult?.status === 'rejected') {
       log(
         'execAgent: failed to load active provider search metadata: %O',
         providerMetadataResult.reason,
       );
     }
     const activeModelMetadata =
-      modelMetadataResult.status === 'fulfilled' ? modelMetadataResult.value : undefined;
+      modelMetadataResult?.status === 'fulfilled' ? modelMetadataResult.value : undefined;
     const activeProviderMetadata =
-      providerMetadataResult.status === 'fulfilled' ? providerMetadataResult.value : undefined;
-    const activeModelAbilities = activeModelMetadata?.abilities as ModelAbilities | undefined;
+      providerMetadataResult?.status === 'fulfilled' ? providerMetadataResult.value : undefined;
+    const activeModelAbilities = (managedModelMetadata?.abilities ??
+      activeModelMetadata?.abilities) as ModelAbilities | undefined;
     const searchDecision = resolveServerSearchDecision({
       builtinModels,
       chatConfig: agentConfig.chatConfig ?? undefined,
       hasModelAbilitiesOverride:
         !!activeModelAbilities && Object.keys(activeModelAbilities).length > 0,
+      isManagedModel: !!platformModelPin,
       model,
       modelSearchAbility: activeModelAbilities?.search,
-      modelSearchImpl: activeModelMetadata?.settings?.searchImpl,
+      modelSearchImpl:
+        managedModelMetadata?.settings?.searchImpl ?? activeModelMetadata?.settings?.searchImpl,
       provider,
-      providerSearchMode: activeProviderMetadata?.settings?.searchMode,
+      providerSearchMode: platformModelPin
+        ? undefined
+        : activeProviderMetadata?.settings?.searchMode,
     });
     // Resolve file URLs before visual tool activation checks and context build.
     const fileService = new FileService(this.db, this.userId, this.workspaceId);
