@@ -1,6 +1,7 @@
 import { type AgentState } from '@lobechat/agent-runtime';
 import { type BotPlatformContext } from '@lobechat/context-engine';
 import { type ExecSubAgentParams, type ExecVirtualSubAgentParams } from '@lobechat/types';
+import type { SearchDecision } from 'model-bank';
 
 import { type MessageModel } from '@/database/models/message';
 import { type LobeChatDatabase } from '@/database/type';
@@ -49,6 +50,7 @@ export interface RuntimeExecutorContext {
   loadAgentState?: (operationId: string) => Promise<AgentState | null>;
   messageModel: MessageModel;
   operationId: string;
+  searchDecision?: SearchDecision;
   serverDB: LobeChatDatabase;
   stepIndex: number;
   stream?: boolean;

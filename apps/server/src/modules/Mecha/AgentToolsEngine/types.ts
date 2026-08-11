@@ -154,4 +154,6 @@ export interface ServerCreateAgentToolsEngineParams {
    * `ServerAgentToolsEngineConfig.transformBuiltinManifest`.
    */
   transformBuiltinManifest?: (manifest: LobeToolManifest) => LobeToolManifest;
+  /** Final search-routing decision resolved by the caller. */
+  useApplicationBuiltinSearchTool?: boolean;
 }

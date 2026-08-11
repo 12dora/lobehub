@@ -174,6 +174,7 @@ export const createServerAgentToolsEngine = (
     model,
     provider,
     transformBuiltinManifest,
+    useApplicationBuiltinSearchTool,
   } = params;
 
   if (exactBuiltinToolIds) {
@@ -237,7 +238,7 @@ export const createServerAgentToolsEngine = (
     : !!deviceContext?.autoActivated || !!deviceContext?.boundDeviceId;
 
   const searchMode = agentConfig.chatConfig?.searchMode ?? 'auto';
-  const isSearchEnabled = searchMode !== 'off';
+  const isSearchEnabled = useApplicationBuiltinSearchTool ?? searchMode !== 'off';
   // Tool mode: explicit `toolMode` wins; otherwise derive from `enableAgentMode`
   // (undefined = agent). `custom` = toolset is exactly the agent's plugins.
   const toolMode = resolveToolMode(agentConfig.chatConfig ?? undefined);

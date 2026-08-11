@@ -1,56 +1,11 @@
-import { type AiProviderModelListItem, isAiModelVisible, normalizeAiModelType } from 'model-bank';
+import type { AiProviderModelListItem } from 'model-bank';
+import {
+  isAiModelVisible,
+  normalizeAiModelType,
+  resolveModelSearchDefaultSettings,
+} from 'model-bank';
 
 import { mergeArrayById } from './merge';
-
-/**
- * Provider-level search defaults (only used when built-in models don't provide
- * settings.searchImpl / settings.searchProvider). Not stored in DB — injected on read.
- */
-const PROVIDER_SEARCH_DEFAULTS: Record<
-  string,
-  { searchImpl?: 'tool' | 'params' | 'internal'; searchProvider?: string }
-> = {
-  ai360: { searchImpl: 'params' },
-  aihubmix: { searchImpl: 'params' },
-  anthropic: { searchImpl: 'params' },
-  baichuan: { searchImpl: 'params' },
-  default: { searchImpl: 'params' },
-  google: { searchImpl: 'params', searchProvider: 'google' },
-  hunyuan: { searchImpl: 'params' },
-  jina: { searchImpl: 'internal' },
-  minimax: { searchImpl: 'params' },
-  openai: { searchImpl: 'params' },
-  perplexity: { searchImpl: 'internal' },
-  qwen: { searchImpl: 'params' },
-  spark: { searchImpl: 'params' },
-  stepfun: { searchImpl: 'params' },
-  vertexai: { searchImpl: 'params', searchProvider: 'google' },
-  wenxin: { searchImpl: 'params' },
-  xai: { searchImpl: 'params' },
-  zhipu: { searchImpl: 'params' },
-};
-
-const MODEL_SEARCH_DEFAULTS: Record<
-  string,
-  Record<string, { searchImpl?: 'tool' | 'params' | 'internal'; searchProvider?: string }>
-> = {
-  openai: {
-    'gpt-4o-mini-search-preview': { searchImpl: 'internal' },
-    'gpt-4o-search-preview': { searchImpl: 'internal' },
-  },
-  spark: {
-    'max-32k': { searchImpl: 'internal' },
-  },
-};
-
-const inferProviderSearchDefaults = (
-  providerId: string | undefined,
-  modelId: string,
-): { searchImpl?: 'tool' | 'params' | 'internal'; searchProvider?: string } => {
-  const modelSpecificConfig = providerId ? MODEL_SEARCH_DEFAULTS[providerId]?.[modelId] : undefined;
-  if (modelSpecificConfig) return modelSpecificConfig;
-  return (providerId && PROVIDER_SEARCH_DEFAULTS[providerId]) || PROVIDER_SEARCH_DEFAULTS.default;
-};
 
 /**
  * Inject/remove search-related settings based on abilities.search (read-time only).
@@ -78,7 +33,7 @@ export const injectSearchSettings = <T extends Record<string, any>>(
   if (abilities.search === true) {
     if (item?.settings?.searchImpl || item?.settings?.searchProvider) return item;
 
-    const searchSettings = inferProviderSearchDefaults(providerId, item.id);
+    const searchSettings = resolveModelSearchDefaultSettings(providerId, item.id);
 
     return {
       ...item,
