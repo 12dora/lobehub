@@ -19,6 +19,7 @@
     "@fal-ai/client": "^1.10.1",
     "@google/genai": "^1.52.0",
     "@huggingface/inference": "^4.13.21",
+    "@lobechat/business-const": "workspace:*",
     "@lobechat/business-model-bank": "workspace:*",
     "@lobechat/business-model-runtime": "workspace:*",
     "@lobechat/const": "workspace:*",

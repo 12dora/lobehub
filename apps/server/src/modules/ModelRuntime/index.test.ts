@@ -903,6 +903,16 @@ describe('hasModelRuntimeEnvironmentFallback SuperGrok', () => {
   });
 });
 
+describe('hasModelRuntimeEnvironmentFallback ChatGPT', () => {
+  it('never treats CHATGPT_API_KEY as a valid environment fallback', () => {
+    expect(
+      hasModelRuntimeEnvironmentFallback(ModelProvider.ChatGPT, {
+        CHATGPT_API_KEY: 'would-have-been-false-ready',
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('buildPayloadFromKeyVaults SuperGrok contract', () => {
   it('only accepts oauthAccessToken — plain apiKey does not become a usable bearer', () => {
     expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.SuperGrok)).toEqual({
@@ -914,6 +924,26 @@ describe('buildPayloadFromKeyVaults SuperGrok contract', () => {
     ).toEqual({
       apiKey: 'oauth-token-value',
       runtimeProvider: ModelProvider.SuperGrok,
+    });
+  });
+});
+
+describe('buildPayloadFromKeyVaults ChatGPT contract', () => {
+  it('forwards only the OAuth access token and account id required by Codex', () => {
+    expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.ChatGPT)).toEqual({
+      apiKey: undefined,
+      chatgptAccountId: undefined,
+      runtimeProvider: ModelProvider.ChatGPT,
+    });
+    expect(
+      buildPayloadFromKeyVaults(
+        { oauthAccessToken: 'oauth-token-value', oauthAccountId: 'account-id' },
+        ModelProvider.ChatGPT,
+      ),
+    ).toEqual({
+      apiKey: 'oauth-token-value',
+      chatgptAccountId: 'account-id',
+      runtimeProvider: ModelProvider.ChatGPT,
     });
   });
 });

@@ -14,6 +14,7 @@ import {
   type CloudflareKeyVault,
   type ComfyUIKeyVault,
   type GithubCopilotKeyVault,
+  type OAuthDeviceFlowKeyVault,
   type OpenAICompatibleKeyVault,
   type SuperGrokKeyVault,
   type VertexAIKeyVault,
@@ -50,6 +51,7 @@ type ProviderKeyVaults = OpenAICompatibleKeyVault &
   CloudflareKeyVault &
   ComfyUIKeyVault &
   GithubCopilotKeyVault &
+  OAuthDeviceFlowKeyVault &
   SuperGrokKeyVault &
   VertexAIKeyVault;
 
@@ -106,8 +108,9 @@ export const hasModelRuntimeEnvironmentFallback = (
     case ModelProvider.Github: {
       return Boolean(env.GITHUB_TOKEN);
     }
-    // SuperGrok is personal OAuth only — never treat SUPERGROK_API_KEY as platform readiness.
+    // Subscription OAuth providers are personal-only; API-key env vars never make them ready.
     case ModelProvider.GithubCopilot:
+    case ModelProvider.ChatGPT:
     case ModelProvider.LobeHub:
     case ModelProvider.SuperGrok: {
       return false;
@@ -162,6 +165,14 @@ export const buildPayloadFromKeyVaults = (
         awsRegion: region,
         awsSecretAccessKey: secretAccessKey,
         awsSessionToken: sessionToken,
+        runtimeProvider,
+      };
+    }
+
+    case ModelProvider.ChatGPT: {
+      return {
+        apiKey: keyVaults.oauthAccessToken,
+        chatgptAccountId: keyVaults.oauthAccountId,
         runtimeProvider,
       };
     }
@@ -346,6 +357,14 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
     case ModelProvider.SuperGrok: {
       // OAuth-only: never fall back to env API keys
       return { apiKey: payload.apiKey };
+    }
+
+    case ModelProvider.ChatGPT: {
+      // OAuth-only: never fall back to env API keys
+      return {
+        apiKey: payload.apiKey,
+        chatgptAccountId: payload.chatgptAccountId,
+      };
     }
 
     case ModelProvider.ComfyUI: {
@@ -580,7 +599,7 @@ const initUserModelRuntimeFromDB = async (
   let keyVaults = (providerConfig?.keyVaults || {}) as ProviderKeyVaults;
 
   // 3.5. OAuth device-flow providers with rotating refresh tokens (e.g.
-  // SuperGrok): proactively refresh + persist the token pair before building
+  // ChatGPT and SuperGrok): proactively refresh + persist the token pair before building
   // the payload. Mounted here because every server-side LLM call path (webapi
   // chat, agent runtime transport, async image/video, lambda routers)
   // converges on this function.

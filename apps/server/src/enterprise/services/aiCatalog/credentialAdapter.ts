@@ -49,10 +49,13 @@ const SUPPORTED_RUNTIME_PROVIDERS = new Set<string>(Object.values(ModelProvider)
 
 /**
  * Providers that exist in ModelProvider but have no platform-managed credential lifecycle.
- * SuperGrok is personal OAuth only (refresh tokens bound to a user); platform catalog cannot
- * store or refresh oauthAccessToken, and apiKey / SUPERGROK_API_KEY are not valid for it.
+ * ChatGPT and SuperGrok are personal OAuth only (refresh tokens bound to a user); platform catalog cannot
+ * store or refresh oauthAccessToken, and API-key credentials are not valid for them.
  */
-const PLATFORM_UNSUPPORTED_RUNTIME_PROVIDERS = new Set<string>([ModelProvider.SuperGrok]);
+const PLATFORM_UNSUPPORTED_RUNTIME_PROVIDERS = new Set<string>([
+  ModelProvider.ChatGPT,
+  ModelProvider.SuperGrok,
+]);
 
 export const resolveAiCatalogRuntimeProvider = (
   providerKey: string,
@@ -63,7 +66,7 @@ export const resolveAiCatalogRuntimeProvider = (
 const assertSupportedRuntimeProvider = (runtimeProvider: string): void => {
   if (PLATFORM_UNSUPPORTED_RUNTIME_PROVIDERS.has(runtimeProvider)) {
     throw new AiCatalogValidationError([
-      'SuperGrok is personal OAuth only and cannot be managed as a platform provider',
+      `${runtimeProvider} is personal OAuth only and cannot be managed as a platform provider`,
     ]);
   }
   if (!SUPPORTED_RUNTIME_PROVIDERS.has(runtimeProvider)) {

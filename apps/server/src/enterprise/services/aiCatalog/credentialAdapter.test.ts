@@ -264,4 +264,13 @@ describe('AI catalog credential adapter', () => {
       }),
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
   });
+
+  it('rejects ChatGPT as a platform-managed runtime (personal OAuth only)', () => {
+    expect(() => validateAiCatalogRuntimeProvider(ModelProvider.ChatGPT, {}, 'builtin')).toThrow(
+      'PLATFORM_CONFIG_VALIDATION_FAILED',
+    );
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.ChatGPT, { apiKey: 'sk-any' }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+  });
 });

@@ -25,6 +25,7 @@ const DEFAULT_TOKEN_TTL_MS = 3600 * 1000;
 
 export interface OAuthTokenKeyVaults {
   oauthAccessToken?: string;
+  oauthAccountId?: string;
   oauthRefreshToken?: string;
   oauthTokenExpiresAt?: number | string;
 }
@@ -93,6 +94,7 @@ const persistKeyVaults = async (
     providerId,
     {
       keyVaults: {
+        oauthAccountId: keyVaults.oauthAccountId,
         oauthAccessToken: keyVaults.oauthAccessToken,
         oauthRefreshToken: keyVaults.oauthRefreshToken,
         oauthTokenExpiresAt:
@@ -228,6 +230,7 @@ const refreshAndPersist = async (
     Date.now() + DEFAULT_TOKEN_TTL_MS;
 
   const nextKeyVaults: OAuthTokenKeyVaults = {
+    oauthAccountId: tokens.accountId ?? keyVaults.oauthAccountId,
     oauthAccessToken: tokens.accessToken,
     oauthRefreshToken: tokens.refreshToken,
     oauthTokenExpiresAt: expiresAt,
@@ -243,7 +246,7 @@ const refreshAndPersist = async (
  * Ensure the OAuth access token in `keyVaults` is fresh, refreshing and
  * persisting it when it is about to expire.
  *
- * Designed for providers with rotating refresh tokens (e.g. xAI / SuperGrok):
+ * Designed for providers with rotating refresh tokens (e.g. ChatGPT and SuperGrok):
  * - proactive refresh at `expiresAt - 2min`, with the JWT `exp` claim as a
  *   fallback expiry signal
  * - in-process single-flight per user/provider
