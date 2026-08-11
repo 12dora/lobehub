@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { LOADING_FLAT } from '@/const/message';
 
 import {
-  countFoldedProcessSteps,
+  countAssistantLlmCalls,
   hasRenderableFinalAnswer,
   shouldFoldProcess,
   splitFinalAnswer,
@@ -67,21 +67,17 @@ describe('splitFinalAnswer', () => {
   });
 });
 
-describe('countFoldedProcessSteps', () => {
-  it('counts folded assistant blocks and tool calls', () => {
+describe('countAssistantLlmCalls', () => {
+  it('counts assistant blocks without counting tool calls', () => {
     const segments = [w('b1', 2), a('b2'), w('b3', 1)];
 
-    expect(countFoldedProcessSteps(segments)).toBe(6);
+    expect(countAssistantLlmCalls(segments)).toBe(3);
   });
 
   it('does not double-count a mixed block split into answer and workflow segments', () => {
-    const segments = [
-      a('mixed-block'),
-      w('mixed-block', 2),
-      w('next-block', 1),
-    ];
+    const segments = [a('mixed-block'), w('mixed-block', 2), w('next-block', 1)];
 
-    expect(countFoldedProcessSteps(segments)).toBe(5);
+    expect(countAssistantLlmCalls(segments)).toBe(2);
   });
 });
 

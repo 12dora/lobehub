@@ -24,7 +24,7 @@ import GroupItem from './GroupItem';
 import ProcessFold from './ProcessFold';
 import type { GroupRenderSegment } from './segments';
 import {
-  countFoldedProcessSteps,
+  countAssistantLlmCalls,
   hasRenderableFinalAnswer,
   shouldFoldProcess,
   splitFinalAnswer,
@@ -574,7 +574,7 @@ const Group = memo<GroupChildrenProps>(
     // does not collapse into a lone header); still-generating turns render in
     // full.
     const { processSegments, finalSegments } = splitFinalAnswer(segments);
-    const processStepCount = countFoldedProcessSteps(processSegments);
+    const llmCallCount = countAssistantLlmCalls(segments);
     const foldProcess = shouldFoldProcess({
       enabled: enableProcessFold,
       hasFinalAnswer: hasRenderableFinalAnswer(finalSegments),
@@ -592,7 +592,7 @@ const Group = memo<GroupChildrenProps>(
         <Flexbox className={styles.container} gap={8}>
           {foldProcess ? (
             <>
-              <ProcessFold durationText={durationText} stepCount={processStepCount}>
+              <ProcessFold durationText={durationText} stepCount={llmCallCount}>
                 <Flexbox gap={8}>
                   {processSegments.map((segment) =>
                     renderSegment(segment, segments.indexOf(segment)),
