@@ -208,6 +208,8 @@
   "providerModels.config.oauth.retry": "重试",
   "providerModels.config.oauth.serviceNote": "服务由 {{name}} 提供",
   "providerModels.config.oauth.title": "OAuth 授权",
+  "providerModels.config.personalOAuthOnly.notice": "{{name}} 通过个人 OAuth 授权接入：凭据按用户单独签发并会定期轮换，平台无法集中托管。成员可在自己的服务商设置中连接各自的账号。",
+  "providerModels.config.personalOAuthOnly.tag": "个人连接",
   "providerModels.config.responsesApi.desc": "采用 OpenAI 新一代请求格式规范，解锁思维链等进阶特性 (仅 OpenAI 模型支持)",
   "providerModels.config.responsesApi.title": "使用 Responses API 规范",
   "providerModels.config.waitingForMore": "更多模型正在 <1>计划接入</1> 中，敬请期待",

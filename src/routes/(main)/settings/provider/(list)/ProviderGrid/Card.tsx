@@ -3,13 +3,15 @@ import { ProviderCombine, ProviderIcon } from '@lobehub/icons';
 import { Avatar, Flexbox, Skeleton, Tag, Text } from '@lobehub/ui';
 import { Divider } from 'antd';
 import { cssVar, cx } from 'antd-style';
-import { memo } from 'react';
+import { isPersonalOAuthOnlyProvider } from 'model-bank/modelProviders';
+import { memo, use } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { BrandingProviderCard } from '@/business/client/features/BrandingProviderCard';
 import { useIsDark } from '@/hooks/useIsDark';
 import { type AiProviderListItem } from '@/types/aiProvider';
 
+import { ProviderSettingsContext } from '../../features/ModelList/ProviderSettingsContext';
 import EnableSwitch from './EnableSwitch';
 import { styles } from './style';
 
@@ -21,8 +23,12 @@ interface ProviderCardProps extends AiProviderListItem {
 }
 const ProviderCard = memo<ProviderCardProps>(
   ({ id, description, name, enabled, source, logo, loading, onProviderSelect }) => {
-    const { t } = useTranslation('providers');
+    const { t } = useTranslation(['providers', 'modelProvider']);
     const isDarkMode = useIsDark();
+    const { hidePersonalAuth } = use(ProviderSettingsContext);
+    // Admin platform surface: personal-OAuth-only providers (chatgpt/supergrok) cannot be
+    // platform-enabled — show a tag instead of a toggle that cannot succeed.
+    const platformUnsupported = Boolean(hidePersonalAuth && isPersonalOAuthOnlyProvider(id));
 
     if (loading)
       return (
@@ -91,7 +97,11 @@ const ProviderCard = memo<ProviderCardProps>(
           <Divider style={{ margin: '4px 0' }} />
           <Flexbox horizontal justify={'space-between'}>
             <div />
-            <EnableSwitch enabled={enabled} id={id} />
+            {platformUnsupported ? (
+              <Tag>{t('providerModels.config.personalOAuthOnly.tag', { ns: 'modelProvider' })}</Tag>
+            ) : (
+              <EnableSwitch enabled={enabled} id={id} />
+            )}
           </Flexbox>
         </Flexbox>
       </Flexbox>

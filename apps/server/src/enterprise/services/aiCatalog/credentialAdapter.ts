@@ -1,4 +1,5 @@
 import { ModelProvider } from 'model-bank';
+import { isPersonalOAuthOnlyProvider } from 'model-bank/modelProviders';
 
 import type {
   PlatformAiProviderConfig,
@@ -47,15 +48,11 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
 const OPENAI_COMPATIBLE_KEYS = new Set(['apiKey', 'baseURL']);
 const SUPPORTED_RUNTIME_PROVIDERS = new Set<string>(Object.values(ModelProvider));
 
-/**
- * Providers that exist in ModelProvider but have no platform-managed credential lifecycle.
- * ChatGPT and SuperGrok are personal OAuth only (refresh tokens bound to a user); platform catalog cannot
- * store or refresh oauthAccessToken, and API-key credentials are not valid for them.
- */
-const PLATFORM_UNSUPPORTED_RUNTIME_PROVIDERS = new Set<string>([
-  ModelProvider.ChatGPT,
-  ModelProvider.SuperGrok,
-]);
+// Personal-OAuth-only providers (chatgpt/supergrok) have no platform-managed credential
+// lifecycle: refresh tokens are bound to a user, so the platform catalog can neither store
+// nor refresh oauthAccessToken, and API-key credentials are not valid for them. Membership
+// is derived from the shared model-bank predicate so the admin UI cannot drift from this
+// server-side rejection.
 
 export const resolveAiCatalogRuntimeProvider = (
   providerKey: string,
@@ -64,7 +61,7 @@ export const resolveAiCatalogRuntimeProvider = (
 ): string => resolveModelRuntimeProvider(providerKey, settings.sdkType, source);
 
 const assertSupportedRuntimeProvider = (runtimeProvider: string): void => {
-  if (PLATFORM_UNSUPPORTED_RUNTIME_PROVIDERS.has(runtimeProvider)) {
+  if (isPersonalOAuthOnlyProvider(runtimeProvider)) {
     throw new AiCatalogValidationError([
       `${runtimeProvider} is personal OAuth only and cannot be managed as a platform provider`,
     ]);

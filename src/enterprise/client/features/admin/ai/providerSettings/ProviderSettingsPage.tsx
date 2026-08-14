@@ -77,6 +77,9 @@ const AdminProviderSettingsContextBridge = memo<{ children: React.ReactNode }>((
     <ProviderSettingsContext
       value={{
         hideFetchOnClient: true,
+        // Personal OAuth connects write to the viewer's own key vault — never offer them
+        // on the platform catalog surface.
+        hidePersonalAuth: true,
         modelEditable: true,
         secretConfigured,
         showAddNewModel: true,

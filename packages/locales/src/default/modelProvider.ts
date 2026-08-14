@@ -232,6 +232,9 @@ export default {
   'providerModels.config.oauth.retry': 'Retry',
   'providerModels.config.oauth.serviceNote': 'Service provided by {{name}}',
   'providerModels.config.oauth.title': 'OAuth Authorization',
+  'providerModels.config.personalOAuthOnly.notice':
+    '{{name}} uses personal OAuth authorization: credentials are issued per user and rotate on refresh, so the platform cannot host them centrally. Each member connects their own account from their provider settings.',
+  'providerModels.config.personalOAuthOnly.tag': 'Personal connection',
   'providerModels.config.responsesApi.desc':
     "Uses OpenAI's next-generation request format specification to unlock advanced features like chain-of-thought (supported by OpenAI models only)",
   'providerModels.config.responsesApi.title': 'Use Responses API Specification',

@@ -5,6 +5,7 @@ import { AES_GCM_URL, BASE_PROVIDER_DOC_URL, FORM_STYLE } from '@lobechat/const'
 import { ProviderCombine } from '@lobehub/icons';
 import { type FormGroupItemType, type FormItemProps } from '@lobehub/ui';
 import {
+  Alert,
   Avatar,
   Center,
   Flexbox,
@@ -12,12 +13,14 @@ import {
   Icon,
   Skeleton,
   stopPropagation,
+  Tag,
   Tooltip,
 } from '@lobehub/ui';
 import { useDebounceFn } from 'ahooks';
 import { Form as AntdForm, Switch } from 'antd';
 import { createStaticStyles, cssVar, cx, responsive } from 'antd-style';
 import { Loader2Icon, LockIcon } from 'lucide-react';
+import { isPersonalOAuthOnlyProvider } from 'model-bank/modelProviders';
 import { type ReactNode } from 'react';
 import { memo, use, useCallback, useLayoutEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
@@ -159,14 +162,20 @@ const ProviderConfig = memo<ProviderConfigProps>(
     const { t } = useTranslation('modelProvider');
     const [form] = Form.useForm();
     const { allowed: canManageProvider } = usePermission('manage_provider_key');
-    const { hideFetchOnClient, secretConfigured } = use(ProviderSettingsContext);
+    const { hideFetchOnClient, hidePersonalAuth, secretConfigured } = use(ProviderSettingsContext);
 
     const isOAuthProvider = authType === 'oauthDeviceFlow';
+    // Admin platform surface: the personal connect panel would store credentials in the
+    // viewer's own key vault, so it never renders there.
+    const showPersonalAuth = isOAuthProvider && !hidePersonalAuth;
+    // Personal-OAuth-only providers cannot be platform-managed (per-user refresh tokens);
+    // on the admin surface explain that instead of rendering a toggle that cannot succeed.
+    const platformUnsupported = Boolean(hidePersonalAuth && isPersonalOAuthOnlyProvider(id));
 
     // Query OAuth authentication status (only for OAuth providers)
     const { data: oauthStatus } = lambdaQuery.oauthDeviceFlow.getAuthStatus.useQuery(
       { providerId: id },
-      { enabled: isOAuthProvider, refetchOnWindowFocus: true },
+      { enabled: showPersonalAuth, refetchOnWindowFocus: true },
     );
     const isOAuthAuthenticated = oauthStatus?.status === 'ACTIVE';
 
@@ -503,25 +512,28 @@ const ProviderConfig = memo<ProviderConfigProps>(
       <Flexbox horizontal align={'center'} gap={8}>
         {extra}
         {isCustom && <UpdateProviderInfo />}
-        {canDeactivate && !(enableBusinessFeatures && id === BRANDING_PROVIDER) && (
-          <EnableSwitch id={id} key={id} />
-        )}
+        {platformUnsupported && <Tag>{t('providerModels.config.personalOAuthOnly.tag')}</Tag>}
+        {canDeactivate &&
+          !platformUnsupported &&
+          !(enableBusinessFeatures && id === BRANDING_PROVIDER) && (
+            <EnableSwitch id={id} key={id} />
+          )}
       </Flexbox>
     );
 
     const model: FormGroupItemType = {
       children: configItems,
       defaultActive: true,
-      extra: isOAuthProvider ? undefined : headerExtra,
-      title: isOAuthProvider ? '' : headerTitle,
+      extra: showPersonalAuth ? undefined : headerExtra,
+      title: showPersonalAuth ? '' : headerTitle,
     };
 
     // For OAuth providers, only show Form when authenticated
-    const shouldShowForm = !isOAuthProvider || isOAuthAuthenticated;
+    const shouldShowForm = !platformUnsupported && (!showPersonalAuth || isOAuthAuthenticated);
 
     return (
       <>
-        {isOAuthProvider && (
+        {showPersonalAuth && (
           <OAuthDeviceFlowAuth
             extra={headerExtra}
             name={name || id}
@@ -529,6 +541,18 @@ const ProviderConfig = memo<ProviderConfigProps>(
             title={headerTitle}
             onAuthChange={handleOAuthChange}
           />
+        )}
+        {platformUnsupported && (
+          <Flexbox gap={16} paddingBlock={8}>
+            <Flexbox horizontal align={'center'} justify={'space-between'}>
+              {headerTitle}
+              {headerExtra}
+            </Flexbox>
+            <Alert
+              message={t('providerModels.config.personalOAuthOnly.notice', { name: name || id })}
+              type={'info'}
+            />
+          </Flexbox>
         )}
         {shouldShowForm && (
           <Form

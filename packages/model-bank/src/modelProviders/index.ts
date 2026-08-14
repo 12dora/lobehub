@@ -245,6 +245,20 @@ export const isProviderOAuthDeviceFlow = (id?: string) =>
     (provider) => provider.id === id && provider.settings?.authType === 'oauthDeviceFlow',
   );
 
+/**
+ * Providers whose device flow issues per-user refresh tokens
+ * (`settings.oauthDeviceFlow.refreshTokenGrant`) — chatgpt, supergrok. Credentials are
+ * bound to a person and rotate on refresh, so the platform catalog can neither store
+ * nor refresh them: these providers can only be connected personally, never
+ * platform-managed. GitHub Copilot also uses a device flow but exchanges a stable
+ * platform-storable token, so it is NOT in this set.
+ */
+export const isPersonalOAuthOnlyProvider = (id?: string) =>
+  DEFAULT_MODEL_PROVIDER_LIST.some(
+    (provider) =>
+      provider.id === id && provider.settings?.oauthDeviceFlow?.refreshTokenGrant === true,
+  );
+
 export { default as Ai21ProviderCard } from './ai21';
 export { default as Ai302ProviderCard } from './ai302';
 export { default as Ai360ProviderCard } from './ai360';
