@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import { type AiProviderModelListItem } from 'model-bank';
+import { type AiProviderModelListItem, type EnabledAiModel } from 'model-bank';
 import {
   AiModelTypeSchema,
   CreateAiModelSchema,
@@ -18,9 +18,19 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import {
+  isPlatformManagedAiEnabled,
+  listPlatformPublishedModels,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { type ProviderConfig } from '@/types/user/settings';
 
 const AI_MODEL_UNIQUE_CONSTRAINT = 'ai_models_id_provider_id_user_id_pk';
+
+/** Published runtime model → settings-list item (the list is per provider; drop providerId). */
+const toProviderModelListItem = ({
+  providerId: _providerId,
+  ...model
+}: EnabledAiModel): AiProviderModelListItem => model as AiProviderModelListItem;
 
 const getPostgresErrorField = (error: unknown, field: 'code' | 'constraint') => {
   let current = error;
@@ -146,10 +156,21 @@ export const aiModelRouter = router({
       }),
     )
     .query(async ({ ctx, input }): Promise<AiProviderModelListItem[]> => {
+      // Actively platform-managed provider: the admin's published set replaces the model-bank
+      // defaults as the base list, and the user's own rows still overlay their enabled flags.
+      // A personally-disabled model therefore lands in the disabled slice instead of vanishing,
+      // and a model the admin never published never shows up at all.
+      const publishedModels = isPlatformManagedAiEnabled()
+        ? await listPlatformPublishedModels(ctx.serverDB, input.id)
+        : null;
+
       return ctx.aiInfraRepos.getAiProviderModelList(input.id, {
         enabled: input.enabled,
         limit: input.limit,
         offset: input.offset,
+        ...(publishedModels
+          ? { publishedModels: publishedModels.map(toProviderModelListItem) }
+          : {}),
         type: input.type,
       });
     }),

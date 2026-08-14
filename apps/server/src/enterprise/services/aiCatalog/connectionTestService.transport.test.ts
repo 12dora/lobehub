@@ -18,6 +18,12 @@ const okJson = (body: unknown): PinnedTransportResponse => ({
   statusText: 'OK',
 });
 
+/**
+ * Stub DNS answers must be PUBLICLY ROUTABLE: the SafeOutbound client runs in its default
+ * public-only mode, which rejects RFC 5737 documentation ranges (203.0.113.0/24 et al) with
+ * PLATFORM_SSRF_BLOCKED *before* the pinned transport is reached — that denial would make
+ * every assertion below vacuous.
+ */
 describe('AI connection test SafeOutbound transport enforcement', () => {
   const globalFetchCalls: string[] = [];
   const realFetch = globalThis.fetch.bind(globalThis);
@@ -53,13 +59,14 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
       });
     });
     const outbound = createSafeOutboundHttpClient({
-      resolve: async () => [{ address: '203.0.113.10', family: 4 }],
+      resolve: async () => [{ address: '93.184.216.34', family: 4 }],
       transport,
     });
     const probe = createSafeAiConnectionProbe(outbound);
 
     await probe({
       keyVaults: { apiKey: 'sk-test-not-real' },
+      model: 'gpt-test',
       provider: {
         checkModel: 'gpt-test',
         config: {},
@@ -97,7 +104,7 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
       };
     });
     const outbound = createSafeOutboundHttpClient({
-      resolve: async () => [{ address: '203.0.113.20', family: 4 }],
+      resolve: async () => [{ address: '93.184.216.35', family: 4 }],
       transport,
     });
     const probe = createSafeAiConnectionProbe(outbound);
@@ -105,6 +112,7 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
     try {
       await probe({
         keyVaults: { apiKey: 'google-test-key-not-real' },
+        model: 'gemini-test',
         provider: {
           checkModel: 'gemini-test',
           config: {},
@@ -139,7 +147,7 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
       });
     });
     const outbound = createSafeOutboundHttpClient({
-      resolve: async () => [{ address: '203.0.113.40', family: 4 }],
+      resolve: async () => [{ address: '93.184.216.37', family: 4 }],
       transport,
     });
     const probe = createSafeAiConnectionProbe(outbound);
@@ -151,6 +159,7 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
           baseURL: 'https://example.openai.azure.com',
           endpoint: 'https://example.openai.azure.com',
         },
+        model: 'gpt-4o',
         provider: {
           checkModel: 'gpt-4o',
           config: {},
@@ -191,7 +200,7 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
       };
     });
     const outbound = createSafeOutboundHttpClient({
-      resolve: async () => [{ address: '203.0.113.50', family: 4 }],
+      resolve: async () => [{ address: '93.184.216.38', family: 4 }],
       transport,
     });
     const probe = createSafeAiConnectionProbe(outbound);
@@ -243,6 +252,7 @@ L5cQAJVyU/9xX/AcEgAxKA==
           apiKey: fakeSa,
           region: 'us-central1',
         },
+        model: 'gemini-1.5-flash',
         provider: {
           checkModel: 'gemini-1.5-flash',
           config: {},
@@ -285,7 +295,7 @@ L5cQAJVyU/9xX/AcEgAxKA==
       return okJson({ completion: 'hi', stop_reason: 'end_turn' });
     });
     const outbound = createSafeOutboundHttpClient({
-      resolve: async () => [{ address: '203.0.113.30', family: 4 }],
+      resolve: async () => [{ address: '93.184.216.36', family: 4 }],
       transport,
     });
     const probe = createSafeAiConnectionProbe(outbound);
@@ -297,6 +307,7 @@ L5cQAJVyU/9xX/AcEgAxKA==
           region: 'us-east-1',
           secretAccessKey: 'secret-test-not-real',
         },
+        model: 'anthropic.claude-v2',
         provider: {
           checkModel: 'anthropic.claude-v2',
           config: {},

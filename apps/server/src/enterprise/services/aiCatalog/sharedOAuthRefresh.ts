@@ -221,12 +221,28 @@ export const refreshSharedOAuthVault = async (
 
   const owner = randomUUID();
   const withRefreshLock = async (
-    run: () => Promise<OAuthTokenKeyVaults>,
+    run: (lockedKeyVaults?: OAuthTokenKeyVaults) => Promise<OAuthTokenKeyVaults>,
   ): Promise<OAuthTokenKeyVaults> => {
     const claimed = await claimRefreshLease(params.db, params.providerKey, owner);
     if (claimed) {
       try {
-        return await run();
+        /**
+         * The pre-lock snapshot is NOT safe to refresh with. Acquiring the lease can happen
+         * long after this request decrypted the vault — including immediately after another
+         * instance rotated the pair and released. Refreshing with that consumed rotating
+         * token is token REUSE, which providers answer by revoking the entire grant family,
+         * killing the shared credential for every user at once. So re-read durable state
+         * first, under the lease.
+         */
+        const stored = await store.read();
+        if (stored.oauthAccessToken && stored.oauthRefreshToken && !isOAuthTokenExpiring(stored)) {
+          // Someone else already did the work while we waited — no token call at all.
+          log('%s was rotated by another holder while waiting; adopting it', params.providerKey);
+          return stored;
+        }
+        // Still expiring: refresh with what durable state actually holds now. Only when the
+        // store has no usable pair (missing secret version) do we fall back to the snapshot.
+        return await run(stored.oauthAccessToken && stored.oauthRefreshToken ? stored : undefined);
       } finally {
         // Release is best-effort — lease expiry is the crash backstop.
         await releaseRefreshLease(params.db, params.providerKey, owner).catch(() => {});

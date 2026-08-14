@@ -14,6 +14,7 @@ import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import {
   getEmptyAiProviderRuntimeState,
+  personalModelOverlayKey,
   recordAiCatalogShadowComparison,
   resolveAiCatalogRuntimeState,
 } from '@/server/enterprise/services/aiCatalog';
@@ -189,9 +190,20 @@ export const aiProviderRouter = router({
           KeyVaultsGateKeeper.getUserKeyVaults,
         );
       }
+      // Personal hide-overrides: a user may drop an admin-published model from THEIR picker.
+      // View-only — the execution allowlist stays published-only, so a hidden model still runs
+      // when something asks for it by name.
+      const hiddenModelKeys = flags.ENABLE_PLATFORM_MANAGED_AI
+        ? new Set(
+            (await ctx.aiInfraRepos.aiModelModel.getAllModels())
+              .filter((model) => model.enabled === false)
+              .map((model) => personalModelOverlayKey(model.providerId, model.id)),
+          )
+        : undefined;
       const effectiveState = await resolveAiCatalogRuntimeState({
         db: ctx.serverDB,
         flags,
+        hiddenModelKeys,
         upstreamState,
       });
       if (effectiveState !== upstreamState) {

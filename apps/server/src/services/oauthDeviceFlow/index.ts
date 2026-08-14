@@ -16,6 +16,8 @@ export interface DeviceCodeResponse {
 export interface TokenResponse {
   accessToken: string;
   accountId?: string;
+  /** Human identity of the connected account (OIDC `email`, else `preferred_username`). */
+  email?: string;
   expiresIn?: number;
   refreshToken?: string;
   scope?: string;

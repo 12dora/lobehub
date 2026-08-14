@@ -159,6 +159,30 @@ describe('enterprise redaction entry', () => {
     expect(showApiKeyScoped.nested.deep.showApiKey).toBe('[REDACTED]');
   });
 
+  it('treats the shared-OAuth account identity leaves as non-secret key names', () => {
+    // `oauthAccountEmail` / `oauthAccountId` are display-only identity, projected to admins by
+    // getConnectionStatus. They must not need an M07 benign-key exception — if the generic
+    // contains-matcher ever starts eating them, the admin card silently shows [REDACTED] and
+    // the write-path contract validator starts rejecting the vault.
+    expect(isSensitiveKey('oauthAccountEmail')).toBe(false);
+    expect(isSensitiveKey('oauthAccountId')).toBe(false);
+    // The credential leaves next to them stay sensitive.
+    expect(isSensitiveKey('oauthAccessToken')).toBe(true);
+    expect(isSensitiveKey('oauthRefreshToken')).toBe(true);
+
+    expect(
+      redactForAudit({
+        oauthAccessToken: 'fake-token',
+        oauthAccountEmail: 'operator@example.test',
+        oauthAccountId: 'acct-1234567890',
+      }),
+    ).toEqual({
+      oauthAccessToken: '[REDACTED]',
+      oauthAccountEmail: 'operator@example.test',
+      oauthAccountId: 'acct-1234567890',
+    });
+  });
+
   it('keeps the M07 allowlist narrow: capability numbers anywhere, OAuth config position-scoped', () => {
     expect(
       redactForAudit(

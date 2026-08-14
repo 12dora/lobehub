@@ -30,6 +30,10 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
           runtimeConfig: {},
         },
       });
+      // Not in the published snapshot ⇒ not actively managed; the caller must fall back to
+      // the user's own (BYOK) view rather than treat the provider as an empty catalog.
+      const managed = state.enabledAiProviders.some((provider) => provider.id === providerKey);
+      if (!managed) return null;
       return state.enabledAiModels.filter((model) => model.providerId === providerKey);
     },
     resolveExecutionConfig: async (db, providerKey) => {

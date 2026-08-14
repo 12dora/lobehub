@@ -304,15 +304,33 @@ export class AiInfraRepos {
       enabled?: boolean;
       limit?: number;
       offset?: number;
+      /**
+       * Base model set for an actively platform-managed provider: what the administrator
+       * published, used INSTEAD of the model-bank defaults. The user's own rows still overlay
+       * their `enabled` flags on top, so a personally-disabled model moves to the disabled
+       * slice rather than vanishing, and a model the admin never published never appears.
+       * Omit (or pass undefined) for BYOK providers — behaviour is unchanged there.
+       */
+      publishedModels?: AiProviderModelListItem[];
       type?: string;
     },
   ) => {
     const aiModels = await this.aiModelModel.getModelListByProviderId(providerId);
     const defaultModels: AiProviderModelListItem[] =
-      (await this.fetchBuiltinModels(providerId)) || [];
+      options?.publishedModels ?? ((await this.fetchBuiltinModels(providerId)) || []);
+
+    // Under the published overlay the admin's set is the whole world: a personal row for a
+    // model that was never published (or was unpublished later) must not resurrect it as a
+    // list entry. Personal rows survive only as flags on published models.
+    const publishedIds = options?.publishedModels
+      ? new Set(options.publishedModels.map((model) => model.id))
+      : null;
+    const overlayModels = publishedIds
+      ? aiModels.filter((model) => publishedIds.has(model.id))
+      : aiModels;
 
     // Shared pure policy (also used by admin adapter) — single merge/filter contract.
-    return buildProviderModelList(providerId, defaultModels, aiModels, {
+    return buildProviderModelList(providerId, defaultModels, overlayModels, {
       brandingProviderId: BRANDING_PROVIDER,
       enabled: options?.enabled,
       limit: options?.limit,

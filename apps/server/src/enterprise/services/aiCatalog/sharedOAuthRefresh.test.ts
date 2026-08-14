@@ -71,6 +71,65 @@ const makeParams = (overrides: Partial<Parameters<typeof refreshSharedOAuthVault
 describe('refreshSharedOAuthVault', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Implementations too, not just call history: the lease holder now re-reads durable state
+    // before refreshing, so a stub leaking across tests would silently change which refresh
+    // token the next test sends — and `clearAllMocks` only clears call records.
+    mockGetVersion.mockReset();
+    mockCas.mockReset();
+    mockFetch.mockReset();
+  });
+
+  it('never calls the token endpoint with a refresh token a prior lease holder consumed', async () => {
+    // The grant-killer race: this requester decrypted an expiring vault, then stalled behind
+    // the lease. By the time it acquires, another instance has rotated and released. Sending
+    // the pre-lock (now consumed) rotating token is REUSE — providers answer that by revoking
+    // the whole grant family, killing the shared credential for everyone.
+    const rotated = {
+      ...baseVault(FRESH_AT()),
+      oauthAccessToken: 'at-rotated-by-other',
+      oauthRefreshToken: 'rt-rotated-by-other',
+    };
+    mockGetVersion.mockResolvedValue({ ciphertext: encryptVault(rotated), keyId: 'kek-1' });
+
+    const result = await refreshSharedOAuthVault(makeParams());
+
+    // No token call at all — the durable re-read under the lease already had a fresh pair.
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockCas).not.toHaveBeenCalled();
+    expect(result.oauthAccessToken).toBe('at-rotated-by-other');
+    expect(result.oauthRefreshToken).toBe('rt-rotated-by-other');
+  });
+
+  it('refreshes with the re-read refresh token, not the stale pre-lock snapshot', async () => {
+    // Same race, but the pair another instance persisted is ALSO expiring, so a token call is
+    // genuinely required. It must use what durable state holds now.
+    const rotatedButExpiring = {
+      ...baseVault(EXPIRING_AT()),
+      oauthAccessToken: 'at-newer',
+      oauthRefreshToken: 'rt-newer',
+    };
+    mockGetVersion.mockResolvedValue({
+      ciphertext: encryptVault(rotatedButExpiring),
+      keyId: 'kek-1',
+    });
+    mockCas.mockResolvedValue(true);
+    mockFetch.mockResolvedValue(
+      tokenResponse({
+        access_token: 'at-final',
+        expires_in: 3600,
+        refresh_token: 'rt-final',
+        token_type: 'bearer',
+      }),
+    );
+
+    const result = await refreshSharedOAuthVault(makeParams());
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = String((mockFetch.mock.calls[0]?.[1] as { body?: unknown })?.body ?? '');
+    expect(body).toContain('rt-newer');
+    // The consumed predecessor must never reach the token endpoint.
+    expect(body).not.toContain('rt-old');
+    expect(result.oauthAccessToken).toBe('at-final');
   });
 
   it('is a no-op for providers without a rotating refresh grant', async () => {

@@ -574,15 +574,63 @@ export const getEmptyAiProviderRuntimeState = (): AiProviderRuntimeState => ({
   runtimeConfig: {},
 });
 
+/** `providerId:modelId` — the key shape of a personal model-visibility override. */
+export const personalModelOverlayKey = (providerId: string, modelId: string): string =>
+  `${providerId}:${modelId}`;
+
+/**
+ * Remove the caller's personally-hidden models from a shared runtime state.
+ *
+ * Platform models are admin-published, but a user may still hide one from their own picker
+ * (their `ai_models` row with `enabled: false`). That is a VIEW preference, not policy: the
+ * execution allowlist stays published-only, so a hidden model still runs if something asks
+ * for it explicitly.
+ *
+ * Deliberately a pure post-filter over the cached snapshot: the adapter's runtime cache is
+ * process-wide and keyed by the catalog token, so a per-user set must never reach it.
+ * BYOK models are unaffected — a user-disabled BYOK model is already absent upstream.
+ */
+export const applyPersonalModelOverlay = (
+  state: AiProviderRuntimeState,
+  hiddenModelKeys: ReadonlySet<string>,
+): AiProviderRuntimeState => {
+  if (hiddenModelKeys.size === 0) return state;
+  const enabledAiModels = state.enabledAiModels.filter(
+    (model) => !hiddenModelKeys.has(personalModelOverlayKey(model.providerId, model.id)),
+  );
+  if (enabledAiModels.length === state.enabledAiModels.length) return state;
+
+  // A provider whose last model of a type is hidden must leave that type's provider list, or
+  // the picker offers a provider with nothing under it.
+  const keepProvidersOfType = (
+    providers: AiProviderRuntimeState['enabledChatAiProviders'],
+    type: string,
+  ) =>
+    providers.filter((provider) =>
+      enabledAiModels.some((model) => model.providerId === provider.id && model.type === type),
+    );
+
+  return {
+    ...state,
+    enabledAiModels,
+    enabledChatAiProviders: keepProvidersOfType(state.enabledChatAiProviders, 'chat'),
+    enabledImageAiProviders: keepProvidersOfType(state.enabledImageAiProviders, 'image'),
+    enabledVideoAiProviders: keepProvidersOfType(state.enabledVideoAiProviders, 'video'),
+  };
+};
+
 export const resolveAiCatalogRuntimeState = async (params: {
   db: LobeChatDatabase;
   flags?: EnterpriseFeatureFlags;
+  /** Personal `providerId:modelId` hide-overrides applied after the shared snapshot. */
+  hiddenModelKeys?: ReadonlySet<string>;
   upstreamState: AiProviderRuntimeState;
 }): Promise<AiProviderRuntimeState> => {
   const flags = params.flags ?? parseEnterpriseFeatureFlags(process.env);
   if (!flags.ENABLE_PLATFORM_MANAGED_AI) return params.upstreamState;
-  return new AiCatalogRuntimeAdapter(params.db).resolve({
+  const state = await new AiCatalogRuntimeAdapter(params.db).resolve({
     flags,
     upstreamState: params.upstreamState,
   });
+  return params.hiddenModelKeys ? applyPersonalModelOverlay(state, params.hiddenModelKeys) : state;
 };

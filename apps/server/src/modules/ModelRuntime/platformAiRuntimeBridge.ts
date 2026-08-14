@@ -55,7 +55,15 @@ export interface PlatformAiExactModelRef {
 export interface PlatformAiRuntimeImplementation {
   createModelAllowlistHooks: (models: PlatformAiExecutionModel[]) => ModelRuntimeHooks;
   isEnabled: () => boolean;
-  listPublishedModels: (db: LobeChatDatabase, providerKey: string) => Promise<EnabledAiModel[]>;
+  /**
+   * Published model set of an ACTIVELY managed provider, or `null` when the provider is not
+   * platform-managed right now (never published, disabled, or archived) — `null` and `[]` are
+   * different answers: `[]` means "managed, nothing published yet".
+   */
+  listPublishedModels: (
+    db: LobeChatDatabase,
+    providerKey: string,
+  ) => Promise<EnabledAiModel[] | null>;
   resolveExecutionConfig: (
     db: LobeChatDatabase,
     providerKey: string,
@@ -116,7 +124,7 @@ export const createPlatformAiModelAllowlistHooks = (
 export const listPlatformPublishedModels = (
   db: LobeChatDatabase,
   providerKey: string,
-): Promise<EnabledAiModel[]> => requireImplementation().listPublishedModels(db, providerKey);
+): Promise<EnabledAiModel[] | null> => requireImplementation().listPublishedModels(db, providerKey);
 
 export const getEmptyPlatformAiRuntimeState = (): AiProviderRuntimeState => ({
   enabledAiModels: [],

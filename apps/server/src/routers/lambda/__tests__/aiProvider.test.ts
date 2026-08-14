@@ -91,6 +91,11 @@ describe('aiProviderRouter', () => {
     } as any);
 
     vi.mocked(KeyVaultsGateKeeper.initWithEnvKey).mockResolvedValue(mockGateKeeper as any);
+    // The runtime-state procedure reads the caller's personal model rows through the repo to
+    // build the hide-overlay; the repo itself is auto-mocked, so give it that accessor.
+    vi.mocked(AiInfraRepos).prototype.aiModelModel = {
+      getAllModels: vi.fn().mockResolvedValue([]),
+    } as never;
   });
 
   const createMockContext = () => ({
@@ -188,6 +193,58 @@ describe('aiProviderRouter', () => {
 
       expect(result).toEqual(mockRuntimeState);
       expect(mockGetState).toHaveBeenCalledWith(KeyVaultsGateKeeper.getUserKeyVaults);
+    });
+
+    it('hides a personally-disabled published model from the caller state only', async () => {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      catalogAuthorityMocks.loadCurrentAiCatalogSnapshot.mockResolvedValue({
+        revisions: [
+          {
+            checksum: 'a'.repeat(64),
+            payload: {
+              models: [
+                { abilities: {}, enabled: true, modelKey: 'kept', sort: 0, type: 'chat' },
+                { abilities: {}, enabled: true, modelKey: 'hidden-by-user', sort: 1, type: 'chat' },
+              ],
+              provider: {
+                config: {},
+                displayName: 'Managed Provider',
+                enabled: true,
+                providerKey: 'managed-provider',
+                sort: 0,
+                source: 'custom',
+              },
+            },
+            resourceId: 'provider-row-id',
+            revision: 1,
+            secretFingerprint: null,
+          },
+        ],
+        token: { kind: 'immutable_id', value: 'c'.repeat(64) },
+      });
+      vi.mocked(AiInfraRepos).prototype.getAiProviderList = vi.fn().mockResolvedValue([]);
+      vi.mocked(AiInfraRepos).prototype.getAiProviderModelList = vi.fn().mockResolvedValue([]);
+      vi.mocked(AiInfraRepos).prototype.aiModelModel = {
+        getAllModels: vi
+          .fn()
+          .mockResolvedValue([
+            { enabled: false, id: 'hidden-by-user', providerId: 'managed-provider', type: 'chat' },
+          ]),
+      } as never;
+
+      clearAiCatalogRuntimeCache();
+      const state = await aiProviderRouter
+        .createCaller(createMockContext())
+        .getAiProviderRuntimeState({});
+
+      const modelIds = state.enabledAiModels
+        .filter((model) => model.providerId === 'managed-provider')
+        .map((model) => model.id);
+      expect(modelIds).toEqual(['kept']);
+      // The provider keeps its chat slot because another published model survived.
+      expect(state.enabledChatAiProviders.map((provider) => provider.id)).toContain(
+        'managed-provider',
+      );
     });
 
     it('never exposes execution secret material in either caller/execution order', async () => {

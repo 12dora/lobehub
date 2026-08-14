@@ -66,8 +66,15 @@ export interface EnsureFreshOAuthTokenWithStoreParams {
    * (platform) credential must serialize refreshes across instances, not just in-process.
    * The wrapper either runs `run()` (lock held) or resolves with the rotated pair some
    * other holder persisted.
+   *
+   * `run` accepts an override pair so a holder that re-read durable state AFTER acquiring
+   * the lock refreshes with what it just read. Waiting for a lock is exactly the window in
+   * which the pre-lock snapshot goes stale: calling the token endpoint with a refresh token
+   * a previous holder already consumed is the reuse that revokes the grant family.
    */
-  withRefreshLock?: (run: () => Promise<OAuthTokenKeyVaults>) => Promise<OAuthTokenKeyVaults>;
+  withRefreshLock?: (
+    run: (lockedKeyVaults?: OAuthTokenKeyVaults) => Promise<OAuthTokenKeyVaults>,
+  ) => Promise<OAuthTokenKeyVaults>;
 }
 
 /**
@@ -298,7 +305,8 @@ export const ensureFreshOAuthTokenWithStore = async (
 
   let flight = inflight.get(flightKey);
   if (!flight) {
-    const run = () => refreshAndPersist(params);
+    const run = (lockedKeyVaults?: OAuthTokenKeyVaults) =>
+      refreshAndPersist(lockedKeyVaults ? { ...params, keyVaults: lockedKeyVaults } : params);
     flight = (params.withRefreshLock ? params.withRefreshLock(run) : run()).finally(() =>
       inflight.delete(flightKey),
     );

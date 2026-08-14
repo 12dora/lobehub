@@ -169,6 +169,12 @@ export const aiProviderRouter = router({
       'agent.acquireAgentLock': 'allow',
       'agent.releaseAgentLock': 'allow',
       'agent.updateAgentPinned': 'exempt',
+      // Personal visibility overlay over the admin-published set — never a catalog write.
+      'aiModel.batchToggleAiModels': 'allow',
+      'aiModel.createAiModel': 'deny',
+      'aiModel.removeAiModel': 'deny',
+      'aiModel.toggleModelEnabled': 'allow',
+      'aiModel.updateAiModel': 'deny',
       'aiProvider.checkProviderConnectivity': 'allow',
       'connector.callTool': 'allow',
       'connector.delete': 'deny',

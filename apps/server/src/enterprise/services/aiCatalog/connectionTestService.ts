@@ -21,6 +21,8 @@ export type AiConnectionTestResult = z.infer<typeof aiConnectionTestResultSchema
 
 export interface AiConnectionProbeParams {
   keyVaults: PlatformProviderKeyVaults;
+  /** Model to probe — the provider's stored `checkModel`, or an operator override. */
+  model: string;
   provider: PlatformAiProviderItem;
   runtimeProvider: string;
 }
@@ -36,6 +38,14 @@ export interface AiConnectionRuntimeTransportOptions {
   [key: string]: unknown;
   fetch: typeof fetch;
 }
+
+/**
+ * Runtimes that always talk to the OpenAI Responses API (`chatCompletion.useResponse`), whose
+ * subscription backends are streaming-first. Probing them non-streaming takes a transport
+ * production never uses, so the probe streams for exactly these — every other runtime keeps
+ * the cheaper single-shot completion.
+ */
+const RESPONSES_ONLY_RUNTIMES = new Set(['chatgpt', 'supergrok', 'xai']);
 
 const AI_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 const AI_CONNECTION_TEST_MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -103,8 +113,8 @@ export const createSafeAiConnectionProbe = (
 
   const transport: AiConnectionRuntimeTransportOptions = { fetch: fetchAdapter };
 
-  return async ({ keyVaults, provider, runtimeProvider }) => {
-    if (!provider.checkModel) throw new Error('check model is required');
+  return async ({ keyVaults, model, provider, runtimeProvider }) => {
+    if (!model) throw new Error('check model is required');
     const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
 
     // Honor managed OpenAI request-format setting so probes match production traffic.
@@ -113,12 +123,16 @@ export const createSafeAiConnectionProbe = (
     // Dual binding: constructor option + concurrent-safe global fetch binding.
     await runWithBoundFetch(fetchAdapter, async () => {
       const runtime = initModelRuntimeWithUserPayload(provider.providerKey, payload, transport);
+      // Match production's transport where it matters: a Responses-API subscription backend
+      // (Codex) is streaming-first, and a probe that takes a different transport than chat can
+      // pass or fail for reasons chat never sees.
+      const stream = apiMode === 'responses' || RESPONSES_ONLY_RUNTIMES.has(runtimeProvider);
       const response = await runtime.chat(
         {
           ...(apiMode ? { apiMode } : {}),
           messages: [{ content: 'Hi', role: 'user' }],
-          model: provider.checkModel!,
-          stream: false,
+          model,
+          stream,
           temperature: 0,
         },
         { metadata: { trigger: RequestTrigger.Api } },
@@ -130,8 +144,38 @@ export const createSafeAiConnectionProbe = (
         failure.status = response.status;
         throw failure;
       }
+      if (stream) await drainProbeStream(response);
     });
   };
+};
+
+/**
+ * Consume the probe's stream so a provider that accepts the request and then fails mid-stream
+ * is reported as a failure rather than a success. Bounded by the outbound adapter's response
+ * size + timeout limits; the body is always released.
+ *
+ * A missing body is a FAILURE, not a pass: a streaming chat that produced no body produced no
+ * completion, and silently accepting it turns the probe into a status-code check.
+ */
+const drainProbeStream = async (response: Response): Promise<void> => {
+  if (!response.body) {
+    throw new Error('provider returned an empty completion stream');
+  }
+  const reader = response.body.getReader();
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value?.byteLength ?? 0;
+    }
+  } finally {
+    reader.releaseLock();
+    await response.body.cancel().catch(() => undefined);
+  }
+  if (bytes === 0) {
+    throw new Error('provider returned an empty completion stream');
+  }
 };
 
 export const defaultAiConnectionProbe: AiConnectionProbe = createSafeAiConnectionProbe();

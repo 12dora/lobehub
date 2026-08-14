@@ -65,12 +65,30 @@ export const adminAiProviderOAuthPollOutputSchema = z
 
 export const adminAiProviderOAuthStatusInputSchema = z.object({ id: providerKeySchema }).strict();
 
-/** Presence-only projection: no token, refresh token, or full account id ever crosses this boundary. */
+/**
+ * Identity + presence projection: no token, refresh token, or full account id ever crosses
+ * this boundary.
+ *
+ * `accountEmail` is the one deliberate exception to "mask everything": it is the identity of
+ * the shared account this instance is about to use for every user, it is only readable with
+ * AI_PROVIDER_READ, and a 4-character mask of a Codex workspace UUID tells an operator
+ * nothing about *which* account is connected.
+ */
 export const adminAiProviderOAuthStatusOutputSchema = z
   .object({
+    /**
+     * Full (unmasked) identity of the connected account — OIDC `email`, else
+     * `preferred_username`, so it is not validated as an email address.
+     */
+    accountEmail: z.string().max(320).nullable(),
     /** First characters of the account id plus an ellipsis, for operator recognition only. */
     accountIdMasked: z.string().max(32).nullable(),
     connected: z.boolean(),
+    /**
+     * true when the stored grant is dead (`invalid_grant`) and an administrator must
+     * reconnect. Transient refresh failures never set this — they degrade to stored values.
+     */
+    expired: z.boolean(),
     /** Epoch millis as a string, mirroring the vault leaf type. */
     expiresAt: z.string().max(200).nullable(),
     secretConfigured: z.boolean(),

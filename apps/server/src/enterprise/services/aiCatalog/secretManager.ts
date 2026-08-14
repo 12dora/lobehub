@@ -65,6 +65,23 @@ export const filterNonEmptySecretFields = (
 const toVaultObject = (value: string | PlatformProviderKeyVaults): PlatformProviderKeyVaults =>
   typeof value === 'string' ? { apiKey: value } : value;
 
+/**
+ * Merge overlay + explicit deletes. `unset` runs AFTER the overlay so a caller can rewrite a
+ * group of related leaves in one mutation and drop the ones the new payload does not carry
+ * (an overlay alone can only ever add or replace, never remove).
+ */
+const mergeSecretFields = (
+  existing: PlatformProviderKeyVaults,
+  mutation: { unset?: string[]; value: PlatformProviderKeyVaults | string },
+): PlatformProviderKeyVaults => {
+  const merged: PlatformProviderKeyVaults = {
+    ...existing,
+    ...filterNonEmptySecretFields(mutation.value),
+  };
+  for (const key of mutation.unset ?? []) delete merged[key];
+  return merged;
+};
+
 /** Applies keep/replace/merge/clear without ever returning plaintext or logging it. */
 export class AiCatalogSecretManager {
   private readonly secrets: PlatformSecretService;
@@ -84,8 +101,7 @@ export class AiCatalogSecretManager {
       const existing = current?.encryptedKeyVaults
         ? await this.decrypt(current.encryptedKeyVaults)
         : {};
-      const incoming = filterNonEmptySecretFields(mutation.value);
-      return { ...existing, ...incoming };
+      return mergeSecretFields(existing, mutation);
     }
     if (mutation?.operation === 'clear') return {};
     return current?.encryptedKeyVaults ? this.decrypt(current.encryptedKeyVaults) : {};
@@ -128,8 +144,7 @@ export class AiCatalogSecretManager {
       const existing = current?.encryptedKeyVaults
         ? await this.decrypt(current.encryptedKeyVaults)
         : {};
-      const incoming = filterNonEmptySecretFields(mutation.value);
-      keyVaults = { ...existing, ...incoming };
+      keyVaults = mergeSecretFields(existing, mutation);
     } else {
       // replace
       keyVaults = toVaultObject(mutation.value);

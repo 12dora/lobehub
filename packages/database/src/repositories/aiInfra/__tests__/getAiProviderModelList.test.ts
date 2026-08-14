@@ -53,6 +53,54 @@ describe('AiInfraRepos', () => {
       );
     });
 
+    it('overlays user flags on the published set for a platform-managed provider', async () => {
+      const providerId = 'chatgpt';
+      // What the administrator published.
+      const publishedModels = [
+        { enabled: true, id: 'gpt-5.5', type: 'chat' },
+        { enabled: true, id: 'gpt-5.6-sol', type: 'chat' },
+      ] as AiProviderModelListItem[];
+      // The user hid one of them; `never-published` is a stale personal row.
+      const mockUserModels = [
+        { enabled: false, id: 'gpt-5.6-sol', type: 'chat' },
+        { enabled: true, id: 'never-published', type: 'chat' },
+      ] as AiProviderModelListItem[];
+      const builtin = vi
+        .spyOn(repo as any, 'fetchBuiltinModels')
+        .mockResolvedValue([{ enabled: true, id: 'model-bank-only' }]);
+      vi.spyOn(repo.aiModelModel, 'getModelListByProviderId').mockResolvedValue(mockUserModels);
+
+      const result = await repo.getAiProviderModelList(providerId, { publishedModels });
+
+      // Published set replaces the model-bank defaults entirely.
+      expect(builtin).not.toHaveBeenCalled();
+      expect(result.map((model) => model.id).sort()).toEqual(['gpt-5.5', 'gpt-5.6-sol']);
+      // The hidden model stays listed — it moves to the disabled slice instead of vanishing.
+      expect(result).toContainEqual(expect.objectContaining({ enabled: false, id: 'gpt-5.6-sol' }));
+      expect(result).toContainEqual(expect.objectContaining({ enabled: true, id: 'gpt-5.5' }));
+
+      const disabledOnly = await repo.getAiProviderModelList(providerId, {
+        enabled: false,
+        publishedModels,
+      });
+      expect(disabledOnly.map((model) => model.id)).toEqual(['gpt-5.6-sol']);
+    });
+
+    it('falls back to model-bank defaults when the provider is not platform-managed', async () => {
+      const mockUserModels = [
+        { enabled: false, id: 'gpt-4', type: 'chat' },
+      ] as AiProviderModelListItem[];
+      const builtin = vi
+        .spyOn(repo as any, 'fetchBuiltinModels')
+        .mockResolvedValue([{ enabled: true, id: 'gpt-4' }]);
+      vi.spyOn(repo.aiModelModel, 'getModelListByProviderId').mockResolvedValue(mockUserModels);
+
+      const result = await repo.getAiProviderModelList('openai');
+
+      expect(builtin).toHaveBeenCalled();
+      expect(result).toContainEqual(expect.objectContaining({ enabled: false, id: 'gpt-4' }));
+    });
+
     it('should merge default and custom models', async () => {
       const mockCustomModels = [
         {

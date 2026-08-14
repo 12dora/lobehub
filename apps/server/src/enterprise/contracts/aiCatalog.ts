@@ -236,6 +236,12 @@ const aiStructuredCredentialSchema = z
     bearerTokenExpiresAt: z.string().min(1).max(200).optional(),
     customHeaders: boundedHeaderMapSchema.optional(),
     oauthAccessToken: z.string().min(1).max(32_768).optional(),
+    /**
+     * Display-only identity of a shared OAuth account (OIDC `email`, else
+     * `preferred_username`). Not validated as an email — some providers return a username.
+     * Deliberately NOT a secret leaf: it is projected to admins by `getConnectionStatus`.
+     */
+    oauthAccountEmail: z.string().min(1).max(320).optional(),
     oauthAccountId: z.string().min(1).max(200).optional(),
     oauthRefreshToken: z.string().min(1).max(32_768).optional(),
     /** Epoch millis as a string — the platform secret vault only stores string leaves. */
@@ -259,11 +265,15 @@ export const aiSecretMutationSchema = z.discriminatedUnion('operation', [
     .strict(),
   /**
    * Overlay non-empty credential fields onto the existing vault.
-   * Empty strings are ignored; unsubmitted fields are retained (no delete semantics).
+   * Empty strings are ignored and unsubmitted fields are retained, so `unset` is the ONLY
+   * way a merge can remove a leaf. Needed when a group of leaves must move as a unit — a
+   * shared-OAuth reconnect that returns no email must not leave the previous account's
+   * email sitting next to the new credential.
    */
   z
     .object({
       operation: z.literal('merge'),
+      unset: z.array(z.string().min(1).max(64)).max(20).optional(),
       value: z.union([z.string().min(1).max(32_768), aiStructuredCredentialSchema]),
     })
     .strict(),
@@ -473,6 +483,12 @@ export const adminAiProviderUpdateDraftInputSchema = providerDraftFieldsSchema
 export const adminAiProviderTestInputSchema = z
   .object({
     id: z.string().min(1),
+    /**
+     * Probe this model instead of the provider's stored `checkModel`, so an operator can
+     * check connectivity against the model picked in the UI without first persisting it.
+     * Same grammar as `checkModel`; it must still resolve to an enabled platform chat model.
+     */
+    model: z.string().trim().min(1).max(150).optional(),
     reason: z.string().trim().min(1).max(2000),
   })
   .strict();

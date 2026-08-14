@@ -366,6 +366,200 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     expect(json).not.toContain('failure-secret');
   });
 
+  it('reports distinct, actionable reasons for each check-model configuration gap', async () => {
+    const probe = vi.fn(async () => {});
+    const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
+      connectionProbe: probe,
+    });
+    const created = await service.createProviderDraft('admin', {
+      displayName: 'Reasons',
+      enabled: true,
+      providerKey: 'check-model-reasons',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'reasons-secret' },
+      source: 'custom',
+    });
+
+    // 1. Nothing configured to probe.
+    await expect(
+      service.testProvider('admin', { id: created.id, reason: 'no check model' }),
+    ).resolves.toMatchObject({
+      errorCategory: 'invalid_config',
+      sanitizedMessage: 'Check model not configured',
+      status: 'failure',
+    });
+
+    // 2. Configured, but not a model of this provider yet (the OAuth first-connect case).
+    await service.updateProviderDraft('admin', {
+      checkModel: 'chat',
+      expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+      expectedRevision: 0,
+      id: created.id,
+      reason: 'set check model',
+    });
+    await expect(
+      service.testProvider('admin', { id: created.id, reason: 'not materialized' }),
+    ).resolves.toMatchObject({ sanitizedMessage: 'Check model not enabled' });
+
+    // 3. Materialized but disabled — same fix for the operator, same code.
+    const model = await service.createModel('admin', {
+      enabled: false,
+      expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'add disabled model',
+      type: 'chat',
+    });
+    await expect(
+      service.testProvider('admin', { id: created.id, reason: 'disabled model' }),
+    ).resolves.toMatchObject({ sanitizedMessage: 'Check model not enabled' });
+    expect(probe).not.toHaveBeenCalled();
+
+    // 4. Enabled but not a chat model.
+    await service.updateModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+      expectedRevision: 0,
+      id: model.id,
+      providerId: created.id,
+      reason: 'enable as embedding',
+      type: 'embedding',
+    });
+    await expect(
+      service.testProvider('admin', { id: created.id, reason: 'not chat' }),
+    ).resolves.toMatchObject({ sanitizedMessage: 'Check model is not a chat model' });
+    expect(probe).not.toHaveBeenCalled();
+
+    // 5. Everything in place — the probe finally runs.
+    await service.updateModel('admin', {
+      expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+      expectedRevision: 0,
+      id: model.id,
+      providerId: created.id,
+      reason: 'back to chat',
+      type: 'chat',
+    });
+    await expect(
+      service.testProvider('admin', { id: created.id, reason: 'ready' }),
+    ).resolves.toMatchObject({ status: 'success' });
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('still probes when the proactive shared-OAuth refresh fails transiently', async () => {
+    // Refresh fires ~2min BEFORE expiry, so the stored access token is normally still valid.
+    // A token-endpoint blip must not be reported as a provider configuration error.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error('token endpoint unreachable');
+    }) as typeof fetch;
+    try {
+      const probe = vi.fn(async (_params: { keyVaults: Record<string, unknown> }) => {});
+      const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
+        connectionProbe: probe,
+      });
+      const created = await service.createProviderDraft('admin', {
+        checkModel: 'grok-chat',
+        displayName: 'Shared grok',
+        enabled: true,
+        providerKey: 'supergrok',
+        reason: 'create',
+        secret: {
+          operation: 'replace',
+          value: {
+            oauthAccessToken: 'at-expiring',
+            oauthRefreshToken: 'rt-expiring',
+            // Inside the 120s proactive window: a refresh is attempted and will fail.
+            oauthTokenExpiresAt: String(Date.now() + 30_000),
+          },
+        },
+        source: 'builtin',
+      });
+      await service.createModel('admin', {
+        enabled: true,
+        expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+        modelKey: 'grok-chat',
+        providerId: created.id,
+        reason: 'add model',
+        type: 'chat',
+      });
+
+      await expect(
+        service.testProvider('admin', { id: created.id, reason: 'probe despite refresh blip' }),
+      ).resolves.toMatchObject({ errorCategory: null, status: 'success' });
+      // The probe really ran, on the stored (still valid) access token.
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(probe.mock.calls[0]?.[0]).toMatchObject({
+        keyVaults: expect.objectContaining({ oauthAccessToken: 'at-expiring' }),
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('probes an operator-selected model override without persisting it as checkModel', async () => {
+    const probed: string[] = [];
+    const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
+      connectionProbe: async () => {},
+    });
+    const created = await service.createProviderDraft('admin', {
+      checkModel: 'chat-a',
+      displayName: 'Override',
+      enabled: true,
+      providerKey: 'check-model-override',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'override-secret' },
+      source: 'custom',
+    });
+    for (const modelKey of ['chat-a', 'chat-b']) {
+      await service.createModel('admin', {
+        enabled: true,
+        expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+        modelKey,
+        providerId: created.id,
+        reason: `add ${modelKey}`,
+        type: 'chat',
+      });
+    }
+
+    const probeService = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
+      connectionProbe: async () => {},
+    });
+    // The service passes the resolved model to the probe; capture it through the seam.
+    (probeService as unknown as { connectionTests: { test: unknown } }).connectionTests = {
+      test: async ({ model }: { model: string }) => {
+        probed.push(model);
+        return {
+          errorCategory: null,
+          latencyMs: 1,
+          sanitizedMessage: 'ok',
+          status: 'success' as const,
+          testedAt: new Date(),
+        };
+      },
+    };
+
+    await expect(
+      probeService.testProvider('admin', {
+        id: created.id,
+        model: 'chat-b',
+        reason: 'probe the selected model',
+      }),
+    ).resolves.toMatchObject({ status: 'success' });
+    expect(probed).toEqual(['chat-b']);
+    // Override is probe-only: the stored check model is untouched.
+    expect((await service.getDetail(created.id)).draft.checkModel).toBe('chat-a');
+
+    // An override that is not an enabled model of this provider is refused, not probed.
+    await expect(
+      probeService.testProvider('admin', {
+        id: created.id,
+        model: 'chat-missing',
+        reason: 'probe an unknown model',
+      }),
+    ).resolves.toMatchObject({ sanitizedMessage: 'Check model not enabled' });
+    expect(probed).toEqual(['chat-b']);
+  });
+
   it('creates and reads a secret-safe draft with a CAS token and success audit', async () => {
     const credential = 'plaincredentialvalue-without-known-prefix';
     const created = await service.createProviderDraft('admin', {

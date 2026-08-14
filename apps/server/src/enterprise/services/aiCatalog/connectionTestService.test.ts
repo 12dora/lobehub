@@ -9,6 +9,18 @@ import {
   resolveAiConnectionProbeApiMode,
 } from './connectionTestService';
 
+/** A real, non-empty SSE body — a streaming probe must actually receive completion bytes. */
+const streamingResponse = () =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n'));
+        controller.close();
+      },
+    }),
+    { status: 200 },
+  );
+
 const chatMock = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 })),
 );
@@ -57,6 +69,53 @@ describe('resolveAiConnectionProbeApiMode', () => {
   });
 });
 
+describe('createSafeAiConnectionProbe streaming drain', () => {
+  const streamingProvider = {
+    ...provider,
+    checkModel: 'gpt-5.5',
+    providerKey: 'chatgpt',
+  } as PlatformAiProviderItem;
+  const runStreamingProbe = () =>
+    createSafeAiConnectionProbe(
+      createSafeOutboundHttpClient({
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+        transport: vi.fn(),
+      }),
+    )({
+      keyVaults: { oauthAccessToken: 'fake-token' },
+      model: 'gpt-5.5',
+      provider: streamingProvider,
+      runtimeProvider: 'chatgpt',
+    });
+
+  it('fails a streaming probe whose response carries no body at all', async () => {
+    // A 200 with no body is not a completion. Treating it as success reduced the probe to a
+    // status-code check and let a broken subscription backend look healthy.
+    chatMock.mockClear();
+    chatMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await expect(runStreamingProbe()).rejects.toThrow(/empty completion stream/);
+  });
+
+  it('fails a streaming probe whose stream yields zero bytes', async () => {
+    chatMock.mockClear();
+    chatMock.mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => controller.close(),
+        }),
+        { status: 200 },
+      ),
+    );
+    await expect(runStreamingProbe()).rejects.toThrow(/empty completion stream/);
+  });
+
+  it('passes when the stream actually delivers completion bytes', async () => {
+    chatMock.mockClear();
+    chatMock.mockResolvedValueOnce(streamingResponse());
+    await expect(runStreamingProbe()).resolves.toBeUndefined();
+  });
+});
+
 describe('AiCatalogConnectionTestService', () => {
   it('createSafeAiConnectionProbe forwards apiMode responses and chatCompletion to runtime.chat', async () => {
     chatMock.mockClear();
@@ -67,8 +126,10 @@ describe('AiCatalogConnectionTestService', () => {
       }),
     );
 
+    chatMock.mockResolvedValueOnce(streamingResponse());
     await probe({
       keyVaults: { apiKey: 'fake-key' },
+      model: 'gpt-test',
       provider: {
         ...provider,
         checkModel: 'gpt-test',
@@ -77,13 +138,14 @@ describe('AiCatalogConnectionTestService', () => {
       runtimeProvider: 'openai',
     });
     expect(chatMock).toHaveBeenCalledWith(
-      expect.objectContaining({ apiMode: 'responses', model: 'gpt-test', stream: false }),
+      expect.objectContaining({ apiMode: 'responses', model: 'gpt-test', stream: true }),
       expect.anything(),
     );
 
     chatMock.mockClear();
     await probe({
       keyVaults: { apiKey: 'fake-key' },
+      model: 'gpt-test',
       provider: {
         ...provider,
         checkModel: 'gpt-test',
@@ -96,9 +158,30 @@ describe('AiCatalogConnectionTestService', () => {
       expect.anything(),
     );
 
+    // Responses-only runtimes (Codex/xAI subscription backends) are streaming-first: probing
+    // them non-streaming would take a transport production never uses.
+    chatMock.mockClear();
+    chatMock.mockResolvedValueOnce(streamingResponse());
+    await probe({
+      keyVaults: { oauthAccessToken: 'fake-token' },
+      model: 'gpt-5.5',
+      provider: {
+        ...provider,
+        checkModel: 'gpt-5.5',
+        config: {},
+        providerKey: 'chatgpt',
+      } as PlatformAiProviderItem,
+      runtimeProvider: 'chatgpt',
+    });
+    expect(chatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5.5', stream: true }),
+      expect.anything(),
+    );
+
     chatMock.mockClear();
     await probe({
       keyVaults: { apiKey: 'fake-key' },
+      model: 'gpt-test',
       provider: {
         ...provider,
         checkModel: 'gpt-test',
@@ -117,6 +200,7 @@ describe('AiCatalogConnectionTestService', () => {
     const service = new AiCatalogConnectionTestService(async () => {});
     const result = await service.test({
       keyVaults: { apiKey: 'fake-key' },
+      model: 'gpt-test',
       provider,
       runtimeProvider: 'openai',
     });
@@ -133,6 +217,7 @@ describe('AiCatalogConnectionTestService', () => {
     });
     const result = await service.test({
       keyVaults: { apiKey: 'fake-key' },
+      model: 'gpt-test',
       provider,
       runtimeProvider: 'openai',
     });
@@ -151,7 +236,12 @@ describe('AiCatalogConnectionTestService', () => {
     const service = new AiCatalogConnectionTestService(async () => {
       throw new Error(JSON.stringify(keyVaults));
     });
-    const result = await service.test({ keyVaults, provider, runtimeProvider: 'comfyui' });
+    const result = await service.test({
+      keyVaults,
+      model: 'gpt-test',
+      provider,
+      runtimeProvider: 'comfyui',
+    });
     expect(result.sanitizedMessage).toBe('Connection failed: authentication rejected');
     expect(JSON.stringify(result)).not.toContain('plain-multi-field-key');
     expect(JSON.stringify(result)).not.toContain('plain-header-secret');
@@ -164,6 +254,7 @@ describe('AiCatalogConnectionTestService', () => {
     });
     const result = await service.test({
       keyVaults: { apiKey: 'fake-key' },
+      model: 'gpt-test',
       provider,
       runtimeProvider: 'openai',
     });

@@ -1,3 +1,4 @@
+import debug from 'debug';
 import { ModelProvider } from 'model-bank';
 import {
   DEFAULT_MODEL_PROVIDER_LIST,
@@ -11,6 +12,7 @@ import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
+import { extractChatGPTAccountEmail } from '@/server/services/oauthDeviceFlow/providers/chatGPT';
 import { getOAuthService } from '@/server/services/oauthDeviceFlow/providers/githubCopilot';
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
@@ -31,8 +33,14 @@ import {
 } from '../../guards/platformPermission';
 import { AiCatalogNotFoundError } from '../../services/aiCatalog/adminService';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
+import {
+  isOAuthAuthorizationExpiredError,
+  refreshSharedOAuthVault,
+} from '../../services/aiCatalog/sharedOAuthRefresh';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { assertDangerousReauth, createService, mapServiceError } from './aiCatalogSupport';
+
+const log = debug('lobe-server:admin-ai-provider-oauth');
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -40,6 +48,8 @@ const adminBase = authedProcedure
   .use(withAdminMutationRateLimit());
 
 interface RotatingOAuthProviderCard {
+  /** Builtin default probe model, seeded so admin connectivity check works on first connect. */
+  checkModel?: string;
   config: OAuthDeviceFlowConfig;
   description?: string;
   name: string;
@@ -64,6 +74,7 @@ const resolveRotatingOAuthCard = (providerKey: string): RotatingOAuthProviderCar
   }
 
   return {
+    checkModel: card.checkModel,
     config,
     description: card.description,
     name: card.name,
@@ -74,6 +85,10 @@ const resolveRotatingOAuthCard = (providerKey: string): RotatingOAuthProviderCar
 /** Recognition affordance only — never enough material to reconstruct the account id. */
 const maskAccountId = (accountId: string | undefined): string | null =>
   accountId ? `${accountId.slice(0, 4)}…` : null;
+
+/** Platform vaults hold string leaves; header maps and absent leaves are not projectable. */
+const asVaultString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value : undefined;
 
 /**
  * Reason recorded on the reauth denial of the initiate step. The contract carries no
@@ -107,8 +122,10 @@ export const adminAiProviderOAuthRouter = router({
       resolveRotatingOAuthCard(input.id);
 
       const disconnected = {
+        accountEmail: null,
         accountIdMasked: null,
         connected: false,
+        expired: false,
         expiresAt: null,
         secretConfigured: false,
       };
@@ -138,17 +155,52 @@ export const adminAiProviderOAuthRouter = router({
           httpCode: 'PRECONDITION_FAILED',
         });
       }
-      const keyVaults = await new AiCatalogSecretManager(secrets).decrypt(
-        provider.encryptedKeyVaults,
-      );
-      const accessToken = keyVaults.oauthAccessToken;
-      const accountId = keyVaults.oauthAccountId;
-      const expiresAt = keyVaults.oauthTokenExpiresAt;
+      const secretManager = new AiCatalogSecretManager(secrets);
+      let keyVaults = await secretManager.decrypt(provider.encryptedKeyVaults);
+
+      // Renew before projecting. Rotation used to happen ONLY on a real chat execution, so an
+      // operator opening this card saw a stale (often already expired) timestamp until someone
+      // chatted. This runs the same lease + CAS machinery, and is a cheap no-op while the
+      // token is still fresh.
+      let expired = false;
+      if (provider.secretFingerprint) {
+        try {
+          keyVaults = await refreshSharedOAuthVault({
+            ciphertext: provider.encryptedKeyVaults,
+            db: ctx.serverDB,
+            fingerprint: provider.secretFingerprint,
+            keyVaults,
+            providerKey: input.id,
+            providerRowId: provider.id,
+            secrets: secretManager,
+          });
+        } catch (error) {
+          // Only a dead grant is actionable for the operator. Everything else (network, token
+          // endpoint 5xx, lost lease) degrades to the stored values — the card still renders.
+          if (isOAuthAuthorizationExpiredError(error)) expired = true;
+          // Stable category + provider key only. This path is polled by any admin with
+          // AI_PROVIDER_READ, and a refresh failure carries provider-controlled prose
+          // (`error_description`) that must never be copied into logs.
+          else log('status refresh for %s degraded to stored values', input.id);
+        }
+      }
+
+      const accessToken = asVaultString(keyVaults.oauthAccessToken);
+      const accountId = asVaultString(keyVaults.oauthAccountId);
+      const expiresAt = asVaultString(keyVaults.oauthTokenExpiresAt);
+      // Connections stored before the email leaf existed keep working: decode the claim from
+      // the access token we already hold, best-effort and WITHOUT persisting it.
+      const accountEmail =
+        asVaultString(keyVaults.oauthAccountEmail) ??
+        extractChatGPTAccountEmail(undefined, accessToken) ??
+        null;
 
       return {
-        accountIdMasked: maskAccountId(typeof accountId === 'string' ? accountId : undefined),
-        connected: typeof accessToken === 'string' && accessToken.length > 0,
-        expiresAt: typeof expiresAt === 'string' && expiresAt.length > 0 ? expiresAt : null,
+        accountEmail,
+        accountIdMasked: maskAccountId(accountId),
+        connected: !expired && Boolean(accessToken),
+        expired,
+        expiresAt: expiresAt ?? null,
         secretConfigured,
       };
     }),
@@ -301,7 +353,19 @@ export const adminAiProviderOAuthRouter = router({
       if (input.id === ModelProvider.ChatGPT && tokens.accountId) {
         vault.oauthAccountId = tokens.accountId;
       }
+      // Display-only account identity, same credential shape rule as the account id.
+      if (input.id === ModelProvider.ChatGPT && tokens.email) {
+        vault.oauthAccountEmail = tokens.email;
+      }
       if (expiresAt) vault.oauthTokenExpiresAt = String(expiresAt);
+
+      /**
+       * Identity leaves move as a UNIT with the credential they describe. A reconnect that
+       * returns no email claim must clear the stored one — a merge alone would leave the
+       * PREVIOUS account's email displayed next to the new account's token.
+       */
+      const clearedIdentityLeaves =
+        input.id === ModelProvider.ChatGPT && !tokens.email ? ['oauthAccountEmail'] : [];
 
       let result;
       try {
@@ -312,9 +376,16 @@ export const adminAiProviderOAuthRouter = router({
               id: detail.draft.id,
               mode: 'update',
               reason: input.reason,
-              secret: { operation: 'merge', value: vault },
+              secret: {
+                operation: 'merge',
+                ...(clearedIdentityLeaves.length > 0 ? { unset: clearedIdentityLeaves } : {}),
+                value: vault,
+              },
             })
           : await service.applyProviderImmediate(ctx.userId!, {
+              // Without a check model the admin connectivity probe cannot run at all; the
+              // builtin card already names the right default.
+              checkModel: card.checkModel ?? null,
               description: card.description,
               displayName: card.name,
               // Connecting a shared account IS the activation intent, and the row is created

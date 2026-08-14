@@ -24,10 +24,12 @@ import { AiCatalogAdminService } from './adminService';
 import {
   AiCatalogExecutionResolver,
   AiCatalogRuntimeAdapter,
+  applyPersonalModelOverlay,
   clearAiCatalogRuntimeCache,
   compareAiCatalogRuntimeStates,
   createAiCatalogModelAllowlistHooks,
   getEmptyAiProviderRuntimeState,
+  personalModelOverlayKey,
   recordAiCatalogShadowComparison,
 } from './runtimeAdapter';
 import {
@@ -421,6 +423,33 @@ describe('AiCatalogRuntimeAdapter', () => {
     await expect(execution.resolveProviderExecutionConfig('alpha')).rejects.toMatchObject({
       code: 'PLATFORM_NOT_FOUND',
     });
+  });
+
+  it('applies the personal model overlay without touching the shared snapshot', async () => {
+    await createPublishedProvider();
+    clearAiCatalogRuntimeCache();
+    const shared = await new AiCatalogRuntimeAdapter(db).resolve({
+      flags,
+      upstreamState,
+    });
+    const published = shared.enabledAiModels.filter((model) => model.providerId === 'alpha');
+    expect(published.length).toBeGreaterThan(0);
+
+    const hidden = new Set([personalModelOverlayKey('alpha', published[0]!.id)]);
+    const personal = applyPersonalModelOverlay(shared, hidden);
+
+    // Personal view loses the hidden model …
+    expect(personal.enabledAiModels.map((model) => model.id)).not.toContain(published[0]!.id);
+    // … and the provider drops out of the chat list only once nothing of that type is left.
+    const remainingChat = personal.enabledAiModels.filter(
+      (model) => model.providerId === 'alpha' && model.type === 'chat',
+    );
+    expect(personal.enabledChatAiProviders.some((item) => item.id === 'alpha')).toBe(
+      remainingChat.length > 0,
+    );
+    // The shared snapshot is untouched — it is cached process-wide for every user.
+    expect(shared.enabledAiModels.map((model) => model.id)).toContain(published[0]!.id);
+    expect(applyPersonalModelOverlay(shared, new Set())).toBe(shared);
   });
 
   it('separates public metadata cache from server execution secrets across publish and rollback', async () => {

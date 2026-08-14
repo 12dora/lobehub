@@ -16,10 +16,12 @@ interface ChatGPTDeviceState {
 
 interface ChatGPTTokenClaims {
   'chatgpt_account_id'?: string;
+  'email'?: string;
   'https://api.openai.com/auth'?: {
     chatgpt_account_id?: string;
   };
   'organizations'?: { id?: string }[];
+  'preferred_username'?: string;
 }
 
 const parseTokenClaims = (token?: string): ChatGPTTokenClaims | undefined => {
@@ -47,6 +49,25 @@ export const extractChatGPTAccountId = (
       claims?.organizations?.[0]?.id;
 
     if (accountId) return accountId;
+  }
+
+  return undefined;
+};
+
+/**
+ * Human identity of the connected Codex account, read from the same JWTs already parsed for
+ * the account id. `email` is the standard OIDC claim; `preferred_username` is the fallback
+ * (and need not be an email address). Never a credential — it exists only so the admin panel
+ * can name the account it is about to share with everyone on the instance.
+ */
+export const extractChatGPTAccountEmail = (
+  idToken?: string,
+  accessToken?: string,
+): string | undefined => {
+  for (const token of [idToken, accessToken]) {
+    const claims = parseTokenClaims(token);
+    const email = claims?.email || claims?.preferred_username;
+    if (typeof email === 'string' && email.length > 0 && email.length <= 320) return email;
   }
 
   return undefined;
@@ -177,6 +198,7 @@ export class ChatGPTOAuthService extends OAuthDeviceFlowService {
       tokens: {
         accessToken: tokens.access_token,
         accountId,
+        email: extractChatGPTAccountEmail(tokens.id_token, tokens.access_token),
         expiresIn: tokens.expires_in,
         refreshToken: tokens.refresh_token,
         scope: tokens.scope,

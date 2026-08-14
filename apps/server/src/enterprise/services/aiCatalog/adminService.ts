@@ -56,6 +56,7 @@ import {
   appendAiCatalogFailureAudit,
   getLockedAiCatalogDraft,
 } from './shared';
+import { isOAuthAuthorizationExpiredError, refreshSharedOAuthVault } from './sharedOAuthRefresh';
 
 type CreateProviderInput = z.infer<typeof adminAiProviderCreateDraftInputSchema>;
 type UpdateProviderInput = z.infer<typeof adminAiProviderUpdateDraftInputSchema>;
@@ -564,7 +565,7 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
 
   testProvider = async (
     actorUserId: string,
-    input: { id: string; reason: string },
+    input: { id: string; model?: string; reason: string },
   ): Promise<AiConnectionTestResult> => {
     const reason = await this.sanitizeReason(input.reason, input.id);
     let finalized:
@@ -589,17 +590,40 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
           connectionTestedDraftToken: testedDraftToken,
           connectionTestedRevision: draft.revision,
         });
-        const checkModel = draft.models.find(
-          (model) => model.enabled && model.modelKey === provider.checkModel,
-        );
-        return { attemptId, checkModelExecutable: checkModel?.type === 'chat', provider };
+        // An explicit override lets the operator probe the model selected in the UI without
+        // persisting it first; otherwise the provider's stored check model is used.
+        const requestedModel = input.model ?? provider.checkModel ?? null;
+        const model = requestedModel
+          ? draft.models.find((item) => item.modelKey === requestedModel)
+          : undefined;
+        return { attemptId, model, provider, requestedModel };
       });
+
+      /**
+       * Distinct, sanitized reasons — one blanket "invalid provider configuration" was
+       * unactionable: the operator could not tell "pick a model" from "enable the model" from
+       * "the provider rejected us".
+       *
+       * CONTRACT WITH THE ADMIN CHECKER: it normalizes this message (lowercase,
+       * non-alphanumeric → `_`) and keys actionable copy off `check_model_not_configured` /
+       * `check_model_not_enabled`. Keep these two phrases normalizing to exactly those codes;
+       * anything else degrades to being shown verbatim, which is the intended fallback.
+       */
+      const configurationIssue = ((): string | null => {
+        if (!snapshot.requestedModel) return 'Check model not configured';
+        // Not materialized as a platform row and explicitly disabled are the same fix for the
+        // operator ("enable it for this provider"), so they share one code.
+        if (!snapshot.model || !snapshot.model.enabled) return 'Check model not enabled';
+        if (snapshot.model.type !== 'chat') return 'Check model is not a chat model';
+        return null;
+      })();
+
       let result: AiConnectionTestResult;
-      if (!snapshot.checkModelExecutable) {
+      if (configurationIssue) {
         result = {
           errorCategory: 'invalid_config',
           latencyMs: 0,
-          sanitizedMessage: 'Connection failed: invalid provider configuration',
+          sanitizedMessage: configurationIssue,
           status: 'failure',
           testedAt: new Date(),
         };
@@ -608,23 +632,54 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
           const keyVaults = snapshot.provider.encryptedKeyVaults
             ? await this.secrets.decrypt(snapshot.provider.encryptedKeyVaults)
             : {};
+          // Probe with the SAME credential a chat would use. Shared rotating-refresh vaults
+          // (chatgpt/supergrok) rotate lazily on execution, so without this the admin check
+          // could fail on an expired token that chat would have silently renewed. Rotation
+          // happens in place at the stable fingerprint, so it is the identical secret version
+          // the published revision pins.
+          //
+          // Isolated from the probe on purpose: refresh is PROACTIVE (it fires ~2min before
+          // expiry), so a token-endpoint blip must not cancel a probe that the still-valid
+          // stored access token would have passed. Only a dead grant is terminal.
+          let refreshed = keyVaults;
+          if (snapshot.provider.encryptedKeyVaults && snapshot.provider.secretFingerprint) {
+            try {
+              refreshed = await refreshSharedOAuthVault({
+                ciphertext: snapshot.provider.encryptedKeyVaults,
+                db: this.db,
+                fingerprint: snapshot.provider.secretFingerprint,
+                keyVaults,
+                providerKey: snapshot.provider.providerKey,
+                providerRowId: snapshot.provider.id,
+                secrets: this.secrets,
+              });
+            } catch (error) {
+              if (isOAuthAuthorizationExpiredError(error)) throw error;
+              // Transient — keep the stored vault and let the probe be the real verdict.
+              refreshed = keyVaults;
+            }
+          }
           const normalized = normalizeAiCatalogExecutionCredentials({
             config: snapshot.provider.config,
-            keyVaults,
+            keyVaults: refreshed,
             providerKey: snapshot.provider.providerKey,
             source: snapshot.provider.source,
             settings: snapshot.provider.settings,
           });
           result = await this.connectionTests.test({
             keyVaults: normalized.keyVaults,
+            model: snapshot.model!.modelKey,
             provider: snapshot.provider,
             runtimeProvider: normalized.runtimeProvider,
           });
-        } catch {
+        } catch (error) {
+          // A dead shared grant is its own actionable state, not a generic config error.
           result = {
-            errorCategory: 'invalid_config',
+            errorCategory: isOAuthAuthorizationExpiredError(error) ? 'auth' : 'invalid_config',
             latencyMs: 0,
-            sanitizedMessage: 'Connection failed: invalid provider configuration',
+            sanitizedMessage: isOAuthAuthorizationExpiredError(error)
+              ? 'Connection failed: the shared account connection expired — reconnect it'
+              : 'Connection failed: invalid provider configuration',
             status: 'failure',
             testedAt: new Date(),
           };

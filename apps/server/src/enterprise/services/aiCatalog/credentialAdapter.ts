@@ -36,6 +36,8 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
   ]),
   [ModelProvider.ChatGPT]: new Set([
     'oauthAccessToken',
+    // Display-only account identity — intentionally absent from SECRET_CREDENTIAL_STRING_KEYS.
+    'oauthAccountEmail',
     'oauthAccountId',
     'oauthRefreshToken',
     'oauthTokenExpiresAt',

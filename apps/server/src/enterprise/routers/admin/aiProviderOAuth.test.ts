@@ -129,11 +129,14 @@ const callerFor = async (
     serverDB: db,
   } as never);
 
+const ACCOUNT_EMAIL = 'operator@example.test';
+
 const successTokens = {
   status: 'success' as const,
   tokens: {
     accessToken: ACCESS_TOKEN,
     accountId: ACCOUNT_ID,
+    email: ACCOUNT_EMAIL,
     expiresIn: 3600,
     refreshToken: REFRESH_TOKEN,
     tokenType: 'bearer',
@@ -291,6 +294,8 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       },
     ]);
     expect(applyImmediate).toHaveBeenCalledWith(ids.aiAdmin, {
+      // Seeded from the builtin card so the admin connectivity probe can run on first connect.
+      checkModel: expect.any(String),
       description: expect.anything(),
       displayName: expect.any(String),
       // First connect activates the shared account — otherwise the row would be invisible
@@ -303,6 +308,7 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
         operation: 'replace',
         value: {
           oauthAccessToken: ACCESS_TOKEN,
+          oauthAccountEmail: ACCOUNT_EMAIL,
           oauthAccountId: ACCOUNT_ID,
           oauthRefreshToken: REFRESH_TOKEN,
           oauthTokenExpiresAt: expect.stringMatching(/^\d+$/),
@@ -469,6 +475,7 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
         operation: 'merge',
         value: {
           oauthAccessToken: ACCESS_TOKEN,
+          oauthAccountEmail: ACCOUNT_EMAIL,
           oauthAccountId: ACCOUNT_ID,
           oauthRefreshToken: REFRESH_TOKEN,
           oauthTokenExpiresAt: expect.stringMatching(/^\d+$/),
@@ -573,8 +580,11 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
     const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' });
 
     expect(status).toEqual({
+      // The admin's own shared account is named in full; the Codex workspace UUID stays masked.
+      accountEmail: ACCOUNT_EMAIL,
       accountIdMasked: 'acct…',
       connected: true,
+      expired: false,
       expiresAt: expect.stringMatching(/^\d+$/),
       secretConfigured: true,
     });
@@ -582,6 +592,90 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
     expect(serialized).not.toContain(ACCESS_TOKEN);
     expect(serialized).not.toContain(REFRESH_TOKEN);
     expect(serialized).not.toContain(ACCOUNT_ID);
+  });
+
+  it('replaces the account email on reconnect, and clears it when the new token has none', async () => {
+    const caller = await callerFor();
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+    expect((await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).accountEmail).toBe(
+      ACCOUNT_EMAIL,
+    );
+
+    // Reconnect as a different account: the identity must follow the new credential.
+    oauthService.pollForToken.mockResolvedValue({
+      ...successTokens,
+      tokens: { ...successTokens.tokens, email: 'someone-else@example.test' },
+    });
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-2',
+      id: 'chatgpt',
+      reason: 'reconnect as another account',
+    });
+    expect((await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).accountEmail).toBe(
+      'someone-else@example.test',
+    );
+
+    // Reconnect with a token carrying NO email claim: a plain merge would strand the previous
+    // account's email next to the new credential, so the leaf is explicitly unset.
+    oauthService.pollForToken.mockResolvedValue({
+      status: 'success' as const,
+      tokens: {
+        accessToken: 'opaque-access-token-without-claims',
+        accountId: ACCOUNT_ID,
+        expiresIn: 3600,
+        refreshToken: REFRESH_TOKEN,
+        tokenType: 'bearer',
+      },
+    });
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-3',
+      id: 'chatgpt',
+      reason: 'reconnect without an email claim',
+    });
+
+    const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' });
+    expect(status.accountEmail).toBeNull();
+    // Falls back to the masked account id rather than showing a stale identity.
+    expect(status.accountIdMasked).toBe('acct…');
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row.encryptedKeyVaults).not.toContain('someone-else@example.test');
+  });
+
+  it('recovers the account email from the stored token when the leaf predates the feature', async () => {
+    // Connections stored before oauthAccountEmail existed must still name their account:
+    // the claim is decoded from the access token we already hold, and never persisted.
+    const claims = Buffer.from(
+      JSON.stringify({ chatgpt_account_id: ACCOUNT_ID, email: 'legacy@example.test' }),
+      'utf8',
+    ).toString('base64url');
+    const legacyJwt = `eyJhbGciOiJub25lIn0.${claims}.sig`;
+    oauthService.pollForToken.mockResolvedValue({
+      status: 'success' as const,
+      tokens: {
+        accessToken: legacyJwt,
+        accountId: ACCOUNT_ID,
+        expiresIn: 3600,
+        refreshToken: REFRESH_TOKEN,
+        tokenType: 'bearer',
+      },
+    });
+    const caller = await callerFor();
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+
+    const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' });
+    expect(status.accountEmail).toBe('legacy@example.test');
+    // Read-time only: nothing was written back into the vault.
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row.encryptedKeyVaults).not.toContain('legacy@example.test');
   });
 
   it('reports a disconnected status when the platform row does not exist', async () => {
@@ -592,8 +686,10 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
     });
 
     expect(status).toEqual({
+      accountEmail: null,
       accountIdMasked: null,
       connected: false,
+      expired: false,
       expiresAt: null,
       secretConfigured: false,
     });
