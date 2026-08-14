@@ -1,5 +1,4 @@
 import { ModelProvider } from 'model-bank';
-import { isPersonalOAuthOnlyProvider } from 'model-bank/modelProviders';
 
 import type {
   PlatformAiProviderConfig,
@@ -35,6 +34,12 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
     'password',
     'username',
   ]),
+  [ModelProvider.ChatGPT]: new Set([
+    'oauthAccessToken',
+    'oauthAccountId',
+    'oauthRefreshToken',
+    'oauthTokenExpiresAt',
+  ]),
   [ModelProvider.GithubCopilot]: new Set([
     'apiKey',
     'bearerToken',
@@ -42,17 +47,16 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
     'oauthAccessToken',
   ]),
   [ModelProvider.Ollama]: new Set(['baseURL']),
+  [ModelProvider.SuperGrok]: new Set([
+    'oauthAccessToken',
+    'oauthRefreshToken',
+    'oauthTokenExpiresAt',
+  ]),
   [ModelProvider.VertexAI]: new Set(['apiKey', 'baseURL', 'region']),
 };
 
 const OPENAI_COMPATIBLE_KEYS = new Set(['apiKey', 'baseURL']);
 const SUPPORTED_RUNTIME_PROVIDERS = new Set<string>(Object.values(ModelProvider));
-
-// Personal-OAuth-only providers (chatgpt/supergrok) have no platform-managed credential
-// lifecycle: refresh tokens are bound to a user, so the platform catalog can neither store
-// nor refresh oauthAccessToken, and API-key credentials are not valid for them. Membership
-// is derived from the shared model-bank predicate so the admin UI cannot drift from this
-// server-side rejection.
 
 export const resolveAiCatalogRuntimeProvider = (
   providerKey: string,
@@ -61,11 +65,6 @@ export const resolveAiCatalogRuntimeProvider = (
 ): string => resolveModelRuntimeProvider(providerKey, settings.sdkType, source);
 
 const assertSupportedRuntimeProvider = (runtimeProvider: string): void => {
-  if (isPersonalOAuthOnlyProvider(runtimeProvider)) {
-    throw new AiCatalogValidationError([
-      `${runtimeProvider} is personal OAuth only and cannot be managed as a platform provider`,
-    ]);
-  }
   if (!SUPPORTED_RUNTIME_PROVIDERS.has(runtimeProvider)) {
     throw new AiCatalogValidationError(['Unsupported provider runtime']);
   }
@@ -151,6 +150,17 @@ const assertRequiredCredentials = (
       }
       return;
     }
+    case ModelProvider.ChatGPT: {
+      // Shared platform OAuth connection: rotating refresh token + Codex account id.
+      if (
+        !hasText(keyVaults.oauthAccessToken) ||
+        !hasText(keyVaults.oauthRefreshToken) ||
+        !hasText(keyVaults.oauthAccountId)
+      ) {
+        throw new AiCatalogValidationError(['ChatGPT shared OAuth connection is incomplete']);
+      }
+      return;
+    }
     case ModelProvider.GithubCopilot: {
       if (
         !hasText(keyVaults.apiKey) &&
@@ -158,6 +168,13 @@ const assertRequiredCredentials = (
         !hasText(keyVaults.oauthAccessToken)
       ) {
         throw new AiCatalogValidationError(['GitHub Copilot credential is missing']);
+      }
+      return;
+    }
+    case ModelProvider.SuperGrok: {
+      // Shared platform OAuth connection: rotating refresh token.
+      if (!hasText(keyVaults.oauthAccessToken) || !hasText(keyVaults.oauthRefreshToken)) {
+        throw new AiCatalogValidationError(['SuperGrok shared OAuth connection is incomplete']);
       }
       return;
     }

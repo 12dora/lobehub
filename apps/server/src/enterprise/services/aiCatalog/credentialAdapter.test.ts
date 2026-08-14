@@ -246,31 +246,83 @@ describe('AI catalog credential adapter', () => {
     },
   );
 
-  it('rejects SuperGrok as a platform-managed runtime (personal OAuth only)', () => {
-    expect(() => validateAiCatalogRuntimeProvider(ModelProvider.SuperGrok, {}, 'builtin')).toThrow(
-      'PLATFORM_CONFIG_VALIDATION_FAILED',
-    );
+  it('accepts SuperGrok as a shared-OAuth platform runtime with an OAuth-only vault', () => {
+    expect(() =>
+      validateAiCatalogRuntimeProvider(ModelProvider.SuperGrok, {}, 'builtin'),
+    ).not.toThrow();
+    // API-key style credentials remain invalid — only the OAuth vault shape is accepted.
     expect(() =>
       validateAiCatalogCredentialShape(ModelProvider.SuperGrok, { apiKey: 'sk-any' }),
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
     expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.SuperGrok, {
+        oauthAccessToken: 'at-1',
+        oauthRefreshToken: 'rt-1',
+        oauthTokenExpiresAt: '1750000000000',
+      }),
+    ).not.toThrow();
+    // Execution needs the full rotating pair; env vars never substitute for it.
+    expect(() =>
       normalizeAiCatalogExecutionCredentials({
         config: {},
         env: { SUPERGROK_API_KEY: 'false-ready-key' },
-        keyVaults: { apiKey: 'sk-any' },
+        keyVaults: { oauthAccessToken: 'at-1' },
         providerKey: ModelProvider.SuperGrok,
         settings: {},
         source: 'builtin',
       }),
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: { oauthAccessToken: 'at-1', oauthRefreshToken: 'rt-1' },
+        providerKey: ModelProvider.SuperGrok,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).not.toThrow();
   });
 
-  it('rejects ChatGPT as a platform-managed runtime (personal OAuth only)', () => {
-    expect(() => validateAiCatalogRuntimeProvider(ModelProvider.ChatGPT, {}, 'builtin')).toThrow(
-      'PLATFORM_CONFIG_VALIDATION_FAILED',
-    );
+  it('accepts ChatGPT as a shared-OAuth platform runtime requiring the Codex account id', () => {
+    expect(() =>
+      validateAiCatalogRuntimeProvider(ModelProvider.ChatGPT, {}, 'builtin'),
+    ).not.toThrow();
     expect(() =>
       validateAiCatalogCredentialShape(ModelProvider.ChatGPT, { apiKey: 'sk-any' }),
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.ChatGPT, {
+        oauthAccessToken: 'at-1',
+        oauthAccountId: 'acct-1',
+        oauthRefreshToken: 'rt-1',
+        oauthTokenExpiresAt: '1750000000000',
+      }),
+    ).not.toThrow();
+    // Missing account id is incomplete — the Codex backend requires it per request.
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: { oauthAccessToken: 'at-1', oauthRefreshToken: 'rt-1' },
+        providerKey: ModelProvider.ChatGPT,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: {
+          oauthAccessToken: 'at-1',
+          oauthAccountId: 'acct-1',
+          oauthRefreshToken: 'rt-1',
+        },
+        providerKey: ModelProvider.ChatGPT,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).not.toThrow();
   });
 });

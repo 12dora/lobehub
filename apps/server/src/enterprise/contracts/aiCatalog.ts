@@ -236,6 +236,10 @@ const aiStructuredCredentialSchema = z
     bearerTokenExpiresAt: z.string().min(1).max(200).optional(),
     customHeaders: boundedHeaderMapSchema.optional(),
     oauthAccessToken: z.string().min(1).max(32_768).optional(),
+    oauthAccountId: z.string().min(1).max(200).optional(),
+    oauthRefreshToken: z.string().min(1).max(32_768).optional(),
+    /** Epoch millis as a string — the platform secret vault only stores string leaves. */
+    oauthTokenExpiresAt: z.string().min(1).max(200).optional(),
     password: z.string().min(1).max(32_768).optional(),
     region: z.string().min(1).max(200).optional(),
     secretAccessKey: z.string().min(1).max(32_768).optional(),
