@@ -1,8 +1,10 @@
 // @vitest-environment node
 /**
  * admin.aiProviderOAuth — shared platform device-flow connection.
- * Covers provider admission, the pending/no-write path, the vault written on
- * success, and the presence-only projection of the status query.
+ * Covers provider admission, the reauth gate on both steps (asserted before the
+ * single-use grant is redeemed), the pending/no-write path, the create and reconnect
+ * store branches with their audits, sanitized failure audits, and the presence-only
+ * projection of the status query.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -138,6 +140,12 @@ const successTokens = {
   },
 };
 
+/** Stale-session caller: the reauth gate must deny before anything is redeemed. */
+const staleCaller = () => callerFor({ authenticatedAt: null, authMethod: 'better-auth' });
+
+const auditRowsFor = async (action: string) =>
+  (await db.select().from(platformAuditLogs)).filter((row) => row.action === action);
+
 describe('admin.aiProviderOAuth.initiateDeviceCode', () => {
   it('rejects providers that do not issue a rotating refresh token', async () => {
     const caller = await callerFor();
@@ -183,6 +191,53 @@ describe('admin.aiProviderOAuth.initiateDeviceCode', () => {
       },
     ]);
   });
+
+  /**
+   * The device grant issued here is single-use, so the freshness window has to be taken on
+   * this click-driven call — a stale session must never reach the authorization server.
+   */
+  it('requires a recent interactive authentication before contacting the provider', async () => {
+    const caller = await staleCaller();
+
+    await expect(
+      caller.aiProviderOAuth.initiateDeviceCode({ id: 'chatgpt' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    expect(oauthService.initiateDeviceCode).not.toHaveBeenCalled();
+    expect(await db.select().from(platformAuditLogs)).toMatchObject([
+      {
+        action: 'admin.aiProviderOAuth.initiateDeviceCode',
+        actorUserId: ids.aiAdmin,
+        afterDiff: { error: 'reauth_required' },
+        result: 'denied',
+        targetId: 'chatgpt',
+        targetType: 'provider',
+      },
+    ]);
+  });
+
+  it('audits a failed device code request without echoing provider prose', async () => {
+    const prose = 'authorization server said: client_id 0oa-secret-value is not permitted';
+    oauthService.initiateDeviceCode.mockRejectedValue(new Error(prose));
+
+    await expect(
+      (await callerFor()).aiProviderOAuth.initiateDeviceCode({ id: 'supergrok' }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits).toMatchObject([
+      {
+        action: 'admin.aiProviderOAuth.initiateDeviceCode',
+        actorUserId: ids.aiAdmin,
+        afterDiff: { error: 'device_code_request_failed', providerKey: 'supergrok' },
+        result: 'failure',
+        targetId: 'supergrok',
+        targetType: 'provider',
+      },
+    ]);
+    expect(JSON.stringify(audits)).not.toContain(prose);
+    expect(JSON.stringify(audits)).not.toContain('0oa-secret-value');
+  });
 });
 
 describe('admin.aiProviderOAuth.pollAuthStatus', () => {
@@ -207,17 +262,21 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       stored: false,
     });
     expect(applyImmediate).not.toHaveBeenCalled();
+    expect(oauthService.pollForToken).toHaveBeenCalledTimes(1);
     expect(await db.select().from(platformAiProviders)).toEqual([]);
     expect(await db.select().from(platformAiProviderSecrets)).toEqual([]);
     expect(await db.select().from(platformAuditLogs)).toEqual([]);
   });
 
   it('stores the authorized connection through the catalog admin service', async () => {
+    // A fresh builtin row has no enabled model yet, so production soft-fails the immediate
+    // publish — the store still succeeded. Mocking a published revision would hide that.
     const applyImmediate = vi.fn().mockResolvedValue({
       auditId: null,
-      published: true,
-      publishError: null,
-      revision: 3,
+      draft: { id: 'created-provider-row-id' },
+      published: false,
+      publishError: 'model_required',
+      revision: 0,
     });
     serviceSeam.applyProviderImmediate = applyImmediate;
     oauthService.pollForToken.mockResolvedValue(successTokens);
@@ -231,12 +290,27 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
     });
 
     expect(result).toEqual({
-      published: true,
-      publishError: null,
-      revision: 3,
+      published: false,
+      publishError: 'model_required',
+      revision: 0,
       status: 'success',
       stored: true,
     });
+    expect(await auditRowsFor('admin.aiProviderOAuth.pollAuthStatus')).toMatchObject([
+      {
+        actorUserId: ids.aiAdmin,
+        afterDiff: {
+          mode: 'create',
+          providerKey: 'chatgpt',
+          publishError: 'model_required',
+          published: false,
+          revision: 0,
+        },
+        result: 'success',
+        targetId: 'created-provider-row-id',
+        targetType: 'provider',
+      },
+    ]);
     expect(applyImmediate).toHaveBeenCalledWith(ids.aiAdmin, {
       description: expect.anything(),
       displayName: expect.any(String),
@@ -260,9 +334,10 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
   it('omits the account id for providers whose credential shape rejects it', async () => {
     const applyImmediate = vi.fn().mockResolvedValue({
       auditId: null,
-      published: true,
-      publishError: null,
-      revision: 1,
+      draft: { id: 'created-provider-row-id' },
+      published: false,
+      publishError: 'model_required',
+      revision: 0,
     });
     serviceSeam.applyProviderImmediate = applyImmediate;
     oauthService.pollForToken.mockResolvedValue(successTokens);
@@ -287,21 +362,29 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
     expect(applyImmediate.mock.calls[0]?.[1]).not.toHaveProperty('secret.value.oauthAccountId');
   });
 
-  it('denies the store without a recent interactive authentication and writes no secret', async () => {
+  /**
+   * The freshness check has to run BEFORE the token exchange: the device grant is
+   * single-use, so a tick that cannot store the result must not redeem it (the operator
+   * would be left with a burnt authorization and a dead-ended flow).
+   */
+  it('denies a stale session before the device grant is redeemed', async () => {
+    const applyImmediate = vi.fn();
+    serviceSeam.applyProviderImmediate = applyImmediate;
     oauthService.pollForToken.mockResolvedValue(successTokens);
-    const caller = await callerFor({ authenticatedAt: null, authMethod: 'better-auth' });
+    const caller = await staleCaller();
 
     await expect(
       caller.aiProviderOAuth.pollAuthStatus({
         deviceCode: 'device-code-1',
         id: 'chatgpt',
-        reason: `denied ${ACCESS_TOKEN}`,
+        reason: 'connect shared chatgpt account',
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
 
+    expect(oauthService.pollForToken).not.toHaveBeenCalled();
+    expect(applyImmediate).not.toHaveBeenCalled();
     expect(await db.select().from(platformAiProviderSecrets)).toEqual([]);
-    const audits = await db.select().from(platformAuditLogs);
-    expect(audits).toMatchObject([
+    expect(await db.select().from(platformAuditLogs)).toMatchObject([
       {
         action: 'admin.aiProviderOAuth.pollAuthStatus',
         afterDiff: { error: 'reauth_required' },
@@ -310,11 +393,148 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
         targetType: 'provider',
       },
     ]);
-    expect(JSON.stringify(audits)).not.toContain(ACCESS_TOKEN);
+  });
+
+  it('keeps the stored token out of the denial audit reason on a reconnect', async () => {
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+    await (
+      await callerFor()
+    ).aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+    oauthService.pollForToken.mockClear();
+
+    const caller = await staleCaller();
+    await expect(
+      caller.aiProviderOAuth.pollAuthStatus({
+        deviceCode: 'device-code-2',
+        id: 'chatgpt',
+        reason: `reconnect ${ACCESS_TOKEN}`,
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    expect(oauthService.pollForToken).not.toHaveBeenCalled();
+    const denied = (await auditRowsFor('admin.aiProviderOAuth.pollAuthStatus')).filter(
+      (row) => row.result === 'denied',
+    );
+    expect(denied).toHaveLength(1);
+    expect(JSON.stringify(denied)).not.toContain(ACCESS_TOKEN);
+  });
+
+  it('reconnects an existing shared account through the update branch', async () => {
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+    const caller = await callerFor();
+    // Unmocked service: pins the real create-branch contract the mocked tests above assert.
+    const created = await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+    expect(created).toEqual({
+      published: false,
+      publishError: 'model_required',
+      revision: 0,
+      status: 'success',
+      stored: true,
+    });
+
+    // Concurrency expectations are read back independently of the router under test.
+    const stored = await caller.aiProviders.get({ providerKey: 'chatgpt' });
+    expect(stored.draftToken).toHaveLength(64);
+
+    const applyImmediate = vi.fn().mockResolvedValue({
+      auditId: null,
+      draft: { id: stored.draft.id },
+      published: false,
+      publishError: 'model_required',
+      revision: 0,
+    });
+    serviceSeam.applyProviderImmediate = applyImmediate;
+
+    const result = await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-2',
+      id: 'chatgpt',
+      reason: 'reconnect shared chatgpt account',
+    });
+
+    expect(result).toEqual({
+      published: false,
+      publishError: 'model_required',
+      revision: 0,
+      status: 'success',
+      stored: true,
+    });
+    // Merge (not replace): a reconnect must not drop vault leaves this flow does not set.
+    expect(applyImmediate).toHaveBeenCalledWith(ids.aiAdmin, {
+      expectedDraftToken: stored.draftToken,
+      expectedRevision: stored.baseRevision,
+      id: stored.draft.id,
+      mode: 'update',
+      reason: 'reconnect shared chatgpt account',
+      secret: {
+        operation: 'merge',
+        value: {
+          oauthAccessToken: ACCESS_TOKEN,
+          oauthAccountId: ACCOUNT_ID,
+          oauthRefreshToken: REFRESH_TOKEN,
+          oauthTokenExpiresAt: expect.stringMatching(/^\d+$/),
+        },
+      },
+    });
+    expect(
+      (await auditRowsFor('admin.aiProviderOAuth.pollAuthStatus')).filter(
+        (row) => row.result === 'success',
+      ),
+    ).toMatchObject([
+      { afterDiff: { mode: 'create' } },
+      { afterDiff: { mode: 'update' }, targetId: stored.draft.id },
+    ]);
+  });
+
+  it('maps a failed token exchange to a stable error and audits it without provider prose', async () => {
+    const prose = 'token endpoint rejected device_code dev-secret-material';
+    oauthService.pollForToken.mockRejectedValue(new Error(prose));
+    const applyImmediate = vi.fn();
+    serviceSeam.applyProviderImmediate = applyImmediate;
+
+    await expect(
+      (await callerFor()).aiProviderOAuth.pollAuthStatus({
+        deviceCode: 'device-code-1',
+        id: 'chatgpt',
+        reason: 'connect shared chatgpt account',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    expect(applyImmediate).not.toHaveBeenCalled();
+    const audits = await auditRowsFor('admin.aiProviderOAuth.pollAuthStatus');
+    expect(audits).toMatchObject([
+      {
+        actorUserId: ids.aiAdmin,
+        afterDiff: { error: 'device_token_exchange_failed', providerKey: 'chatgpt' },
+        result: 'failure',
+        targetId: 'chatgpt',
+        targetType: 'provider',
+      },
+    ]);
+    expect(JSON.stringify(audits)).not.toContain(prose);
+    expect(JSON.stringify(audits)).not.toContain('dev-secret-material');
   });
 });
 
 describe('admin.aiProviderOAuth.getConnectionStatus', () => {
+  it('rejects providers that cannot hold a shared rotating-refresh account', async () => {
+    const caller = await callerFor();
+
+    await expect(
+      caller.aiProviderOAuth.getConnectionStatus({ id: 'openai' }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(
+      caller.aiProviderOAuth.getConnectionStatus({ id: 'githubcopilot' }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
   it('reports a presence-only status without any token material', async () => {
     oauthService.pollForToken.mockResolvedValue(successTokens);
     const caller = await callerFor();

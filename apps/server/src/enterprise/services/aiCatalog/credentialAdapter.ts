@@ -238,6 +238,7 @@ const SECRET_CREDENTIAL_STRING_KEYS = new Set([
   'apiKey',
   'bearerToken',
   'oauthAccessToken',
+  'oauthRefreshToken',
   'password',
   'secretAccessKey',
   'sessionToken',

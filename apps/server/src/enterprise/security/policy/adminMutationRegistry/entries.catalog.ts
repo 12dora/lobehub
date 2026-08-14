@@ -3,11 +3,13 @@ import {
   conditionalReauth,
   dangerousMutation,
   enforced,
+  noReason,
   notApplicable,
   recentReauth,
   regularMutation,
   remoteProbeNoLkg,
   safeOutbound,
+  validationAudit,
   validationMutation,
   validationNoLkg,
 } from './helpers';
@@ -131,10 +133,21 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'medium',
     'Change a model in a provider draft.',
   ),
-  'admin.aiProviderOAuth.initiateDeviceCode': validationMutation(
+  // Persists nothing itself, so it stays a regular mutation — but it opens the single-use
+  // grant whose redemption stores a shared platform credential, so it carries the same
+  // reauth gate and permission union as the store step (a stale session must fail here,
+  // on the click-driven call, rather than after the grant is burned).
+  'admin.aiProviderOAuth.initiateDeviceCode': regularMutation(
     'admin.aiProviderOAuth.initiateDeviceCode',
+    'medium',
     'Request a device authorization code for a shared platform provider account.',
-    { lastKnownGood: remoteProbeNoLkg, outbound: fixedProviderEndpointOutbound },
+    {
+      audit: validationAudit,
+      lastKnownGood: remoteProbeNoLkg,
+      outbound: fixedProviderEndpointOutbound,
+      reason: noReason,
+      reauth: recentReauth,
+    },
   ),
   'admin.aiProviderOAuth.pollAuthStatus': dangerousMutation(
     'admin.aiProviderOAuth.pollAuthStatus',

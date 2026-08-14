@@ -173,6 +173,14 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const persistRotatedKeyVaults = async (
   params: EnsureFreshOAuthTokenWithStoreParams,
   nextKeyVaults: OAuthTokenKeyVaults,
+  /**
+   * The refresh token the token-endpoint call actually consumed (differs from
+   * params.keyVaults after an invalid_grant self-heal picked up a newer stored token).
+   * A stored pair is only "someone else's rotation" when its refresh token differs
+   * from THIS one — comparing against the flow's original token can mistake our own
+   * just-consumed pair for a fresh one.
+   */
+  consumedRefreshToken: string,
 ): Promise<OAuthTokenKeyVaults> => {
   const { flightKey, providerId, store } = params;
   let lastError: unknown;
@@ -194,7 +202,7 @@ const persistRotatedKeyVaults = async (
     if (
       stored.oauthAccessToken &&
       stored.oauthRefreshToken &&
-      stored.oauthRefreshToken !== params.keyVaults.oauthRefreshToken &&
+      stored.oauthRefreshToken !== consumedRefreshToken &&
       !isExpiring(stored)
     ) {
       return stored;
@@ -223,6 +231,7 @@ const refreshAndPersist = async (
   const service = new OAuthDeviceFlowService();
   const usedRefreshToken = keyVaults.oauthRefreshToken!;
   const invalidGrant = params.onInvalidGrant ?? throwInvalidGrant;
+  let consumedRefreshToken = usedRefreshToken;
 
   let tokens;
   try {
@@ -246,7 +255,8 @@ const refreshAndPersist = async (
 
     // Otherwise retry ONCE with the newer stored refresh token.
     try {
-      tokens = await service.refreshAccessToken(config, stored.oauthRefreshToken!);
+      consumedRefreshToken = stored.oauthRefreshToken!;
+      tokens = await service.refreshAccessToken(config, consumedRefreshToken);
     } catch (retryError) {
       if (retryError instanceof OAuthInvalidGrantError) invalidGrant(providerId);
       throw retryError;
@@ -268,7 +278,7 @@ const refreshAndPersist = async (
   // Persist BEFORE returning: a rotated pair that only exists in memory strands
   // every other instance and the next request on this one (invalid_grant +
   // re-read still sees the consumed token and cannot self-heal).
-  return persistRotatedKeyVaults(params, nextKeyVaults);
+  return persistRotatedKeyVaults(params, nextKeyVaults, consumedRefreshToken);
 };
 
 /**

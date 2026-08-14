@@ -194,7 +194,16 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   {
     kind: 'mutation',
     path: 'admin.aiProviderOAuth.initiateDeviceCode',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE] },
+    // Same union as the store step: whoever may open the single-use grant must be able to
+    // finish it, otherwise the shared account authorization is redeemed and then rejected.
+    permission: {
+      mode: 'all',
+      permissions: [
+        PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+      ],
+    },
   },
   {
     kind: 'mutation',

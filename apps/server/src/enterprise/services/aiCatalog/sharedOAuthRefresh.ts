@@ -62,6 +62,12 @@ const mergeTokens = (
     : { oauthTokenExpiresAt: String(tokens.oauthTokenExpiresAt) }),
 });
 
+/** Matches the payload thrown for a dead shared grant (AgentRuntimeError.createError shape). */
+export const isOAuthAuthorizationExpiredError = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { errorType?: unknown }).errorType === AgentRuntimeErrorType.OAuthAuthorizationExpired;
+
 const throwSharedGrantExpired = (providerId: string): never => {
   // Surfaced to end users who cannot fix it themselves — point them at the admin, and
   // leave an operator trace (the vault is deliberately NOT cleared; it is the evidence).
@@ -160,34 +166,57 @@ export const refreshSharedOAuthVault = async (
   // subsequent persist must expect the ciphertext of the version it actually consumed.
   let lastCiphertext = params.ciphertext;
   let latestFullVault = params.keyVaults;
+  // Once a CAS miss reveals a DIFFERENT refresh token in the store, someone else rotated
+  // the grant — never CAS again in this flow (we would clobber their newer pair); the
+  // refresh policy's fallback re-reads and adopts it instead.
+  let foreignRotationDetected = false;
+
+  const readVault = async (): Promise<OAuthTokenKeyVaults> => {
+    const version = await repository.getProviderSecretVersion(
+      params.providerRowId,
+      params.fingerprint,
+    );
+    if (!version) return {};
+    lastCiphertext = version.ciphertext;
+    latestFullVault = await params.secrets.decrypt(version.ciphertext);
+    return toOAuthVault(latestFullVault);
+  };
 
   const store: OAuthTokenStore = {
     persist: async (next) => {
-      const merged = mergeTokens(latestFullVault, next);
-      const sealed = await params.secrets.encryptVaultForRotation(merged);
-      const updated = await repository.casProviderSecretCiphertext({
-        ciphertext: sealed.ciphertext,
-        expectedCiphertext: lastCiphertext,
-        fingerprint: params.fingerprint,
-        keyId: sealed.keyId,
-        providerId: params.providerRowId,
-      });
-      // CAS miss = another writer rotated (or an admin replaced the secret) after our
-      // read. Failing lets the refresh policy re-read and adopt the newer durable pair.
-      if (!updated) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
-      lastCiphertext = sealed.ciphertext;
-      latestFullVault = merged;
+      // A CAS miss is NOT always a competing rotation: the KEK rewrap worker rewrites
+      // the SAME plaintext under a new ciphertext. Losing to it must not strand a
+      // rotated pair whose predecessor refresh token is already consumed at the
+      // provider — that would kill the shared grant platform-wide. Re-baseline and
+      // retry while the durable refresh token is unchanged; only a genuine foreign
+      // rotation escapes to the policy fallback.
+      for (let attempt = 0; ; attempt += 1) {
+        if (foreignRotationDetected) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+        const previousRefreshToken = asString(latestFullVault.oauthRefreshToken);
+        const merged = mergeTokens(latestFullVault, next);
+        const sealed = await params.secrets.encryptVaultForRotation(merged);
+        const updated = await repository.casProviderSecretCiphertext({
+          ciphertext: sealed.ciphertext,
+          expectedCiphertext: lastCiphertext,
+          fingerprint: params.fingerprint,
+          keyId: sealed.keyId,
+          providerId: params.providerRowId,
+        });
+        if (updated) {
+          lastCiphertext = sealed.ciphertext;
+          latestFullVault = merged;
+          return;
+        }
+        if (attempt >= 2) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+        const reread = await readVault();
+        if (!reread.oauthRefreshToken) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+        if (reread.oauthRefreshToken !== previousRefreshToken) {
+          foreignRotationDetected = true;
+          throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
+        }
+      }
     },
-    read: async () => {
-      const version = await repository.getProviderSecretVersion(
-        params.providerRowId,
-        params.fingerprint,
-      );
-      if (!version) return {};
-      lastCiphertext = version.ciphertext;
-      latestFullVault = await params.secrets.decrypt(version.ciphertext);
-      return toOAuthVault(latestFullVault);
-    },
+    read: readVault,
   };
 
   const owner = randomUUID();

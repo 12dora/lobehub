@@ -35,7 +35,15 @@ import {
 } from './errors';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
-import { refreshSharedOAuthVault } from './sharedOAuthRefresh';
+import { isOAuthAuthorizationExpiredError, refreshSharedOAuthVault } from './sharedOAuthRefresh';
+
+export interface AiCatalogExecutionResolveOptions {
+  /**
+   * Readiness/health probes must stay free of outbound I/O: skip the shared-OAuth
+   * refresh entirely (no token-endpoint calls, no cross-instance lease waits).
+   */
+  skipSharedOAuthRefresh?: boolean;
+}
 
 /**
  * Credential-free provider config fields safe to expose in public runtime state.
@@ -389,6 +397,7 @@ export class AiCatalogExecutionResolver {
 
   async resolveProviderExecutionConfig(
     providerKey: string,
+    options?: AiCatalogExecutionResolveOptions,
   ): Promise<AiCatalogProviderExecutionConfig> {
     const repository = new PlatformAiCatalogRepository(this.db);
     const { revisions } = await loadCurrentAiCatalogSnapshot(this.db);
@@ -405,7 +414,7 @@ export class AiCatalogExecutionResolver {
       }
       throw new AiCatalogNotFoundError();
     }
-    return this.buildExecutionConfigFromRevision(providerKey, revision, repository);
+    return this.buildExecutionConfigFromRevision(providerKey, revision, repository, options);
   }
 
   /**
@@ -455,6 +464,7 @@ export class AiCatalogExecutionResolver {
     providerKey: string,
     revision: PlatformResourceRevisionItem,
     repository: PlatformAiCatalogRepository,
+    options?: AiCatalogExecutionResolveOptions,
   ): Promise<AiCatalogProviderExecutionConfig> {
     if (!isRecord(revision.payload.provider)) throw new AiCatalogNotFoundError();
     const provider = revision.payload.provider;
@@ -505,15 +515,32 @@ export class AiCatalogExecutionResolver {
       // Shared rotating-refresh OAuth credentials (chatgpt/supergrok) are refreshed here
       // — the single seam every execution resolver passes through — so the runtime always
       // receives a token that outlives the request. No-op for every other provider.
-      keyVaults = await refreshSharedOAuthVault({
-        ciphertext: secretVersion.ciphertext,
-        db: this.db,
-        fingerprint: revision.secretFingerprint,
-        keyVaults,
-        providerKey,
-        providerRowId: revision.resourceId,
-        secrets: this.secrets,
-      });
+      // Readiness probes pass skipSharedOAuthRefresh: a health check must never make
+      // outbound token calls, wait on a refresh lease, or let a third-party OAuth blip
+      // downgrade managed-resource enforcement.
+      if (!options?.skipSharedOAuthRefresh) {
+        try {
+          keyVaults = await refreshSharedOAuthVault({
+            ciphertext: secretVersion.ciphertext,
+            db: this.db,
+            fingerprint: revision.secretFingerprint,
+            keyVaults,
+            providerKey,
+            providerRowId: revision.resourceId,
+            secrets: this.secrets,
+          });
+        } catch (error) {
+          // Only a dead grant is actionable for the caller. Transient failures (network,
+          // token endpoint 5xx, lost persist race) degrade to the stored vault — the
+          // access token may still be inside its expiry skew, and the next request
+          // re-enters the refresh path.
+          if (isOAuthAuthorizationExpiredError(error)) throw error;
+          console.error(
+            `[ai-catalog] shared OAuth refresh for ${providerKey} failed transiently; using stored vault:`,
+            error,
+          );
+        }
+      }
     }
     const normalized = normalizeAiCatalogExecutionCredentials({
       config,

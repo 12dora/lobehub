@@ -97,7 +97,15 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     }
   }, [refreshStatus, storeApi]);
 
+  const handleStatusStale = useCallback(() => {
+    // A cancelled/expired/failed flow can still sit on a connection the server stored:
+    // re-read the status instead of leaving the idle card on the pre-connect answer.
+    // Wrapped because a failing revalidation is a stale view only, never a user error.
+    void Promise.resolve(refreshStatus()).catch(() => {});
+  }, [refreshStatus]);
+
   const { connect, deviceCode, error, outcome, reset, state } = useAdminSharedOAuthFlow({
+    onStatusStale: handleStatusStale,
     onSuccess: handleStored,
     providerId,
   });
@@ -115,12 +123,50 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
   }, [deviceCode?.verificationUri, deviceCode?.verificationUriComplete]);
 
+  /**
+   * The account is stored either way; only the publish outcome differs. `model_required`
+   * (and the revision-0 create that publishes nothing yet) is a step the operator finishes
+   * on this page; every other stable code — connection_test_failed, validation_failed,
+   * publish_failed, secret_required — needs the draft/publish banner, so say so instead of
+   * asking for models that are already there.
+   */
+  const renderStoredAlert = () => {
+    if (outcome?.published) {
+      return (
+        <Alert message={t('aiProviderSettings.sharedOAuth.success.published')} type={'success'} />
+      );
+    }
+
+    const publishError = outcome?.publishError ?? null;
+    if (publishError && publishError !== 'model_required') {
+      return (
+        <Alert
+          type={'warning'}
+          message={t('aiProviderSettings.sharedOAuth.success.publishFailed', {
+            code: publishError,
+          })}
+        />
+      );
+    }
+
+    return (
+      <Alert message={t('aiProviderSettings.sharedOAuth.success.needsModels')} type={'success'} />
+    );
+  };
+
   const renderBody = () => {
     if (state === 'requesting') {
+      // Always offer a way out: the provider can stall for minutes on this call, and the
+      // flow's staleness guards make a cancelled request safe to discard when it lands.
       return (
-        <Flexbox horizontal align={'center'} gap={8}>
-          <Icon spin icon={Loader2Icon} />
-          <Text type={'secondary'}>{t('aiProviderSettings.sharedOAuth.requesting')}</Text>
+        <Flexbox gap={12}>
+          <Flexbox horizontal align={'center'} gap={8}>
+            <Icon spin icon={Loader2Icon} />
+            <Text type={'secondary'}>{t('aiProviderSettings.sharedOAuth.requesting')}</Text>
+          </Flexbox>
+          <Flexbox horizontal>
+            <Button onClick={reset}>{t('aiProviderSettings.sharedOAuth.cancel')}</Button>
+          </Flexbox>
         </Flexbox>
       );
     }
@@ -176,14 +222,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     if (state === 'success') {
       return (
         <Flexbox gap={12}>
-          <Alert
-            type={'success'}
-            message={t(
-              outcome?.published
-                ? 'aiProviderSettings.sharedOAuth.success.published'
-                : 'aiProviderSettings.sharedOAuth.success.needsModels',
-            )}
-          />
+          {renderStoredAlert()}
           <Flexbox horizontal>
             <Button onClick={reset}>{t('aiProviderSettings.sharedOAuth.done')}</Button>
           </Flexbox>

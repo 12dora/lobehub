@@ -64,13 +64,13 @@ const AdvancedCatalogLink = memo(() => {
   );
 });
 
-/**
- * Sync secretConfigured + admin UI flags into ProviderSettingsContext from active detail.
- */
 const renderSharedOAuthPanel = (providerId: string) => (
   <SharedOAuthConnect key={providerId} providerId={providerId} />
 );
 
+/**
+ * Sync secretConfigured + admin UI flags into ProviderSettingsContext from active detail.
+ */
 const AdminProviderSettingsContextBridge = memo<{ children: React.ReactNode }>(({ children }) => {
   const activeId = useAiInfraStore((s) => s.activeAiProvider);
   const detail = useAiInfraStore((s) => (activeId ? s.aiProviderDetailMap[activeId] : undefined));

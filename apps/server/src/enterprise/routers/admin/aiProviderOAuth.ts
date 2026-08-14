@@ -75,6 +75,25 @@ const resolveRotatingOAuthCard = (providerKey: string): RotatingOAuthProviderCar
 const maskAccountId = (accountId: string | undefined): string | null =>
   accountId ? `${accountId.slice(0, 4)}…` : null;
 
+/**
+ * Reason recorded on the reauth denial of the initiate step. The contract carries no
+ * operator reason there (nothing is persisted), so a server constant is used — it can
+ * never contain secret material.
+ */
+const INITIATE_REAUTH_REASON = 'Request a device authorization code for a shared provider account.';
+
+/**
+ * The device grant is single-use and every branch below reaches the shared platform
+ * credential, so both procedures require the union of the create and update branches.
+ * Create-vs-update is decided by server state (does the platform row exist yet), not by
+ * client input, and an operator who may open the flow must be able to finish it.
+ */
+const sharedAccountPermissions = [
+  PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+  PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+  PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+] as const;
+
 export const adminAiProviderOAuthRouter = router({
   /**
    * Read the shared connection state of one rotating-refresh provider.
@@ -137,13 +156,32 @@ export const adminAiProviderOAuthRouter = router({
   /**
    * Request a device code for the shared platform account.
    * Persists nothing — only the sanitized audit trail of the attempt.
+   *
+   * Reauth is asserted on THIS step rather than only on the store: it is the click-driven
+   * one, so a step-up prompt still has user activation, and a session fresh here covers the
+   * whole device-code lifetime. A later poll can then never redeem the single-use grant
+   * with a session it is about to reject.
    */
   initiateDeviceCode: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE))
+    .use(withAllPlatformPermissions([...sharedAccountPermissions]))
     .input(adminAiProviderOAuthInitiateInputSchema)
     .output(adminAiProviderOAuthInitiateOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      // Admission first: an unsupported provider is rejected before any audit row exists.
       const card = resolveRotatingOAuthCard(input.id);
+
+      await assertDangerousReauth({
+        action: 'admin.aiProviderOAuth.initiateDeviceCode',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        // Constant reason, no stored secret to scan against.
+        existingSecretTargetId: null,
+        reason: INITIATE_REAUTH_REASON,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+      });
+
       const audit = new PlatformAuditService(ctx.serverDB);
 
       let response;
@@ -188,29 +226,61 @@ export const adminAiProviderOAuthRouter = router({
    * Poll the authorization server once (the client drives the retry cadence) and,
    * on authorization, store the shared connection in the platform vault.
    *
-   * Only the successful store is reauth-gated and audited: a pending poll changes
-   * no state, so gating it would burn the reauth window on every tick.
+   * The reauth freshness check runs BEFORE the token exchange: the device grant is
+   * single-use, so a tick that could not store the result must not redeem it. Apart from
+   * that check (which audits only when it denies) a tick that finds no authorization yet
+   * writes nothing.
    */
   pollAuthStatus: adminBase
-    .use(
-      // Create-vs-update is decided by server state (does the platform row exist yet),
-      // not by client input, so the union of both branches is required up front.
-      withAllPlatformPermissions([
-        PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
-        PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
-        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
-      ]),
-    )
+    .use(withAllPlatformPermissions([...sharedAccountPermissions]))
     .input(adminAiProviderOAuthPollInputSchema)
     .output(adminAiProviderOAuthPollOutputSchema)
     .mutation(async ({ ctx, input }) => {
       const card = resolveRotatingOAuthCard(input.id);
       const unfinished = { published: false, publishError: null, revision: null, stored: false };
+      const audit = new PlatformAuditService(ctx.serverDB);
 
-      const pollResult = await getOAuthService(input.id).pollForToken(
-        card.config,
-        input.deviceCode,
-      );
+      // Read-only lookup: decides the create-vs-update branch and gives the denial audit a
+      // stored credential to sanitize the operator reason against.
+      const service = createService(ctx.serverDB);
+      let detail;
+      try {
+        detail = await service.getDetail({ providerKey: input.id });
+      } catch (error) {
+        if (!(error instanceof AiCatalogNotFoundError)) return mapServiceError(error);
+      }
+      const targetId = detail?.draft.id ?? input.id;
+
+      await assertDangerousReauth({
+        action: 'admin.aiProviderOAuth.pollAuthStatus',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        existingSecretTargetId: detail?.draft.id ?? null,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId,
+      });
+
+      let pollResult;
+      try {
+        pollResult = await getOAuthService(input.id).pollForToken(card.config, input.deviceCode);
+      } catch {
+        await audit.append({
+          action: 'admin.aiProviderOAuth.pollAuthStatus',
+          actorUserId: ctx.userId!,
+          // Provider prose may echo request material — only a stable code is stored.
+          afterDiff: { error: 'device_token_exchange_failed', providerKey: input.id },
+          result: 'failure',
+          targetId,
+          targetType: 'provider',
+        });
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+          httpCode: 'PRECONDITION_FAILED',
+        });
+      }
+
       if (pollResult.status !== 'success' || !pollResult.tokens) {
         return { ...unfinished, status: pollResult.status };
       }
@@ -229,28 +299,9 @@ export const adminAiProviderOAuthRouter = router({
       }
       if (expiresAt) vault.oauthTokenExpiresAt = String(expiresAt);
 
-      const service = createService(ctx.serverDB);
-      let detail;
+      let result;
       try {
-        detail = await service.getDetail({ providerKey: input.id });
-      } catch (error) {
-        if (!(error instanceof AiCatalogNotFoundError)) return mapServiceError(error);
-      }
-
-      await assertDangerousReauth({
-        action: 'admin.aiProviderOAuth.pollAuthStatus',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        existingSecretTargetId: detail?.draft.id ?? null,
-        reason: input.reason,
-        replacementSecrets: [vault],
-        serverDB: ctx.serverDB,
-        targetId: detail?.draft.id ?? input.id,
-      });
-
-      try {
-        const result = detail
+        result = detail
           ? await service.applyProviderImmediate(ctx.userId!, {
               expectedDraftToken: detail.draftToken,
               expectedRevision: detail.baseRevision,
@@ -269,16 +320,32 @@ export const adminAiProviderOAuthRouter = router({
               settings: card.settings,
               source: 'builtin',
             });
-
-        return {
-          published: result.published,
-          publishError: result.publishError ?? null,
-          revision: result.revision,
-          status: 'success' as const,
-          stored: true,
-        };
       } catch (error) {
         return mapServiceError(error);
       }
+
+      await audit.append({
+        action: 'admin.aiProviderOAuth.pollAuthStatus',
+        actorUserId: ctx.userId!,
+        // Stable outcome codes only — the vault leaves this procedure through the service.
+        afterDiff: {
+          mode: detail ? 'update' : 'create',
+          providerKey: input.id,
+          publishError: result.publishError ?? null,
+          published: result.published,
+          revision: result.revision,
+        },
+        result: 'success',
+        targetId: result.draft?.id ?? targetId,
+        targetType: 'provider',
+      });
+
+      return {
+        published: result.published,
+        publishError: result.publishError ?? null,
+        revision: result.revision,
+        status: 'success' as const,
+        stored: true,
+      };
     }),
 });

@@ -120,6 +120,26 @@ describe('refreshSharedOAuthVault', () => {
     expect(persisted.baseURL).toBe('https://keep.example.com/v1');
   });
 
+  it('survives losing the CAS race to the KEK rewrap worker (same plaintext, new ciphertext)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+    );
+    // First CAS loses to the rewrap worker; the re-read shows the SAME refresh token
+    // under a new ciphertext, so the store re-baselines and the second CAS lands.
+    // (Before this behavior existed, the rotated pair was dropped after rt-old was
+    // already consumed at the provider — killing the shared grant platform-wide.)
+    mockCas.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const rewrappedCiphertext = encryptVault(baseVault(EXPIRING_AT()));
+    mockGetVersion.mockResolvedValue({ ciphertext: rewrappedCiphertext, keyId: 'kek-2' });
+
+    const result = await refreshSharedOAuthVault(makeParams());
+    expect(result.oauthAccessToken).toBe('at-new');
+    expect(result.oauthRefreshToken).toBe('rt-new');
+    expect(mockCas).toHaveBeenCalledTimes(2);
+    // The retry CAS expects the rewrap worker's ciphertext, not the stale baseline.
+    expect(mockCas.mock.calls[1][0].expectedCiphertext).toBe(rewrappedCiphertext);
+  });
+
   it('adopts another instance’s rotated pair after a CAS miss instead of failing', async () => {
     mockFetch.mockResolvedValueOnce(
       tokenResponse({ access_token: 'at-mine', expires_in: 3600, refresh_token: 'rt-mine' }),

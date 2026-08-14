@@ -507,6 +507,7 @@
   "aiProviderSettings.sharedOAuth.retryStatus": "重新加载",
   "aiProviderSettings.sharedOAuth.statusFailed": "无法加载连接状态。",
   "aiProviderSettings.sharedOAuth.success.needsModels": "账号已连接。请添加至少一个模型并开启该服务商，成员才能使用。",
+  "aiProviderSettings.sharedOAuth.success.publishFailed": "账号已连接，但该服务商未能发布生效（{{code}}）。请在本页顶部的草稿提示中查看并重新发布。",
   "aiProviderSettings.sharedOAuth.success.published": "账号已连接，该服务商已对全体成员生效。",
   "aiProviderSettings.sharedOAuth.title": "共享平台账号",
   "aiServiceModel.autoPublishNote": "编辑会保存并发布为平台默认值。普通用户除非覆盖，否则继承这些值。",

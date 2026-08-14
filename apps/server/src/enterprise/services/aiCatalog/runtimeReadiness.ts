@@ -37,7 +37,9 @@ export const resolveAiCatalogRuntimeReadiness = async (
   const resolver = new AiCatalogExecutionResolver(db, secrets);
   await Promise.all(
     state.enabledAiProviders.map((provider) =>
-      resolver.resolveProviderExecutionConfig(provider.id),
+      // Health probe: never make outbound token calls or wait on refresh leases here —
+      // a third-party OAuth blip must not downgrade managed-resource enforcement.
+      resolver.resolveProviderExecutionConfig(provider.id, { skipSharedOAuthRefresh: true }),
     ),
   );
   return true;

@@ -507,6 +507,7 @@
   "aiProviderSettings.sharedOAuth.retryStatus": "Reload",
   "aiProviderSettings.sharedOAuth.statusFailed": "Could not load the connection status.",
   "aiProviderSettings.sharedOAuth.success.needsModels": "Account connected. Add at least one model and turn the provider on to make it available to members.",
+  "aiProviderSettings.sharedOAuth.success.publishFailed": "Account connected, but the provider could not go live ({{code}}). Use the draft banner at the top of this page to review and publish it.",
   "aiProviderSettings.sharedOAuth.success.published": "Account connected. This provider is live for all members.",
   "aiProviderSettings.sharedOAuth.title": "Shared platform account",
   "aiServiceModel.autoPublishNote": "Edits save and publish as platform defaults. Users inherit these values unless they override them.",
