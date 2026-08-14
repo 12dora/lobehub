@@ -24,6 +24,20 @@ export interface PlatformProviderKeyVaults {
   customHeaders?: Record<string, string>;
 }
 
+/**
+ * Computed on admin writes only and used as (a) the lookup key into
+ * `platform_ai_provider_secrets` and (b) a change signal in the catalog authority token.
+ * It is NEVER re-verified against the plaintext on read.
+ *
+ * DELIBERATE DEVIATION for shared-OAuth token rotation: server-side refresh
+ * (`sharedOAuthRefresh.ts`) CAS-rewrites the ciphertext IN PLACE at the existing
+ * fingerprint, because published revisions are immutable (they pin this fingerprint) and
+ * a rotation must stay invisible to the catalog-drift machinery. After a rotation the
+ * fingerprint therefore no longer equals sha256(current plaintext) — do not add a
+ * read-time fingerprint equality assertion, and treat "same fingerprint, changed
+ * ciphertext" as expected for rotating-refresh OAuth providers (the KEK rewrap worker's
+ * concurrent-change classification already tolerates it via ciphertext CAS).
+ */
 const fingerprintSecret = (plaintext: string): string =>
   `sha256:${createHash('sha256').update(plaintext).digest('hex').slice(0, 16)}`;
 
@@ -130,6 +144,18 @@ export class AiCatalogSecretManager {
       secretKeyVersion: 1,
       secretUpdatedAt: new Date(),
     };
+  };
+
+  /**
+   * Re-encrypt a rotated vault WITHOUT recomputing the fingerprint — used only by the
+   * shared-OAuth token rotation (see the deviation note on {@link fingerprintSecret}).
+   * Never use this for admin-driven secret mutations; those go through applyMutation.
+   */
+  encryptVaultForRotation = async (
+    keyVaults: PlatformProviderKeyVaults,
+  ): Promise<{ ciphertext: string; keyId: string }> => {
+    const ciphertext = await this.secrets.encrypt(JSON.stringify(keyVaults));
+    return { ciphertext, keyId: this.secrets.peekKeyId(ciphertext) };
   };
 
   decrypt = async (ciphertext: string): Promise<PlatformProviderKeyVaults> => {

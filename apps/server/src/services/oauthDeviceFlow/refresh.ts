@@ -30,6 +30,17 @@ export interface OAuthTokenKeyVaults {
   oauthTokenExpiresAt?: number | string;
 }
 
+/**
+ * Persistence seam for the refresh policy: the user path stores per-user
+ * `ai_providers` keyVaults, the platform path CAS-rewrites the shared catalog
+ * secret. `read` must always return the CURRENT durable state (it is the
+ * self-heal source after invalid_grant and persist races).
+ */
+export interface OAuthTokenStore {
+  persist: (next: OAuthTokenKeyVaults) => Promise<void>;
+  read: () => Promise<OAuthTokenKeyVaults>;
+}
+
 interface EnsureFreshOAuthTokenParams {
   config: OAuthDeviceFlowConfig;
   db: LobeChatDatabase;
@@ -39,6 +50,26 @@ interface EnsureFreshOAuthTokenParams {
   workspaceId?: string;
 }
 
+export interface EnsureFreshOAuthTokenWithStoreParams {
+  config: OAuthDeviceFlowConfig;
+  /** In-process single-flight key; concurrent callers with the same key share one refresh. */
+  flightKey: string;
+  keyVaults: OAuthTokenKeyVaults;
+  /** Override the terminal invalid_grant error (e.g. platform credentials need an admin-facing message). */
+  onInvalidGrant?: (providerId: string) => never;
+  providerId: string;
+  store: OAuthTokenStore;
+  /**
+   * Optional cross-instance mutual exclusion wrapped around the token-endpoint call.
+   * With rotating refresh tokens, two instances refreshing with the same token trip the
+   * provider's reuse detection and can revoke the whole grant family — a shared
+   * (platform) credential must serialize refreshes across instances, not just in-process.
+   * The wrapper either runs `run()` (lock held) or resolves with the rotated pair some
+   * other holder persisted.
+   */
+  withRefreshLock?: (run: () => Promise<OAuthTokenKeyVaults>) => Promise<OAuthTokenKeyVaults>;
+}
+
 /**
  * In-process single-flight registry: concurrent requests for the same
  * user/provider collapse onto one refresh HTTP call. Critical for rotating
@@ -46,6 +77,9 @@ interface EnsureFreshOAuthTokenParams {
  * would invalidate each other.
  */
 const inflight = new Map<string, Promise<OAuthTokenKeyVaults>>();
+
+export const isOAuthTokenExpiring = (keyVaults: OAuthTokenKeyVaults): boolean =>
+  isExpiring(keyVaults);
 
 const isExpiring = (keyVaults: OAuthTokenKeyVaults): boolean => {
   const now = Date.now();
@@ -137,32 +171,26 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * (and every other instance) with an irrecoverable invalid_grant.
  */
 const persistRotatedKeyVaults = async (
-  params: EnsureFreshOAuthTokenParams,
+  params: EnsureFreshOAuthTokenWithStoreParams,
   nextKeyVaults: OAuthTokenKeyVaults,
 ): Promise<OAuthTokenKeyVaults> => {
-  const { db, providerId, userId, workspaceId } = params;
+  const { flightKey, providerId, store } = params;
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= PERSIST_MAX_ATTEMPTS; attempt += 1) {
     try {
-      await persistKeyVaults(db, userId, providerId, nextKeyVaults, workspaceId);
+      await store.persist(nextKeyVaults);
       return nextKeyVaults;
     } catch (error) {
       lastError = error;
-      log(
-        'persist attempt %d/%d failed for %s:%s',
-        attempt,
-        PERSIST_MAX_ATTEMPTS,
-        userId,
-        providerId,
-      );
+      log('persist attempt %d/%d failed for %s', attempt, PERSIST_MAX_ATTEMPTS, flightKey);
       if (attempt < PERSIST_MAX_ATTEMPTS) await delay(PERSIST_RETRY_DELAY_MS * attempt);
     }
   }
 
   // Another instance may have won a race and written the same (or newer) pair.
   try {
-    const stored = await readStoredKeyVaults(db, userId, providerId, workspaceId);
+    const stored = await store.read();
     if (
       stored.oauthAccessToken &&
       stored.oauthRefreshToken &&
@@ -189,11 +217,12 @@ const persistRotatedKeyVaults = async (
 };
 
 const refreshAndPersist = async (
-  params: EnsureFreshOAuthTokenParams,
+  params: EnsureFreshOAuthTokenWithStoreParams,
 ): Promise<OAuthTokenKeyVaults> => {
-  const { config, db, keyVaults, providerId, userId, workspaceId } = params;
+  const { config, flightKey, keyVaults, providerId, store } = params;
   const service = new OAuthDeviceFlowService();
   const usedRefreshToken = keyVaults.oauthRefreshToken!;
+  const invalidGrant = params.onInvalidGrant ?? throwInvalidGrant;
 
   let tokens;
   try {
@@ -203,13 +232,13 @@ const refreshAndPersist = async (
 
     // invalid_grant self-heal: with rotating refresh tokens, "our" token being
     // rejected usually means another server instance already consumed it and
-    // persisted a newer pair. Re-read the DB before declaring the grant dead.
-    log('invalid_grant for %s:%s, re-reading stored credentials', userId, providerId);
-    const stored = await readStoredKeyVaults(db, userId, providerId, workspaceId);
+    // persisted a newer pair. Re-read the store before declaring the grant dead.
+    log('invalid_grant for %s, re-reading stored credentials', flightKey);
+    const stored = await store.read();
 
-    // Same token in the DB as the one that was just rejected → truly dead.
+    // Same token in the store as the one that was just rejected → truly dead.
     if (!stored.oauthRefreshToken || stored.oauthRefreshToken === usedRefreshToken) {
-      throwInvalidGrant(providerId);
+      invalidGrant(providerId);
     }
 
     // Another instance rotated: its access token may already be fresh enough.
@@ -219,7 +248,7 @@ const refreshAndPersist = async (
     try {
       tokens = await service.refreshAccessToken(config, stored.oauthRefreshToken!);
     } catch (retryError) {
-      if (retryError instanceof OAuthInvalidGrantError) throwInvalidGrant(providerId);
+      if (retryError instanceof OAuthInvalidGrantError) invalidGrant(providerId);
       throw retryError;
     }
   }
@@ -243,6 +272,33 @@ const refreshAndPersist = async (
 };
 
 /**
+ * Store-agnostic core of {@link ensureFreshOAuthToken}: same proactive-expiry,
+ * single-flight, persist-then-use and invalid_grant self-heal policy, with the
+ * persistence target and (optionally) a cross-instance lock supplied by the caller.
+ */
+export const ensureFreshOAuthTokenWithStore = async (
+  params: EnsureFreshOAuthTokenWithStoreParams,
+): Promise<OAuthTokenKeyVaults> => {
+  const { flightKey, keyVaults } = params;
+
+  // Not connected via OAuth (or nothing to refresh with) — leave untouched.
+  if (!keyVaults.oauthAccessToken || !keyVaults.oauthRefreshToken) return keyVaults;
+
+  if (!isExpiring(keyVaults)) return keyVaults;
+
+  let flight = inflight.get(flightKey);
+  if (!flight) {
+    const run = () => refreshAndPersist(params);
+    flight = (params.withRefreshLock ? params.withRefreshLock(run) : run()).finally(() =>
+      inflight.delete(flightKey),
+    );
+    inflight.set(flightKey, flight);
+  }
+
+  return flight;
+};
+
+/**
  * Ensure the OAuth access token in `keyVaults` is fresh, refreshing and
  * persisting it when it is about to expire.
  *
@@ -259,20 +315,16 @@ const refreshAndPersist = async (
 export const ensureFreshOAuthToken = async (
   params: EnsureFreshOAuthTokenParams,
 ): Promise<OAuthTokenKeyVaults> => {
-  const { keyVaults, providerId, userId, workspaceId } = params;
+  const { config, db, keyVaults, providerId, userId, workspaceId } = params;
 
-  // Not connected via OAuth (or nothing to refresh with) — leave untouched.
-  if (!keyVaults.oauthAccessToken || !keyVaults.oauthRefreshToken) return keyVaults;
-
-  if (!isExpiring(keyVaults)) return keyVaults;
-
-  const flightKey = `${userId}:${workspaceId ?? ''}:${providerId}`;
-
-  let flight = inflight.get(flightKey);
-  if (!flight) {
-    flight = refreshAndPersist(params).finally(() => inflight.delete(flightKey));
-    inflight.set(flightKey, flight);
-  }
-
-  return flight;
+  return ensureFreshOAuthTokenWithStore({
+    config,
+    flightKey: `${userId}:${workspaceId ?? ''}:${providerId}`,
+    keyVaults,
+    providerId,
+    store: {
+      persist: (next) => persistKeyVaults(db, userId, providerId, next, workspaceId),
+      read: () => readStoredKeyVaults(db, userId, providerId, workspaceId),
+    },
+  });
 };

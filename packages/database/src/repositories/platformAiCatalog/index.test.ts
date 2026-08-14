@@ -244,4 +244,209 @@ describe('PlatformAiCatalogRepository', () => {
     ]);
     expect(await repository.listModelsForProviders([])).toEqual([]);
   });
+
+  describe('casProviderSecretCiphertext', () => {
+    it('CAS-updates the secret version and syncs the provider when fingerprint+ciphertext match', async () => {
+      const provider = await repository.createProvider({
+        displayName: 'Alpha',
+        providerKey: 'alpha',
+      });
+      await repository.storeProviderSecretVersion({
+        ciphertext: 'cipher-v1',
+        fingerprint: 'fp-1',
+        keyId: 'key-v1',
+        keyVersion: 1,
+        providerId: provider.id,
+      });
+      await repository.updateProvider(provider.id, {
+        encryptedKeyVaults: 'cipher-v1',
+        secretFingerprint: 'fp-1',
+        secretKeyId: 'key-v1',
+      });
+
+      const result = await repository.casProviderSecretCiphertext({
+        ciphertext: 'cipher-v2',
+        expectedCiphertext: 'cipher-v1',
+        fingerprint: 'fp-1',
+        keyId: 'key-v2',
+        providerId: provider.id,
+      });
+
+      expect(result).toBe(true);
+      expect(await repository.getProviderSecretVersion(provider.id, 'fp-1')).toMatchObject({
+        ciphertext: 'cipher-v2',
+        keyId: 'key-v2',
+      });
+      const synced = await repository.getProvider(provider.id);
+      expect(synced).toMatchObject({
+        encryptedKeyVaults: 'cipher-v2',
+        secretFingerprint: 'fp-1',
+        secretKeyId: 'key-v2',
+      });
+      expect(synced!.secretUpdatedAt).not.toBeNull();
+    });
+
+    it('returns false and changes nothing when expectedCiphertext is stale', async () => {
+      const provider = await repository.createProvider({
+        displayName: 'Alpha',
+        providerKey: 'alpha',
+      });
+      await repository.storeProviderSecretVersion({
+        ciphertext: 'cipher-v1',
+        fingerprint: 'fp-1',
+        keyId: 'key-v1',
+        keyVersion: 1,
+        providerId: provider.id,
+      });
+      await repository.updateProvider(provider.id, {
+        encryptedKeyVaults: 'cipher-v1',
+        secretFingerprint: 'fp-1',
+        secretKeyId: 'key-v1',
+      });
+
+      const result = await repository.casProviderSecretCiphertext({
+        ciphertext: 'cipher-v2',
+        expectedCiphertext: 'cipher-stale',
+        fingerprint: 'fp-1',
+        keyId: 'key-v2',
+        providerId: provider.id,
+      });
+
+      expect(result).toBe(false);
+      expect(await repository.getProviderSecretVersion(provider.id, 'fp-1')).toMatchObject({
+        ciphertext: 'cipher-v1',
+        keyId: 'key-v1',
+      });
+      expect(await repository.getProvider(provider.id)).toMatchObject({
+        encryptedKeyVaults: 'cipher-v1',
+        secretKeyId: 'key-v1',
+      });
+    });
+
+    it('does not sync the provider when its secret_fingerprint no longer matches (admin replaced the secret)', async () => {
+      const provider = await repository.createProvider({
+        displayName: 'Alpha',
+        providerKey: 'alpha',
+      });
+      // Stale rotation target: an older secret version at fp-old, still stored.
+      await repository.storeProviderSecretVersion({
+        ciphertext: 'cipher-old',
+        fingerprint: 'fp-old',
+        keyId: 'key-old',
+        keyVersion: 1,
+        providerId: provider.id,
+      });
+      // Admin has since replaced the secret with a fresh fingerprint.
+      await repository.updateProvider(provider.id, {
+        encryptedKeyVaults: 'cipher-new',
+        secretFingerprint: 'fp-new',
+        secretKeyId: 'key-new',
+      });
+
+      const result = await repository.casProviderSecretCiphertext({
+        ciphertext: 'cipher-old-rotated',
+        expectedCiphertext: 'cipher-old',
+        fingerprint: 'fp-old',
+        keyId: 'key-old-rotated',
+        providerId: provider.id,
+      });
+
+      expect(result).toBe(true);
+      expect(await repository.getProviderSecretVersion(provider.id, 'fp-old')).toMatchObject({
+        ciphertext: 'cipher-old-rotated',
+        keyId: 'key-old-rotated',
+      });
+      // Provider row still points at the admin-replaced secret, untouched.
+      expect(await repository.getProvider(provider.id)).toMatchObject({
+        encryptedKeyVaults: 'cipher-new',
+        secretFingerprint: 'fp-new',
+        secretKeyId: 'key-new',
+      });
+    });
+
+    it('does not sync the provider when fingerprint matches but encrypted_key_vaults differs from expectedCiphertext', async () => {
+      const provider = await repository.createProvider({
+        displayName: 'Alpha',
+        providerKey: 'alpha',
+      });
+      await repository.storeProviderSecretVersion({
+        ciphertext: 'cipher-v1',
+        fingerprint: 'fp-1',
+        keyId: 'key-v1',
+        keyVersion: 1,
+        providerId: provider.id,
+      });
+      // Provider points at the right fingerprint but a different ciphertext value
+      // than the one we're about to CAS-rotate (e.g. a concurrent write raced in).
+      await repository.updateProvider(provider.id, {
+        encryptedKeyVaults: 'cipher-divergent',
+        secretFingerprint: 'fp-1',
+        secretKeyId: 'key-divergent',
+      });
+
+      const result = await repository.casProviderSecretCiphertext({
+        ciphertext: 'cipher-v2',
+        expectedCiphertext: 'cipher-v1',
+        fingerprint: 'fp-1',
+        keyId: 'key-v2',
+        providerId: provider.id,
+      });
+
+      expect(result).toBe(true);
+      expect(await repository.getProviderSecretVersion(provider.id, 'fp-1')).toMatchObject({
+        ciphertext: 'cipher-v2',
+        keyId: 'key-v2',
+      });
+      expect(await repository.getProvider(provider.id)).toMatchObject({
+        encryptedKeyVaults: 'cipher-divergent',
+        secretFingerprint: 'fp-1',
+        secretKeyId: 'key-divergent',
+      });
+    });
+
+    it('returns false for a wrong fingerprint or a wrong providerId', async () => {
+      const alpha = await repository.createProvider({ displayName: 'Alpha', providerKey: 'alpha' });
+      const beta = await repository.createProvider({ displayName: 'Beta', providerKey: 'beta' });
+      await repository.storeProviderSecretVersion({
+        ciphertext: 'cipher-v1',
+        fingerprint: 'fp-1',
+        keyId: 'key-v1',
+        keyVersion: 1,
+        providerId: alpha.id,
+      });
+      await repository.updateProvider(alpha.id, {
+        encryptedKeyVaults: 'cipher-v1',
+        secretFingerprint: 'fp-1',
+        secretKeyId: 'key-v1',
+      });
+
+      expect(
+        await repository.casProviderSecretCiphertext({
+          ciphertext: 'cipher-v2',
+          expectedCiphertext: 'cipher-v1',
+          fingerprint: 'fp-wrong',
+          keyId: 'key-v2',
+          providerId: alpha.id,
+        }),
+      ).toBe(false);
+      expect(
+        await repository.casProviderSecretCiphertext({
+          ciphertext: 'cipher-v2',
+          expectedCiphertext: 'cipher-v1',
+          fingerprint: 'fp-1',
+          keyId: 'key-v2',
+          providerId: beta.id,
+        }),
+      ).toBe(false);
+
+      expect(await repository.getProviderSecretVersion(alpha.id, 'fp-1')).toMatchObject({
+        ciphertext: 'cipher-v1',
+        keyId: 'key-v1',
+      });
+      expect(await repository.getProvider(alpha.id)).toMatchObject({
+        encryptedKeyVaults: 'cipher-v1',
+        secretKeyId: 'key-v1',
+      });
+    });
+  });
 });

@@ -35,6 +35,7 @@ import {
 } from './errors';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
+import { refreshSharedOAuthVault } from './sharedOAuthRefresh';
 
 /**
  * Credential-free provider config fields safe to expose in public runtime state.
@@ -501,6 +502,18 @@ export class AiCatalogExecutionResolver {
       );
       if (!secretVersion) throw secretNotReadable();
       keyVaults = await this.secrets.decrypt(secretVersion.ciphertext);
+      // Shared rotating-refresh OAuth credentials (chatgpt/supergrok) are refreshed here
+      // — the single seam every execution resolver passes through — so the runtime always
+      // receives a token that outlives the request. No-op for every other provider.
+      keyVaults = await refreshSharedOAuthVault({
+        ciphertext: secretVersion.ciphertext,
+        db: this.db,
+        fingerprint: revision.secretFingerprint,
+        keyVaults,
+        providerKey,
+        providerRowId: revision.resourceId,
+        secrets: this.secrets,
+      });
     }
     const normalized = normalizeAiCatalogExecutionCredentials({
       config,

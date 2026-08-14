@@ -154,6 +154,55 @@ export class PlatformAiCatalogRepository {
     return rows[0];
   };
 
+  /**
+   * CAS-rewrite a secret version's ciphertext IN PLACE at a stable fingerprint —
+   * shared-OAuth token rotation only (published revisions pin the fingerprint, so a
+   * rotation must not change it; see the deviation note on the aiCatalog secret
+   * manager's fingerprint helper). Mirrors the KEK rewrap worker's rotateExact CAS.
+   * Returns false when the stored ciphertext no longer matches `expectedCiphertext`
+   * (another instance rotated first) — the caller re-reads and adopts the newer pair.
+   * The current provider row is synced in the same transaction only while it still
+   * points at the same fingerprint (an admin replace/clear in between must win).
+   */
+  casProviderSecretCiphertext = async (params: {
+    ciphertext: string;
+    expectedCiphertext: string;
+    fingerprint: string;
+    keyId: string;
+    providerId: string;
+  }): Promise<boolean> => {
+    return this.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(platformAiProviderSecrets)
+        .set({ ciphertext: params.ciphertext, keyId: params.keyId })
+        .where(
+          and(
+            eq(platformAiProviderSecrets.providerId, params.providerId),
+            eq(platformAiProviderSecrets.fingerprint, params.fingerprint),
+            eq(platformAiProviderSecrets.ciphertext, params.expectedCiphertext),
+          ),
+        )
+        .returning({ id: platformAiProviderSecrets.id });
+      if (updated.length === 0) return false;
+
+      await tx
+        .update(platformAiProviders)
+        .set({
+          encryptedKeyVaults: params.ciphertext,
+          secretKeyId: params.keyId,
+          secretUpdatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(platformAiProviders.id, params.providerId),
+            eq(platformAiProviders.secretFingerprint, params.fingerprint),
+            eq(platformAiProviders.encryptedKeyVaults, params.expectedCiphertext),
+          ),
+        );
+      return true;
+    });
+  };
+
   storeProviderSecretVersion = async (params: {
     ciphertext: string;
     fingerprint: string;
