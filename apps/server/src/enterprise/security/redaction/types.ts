@@ -12,6 +12,10 @@ export interface RedactOptions {
    *
    * When true, the key's value is walked recursively but the key itself
    * is not replaced with [REDACTED]. Default: no keys are benign.
+   *
+   * `parentKey` (the key of the enclosing object; undefined at the walked root)
+   * lets predicates position-scope the relaxation, e.g. OAuth device-flow config
+   * keys are benign only directly under `oauthDeviceFlow`.
    */
-  isBenignKey?: (key: string) => boolean;
+  isBenignKey?: (key: string, parentKey?: string) => boolean;
 }

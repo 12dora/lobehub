@@ -104,7 +104,62 @@ describe('enterprise redaction entry', () => {
     expect(out.token).toBe('[REDACTED]');
   });
 
-  it('exports the narrow M07 numeric token-key allowlist', () => {
+  it('preserves OAuth device-flow config keys while still redacting secret-shaped values under them', () => {
+    // Builtin provider cards (chatgpt, githubcopilot, supergrok) carry these keys as
+    // plain configuration — endpoint URLs and booleans, not credentials.
+    const out = redactForAudit(
+      {
+        oauthDeviceFlow: {
+          refreshTokenGrant: true,
+          tokenEndpoint: 'https://auth.openai.com/oauth/token',
+          tokenExchangeEndpoint: 'https://auth.openai.com/api/accounts/deviceauth/token',
+        },
+        refreshToken: 'opaque-refresh',
+        showApiKey: false,
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(out).toEqual({
+      oauthDeviceFlow: {
+        refreshTokenGrant: true,
+        tokenEndpoint: 'https://auth.openai.com/oauth/token',
+        tokenExchangeEndpoint: 'https://auth.openai.com/api/accounts/deviceauth/token',
+      },
+      refreshToken: '[REDACTED]',
+      showApiKey: false,
+    });
+
+    // A secret-shaped value under an allow-listed key is still caught by M01 value-shape
+    // redaction (prefixed tokens / JWT / Bearer). Opaque scalars are NOT value-checked —
+    // position scoping below is the guard against arbitrary-depth smuggling.
+    const smuggled = redactForAudit(
+      { oauthDeviceFlow: { tokenEndpoint: 'Bearer sk-fake-not-real-embedded' } },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(smuggled.oauthDeviceFlow.tokenEndpoint).toBe('[REDACTED]');
+
+    // Position scoping: the OAuth config keys are benign ONLY directly under
+    // `oauthDeviceFlow`; elsewhere the key-name rule still redacts them.
+    const outOfPosition = redactForAudit(
+      {
+        config: { nested: { tokenEndpoint: 'opaque-not-a-secret-shape' } },
+        tokenExchangeEndpoint: 'opaque-not-a-secret-shape',
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(outOfPosition.config.nested.tokenEndpoint).toBe('[REDACTED]');
+    expect(outOfPosition.tokenExchangeEndpoint).toBe('[REDACTED]');
+
+    // showApiKey is scoped to the settings root (walk root or a `settings` object).
+    const showApiKeyScoped = redactForAudit(
+      { nested: { deep: { showApiKey: 'smuggled' } }, settings: { showApiKey: false } },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(showApiKeyScoped.settings.showApiKey).toBe(false);
+    expect(showApiKeyScoped.nested.deep.showApiKey).toBe('[REDACTED]');
+  });
+
+  it('keeps the M07 allowlist narrow: capability numbers anywhere, OAuth config position-scoped', () => {
     expect(
       redactForAudit(
         {

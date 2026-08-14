@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -189,6 +190,24 @@ describe('AI catalog contracts', () => {
         config: { contextWindowTokens: 128_000, maxTokens: 4096 },
       }).success,
     ).toBe(true);
+  });
+
+  it('accepts every builtin provider card settings/config (no sensitive-key false positives)', () => {
+    // Regression: chatgpt/githubcopilot/supergrok oauthDeviceFlow endpoints and showApiKey
+    // used to be rejected as "sensitive key is not allowed", breaking the admin enable toggle.
+    for (const card of DEFAULT_MODEL_PROVIDER_LIST) {
+      const wireSettings = structuredClone(card.settings ?? {});
+      const result = adminAiProviderCreateDraftInputSchema.safeParse({
+        displayName: card.name ?? card.id,
+        providerKey: card.id,
+        reason: 'create',
+        settings: wireSettings,
+      });
+      expect(
+        result.success,
+        `provider '${card.id}' settings rejected: ${result.success ? '' : JSON.stringify(result.error.issues)}`,
+      ).toBe(true);
+    }
   });
 
   it('bounds recursive JSON depth/nodes/keys without throwing RangeError', () => {

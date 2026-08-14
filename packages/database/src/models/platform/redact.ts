@@ -44,8 +44,12 @@ const SENSITIVE_NORMALIZED_TOKENS = [
 const REDACTED = '[REDACTED]';
 
 export interface RedactSensitiveOptions {
-  /** Narrow allowlist for known-safe key false positives; value-shape checks still apply. */
-  isBenignKey?: (key: string) => boolean;
+  /**
+   * Narrow allowlist for known-safe key false positives; value-shape checks still apply.
+   * `parentKey` is the key of the enclosing object (undefined at the walked root) so
+   * predicates can position-scope the relaxation.
+   */
+  isBenignKey?: (key: string, parentKey?: string) => boolean;
 }
 
 const BEARER_VALUE_PATTERN = /\bbearer\s+([\w.~+/-]+)/giu;
@@ -124,26 +128,30 @@ const redactString = (value: string): string => {
  * Returns a new structure; does not mutate the input.
  */
 export const redactSensitive = <T>(input: T, options: RedactSensitiveOptions = {}): T => {
-  return redactValue(input, options) as T;
+  return redactValue(input, options, undefined) as T;
 };
 
-const redactValue = (value: unknown, options: RedactSensitiveOptions): unknown => {
+const redactValue = (
+  value: unknown,
+  options: RedactSensitiveOptions,
+  parentKey: string | undefined,
+): unknown => {
   if (value === null || value === undefined) return value;
 
   if (typeof value === 'string') return redactString(value);
 
   if (typeof value === 'number' || typeof value === 'boolean') return value;
 
-  if (Array.isArray(value)) return value.map((item) => redactValue(item, options));
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, options, parentKey));
 
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(key) && !options.isBenignKey?.(key)) {
+      if (isSensitiveKey(key) && !options.isBenignKey?.(key, parentKey)) {
         out[key] = REDACTED;
         continue;
       }
-      out[key] = redactValue(child, options);
+      out[key] = redactValue(child, options, key);
     }
     return out;
   }

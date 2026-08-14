@@ -150,9 +150,20 @@ const validateNonSecretJson = (root: unknown, ctx: z.RefinementCtx): void => {
       return;
     }
 
+    // Parent key of this object's entries = nearest named ancestor key (skipping array
+    // indexes, matching walkRedact's array semantics; undefined at the blob root). Lets
+    // the M07 predicate position-scope OAuth config keys.
+    let parentKey: string | undefined;
+    for (let i = path.length - 1; i >= 0; i -= 1) {
+      const segment = path[i];
+      if (typeof segment === 'string') {
+        parentKey = segment;
+        break;
+      }
+    }
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const [key, child] = entries[i]!;
-      if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key)) {
+      if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key, parentKey)) {
         ctx.addIssue({
           code: 'custom',
           message: 'sensitive key is not allowed',
