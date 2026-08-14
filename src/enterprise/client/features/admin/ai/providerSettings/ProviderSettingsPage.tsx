@@ -17,6 +17,7 @@ import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import { AdminProviderSettingsStoreProvider } from './AdminProviderSettingsStore';
 import DraftPublishBanner from './DraftPublishBanner';
+import SharedOAuthConnect from './SharedOAuthConnect';
 
 const styles = createStaticStyles(({ css }) => ({
   advancedLink: css`
@@ -66,6 +67,10 @@ const AdvancedCatalogLink = memo(() => {
 /**
  * Sync secretConfigured + admin UI flags into ProviderSettingsContext from active detail.
  */
+const renderSharedOAuthPanel = (providerId: string) => (
+  <SharedOAuthConnect key={providerId} providerId={providerId} />
+);
+
 const AdminProviderSettingsContextBridge = memo<{ children: React.ReactNode }>(({ children }) => {
   const activeId = useAiInfraStore((s) => s.activeAiProvider);
   const detail = useAiInfraStore((s) => (activeId ? s.aiProviderDetailMap[activeId] : undefined));
@@ -82,6 +87,8 @@ const AdminProviderSettingsContextBridge = memo<{ children: React.ReactNode }>((
         hidePersonalAuth: true,
         modelEditable: true,
         secretConfigured,
+        // Platform-owned shared account connect for rotating-refresh providers.
+        sharedOAuthPanel: renderSharedOAuthPanel,
         showAddNewModel: true,
         // Remote model fetch is user-key based; hide for platform catalog.
         showModelFetcher: false,

@@ -20,7 +20,7 @@ import { useDebounceFn } from 'ahooks';
 import { Form as AntdForm, Switch } from 'antd';
 import { createStaticStyles, cssVar, cx, responsive } from 'antd-style';
 import { Loader2Icon, LockIcon } from 'lucide-react';
-import { isPersonalOAuthOnlyProvider } from 'model-bank/modelProviders';
+import { isRotatingRefreshOAuthProvider } from 'model-bank/modelProviders';
 import { type ReactNode } from 'react';
 import { memo, use, useCallback, useLayoutEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
@@ -162,15 +162,19 @@ const ProviderConfig = memo<ProviderConfigProps>(
     const { t } = useTranslation('modelProvider');
     const [form] = Form.useForm();
     const { allowed: canManageProvider } = usePermission('manage_provider_key');
-    const { hideFetchOnClient, hidePersonalAuth, secretConfigured } = use(ProviderSettingsContext);
+    const { hideFetchOnClient, hidePersonalAuth, secretConfigured, sharedOAuthPanel } =
+      use(ProviderSettingsContext);
 
     const isOAuthProvider = authType === 'oauthDeviceFlow';
     // Admin platform surface: the personal connect panel would store credentials in the
     // viewer's own key vault, so it never renders there.
     const showPersonalAuth = isOAuthProvider && !hidePersonalAuth;
-    // Personal-OAuth-only providers cannot be platform-managed (per-user refresh tokens);
-    // on the admin surface explain that instead of rendering a toggle that cannot succeed.
-    const platformUnsupported = Boolean(hidePersonalAuth && isPersonalOAuthOnlyProvider(id));
+    // Admin platform surface + rotating-refresh device flow (chatgpt/supergrok): the platform
+    // holds ONE shared account for everyone, connected through the admin-owned panel slot.
+    const sharedOAuthAdmin = Boolean(hidePersonalAuth && isRotatingRefreshOAuthProvider(id));
+    // Admin platform surface + device flow without a shared-account path (githubcopilot):
+    // there is no credential this form can capture, so say where the connection comes from.
+    const perUserOAuthAdmin = Boolean(hidePersonalAuth && isOAuthProvider && !sharedOAuthAdmin);
 
     // Query OAuth authentication status (only for OAuth providers)
     const { data: oauthStatus } = lambdaQuery.oauthDeviceFlow.getAuthStatus.useQuery(
@@ -512,24 +516,26 @@ const ProviderConfig = memo<ProviderConfigProps>(
       <Flexbox horizontal align={'center'} gap={8}>
         {extra}
         {isCustom && <UpdateProviderInfo />}
-        {platformUnsupported && <Tag>{t('providerModels.config.personalOAuthOnly.tag')}</Tag>}
-        {canDeactivate &&
-          !platformUnsupported &&
-          !(enableBusinessFeatures && id === BRANDING_PROVIDER) && (
-            <EnableSwitch id={id} key={id} />
-          )}
+        {sharedOAuthAdmin && <Tag>{t('providerModels.config.sharedOAuth.tag')}</Tag>}
+        {canDeactivate && !(enableBusinessFeatures && id === BRANDING_PROVIDER) && (
+          <EnableSwitch id={id} key={id} />
+        )}
       </Flexbox>
     );
+
+    // The header lives inside the connect card whenever one is rendered above the form,
+    // so it is never shown twice.
+    const headerAboveForm = showPersonalAuth || sharedOAuthAdmin || perUserOAuthAdmin;
 
     const model: FormGroupItemType = {
       children: configItems,
       defaultActive: true,
-      extra: showPersonalAuth ? undefined : headerExtra,
-      title: showPersonalAuth ? '' : headerTitle,
+      extra: headerAboveForm ? undefined : headerExtra,
+      title: headerAboveForm ? '' : headerTitle,
     };
 
     // For OAuth providers, only show Form when authenticated
-    const shouldShowForm = !platformUnsupported && (!showPersonalAuth || isOAuthAuthenticated);
+    const shouldShowForm = !showPersonalAuth || isOAuthAuthenticated;
 
     return (
       <>
@@ -542,16 +548,22 @@ const ProviderConfig = memo<ProviderConfigProps>(
             onAuthChange={handleOAuthChange}
           />
         )}
-        {platformUnsupported && (
+        {(sharedOAuthAdmin || perUserOAuthAdmin) && (
           <Flexbox gap={16} paddingBlock={8}>
             <Flexbox horizontal align={'center'} justify={'space-between'}>
               {headerTitle}
               {headerExtra}
             </Flexbox>
-            <Alert
-              message={t('providerModels.config.personalOAuthOnly.notice', { name: name || id })}
-              type={'info'}
-            />
+            {sharedOAuthAdmin ? (
+              sharedOAuthPanel?.(id)
+            ) : (
+              <Alert
+                type={'info'}
+                message={t('providerModels.config.sharedOAuth.perUserOnlyNotice', {
+                  name: name || id,
+                })}
+              />
+            )}
           </Flexbox>
         )}
         {shouldShowForm && (
