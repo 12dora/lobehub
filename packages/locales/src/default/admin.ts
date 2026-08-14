@@ -703,8 +703,14 @@ export default {
   'aiMemory.noWritePermission':
     'You need settings update and publish permissions to edit platform defaults.',
   'aiMemory.retry': 'Retry',
+  'aiSettings.draftBanner.error.connection_test_failed':
+    'The connectivity check failed — verify the credentials (or the connected shared account), then retry.',
   'aiSettings.draftBanner.error.generic':
     'Publish did not complete. Open the advanced catalog or retry.',
+  'aiSettings.draftBanner.error.model_required':
+    'Enable at least one model on this provider, then retry publishing.',
+  'aiSettings.draftBanner.error.secret_required':
+    'Credentials are missing — configure an API key, or connect the shared account for OAuth providers, then retry.',
   'aiSettings.draftBanner.error.validation_failed':
     'Validation failed — changes stay as draft until fixed.',
   'aiSettings.draftBanner.error.publish_failed': 'Publish failed — changes stay as draft.',
