@@ -139,12 +139,6 @@ const callerFor = async (
   } as never);
 };
 
-const createProviderInput = (
-  providerKey: string,
-  secret?: { operation: 'clear' | 'keep' } | { operation: 'replace'; value: string },
-  reason = 'create provider draft',
-) => ({ displayName: providerKey, providerKey, reason, secret });
-
 describe('admin AI catalog publication, models, and delete lifecycle', () => {
   /** Seed a first-publishable provider: enabled + model + fresh connection test row. */
   const seedPublishableProvider = async (providerKey: string) => {
@@ -442,7 +436,10 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
     ).toBe(true);
   });
 
-  it('hard-deletes a published provider while retaining immutable revision history', async () => {
+  it('refuses to hard-delete an ever-published provider (fail-closed tombstone stays)', async () => {
+    // Ever-published providers (revision > 0) keep a tombstone so runtime can distinguish
+    // deliberate removal from "never managed" and refuse BYOK fallback — hard delete is
+    // rejected; admins must archive/disable instead (guard added in 69b14e5349).
     const { providerId } = await seedPublishableProvider('delete-published');
     // Published provider owns at least one revision row.
     const revisionsBefore = await revisionRows(providerId);
@@ -457,11 +454,10 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
         id: providerId,
         reason: 'remove published provider',
       }),
-    ).resolves.toEqual({ deleted: true });
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    expect(await providerRows(providerId)).toHaveLength(0);
-    expect(await modelRows(providerId)).toHaveLength(0);
-    // Migration 0145: revision rows are immutable and retained as audit trail by provider id.
+    // Nothing was deleted: provider row, models and immutable revision trail all remain.
+    expect(await providerRows(providerId)).toHaveLength(1);
     expect(await revisionRows(providerId)).toHaveLength(revisionsBefore.length);
   });
 
