@@ -25,10 +25,12 @@ export interface DeletePlatformResourceRevisionsForTestOptions {
 /**
  * Test-only delete of `platform_resource_revisions`.
  *
- * Production trigger `prevent_platform_resource_revision_mutation` rejects every DELETE
- * unconditionally (no GUC escape hatch). The established test-fixture pattern is
- * `SET LOCAL session_replication_role = replica` inside a transaction so user triggers
- * are skipped for teardown only.
+ * Production trigger `prevent_platform_resource_revision_mutation` rejects DELETE unless the
+ * transaction opts in via `lobe.allow_platform_revision_purge` (migration 0012) — an opt-in
+ * reserved for the AI-provider hard-delete purge, which is scoped to one provider. Test
+ * teardown deletes across arbitrary resource types, so it keeps the established fixture
+ * pattern instead: `SET LOCAL session_replication_role = replica` inside a transaction, so
+ * user triggers are skipped for teardown only.
  *
  * **Portability:** `session_replication_role` requires superuser (or equivalent) on real
  * Postgres. This is a pre-existing repo assumption (identityProvider, connectorCatalog,

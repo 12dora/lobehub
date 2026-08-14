@@ -399,7 +399,7 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     expect(JSON.stringify(audits)).not.toContain(credential);
   });
 
-  it('does not mark unsupported-only providers ready or invoke their probe', async () => {
+  it('fails the connection probe for a non-chat check model without blocking publish', async () => {
     const probe = vi.fn(async () => {});
     const unsupportedService = new AiCatalogAdminService(
       db,
@@ -429,16 +429,15 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     ).resolves.toMatchObject({ errorCategory: 'invalid_config', status: 'failure' });
     expect(probe).not.toHaveBeenCalled();
     const detail = await unsupportedService.getDetail(created.id);
+    // The manual health check is advisory only — it never gates publish any more.
     await expect(
       unsupportedService.publishProvider('admin', {
         expectedDraftToken: detail.draftToken,
         expectedRevision: 0,
         id: created.id,
-        reason: 'must not publish',
+        reason: 'publishes despite a failed probe',
       }),
-    ).rejects.toMatchObject({
-      issues: expect.arrayContaining(['Check model must reference an enabled chat model']),
-    });
+    ).resolves.toMatchObject({ revision: 1 });
   });
 
   it('enforces draft token/revision CAS and preserves or clears secrets explicitly', async () => {

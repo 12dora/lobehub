@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PlatformAiCatalogModel, PlatformRevisionConflictError } from '@/database/models/platform';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import {
@@ -28,6 +29,7 @@ import { resolveAiCatalogDependents, resolveAiCatalogDependentsForModels } from 
 import {
   type AiCatalogDependent,
   AiCatalogNotFoundError,
+  AiCatalogPermissionDeniedError,
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from './errors';
@@ -54,6 +56,12 @@ type ApplyImmediateBatchUpdate = Extract<
   { operation: 'batchUpdate' }
 >;
 type ApplyImmediateClear = Extract<AdminAiModelApplyImmediateInput, { operation: 'clear' }>;
+
+/** Caller grants that only the executing transaction can decide the need for. */
+export interface AiCatalogModelApplyCapabilities {
+  /** Caller holds AI_MODEL_CREATE — required for any `batchUpdate` item that inserts. */
+  allowModelCreate: boolean;
+}
 
 const toModelDraft = (row: PlatformAiModelItem) =>
   aiModelDraftSchema.parse({
@@ -102,18 +110,21 @@ export abstract class AiCatalogAdminServiceModelOps {
     reason: string;
     targetId?: string;
   }) => Promise<unknown> | unknown;
-  protected abstract tryPublishImmediate: (
+  protected abstract publishAfterMutation: (
     actorUserId: string,
     providerId: string,
     reason: string,
-    options?: { softFail?: boolean },
-  ) => Promise<{
-    auditId: string | null;
-    draft: unknown;
-    published: boolean;
-    publishError: string | null;
-    revision: number;
-  }>;
+  ) => Promise<{ auditId: string; revision: number }>;
+  protected abstract runModelApplyTransaction: <T>(
+    params: {
+      action: AuditAction;
+      actorUserId: string;
+      auditTargetId?: string;
+      reason: string;
+      secretTargetId?: string;
+    },
+    run: (scoped: AiCatalogAdminServiceModelOps) => Promise<T>,
+  ) => Promise<T>;
   abstract getDetail: (
     providerIdOrLookup: string | { id?: string; providerKey?: string },
   ) => Promise<{ draftToken: string }>;
@@ -355,40 +366,78 @@ export abstract class AiCatalogAdminServiceModelOps {
   };
 
   /**
-   * Atomic model mutation + soft-fail publish using the router-discriminated input union.
-   * Per-operation work lives in private handlers so the compiler enforces required fields.
+   * Atomic model mutation followed by an unconditional publish of the parent provider.
+   *
+   * Mutation + publish share ONE transaction, so a publish failure rolls the model DML back
+   * instead of leaving model rows runtime never serves. Any failure throws.
+   *
+   * `capabilities.allowModelCreate` carries the caller's AI_MODEL_CREATE grant: the router's
+   * compound gate can only classify the *declared* operation, and `batchUpdate` decides
+   * create-vs-update from database state, so the insert branch is authorized here — inside the
+   * transaction that makes the decision.
    */
-  applyModelImmediate = async (actorUserId: string, input: AdminAiModelApplyImmediateInput) => {
+  applyModelImmediate = async (
+    actorUserId: string,
+    input: AdminAiModelApplyImmediateInput,
+    capabilities: AiCatalogModelApplyCapabilities = { allowModelCreate: true },
+  ) => {
     const { providerId, reason } = input;
+    const published = await this.runModelApplyTransaction(
+      {
+        action: 'admin.aiModels.applyImmediate',
+        actorUserId,
+        auditTargetId: providerId,
+        reason,
+        secretTargetId: providerId,
+      },
+      async (scoped) => {
+        await scoped.applyModelMutation(actorUserId, input, capabilities);
+        return scoped.publishAfterMutation(actorUserId, providerId, reason);
+      },
+    );
+    const after = await this.getDetail(providerId);
+    return {
+      auditId: published.auditId,
+      draftToken: after.draftToken,
+      revision: published.revision,
+    };
+  };
 
+  /** Per-operation dispatch; private handlers keep required fields compiler-enforced. */
+  protected applyModelMutation = async (
+    actorUserId: string,
+    input: AdminAiModelApplyImmediateInput,
+    capabilities: AiCatalogModelApplyCapabilities,
+  ) => {
     switch (input.operation) {
       case 'create': {
         await this.applyImmediateCreate(actorUserId, input);
-        break;
+        return;
       }
       case 'update': {
         await this.applyImmediateUpdate(actorUserId, input);
-        break;
+        return;
       }
       case 'delete': {
         await this.applyImmediateDelete(actorUserId, input);
-        break;
+        return;
       }
       case 'reorder': {
         await this.applyImmediateReorder(actorUserId, input);
-        break;
+        return;
       }
       case 'batchToggle': {
+        // Insert-free by construction: an unknown id is rejected below, never materialized.
         await this.applyImmediateBatchToggle(actorUserId, input);
-        break;
+        return;
       }
       case 'batchUpdate': {
-        await this.applyImmediateBatchUpdate(actorUserId, input);
-        break;
+        await this.applyImmediateBatchUpdate(actorUserId, input, capabilities);
+        return;
       }
       case 'clear': {
         await this.applyImmediateClear(actorUserId, input);
-        break;
+        return;
       }
       default: {
         const _exhaustive: never = input;
@@ -397,18 +446,6 @@ export abstract class AiCatalogAdminServiceModelOps {
         ]);
       }
     }
-
-    const publishResult = await this.tryPublishImmediate(actorUserId, providerId, reason, {
-      softFail: true,
-    });
-    const after = await this.getDetail(providerId);
-    return {
-      auditId: publishResult.auditId,
-      draftToken: after.draftToken,
-      published: publishResult.published,
-      publishError: publishResult.publishError,
-      revision: publishResult.revision,
-    };
   };
 
   private applyImmediateCreate = async (actorUserId: string, input: ApplyImmediateCreate) => {
@@ -520,6 +557,7 @@ export abstract class AiCatalogAdminServiceModelOps {
   private applyImmediateBatchUpdate = async (
     actorUserId: string,
     input: ApplyImmediateBatchUpdate,
+    capabilities: AiCatalogModelApplyCapabilities,
   ) => {
     // Lock once; validate + plan in memory; bounded multi-row insert/update + bulk audit.
     const { expectedDraftToken, models, providerId, reason } = input;
@@ -564,6 +602,13 @@ export abstract class AiCatalogAdminServiceModelOps {
         for (const item of models) {
           const current = modelsById.get(item.id);
           if (!current) {
+            // An id with no platform row is an INSERT (this is how toggling a builtin
+            // model-bank model materializes its first platform row). Least privilege: that
+            // branch needs AI_MODEL_CREATE, which the declared `batchUpdate` operation does
+            // not select — so a caller holding only UPDATE+PUBLISH is denied here.
+            if (!capabilities.allowModelCreate) {
+              throw new AiCatalogPermissionDeniedError(PLATFORM_PERMISSIONS.AI_MODEL_CREATE);
+            }
             // Creates keep every input row so duplicate modelKeys still hit the unique
             // constraint (same failure as sequential create-then-create).
             const values = {

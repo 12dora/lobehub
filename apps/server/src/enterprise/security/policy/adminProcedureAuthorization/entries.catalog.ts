@@ -137,54 +137,14 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
     },
   },
   {
-    kind: 'mutation',
-    path: 'admin.aiModels.create',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_CREATE] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.aiModels.deleteFromDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_DELETE] },
-  },
-  {
     kind: 'query',
     path: 'admin.aiModels.dependents',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ] },
   },
   {
     kind: 'query',
-    path: 'admin.aiModels.getCreateDraftContext',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_CREATE] },
-  },
-  {
-    kind: 'query',
-    path: 'admin.aiModels.getDeleteDraftContext',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_DELETE] },
-  },
-  {
-    kind: 'query',
-    path: 'admin.aiModels.getUpdateDraftContext',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_UPDATE] },
-  },
-  {
-    kind: 'query',
     path: 'admin.aiModels.list',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ] },
-  },
-  {
-    kind: 'query',
-    path: 'admin.aiModels.listCreateTargets',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_CREATE] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.aiModels.reorder',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_UPDATE] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.aiModels.update',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_UPDATE] },
   },
   {
     kind: 'query',
@@ -233,16 +193,6 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   },
   {
     kind: 'mutation',
-    path: 'admin.aiProviders.archive',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.aiProviders.createDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE] },
-  },
-  {
-    kind: 'mutation',
     path: 'admin.aiProviders.delete',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE] },
   },
@@ -268,28 +218,8 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   },
   {
     kind: 'mutation',
-    path: 'admin.aiProviders.publish',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.aiProviders.publishNow',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.aiProviders.rollback',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
     path: 'admin.aiProviders.test',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_TEST] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.aiProviders.updateDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE] },
   },
   {
     kind: 'mutation',

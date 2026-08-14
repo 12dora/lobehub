@@ -256,8 +256,10 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
 
     try {
       await cleanup();
-      // Use a never-published draft (revision 0): published providers reject hard-delete outright,
-      // so the lock-order race is only meaningful before first publish.
+      // Race a first publish against a hard delete of the same never-published draft: both
+      // paths take the provider row lock and then the dependency advisory lock in that order,
+      // so the loser must block rather than interleave. (Hard delete is allowed at any
+      // revision now; revision 0 keeps this case focused on the first-publish race.)
       const seedService = new AiCatalogAdminService(
         firstDb,
         new PlatformSecretService({ keyProvider }),

@@ -5,6 +5,7 @@ import type { z } from 'zod';
 import {
   PlatformAiCatalogModel,
   type PlatformAiProviderDraftView,
+  PlatformCatalogAuthorityModel,
   PlatformRevisionConflictError,
 } from '@/database/models/platform';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
@@ -26,6 +27,8 @@ import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import { invalidateAiCatalogAuthorityToken } from '../platformInstance/catalogTokens';
+import type { DeferInvalidation } from '../platformPublisher';
 import { AiCatalogAdminServiceModelOps } from './adminService.models';
 import { AiCatalogReadService } from './catalogReadService';
 import {
@@ -34,9 +37,7 @@ import {
   type AiConnectionTestResult,
 } from './connectionTestService';
 import {
-  hasAiCatalogEnvironmentFallback,
   normalizeAiCatalogExecutionCredentials,
-  resolveAiCatalogRuntimeProvider,
   validateAiCatalogCredentialShape,
   validateAiCatalogRuntimeProvider,
 } from './credentialAdapter';
@@ -54,7 +55,6 @@ import {
   aiCatalogDraftToken,
   appendAiCatalogFailureAudit,
   getLockedAiCatalogDraft,
-  publishedPayloadConnectivityMatchesDraft,
 } from './shared';
 
 type CreateProviderInput = z.infer<typeof adminAiProviderCreateDraftInputSchema>;
@@ -63,14 +63,33 @@ type DeleteProviderInput = z.infer<typeof adminAiProviderDeleteInputSchema>;
 
 export interface AiCatalogAdminServiceOptions {
   connectionProbe?: AiConnectionProbe;
+  /**
+   * @internal Set only on the transaction-scoped clone built by `scopedToTransaction`.
+   * Collects invalidation work so it runs after the enclosing transaction commits.
+   */
+  deferInvalidation?: DeferInvalidation;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: {
     afterDraftLock?: () => Promise<void>;
+    /**
+     * Runs inside the applyImmediate transaction, after the publish savepoint committed and
+     * before the outer COMMIT — the seam for proving that a late failure rolls the whole
+     * apply back and fires no invalidation.
+     */
+    afterApplyPublish?: () => Promise<void>;
     afterArchiveDependencyCheck?: () => Promise<void>;
     afterModelDependencyCheck?: () => Promise<void>;
     afterPublishLock?: (tx: Transaction) => Promise<void>;
   };
   resolveDependentsForModels?: typeof resolveAiCatalogDependentsForModels;
+  /**
+   * @internal Set only on the transaction-scoped clone built by `scopedToTransaction`.
+   * Failure audits must not run on the scoped instance: written inside the transaction they
+   * would roll back with it, and taking a second pooled connection while the transaction
+   * holds row locks can deadlock a size-1 pool. The root instance writes exactly one failure
+   * audit after the transaction settles.
+   */
+  suppressFailureAudit?: boolean;
 }
 
 /**
@@ -93,6 +112,8 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
   protected readonly lifecycle: NonNullable<AiCatalogAdminServiceOptions['lifecycle']>;
   protected readonly publication: AiCatalogPublicationService;
   protected readonly secrets: AiCatalogSecretManager;
+  private readonly options: AiCatalogAdminServiceOptions;
+  private readonly secretService: PlatformSecretService;
 
   constructor(
     db: LobeChatDatabase,
@@ -101,15 +122,87 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
   ) {
     super();
     this.db = db;
+    this.options = options;
+    this.secretService = secretService;
     this.connectionTests = new AiCatalogConnectionTestService(options.connectionProbe);
     this.lifecycle = options.lifecycle ?? {};
     this.secrets = new AiCatalogSecretManager(secretService);
     this.publication = new AiCatalogPublicationService(db, this.secrets, {
+      deferInvalidation: options.deferInvalidation,
       invalidation: options.invalidation,
       lifecycle: options.lifecycle,
       resolveDependentsForModels: options.resolveDependentsForModels,
     });
   }
+
+  /**
+   * The same service bound to an open transaction.
+   *
+   * Drizzle turns a nested `transaction()` on a transaction handle into a SAVEPOINT, so the
+   * draft write, publish validation, revision insert, pointer move and success audit of one
+   * applyImmediate all commit or roll back together. Without this, a publish failure would
+   * leave the very thing this design removes: a persisted draft that runtime never serves.
+   */
+  private scopedToTransaction = (
+    tx: Transaction,
+    deferInvalidation: DeferInvalidation,
+  ): AiCatalogAdminService =>
+    new AiCatalogAdminService(tx as unknown as LobeChatDatabase, this.secretService, {
+      ...this.options,
+      deferInvalidation,
+      suppressFailureAudit: true,
+    });
+
+  /**
+   * Run one applyImmediate unit of work in a single transaction, then invalidate the
+   * process-local catalog authority token — after commit, never before.
+   * On failure the transaction is rolled back and exactly one failure audit is written on the
+   * root connection (the scoped instance suppresses its own).
+   */
+  protected runApplyTransaction = async <T>(
+    params: {
+      action: AuditAction;
+      actorUserId: string;
+      auditTargetId?: string;
+      reason: string;
+      secret?: AiSecretMutation;
+      secretTargetId?: string;
+    },
+    run: (scoped: AiCatalogAdminService) => Promise<T>,
+  ): Promise<T> => {
+    // Nothing may announce a revision before the transaction that produced it commits: a
+    // later failure would leave every cache holding an event for a revision that never
+    // existed. Invalidation work is collected here and flushed only after COMMIT.
+    const pendingInvalidations: Array<() => Promise<void>> = [];
+    try {
+      const result = await this.db.transaction(async (tx) =>
+        run(this.scopedToTransaction(tx, (invalidate) => pendingInvalidations.push(invalidate))),
+      );
+      for (const invalidate of pendingInvalidations) await invalidate();
+      invalidateAiCatalogAuthorityToken();
+      return result;
+    } catch (error) {
+      await this.appendFailureAudit({
+        action: params.action,
+        actorUserId: params.actorUserId,
+        reason: await this.sanitizeReason(params.reason, params.secretTargetId, params.secret),
+        targetId: params.auditTargetId,
+      });
+      throw error;
+    }
+  };
+
+  /** Model-side entry point for {@link runApplyTransaction} (see `applyModelImmediate`). */
+  protected runModelApplyTransaction = <T>(
+    params: {
+      action: AuditAction;
+      actorUserId: string;
+      auditTargetId?: string;
+      reason: string;
+      secretTargetId?: string;
+    },
+    run: (scoped: AiCatalogAdminServiceModelOps) => Promise<T>,
+  ): Promise<T> => this.runApplyTransaction(params, run);
 
   protected sanitizeReason = async (
     reason: string,
@@ -147,12 +240,16 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
       tx,
     });
 
-  protected appendFailureAudit = (params: {
+  protected appendFailureAudit = async (params: {
     action: AuditAction;
     actorUserId: string;
     reason: string;
     targetId?: string;
-  }) => appendAiCatalogFailureAudit(this.db, params);
+  }) => {
+    // Transaction-scoped clone: the root instance owns the failure audit (see options doc).
+    if (this.options.suppressFailureAudit) return;
+    await appendAiCatalogFailureAudit(this.db, params);
+  };
 
   /**
    * Load provider detail by platform UUID, or by user-facing providerKey.
@@ -221,6 +318,10 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
     };
   };
 
+  /**
+   * Server-side revision history. Not exposed as an admin procedure (the revision-history UI
+   * is gone); kept as the read side of the retained rollback capability.
+   */
   listRevisionHistory = async (params: { beforeRevision?: number; id: string; limit?: number }) => {
     const repository = new PlatformAiCatalogRepository(this.db);
     if (!(await repository.getProvider(params.id))) throw new AiCatalogNotFoundError();
@@ -229,29 +330,6 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
       limit: params.limit,
       providerId: params.id,
     });
-  };
-
-  getModelDraftContext = async (providerId: string) => {
-    const draft = await new PlatformAiCatalogModel(this.db).getProvider(providerId);
-    if (!draft) throw new AiCatalogNotFoundError();
-    return {
-      baseRevision: draft.revision,
-      draftToken: aiCatalogDraftToken(draft),
-      modelIds: draft.models.map((model) => model.id),
-      providerId,
-    };
-  };
-
-  listModelCreateTargets = async (params: { cursor?: string; limit?: number; query?: string }) => {
-    const page = await new PlatformAiCatalogModel(this.db).listProviders(params);
-    return {
-      items: page.items.map(({ displayName, id, providerKey }) => ({
-        displayName,
-        id,
-        providerKey,
-      })),
-      nextCursor: page.nextCursor,
-    };
   };
 
   createProviderDraft = async (
@@ -435,14 +513,6 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
             resourceType: 'provider',
           });
         }
-        // Ever-published providers (revision > 0) must keep a fail-closed tombstone so runtime
-        // can distinguish deliberate removal from "never managed" and refuse BYOK fallback.
-        // Admins must archive/disable instead of hard-deleting published providers.
-        if (provider.revision > 0) {
-          throw new AiCatalogValidationError([
-            'Published providers cannot be hard-deleted; archive or disable them instead',
-          ]);
-        }
         // Refuse when any owned model is still referenced by a published agent / setting.
         const models = await repository.listModels(id);
         const dependents = await resolveAiCatalogDependentsForModels(
@@ -453,9 +523,16 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
         if (dependents.some((item) => item.blocking)) {
           throw new AiCatalogResourceInUseError(dependents);
         }
+        // True hard delete: models, revision history and the provider row (its secret
+        // versions cascade). Afterwards the instance looks as if this provider had never
+        // been platform-managed, so runtime resolves NOT_FOUND and hands the provider back
+        // to the user's own BYOK configuration.
         await repository.deleteProviderModels(id);
-        await repository.deleteProviderRevisions(id);
+        const revisionsPurged = await repository.deleteProviderRevisions(id);
         await repository.deleteProvider(id);
+        // Advance the multi-instance catalog authority in the same transaction as the delete,
+        // exactly like a publish, so every instance drops the provider on its next peek.
+        await new PlatformCatalogAuthorityModel(tx).bumpGeneration('ai_catalog');
         await new PlatformAuditService(tx).append({
           action: 'admin.aiProviders.delete',
           actorUserId,
@@ -463,6 +540,8 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
             modelCount: models.length,
             providerId: id,
             providerKey: provider.providerKey,
+            revision: provider.revision,
+            revisionsPurged,
           },
           reason,
           result: 'success',
@@ -470,6 +549,7 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
           targetType: 'provider',
         });
       });
+      invalidateAiCatalogAuthorityToken();
       return { deleted: true as const };
     } catch (error) {
       await this.appendFailureAudit({
@@ -616,187 +696,88 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
   archiveProvider: AiCatalogPublicationService['archiveProvider'] = (actorUserId, input) =>
     this.publication.archiveProvider(actorUserId, input);
 
+  /**
+   * Restore a previous published revision. Not exposed as an admin procedure — the
+   * draft/publish/rollback UI is gone — but retained as a server-side recovery capability
+   * over the immutable revision log.
+   */
   rollbackProvider: AiCatalogPublicationService['rollbackProvider'] = (actorUserId, input) =>
     this.publication.rollbackProvider(actorUserId, input);
 
   /**
-   * Determine whether connectivity-sensitive fields differ from the last published revision.
-   * Used to decide whether applyImmediate may skip a retest (cosmetic-only) or must probe.
+   * Publish the current draft of `providerId` under its live CAS identity.
+   *
+   * There is no draft/publish workflow any more: every admin write ends here, and a publish
+   * failure is a hard error (the caller sees a toast) rather than a leftover visible draft.
    */
-  private connectivityChangedFromPublished = async (providerId: string): Promise<boolean> => {
-    const draft = await new PlatformAiCatalogModel(this.db).getProvider(providerId);
-    if (!draft) throw new AiCatalogNotFoundError();
-    if (draft.revision === 0) return true;
-    const repository = new PlatformAiCatalogRepository(this.db);
-    const published = await repository.getProviderRevision(providerId, draft.revision);
-    if (!published || published.status !== 'published') return true;
-    return !publishedPayloadConnectivityMatchesDraft(draft, {
-      payload: published.payload as Record<string, unknown>,
-      secretFingerprint: published.secretFingerprint,
+  protected publishAfterMutation = async (
+    actorUserId: string,
+    providerId: string,
+    reason: string,
+  ): Promise<{ auditId: string; revision: number }> => {
+    const detail = await this.getDetail(providerId);
+    return this.publishProvider(actorUserId, {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: providerId,
+      reason,
     });
   };
 
   /**
-   * Auto-run connectivity test when required so applyImmediate can land without a separate UI step.
-   * - revision 0 (first publish): always retest when credentials + ≥1 enabled model are present.
-   * - revision > 0: retest only when connectivity-sensitive fields changed vs last publish;
-   *   cosmetic-only edits reuse the stale-test allow path in validatePublishDraft.
-   */
-  /**
-   * Stable machine-readable codes returned as `publishError` for client i18n.
-   * Free-form prose is never surfaced — map codes under `aiSettings.draftBanner.error.*`.
-   */
-  private preparePublishConnectionTest = async (
-    actorUserId: string,
-    providerId: string,
-    reason: string,
-  ): Promise<{ ok: true } | { ok: false; reason: string }> => {
-    const detail = await this.getDetail(providerId);
-    const connectivityChanged =
-      detail.baseRevision === 0 || (await this.connectivityChangedFromPublished(providerId));
-    if (!connectivityChanged) return { ok: true };
-
-    // Fresh connection test already bound to this draft — no need to re-probe.
-    if (detail.draft.connectionTest?.status === 'success' && !detail.draft.connectionTest.stale) {
-      return { ok: true };
-    }
-
-    const hasEnabledModel = detail.draft.models.some((m) => m.enabled);
-    const runtimeProvider = resolveAiCatalogRuntimeProvider(
-      detail.draft.providerKey,
-      detail.draft.settings,
-      detail.draft.source,
-    );
-    // Stored secret OR ModelRuntime env credentials (OPENAI_API_KEY, etc.) both satisfy readiness.
-    const hasCredentials =
-      detail.draft.secret.configured || hasAiCatalogEnvironmentFallback(runtimeProvider);
-    if (!hasEnabledModel || !hasCredentials) {
-      return {
-        ok: false,
-        // Stable codes — client translates; do not return localized/server prose.
-        reason: !hasEnabledModel ? 'model_required' : 'secret_required',
-      };
-    }
-    const test = await this.testProvider(actorUserId, { id: providerId, reason });
-    if (test.status !== 'success') {
-      return {
-        ok: false,
-        reason: 'connection_test_failed',
-      };
-    }
-    return { ok: true };
-  };
-
-  protected tryPublishImmediate = async (
-    actorUserId: string,
-    providerId: string,
-    reason: string,
-    options?: { softFail?: boolean },
-  ) => {
-    const prep = await this.preparePublishConnectionTest(actorUserId, providerId, reason);
-    if (!prep.ok) {
-      const detail = await this.getDetail(providerId);
-      return {
-        auditId: null as string | null,
-        draft: detail.draft,
-        published: false,
-        publishError: prep.reason,
-        revision: detail.baseRevision,
-      };
-    }
-    const detail = await this.getDetail(providerId);
-
-    try {
-      const published = await this.publishProvider(actorUserId, {
-        // Cosmetic-only republish may reuse a stale successful test; connectivity changes
-        // were already re-probed above (or rejected). Validation still re-checks field sensitivity.
-        allowStaleConnectionTest: detail.baseRevision > 0,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: providerId,
-        reason,
-      });
-      const after = await this.getDetail(providerId);
-      return {
-        auditId: published.auditId as string | null,
-        draft: after.draft,
-        published: true,
-        publishError: null as string | null,
-        revision: published.revision,
-      };
-    } catch (error) {
-      if (options?.softFail || error instanceof AiCatalogValidationError) {
-        const after = await this.getDetail(providerId);
-        // Stable machine-readable codes only — never free-form Error.message / issue prose.
-        const reasonCode =
-          error instanceof AiCatalogValidationError ? 'validation_failed' : 'publish_failed';
-        if (options?.softFail || after.baseRevision === 0) {
-          return {
-            auditId: null as string | null,
-            draft: after.draft,
-            published: false,
-            publishError: reasonCode,
-            revision: after.baseRevision,
-          };
-        }
-      }
-      throw error;
-    }
-  };
-
-  /**
-   * Apply a provider draft mutation then publish immediately.
-   * Sequential (draft then publish); publish failure leaves a visible draft (no silent half-state).
+   * Apply a provider mutation and publish it — atomically.
+   *
+   * The draft write and the publish share ONE transaction, so a validation failure rolls the
+   * write back: a failed create leaves no provider row (a retry cannot duplicate it) and a
+   * failed update leaves the stored draft exactly as runtime already serves it. Success ⇒ the
+   * change is live site-wide.
+   *
+   * Two concurrent admins are still last-write-wins (user-page parity); the draftToken /
+   * expectedRevision CAS is the only serialization, and it guarantees that what gets published
+   * is what this transaction itself wrote.
    */
   applyProviderImmediate = async (
     actorUserId: string,
     input: (CreateProviderInput & { mode: 'create' }) | (UpdateProviderInput & { mode: 'update' }),
   ) => {
-    let providerId: string;
-    if (input.mode === 'create') {
-      const { mode: _mode, ...createInput } = input;
-      const draft = await this.createProviderDraft(actorUserId, createInput);
-      providerId = draft.id;
-    } else {
-      const { mode: _mode, ...updateInput } = input;
-      await this.updateProviderDraft(actorUserId, updateInput);
-      providerId = input.id;
-    }
+    const { providerId, published } = await this.runApplyTransaction(
+      {
+        action: 'admin.aiProviders.applyImmediate',
+        actorUserId,
+        auditTargetId: input.mode === 'create' ? input.providerKey : input.id,
+        reason: input.reason,
+        secret: input.secret,
+        secretTargetId: input.mode === 'update' ? input.id : undefined,
+      },
+      async (scoped) => {
+        let providerId: string;
+        if (input.mode === 'create') {
+          const { mode: _mode, ...createInput } = input;
+          providerId = (await scoped.createProviderDraft(actorUserId, createInput)).id;
+        } else {
+          const { mode: _mode, ...updateInput } = input;
+          await scoped.updateProviderDraft(actorUserId, updateInput);
+          providerId = input.id;
+        }
+        const published = await scoped.publishAfterMutation(actorUserId, providerId, input.reason);
+        await this.lifecycle.afterApplyPublish?.();
+        return { providerId, published };
+      },
+    );
 
-    // Create always soft-fails publish validation; updates soft-fail only on first-publish path
-    // (revision 0). Already-published update failures still throw for UI visibility (M1).
-    const softFail = input.mode === 'create';
-    const result = await this.tryPublishImmediate(actorUserId, providerId, input.reason, {
-      softFail,
-    });
-    // For update on revision>0 that fails validation, rethrow so adapter/toast surfaces it.
-    if (!result.published && input.mode === 'update') {
-      const after = await this.getDetail(providerId);
-      if (after.baseRevision > 0 && result.publishError) {
-        throw new AiCatalogValidationError([result.publishError]);
-      }
-    }
+    const after = await this.getDetail(providerId);
     return {
-      auditId: result.auditId,
-      draft: result.draft,
-      published: result.published,
-      publishError: result.publishError,
-      revision: result.revision,
+      auditId: published.auditId,
+      draft: after.draft,
+      revision: published.revision,
     };
-  };
-
-  /**
-   * Retry publish for banner (re-run connection test when revision === 0, then publish).
-   */
-  publishNow = async (actorUserId: string, input: { id: string; reason: string }) => {
-    return this.tryPublishImmediate(actorUserId, input.id, input.reason, { softFail: true });
   };
 }
 
 export {
   type AiCatalogDependent,
   AiCatalogNotFoundError,
-  AiCatalogProviderDisabledError,
+  AiCatalogPermissionDeniedError,
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from './errors';

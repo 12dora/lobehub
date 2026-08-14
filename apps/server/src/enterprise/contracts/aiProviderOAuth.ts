@@ -47,11 +47,15 @@ export const adminAiProviderOAuthPollInputSchema = z
 
 export const adminAiProviderOAuthPollOutputSchema = z
   .object({
-    /** true only when the shared connection reached the live published catalog. */
-    published: z.boolean(),
-    /** Structured human-safe reason when published is false (never token material). */
-    publishError: z.string().max(500).nullable(),
-    /** Provider revision after a successful store; null while the flow is unfinished. */
+    /**
+     * Stable machine-readable code when the redeemed grant could not be stored
+     * (`status: 'denied'`, `stored: false`). Never prose, never token material.
+     */
+    error: z.string().max(200).nullable().optional(),
+    /**
+     * Provider revision after a successful store; null while the flow is unfinished.
+     * A `stored: true` poll is always live — storing publishes unconditionally.
+     */
     revision: z.number().int().nonnegative().nullable(),
     /** true when this poll stored the shared connection in the platform vault. */
     stored: z.boolean(),

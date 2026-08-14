@@ -30,20 +30,41 @@ export class AiCatalogModelNotPublishedError extends Error {
 }
 
 /**
- * Managed provider exists in the catalog but is administratively disabled.
- * Must not be confused with {@link AiCatalogNotFoundError}: callers that fall back to
- * user BYOK on PLATFORM_NOT_FOUND must still fail closed on this code.
+ * A pinned platform provider revision can no longer be resolved: the provider was hard-deleted
+ * (its revision history purged with it) while an operation that pinned that exact revision was
+ * still in flight, or the pinned checksum no longer matches.
+ *
+ * Terminal by design — MODEL-EXACT never falls back to the current pointer or to user BYOK.
+ * Carries `errorType` so the chat error formatter classifies it as a real, labelled provider
+ * error instead of wrapping it as an opaque internal server error.
  */
-export class AiCatalogProviderDisabledError extends Error {
+export class AiCatalogProviderUnavailableError extends Error {
   readonly code = PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED;
   readonly errorType = PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED;
 
   constructor(providerKey?: string) {
     super(PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED);
-    this.name = 'AiCatalogProviderDisabledError';
+    this.name = 'AiCatalogProviderUnavailableError';
     if (providerKey) {
       Object.defineProperty(this, 'providerKey', { enumerable: false, value: providerKey });
     }
+  }
+}
+
+/**
+ * The caller lacks a platform permission that only the executing transaction could
+ * establish the need for — e.g. a `batchUpdate` item that turns out to be an INSERT and
+ * therefore requires AI_MODEL_CREATE, which the router's input-only compound gate cannot
+ * classify. Routers map this to a FORBIDDEN permission denial.
+ */
+export class AiCatalogPermissionDeniedError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED;
+  readonly permission: string;
+
+  constructor(permission: string) {
+    super(PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED);
+    this.name = 'AiCatalogPermissionDeniedError';
+    this.permission = permission;
   }
 }
 

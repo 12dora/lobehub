@@ -254,13 +254,7 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       reason: 'connect shared chatgpt account',
     });
 
-    expect(result).toEqual({
-      published: false,
-      publishError: null,
-      revision: null,
-      status: 'pending',
-      stored: false,
-    });
+    expect(result).toEqual({ error: null, revision: null, status: 'pending', stored: false });
     expect(applyImmediate).not.toHaveBeenCalled();
     expect(oauthService.pollForToken).toHaveBeenCalledTimes(1);
     expect(await db.select().from(platformAiProviders)).toEqual([]);
@@ -269,14 +263,11 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
   });
 
   it('stores the authorized connection through the catalog admin service', async () => {
-    // A fresh builtin row has no enabled model yet, so production soft-fails the immediate
-    // publish — the store still succeeded. Mocking a published revision would hide that.
+    // Storing publishes unconditionally, so a successful poll is always live.
     const applyImmediate = vi.fn().mockResolvedValue({
-      auditId: null,
+      auditId: 'apply-audit-id',
       draft: { id: 'created-provider-row-id' },
-      published: false,
-      publishError: 'model_required',
-      revision: 0,
+      revision: 1,
     });
     serviceSeam.applyProviderImmediate = applyImmediate;
     oauthService.pollForToken.mockResolvedValue(successTokens);
@@ -289,23 +280,11 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       reason: 'connect shared chatgpt account',
     });
 
-    expect(result).toEqual({
-      published: false,
-      publishError: 'model_required',
-      revision: 0,
-      status: 'success',
-      stored: true,
-    });
+    expect(result).toEqual({ error: null, revision: 1, status: 'success', stored: true });
     expect(await auditRowsFor('admin.aiProviderOAuth.pollAuthStatus')).toMatchObject([
       {
         actorUserId: ids.aiAdmin,
-        afterDiff: {
-          mode: 'create',
-          providerKey: 'chatgpt',
-          publishError: 'model_required',
-          published: false,
-          revision: 0,
-        },
+        afterDiff: { mode: 'create', providerKey: 'chatgpt', revision: 1 },
         result: 'success',
         targetId: 'created-provider-row-id',
         targetType: 'provider',
@@ -314,6 +293,9 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
     expect(applyImmediate).toHaveBeenCalledWith(ids.aiAdmin, {
       description: expect.anything(),
       displayName: expect.any(String),
+      // First connect activates the shared account — otherwise the row would be invisible
+      // to runtime while the panel reports a live connection.
+      enabled: true,
       mode: 'create',
       providerKey: 'chatgpt',
       reason: 'connect shared chatgpt account',
@@ -333,11 +315,9 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
 
   it('omits the account id for providers whose credential shape rejects it', async () => {
     const applyImmediate = vi.fn().mockResolvedValue({
-      auditId: null,
+      auditId: 'apply-audit-id',
       draft: { id: 'created-provider-row-id' },
-      published: false,
-      publishError: 'model_required',
-      revision: 0,
+      revision: 1,
     });
     serviceSeam.applyProviderImmediate = applyImmediate;
     oauthService.pollForToken.mockResolvedValue(successTokens);
@@ -423,6 +403,31 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
     expect(JSON.stringify(denied)).not.toContain(ACCESS_TOKEN);
   });
 
+  it('first connect creates an enabled, published provider row', async () => {
+    // Connecting a shared account is the activation intent: an enabled:false row would be
+    // invisible to runtime while the panel reports a live connection.
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+
+    const result = await (
+      await callerFor()
+    ).aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+
+    expect(result).toMatchObject({ status: 'success', stored: true });
+    expect(result.revision).toBeGreaterThanOrEqual(1);
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row).toMatchObject({
+      enabled: true,
+      providerKey: 'chatgpt',
+      source: 'builtin',
+      status: 'published',
+    });
+    expect(row.revision).toBeGreaterThanOrEqual(1);
+  });
+
   it('reconnects an existing shared account through the update branch', async () => {
     oauthService.pollForToken.mockResolvedValue(successTokens);
     const caller = await callerFor();
@@ -432,24 +437,17 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       id: 'chatgpt',
       reason: 'connect shared chatgpt account',
     });
-    expect(created).toEqual({
-      published: false,
-      publishError: 'model_required',
-      revision: 0,
-      status: 'success',
-      stored: true,
-    });
+    // Unmocked create branch: the store published the shared connection immediately.
+    expect(created).toEqual({ error: null, revision: 1, status: 'success', stored: true });
 
     // Concurrency expectations are read back independently of the router under test.
     const stored = await caller.aiProviders.get({ providerKey: 'chatgpt' });
     expect(stored.draftToken).toHaveLength(64);
 
     const applyImmediate = vi.fn().mockResolvedValue({
-      auditId: null,
+      auditId: 'apply-audit-id',
       draft: { id: stored.draft.id },
-      published: false,
-      publishError: 'model_required',
-      revision: 0,
+      revision: 2,
     });
     serviceSeam.applyProviderImmediate = applyImmediate;
 
@@ -459,13 +457,7 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       reason: 'reconnect shared chatgpt account',
     });
 
-    expect(result).toEqual({
-      published: false,
-      publishError: 'model_required',
-      revision: 0,
-      status: 'success',
-      stored: true,
-    });
+    expect(result).toEqual({ error: null, revision: 2, status: 'success', stored: true });
     // Merge (not replace): a reconnect must not drop vault leaves this flow does not set.
     expect(applyImmediate).toHaveBeenCalledWith(ids.aiAdmin, {
       expectedDraftToken: stored.draftToken,
@@ -491,6 +483,40 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       { afterDiff: { mode: 'create' } },
       { afterDiff: { mode: 'update' }, targetId: stored.draft.id },
     ]);
+  });
+
+  it('reports a terminal denied outcome when the store fails after the grant is redeemed', async () => {
+    // The device grant is single-use: a throw here would strand the operator mid-poll.
+    const applyImmediate = vi
+      .fn()
+      .mockRejectedValue(new Error('sensitive apply prose sk-should-never-surface'));
+    serviceSeam.applyProviderImmediate = applyImmediate;
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+
+    const result = await (
+      await callerFor()
+    ).aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+
+    expect(result).toEqual({
+      error: 'provider_store_failed',
+      revision: null,
+      status: 'denied',
+      stored: false,
+    });
+    const audits = await auditRowsFor('admin.aiProviderOAuth.pollAuthStatus');
+    expect(audits).toMatchObject([
+      {
+        afterDiff: { error: 'provider_store_failed', mode: 'create', providerKey: 'chatgpt' },
+        result: 'failure',
+        targetId: 'chatgpt',
+        targetType: 'provider',
+      },
+    ]);
+    expect(JSON.stringify(audits)).not.toContain('sk-should-never-surface');
   });
 
   it('maps a failed token exchange to a stable error and audits it without provider prose', async () => {

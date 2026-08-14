@@ -31,7 +31,7 @@ import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import {
   AiCatalogModelNotPublishedError,
   AiCatalogNotFoundError,
-  AiCatalogProviderDisabledError,
+  AiCatalogProviderUnavailableError,
 } from './errors';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
@@ -406,12 +406,11 @@ export class AiCatalogExecutionResolver {
         isRecord(item.payload.provider) && item.payload.provider.providerKey === providerKey,
     );
     if (!revision || !isRecord(revision.payload.provider)) {
-      // Snapshot omits archived pointers. A known provider with a non-zero pointer was once
-      // published and is now inactive — fail closed so runtime does not resurrect it via BYOK.
-      const known = await repository.getProviderByKey(providerKey);
-      if (known && known.revision > 0) {
-        throw new AiCatalogProviderDisabledError(providerKey);
-      }
+      // Platform takeover applies only while a provider is actively managed. A provider that
+      // is absent from the snapshot (never managed, or archived) is reported as NOT_FOUND so
+      // the ModelRuntime bridge falls back to the user's own BYOK configuration. Re-enabling
+      // the platform provider puts it back in the snapshot, and the platform path — which is
+      // tried first — takes precedence again automatically.
       throw new AiCatalogNotFoundError();
     }
     return this.buildExecutionConfigFromRevision(providerKey, revision, repository, options);
@@ -435,8 +434,12 @@ export class AiCatalogExecutionResolver {
     providerRevision: number;
   }): Promise<AiCatalogProviderExecutionConfig> {
     const repository = new PlatformAiCatalogRepository(this.db);
+    const unavailable = () => new AiCatalogProviderUnavailableError(params.providerKey);
     const provider = await repository.getProviderByKey(params.providerKey);
-    if (!provider || provider.status !== 'published') throw new AiCatalogNotFoundError();
+    // A hard-deleted provider takes its revision history with it, so an in-flight pinned
+    // operation lands here on its next resolve and fails with a labelled provider error
+    // (never an opaque internal error, never a silent switch to another configuration).
+    if (!provider || provider.status !== 'published') throw unavailable();
     const revision = await repository.getProviderRevision(provider.id, params.providerRevision);
     if (
       !revision ||
@@ -444,13 +447,21 @@ export class AiCatalogExecutionResolver {
       revision.checksum !== params.providerChecksum ||
       !isRecord(revision.payload.provider)
     ) {
-      throw new AiCatalogNotFoundError();
+      throw unavailable();
     }
-    const resolved = await this.buildExecutionConfigFromRevision(
-      params.providerKey,
-      revision,
-      repository,
-    );
+    let resolved;
+    try {
+      resolved = await this.buildExecutionConfigFromRevision(
+        params.providerKey,
+        revision,
+        repository,
+      );
+    } catch (error) {
+      // The shared builder reports "not managed" as NOT_FOUND for the BYOK-fallback path;
+      // on the pinned path there is no fallback, so it is a terminal provider error.
+      if (error instanceof AiCatalogNotFoundError) throw unavailable();
+      throw error;
+    }
     if (
       params.modelKey &&
       !resolved.allowedModels.some((model) => model.modelKey === params.modelKey)
@@ -468,13 +479,11 @@ export class AiCatalogExecutionResolver {
   ): Promise<AiCatalogProviderExecutionConfig> {
     if (!isRecord(revision.payload.provider)) throw new AiCatalogNotFoundError();
     const provider = revision.payload.provider;
-    // Known but administratively disabled — fail closed (do not surface as PLATFORM_NOT_FOUND
-    // or the runtime BYOK path will resurrect the provider with a user key).
-    if (provider.enabled !== true) {
-      throw new AiCatalogProviderDisabledError(
-        typeof provider.providerKey === 'string' ? provider.providerKey : providerKey,
-      );
-    }
+    // Administratively disabled ⇒ not managed. Surfaced as NOT_FOUND so the current-pointer
+    // path hands the provider back to the user's own BYOK config (see
+    // resolveProviderExecutionConfig). The pinned-revision path has no BYOK fallback, so this
+    // stays terminal there.
+    if (provider.enabled !== true) throw new AiCatalogNotFoundError();
     const allowedModels = Array.isArray(revision.payload.models)
       ? revision.payload.models.flatMap((model) =>
           isRecord(model) &&

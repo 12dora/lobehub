@@ -78,13 +78,55 @@ export class PlatformAiCatalogRepository {
   };
 
   /**
-   * Revision rows are immutable (migration 0145): never hard-delete them.
-   * Provider teardown leaves revision history as an audit trail keyed by the
-   * former provider id. Returns 0 always for API compatibility.
+   * Purge the immutable revision history of a provider that is being hard-deleted.
+   *
+   * Revision rows are append-only; migration `0012_platform_revision_purge` relaxes the
+   * trigger to accept DELETE only while the transaction-local GUC
+   * `lobe.allow_platform_revision_purge` is on (UPDATE stays permanently rejected). Provider
+   * removal must be a true delete — leaving history behind would keep the pinned secret
+   * fingerprints of a resource that no longer exists, and would let a re-created provider
+   * inherit a stranger's revision trail.
+   *
+   * The opt-in window is exactly this DELETE. `SET LOCAL` is scoped to the whole transaction,
+   * and RELEASE SAVEPOINT does NOT undo it — so when the caller already opened a transaction
+   * (the provider hard-delete does) the nested transaction here is only a SAVEPOINT and the
+   * permission would otherwise stay armed for the rest of the parent transaction. The prior
+   * value is therefore stashed in a companion GUC and restored immediately afterwards, so a
+   * later sibling DELETE in the same parent transaction is rejected by the trigger again.
    */
-  deleteProviderRevisions = async (_providerId: string): Promise<number> => {
-    return 0;
-  };
+  deleteProviderRevisions = async (providerId: string): Promise<number> =>
+    this.db.transaction(async (tx) => {
+      // Stash + arm in one statement; no result parsing, so this stays driver-agnostic.
+      await tx.execute(sql`
+        SELECT
+          set_config(
+            'lobe.platform_revision_purge_prior',
+            coalesce(current_setting('lobe.allow_platform_revision_purge', true), ''),
+            true
+          ),
+          set_config('lobe.allow_platform_revision_purge', 'on', true)
+      `);
+      const rows = await tx
+        .delete(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceType, 'provider'),
+            eq(platformResourceRevisions.resourceId, providerId),
+          ),
+        )
+        .returning({ id: platformResourceRevisions.id });
+      // Only on the success path: a failed DELETE aborts this subtransaction, and a
+      // subtransaction abort already rolls the SET LOCAL back (issuing more SQL on the
+      // aborted savepoint would just mask the real error).
+      await tx.execute(sql`
+        SELECT set_config(
+          'lobe.allow_platform_revision_purge',
+          coalesce(current_setting('lobe.platform_revision_purge_prior', true), ''),
+          true
+        )
+      `);
+      return rows.length;
+    });
 
   /** Hard-delete a provider row; encrypted secret versions cascade automatically. */
   deleteProvider = async (id: string): Promise<PlatformAiProviderItem | undefined> => {

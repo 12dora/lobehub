@@ -382,7 +382,7 @@ describe('AiCatalogRuntimeAdapter', () => {
     expect(after.runtimeConfig.alpha.config).toEqual({ enableResponseApi: false });
   });
 
-  it('fails closed for disabled managed providers without PLATFORM_NOT_FOUND (no BYOK)', async () => {
+  it('hands a disabled managed provider back to BYOK (platform takeover ends with the toggle)', async () => {
     const { provider, service } = await createPublishedProvider();
     let detail = await service.getDetail(provider.id);
     await service.updateProviderDraft('admin', {
@@ -394,19 +394,21 @@ describe('AiCatalogRuntimeAdapter', () => {
     });
     detail = await service.getDetail(provider.id);
     await service.publishProvider('admin', {
-      allowStaleConnectionTest: true,
       expectedDraftToken: detail.draftToken,
       expectedRevision: detail.baseRevision,
       id: provider.id,
       reason: 'publish disabled',
     });
+    // Platform takeover applies only while the provider is enabled: NOT_FOUND is the signal
+    // the ModelRuntime bridge uses to fall back to the user's own configuration. Re-enabling
+    // puts the provider back in the snapshot and the platform path wins again.
     const execution = new AiCatalogExecutionResolver(db, secretService);
     await expect(execution.resolveProviderExecutionConfig('alpha')).rejects.toMatchObject({
-      code: 'PLATFORM_AI_PROVIDER_DISABLED',
+      code: 'PLATFORM_NOT_FOUND',
     });
   });
 
-  it('fails closed for archived managed providers (no BYOK via PLATFORM_NOT_FOUND)', async () => {
+  it('hands an archived managed provider back to BYOK', async () => {
     const { provider, service } = await createPublishedProvider();
     const detail = await service.getDetail(provider.id);
     await service.archiveProvider('admin', {
@@ -417,7 +419,7 @@ describe('AiCatalogRuntimeAdapter', () => {
     });
     const execution = new AiCatalogExecutionResolver(db, secretService);
     await expect(execution.resolveProviderExecutionConfig('alpha')).rejects.toMatchObject({
-      code: 'PLATFORM_AI_PROVIDER_DISABLED',
+      code: 'PLATFORM_NOT_FOUND',
     });
   });
 

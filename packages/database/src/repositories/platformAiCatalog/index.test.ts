@@ -168,7 +168,7 @@ describe('PlatformAiCatalogRepository', () => {
     });
   });
 
-  it('hard-deletes a provider with its models, revisions, and cascaded secrets', async () => {
+  it('hard-deletes a provider with its models, revision history, and cascaded secrets', async () => {
     const alpha = await repository.createProvider({ displayName: 'Alpha', providerKey: 'alpha' });
     const beta = await repository.createProvider({ displayName: 'Beta', providerKey: 'beta' });
     await repository.createModel({ modelKey: 'chat', providerId: alpha.id });
@@ -200,11 +200,12 @@ describe('PlatformAiCatalogRepository', () => {
     ]);
 
     expect(await repository.deleteProviderModels(alpha.id)).toBe(2);
-    // Revisions are immutable — hard-delete is a no-op that retains audit history.
-    expect(await repository.deleteProviderRevisions(alpha.id)).toBe(0);
+    // Revision rows are append-only, but a provider hard-delete purges its own history via
+    // the transaction-local opt-in GUC (migration 0012) — nothing of the provider survives.
+    expect(await repository.deleteProviderRevisions(alpha.id)).toBe(1);
     expect(await repository.deleteProvider(alpha.id)).toMatchObject({ id: alpha.id });
 
-    // Alpha provider/models/secrets are gone; revision history remains; Beta untouched.
+    // Everything belonging to Alpha is gone; Beta (including its revision) is untouched.
     expect(await repository.getProvider(alpha.id)).toBeUndefined();
     expect(await repository.listModels(alpha.id)).toHaveLength(0);
     expect(
@@ -218,9 +219,65 @@ describe('PlatformAiCatalogRepository', () => {
         .select()
         .from(platformResourceRevisions)
         .where(eq(platformResourceRevisions.resourceId, alpha.id)),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(await repository.getProvider(beta.id)).toMatchObject({ id: beta.id });
     expect(await repository.listModels(beta.id)).toHaveLength(1);
+    expect(
+      await serverDB
+        .select()
+        .from(platformResourceRevisions)
+        .where(eq(platformResourceRevisions.resourceId, beta.id)),
+    ).toHaveLength(1);
+  });
+
+  it('disarms the revision purge opt-in again once the purge statement is done', async () => {
+    // SET LOCAL survives RELEASE SAVEPOINT, so an un-restored opt-in would stay armed for the
+    // rest of the caller's transaction and let an unrelated revision DELETE slip past the
+    // trigger. The purge must leave the permission exactly as it found it.
+    const alpha = await repository.createProvider({ displayName: 'Alpha', providerKey: 'alpha' });
+    const payload = { models: [], provider: { providerKey: 'alpha' } };
+    await serverDB.insert(platformResourceRevisions).values([
+      {
+        checksum: checksumPayload(payload),
+        payload,
+        resourceId: alpha.id,
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        checksum: checksumPayload(payload),
+        id: 'rev-sibling-protected',
+        payload,
+        resourceId: 'unrelated-resource',
+        resourceType: 'settings',
+        revision: 1,
+        status: 'published',
+      },
+    ]);
+
+    let siblingDeleteError: unknown;
+    await serverDB.transaction(async (tx) => {
+      expect(await new PlatformAiCatalogRepository(tx).deleteProviderRevisions(alpha.id)).toBe(1);
+      // Savepoint so the rejected sibling DELETE does not abort the parent transaction —
+      // the purge itself must still commit.
+      try {
+        await tx.transaction(async (sibling) => {
+          await sibling
+            .delete(platformResourceRevisions)
+            .where(eq(platformResourceRevisions.id, 'rev-sibling-protected'));
+        });
+      } catch (error) {
+        siblingDeleteError = error;
+      }
+    });
+
+    const err = siblingDeleteError as (Error & { cause?: Error }) | undefined;
+    expect(`${err?.message ?? ''}\n${err?.cause?.message ?? ''}`).toMatch(/immutable/i);
+    // Purge committed; the unrelated revision survived because the opt-in was disarmed.
+    expect(
+      await serverDB.select({ id: platformResourceRevisions.id }).from(platformResourceRevisions),
+    ).toEqual([{ id: 'rev-sibling-protected' }]);
   });
 
   it('batch-loads providers and models in single-query helpers', async () => {

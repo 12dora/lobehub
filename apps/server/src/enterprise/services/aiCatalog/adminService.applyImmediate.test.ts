@@ -58,271 +58,155 @@ const createService = (connectionProbe: () => Promise<void> = async () => {}) =>
     connectionProbe,
   });
 
-describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
-  it('auto retests and publishes on revision 0 when credentials + enabled model exist', async () => {
-    const service = createService(async () => {});
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'First',
-      enabled: true,
-      providerKey: 'first-auto',
-      reason: 'create',
-      secret: { operation: 'replace', value: 'seed-key' },
-      settings: { sdkType: 'openai' },
-    });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    detail = await service.getDetail(created.id);
-    const result = await service.applyProviderImmediate('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      mode: 'update',
-      reason: 'nudge publish',
-    });
-    expect(result.published).toBe(true);
-    expect(result.revision).toBeGreaterThan(0);
-  });
-
-  it('publishes via applyImmediate when credentials come only from ModelRuntime environment', async () => {
-    vi.stubEnv('OPENAI_API_KEY', 'environment-only-apply-key');
+describe('AiCatalogAdminService applyImmediate (unconditional publish)', () => {
+  it('publishes a create with zero models and no credentials, without probing', async () => {
     let probeCount = 0;
     const service = createService(async () => {
       probeCount += 1;
     });
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'Env apply',
-      enabled: true,
-      providerKey: 'env-apply',
-      reason: 'create',
-      // No stored secret — OPENAI_API_KEY satisfies readiness via environment fallback.
-      settings: { sdkType: 'openai' },
-    });
-    let detail = await service.getDetail(created.id);
-    expect(detail.draft.secret.configured).toBe(false);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    detail = await service.getDetail(created.id);
     const result = await service.applyProviderImmediate('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      mode: 'update',
-      reason: 'nudge env publish',
+      displayName: 'Bare',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'bare-create',
+      reason: 'create and go live',
+      settings: { sdkType: 'openai' },
+      source: 'custom',
     });
-    expect(result.published).toBe(true);
-    expect(result.revision).toBeGreaterThan(0);
-    // Success path sets publishError: null (not undefined) — see tryPublishImmediate.
-    expect(result.publishError).toBeNull();
-    expect(probeCount).toBe(1);
+    // Readiness is no longer a publish gate: no models, no secret, no connection test.
+    expect(result.revision).toBe(1);
+    expect(result.draft.models).toEqual([]);
+    expect(result.draft.secret.configured).toBe(false);
+    expect(result.auditId).toEqual(expect.any(String));
+    expect(probeCount).toBe(0);
+
+    const detail = await service.getDetail(result.draft.id);
+    expect(detail.baseRevision).toBe(1);
+    expect(detail.draft.status).toBe('published');
+    // The revision is live; the public catalog projection stays empty until a model is
+    // enabled (nothing to expose), which is exactly the user-side provider behaviour.
+    expect(detail.published).toBeNull();
   });
 
-  it('soft-returns published:false when connection test fails on first publish', async () => {
-    const service = createService(async () => {
-      throw new Error('network down');
-    });
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'Fail test',
-      enabled: true,
-      providerKey: 'fail-test',
-      reason: 'create',
-      secret: { operation: 'replace', value: 'seed-key' },
-      settings: { sdkType: 'openai' },
-    });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    detail = await service.getDetail(created.id);
-    const result = await service.applyProviderImmediate('admin', {
-      displayName: 'Still draft',
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      mode: 'update',
-      reason: 'try publish',
-    });
-    // update mode on revision 0 soft-fails via tryPublish when baseRevision stays 0
-    // applyProviderImmediate rethrows for update when baseRevision > 0 only
-    expect(result.published).toBe(false);
-    // Stable machine-readable code (not free-form probe prose).
-    expect(result.publishError).toBe('connection_test_failed');
-    expect(result.revision).toBe(0);
-  });
-
-  it('does not auto retest cosmetic edits when revision > 0 (allowStaleConnectionTest path)', async () => {
+  it('republishes an update without re-running the connection test', async () => {
     let probeCount = 0;
     const service = createService(async () => {
       probeCount += 1;
     });
-    // Seed published provider
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
+    const created = await service.applyProviderImmediate('admin', {
       displayName: 'Live',
       enabled: true,
-      providerKey: 'live-p',
+      mode: 'create',
+      providerKey: 'live-republish',
       reason: 'create',
       secret: { operation: 'replace', value: 'seed-key' },
       settings: { sdkType: 'openai' },
+      source: 'custom',
     });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    await service.testProvider('admin', { id: created.id, reason: 'prime' });
-    detail = await service.getDetail(created.id);
-    await service.publishProvider('admin', {
+    const detail = await service.getDetail(created.draft.id);
+    // Connectivity-sensitive change (secret rotation) — still no probe, still publishes.
+    const renamed = await service.applyProviderImmediate('admin', {
+      displayName: 'Live Renamed',
       expectedDraftToken: detail.draftToken,
       expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'first publish',
-    });
-    probeCount = 0;
-    detail = await service.getDetail(created.id);
-    await service.applyProviderImmediate('admin', {
-      displayName: 'Renamed live',
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
+      id: created.draft.id,
       mode: 'update',
-      reason: 'rename',
+      reason: 'rotate + rename',
+      secret: { operation: 'replace', value: 'seed-key-v2' },
     });
+    expect(renamed.draft.displayName).toBe('Live Renamed');
+    expect(renamed.revision).toBe(created.revision + 1);
     expect(probeCount).toBe(0);
   });
 
-  it('transport config changes (apiStyle/headers/timeoutMs) require retest', async () => {
-    let probeCount = 0;
-    const service = createService(async () => {
-      probeCount += 1;
-    });
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      config: { endpoint: 'https://api.example.test/v1' },
-      displayName: 'Transport',
+  it('throws instead of leaving an unpublished draft when publish validation fails', async () => {
+    const service = createService(async () => {});
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'Throwing',
       enabled: true,
-      providerKey: 'transport-cfg',
+      mode: 'create',
+      providerKey: 'throw-pub',
       reason: 'create',
       secret: { operation: 'replace', value: 'seed-key' },
-      settings: { sdkType: 'openai', timeoutMs: 30_000 },
+      settings: { sdkType: 'openai' },
+      source: 'custom',
     });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    await service.testProvider('admin', { id: created.id, reason: 'prime' });
-    detail = await service.getDetail(created.id);
-    await service.publishProvider('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'first publish',
-    });
-    probeCount = 0;
-    detail = await service.getDetail(created.id);
-    await service.updateProviderDraft('admin', {
-      config: {
-        endpoint: 'https://api.example.test/v1',
-        headers: { 'X-Custom': '1' },
-      },
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'add headers',
-      settings: { sdkType: 'openai', timeoutMs: 30_000 },
-    });
-    detail = await service.getDetail(created.id);
+    const detail = await service.getDetail(created.draft.id);
     await expect(
-      service.publishProvider('admin', {
-        allowStaleConnectionTest: true,
+      service.applyProviderImmediate('admin', {
+        config: { endpoint: 'not-a-valid-url' },
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,
-        id: created.id,
-        reason: 'publish headers without retest',
+        id: created.draft.id,
+        mode: 'update',
+        reason: 'invalid endpoint must throw',
       }),
     ).rejects.toBeInstanceOf(AiCatalogValidationError);
-    expect(probeCount).toBe(0);
-
-    detail = await service.getDetail(created.id);
-    const applied = await service.applyProviderImmediate('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      mode: 'update',
-      reason: 'apply after headers',
-    });
-    expect(probeCount).toBeGreaterThan(0);
-    expect(applied.published).toBe(true);
+    // Atomic: neither the draft write nor the pointer moved.
+    const unchanged = await service.getDetail(created.draft.id);
+    expect(unchanged.baseRevision).toBe(created.revision);
+    expect(unchanged.draft.config).toEqual({});
+    expect(unchanged.draft.status).toBe('published');
   });
 
-  it('failed connection probe blocks publish after invalid credentials', async () => {
-    const service = createService(async () => {
-      throw new Error('invalid_api_key');
-    });
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'Bad key',
-      enabled: true,
-      providerKey: 'bad-key-probe',
-      reason: 'create',
-      secret: { operation: 'replace', value: 'bad-secret' },
-      settings: { sdkType: 'openai' },
-    });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    const test = await service.testProvider('admin', { id: created.id, reason: 'probe' });
-    expect(test.status).toBe('failure');
-    detail = await service.getDetail(created.id);
+  it('throws on a create whose first publish is invalid (no soft-fail draft)', async () => {
+    const service = createService(async () => {});
     await expect(
-      service.publishProvider('admin', {
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: created.id,
-        reason: 'publish with failed probe',
+      service.applyProviderImmediate('admin', {
+        config: { endpoint: 'ftp://example.test' },
+        displayName: 'Bad endpoint',
+        enabled: true,
+        mode: 'create',
+        providerKey: 'bad-endpoint-create',
+        reason: 'create with unusable endpoint',
+        settings: { sdkType: 'openai' },
+        source: 'custom',
       }),
     ).rejects.toBeInstanceOf(AiCatalogValidationError);
+    // Atomic: the draft write rolled back with the failed publish, so a retry cannot
+    // collide with a half-created provider.
+    expect(
+      await db
+        .select()
+        .from(platformAiProviders)
+        .where(eq(platformAiProviders.providerKey, 'bad-endpoint-create')),
+    ).toEqual([]);
+  });
+
+  it('rolls the model mutation back when the parent publish fails', async () => {
+    const service = createService(async () => {});
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'Model atomic',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'model-atomic',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+      source: 'custom',
+    });
+    // Poison the provider so publish validation fails AFTER the model DML has run.
+    await db
+      .update(platformAiProviders)
+      .set({ config: { endpoint: 'not-a-valid-url' } })
+      .where(eq(platformAiProviders.id, created.draft.id));
+
+    const detail = await service.getDetail(created.draft.id);
+    await expect(
+      service.applyModelImmediate('admin', {
+        enabled: true,
+        expectedDraftToken: detail.draftToken,
+        modelKey: 'rolled-back',
+        operation: 'create',
+        providerId: created.draft.id,
+        reason: 'model create with failing publish',
+        type: 'chat',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+
+    const after = await service.getDetail(created.draft.id);
+    expect(after.draft.models).toEqual([]);
+    expect(after.baseRevision).toBe(created.revision);
   });
 
   it('hard-delete requires matching expectedRevision and expectedDraftToken', async () => {
@@ -367,188 +251,101 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     });
   });
 
-  it('refuses hard-delete of ever-published providers so runtime keeps a BYOK tombstone', async () => {
+  it('hard-deletes a published provider completely and hands it back to BYOK', async () => {
     const secretService = new PlatformSecretService({ keyProvider });
     const service = new AiCatalogAdminService(db, secretService, {
       connectionProbe: async () => {},
     });
-    const providerKey = 'published-no-hard-delete';
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'Published tombstone',
+    const providerKey = 'published-hard-delete';
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'Published then removed',
       enabled: true,
+      mode: 'create',
       providerKey,
       reason: 'create',
       secret: { operation: 'replace', value: 'seed-key' },
       settings: { sdkType: 'openai' },
+      source: 'custom',
     });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
+    const providerId = created.draft.id;
+    let detail = await service.getDetail(providerId);
+    await service.applyModelImmediate('admin', {
       enabled: true,
       expectedDraftToken: detail.draftToken,
       modelKey: 'chat',
-      providerId: created.id,
+      operation: 'create',
+      providerId,
       reason: 'model',
       type: 'chat',
     });
-    await service.testProvider('admin', { id: created.id, reason: 'test' });
-    detail = await service.getDetail(created.id);
-    await service.publishProvider('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'publish',
-    });
-    detail = await service.getDetail(created.id);
-    expect(detail.draft.revision).toBeGreaterThan(0);
+    detail = await service.getDetail(providerId);
+    expect(detail.baseRevision).toBeGreaterThan(0);
 
-    // Archive/disable is the supported retirement path; hard-delete must still be rejected.
-    await service.archiveProvider('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'archive managed tombstone',
-    });
-    detail = await service.getDetail(created.id);
-    expect(detail.draft.status).toBe('archived');
-    expect(detail.draft.revision).toBeGreaterThan(0);
+    // An operation already in flight pinned this exact revision.
+    const [pinned] = await db
+      .select()
+      .from(platformResourceRevisions)
+      .where(eq(platformResourceRevisions.resourceId, providerId));
+    const pinnedRef = {
+      modelKey: 'chat',
+      providerChecksum: pinned.checksum!,
+      providerKey,
+      providerRevision: pinned.revision,
+    };
 
     await expect(
       service.deleteProvider('admin', {
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,
-        id: created.id,
-        reason: 'hard delete published',
+        id: providerId,
+        reason: 'remove the provider for good',
       }),
-    ).rejects.toMatchObject({
-      issues: expect.arrayContaining([
-        expect.stringMatching(/cannot be hard-deleted|archive or disable/i),
-      ]),
-    });
-    await expect(
-      service.deleteProvider('admin', {
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: created.id,
-        reason: 'hard delete published',
-      }),
-    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+    ).resolves.toEqual({ deleted: true });
 
-    // Provider row remains so the fail-closed tombstone survives.
-    await expect(service.getDetail(created.id)).resolves.toMatchObject({
-      draft: { id: created.id, providerKey, revision: expect.any(Number), status: 'archived' },
-    });
-    expect((await service.getDetail(created.id)).draft.revision).toBeGreaterThan(0);
+    // Nothing of the provider survives — not even its immutable revision history.
+    expect(
+      await db.select().from(platformAiProviders).where(eq(platformAiProviders.id, providerId)),
+    ).toEqual([]);
+    expect(
+      await db.select().from(platformAiModels).where(eq(platformAiModels.providerId, providerId)),
+    ).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(platformAiProviderSecrets)
+        .where(eq(platformAiProviderSecrets.providerId, providerId)),
+    ).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(platformResourceRevisions)
+        .where(eq(platformResourceRevisions.resourceId, providerId)),
+    ).toEqual([]);
 
-    // Runtime must fail closed with PROVIDER_DISABLED — never PLATFORM_NOT_FOUND (BYOK signal).
+    // Runtime: as if never platform-managed → NOT_FOUND, which is what the ModelRuntime
+    // bridge treats as "fall back to the user's own BYOK configuration".
     clearAiCatalogRuntimeCache();
     const execution = new AiCatalogExecutionResolver(db, secretService);
     await expect(execution.resolveProviderExecutionConfig(providerKey)).rejects.toMatchObject({
-      code: 'PLATFORM_AI_PROVIDER_DISABLED',
-    });
-    await expect(execution.resolveProviderExecutionConfig(providerKey)).rejects.not.toMatchObject({
       code: 'PLATFORM_NOT_FOUND',
     });
-  });
+    const runtime = await new AiCatalogRuntimeAdapter(db).resolve({
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+      upstreamState: getEmptyAiProviderRuntimeState(),
+    });
+    expect(runtime.enabledAiProviders.map((provider) => provider.id)).not.toContain(providerKey);
 
-  it('secret rotation requires retest before publishing (connectivity-sensitive)', async () => {
-    let probeCount = 0;
-    const service = createService(async () => {
-      probeCount += 1;
-    });
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'Rotate',
-      enabled: true,
-      providerKey: 'rotate-secret',
-      reason: 'create',
-      secret: { operation: 'replace', value: 'seed-key-v1' },
-      settings: { sdkType: 'openai' },
-    });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    await service.testProvider('admin', { id: created.id, reason: 'prime' });
-    detail = await service.getDetail(created.id);
-    await service.publishProvider('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'first publish',
-    });
-    probeCount = 0;
-    detail = await service.getDetail(created.id);
-    // Direct publish without retest must fail validation for secret rotation.
-    await service.updateProviderDraft('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'rotate secret',
-      secret: { operation: 'replace', value: 'seed-key-v2-invalid' },
-    });
-    detail = await service.getDetail(created.id);
+    // In-flight pinned operations fail closed with a labelled provider error (never an
+    // opaque internal error, and never silently re-pointed at another configuration).
     await expect(
-      service.publishProvider('admin', {
-        allowStaleConnectionTest: true,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: created.id,
-        reason: 'publish rotated secret without retest',
-      }),
-    ).rejects.toBeInstanceOf(AiCatalogValidationError);
-    expect(probeCount).toBe(0);
-
-    // applyImmediate must auto-retest then publish.
-    detail = await service.getDetail(created.id);
-    const applied = await service.applyProviderImmediate('admin', {
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      mode: 'update',
-      reason: 'apply after rotate',
+      execution.resolveProviderExecutionConfigAtRevision(pinnedRef),
+    ).rejects.toMatchObject({
+      code: 'PLATFORM_AI_PROVIDER_DISABLED',
+      errorType: 'PLATFORM_AI_PROVIDER_DISABLED',
     });
-    expect(probeCount).toBeGreaterThan(0);
-    expect(applied.published).toBe(true);
   });
 
-  it('publishNow retests revision 0 and publishes', async () => {
-    const service = createService(async () => {});
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'Now',
-      enabled: true,
-      providerKey: 'publish-now',
-      reason: 'create',
-      secret: { operation: 'replace', value: 'seed-key' },
-      settings: { sdkType: 'openai' },
-    });
-    const detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
-      type: 'chat',
-    });
-    const result = await service.publishNow('admin', {
-      id: created.id,
-      reason: 'banner retry',
-    });
-    expect(result.published).toBe(true);
-    expect(result.revision).toBeGreaterThan(0);
-  });
-
-  it('applyModelImmediate create then publishes with auto retest on revision 0', async () => {
+  it('applyModelImmediate create publishes the parent provider immediately', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
       source: 'custom',
@@ -570,7 +367,6 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
       reason: 'add model',
       type: 'chat',
     });
-    expect(result.published).toBe(true);
     expect(result.revision).toBeGreaterThan(0);
   });
 
@@ -815,7 +611,6 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
       mode: 'update',
       reason: 'global disable',
     });
-    expect(off.published).toBe(true);
     expect(off.draft.enabled).toBe(false);
     expect(off.revision).toBeGreaterThan(first.revision);
 
@@ -838,7 +633,6 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
       mode: 'update',
       reason: 're-enable',
     });
-    expect(on.published).toBe(true);
     expect(on.draft.enabled).toBe(true);
 
     clearAiCatalogRuntimeCache();
@@ -849,77 +643,73 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     expect(runtimeOn.enabledAiProviders.map((p) => p.id)).toContain('disable-pub');
   });
 
-  it('revision 0 disable publish is still rejected (first publish must be enabled)', async () => {
+  it('resurrects an archived builtin provider through a later applyImmediate update', async () => {
+    // Settings-page "delete" is a hard delete; archive survives only as a server-side
+    // retirement path. Either way, re-enabling the same builtin providerKey must republish it
+    // and put it back into the runtime snapshot.
+    const providerKey = 'openai';
     const service = createService(async () => {});
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      displayName: 'Never Live',
-      enabled: false,
-      providerKey: 'rev0-off',
-      reason: 'create disabled',
-      secret: { operation: 'replace', value: 'seed-key' },
-      settings: { sdkType: 'openai' },
-    });
-    const detail = await service.getDetail(created.id);
-    const result = await service.applyProviderImmediate('admin', {
-      enabled: false,
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: created.id,
-      mode: 'update',
-      reason: 'cannot first-publish disabled',
-    });
-    // Soft path on revision 0: draft kept, not published.
-    expect(result.published).toBe(false);
-    expect(result.revision).toBe(0);
-  });
-
-  /**
-   * R2 "update failure visibility" — rewritten after F1 semantic change:
-   * disable is now a valid publish; use invalid endpoint on a still-enabled
-   * published provider so publish validation still throws (not soft-return).
-   */
-  it('update on published provider throws when publish validation fails (not soft-return)', async () => {
-    const service = createService(async () => {});
-    const created = await service.createProviderDraft('admin', {
-      source: 'custom',
-      checkModel: 'chat',
-      displayName: 'Throwing',
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'OpenAI',
       enabled: true,
-      providerKey: 'throw-pub',
-      reason: 'create',
-      secret: { operation: 'replace', value: 'seed-key' },
-      settings: { sdkType: 'openai' },
+      mode: 'create',
+      providerKey,
+      reason: 'enable builtin provider',
+      secret: { operation: 'replace', value: { apiKey: 'builtin-seed-key' } },
+      source: 'builtin',
     });
-    let detail = await service.getDetail(created.id);
-    await service.createModel('admin', {
+    let detail = await service.getDetail(created.draft.id);
+    await service.applyModelImmediate('admin', {
       enabled: true,
       expectedDraftToken: detail.draftToken,
-      modelKey: 'chat',
-      providerId: created.id,
-      reason: 'model',
+      modelKey: 'gpt-test',
+      operation: 'create',
+      providerId: created.draft.id,
+      reason: 'add model',
       type: 'chat',
     });
-    await service.testProvider('admin', { id: created.id, reason: 'prime' });
-    detail = await service.getDetail(created.id);
-    await service.publishProvider('admin', {
+
+    const runtimeProviders = async () => {
+      clearAiCatalogRuntimeCache();
+      const runtime = await new AiCatalogRuntimeAdapter(db).resolve({
+        flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+        upstreamState: getEmptyAiProviderRuntimeState(),
+      });
+      return runtime.enabledAiProviders.map((provider) => provider.id);
+    };
+    expect(await runtimeProviders()).toContain(providerKey);
+
+    detail = await service.getDetail(created.draft.id);
+    await service.archiveProvider('admin', {
       expectedDraftToken: detail.draftToken,
       expectedRevision: detail.baseRevision,
-      id: created.id,
-      reason: 'first publish',
+      id: created.draft.id,
+      reason: 'remove from settings page',
     });
-    detail = await service.getDetail(created.id);
+    expect((await service.getDetail(created.draft.id)).draft.status).toBe('archived');
+    expect(await runtimeProviders()).not.toContain(providerKey);
+    clearAiCatalogRuntimeCache();
+    // Platform takeover applies only while enabled: an archived provider reports NOT_FOUND
+    // so ModelRuntime falls back to the user's own BYOK configuration.
     await expect(
-      service.applyProviderImmediate('admin', {
-        config: { endpoint: 'not-a-valid-url' },
-        enabled: true,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.baseRevision,
-        id: created.id,
-        mode: 'update',
-        reason: 'invalid endpoint must throw',
-      }),
-    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+      new AiCatalogExecutionResolver(
+        db,
+        new PlatformSecretService({ keyProvider }),
+      ).resolveProviderExecutionConfig(providerKey),
+    ).rejects.toMatchObject({ code: 'PLATFORM_NOT_FOUND' });
+
+    detail = await service.getDetail(created.draft.id);
+    const resurrected = await service.applyProviderImmediate('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.draft.id,
+      mode: 'update',
+      reason: 're-enable archived builtin',
+    });
+    expect(resurrected.draft.status).toBe('published');
+    expect(resurrected.revision).toBeGreaterThan(detail.baseRevision);
+    expect(await runtimeProviders()).toContain(providerKey);
   });
 
   it('secret merge keeps unsubmitted apiKey when only baseURL-equivalent fields are absent', async () => {

@@ -517,6 +517,7 @@ export const adminAiProviderDeleteInputSchema = z
 
 export const adminAiProviderDeleteOutputSchema = z.object({ deleted: z.literal(true) }).strict();
 
+/** Server-side rollback capability (no admin procedure exposes it). */
 export const adminAiProviderRollbackInputSchema = adminAiProviderPublishInputSchema
   .extend({ targetRevision: z.number().int().positive() })
   .strict();
@@ -536,6 +537,11 @@ export const adminAiProviderRevisionHistoryInputSchema = z
   })
   .strict();
 
+/**
+ * Read-only publication history. Not part of the draft/publish workflow: the agent
+ * dependency editor reads the published revision `checksum` from here to pin a
+ * model dependency (exact-validated on publish).
+ */
 export const adminAiProviderRevisionHistoryOutputSchema = z
   .object({
     items: z.array(
@@ -553,8 +559,6 @@ export const adminAiProviderRevisionHistoryOutputSchema = z
     nextCursor: z.number().int().positive().nullable(),
   })
   .strict();
-
-export const adminAiProviderMutationOutputSchema = aiProviderDraftSchema;
 
 const modelDraftFieldsSchema = z
   .object({
@@ -639,42 +643,6 @@ export const adminAiModelListOutputSchema = z
   })
   .strict();
 
-export const adminAiModelCreateTargetListInputSchema = z
-  .object({
-    cursor: providerKeySchema.optional(),
-    limit: z.number().int().min(1).max(100).default(50),
-    query: z.string().trim().min(1).max(200).optional(),
-  })
-  .strict();
-
-export const adminAiModelCreateTargetListOutputSchema = z
-  .object({
-    items: z.array(
-      z
-        .object({
-          displayName: z.string().min(1),
-          id: z.string().min(1),
-          providerKey: providerKeySchema,
-        })
-        .strict(),
-    ),
-    nextCursor: providerKeySchema.nullable(),
-  })
-  .strict();
-
-export const adminAiModelDraftContextInputSchema = z
-  .object({ providerId: z.string().min(1) })
-  .strict();
-
-export const adminAiModelDraftContextOutputSchema = z
-  .object({
-    baseRevision: z.number().int().nonnegative(),
-    draftToken: z.string().length(64),
-    modelIds: z.array(z.string().min(1)),
-    providerId: z.string().min(1),
-  })
-  .strict();
-
 export const adminAiModelDependentsOutputSchema = z
   .object({
     items: z.array(
@@ -690,34 +658,16 @@ export const adminAiModelDependentsOutputSchema = z
   })
   .strict();
 
-export const adminAiModelMutationOutputSchema = aiModelDraftSchema;
-
-export const adminAiModelDeleteOutputSchema = z.object({ deleted: z.literal(true) }).strict();
-
-export const adminAiModelReorderOutputSchema = z
-  .object({ draftToken: z.string().length(64), updated: z.number().int().nonnegative() })
-  .strict();
-
-/** Draft mutation + immediate publish (admin UI parity; single rate-limit unit). */
+/**
+ * Draft write + unconditional publish (single rate-limit unit).
+ * Resolving at all means the change is live: publish failures throw instead of returning
+ * a "saved but not published" outcome, so there is no published/publishError pair.
+ */
 export const adminAiProviderApplyImmediateOutputSchema = z
   .object({
     auditId: z.string().min(1).nullable(),
     draft: aiProviderDraftSchema,
-    /**
-     * false when draft was written but publish validation blocked first publish
-     * (e.g. create without models / connection test). Client must not treat as silent success for live catalog.
-     */
-    published: z.boolean(),
-    /** Structured human-safe reason when published is false (never secrets). */
-    publishError: z.string().max(500).nullable().optional(),
     revision: z.number().int().nonnegative(),
-  })
-  .strict();
-
-export const adminAiProviderPublishNowInputSchema = z
-  .object({
-    id: z.string().min(1),
-    reason: z.string().trim().min(1).max(2000),
   })
   .strict();
 
@@ -726,12 +676,11 @@ export const adminAiProviderApplyImmediateInputSchema = z.discriminatedUnion('mo
   adminAiProviderUpdateDraftInputSchema.extend({ mode: z.literal('update') }),
 ]);
 
+/** Model DML + unconditional publish of the parent provider (failures throw). */
 export const adminAiModelApplyImmediateOutputSchema = z
   .object({
     auditId: z.string().min(1).nullable(),
     draftToken: z.string().length(64),
-    published: z.boolean(),
-    publishError: z.string().max(500).nullable().optional(),
     revision: z.number().int().nonnegative(),
   })
   .strict();

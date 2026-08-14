@@ -140,54 +140,36 @@ const callerFor = async (
 };
 
 describe('admin AI catalog publication, models, and delete lifecycle', () => {
-  /** Seed a first-publishable provider: enabled + model + fresh connection test row. */
-  const seedPublishableProvider = async (providerKey: string) => {
+  /** Seed a live provider through the only write path: applyImmediate (create + publish). */
+  const seedPublishedProvider = async (providerKey: string) => {
     const caller = await callerFor(ids.aiAdmin);
     const credential = `seed-credential-${providerKey}`;
-    const provider = await caller.aiProviders.createDraft({
+    const created = await caller.aiProviders.applyImmediate({
       checkModel: 'chat',
       displayName: providerKey,
       enabled: true,
+      mode: 'create',
       providerKey,
-      reason: 'seed draft',
+      reason: 'seed provider',
       secret: { operation: 'replace', value: credential },
       settings: { sdkType: 'openai' },
     });
-    let detail = await caller.aiProviders.get({ id: provider.id });
-    await caller.aiModels.create({
+    expect(created.revision).toBeGreaterThan(0);
+    const detail = await caller.aiProviders.get({ id: created.draft.id });
+    const published = await caller.aiModels.applyImmediate({
       enabled: true,
       expectedDraftToken: detail.draftToken,
       modelKey: 'chat',
-      providerId: provider.id,
+      operation: 'create',
+      providerId: created.draft.id,
       reason: 'seed model',
       type: 'chat',
     });
-    detail = await caller.aiProviders.get({ id: provider.id });
-    // Mark connection test success bound to the current draft (no live network in unit tests).
-    await db
-      .update(platformAiProviders)
-      .set({
-        connectionTestErrorCategory: null,
-        connectionTestLatencyMs: 12,
-        connectionTestSanitizedMessage: 'ok',
-        connectionTestStatus: 'success',
-        connectionTestedAt: new Date(),
-        connectionTestedDraftToken: detail.draftToken,
-        connectionTestedRevision: detail.baseRevision,
-      })
-      .where(eq(platformAiProviders.id, provider.id));
-    detail = await caller.aiProviders.get({ id: provider.id });
-    const published = await caller.aiProviders.publish({
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: provider.id,
-      reason: 'seed publish',
-    });
-    return { caller, credential, providerId: provider.id, published };
+    return { caller, credential, providerId: created.draft.id, published };
   };
 
   it('applyImmediate update republishes an already-published provider', async () => {
-    const { caller, credential, providerId } = await seedPublishableProvider('immediate-p');
+    const { caller, credential, providerId } = await seedPublishedProvider('immediate-p');
     const detail = await caller.aiProviders.get({ id: providerId });
     const updated = await caller.aiProviders.applyImmediate({
       displayName: 'Immediate Renamed',
@@ -198,25 +180,28 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
       reason: 'rename immediately',
     });
     expect(updated.draft.displayName).toBe('Immediate Renamed');
-    expect(updated.published).toBe(true);
-    expect(updated.revision).toBeGreaterThan(0);
+    expect(updated.revision).toBeGreaterThan(detail.baseRevision);
     expect(JSON.stringify(updated)).not.toContain(credential);
   });
 
-  it('applyImmediate create keeps draft when first publish is not yet valid', async () => {
+  it('applyImmediate create publishes immediately with no models and no connection test', async () => {
     const caller = await callerFor(ids.aiAdmin);
     const result = await caller.aiProviders.applyImmediate({
-      displayName: 'Draft Only',
+      displayName: 'Live On Create',
+      enabled: true,
       mode: 'create',
-      providerKey: 'draft-only-p',
-      reason: 'create without models/test',
+      providerKey: 'live-on-create',
+      reason: 'create goes live',
       secret: { operation: 'replace', value: 'not-a-real-secret-value' },
       settings: { sdkType: 'openai' },
     });
-    expect(result.published).toBe(false);
-    expect(result.draft.providerKey).toBe('draft-only-p');
-    expect(result.revision).toBe(0);
+    expect(result.draft.providerKey).toBe('live-on-create');
+    expect(result.draft.status).toBe('published');
+    expect(result.revision).toBe(1);
     expect(JSON.stringify(result)).not.toContain('not-a-real-secret-value');
+    // The output carries no publish outcome any more — resolving means it is live.
+    expect(result).not.toHaveProperty('published');
+    expect(result).not.toHaveProperty('publishError');
   });
 
   it('applyImmediate denies callers without publish permission', async () => {
@@ -232,7 +217,7 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
   });
 
   it('applyImmediate rejects stale reauth before mutating', async () => {
-    const { providerId } = await seedPublishableProvider('reauth-gate');
+    const { providerId } = await seedPublishedProvider('reauth-gate');
     const fresh = await callerFor(ids.aiAdmin);
     const detail = await fresh.aiProviders.get({ id: providerId });
     const stale = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
@@ -249,7 +234,7 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
   });
 
   it('aiModels.applyImmediate create/update/delete/reorder/batch on published provider', async () => {
-    const { caller, providerId } = await seedPublishableProvider('models-ops');
+    const { caller, providerId } = await seedPublishedProvider('models-ops');
     let detail = await caller.aiProviders.get({ id: providerId });
 
     const created = await caller.aiModels.applyImmediate({
@@ -261,7 +246,7 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
       reason: 'create model',
       type: 'chat',
     });
-    expect(created.published).toBe(true);
+    expect(created.revision).toBeGreaterThan(0);
     detail = await caller.aiProviders.get({ id: providerId });
     const extra = detail.draft.models.find((m) => m.modelKey === 'extra');
     expect(extra).toBeTruthy();
@@ -275,7 +260,7 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
       providerId,
       reason: 'rename model',
     });
-    expect(updated.published).toBe(true);
+    expect(updated.revision).toBeGreaterThan(0);
 
     detail = await caller.aiProviders.get({ id: providerId });
     const toggled = await caller.aiModels.applyImmediate({
@@ -286,7 +271,7 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
       providerId,
       reason: 'batch toggle',
     });
-    expect(toggled.published).toBe(true);
+    expect(toggled.revision).toBeGreaterThan(0);
 
     detail = await caller.aiProviders.get({ id: providerId });
     const reorderItems = detail.draft.models.map((m, sort) => ({ id: m.id, sort }));
@@ -297,7 +282,7 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
       providerId,
       reason: 'reorder',
     });
-    expect(reordered.published).toBe(true);
+    expect(reordered.revision).toBeGreaterThan(0);
 
     detail = await caller.aiProviders.get({ id: providerId });
     const deleted = await caller.aiModels.applyImmediate({
@@ -307,11 +292,11 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
       providerId,
       reason: 'delete model',
     });
-    expect(deleted.published).toBe(true);
+    expect(deleted.revision).toBeGreaterThan(0);
   });
 
   it('aiModels.applyImmediate denies model editor without publish permission', async () => {
-    const { providerId } = await seedPublishableProvider('models-deny');
+    const { providerId } = await seedPublishedProvider('models-deny');
     const detail = await (await callerFor(ids.aiAdmin)).aiProviders.get({ id: providerId });
     const modelEditor = await callerFor(ids.modelEditor);
     await expect(
@@ -325,14 +310,6 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
         type: 'chat',
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
-  });
-
-  it('publishNow requires reauth like other publish mutations', async () => {
-    const { providerId } = await seedPublishableProvider('publish-now-reauth');
-    const stale = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
-    await expect(
-      stale.aiProviders.publishNow({ id: providerId, reason: 'stale' }),
-    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
   });
 
   it('applyImmediate is rate-limited with ADMIN_RATE_LIMITED when window is exhausted', async () => {
@@ -369,24 +346,33 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
     }
   });
 
+  /**
+   * A never-published (revision 0) provider. applyImmediate always publishes, so this state
+   * only exists for legacy drafts written before the draft/publish workflow was removed.
+   */
   const seedDeletableProvider = async (providerKey: string) => {
     const caller = await callerFor(ids.aiAdmin);
-    const provider = await caller.aiProviders.createDraft({
-      displayName: providerKey,
+    const [provider] = await db
+      .insert(platformAiProviders)
+      .values({
+        displayName: providerKey,
+        enabled: true,
+        providerKey,
+        settings: { sdkType: 'openai' },
+      })
+      .returning();
+    await db.insert(platformAiModels).values({
       enabled: true,
-      providerKey,
-      reason: 'seed deletable draft',
-      secret: { operation: 'replace', value: `del-credential-${providerKey}` },
-      settings: { sdkType: 'openai' },
-    });
-    const detail = await caller.aiProviders.get({ id: provider.id });
-    await caller.aiModels.create({
-      enabled: true,
-      expectedDraftToken: detail.draftToken,
       modelKey: 'chat',
       providerId: provider.id,
-      reason: 'seed deletable model',
       type: 'chat',
+    });
+    await db.insert(platformAiProviderSecrets).values({
+      ciphertext: `ciphertext-${providerKey}`,
+      fingerprint: `sha256:${providerKey}`,
+      keyId: 'legacy',
+      keyVersion: 1,
+      providerId: provider.id,
     });
     return { caller, providerId: provider.id };
   };
@@ -436,12 +422,11 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
     ).toBe(true);
   });
 
-  it('refuses to hard-delete an ever-published provider (fail-closed tombstone stays)', async () => {
-    // Ever-published providers (revision > 0) keep a tombstone so runtime can distinguish
-    // deliberate removal from "never managed" and refuse BYOK fallback — hard delete is
-    // rejected; admins must archive/disable instead (guard added in 69b14e5349).
-    const { providerId } = await seedPublishableProvider('delete-published');
-    // Published provider owns at least one revision row.
+  it('hard-deletes an ever-published provider together with its revision history', async () => {
+    // Delete is a TRUE delete: an archived tombstone would leave a resource users can still
+    // be routed to, and history for something that no longer exists. Afterwards the provider
+    // is simply not platform-managed any more.
+    const { providerId } = await seedPublishedProvider('delete-published');
     const revisionsBefore = await revisionRows(providerId);
     expect(revisionsBefore.length).toBeGreaterThan(0);
 
@@ -454,11 +439,19 @@ describe('admin AI catalog publication, models, and delete lifecycle', () => {
         id: providerId,
         reason: 'remove published provider',
       }),
-    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    ).resolves.toEqual({ deleted: true });
 
-    // Nothing was deleted: provider row, models and immutable revision trail all remain.
-    expect(await providerRows(providerId)).toHaveLength(1);
-    expect(await revisionRows(providerId)).toHaveLength(revisionsBefore.length);
+    expect(await providerRows(providerId)).toHaveLength(0);
+    expect(await modelRows(providerId)).toHaveLength(0);
+    expect(await secretRows(providerId)).toHaveLength(0);
+    expect(await revisionRows(providerId)).toHaveLength(0);
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.some(
+        ({ action, result, targetId }) =>
+          action === 'admin.aiProviders.delete' && result === 'success' && targetId === providerId,
+      ),
+    ).toBe(true);
   });
 
   it('rejects a stale-reauth delete before mutating and records a denied audit', async () => {

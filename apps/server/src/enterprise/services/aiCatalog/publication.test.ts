@@ -195,13 +195,13 @@ describe('AiCatalog publication transaction', () => {
     });
   });
 
-  it('requires a successful connection test bound to the current draft', async () => {
+  it('publishes without any connection test and rebinds the probe to the new revision', async () => {
     const { service } = createService();
     const provider = await service.createProviderDraft('admin', {
       checkModel: 'chat',
-      displayName: 'Connection gated',
+      displayName: 'Connection ungated',
       enabled: true,
-      providerKey: 'connection-gated',
+      providerKey: 'connection-ungated',
       reason: 'create',
       secret: { operation: 'replace', value: 'fake-key' },
       source: 'custom',
@@ -215,6 +215,8 @@ describe('AiCatalog publication transaction', () => {
       reason: 'model',
     });
     detail = await service.getDetail(provider.id);
+    // Never probed: readiness is not a publish gate.
+    expect(detail.draft.connectionTest).toBeNull();
     await expect(
       service.publishProvider('admin', {
         expectedDraftToken: detail.draftToken,
@@ -222,35 +224,21 @@ describe('AiCatalog publication transaction', () => {
         id: provider.id,
         reason: 'untested publish',
       }),
-    ).rejects.toMatchObject({
-      issues: expect.arrayContaining([
-        'Current provider draft must pass connection testing before publish',
-      ]),
-    });
+    ).resolves.toMatchObject({ revision: 1 });
 
+    // A stale probe result is equally irrelevant.
     await service.testProvider('admin', { id: provider.id, reason: 'test' });
     detail = await service.getDetail(provider.id);
     await service.updateModel('admin', {
       displayName: 'changed after test',
       expectedDraftToken: detail.draftToken,
-      expectedRevision: 0,
+      expectedRevision: 1,
       id: model.id,
       providerId: provider.id,
       reason: 'mutate',
     });
     detail = await service.getDetail(provider.id);
     expect(detail.draft.connectionTest?.stale).toBe(true);
-    await expect(
-      service.publishProvider('admin', {
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: 0,
-        id: provider.id,
-        reason: 'stale test publish',
-      }),
-    ).rejects.toBeInstanceOf(AiCatalogValidationError);
-
-    await service.testProvider('admin', { id: provider.id, reason: 'retest' });
-    detail = await service.getDetail(provider.id);
     await db
       .update(platformAiProviderSecrets)
       .set({ keyId: null })
@@ -258,29 +246,115 @@ describe('AiCatalog publication transaction', () => {
     await expect(
       service.publishProvider('admin', {
         expectedDraftToken: detail.draftToken,
-        expectedRevision: 0,
+        expectedRevision: 1,
         id: provider.id,
-        reason: 'tested publish',
+        reason: 'stale test publish',
       }),
-    ).resolves.toMatchObject({ revision: 1 });
+    ).resolves.toMatchObject({ revision: 2 });
     const [materialized] = await db
       .select()
       .from(platformAiProviders)
       .where(eq(platformAiProviders.id, provider.id));
     expect(materialized.secretKeyId).toBe('publish-test');
+    // Publish rebinds the successful probe to the freshly published revision.
     expect((await service.getDetail(provider.id)).draft.connectionTest).toMatchObject({
       stale: false,
       status: 'success',
-      testedRevision: 1,
+      testedRevision: 2,
     });
   });
 
-  it('validation failure leaves the current published revision unchanged', async () => {
+  it('security validation failure leaves the current published revision unchanged', async () => {
     const { service } = createService();
     const provider = await service.createProviderDraft('admin', {
       displayName: 'Invalid',
       enabled: true,
+      fetchOnClient: true,
       providerKey: 'invalid',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'fake-key' },
+      source: 'custom',
+    });
+    const detail = await service.getDetail(provider.id);
+    // A credential-bearing provider must never delegate the request to the browser.
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'must fail on fetchOnClient with a secret',
+      }),
+    ).rejects.toMatchObject({
+      issues: expect.arrayContaining(['Secret-configured providers must disable fetchOnClient']),
+    });
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect((await service.getDetail(provider.id)).baseRevision).toBe(0);
+  });
+
+  it('fires invalidation only after the applyImmediate transaction commits', async () => {
+    // Late failure inside the apply transaction: the publish savepoint already committed, so
+    // an eagerly-fired event would advertise a revision that the rollback then erases.
+    const failing = createService({
+      afterApplyPublish: async () => {
+        throw new Error('outer transaction fails after publish');
+      },
+    });
+    await expect(
+      failing.service.applyProviderImmediate('admin', {
+        displayName: 'Never announced',
+        enabled: true,
+        mode: 'create',
+        providerKey: 'never-announced',
+        reason: 'create',
+        source: 'custom',
+      }),
+    ).rejects.toThrow('outer transaction fails after publish');
+    expect(failing.invalidation.events).toEqual([]);
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect(await db.select().from(platformAiProviders)).toHaveLength(0);
+
+    const { invalidation, service } = createService();
+    const created = await service.applyProviderImmediate('admin', {
+      displayName: 'Announced once',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'announced-once',
+      reason: 'create',
+      source: 'custom',
+    });
+    expect(created.revision).toBe(1);
+    expect(invalidation.events).toHaveLength(1);
+    expect(invalidation.events[0]).toMatchObject({ resourceType: 'provider', revision: 1 });
+  });
+
+  it('publishes a provider with no models and no credentials at all', async () => {
+    const { service } = createService();
+    const provider = await service.createProviderDraft('admin', {
+      displayName: 'Bare',
+      enabled: true,
+      providerKey: 'bare-publish',
+      reason: 'create',
+      source: 'custom',
+    });
+    const detail = await service.getDetail(provider.id);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'publish an empty provider',
+      }),
+    ).resolves.toMatchObject({ revision: 1 });
+    // Live revision, but nothing to expose publicly until a model is enabled.
+    expect((await new AiCatalogReadService(db).getPublished()).providers).toEqual([]);
+  });
+
+  it('publishes a disabled provider so a toggle-off persists site-wide', async () => {
+    const { service } = createService();
+    const provider = await service.createProviderDraft('admin', {
+      displayName: 'Never enabled',
+      enabled: false,
+      providerKey: 'first-publish-disabled',
       reason: 'create',
       secret: { operation: 'replace', value: 'fake-key' },
       source: 'custom',
@@ -291,11 +365,13 @@ describe('AiCatalog publication transaction', () => {
         expectedDraftToken: detail.draftToken,
         expectedRevision: 0,
         id: provider.id,
-        reason: 'must fail without models',
+        reason: 'first publish while disabled',
       }),
-    ).rejects.toBeInstanceOf(AiCatalogValidationError);
-    expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
-    expect((await service.getDetail(provider.id)).baseRevision).toBe(0);
+    ).resolves.toMatchObject({ revision: 1 });
+    expect((await service.getDetail(provider.id)).draft).toMatchObject({
+      enabled: false,
+      status: 'published',
+    });
   });
 
   it('publishes a chat-ready provider backed only by the ModelRuntime environment', async () => {

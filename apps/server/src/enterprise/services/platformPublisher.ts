@@ -17,12 +17,25 @@ import {
 
 export { PlatformRevisionConflictError, PlatformRevisionImmutableError };
 
+/**
+ * Hand the invalidation off instead of firing it.
+ *
+ * Callers that run `publish` inside a LARGER transaction of their own must not announce a
+ * revision before that transaction commits — a later failure would leave every cache holding
+ * an event for a revision that never existed. Such callers pass this and run the collected
+ * work after their commit. Callers without an enclosing transaction omit it and keep the
+ * immediate behaviour.
+ */
+export type DeferInvalidation = (run: () => Promise<void>) => void;
+
 export type PublishResourceParams = PublishDraftParams & {
+  deferInvalidation?: DeferInvalidation;
   /** Optional scopes to invalidate after publish (e.g. `branding`, `settings`). */
   invalidationScopes?: string[];
 };
 
 export type RollbackResourceParams = RollbackToRevisionParams & {
+  deferInvalidation?: DeferInvalidation;
   invalidationScopes?: string[];
 };
 
@@ -80,10 +93,10 @@ export class PlatformPublisherService {
   publish = async (params: PublishResourceParams): Promise<PublishResult> => {
     const startedAt = Date.now();
     try {
-      const { invalidationScopes, ...publishParams } = params;
+      const { deferInvalidation, invalidationScopes, ...publishParams } = params;
       const result = await this.revisions.publishDraft(publishParams);
 
-      await this.publishInvalidation({
+      await this.emitInvalidation(deferInvalidation, {
         at: new Date().toISOString(),
         resourceId: params.resourceId,
         resourceType: params.resourceType,
@@ -115,10 +128,10 @@ export class PlatformPublisherService {
   rollback = async (params: RollbackResourceParams): Promise<PublishResult> => {
     const startedAt = Date.now();
     try {
-      const { invalidationScopes, ...rollbackParams } = params;
+      const { deferInvalidation, invalidationScopes, ...rollbackParams } = params;
       const result = await this.revisions.rollbackToRevision(rollbackParams);
 
-      await this.publishInvalidation({
+      await this.emitInvalidation(deferInvalidation, {
         at: new Date().toISOString(),
         resourceId: params.resourceId,
         resourceType: params.resourceType,
@@ -145,6 +158,18 @@ export class PlatformPublisherService {
       });
       throw error;
     }
+  };
+
+  /** Fire now, or hand the work to a caller that will run it after its own commit. */
+  private emitInvalidation = async (
+    defer: DeferInvalidation | undefined,
+    event: Parameters<PlatformConfigInvalidationPublisher['publish']>[0],
+  ): Promise<void> => {
+    if (defer) {
+      defer(() => this.publishInvalidation(event));
+      return;
+    }
+    await this.publishInvalidation(event);
   };
 
   private publishInvalidation = async (

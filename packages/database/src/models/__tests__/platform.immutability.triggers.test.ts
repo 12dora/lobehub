@@ -1,6 +1,7 @@
 // @vitest-environment node
 /**
- * Real-Postgres/PGlite enforcement of migration 0145 immutability triggers.
+ * Real-Postgres/PGlite enforcement of the platform immutability triggers: migration 0145
+ * (append-only revisions + audit logs) as amended by 0012 (guarded revision purge).
  */
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -33,8 +34,8 @@ const expectRejectedWith = async (promise: Promise<unknown>, pattern: RegExp) =>
 beforeEach(cleanup);
 afterEach(cleanup);
 
-describe('platform revision / audit immutability triggers (0145)', () => {
-  it('rejects UPDATE and DELETE on platform_resource_revisions', async () => {
+describe('platform revision / audit immutability triggers (0145, 0012)', () => {
+  it('rejects UPDATE always and DELETE without the purge opt-in on platform_resource_revisions', async () => {
     await serverDB.insert(platformResourceRevisions).values({
       checksum: 'a'.repeat(64),
       id: 'rev-immut-1',
@@ -45,6 +46,7 @@ describe('platform revision / audit immutability triggers (0145)', () => {
       status: 'published',
     });
 
+    // UPDATE has no escape hatch at all: a published revision is never rewritten in place.
     await expectRejectedWith(
       serverDB
         .update(platformResourceRevisions)
@@ -60,10 +62,58 @@ describe('platform revision / audit immutability triggers (0145)', () => {
       /immutable/i,
     );
 
+    // The GUC is transaction-local, so setting it in one transaction cannot arm a DELETE
+    // issued outside that transaction.
+    await serverDB.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('lobe.allow_platform_revision_purge', 'on', true)`);
+    });
+    await expectRejectedWith(
+      serverDB
+        .delete(platformResourceRevisions)
+        .where(eq(platformResourceRevisions.id, 'rev-immut-1')),
+      /immutable/i,
+    );
+
     const still = await serverDB
       .select({ id: platformResourceRevisions.id })
       .from(platformResourceRevisions);
     expect(still).toHaveLength(1);
+  });
+
+  it('allows DELETE on platform_resource_revisions inside a transaction that opts in', async () => {
+    // Migration 0012: the provider hard-delete purge path — a deleted provider must leave no
+    // history (and no pinned secret fingerprints) behind.
+    await serverDB.insert(platformResourceRevisions).values([
+      {
+        checksum: 'b'.repeat(64),
+        id: 'rev-purge-1',
+        payload: { ok: true },
+        resourceId: 'provider-purged',
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        checksum: 'c'.repeat(64),
+        id: 'rev-purge-keep',
+        payload: { ok: true },
+        resourceId: 'provider-kept',
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+    ]);
+
+    await serverDB.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('lobe.allow_platform_revision_purge', 'on', true)`);
+      await tx
+        .delete(platformResourceRevisions)
+        .where(eq(platformResourceRevisions.resourceId, 'provider-purged'));
+    });
+
+    expect(
+      await serverDB.select({ id: platformResourceRevisions.id }).from(platformResourceRevisions),
+    ).toEqual([{ id: 'rev-purge-keep' }]);
   });
 
   it('rejects UPDATE and unauthorized DELETE on platform_audit_logs', async () => {

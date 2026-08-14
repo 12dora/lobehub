@@ -230,6 +230,10 @@ export const adminAiProviderOAuthRouter = router({
    * single-use, so a tick that could not store the result must not redeem it. Apart from
    * that check (which audits only when it denies) a tick that finds no authorization yet
    * writes nothing.
+   *
+   * Storing applies immediately (the service publishes unconditionally), so a `stored: true`
+   * result is always live. If the store fails after the grant was redeemed the poll returns
+   * a terminal `denied` outcome with a stable code rather than throwing.
    */
   pollAuthStatus: adminBase
     .use(withAllPlatformPermissions([...sharedAccountPermissions]))
@@ -237,7 +241,7 @@ export const adminAiProviderOAuthRouter = router({
     .output(adminAiProviderOAuthPollOutputSchema)
     .mutation(async ({ ctx, input }) => {
       const card = resolveRotatingOAuthCard(input.id);
-      const unfinished = { published: false, publishError: null, revision: null, stored: false };
+      const unfinished = { error: null, revision: null, stored: false };
       const audit = new PlatformAuditService(ctx.serverDB);
 
       // Read-only lookup: decides the create-vs-update branch and gives the denial audit a
@@ -313,6 +317,11 @@ export const adminAiProviderOAuthRouter = router({
           : await service.applyProviderImmediate(ctx.userId!, {
               description: card.description,
               displayName: card.name,
+              // Connecting a shared account IS the activation intent, and the row is created
+              // here for the first time — so first connect lands enabled and live. The update
+              // branch above deliberately omits `enabled`: a reconnect must never re-enable a
+              // provider the admin turned off on purpose.
+              enabled: true,
               mode: 'create',
               providerKey: input.id,
               reason: input.reason,
@@ -320,8 +329,24 @@ export const adminAiProviderOAuthRouter = router({
               settings: card.settings,
               source: 'builtin',
             });
-      } catch (error) {
-        return mapServiceError(error);
+      } catch {
+        // The device grant is single-use and has already been redeemed here, so a failed
+        // store must not crash the poll loop: report a terminal, non-retryable outcome and
+        // let the operator start a fresh authorization. Only a stable code is surfaced —
+        // service errors may carry issue prose that never belongs on this boundary.
+        await audit.append({
+          action: 'admin.aiProviderOAuth.pollAuthStatus',
+          actorUserId: ctx.userId!,
+          afterDiff: {
+            error: 'provider_store_failed',
+            mode: detail ? 'update' : 'create',
+            providerKey: input.id,
+          },
+          result: 'failure',
+          targetId,
+          targetType: 'provider',
+        });
+        return { ...unfinished, error: 'provider_store_failed', status: 'denied' as const };
       }
 
       await audit.append({
@@ -331,8 +356,6 @@ export const adminAiProviderOAuthRouter = router({
         afterDiff: {
           mode: detail ? 'update' : 'create',
           providerKey: input.id,
-          publishError: result.publishError ?? null,
-          published: result.published,
           revision: result.revision,
         },
         result: 'success',
@@ -341,8 +364,7 @@ export const adminAiProviderOAuthRouter = router({
       });
 
       return {
-        published: result.published,
-        publishError: result.publishError ?? null,
+        error: null,
         revision: result.revision,
         status: 'success' as const,
         stored: true,

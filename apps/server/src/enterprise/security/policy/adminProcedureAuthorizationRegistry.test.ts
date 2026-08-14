@@ -62,15 +62,18 @@ describe('admin procedure authorization registry', () => {
   it('reconciles all live procedures, middleware gates, root mounts, and mutation risks', () => {
     expect(() => reconcile()).not.toThrow();
 
-    // Registry length after external access-module procedure removal + secretRotation.restart.
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(197);
+    // Registry length after the AI provider draft/publish surface collapsed into
+    // applyImmediate and archive gave way to a true hard delete: 14 procedures removed
+    // (10 mutations + 4 queries). The read-only aiProviders.listRevisions history query
+    // stays — agent dependency pinning reads the published revision checksum from it.
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(183);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(90);
+    ).toHaveLength(86);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(107);
-    expect(mutationPaths).toHaveLength(107);
+    ).toHaveLength(97);
+    expect(mutationPaths).toHaveLength(97);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

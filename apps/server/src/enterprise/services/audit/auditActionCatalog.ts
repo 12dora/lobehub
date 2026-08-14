@@ -39,7 +39,6 @@ export const AUDIT_ACTIONS = [
   'admin.aiProviders.createDraft',
   'admin.aiProviders.delete',
   'admin.aiProviders.publish',
-  'admin.aiProviders.publishNow',
   'admin.aiProviders.rollback',
   'admin.aiProviders.test',
   'admin.aiProviders.updateDraft',

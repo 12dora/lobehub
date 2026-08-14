@@ -311,6 +311,11 @@ describe('AiCatalogAdminService model mutations', () => {
    * Count real drizzle DML entry-points on the transaction object (tx.update/insert/delete),
    * not helper-function invocations. Sequential per-item paths issue one model UPDATE per id;
    * bulk paths issue a single multi-row UPDATE for the unique set.
+   *
+   * `applyModelImmediate` nests three transactions: the outer atomic apply (index 0), the model
+   * mutation savepoint (index 1) and the publish savepoint (index 2). Counters are scoped to the
+   * mutation savepoint — the publish materialization (delete + re-insert of model rows from the
+   * revision payload) is not what these assertions are about.
    */
   const withTxDmlCounters = async <T>(run: () => Promise<T>) => {
     const counters = {
@@ -319,6 +324,52 @@ describe('AiCatalogAdminService model mutations', () => {
       modelUpdates: 0,
       auditInserts: 0,
     };
+    // Only the first savepoint (the model mutation) is counted; the second is the publish.
+    let nestedIndex = 0;
+    let counting = false;
+    type CountableTx = {
+      delete: (table: unknown, ...args: unknown[]) => unknown;
+      insert: (table: unknown, ...args: unknown[]) => unknown;
+      transaction: (callback: (tx: unknown) => unknown, ...rest: unknown[]) => unknown;
+      update: (table: unknown, ...args: unknown[]) => unknown;
+    };
+    const instrument = (handle: unknown) => {
+      const tx = handle as CountableTx;
+      const rawUpdate = tx.update.bind(tx);
+      const rawInsert = tx.insert.bind(tx);
+      const rawDelete = tx.delete.bind(tx);
+      const rawTransaction = tx.transaction.bind(tx);
+      tx.update = (table, ...args) => {
+        if (counting && table === platformAiModels) counters.modelUpdates += 1;
+        return rawUpdate(table, ...args);
+      };
+      tx.insert = (table, ...args) => {
+        if (counting && table === platformAiModels) counters.modelInserts += 1;
+        if (counting && table === platformAuditLogs) counters.auditInserts += 1;
+        return rawInsert(table, ...args);
+      };
+      tx.delete = (table, ...args) => {
+        if (counting && table === platformAiModels) counters.modelDeletes += 1;
+        return rawDelete(table, ...args);
+      };
+      // Savepoints get their own handle — instrument it too, or nested DML is invisible.
+      tx.transaction = (callback, ...rest) =>
+        rawTransaction(
+          async (child: unknown) => {
+            const index = nestedIndex++;
+            instrument(child);
+            const previous = counting;
+            counting = index === 0;
+            try {
+              return await callback(child);
+            } finally {
+              counting = previous;
+            }
+          },
+          ...rest,
+        );
+    };
+
     const originalTransaction = db.transaction.bind(db);
     const spy = vi.spyOn(db, 'transaction').mockImplementation(((
       callback: Parameters<typeof db.transaction>[0],
@@ -326,22 +377,7 @@ describe('AiCatalogAdminService model mutations', () => {
     ) =>
       originalTransaction(
         async (tx) => {
-          const rawUpdate = tx.update.bind(tx);
-          const rawInsert = tx.insert.bind(tx);
-          const rawDelete = tx.delete.bind(tx);
-          (tx as { update: typeof tx.update }).update = ((table: unknown, ...args: unknown[]) => {
-            if (table === platformAiModels) counters.modelUpdates += 1;
-            return (rawUpdate as (...a: unknown[]) => unknown)(table, ...args);
-          }) as typeof tx.update;
-          (tx as { insert: typeof tx.insert }).insert = ((table: unknown, ...args: unknown[]) => {
-            if (table === platformAiModels) counters.modelInserts += 1;
-            if (table === platformAuditLogs) counters.auditInserts += 1;
-            return (rawInsert as (...a: unknown[]) => unknown)(table, ...args);
-          }) as typeof tx.insert;
-          (tx as { delete: typeof tx.delete }).delete = ((table: unknown, ...args: unknown[]) => {
-            if (table === platformAiModels) counters.modelDeletes += 1;
-            return (rawDelete as (...a: unknown[]) => unknown)(table, ...args);
-          }) as typeof tx.delete;
+          instrument(tx);
           return callback(tx);
         },
         ...(rest as []),

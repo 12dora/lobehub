@@ -7,25 +7,12 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
   adminAiModelApplyImmediateInputSchema,
   adminAiModelApplyImmediateOutputSchema,
-  adminAiModelCreateInputSchema,
-  adminAiModelCreateTargetListInputSchema,
-  adminAiModelCreateTargetListOutputSchema,
-  adminAiModelDeleteInputSchema,
-  adminAiModelDeleteOutputSchema,
   adminAiModelDependentsInputSchema,
   adminAiModelDependentsOutputSchema,
-  adminAiModelDraftContextInputSchema,
-  adminAiModelDraftContextOutputSchema,
   adminAiModelListInputSchema,
   adminAiModelListOutputSchema,
-  adminAiModelMutationOutputSchema,
-  adminAiModelReorderInputSchema,
-  adminAiModelReorderOutputSchema,
-  adminAiModelUpdateInputSchema,
   adminAiProviderApplyImmediateInputSchema,
   adminAiProviderApplyImmediateOutputSchema,
-  adminAiProviderArchiveInputSchema,
-  adminAiProviderCreateDraftInputSchema,
   adminAiProviderDeleteInputSchema,
   adminAiProviderDeleteOutputSchema,
   adminAiProviderGetBatchInputSchema,
@@ -34,15 +21,9 @@ import {
   adminAiProviderGetOutputSchema,
   adminAiProviderListInputSchema,
   adminAiProviderListOutputSchema,
-  adminAiProviderMutationOutputSchema,
-  adminAiProviderPublishInputSchema,
-  adminAiProviderPublishNowInputSchema,
   adminAiProviderRevisionHistoryInputSchema,
   adminAiProviderRevisionHistoryOutputSchema,
-  adminAiProviderRevisionOutputSchema,
-  adminAiProviderRollbackInputSchema,
   adminAiProviderTestInputSchema,
-  adminAiProviderUpdateDraftInputSchema,
   aiConnectionTestResultSchema,
 } from '../../contracts/aiCatalog';
 import { withActiveUser } from '../../guards/activeUser';
@@ -52,12 +33,7 @@ import {
   withCompoundPlatformPermission,
   withPlatformPermission,
 } from '../../guards/platformPermission';
-import {
-  aiSecretMutationRequiresReauth,
-  assertDangerousReauth,
-  createService,
-  mapServiceError,
-} from './aiCatalogSupport';
+import { assertDangerousReauth, createService, mapServiceError } from './aiCatalogSupport';
 
 const adminBase = authedProcedure
   .use(serverDatabase)
@@ -66,7 +42,8 @@ const adminBase = authedProcedure
 
 export const adminAiProvidersRouter = router({
   /**
-   * Create/update draft then publish in one procedure (admin settings UI parity).
+   * The only provider write: apply the change and publish it immediately, always.
+   * A failure throws (client toasts it) — nothing is ever left saved-but-not-live.
    * Requires UPDATE+PUBLISH (or CREATE+PUBLISH for create mode). Rate-limit: 1 unit.
    */
   applyImmediate: adminBase
@@ -110,51 +87,10 @@ export const adminAiProvidersRouter = router({
     }),
 
   /**
-   * Banner "retry publish": re-run connection test when revision===0, then publish.
-   * Same guard combo as applyImmediate (PUBLISH + reauth + rate-limit).
+   * True hard delete: models, revision history and the provider row (secrets cascade).
+   * After this the provider is as if it had never been platform-managed — runtime resolves
+   * NOT_FOUND and falls back to the user's own BYOK configuration.
    */
-  publishNow: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
-    .input(adminAiProviderPublishNowInputSchema)
-    .output(adminAiProviderApplyImmediateOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertDangerousReauth({
-        action: 'admin.aiProviders.publishNow',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        serverDB: ctx.serverDB,
-        targetId: input.id,
-      });
-      try {
-        return await createService(ctx.serverDB).publishNow(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  archive: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE))
-    .input(adminAiProviderArchiveInputSchema)
-    .output(adminAiProviderRevisionOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertDangerousReauth({
-        action: 'admin.aiProviders.archive',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        serverDB: ctx.serverDB,
-        targetId: input.id,
-      });
-      try {
-        return await createService(ctx.serverDB).archiveProvider(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
   delete: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE))
     .input(adminAiProviderDeleteInputSchema)
@@ -171,34 +107,6 @@ export const adminAiProvidersRouter = router({
       });
       try {
         return await createService(ctx.serverDB).deleteProvider(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  createDraft: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE))
-    .input(adminAiProviderCreateDraftInputSchema)
-    .output(adminAiProviderMutationOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      if (aiSecretMutationRequiresReauth(input.secret)) {
-        await assertDangerousReauth({
-          action: 'admin.aiProviders.createDraft',
-          actorUserId: ctx.userId!,
-          authenticatedAt: ctx.authenticatedAt,
-          authMethod: ctx.authMethod,
-          existingSecretTargetId: null,
-          reason: input.reason,
-          replacementSecrets:
-            input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
-              ? [input.secret.value]
-              : [],
-          serverDB: ctx.serverDB,
-          targetId: input.providerKey,
-        });
-      }
-      try {
-        return await createService(ctx.serverDB).createProviderDraft(ctx.userId!, input);
       } catch (error) {
         return mapServiceError(error);
       }
@@ -235,6 +143,10 @@ export const adminAiProvidersRouter = router({
     .output(adminAiProviderListOutputSchema)
     .query(async ({ ctx, input }) => new PlatformAiCatalogModel(ctx.serverDB).listProviders(input)),
 
+  /**
+   * Read-only publication history. Not a draft/publish affordance: the agent dependency
+   * editor reads the published revision checksum from here to pin a model dependency.
+   */
   listRevisions: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_READ))
     .input(adminAiProviderRevisionHistoryInputSchema)
@@ -242,48 +154,6 @@ export const adminAiProvidersRouter = router({
     .query(async ({ ctx, input }) => {
       try {
         return await createService(ctx.serverDB).listRevisionHistory(input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  publish: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
-    .input(adminAiProviderPublishInputSchema)
-    .output(adminAiProviderRevisionOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertDangerousReauth({
-        action: 'admin.aiProviders.publish',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        serverDB: ctx.serverDB,
-        targetId: input.id,
-      });
-      try {
-        return await createService(ctx.serverDB).publishProvider(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  rollback: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
-    .input(adminAiProviderRollbackInputSchema)
-    .output(adminAiProviderRevisionOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertDangerousReauth({
-        action: 'admin.aiProviders.rollback',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        serverDB: ctx.serverDB,
-        targetId: input.id,
-      });
-      try {
-        return await createService(ctx.serverDB).rollbackProvider(ctx.userId!, input);
       } catch (error) {
         return mapServiceError(error);
       }
@@ -300,38 +170,12 @@ export const adminAiProvidersRouter = router({
         return mapServiceError(error);
       }
     }),
-
-  updateDraft: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE))
-    .input(adminAiProviderUpdateDraftInputSchema)
-    .output(adminAiProviderMutationOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      if (aiSecretMutationRequiresReauth(input.secret)) {
-        await assertDangerousReauth({
-          action: 'admin.aiProviders.updateDraft',
-          actorUserId: ctx.userId!,
-          authenticatedAt: ctx.authenticatedAt,
-          authMethod: ctx.authMethod,
-          reason: input.reason,
-          replacementSecrets:
-            input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
-              ? [input.secret.value]
-              : [],
-          serverDB: ctx.serverDB,
-          targetId: input.id,
-        });
-      }
-      try {
-        return await createService(ctx.serverDB).updateProviderDraft(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
 });
 
 export const adminAiModelsRouter = router({
   /**
-   * Model draft mutation(s) + immediate parent-provider publish (admin UI parity).
+   * The only model write: mutate model rows then publish the parent provider immediately.
+   * A failure throws — model edits never linger as an unpublished draft.
    * Combination rule (rate-limit: 1 unit):
    * - fixed: AI_PROVIDER_PUBLISH + AI_MODEL_PUBLISH
    * - selectable: CREATE / UPDATE / DELETE from input.operation
@@ -358,7 +202,7 @@ export const adminAiModelsRouter = router({
     .input(adminAiModelApplyImmediateInputSchema)
     .output(adminAiModelApplyImmediateOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      // Publish step requires reauth (aligned with admin.aiProviders.publish).
+      // The publish step requires reauth (aligned with admin.aiProviders.applyImmediate).
       await assertDangerousReauth({
         action: 'admin.aiModels.applyImmediate',
         actorUserId: ctx.userId!,
@@ -369,31 +213,14 @@ export const adminAiModelsRouter = router({
         targetId: input.providerId,
       });
       try {
-        return await createService(ctx.serverDB).applyModelImmediate(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  create: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_CREATE))
-    .input(adminAiModelCreateInputSchema)
-    .output(adminAiModelMutationOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        return await createService(ctx.serverDB).createModel(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  deleteFromDraft: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_DELETE))
-    .input(adminAiModelDeleteInputSchema)
-    .output(adminAiModelDeleteOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        return await createService(ctx.serverDB).deleteModel(ctx.userId!, input);
+        return await createService(ctx.serverDB).applyModelImmediate(ctx.userId!, input, {
+          // The compound gate can only classify the *declared* operation. `batchUpdate`
+          // decides insert-vs-update from database state, so the CREATE grant travels into
+          // the service and is enforced where that decision is made.
+          allowModelCreate: ctx.platformAuth.permissions.includes(
+            PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+          ),
+        });
       } catch (error) {
         return mapServiceError(error);
       }
@@ -407,42 +234,6 @@ export const adminAiModelsRouter = router({
       try {
         const items = await createService(ctx.serverDB).getDependents(input.providerId, input.id);
         return { items };
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  getCreateDraftContext: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_CREATE))
-    .input(adminAiModelDraftContextInputSchema)
-    .output(adminAiModelDraftContextOutputSchema)
-    .query(async ({ ctx, input }) => {
-      try {
-        return await createService(ctx.serverDB).getModelDraftContext(input.providerId);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  getDeleteDraftContext: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_DELETE))
-    .input(adminAiModelDraftContextInputSchema)
-    .output(adminAiModelDraftContextOutputSchema)
-    .query(async ({ ctx, input }) => {
-      try {
-        return await createService(ctx.serverDB).getModelDraftContext(input.providerId);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  getUpdateDraftContext: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_UPDATE))
-    .input(adminAiModelDraftContextInputSchema)
-    .output(adminAiModelDraftContextOutputSchema)
-    .query(async ({ ctx, input }) => {
-      try {
-        return await createService(ctx.serverDB).getModelDraftContext(input.providerId);
       } catch (error) {
         return mapServiceError(error);
       }
@@ -466,36 +257,6 @@ export const adminAiModelsRouter = router({
           });
         }
         throw error;
-      }
-    }),
-
-  listCreateTargets: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_CREATE))
-    .input(adminAiModelCreateTargetListInputSchema)
-    .output(adminAiModelCreateTargetListOutputSchema)
-    .query(async ({ ctx, input }) => createService(ctx.serverDB).listModelCreateTargets(input)),
-
-  reorder: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_UPDATE))
-    .input(adminAiModelReorderInputSchema)
-    .output(adminAiModelReorderOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        return await createService(ctx.serverDB).reorderModels(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
-      }
-    }),
-
-  update: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_UPDATE))
-    .input(adminAiModelUpdateInputSchema)
-    .output(adminAiModelMutationOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        return await createService(ctx.serverDB).updateModel(ctx.userId!, input);
-      } catch (error) {
-        return mapServiceError(error);
       }
     }),
 });

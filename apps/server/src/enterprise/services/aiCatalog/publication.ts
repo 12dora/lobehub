@@ -36,8 +36,11 @@ import {
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { invalidateAiCatalogAuthorityToken } from '../platformInstance/catalogTokens';
-import { PlatformPublisherService } from '../platformPublisher';
-import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
+import { type DeferInvalidation, PlatformPublisherService } from '../platformPublisher';
+import {
+  resolveAiCatalogRuntimeProvider,
+  validateAiCatalogCredentialShape,
+} from './credentialAdapter';
 import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
 import { resolveAiCatalogDependentsForModels } from './dependencies';
 import {
@@ -47,17 +50,19 @@ import {
 } from './errors';
 import { sanitizeAiCatalogPersistedText } from './persistentText';
 import type { AiCatalogSecretManager } from './secretManager';
-import {
-  aiCatalogDraftToken,
-  appendAiCatalogFailureAudit,
-  publishedPayloadConnectivityMatchesDraft,
-} from './shared';
+import { aiCatalogDraftToken, appendAiCatalogFailureAudit } from './shared';
 
 type PublishProviderInput = z.infer<typeof adminAiProviderPublishInputSchema>;
 type ArchiveProviderInput = z.infer<typeof adminAiProviderArchiveInputSchema>;
 type RollbackProviderInput = z.infer<typeof adminAiProviderRollbackInputSchema>;
 
 export interface AiCatalogPublicationOptions {
+  /**
+   * Set when this service runs inside a caller-owned transaction: distributed invalidation
+   * events and the local authority-token reset are handed over instead of fired, so nothing
+   * announces a revision the enclosing transaction might still roll back.
+   */
+  deferInvalidation?: DeferInvalidation;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: {
     afterArchiveDependencyCheck?: () => Promise<void>;
@@ -119,6 +124,7 @@ const assertRemovedModelsUnused = async (
 
 export class AiCatalogPublicationService {
   private readonly db: LobeChatDatabase;
+  private readonly deferInvalidation?: DeferInvalidation;
   private readonly lifecycle: NonNullable<AiCatalogPublicationOptions['lifecycle']>;
   private readonly publisher: PlatformPublisherService;
   private readonly resolveDependentsForModels: typeof resolveAiCatalogDependentsForModels;
@@ -130,12 +136,22 @@ export class AiCatalogPublicationService {
     options: AiCatalogPublicationOptions = {},
   ) {
     this.db = db;
+    this.deferInvalidation = options.deferInvalidation;
     this.lifecycle = options.lifecycle ?? {};
     this.publisher = new PlatformPublisherService(db, options.invalidation);
     this.resolveDependentsForModels =
       options.resolveDependentsForModels ?? resolveAiCatalogDependentsForModels;
     this.secrets = secrets;
   }
+
+  /** Local authority-token reset — deferred with the distributed event when scoped to a tx. */
+  private invalidateAuthorityToken = (): void => {
+    if (this.deferInvalidation) {
+      this.deferInvalidation(async () => invalidateAiCatalogAuthorityToken());
+      return;
+    }
+    invalidateAiCatalogAuthorityToken();
+  };
 
   private sanitizeReason = async (providerId: string, reason: string): Promise<string> => {
     const provider = await new PlatformAiCatalogRepository(this.db).getProvider(providerId);
@@ -148,64 +164,33 @@ export class AiCatalogPublicationService {
     }
   };
 
+  /**
+   * Publish-time invariants.
+   *
+   * Every admin write applies immediately (draft write + unconditional publish), so this is
+   * a **security / sanity** gate only — never a readiness gate. Publishing a disabled
+   * provider, or one with zero models and no credentials, is legal: that is exactly how the
+   * settings-page toggle persists site-wide. Chat-time errors surface at chat time.
+   *
+   * Kept: fetchOnClient-vs-secret, endpoint scheme without embedded credentials, secret
+   * decryptability, credential shape for the resolved runtime, and no credential material in
+   * public catalog fields.
+   */
   private validatePublishDraft = async (
     tx: Transaction,
     providerId: string,
-    options?: {
-      /**
-       * Admin settings UI auto-publish: after a provider has already been published once,
-       * allow republishing *cosmetic* draft edits without re-running the connection test.
-       * Any non-cosmetic change (full config/settings deep-equal, check model, secret
-       * fingerprint) always requires a fresh successful probe.
-       * First publish still requires a fresh successful connection test.
-       */
-      allowStaleConnectionTest?: boolean;
-    },
   ): Promise<PlatformAiProviderDraftView> => {
     const repository = new PlatformAiCatalogRepository(tx);
     const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
     if (!draft) throw new AiCatalogNotFoundError();
     const issues: string[] = [];
-    // revision > 0 means at least one successful publish has landed on this provider.
-    const previouslyPublished = draft.revision > 0;
     /**
-     * Global disable of an already-published provider: publish enabled:false without
-     * requiring live readiness (models / connection test). First publish (revision 0)
-     * still requires a fully ready draft.
+     * Emergency disable of an already-published provider must survive a KEK/secret outage:
+     * publishing `enabled: false` never reads the stored ciphertext (mirrors the same
+     * carve-out in `materializePublished`).
      */
-    const isDeactivatingPublished = previouslyPublished && draft.enabled === false;
-    const enabledModels = draft.models.filter((model) => model.enabled);
+    const isDeactivatingPublished = draft.revision > 0 && draft.enabled === false;
 
-    if (!isDeactivatingPublished) {
-      if (!draft.enabled) issues.push('Provider must be enabled');
-      if (enabledModels.length === 0) issues.push('At least one model must be enabled');
-      const connectionTestFresh =
-        draft.connectionTest?.status === 'success' && !draft.connectionTest.stale;
-      if (!connectionTestFresh) {
-        let allowStale = false;
-        if (options?.allowStaleConnectionTest === true && previouslyPublished) {
-          // Stale reuse is limited to cosmetic field edits vs the last published revision.
-          const published = await repository.getProviderRevision(providerId, draft.revision);
-          allowStale =
-            published?.status === 'published' &&
-            publishedPayloadConnectivityMatchesDraft(draft, {
-              payload: published.payload as Record<string, unknown>,
-              // Revision-row column is unredacted; payload.provider.secretFingerprint is redacted.
-              secretFingerprint: published.secretFingerprint,
-            });
-        }
-        if (!allowStale) {
-          issues.push('Current provider draft must pass connection testing before publish');
-        }
-      }
-      if (draft.checkModel) {
-        const checkModel = enabledModels.find((model) => model.modelKey === draft.checkModel);
-        if (!checkModel) issues.push('Check model must reference an enabled model');
-        else if (checkModel.type !== 'chat') {
-          issues.push('Check model must reference an enabled chat model');
-        }
-      }
-    }
     if (draft.secret.configured && draft.fetchOnClient) {
       issues.push('Secret-configured providers must disable fetchOnClient');
     }
@@ -231,13 +216,12 @@ export class AiCatalogPublicationService {
           : {};
       assertAiCatalogPublicFieldsExcludeCredentials(draft, keyVaults);
       if (!isDeactivatingPublished) {
-        normalizeAiCatalogExecutionCredentials({
-          config: draft.config,
+        // Shape only (supported runtime + credential fields belong to it). Completeness is
+        // deliberately NOT checked: a credential-less provider is publishable.
+        validateAiCatalogCredentialShape(
+          resolveAiCatalogRuntimeProvider(draft.providerKey, draft.settings, draft.source),
           keyVaults,
-          providerKey: draft.providerKey,
-          source: draft.source,
-          settings: draft.settings,
-        });
+        );
       }
     } catch (error) {
       if (error instanceof AiCatalogValidationError) issues.push(...error.issues);
@@ -253,7 +237,6 @@ export class AiCatalogPublicationService {
     expectedDraftToken: string,
     validateForPublish = true,
     validateArchiveDependents = false,
-    allowStaleConnectionTest = false,
   ): ResourcePointerAdapter => {
     let currentPublishedPayload: Record<string, unknown> | null = null;
     return {
@@ -381,7 +364,7 @@ export class AiCatalogPublicationService {
       },
       prepareLockedPublish: async (tx) => {
         const draft = validateForPublish
-          ? await this.validatePublishDraft(tx, providerId, { allowStaleConnectionTest })
+          ? await this.validatePublishDraft(tx, providerId)
           : await new PlatformAiCatalogModel(tx).getProvider(providerId);
         if (!draft) throw new AiCatalogNotFoundError();
         const payload = await new PlatformAiCatalogModel(tx).prepareRevisionPayload(providerId);
@@ -427,34 +410,25 @@ export class AiCatalogPublicationService {
     };
   };
 
-  publishProvider = async (
-    actorUserId: string,
-    input: PublishProviderInput & { allowStaleConnectionTest?: boolean },
-  ) => {
+  publishProvider = async (actorUserId: string, input: PublishProviderInput) => {
     const reason = await this.sanitizeReason(input.id, input.reason);
     try {
       const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
       if (!draft) throw new AiCatalogNotFoundError();
       const result = await this.publisher.publish({
         actorUserId,
+        deferInvalidation: this.deferInvalidation,
         expectedRevision: input.expectedRevision,
         invalidationScopes: ['ai-catalog', 'model-runtime'],
         payload: {},
-        pointer: this.createPointer(
-          input.id,
-          actorUserId,
-          input.expectedDraftToken,
-          true,
-          false,
-          input.allowStaleConnectionTest === true,
-        ),
+        pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
         reason,
         redactionOptions: M07_REDACTION_OPTIONS,
         resourceId: input.id,
         resourceType: 'provider',
         secretFingerprint: draft.secret.fingerprint,
       });
-      invalidateAiCatalogAuthorityToken();
+      this.invalidateAuthorityToken();
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendAiCatalogFailureAudit(this.db, {
@@ -474,6 +448,7 @@ export class AiCatalogPublicationService {
       if (!draft) throw new AiCatalogNotFoundError();
       const result = await this.publisher.publish({
         actorUserId,
+        deferInvalidation: this.deferInvalidation,
         expectedRevision: input.expectedRevision,
         invalidationScopes: ['ai-catalog', 'model-runtime'],
         payload: {},
@@ -485,7 +460,7 @@ export class AiCatalogPublicationService {
         secretFingerprint: draft.secret.fingerprint,
         status: 'archived',
       });
-      invalidateAiCatalogAuthorityToken();
+      this.invalidateAuthorityToken();
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendAiCatalogFailureAudit(this.db, {
@@ -512,6 +487,7 @@ export class AiCatalogPublicationService {
       }
       const result = await this.publisher.rollback({
         actorUserId,
+        deferInvalidation: this.deferInvalidation,
         expectedRevision: input.expectedRevision,
         invalidationScopes: ['ai-catalog', 'model-runtime'],
         pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
@@ -520,7 +496,7 @@ export class AiCatalogPublicationService {
         resourceType: 'provider',
         targetRevision: input.targetRevision,
       });
-      invalidateAiCatalogAuthorityToken();
+      this.invalidateAuthorityToken();
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendAiCatalogFailureAudit(this.db, {

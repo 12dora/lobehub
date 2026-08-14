@@ -32,6 +32,8 @@ const ids = {
   aiAdmin: 'm07-ai-admin',
   auditor: 'm07-auditor',
   modelEditor: 'm07-model-editor',
+  /** May publish and update models, but must never create one. */
+  modelUpdater: 'm07-model-updater',
   normal: 'm07-normal',
 };
 
@@ -107,6 +109,43 @@ beforeEach(async () => {
     userId: ids.modelEditor,
     workspaceId: null,
   });
+
+  await assignGlobalPlatformRole(db, {
+    roleName: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+    userId: ids.modelUpdater,
+  });
+  const [modelUpdaterRole] = await db
+    .insert(roles)
+    .values({
+      displayName: 'Model updater',
+      id: 'm07-model-updater-role',
+      name: 'm07_model_updater',
+      workspaceId: null,
+    })
+    .returning();
+  // Everything aiModels.applyImmediate's compound gate asks of a batchUpdate — minus CREATE.
+  const updaterPermissions = await db
+    .select({ id: permissions.id })
+    .from(permissions)
+    .where(
+      inArray(permissions.code, [
+        PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH,
+        PLATFORM_PERMISSIONS.AI_MODEL_READ,
+        PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
+      ]),
+    );
+  await db
+    .insert(rolePermissions)
+    .values(
+      updaterPermissions.map(({ id }) => ({ permissionId: id, roleId: modelUpdaterRole.id })),
+    );
+  await db.insert(userRoles).values({
+    roleId: modelUpdaterRole.id,
+    userId: ids.modelUpdater,
+    workspaceId: null,
+  });
 });
 
 afterEach(async () => {
@@ -135,14 +174,14 @@ const callerFor = async (
   } as never);
 };
 
-const createProviderInput = (
+const applyCreate = (
   providerKey: string,
   secret?: { operation: 'clear' | 'keep' } | { operation: 'replace'; value: string },
-  reason = 'create provider draft',
-) => ({ displayName: providerKey, providerKey, reason, secret });
+  reason = 'create provider',
+) => ({ displayName: providerKey, mode: 'create' as const, providerKey, reason, secret });
 
 describe('admin AI catalog permission and reauth gates', () => {
-  it('conditionally gates create secret replace and clear for every unsupported auth state', async () => {
+  it('gates every create variant for every unsupported auth state, including keep/absent', async () => {
     const authStates = [
       { authenticatedAt: null, authMethod: 'better-auth' as const },
       {
@@ -153,19 +192,23 @@ describe('admin AI catalog permission and reauth gates', () => {
     ];
     let attempt = 0;
     for (const auth of authStates) {
-      for (const operation of ['replace', 'clear'] as const) {
+      // applyImmediate publishes site-wide, so reauth is unconditional: a secret-free
+      // create is gated exactly like a credential replacement.
+      for (const operation of ['replace', 'clear', 'keep', 'absent'] as const) {
         const providerKey = `guarded-create-${attempt++}`;
         const secretValue = `router-create-value-${attempt}`;
         const secret =
           operation === 'replace'
             ? ({ operation, value: secretValue } as const)
-            : ({ operation } as const);
+            : operation === 'absent'
+              ? undefined
+              : ({ operation } as const);
         await expect(
-          (await callerFor(ids.aiAdmin, auth)).aiProviders.createDraft(
-            createProviderInput(
+          (await callerFor(ids.aiAdmin, auth)).aiProviders.applyImmediate(
+            applyCreate(
               providerKey,
               secret,
-              operation === 'replace' ? `denied ${secretValue}` : 'denied clear',
+              operation === 'replace' ? `denied ${secretValue}` : `denied ${operation}`,
             ),
           ),
         ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
@@ -175,9 +218,9 @@ describe('admin AI catalog permission and reauth gates', () => {
     expect(await db.select().from(platformAiProviders)).toEqual([]);
     expect(await db.select().from(platformAiProviderSecrets)).toEqual([]);
     const audits = (await db.select().from(platformAuditLogs)).filter(
-      ({ action }) => action === 'admin.aiProviders.createDraft',
+      ({ action }) => action === 'admin.aiProviders.applyImmediate',
     );
-    expect(audits).toHaveLength(6);
+    expect(audits).toHaveLength(12);
     expect(audits).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -193,10 +236,10 @@ describe('admin AI catalog permission and reauth gates', () => {
     expect(JSON.stringify(audits)).not.toContain('router-create-value');
   });
 
-  it('conditionally gates update secret replace and clear before draft or secret writes', async () => {
+  it('gates every update variant before any draft or secret write', async () => {
     const fresh = await callerFor(ids.aiAdmin);
-    const provider = await fresh.aiProviders.createDraft(createProviderInput('guarded-update'));
-    const detail = await fresh.aiProviders.get({ id: provider.id });
+    const created = await fresh.aiProviders.applyImmediate(applyCreate('guarded-update'));
+    const detail = await fresh.aiProviders.get({ id: created.draft.id });
     const authStates = [
       { authenticatedAt: null, authMethod: 'better-auth' as const },
       {
@@ -207,19 +250,20 @@ describe('admin AI catalog permission and reauth gates', () => {
     ];
     let attempt = 0;
     for (const auth of authStates) {
-      for (const operation of ['replace', 'clear'] as const) {
+      for (const operation of ['replace', 'clear', 'keep'] as const) {
         const secretValue = `router-update-value-${attempt++}`;
         const secret =
           operation === 'replace'
             ? ({ operation, value: secretValue } as const)
             : ({ operation } as const);
         await expect(
-          (await callerFor(ids.aiAdmin, auth)).aiProviders.updateDraft({
+          (await callerFor(ids.aiAdmin, auth)).aiProviders.applyImmediate({
             displayName: `denied-${attempt}`,
             expectedDraftToken: detail.draftToken,
-            expectedRevision: provider.revision,
-            id: provider.id,
-            reason: operation === 'replace' ? `denied ${secretValue}` : 'denied clear',
+            expectedRevision: detail.baseRevision,
+            id: created.draft.id,
+            mode: 'update',
+            reason: operation === 'replace' ? `denied ${secretValue}` : `denied ${operation}`,
             secret,
           }),
         ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
@@ -233,53 +277,39 @@ describe('admin AI catalog permission and reauth gates', () => {
           revision: platformAiProviders.revision,
         })
         .from(platformAiProviders)
-        .where(eq(platformAiProviders.id, provider.id)),
-    ).toEqual([{ displayName: 'guarded-update', revision: 0 }]);
+        .where(eq(platformAiProviders.id, created.draft.id)),
+    ).toEqual([{ displayName: 'guarded-update', revision: created.revision }]);
     expect(await db.select().from(platformAiProviderSecrets)).toEqual([]);
-    const audits = (await db.select().from(platformAuditLogs)).filter(
-      ({ action }) => action === 'admin.aiProviders.updateDraft',
+    const denied = (await db.select().from(platformAuditLogs)).filter(
+      ({ action, result }) => action === 'admin.aiProviders.applyImmediate' && result === 'denied',
     );
-    expect(audits).toHaveLength(6);
+    expect(denied).toHaveLength(9);
     expect(
-      audits.every(
-        ({ actorUserId, afterDiff, result, targetId, targetType }) =>
+      denied.every(
+        ({ actorUserId, afterDiff, targetId, targetType }) =>
           actorUserId === ids.aiAdmin &&
           JSON.stringify(afterDiff) === JSON.stringify({ error: 'reauth_required' }) &&
-          result === 'denied' &&
-          targetId === provider.id &&
+          targetId === created.draft.id &&
           targetType === 'provider',
       ),
     ).toBe(true);
-    expect(JSON.stringify(audits)).not.toContain('router-update-value');
+    expect(JSON.stringify(denied)).not.toContain('router-update-value');
   });
 
-  it('does not over-gate absent or keep operations and permits fresh replacement', async () => {
-    const ordinary = await callerFor(ids.aiAdmin, { authenticatedAt: null });
-    const absent = await ordinary.aiProviders.createDraft(createProviderInput('ordinary-absent'));
-    const keep = await ordinary.aiProviders.createDraft(
-      createProviderInput('ordinary-keep', { operation: 'keep' }),
-    );
-    const keepDetail = await ordinary.aiProviders.get({ id: keep.id });
-    await expect(
-      ordinary.aiProviders.updateDraft({
-        expectedDraftToken: keepDetail.draftToken,
-        expectedRevision: keep.revision,
-        id: keep.id,
-        reason: 'ordinary keep update',
-        secret: { operation: 'keep' },
-      }),
-    ).resolves.toMatchObject({ id: keep.id, secret: { configured: false } });
-
+  it('accepts a fresh session for a credential replacement and stores exactly one version', async () => {
     const fresh = await callerFor(ids.aiAdmin);
-    const absentDetail = await fresh.aiProviders.get({ id: absent.id });
-    const replaced = await fresh.aiProviders.updateDraft({
-      expectedDraftToken: absentDetail.draftToken,
-      expectedRevision: absent.revision,
-      id: absent.id,
+    const created = await fresh.aiProviders.applyImmediate(applyCreate('fresh-replacement'));
+    const detail = await fresh.aiProviders.get({ id: created.draft.id });
+    const replaced = await fresh.aiProviders.applyImmediate({
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.draft.id,
+      mode: 'update',
       reason: 'fresh replacement',
       secret: { operation: 'replace', value: 'fresh-router-replacement' },
     });
-    expect(replaced.secret.configured).toBe(true);
+    expect(replaced.draft.secret.configured).toBe(true);
+    expect(replaced.revision).toBeGreaterThan(created.revision);
     expect(await db.select().from(platformAiProviderSecrets)).toHaveLength(1);
   });
 
@@ -289,8 +319,8 @@ describe('admin AI catalog permission and reauth gates', () => {
       throw new Error('audit sink unavailable');
     });
     await expect(
-      (await callerFor(ids.aiAdmin, { authenticatedAt: null })).aiProviders.createDraft(
-        createProviderInput('audit-failure', {
+      (await callerFor(ids.aiAdmin, { authenticatedAt: null })).aiProviders.applyImmediate(
+        applyCreate('audit-failure', {
           operation: 'replace',
           value: 'never-written-secret',
         }),
@@ -308,12 +338,10 @@ describe('admin AI catalog permission and reauth gates', () => {
     await expect(caller.aiProviders.list({ limit: 10 })).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
+    await expect(caller.aiModels.list({ limit: 10 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
     await expect(
-      caller.aiModels.getCreateDraftContext({ providerId: 'missing' }),
+      caller.aiModels.dependents({ id: 'missing', providerId: 'missing' }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(caller.aiModels.listCreateTargets({ limit: 10 })).rejects.toMatchObject({
-      code: 'FORBIDDEN',
-    });
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'admin.permission.denied', result: 'denied' }),
     );
@@ -329,43 +357,126 @@ describe('admin AI catalog permission and reauth gates', () => {
       code: 'NOT_FOUND',
     });
     await expect(
-      caller.aiProviders.createDraft({
-        displayName: 'Denied',
-        providerKey: 'denied',
-        reason: 'auditor cannot create',
-      }),
+      caller.aiProviders.applyImmediate(applyCreate('denied', undefined, 'auditor cannot create')),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(
-      caller.aiModels.getUpdateDraftContext({ providerId: 'missing' }),
-    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(caller.aiModels.listCreateTargets({ limit: 10 })).rejects.toMatchObject({
-      code: 'FORBIDDEN',
-    });
   });
 
-  it('returns secret metadata only and denies stale publish reauth before mutation', async () => {
+  it('denies a model-only role every write while leaving model reads open', async () => {
+    // Model writes now go through the parent-provider publish, so AI_MODEL_* alone is
+    // never enough — there is no draft-context/draft-DML back door left.
+    const [provider] = await db
+      .insert(platformAiProviders)
+      .values({ displayName: 'Model-only target', providerKey: 'model-only' })
+      .returning();
+    const caller = await callerFor(ids.modelEditor);
+
+    await expect(caller.aiProviders.get({ id: provider.id })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await expect(caller.aiModels.list({ limit: 10 })).resolves.toMatchObject({ items: [] });
+    await expect(
+      caller.aiModels.applyImmediate({
+        enabled: true,
+        expectedDraftToken: '0'.repeat(64),
+        modelKey: 'chat',
+        operation: 'create',
+        providerId: provider.id,
+        reason: 'model-only create',
+        type: 'chat',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(await db.select().from(platformAiModels)).toEqual([]);
+  });
+
+  it('denies an inserting batchUpdate to a role without AI_MODEL_CREATE, but allows pure updates', async () => {
+    // `batchUpdate` decides insert-vs-update from database state, so the router's input-only
+    // compound gate cannot classify it — an update-only role must not be able to create
+    // arbitrary models through the upsert branch.
+    const admin = await callerFor(ids.aiAdmin);
+    const created = await admin.aiProviders.applyImmediate({
+      displayName: 'Least privilege',
+      enabled: true,
+      mode: 'create',
+      providerKey: 'least-privilege',
+      reason: 'seed provider',
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await admin.aiProviders.get({ id: created.draft.id });
+    await admin.aiModels.applyImmediate({
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      operation: 'create',
+      providerId: created.draft.id,
+      reason: 'seed model',
+      type: 'chat',
+    });
+
+    detail = await admin.aiProviders.get({ id: created.draft.id });
+    const existing = detail.draft.models[0]!;
+    const updater = await callerFor(ids.modelUpdater);
+
+    // Pure update: allowed with UPDATE + PUBLISH only.
+    await expect(
+      updater.aiModels.applyImmediate({
+        expectedDraftToken: detail.draftToken,
+        models: [{ displayName: 'Renamed by updater', id: existing.id }],
+        operation: 'batchUpdate',
+        providerId: created.draft.id,
+        reason: 'pure update batch',
+      }),
+    ).resolves.toMatchObject({ revision: expect.any(Number) });
+
+    detail = await admin.aiProviders.get({ id: created.draft.id });
+    expect(detail.draft.models[0]!.displayName).toBe('Renamed by updater');
+
+    // Same procedure, same declared operation — but this item would INSERT.
+    await expect(
+      updater.aiModels.applyImmediate({
+        expectedDraftToken: detail.draftToken,
+        models: [
+          { displayName: 'Renamed again', id: existing.id },
+          { displayName: 'Smuggled', enabled: true, id: 'smuggled-model-key', type: 'chat' },
+        ],
+        operation: 'batchUpdate',
+        providerId: created.draft.id,
+        reason: 'inserting batch must be denied',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // Atomic: the accompanying rename rolled back with the denied insert.
+    const after = await admin.aiProviders.get({ id: created.draft.id });
+    expect(after.draft.models).toHaveLength(1);
+    expect(after.draft.models[0]!.displayName).toBe('Renamed by updater');
+  });
+
+  it('returns secret metadata only and denies a stale-reauth apply before mutation', async () => {
     const caller = await callerFor(ids.aiAdmin);
     const credential = 'reauth-plain-credential-value';
-    const provider = await caller.aiProviders.createDraft({
+    const created = await caller.aiProviders.applyImmediate({
       displayName: 'Alpha',
       enabled: true,
+      mode: 'create',
       providerKey: 'alpha',
       reason: 'create',
       secret: { operation: 'replace', value: credential },
     });
-    expect(provider.secret.configured).toBe(true);
-    expect(JSON.stringify(provider)).not.toContain(credential);
-    const detail = await caller.aiProviders.get({ id: provider.id });
+    expect(created.draft.secret.configured).toBe(true);
+    expect(JSON.stringify(created)).not.toContain(credential);
+    const detail = await caller.aiProviders.get({ id: created.draft.id });
 
     const staleCaller = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
     await expect(
-      staleCaller.aiProviders.publish({
+      staleCaller.aiProviders.applyImmediate({
+        displayName: 'Blocked',
         expectedDraftToken: detail.draftToken,
-        expectedRevision: 0,
-        id: provider.id,
+        expectedRevision: detail.baseRevision,
+        id: created.draft.id,
+        mode: 'update',
         reason: `stale reauth ${credential}`,
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    // No new revision beyond the one the create published.
     expect(
       await db
         .select()
@@ -373,14 +484,14 @@ describe('admin AI catalog permission and reauth gates', () => {
         .where(
           and(
             eq(platformResourceRevisions.resourceType, 'provider'),
-            eq(platformResourceRevisions.resourceId, provider.id),
+            eq(platformResourceRevisions.resourceId, created.draft.id),
           ),
         ),
-    ).toHaveLength(0);
+    ).toHaveLength(created.revision);
     const audits = await db.select().from(platformAuditLogs);
     expect(audits).toContainEqual(
       expect.objectContaining({
-        action: 'admin.aiProviders.publish',
+        action: 'admin.aiProviders.applyImmediate',
         result: 'denied',
       }),
     );
@@ -392,8 +503,9 @@ describe('admin AI catalog permission and reauth gates', () => {
     const credential = 'router-arbitrary-credential-leaf';
     let thrown: unknown;
     try {
-      await caller.aiProviders.createDraft({
+      await caller.aiProviders.applyImmediate({
         displayName: `copied:${credential}`,
+        mode: 'create',
         providerKey: 'router-rejected',
         reason: 'create rejected',
         secret: { operation: 'replace', value: credential },
@@ -404,79 +516,5 @@ describe('admin AI catalog permission and reauth gates', () => {
     expect(thrown).toMatchObject({ code: 'PRECONDITION_FAILED' });
     expect(JSON.stringify(thrown)).not.toContain(credential);
     expect(await db.select().from(platformAiProviders)).toEqual([]);
-  });
-
-  it('lets a model-only global role obtain CAS context and mutate without provider update', async () => {
-    const [provider] = await db
-      .insert(platformAiProviders)
-      .values({ displayName: 'Model-only target', providerKey: 'model-only' })
-      .returning();
-    const caller = await callerFor(ids.modelEditor);
-    await expect(caller.aiProviders.get({ id: provider.id })).rejects.toMatchObject({
-      code: 'FORBIDDEN',
-    });
-
-    let context = await caller.aiModels.getCreateDraftContext({ providerId: provider.id });
-    const model = await caller.aiModels.create({
-      enabled: true,
-      expectedDraftToken: context.draftToken,
-      modelKey: 'chat',
-      providerId: provider.id,
-      reason: 'model-only create',
-    });
-    context = await caller.aiModels.getUpdateDraftContext({ providerId: provider.id });
-    const updated = await caller.aiModels.update({
-      displayName: 'Updated',
-      expectedDraftToken: context.draftToken,
-      expectedRevision: context.baseRevision,
-      id: model.id,
-      providerId: provider.id,
-      reason: 'model-only update',
-    });
-    expect(updated.displayName).toBe('Updated');
-    context = await caller.aiModels.getDeleteDraftContext({ providerId: provider.id });
-    await expect(
-      caller.aiModels.deleteFromDraft({
-        expectedDraftToken: context.draftToken,
-        id: model.id,
-        providerId: provider.id,
-        reason: 'model-only delete',
-      }),
-    ).resolves.toEqual({ deleted: true });
-  });
-
-  it('lets model creators discover empty providers through a paged secret-free target list', async () => {
-    await db.insert(platformAiProviders).values([
-      {
-        config: { endpoint: 'https://private-target.example.test' },
-        displayName: 'Alpha Empty',
-        encryptedKeyVaults: 'ciphertext-must-not-leak',
-        providerKey: 'alpha-empty',
-        settings: { sdkType: 'openai' },
-      },
-      { displayName: 'Beta Empty', providerKey: 'beta-empty' },
-    ]);
-    const caller = await callerFor(ids.modelEditor);
-
-    const first = await caller.aiModels.listCreateTargets({ limit: 1 });
-    expect(first.items).toEqual([
-      { displayName: 'Alpha Empty', id: expect.any(String), providerKey: 'alpha-empty' },
-    ]);
-    expect(first.nextCursor).toBe('alpha-empty');
-    const second = await caller.aiModels.listCreateTargets({
-      cursor: first.nextCursor!,
-      limit: 1,
-    });
-    expect(second.items).toEqual([
-      { displayName: 'Beta Empty', id: expect.any(String), providerKey: 'beta-empty' },
-    ]);
-    expect(second.nextCursor).toBeNull();
-    await expect(caller.aiModels.listCreateTargets({ limit: 10, query: 'Beta' })).resolves.toEqual({
-      items: [{ displayName: 'Beta Empty', id: expect.any(String), providerKey: 'beta-empty' }],
-      nextCursor: null,
-    });
-    expect(JSON.stringify([first, second])).not.toContain('private-target');
-    expect(JSON.stringify([first, second])).not.toContain('ciphertext');
-    expect(Object.keys(first.items[0]).sort()).toEqual(['displayName', 'id', 'providerKey']);
   });
 });

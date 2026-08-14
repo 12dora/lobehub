@@ -10,21 +10,14 @@ import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import {
   AiCatalogAdminService,
   AiCatalogNotFoundError,
+  AiCatalogPermissionDeniedError,
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from '../../services/aiCatalog/adminService';
 import { credentialStringLeaves } from '../../services/aiCatalog/credentialAdapter';
 import { sanitizeAiCatalogPersistedText } from '../../services/aiCatalog/persistentText';
-import {
-  AiCatalogSecretManager,
-  type AiSecretMutation,
-} from '../../services/aiCatalog/secretManager';
+import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import type { AuditAction } from '../../services/audit/auditActionCatalog';
-
-export const aiSecretMutationRequiresReauth = (mutation?: AiSecretMutation): boolean =>
-  mutation?.operation === 'replace' ||
-  mutation?.operation === 'merge' ||
-  mutation?.operation === 'clear';
 
 const safeDeniedReason = async (params: {
   existingSecretTargetId?: string | null;
@@ -85,6 +78,13 @@ export const mapServiceError = (error: unknown): never => {
       code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
       details: error.details as Record<string, string | number | boolean | null> | undefined,
       httpCode: 'CONFLICT',
+    });
+  }
+  if (error instanceof AiCatalogPermissionDeniedError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+      details: { permission: error.permission },
+      httpCode: 'FORBIDDEN',
     });
   }
   if (error instanceof AiCatalogValidationError) {

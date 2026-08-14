@@ -110,28 +110,8 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
   'admin.aiModels.applyImmediate': dangerousMutation(
     'admin.aiModels.applyImmediate',
     'high',
-    'Apply model draft mutation(s) and publish the parent provider immediately.',
-    { outbound: safeOutbound, reauth: recentReauth },
-  ),
-  'admin.aiModels.create': regularMutation(
-    'admin.aiModels.create',
-    'medium',
-    'Add a model to a provider draft.',
-  ),
-  'admin.aiModels.deleteFromDraft': regularMutation(
-    'admin.aiModels.deleteFromDraft',
-    'medium',
-    'Remove a model from a provider draft.',
-  ),
-  'admin.aiModels.reorder': regularMutation(
-    'admin.aiModels.reorder',
-    'medium',
-    'Reorder models in a provider draft.',
-  ),
-  'admin.aiModels.update': regularMutation(
-    'admin.aiModels.update',
-    'medium',
-    'Change a model in a provider draft.',
+    'Apply model mutation(s) and publish the parent provider immediately (the only model write).',
+    { reauth: recentReauth },
   ),
   // Persists nothing itself, so it stays a regular mutation — but it opens the single-use
   // grant whose redemption stores a shared platform credential, so it carries the same
@@ -158,43 +138,13 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
   'admin.aiProviders.applyImmediate': dangerousMutation(
     'admin.aiProviders.applyImmediate',
     'high',
-    'Apply provider draft changes and publish immediately (auto connection test at first publish).',
-    { outbound: safeOutbound, reauth: recentReauth },
-  ),
-  'admin.aiProviders.archive': dangerousMutation(
-    'admin.aiProviders.archive',
-    'high',
-    'Archive a published AI provider.',
+    'Apply provider changes and publish immediately (the only provider write; no remote probe).',
     { reauth: recentReauth },
-  ),
-  'admin.aiProviders.createDraft': regularMutation(
-    'admin.aiProviders.createDraft',
-    'medium',
-    'Create an AI provider draft.',
-    { reauth: conditionalReauth },
   ),
   'admin.aiProviders.delete': dangerousMutation(
     'admin.aiProviders.delete',
-    'high',
-    'Permanently delete an AI provider and all its models, secrets, and revisions.',
-    { reauth: recentReauth },
-  ),
-  'admin.aiProviders.publish': dangerousMutation(
-    'admin.aiProviders.publish',
-    'high',
-    'Publish AI provider configuration.',
-    { reauth: recentReauth },
-  ),
-  'admin.aiProviders.publishNow': dangerousMutation(
-    'admin.aiProviders.publishNow',
-    'high',
-    'Re-run first-publish connection test when required, then publish immediately.',
-    { outbound: safeOutbound, reauth: recentReauth },
-  ),
-  'admin.aiProviders.rollback': dangerousMutation(
-    'admin.aiProviders.rollback',
-    'high',
-    'Roll back published AI provider configuration.',
+    'critical',
+    'Permanently delete an AI provider with all its models, secrets, and revision history.',
     { reauth: recentReauth },
   ),
   'admin.aiProviders.test': regularMutation(
@@ -202,12 +152,6 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'medium',
     'Test an AI provider connection.',
     { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
-  ),
-  'admin.aiProviders.updateDraft': regularMutation(
-    'admin.aiProviders.updateDraft',
-    'medium',
-    'Change an AI provider draft.',
-    { reauth: conditionalReauth },
   ),
   'admin.skills.applyImmediate': dangerousMutation(
     'admin.skills.applyImmediate',
