@@ -21,6 +21,7 @@ import { LastSuperAdminError, PlatformRbacService } from '../services/platformRb
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { adminAgentsRouter } from './admin/agents';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
+import { adminAiProviderOAuthRouter } from './admin/aiProviderOAuth';
 import { adminAuditRouter } from './admin/audit';
 import { adminAuthSettingsRouter } from './admin/authSettings';
 import { adminBrandingRouter } from './admin/branding';
@@ -168,6 +169,7 @@ export const adminRolesRouter = router({
 export const adminRouter = router({
   agents: adminAgentsRouter,
   aiModels: adminAiModelsRouter,
+  aiProviderOAuth: adminAiProviderOAuthRouter,
   aiProviders: adminAiProvidersRouter,
   audit: adminAuditRouter,
   auth: adminAuthRouter,

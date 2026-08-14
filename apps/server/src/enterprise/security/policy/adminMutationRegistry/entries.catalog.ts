@@ -1,4 +1,5 @@
 import {
+  conditional,
   conditionalReauth,
   dangerousMutation,
   enforced,
@@ -11,6 +12,16 @@ import {
   validationNoLkg,
 } from './helpers';
 import type { AdminMutationDefinition } from './types';
+
+/**
+ * Device-flow endpoints come from the immutable builtin provider catalog, never from
+ * admin input, so there is no address to validate — but they also do not travel
+ * through the shared outbound policy client, which this states explicitly.
+ */
+const fixedProviderEndpointOutbound = conditional(
+  'Remote endpoints are fixed constants of the builtin provider catalog and cannot be set by an operator.',
+  'These fixed endpoints are not routed through the enterprise outbound policy client.',
+);
 
 export const ADMIN_MUTATION_ENTRIES_CATALOG = {
   'admin.agents.appendVersion': regularMutation(
@@ -119,6 +130,17 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'admin.aiModels.update',
     'medium',
     'Change a model in a provider draft.',
+  ),
+  'admin.aiProviderOAuth.initiateDeviceCode': validationMutation(
+    'admin.aiProviderOAuth.initiateDeviceCode',
+    'Request a device authorization code for a shared platform provider account.',
+    { lastKnownGood: remoteProbeNoLkg, outbound: fixedProviderEndpointOutbound },
+  ),
+  'admin.aiProviderOAuth.pollAuthStatus': dangerousMutation(
+    'admin.aiProviderOAuth.pollAuthStatus',
+    'high',
+    'Store the authorized shared platform provider account and publish it immediately.',
+    { outbound: fixedProviderEndpointOutbound, reauth: recentReauth },
   ),
   'admin.aiProviders.applyImmediate': dangerousMutation(
     'admin.aiProviders.applyImmediate',

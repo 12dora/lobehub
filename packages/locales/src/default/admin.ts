@@ -732,6 +732,37 @@ export default {
   'aiProviderSettings.draftBanner.title': 'Changes saved as draft — not live yet',
   'aiProviderSettings.description':
     'Manage global platform AI providers. Changes publish immediately.',
+  'aiProviderSettings.sharedOAuth.account': 'Account {{account}}',
+  'aiProviderSettings.sharedOAuth.accountUnknown': 'Account connected',
+  'aiProviderSettings.sharedOAuth.autoRefresh': 'The access token refreshes automatically.',
+  'aiProviderSettings.sharedOAuth.cancel': 'Cancel',
+  'aiProviderSettings.sharedOAuth.connect': 'Connect account',
+  'aiProviderSettings.sharedOAuth.connected': 'Connected',
+  'aiProviderSettings.sharedOAuth.description':
+    'One {{name}} account is stored on the platform and serves every member. Members never connect their own.',
+  'aiProviderSettings.sharedOAuth.disconnectedHint':
+    'No {{name}} account is connected yet, so this provider cannot answer requests.',
+  'aiProviderSettings.sharedOAuth.done': 'Done',
+  'aiProviderSettings.sharedOAuth.enterCode': 'Enter this code on the {{name}} authorization page:',
+  'aiProviderSettings.sharedOAuth.error.authError':
+    'The authorization request failed. Please try again.',
+  'aiProviderSettings.sharedOAuth.error.codeExpired':
+    'The code expired before the authorization finished. Start again to get a new one.',
+  'aiProviderSettings.sharedOAuth.error.denied': 'The authorization was denied by the provider.',
+  'aiProviderSettings.sharedOAuth.expiresAt': 'Access token expires {{time}}',
+  'aiProviderSettings.sharedOAuth.notConnected': 'Not connected',
+  'aiProviderSettings.sharedOAuth.openPage': 'Open authorization page',
+  'aiProviderSettings.sharedOAuth.polling': 'Waiting for the authorization to complete…',
+  'aiProviderSettings.sharedOAuth.reconnect': 'Reconnect',
+  'aiProviderSettings.sharedOAuth.requesting': 'Requesting a device code…',
+  'aiProviderSettings.sharedOAuth.retry': 'Try again',
+  'aiProviderSettings.sharedOAuth.retryStatus': 'Reload',
+  'aiProviderSettings.sharedOAuth.statusFailed': 'Could not load the connection status.',
+  'aiProviderSettings.sharedOAuth.success.needsModels':
+    'Account connected. Add at least one model and turn the provider on to make it available to members.',
+  'aiProviderSettings.sharedOAuth.success.published':
+    'Account connected. This provider is live for all members.',
+  'aiProviderSettings.sharedOAuth.title': 'Shared platform account',
   'aiConnectorSettings.httpOnly':
     'Platform connectors support HTTP MCP servers only — stdio runs on user devices and cannot be provided org-wide.',
   'aiConnectorSettings.oauthViaAdvanced':
@@ -2540,6 +2571,9 @@ export default {
   'audit.logs.action.admin.aiModels.deleteFromDraft': 'Delete model from draft',
   'audit.logs.action.admin.aiModels.reorder': 'Reorder models',
   'audit.logs.action.admin.aiModels.update': 'Update model',
+  'audit.logs.action.admin.aiProviderOAuth.initiateDeviceCode':
+    'Start shared provider account connection',
+  'audit.logs.action.admin.aiProviderOAuth.pollAuthStatus': 'Connect shared provider account',
   'audit.logs.action.admin.aiProviders.applyImmediate': 'Apply provider',
   'audit.logs.action.admin.aiProviders.archive': 'Archive provider',
   'audit.logs.action.admin.aiProviders.createDraft': 'Create provider draft',

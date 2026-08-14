@@ -187,6 +187,29 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_UPDATE] },
   },
   {
+    kind: 'query',
+    path: 'admin.aiProviderOAuth.getConnectionStatus',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.aiProviderOAuth.initiateDeviceCode',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.aiProviderOAuth.pollAuthStatus',
+    // Create-vs-update is decided by server state, not input, so both are required with PUBLISH.
+    permission: {
+      mode: 'all',
+      permissions: [
+        PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+      ],
+    },
+  },
+  {
     kind: 'mutation',
     path: 'admin.aiProviders.applyImmediate',
     // PUBLISH always required; CREATE/UPDATE selected from input.mode.

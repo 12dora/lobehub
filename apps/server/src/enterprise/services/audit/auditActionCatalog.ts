@@ -32,6 +32,8 @@ export const AUDIT_ACTIONS = [
   'admin.aiModels.deleteFromDraft',
   'admin.aiModels.reorder',
   'admin.aiModels.update',
+  'admin.aiProviderOAuth.initiateDeviceCode',
+  'admin.aiProviderOAuth.pollAuthStatus',
   'admin.aiProviders.applyImmediate',
   'admin.aiProviders.archive',
   'admin.aiProviders.createDraft',

@@ -63,14 +63,14 @@ describe('admin procedure authorization registry', () => {
     expect(() => reconcile()).not.toThrow();
 
     // Registry length after external access-module procedure removal + secretRotation.restart.
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(194);
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(197);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(89);
+    ).toHaveLength(90);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(105);
-    expect(mutationPaths).toHaveLength(105);
+    ).toHaveLength(107);
+    expect(mutationPaths).toHaveLength(107);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
