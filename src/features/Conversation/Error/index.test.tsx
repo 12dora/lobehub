@@ -202,6 +202,28 @@ describe('ErrorMessageExtra', () => {
     expect(screen.getByText('response.PLATFORM_AI_PROVIDER_DISABLED')).toBeInTheDocument();
   });
 
+  it('localizes a not-published model error instead of falling back to the report UI', () => {
+    serverConfigMock.enableBusinessFeatures = true;
+
+    render(
+      <ErrorMessageExtra
+        error={{ message: 'response.PLATFORM_AI_MODEL_NOT_PUBLISHED' }}
+        data={{
+          error: {
+            body: { traceId: 'trace-790' },
+            message: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+            type: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+          } as any,
+          id: 'msg-model-unpublished',
+        }}
+      />,
+    );
+
+    // A chat request racing an admin unpublish must read as an actionable message.
+    expect(screen.queryByText('dynamic')).not.toBeInTheDocument();
+    expect(screen.getByText('response.PLATFORM_AI_MODEL_NOT_PUBLISHED')).toBeInTheDocument();
+  });
+
   it('shows the trace-id report UI for unknown traceable errors', () => {
     serverConfigMock.enableBusinessFeatures = true;
 

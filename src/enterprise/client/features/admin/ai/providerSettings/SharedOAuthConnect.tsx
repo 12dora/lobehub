@@ -246,14 +246,21 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     }
 
     const expiry = formatExpiry(status?.expiresAt ?? null);
+    /**
+     * Prefer the full sign-in email: it is the only human-readable identity of the shared
+     * account, and an operator needs to recognise WHICH account is connected. `accountIdMasked`
+     * is a 4-char prefix of the Codex workspace UUID — it identifies nothing to a human, so it
+     * is only the fallback for connections stored before the email was captured.
+     */
+    const account = status?.accountEmail ?? status?.accountIdMasked ?? null;
 
     return (
       <Flexbox gap={12}>
         {status?.connected ? (
           <Flexbox gap={4}>
             <Text className={styles.meta}>
-              {status.accountIdMasked
-                ? t('aiProviderSettings.sharedOAuth.account', { account: status.accountIdMasked })
+              {account
+                ? t('aiProviderSettings.sharedOAuth.account', { account })
                 : t('aiProviderSettings.sharedOAuth.accountUnknown')}
             </Text>
             <Text className={styles.hint}>

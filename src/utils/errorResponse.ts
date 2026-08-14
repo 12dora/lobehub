@@ -4,6 +4,25 @@ import { AgentRuntimeErrorType } from '@lobechat/model-runtime';
 import { type ErrorResponse, type ErrorType } from '@lobechat/types';
 import { ChatErrorType } from '@lobechat/types';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+
+/**
+ * Status used when an error type has no mapping. A non-numeric or out-of-range status makes the
+ * `Response` constructor throw `RangeError`, and because `createErrorResponse` is called from
+ * inside route catch blocks that throw surfaces as an opaque HTTP 500 — hiding the real error
+ * type from the client. Falling back to 500 keeps the payload (which carries `errorType`) intact.
+ */
+const FALLBACK_STATUS = 500;
+
+/** Platform catalog refusals that are a client-side permission problem, not a server fault. */
+const PLATFORM_FORBIDDEN_ERROR_CODES = new Set<string>([
+  PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED,
+  PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED,
+]);
+
+const isValidHttpStatus = (status: unknown): status is number =>
+  typeof status === 'number' && Number.isInteger(status) && status >= 200 && status <= 599;
+
 /**
  * Error types that indicate a real authentication failure.
  * When these errors occur, the response will include X-Auth-Required header
@@ -75,6 +94,14 @@ const getStatus = (errorType: ILobeAgentRuntimeErrorType | ErrorType) => {
     }
   }
 
+  // Platform-managed catalog refusals. Both mean "the admin has not made this available to you",
+  // which is a forbidden request, not a server fault — and without an explicit mapping they fell
+  // through as raw strings and blew up the Response constructor.
+  //
+  // Compared outside the switch above: these codes are raised by the enterprise catalog layer
+  // and are deliberately not members of the shared `ErrorType` union.
+  if (PLATFORM_FORBIDDEN_ERROR_CODES.has(errorType as string)) return 403;
+
   return errorType as number;
 };
 
@@ -82,16 +109,20 @@ export const createErrorResponse = (
   errorType: ErrorType | ILobeAgentRuntimeErrorType,
   body?: any,
 ) => {
-  const statusCode = getStatus(errorType);
+  const mappedStatus = getStatus(errorType);
 
   const data: ErrorResponse = { body, errorType };
 
-  if (typeof statusCode !== 'number' || statusCode < 200 || statusCode > 599) {
+  if (!isValidHttpStatus(mappedStatus)) {
     console.error(
-      `current StatusCode: \`${statusCode}\` .`,
+      `current StatusCode: \`${mappedStatus}\` .`,
       'Please go to `./src/app/api/errorResponse.ts` to defined the statusCode.',
     );
   }
+
+  // Never hand an unmapped value to `Response`: it throws RangeError, and callers invoke this
+  // from a catch block, so the throw becomes a bare 500 with no errorType for the client to read.
+  const statusCode = isValidHttpStatus(mappedStatus) ? mappedStatus : FALLBACK_STATUS;
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

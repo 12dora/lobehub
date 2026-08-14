@@ -434,6 +434,8 @@
   "llm.checker.button": "检查",
   "llm.checker.desc": "测试 Api Key 与代理地址是否正确填写",
   "llm.checker.pass": "检查通过",
+  "llm.checker.reason.checkModelNotConfigured": "该服务商尚未配置检查模型。请先在上方选择一个模型，再重试检查。",
+  "llm.checker.reason.checkModelNotEnabled": "该模型尚未启用。请先在模型列表中启用该模型，再重试检查。",
   "llm.checker.title": "连通性检查",
   "llm.customModelCards.addNew": "创建并添加 {{id}} 模型",
   "llm.customModelCards.config": "配置模型",

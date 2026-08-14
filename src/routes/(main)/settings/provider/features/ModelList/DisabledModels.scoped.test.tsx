@@ -138,3 +138,47 @@ describe('DisabledModels admin datasource isolation (AI-01)', () => {
     expect(key[0]).toBe('admin');
   });
 });
+
+const buildUserServices = (): AiInfraServices => {
+  const services = buildAdminServices();
+  return {
+    ...services,
+    aiModel: { ...services.aiModel, getAiProviderModelList: userGetList },
+    swrScope: undefined as never,
+  };
+};
+
+describe('DisabledModels for a platform-managed provider (bug E)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    userGetList.mockResolvedValue([]);
+    adminGetList.mockResolvedValue([]);
+  });
+
+  it('renders admin-published models the viewer turned off instead of dropping them', async () => {
+    // The settings list for an ACTIVE platform-managed provider is the published set overlaid
+    // with the viewer's own choices, so a model the user disabled comes back with
+    // `enabled: false` and must appear here — previously it vanished from settings entirely.
+    const store = createAiInfraStore(buildUserServices());
+    store.setState({
+      aiProviderModelList: [
+        { displayName: 'GPT-5.6 Sol', enabled: false, id: 'gpt-5.6-sol', type: 'chat' },
+        { displayName: 'GPT-5.5', enabled: false, id: 'gpt-5.5', type: 'chat' },
+      ],
+      isAiModelListInit: true,
+    });
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <SWRConfig value={{ dedupingInterval: 0, provider: () => new Map() }}>
+        <AiInfraStoreProvider store={store}>{children}</AiInfraStoreProvider>
+      </SWRConfig>
+    );
+
+    const { queryByTestId } = render(<DisabledModels activeTab="all" providerId="chatgpt" />, {
+      wrapper,
+    });
+
+    await waitFor(() => expect(queryByTestId('model-gpt-5.6-sol')).not.toBeNull());
+    expect(queryByTestId('model-gpt-5.5')).not.toBeNull();
+  });
+});

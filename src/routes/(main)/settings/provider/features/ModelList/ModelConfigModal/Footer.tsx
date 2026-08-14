@@ -34,8 +34,12 @@ const ModelConfigFooter = memo<ModelConfigFooterProps>(({ formRef, id }) => {
           const data = form.getFieldsValue();
 
           setLoading(true);
-          await updateAiModelsConfig(id, editingProvider, data);
-          setLoading(false);
+          try {
+            await updateAiModelsConfig(id, editingProvider, data);
+          } finally {
+            // Always clear: a rejected write must not leave the OK button spinning.
+            setLoading(false);
+          }
 
           close();
         }}

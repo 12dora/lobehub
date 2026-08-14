@@ -64,8 +64,28 @@ export class AiModelActionImpl {
     const { activeAiProvider } = this.#get();
     if (!activeAiProvider) return;
 
-    await this.#services.aiModel.batchToggleAiModels(activeAiProvider, ids, enabled);
-    await this.#get().refreshAiModelList();
+    // A rejected batch does NOT mean nothing was applied: the admin adapter splits a mixed
+    // selection into a toggle of existing rows plus a materializing upsert, so the first
+    // operation can publish and the second still fail. Refresh either way, or the list keeps
+    // showing the pre-operation state for models that really did change.
+    let writeError: unknown;
+    let failed = false;
+    try {
+      await this.#services.aiModel.batchToggleAiModels(activeAiProvider, ids, enabled);
+    } catch (error) {
+      writeError = error;
+      failed = true;
+    }
+
+    try {
+      await this.#get().refreshAiModelList();
+    } catch (refreshError) {
+      // Never let a failed resync replace the write rejection — that error carries the
+      // user-facing failure the caller reports. Stale list only.
+      if (!failed) throw refreshError;
+    }
+
+    if (failed) throw writeError;
   };
 
   batchUpdateAiModels = async (models: AiProviderModelListItem[]): Promise<void> => {

@@ -115,6 +115,8 @@ export default {
     'The model service is currently under heavy load. Please try again later or switch to another model.',
   'response.FreePlanLimit':
     'You are currently a free user and cannot use this feature. Please upgrade to a paid plan to continue using it.',
+  'response.PLATFORM_AI_MODEL_NOT_PUBLISHED':
+    'This model is no longer published by your administrator. Switch to another model and try again.',
   'response.PLATFORM_AI_PROVIDER_DISABLED':
     'This provider has been removed or disabled by your administrator. Switch to another model and try again.',
   'response.InsufficientBudgetForModel':

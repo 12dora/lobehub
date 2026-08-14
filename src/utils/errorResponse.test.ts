@@ -102,12 +102,54 @@ describe('createErrorResponse', () => {
   // 测试状态码不在200-599范围内的情况
   it('logs an error when the status code is not a number or not in the range of 200-599', () => {
     const errorType = 'Unknown Error';
-    const consoleSpy = vi.spyOn(console, 'error');
-    try {
-      createErrorResponse(errorType as any);
-    } catch (e) {}
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createErrorResponse(errorType as any);
     expect(consoleSpy).toHaveBeenCalled();
     consoleSpy.mockRestore();
+  });
+
+  describe('platform-managed catalog refusals', () => {
+    it('returns 403 when the requested model is not published', () => {
+      const response = createErrorResponse('PLATFORM_AI_MODEL_NOT_PUBLISHED' as any);
+      expect(response.status).toBe(403);
+    });
+
+    it('returns 403 when the provider was disabled by an administrator', () => {
+      const response = createErrorResponse('PLATFORM_AI_PROVIDER_DISABLED' as any);
+      expect(response.status).toBe(403);
+    });
+  });
+
+  describe('unmapped status hardening', () => {
+    // Regression: an unmapped errorType used to reach `new Response({ status })` as a raw
+    // string. The constructor threw RangeError inside the route's catch block, so the client
+    // got an opaque 500 with no errorType at all.
+    it.each([
+      ['a non-numeric error type', 'SOME_UNMAPPED_ERROR_TYPE'],
+      ['an out-of-range numeric status', 120],
+      ['a non-integer status', 404.5],
+    ])('falls back to 500 without throwing for %s', (_case, errorType) => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      let response: Response | undefined;
+      expect(() => {
+        response = createErrorResponse(errorType as any);
+      }).not.toThrow();
+
+      expect(response!.status).toBe(500);
+      expect(consoleSpy).toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it('still reports the original errorType in the payload', async () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const response = createErrorResponse('SOME_UNMAPPED_ERROR_TYPE' as any);
+      consoleSpy.mockRestore();
+
+      await expect(response.json()).resolves.toMatchObject({
+        errorType: 'SOME_UNMAPPED_ERROR_TYPE',
+      });
+    });
   });
 
   // 测试默认情况

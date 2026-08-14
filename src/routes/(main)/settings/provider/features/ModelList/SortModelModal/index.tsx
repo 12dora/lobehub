@@ -88,8 +88,12 @@ const SortModelModal = memo<SortModelModalProps>(({ open, onCancel, defaultItems
             }));
 
             setLoading(true);
-            await updateAiModelsSort(providerId, sortMap);
-            setLoading(false);
+            try {
+              await updateAiModelsSort(providerId, sortMap);
+            } finally {
+              // Always clear: a rejected batch write must not leave the button spinning.
+              setLoading(false);
+            }
             message.success(t('sortModal.success'));
             onCancel();
           }}

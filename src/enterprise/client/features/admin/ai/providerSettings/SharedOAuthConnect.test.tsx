@@ -75,6 +75,7 @@ beforeEach(() => {
   mocks.flowOptions.value = undefined;
   mocks.swr.mockReturnValue(
     swrResult({
+      accountEmail: null,
       accountIdMasked: null,
       connected: false,
       expiresAt: null,
@@ -92,9 +93,10 @@ describe('SharedOAuthConnect', () => {
     expect(screen.getByText('aiProviderSettings.sharedOAuth.connect')).toBeTruthy();
   });
 
-  it('shows the masked account and expiry once connected', () => {
+  it('shows the full sign-in email and expiry once connected', () => {
     mocks.swr.mockReturnValue(
       swrResult({
+        accountEmail: 'ops@example.com',
         accountIdMasked: 'acc1…',
         connected: true,
         expiresAt: String(Date.UTC(2030, 0, 1)),
@@ -105,9 +107,43 @@ describe('SharedOAuthConnect', () => {
     render(<SharedOAuthConnect providerId="chatgpt" />);
 
     expect(screen.getByText('aiProviderSettings.sharedOAuth.connected')).toBeTruthy();
-    expect(screen.getByText(/"account":"acc1…"/)).toBeTruthy();
+    // The email wins over the masked Codex workspace UUID: only it identifies the account.
+    expect(screen.getByText(/"account":"ops@example.com"/)).toBeTruthy();
+    expect(screen.queryByText(/"account":"acc1…"/)).toBeNull();
     expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeTruthy();
     expect(screen.getByText('aiProviderSettings.sharedOAuth.reconnect')).toBeTruthy();
+  });
+
+  it('falls back to the masked account id for connections stored before the email', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: null,
+        accountIdMasked: 'acc1…',
+        connected: true,
+        expiresAt: null,
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+
+    expect(screen.getByText(/"account":"acc1…"/)).toBeTruthy();
+  });
+
+  it('says the account is unknown when neither identity is available', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: null,
+        accountIdMasked: null,
+        connected: true,
+        expiresAt: null,
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.accountUnknown')).toBeTruthy();
   });
 
   it('offers a reload when the connection status cannot be read', () => {

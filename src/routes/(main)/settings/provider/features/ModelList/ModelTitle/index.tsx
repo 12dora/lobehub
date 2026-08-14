@@ -94,8 +94,12 @@ const ModelTitle = memo<ModelFetcherProps>(
                       onClick={async () => {
                         if (!canManageProvider) return;
                         setClearRemoteModelsLoading(true);
-                        await clearObtainedModels(provider);
-                        setClearRemoteModelsLoading(false);
+                        try {
+                          await clearObtainedModels(provider);
+                        } finally {
+                          // Always clear: a rejected bulk clear must not spin forever.
+                          setClearRemoteModelsLoading(false);
+                        }
                       }}
                     />
                   )}

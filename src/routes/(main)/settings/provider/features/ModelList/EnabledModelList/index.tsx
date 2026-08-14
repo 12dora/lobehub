@@ -63,11 +63,21 @@ const EnabledModelList = ({ activeTab }: EnabledModelListProps) => {
                   onClick={async () => {
                     if (!canManageProvider) return;
                     setBatchLoading(true);
-                    await batchToggleAiModels(
-                      togglableModels.map((i) => i.id),
-                      false,
-                    );
-                    setBatchLoading(false);
+                    try {
+                      await batchToggleAiModels(
+                        togglableModels.map((i) => i.id),
+                        false,
+                      );
+                    } catch (error) {
+                      // The write layer owns the user-facing toast; swallowing the rejection
+                      // here only stops it becoming an unhandled promise inside React's
+                      // event dispatch (same handling as the model fetcher in ModelTitle).
+                      console.error(error);
+                    } finally {
+                      // Never leave the icon spinning — a stuck control is unrecoverable
+                      // without a reload.
+                      setBatchLoading(false);
+                    }
                   }}
                 />
               )}

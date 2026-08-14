@@ -22,6 +22,7 @@ type LooseT = (key: string, vars?: Record<string, unknown>) => string;
  * that one addresses an operator, this one addresses the person mid-chat.
  */
 export const PLATFORM_LOCALIZED_ERROR_TYPES = new Set<string>([
+  PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED,
   PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED,
 ]);
 

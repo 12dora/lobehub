@@ -513,6 +513,10 @@ export default {
   'llm.checker.button': 'Check',
   'llm.checker.desc': 'Test if the API Key and proxy address are filled in correctly',
   'llm.checker.pass': 'Check Passed',
+  'llm.checker.reason.checkModelNotConfigured':
+    'No check model is configured for this provider. Pick a model above, then run the check again.',
+  'llm.checker.reason.checkModelNotEnabled':
+    'This model is not enabled yet. Enable it in the model list first, then run the check again.',
   'llm.checker.title': 'Connectivity Check',
   'llm.customModelCards.addNew': 'Create and add {{id}} model',
   'llm.customModelCards.config': 'Model Configuration',

@@ -73,6 +73,54 @@ describe('AiModelAction', () => {
 
       expect(serviceSpy).not.toHaveBeenCalled();
     });
+
+    it('propagates a rejected batch so the caller can clear its loading state', async () => {
+      const { result } = renderHook(() => useStore());
+      vi.spyOn(result.current, 'refreshAiModelList').mockResolvedValue(undefined);
+      vi.spyOn(aiModelService, 'batchToggleAiModels').mockRejectedValue(new Error('apply failed'));
+
+      await expect(result.current.batchToggleAiModels(['model-1'], true)).rejects.toThrow(
+        'apply failed',
+      );
+    });
+
+    it('refreshes the list after a partially applied batch and still surfaces the error', async () => {
+      // The admin adapter splits a mixed selection into two writes: existing rows are toggled,
+      // rows with no platform row are materialized. Operation 1 can publish and operation 2
+      // still fail — those first models DID change, so the list must be re-read.
+      const { result } = renderHook(() => useStore());
+      const refreshSpy = vi
+        .spyOn(result.current, 'refreshAiModelList')
+        .mockResolvedValue(undefined);
+      vi.spyOn(aiModelService, 'batchToggleAiModels').mockRejectedValue(
+        new Error('materialization failed after toggle published'),
+      );
+
+      await expect(
+        result.current.batchToggleAiModels(['already-a-row', 'never-materialized'], true),
+      ).rejects.toThrow('materialization failed after toggle published');
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the write rejection when the follow-up refresh also fails', async () => {
+      const { result } = renderHook(() => useStore());
+      vi.spyOn(result.current, 'refreshAiModelList').mockRejectedValue(new Error('refresh failed'));
+      vi.spyOn(aiModelService, 'batchToggleAiModels').mockRejectedValue(new Error('apply failed'));
+
+      await expect(result.current.batchToggleAiModels(['model-1'], true)).rejects.toThrow(
+        'apply failed',
+      );
+    });
+
+    it('surfaces a refresh failure only when the batch itself succeeded', async () => {
+      const { result } = renderHook(() => useStore());
+      vi.spyOn(result.current, 'refreshAiModelList').mockRejectedValue(new Error('refresh failed'));
+      vi.spyOn(aiModelService, 'batchToggleAiModels').mockResolvedValue(undefined);
+
+      await expect(result.current.batchToggleAiModels(['model-1'], true)).rejects.toThrow(
+        'refresh failed',
+      );
+    });
   });
 
   describe('batchUpdateAiModels', () => {
@@ -127,6 +175,14 @@ describe('AiModelAction', () => {
       });
 
       expect(serviceSpy).not.toHaveBeenCalled();
+    });
+
+    it('propagates a rejected batch update so the caller can clear its loading state', async () => {
+      const { result } = renderHook(() => useStore());
+      vi.spyOn(result.current, 'refreshAiModelList').mockResolvedValue(undefined);
+      vi.spyOn(aiModelService, 'batchUpdateAiModels').mockRejectedValue(new Error('apply failed'));
+
+      await expect(result.current.batchUpdateAiModels([])).rejects.toThrow('apply failed');
     });
   });
 

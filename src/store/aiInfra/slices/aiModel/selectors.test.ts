@@ -96,6 +96,43 @@ describe('aiModelSelectors', () => {
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('model2');
     });
+
+    it('keeps a user-disabled platform model in the list so it lands in 未启用', () => {
+      // Platform-managed providers serve the admin-published set overlaid with the viewer's own
+      // enable/disable choices. A model the user turned off must stay in the array with
+      // `enabled: false` — dropping it made the model vanish from settings entirely instead of
+      // moving to the disabled section.
+      const platformState = {
+        ...mockState,
+        aiProviderModelList: [
+          { displayName: 'Published On', enabled: true, id: 'gpt-5.6-sol', type: 'chat' },
+          { displayName: 'Published Off', enabled: false, id: 'gpt-5.5', type: 'chat' },
+        ],
+      } as AIProviderStoreState;
+
+      expect(aiModelSelectors.enabledAiProviderModelList(platformState).map((m) => m.id)).toEqual([
+        'gpt-5.6-sol',
+      ]);
+      expect(aiModelSelectors.disabledAiProviderModelList(platformState).map((m) => m.id)).toEqual([
+        'gpt-5.5',
+      ]);
+    });
+
+    it('moves every model to the disabled slice after a disable-all', () => {
+      const afterDisableAll = {
+        ...mockState,
+        aiProviderModelList: [
+          { displayName: 'Published On', enabled: false, id: 'gpt-5.6-sol', type: 'chat' },
+          { displayName: 'Published Off', enabled: false, id: 'gpt-5.5', type: 'chat' },
+        ],
+      } as AIProviderStoreState;
+
+      expect(aiModelSelectors.enabledAiProviderModelList(afterDisableAll)).toHaveLength(0);
+      // Not vanished: the disabled section renders both, so the user can turn them back on.
+      expect(
+        aiModelSelectors.disabledAiProviderModelList(afterDisableAll).map((m) => m.id),
+      ).toEqual(['gpt-5.6-sol', 'gpt-5.5']);
+    });
   });
 
   describe('filteredAiProviderModelList', () => {

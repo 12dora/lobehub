@@ -7,6 +7,7 @@ import { ModelIcon } from '@lobehub/icons';
 import { Alert, Button, Flexbox, Highlighter, Icon } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
+import isEqual from 'fast-deep-equal';
 import { Loader2Icon } from 'lucide-react';
 import { type ReactNode } from 'react';
 import { memo, use, useEffect, useMemo, useState } from 'react';
@@ -26,7 +27,13 @@ const styles = createStaticStyles(({ css }) => ({
     width: 380px;
   `,
 }));
-const Error = memo<{ error: ChatMessageError }>(({ error }) => {
+/**
+ * `title` overrides the error-type headline. The platform probe answers with its own sanitized
+ * reason ("authentication rejected", "check model is not enabled", …); rendering the generic
+ * `ConnectionCheckFailed` copy over it told operators to inspect a `/v1` proxy suffix that had
+ * nothing to do with the failure, and buried the real reason in the expandable JSON.
+ */
+const Error = memo<{ error: ChatMessageError; title?: string }>(({ error, title }) => {
   const { t } = useTranslation(['error', 'modelRuntime']);
   const providerName = useProviderName(error.body?.provider);
 
@@ -34,7 +41,7 @@ const Error = memo<{ error: ChatMessageError }>(({ error }) => {
     <Flexbox gap={8} style={{ maxWidth: 600, width: '100%' }}>
       <Alert
         showIcon
-        title={getRuntimeErrorMessage(t, error.type, { provider: providerName })}
+        title={title ?? getRuntimeErrorMessage(t, error.type, { provider: providerName })}
         type={'error'}
         extra={
           <Flexbox paddingBlock={8} paddingInline={16}>
@@ -66,6 +73,24 @@ interface ConnectionCheckerProps {
   onBeforeCheck: () => Promise<void>;
   provider: string;
 }
+
+/**
+ * Stable reasons the platform probe reports when it refuses to run at all. They are actionable
+ * by the operator, so they get their own copy instead of the server's terse sanitized string.
+ * Matched loosely (case/punctuation-insensitive) so the wording can evolve server-side without
+ * silently falling back to the generic message.
+ */
+const CHECK_MODEL_REASON_KEYS: Record<string, string> = {
+  check_model_not_configured: 'llm.checker.reason.checkModelNotConfigured',
+  check_model_not_enabled: 'llm.checker.reason.checkModelNotEnabled',
+};
+
+const normalizeReason = (message: string): string =>
+  message
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, '_')
+    .replaceAll(/^_+|_+$/g, '');
 
 const Checker = memo<ConnectionCheckerProps>(
   ({ model, provider, checkErrorRender: CheckErrorRender, onBeforeCheck, onAfterCheck }) => {
@@ -114,16 +139,44 @@ const Checker = memo<ConnectionCheckerProps>(
     const [checkModel, setCheckModel] = useState(model);
 
     const [error, setError] = useState<ChatMessageError | undefined>();
+    const [errorTitle, setErrorTitle] = useState<string | undefined>();
 
-    // Sync checkModel state when model prop changes
+    /**
+     * Models the runtime will actually accept for this provider. For a platform-managed provider
+     * this is the admin-published set; for BYOK it is the user's enabled set.
+     */
+    const runtimeEnabledChatModels = useAiInfraStore(
+      (s) =>
+        (s.enabledAiModels ?? [])
+          .filter((item) => item.providerId === provider && item.type === 'chat')
+          .map((item) => item.id),
+      // Derived array: compare by value, or every store tick re-renders and re-runs the effect.
+      isEqual,
+    );
+
+    // Sync checkModel state when model prop changes.
+    //
+    // The card's default check model (e.g. chatgpt's `gpt-5.5`) is NOT necessarily one the
+    // runtime serves: on a platform-managed provider only admin-published models pass the
+    // allowlist, so checking the card default returned PLATFORM_AI_MODEL_NOT_PUBLISHED. Fall
+    // back to a model that is actually enabled. The admin surface keeps the persisted value —
+    // there the dropdown IS the stored `checkModel`, and silently showing something else would
+    // misrepresent the saved config.
     useEffect(() => {
-      setCheckModel(model);
-    }, [model]);
+      if (isAdminPlatformCatalog || runtimeEnabledChatModels.length === 0) {
+        setCheckModel(model);
+        return;
+      }
+      setCheckModel(
+        runtimeEnabledChatModels.includes(model) ? model : runtimeEnabledChatModels[0]!,
+      );
+    }, [isAdminPlatformCatalog, model, runtimeEnabledChatModels]);
 
     const checkConnection = async () => {
       // Clear previous check results immediately
       setPass(false);
       setError(undefined);
+      setErrorTitle(undefined);
 
       if (isAdminPlatformCatalog) {
         // Platform catalog: admin.aiProviders.test updates draft connectionTest for publish gates.
@@ -150,17 +203,34 @@ const Checker = memo<ConnectionCheckerProps>(
           }
           const result = await lambdaClient.admin.aiProviders.test.mutate({
             id: platformId,
+            // Probe what the operator picked, not only the persisted `checkModel` — selecting a
+            // model in the dropdown used to have no effect on the check that ran.
+            model: checkModel,
             reason: 'admin provider settings connectivity check',
           });
           if (result.status === 'success') {
             setPass(true);
             setError(undefined);
+            setErrorTitle(undefined);
           } else {
             setPass(false);
+            // Prefer the server's own reason. Known actionable refusals get dedicated copy;
+            // anything else shows the sanitized message verbatim. `ConnectionCheckFailed` (the
+            // "empty response / proxy must not end in /v1" guidance) is now reserved for the
+            // transport-level catch below, where it is actually the right advice.
+            const reasonKey = result.sanitizedMessage
+              ? CHECK_MODEL_REASON_KEYS[normalizeReason(result.sanitizedMessage)]
+              : undefined;
+            setErrorTitle(
+              reasonKey
+                ? t(reasonKey as never)
+                : result.sanitizedMessage || getRuntimeErrorMessage(t, 'ConnectionCheckFailed'),
+            );
             setError({
               body: {
                 errorCategory: result.errorCategory,
                 latencyMs: result.latencyMs,
+                model: checkModel,
                 sanitizedMessage: result.sanitizedMessage,
               },
               message:
@@ -170,6 +240,9 @@ const Checker = memo<ConnectionCheckerProps>(
           }
         } catch (cause) {
           setPass(false);
+          // Genuine transport failure (network, permission, provider row missing): the generic
+          // connectivity guidance is the correct copy here.
+          setErrorTitle(undefined);
           setError({
             body: cause,
             message: getRuntimeErrorMessage(t, 'ConnectionCheckFailed'),
@@ -193,6 +266,7 @@ const Checker = memo<ConnectionCheckerProps>(
         onFinish: async (value) => {
           if (!isError && value) {
             setError(undefined);
+            setErrorTitle(undefined);
             setPass(true);
           } else {
             setPass(false);
@@ -224,7 +298,9 @@ const Checker = memo<ConnectionCheckerProps>(
       });
     };
 
-    const defaultError = error ? <Error error={error as ChatMessageError} /> : null;
+    const defaultError = error ? (
+      <Error error={error as ChatMessageError} title={errorTitle} />
+    ) : null;
 
     const errorContent = CheckErrorRender ? (
       <CheckErrorRender defaultError={defaultError} error={error} setError={setError} />
@@ -262,6 +338,7 @@ const Checker = memo<ConnectionCheckerProps>(
               setCheckModel(value);
               setPass(false);
               setError(undefined);
+              setErrorTitle(undefined);
 
               // Persist the selected model to provider config
               // This allows the model to be retained after page refresh

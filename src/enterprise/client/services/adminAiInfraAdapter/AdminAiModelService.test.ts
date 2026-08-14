@@ -1,3 +1,4 @@
+import { LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminAiModelService } from './AdminAiModelService';
@@ -97,6 +98,14 @@ const detailFixture = {
   published: null,
 };
 
+/**
+ * A real model-bank card for the fixture provider that the fixture has NO platform row for —
+ * i.e. exactly the "never materialized builtin" the admin list shows for a fresh provider.
+ */
+const builtinCard = LOBE_DEFAULT_MODEL_LIST.find(
+  (model) => model.providerId === 'openai' && !['m1', 'm2'].includes(model.id),
+)!;
+
 describe('AdminAiModelService CAS and apply contract', () => {
   const service = new AdminAiModelService();
 
@@ -150,6 +159,97 @@ describe('AdminAiModelService CAS and apply contract', () => {
     expect(payload.items).toHaveLength(2);
     const ids = payload.items.map((i) => i.id).sort();
     expect(ids).toEqual(['model-uuid-1', 'model-uuid-2']);
+  });
+
+  it('batchToggle keeps the cheap insert-free path when every model has a platform row', async () => {
+    await service.batchToggleAiModels('openai', ['m1', 'm2'], true);
+
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(1);
+    expect(mocks.applyImmediate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        expectedDraftToken: detailFixture.draftToken,
+        modelIds: ['model-uuid-1', 'model-uuid-2'],
+        operation: 'batchToggle',
+        providerId: 'provider-uuid',
+      }),
+    );
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('batchToggle materializes builtins that have no platform row yet', async () => {
+    // The bug: "enable all" on a freshly configured provider threw on the FIRST unmaterialized
+    // builtin, so the whole batch became a no-op.
+    await service.batchToggleAiModels('openai', [builtinCard.id], true);
+
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(1);
+    const payload = mocks.applyImmediate.mock.calls[0]![0] as {
+      expectedDraftToken: string;
+      models: { enabled: boolean; id: string; type: string }[];
+      operation: string;
+    };
+    expect(payload.operation).toBe('batchUpdate');
+    expect(payload.expectedDraftToken).toBe(detailFixture.draftToken);
+    expect(payload.models).toHaveLength(1);
+    // `id` is the modelKey: the server's missing-row branch inserts with `modelKey: item.id`.
+    expect(payload.models[0]).toMatchObject({
+      contextWindowTokens: builtinCard.contextWindowTokens ?? null,
+      displayName: builtinCard.displayName ?? null,
+      enabled: true,
+      id: builtinCard.id,
+      type: builtinCard.type ?? 'chat',
+    });
+    // Only one read is needed when there is nothing to toggle.
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('batchToggle issues both operations for a mixed set, re-reading the CAS token between them', async () => {
+    const rotatedToken = 'e'.repeat(64);
+    mocks.get
+      .mockResolvedValueOnce(detailFixture)
+      .mockResolvedValueOnce({ ...detailFixture, draftToken: rotatedToken });
+
+    await service.batchToggleAiModels('openai', ['m1', builtinCard.id], false);
+
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(2);
+    expect(mocks.applyImmediate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        enabled: false,
+        expectedDraftToken: detailFixture.draftToken,
+        modelIds: ['model-uuid-1'],
+        operation: 'batchToggle',
+      }),
+    );
+    // The first apply republishes, so the draft token rotates — reusing it would be a CAS
+    // conflict, which is exactly what the second read avoids.
+    expect(mocks.applyImmediate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        expectedDraftToken: rotatedToken,
+        models: [expect.objectContaining({ enabled: false, id: builtinCard.id })],
+        operation: 'batchUpdate',
+      }),
+    );
+    expect(mocks.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('batchToggle is a no-op for an empty selection', async () => {
+    await service.batchToggleAiModels('openai', [], true);
+    expect(mocks.applyImmediate).not.toHaveBeenCalled();
+  });
+
+  it('single toggle materializes an untouched builtin instead of failing the switch', async () => {
+    await service.toggleModelEnabled({ enabled: true, id: builtinCard.id, providerId: 'openai' });
+
+    expect(mocks.applyImmediate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedDraftToken: detailFixture.draftToken,
+        models: [expect.objectContaining({ enabled: true, id: builtinCard.id })],
+        operation: 'batchUpdate',
+        providerId: 'provider-uuid',
+      }),
+    );
   });
 
   it('batchToggle rejects unknown model keys', async () => {
