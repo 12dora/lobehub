@@ -43,16 +43,12 @@ const deviceCodeResponse = {
 };
 
 const pending = {
-  publishError: null,
-  published: false,
   revision: null,
   status: 'pending' as const,
   stored: false,
 };
 
 const success = {
-  publishError: null,
-  published: true,
   revision: 2,
   status: 'success' as const,
   stored: true,
@@ -87,17 +83,11 @@ const deferred = <T>() => {
 };
 
 describe('useAdminSharedOAuthFlow', () => {
-  it('polls once per interval, backs off on slow_down and reports the store outcome', async () => {
+  it('polls once per interval, backs off on slow_down and reports the applied revision', async () => {
     mocks.poll
       .mockResolvedValueOnce(pending)
       .mockResolvedValueOnce({ ...pending, status: 'slow_down' })
-      .mockResolvedValueOnce({
-        publishError: 'validation_failed',
-        published: false,
-        revision: 1,
-        status: 'success',
-        stored: true,
-      });
+      .mockResolvedValueOnce({ revision: 1, status: 'success', stored: true });
 
     const onSuccess = vi.fn();
     const { result } = renderFlow({ onSuccess });
@@ -131,16 +121,8 @@ describe('useAdminSharedOAuthFlow', () => {
     });
     expect(mocks.poll).toHaveBeenCalledTimes(3);
     expect(result.current.state).toBe('success');
-    expect(result.current.outcome).toEqual({
-      publishError: 'validation_failed',
-      published: false,
-      revision: 1,
-    });
-    expect(onSuccess).toHaveBeenCalledWith({
-      publishError: 'validation_failed',
-      published: false,
-      revision: 1,
-    });
+    expect(result.current.outcome).toEqual({ revision: 1 });
+    expect(onSuccess).toHaveBeenCalledWith({ revision: 1 });
 
     // Flow stopped: no further polling after success.
     await act(async () => {
@@ -169,7 +151,7 @@ describe('useAdminSharedOAuthFlow', () => {
       true,
     );
     expect(result.current.state).toBe('success');
-    expect(result.current.outcome).toEqual({ publishError: null, published: true, revision: 2 });
+    expect(result.current.outcome).toEqual({ revision: 2 });
   });
 
   it('surfaces a reauth failure that survives the replay as a retryable error', async () => {
@@ -225,6 +207,55 @@ describe('useAdminSharedOAuthFlow', () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(mocks.poll).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes a failed credential store from a provider-side denial', async () => {
+    // Exact terminal shape the server sends when the grant was redeemed but the store failed.
+    mocks.poll.mockResolvedValueOnce({
+      error: 'provider_store_failed',
+      revision: null,
+      status: 'denied',
+      stored: false,
+    });
+
+    const onStatusStale = vi.fn();
+    const { result } = renderFlow({ onStatusStale });
+    await act(async () => {
+      await result.current.connect();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(result.current.state).toBe('error');
+    // The admin DID consent — "denied by the provider" would send them to the wrong fix.
+    expect(result.current.error).toBe('providerStoreFailed');
+    expect(onStatusStale).toHaveBeenCalledTimes(1);
+
+    // Still terminal: the single-use grant is spent, so the loop must stop.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(mocks.poll).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a plain denial as a denial when no error code is attached', async () => {
+    mocks.poll.mockResolvedValueOnce({
+      error: null,
+      revision: null,
+      status: 'denied',
+      stored: false,
+    });
+
+    const { result } = renderFlow();
+    await act(async () => {
+      await result.current.connect();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(result.current.error).toBe('denied');
   });
 
   it('keeps polling through transient failures and gives up after three in a row', async () => {

@@ -1,15 +1,15 @@
 import { toast } from '@lobehub/ui/base-ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AdminAiProviderOrderPublishError, AdminAiProviderService } from './index';
-import { adminPublishOutcomeStore, clearLastAdminPublishOutcome, getDetail } from './shared';
+import { AdminAiProviderService } from './index';
+import { getDetail } from './shared';
 
 const mocks = vi.hoisted(() => ({
   applyImmediate: vi.fn(),
+  delete: vi.fn(),
   get: vi.fn(),
   getBatch: vi.fn(),
   list: vi.fn(),
-  publishNow: vi.fn(),
   withAdminReauthRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -18,10 +18,10 @@ vi.mock('@/libs/trpc/client', () => ({
     admin: {
       aiProviders: {
         applyImmediate: { mutate: mocks.applyImmediate },
+        delete: { mutate: mocks.delete },
         get: { query: mocks.get },
         getBatch: { query: mocks.getBatch },
         list: { query: mocks.list },
-        publishNow: { mutate: mocks.publishNow },
       },
     },
   },
@@ -90,7 +90,6 @@ describe('AdminAiProviderService adapter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    clearLastAdminPublishOutcome();
     mocks.list.mockResolvedValue({
       items: [
         {
@@ -116,10 +115,9 @@ describe('AdminAiProviderService adapter', () => {
     mocks.applyImmediate.mockResolvedValue({
       auditId: 'a1',
       draft: detailFixture.draft,
-      published: true,
-      publishError: null,
       revision: 2,
     });
+    mocks.delete.mockResolvedValue({ deleted: true });
     mocks.withAdminReauthRetry.mockImplementation(async (fn: () => Promise<unknown>) => fn());
   });
 
@@ -340,47 +338,54 @@ describe('AdminAiProviderService adapter', () => {
   });
 
   it.each([0, 1, 2])(
-    'aggregates a soft provider-order publish failure at position %i without losing it',
+    'attempts every reorder write even when position %i rejects',
     async (failureIndex) => {
       const providerIds = ['provider-a', 'provider-b', 'provider-c'];
       mocks.get.mockImplementation(async ({ providerKey }: { providerKey: string }) => ({
         ...detailFixture,
-        draft: {
-          ...detailFixture.draft,
-          id: `uuid-${providerKey}`,
-          providerKey,
-        },
+        draft: { ...detailFixture.draft, id: `uuid-${providerKey}`, providerKey },
       }));
-      mocks.applyImmediate.mockImplementation(async (_input: unknown) => {
-        const callIndex = mocks.applyImmediate.mock.calls.length - 1;
-        return {
-          auditId: `audit-${callIndex}`,
-          draft: detailFixture.draft,
-          published: callIndex !== failureIndex,
-          publishError: callIndex === failureIndex ? 'connection_test_required' : null,
-          revision: 2,
-        };
-      });
-
-      const operation = service.updateAiProviderOrder(
-        providerIds.map((id, sort) => ({ id, sort })),
+      mocks.applyImmediate.mockImplementation(async () =>
+        mocks.applyImmediate.mock.calls.length - 1 === failureIndex
+          ? Promise.reject(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'))
+          : { auditId: 'a', draft: detailFixture.draft, revision: 2 },
       );
 
-      await expect(operation).rejects.toEqual(
-        new AdminAiProviderOrderPublishError([
-          {
-            providerId: providerIds[failureIndex]!,
-            publishError: 'connection_test_required',
-          },
-        ]),
-      );
+      await expect(
+        service.updateAiProviderOrder(providerIds.map((id, sort) => ({ id, sort }))),
+      ).rejects.toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+      // Never abort early: a half-applied order matches neither the old nor the requested one.
       expect(mocks.applyImmediate).toHaveBeenCalledTimes(3);
-      expect(adminPublishOutcomeStore.get(providerIds[failureIndex])).toMatchObject({
-        providerId: providerIds[failureIndex],
-        published: false,
-      });
     },
   );
+
+  it('reports exactly one toast when several reorder writes reject', async () => {
+    mocks.get.mockImplementation(async ({ providerKey }: { providerKey: string }) => ({
+      ...detailFixture,
+      draft: { ...detailFixture.draft, id: `uuid-${providerKey}`, providerKey },
+    }));
+    mocks.applyImmediate.mockRejectedValue(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'));
+
+    await expect(
+      service.updateAiProviderOrder([
+        { id: 'provider-a', sort: 0 },
+        { id: 'provider-b', sort: 1 },
+        { id: 'provider-c', sort: 2 },
+      ]),
+    ).rejects.toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    expect(mocks.applyImmediate).toHaveBeenCalledTimes(3);
+    expect(toast.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('hard-deletes every provider, published or not, under the detail CAS', async () => {
+    await service.deleteAiProvider('prov');
+    expect(mocks.delete).toHaveBeenCalledWith({
+      expectedDraftToken: detailFixture.draftToken,
+      expectedRevision: 1,
+      id: 'uuid-p',
+      reason: expect.any(String),
+    });
+  });
 
   it('reauth retry succeeds after one reauth', async () => {
     let calls = 0;
@@ -425,8 +430,6 @@ describe('AdminAiProviderService adapter', () => {
     mocks.applyImmediate.mockResolvedValue({
       auditId: 'a-off',
       draft: { ...detailFixture.draft, enabled: false },
-      published: true,
-      publishError: null,
       revision: 3,
     });
     await service.toggleProviderEnabled('prov', false);
@@ -446,7 +449,7 @@ describe('AdminAiProviderService adapter', () => {
     expect(toast.error).toHaveBeenCalled();
   });
 
-  it('publish failures rethrow after toast', async () => {
+  it('apply failures rethrow after toast — nothing is left half-applied', async () => {
     mocks.applyImmediate.mockRejectedValue(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'));
     await expect(service.toggleProviderEnabled('prov', true)).rejects.toThrow(
       'PLATFORM_CONFIG_VALIDATION_FAILED',

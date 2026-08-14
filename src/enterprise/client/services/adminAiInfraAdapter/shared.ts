@@ -1,5 +1,4 @@
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
-import { useSyncExternalStore } from 'react';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -18,98 +17,11 @@ import { withAdminAiInfraErrorToast } from './errors';
 export const isPlatformNotFoundError = (cause: unknown): boolean =>
   mapEnterpriseError(cause)?.code === PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND;
 
-export const DEFAULT_REASON = 'admin provider settings auto-publish';
-
-export type AdminPublishOutcome = {
-  providerId: string;
-  published: boolean;
-  publishError?: string | null;
-};
-
 /**
- * Explicit service-owned store for the last applyImmediate/publishNow outcome.
- * Observable via subscribe/getSnapshot so React can use useSyncExternalStore
- * without coupling the adapter layer to a UI store framework.
+ * Audit reason recorded for every admin provider/model write.
+ * Writes are unconditional: a resolved applyImmediate is already live site-wide.
  */
-class AdminPublishOutcomeStore {
-  #latestProviderId: string | null = null;
-  #listeners = new Set<() => void>();
-  #outcomes = new Map<string, AdminPublishOutcome>();
-
-  clear = (providerId?: string) => {
-    if (providerId) {
-      if (!this.#outcomes.delete(providerId)) return;
-      if (this.#latestProviderId === providerId) {
-        this.#latestProviderId = [...this.#outcomes.keys()].at(-1) ?? null;
-      }
-    } else {
-      if (this.#outcomes.size === 0) return;
-      this.#outcomes.clear();
-      this.#latestProviderId = null;
-    }
-    this.#emit();
-  };
-
-  get = (providerId?: string | null) =>
-    providerId
-      ? (this.#outcomes.get(providerId) ?? null)
-      : this.#latestProviderId
-        ? (this.#outcomes.get(this.#latestProviderId) ?? null)
-        : null;
-
-  record = (providerKey: string, result: { published?: boolean; publishError?: string | null }) => {
-    if (result.published === false) {
-      this.#outcomes.set(providerKey, {
-        providerId: providerKey,
-        published: false,
-        publishError: result.publishError ?? null,
-      });
-      this.#latestProviderId = providerKey;
-    } else {
-      this.#outcomes.delete(providerKey);
-      if (this.#latestProviderId === providerKey) {
-        this.#latestProviderId = [...this.#outcomes.keys()].at(-1) ?? null;
-      }
-    }
-    this.#emit();
-  };
-
-  subscribe = (listener: () => void) => {
-    this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
-    };
-  };
-
-  #emit = () => {
-    for (const listener of this.#listeners) listener();
-  };
-}
-
-/** Singleton store used by provider/model adapter writes and the draft banner. */
-export const adminPublishOutcomeStore = new AdminPublishOutcomeStore();
-
-export const clearLastAdminPublishOutcome = (providerId?: string) => {
-  adminPublishOutcomeStore.clear(providerId);
-};
-
-export const recordPublishOutcome = (
-  providerKey: string,
-  result: { published?: boolean; publishError?: string | null },
-) => {
-  adminPublishOutcomeStore.record(providerKey, result);
-};
-
-/**
- * React-friendly subscription to the last admin publish outcome.
- * Lives next to the store so DraftPublishBanner re-renders when record() fires.
- */
-export const useAdminPublishOutcome = (providerId?: string | null): AdminPublishOutcome | null =>
-  useSyncExternalStore(
-    adminPublishOutcomeStore.subscribe,
-    () => adminPublishOutcomeStore.get(providerId),
-    () => adminPublishOutcomeStore.get(providerId),
-  );
+export const DEFAULT_REASON = 'admin provider settings change';
 
 /** Platform UUIDs use standard hex-with-hyphens shape; everything else is treated as providerKey. */
 const PLATFORM_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

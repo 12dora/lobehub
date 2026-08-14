@@ -429,32 +429,38 @@ export class AiProviderActionImpl {
 
   toggleProviderEnabled = async (id: string, enabled: boolean): Promise<void> => {
     this.#get().internal_toggleAiProviderLoading(id, true);
-    await this.#services.aiProvider.toggleProviderEnabled(id, enabled);
+    try {
+      await this.#services.aiProvider.toggleProviderEnabled(id, enabled);
 
-    // Immediately update local aiProviderList to reflect the change
-    // This ensures the switch displays correctly without waiting for SWR refresh
-    this.#set(
-      (state) => ({
-        aiProviderList: state.aiProviderList.map((item) =>
-          item.id === id ? { ...item, enabled } : item,
-        ),
-      }),
-      false,
-      'toggleProviderEnabled/syncEnabled',
-    );
+      // Immediately update local aiProviderList to reflect the change
+      // This ensures the switch displays correctly without waiting for SWR refresh
+      this.#set(
+        (state) => ({
+          aiProviderList: state.aiProviderList.map((item) =>
+            item.id === id ? { ...item, enabled } : item,
+          ),
+        }),
+        false,
+        'toggleProviderEnabled/syncEnabled',
+      );
 
-    await this.#get().refreshAiProviderList();
-
-    this.#get().internal_toggleAiProviderLoading(id, false);
+      await this.#get().refreshAiProviderList();
+    } finally {
+      // Always clear the spinner: a rejected write (admin applyImmediate, network) already
+      // surfaced a toast, and a switch that keeps spinning forever is not a recoverable state.
+      this.#get().internal_toggleAiProviderLoading(id, false);
+    }
   };
 
   updateAiProvider = async (id: string, value: UpdateAiProviderParams): Promise<void> => {
     this.#get().internal_toggleAiProviderLoading(id, true);
-    await this.#services.aiProvider.updateAiProvider(id, value);
-    await this.#get().refreshAiProviderList();
-    await this.#get().refreshAiProviderDetail();
-
-    this.#get().internal_toggleAiProviderLoading(id, false);
+    try {
+      await this.#services.aiProvider.updateAiProvider(id, value);
+      await this.#get().refreshAiProviderList();
+      await this.#get().refreshAiProviderDetail();
+    } finally {
+      this.#get().internal_toggleAiProviderLoading(id, false);
+    }
   };
 
   updateAiProviderConfig = async (
@@ -528,8 +534,28 @@ export class AiProviderActionImpl {
   };
 
   updateAiProviderSort = async (items: AiProviderSortMap[]): Promise<void> => {
-    await this.#services.aiProvider.updateAiProviderOrder(items);
-    await this.#get().refreshAiProviderList();
+    // Reorder is one write per provider, so a failure can leave a partially applied order.
+    // Always resync so the list snaps back to server truth instead of showing the order the
+    // operator asked for next to a failure toast.
+    let writeError: unknown;
+    let failed = false;
+    try {
+      await this.#services.aiProvider.updateAiProviderOrder(items);
+    } catch (error) {
+      writeError = error;
+      failed = true;
+    }
+
+    try {
+      await this.#get().refreshAiProviderList();
+    } catch (refreshError) {
+      // A failing resync must never REPLACE the write rejection: the write error carries the
+      // mapped, already-toasted failure, and swapping it for an unmarked refresh error would
+      // both mask the real cause and earn a second generic toast. Stale list only.
+      if (!failed) throw refreshError;
+    }
+
+    if (failed) throw writeError;
   };
 
   useFetchAiProviderItem = (id: string): SWRResponse<AiProviderDetailItem | undefined> => {

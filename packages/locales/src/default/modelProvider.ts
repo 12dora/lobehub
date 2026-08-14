@@ -434,8 +434,6 @@ export default {
   'providerModels.tabs.tts': 'TTS',
   'providerModels.tabs.video': 'Video',
   'sortModal.failure': 'Provider order could not be updated. Try again.',
-  'sortModal.partialFailure':
-    '{{count}} provider updates were saved as drafts: {{providers}}. Retry to publish the complete order.',
   'sortModal.success': 'Sort update successful',
   'sortModal.title': 'Custom Order',
   'sortModal.update': 'Update',

@@ -41,15 +41,6 @@ const AiSkillSettingsPage = lazy(
 const AiConnectorSettingsPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/connectors/ConnectorSettingsPage'),
 );
-const AiCatalogProviderListPage = lazy(
-  () => import('@/enterprise/client/features/admin/ai/providers/ProviderListPage'),
-);
-const AiCatalogProviderDetailPage = lazy(
-  () => import('@/enterprise/client/features/admin/ai/providers/ProviderDetailPage'),
-);
-const AiCatalogModelListPage = lazy(
-  () => import('@/enterprise/client/features/admin/ai/models/ModelListPage'),
-);
 const SkillListPage = lazy(() => import('@/enterprise/client/features/admin/skills/SkillListPage'));
 const SkillDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/skills/SkillDetailPage'),
@@ -163,18 +154,6 @@ export const ADMIN_PAGE_BY_ID: Readonly<
   'ai-connector-detail': {
     componentId: 'AiConnectorSettingsPage',
     element: withLazy(<AiConnectorSettingsPage />),
-  },
-  'ai-catalog-providers': {
-    componentId: 'AiCatalogProviderListPage',
-    element: withLazy(<AiCatalogProviderListPage />),
-  },
-  'ai-catalog-provider-detail': {
-    componentId: 'AiCatalogProviderDetailPage',
-    element: withLazy(<AiCatalogProviderDetailPage />),
-  },
-  'ai-catalog-models': {
-    componentId: 'AiCatalogModelListPage',
-    element: withLazy(<AiCatalogModelListPage />),
   },
   'skills': { componentId: 'SkillListPage', element: withLazy(<SkillListPage />) },
   'skills-detail': { componentId: 'SkillDetailPage', element: withLazy(<SkillDetailPage />) },

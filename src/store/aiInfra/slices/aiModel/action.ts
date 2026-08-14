@@ -191,10 +191,14 @@ export class AiModelActionImpl {
 
     this.#get().internal_toggleAiModelLoading(params.id, true);
 
-    await this.#services.aiModel.toggleModelEnabled({ ...params, providerId: activeAiProvider });
-    await this.#get().refreshAiModelList();
-
-    this.#get().internal_toggleAiModelLoading(params.id, false);
+    try {
+      await this.#services.aiModel.toggleModelEnabled({ ...params, providerId: activeAiProvider });
+      await this.#get().refreshAiModelList();
+    } finally {
+      // Always clear the spinner: a rejected write (admin applyImmediate, network) already
+      // surfaced a toast, and a switch that keeps spinning forever is not a recoverable state.
+      this.#get().internal_toggleAiModelLoading(params.id, false);
+    }
   };
 
   updateAiModelsConfig = async (

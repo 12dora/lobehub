@@ -177,6 +177,31 @@ describe('ErrorMessageExtra', () => {
     expect(screen.getByText('response.LocationNotSupportError')).toBeInTheDocument();
   });
 
+  it('localizes a platform provider-disabled error instead of falling back to the report UI', () => {
+    serverConfigMock.enableBusinessFeatures = true;
+
+    render(
+      <ErrorMessageExtra
+        // What useErrorContent resolves for this type: getRuntimeErrorMessage routes any
+        // non-runtime code to `error:response.<CODE>`.
+        error={{ message: 'response.PLATFORM_AI_PROVIDER_DISABLED' }}
+        data={{
+          error: {
+            body: { traceId: 'trace-789' },
+            message: 'PLATFORM_AI_PROVIDER_DISABLED',
+            type: 'PLATFORM_AI_PROVIDER_DISABLED',
+          } as any,
+          id: 'msg-provider-disabled',
+        }}
+      />,
+    );
+
+    // An admin hard-deleting the provider mid-conversation must read as an actionable message,
+    // not a raw key behind the trace-id report block.
+    expect(screen.queryByText('dynamic')).not.toBeInTheDocument();
+    expect(screen.getByText('response.PLATFORM_AI_PROVIDER_DISABLED')).toBeInTheDocument();
+  });
+
   it('shows the trace-id report UI for unknown traceable errors', () => {
     serverConfigMock.enableBusinessFeatures = true;
 

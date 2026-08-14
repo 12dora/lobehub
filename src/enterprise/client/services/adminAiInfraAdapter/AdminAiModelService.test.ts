@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminAiModelService } from './AdminAiModelService';
-import { adminPublishOutcomeStore, clearLastAdminPublishOutcome } from './shared';
 
 const mocks = vi.hoisted(() => ({
   applyImmediate: vi.fn(),
@@ -98,18 +97,15 @@ const detailFixture = {
   published: null,
 };
 
-describe('AdminAiModelService CAS and publish contract', () => {
+describe('AdminAiModelService CAS and apply contract', () => {
   const service = new AdminAiModelService();
 
   beforeEach(() => {
     vi.clearAllMocks();
-    clearLastAdminPublishOutcome();
     mocks.get.mockResolvedValue(detailFixture);
     mocks.applyImmediate.mockResolvedValue({
       auditId: 'a1',
       draft: detailFixture.draft,
-      published: true,
-      publishError: null,
       revision: 3,
     });
     mocks.withAdminReauthRetry.mockImplementation(async (fn: () => Promise<unknown>) => fn());
@@ -176,23 +172,14 @@ describe('AdminAiModelService CAS and publish contract', () => {
     });
   });
 
-  it('records soft publish failures for the draft banner', async () => {
-    mocks.applyImmediate.mockResolvedValue({
-      auditId: 'a-soft',
-      draft: detailFixture.draft,
-      published: false,
-      publishError: 'validation_failed',
-      revision: 3,
-    });
-    await service.toggleModelEnabled({ enabled: true, id: 'm1', providerId: 'openai' });
-    expect(adminPublishOutcomeStore.get()).toEqual({
-      providerId: 'openai',
-      published: false,
-      publishError: 'validation_failed',
-    });
+  it('surfaces a rejected apply instead of reporting a silent draft', async () => {
+    mocks.applyImmediate.mockRejectedValue(new Error('PLATFORM_CONFIG_VALIDATION_FAILED'));
+    await expect(
+      service.toggleModelEnabled({ enabled: true, id: 'm1', providerId: 'openai' }),
+    ).rejects.toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
   });
 
-  it('createAiModel maps modelKey and records publish outcome', async () => {
+  it('createAiModel maps modelKey onto the immediate apply payload', async () => {
     await service.createAiModel({
       id: 'new-model',
       providerId: 'openai',

@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useClientDataSWR } from '@/libs/swr';
 import { lambdaClient } from '@/libs/trpc/client';
-import { useAiInfraStoreApi } from '@/store/aiInfra';
+import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import { useAdminSharedOAuthFlow } from './useAdminSharedOAuthFlow';
 
@@ -71,6 +71,18 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   const { t } = useTranslation('admin');
   const storeApi = useAiInfraStoreApi();
   const name = providerDisplayName(providerId);
+  /**
+   * Follow-up hint source: PERSISTED platform model rows only.
+   *
+   * `aiProviderModelList` is the merged view — it carries the enabled model-bank defaults even
+   * when this provider has zero rows in the platform catalog, so a first ChatGPT/SuperGrok
+   * connect would claim "live" while the runtime (which reads published rows) sees a model-less
+   * provider and drops it. `enabledAiModels` comes from the admin runtime state, which is built
+   * from the persisted draft models of enabled providers, so it cannot lie in that direction.
+   */
+  const hasPersistedEnabledModel = useAiInfraStore((s) =>
+    (s.enabledAiModels ?? []).some((model) => model.providerId === providerId),
+  );
 
   const statusKey = buildAdminSharedOAuthStatusKey(providerId);
   const {
@@ -92,6 +104,9 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
       await refreshStatus();
       await storeApi.getState().refreshAiProviderDetail();
       await storeApi.getState().refreshAiProviderList();
+      // The create path activates the provider server-side, so the runtime projection (which
+      // drives the "live" hint and the model list) is stale until it is re-read.
+      await storeApi.getState().refreshAiProviderRuntimeState();
     } catch {
       /* stale view only; the next revalidation recovers it */
     }
@@ -104,7 +119,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     void Promise.resolve(refreshStatus()).catch(() => {});
   }, [refreshStatus]);
 
-  const { connect, deviceCode, error, outcome, reset, state } = useAdminSharedOAuthFlow({
+  const { connect, deviceCode, error, reset, state } = useAdminSharedOAuthFlow({
     onStatusStale: handleStatusStale,
     onSuccess: handleStored,
     providerId,
@@ -124,35 +139,20 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   }, [deviceCode?.verificationUri, deviceCode?.verificationUriComplete]);
 
   /**
-   * The account is stored either way; only the publish outcome differs. `model_required`
-   * (and the revision-0 create that publishes nothing yet) is a step the operator finishes
-   * on this page; every other stable code — connection_test_failed, validation_failed,
-   * publish_failed, secret_required — needs the draft/publish banner, so say so instead of
-   * asking for models that are already there.
+   * A `success` poll means the account was applied unconditionally — it is already live for
+   * every member. Anything that failed on the way surfaces as an error state instead, so the
+   * only variation left here is the follow-up hint for a provider that still has no model on.
    */
-  const renderStoredAlert = () => {
-    if (outcome?.published) {
-      return (
-        <Alert message={t('aiProviderSettings.sharedOAuth.success.published')} type={'success'} />
-      );
-    }
-
-    const publishError = outcome?.publishError ?? null;
-    if (publishError && publishError !== 'model_required') {
-      return (
-        <Alert
-          type={'warning'}
-          message={t('aiProviderSettings.sharedOAuth.success.publishFailed', {
-            code: publishError,
-          })}
-        />
-      );
-    }
-
-    return (
-      <Alert message={t('aiProviderSettings.sharedOAuth.success.needsModels')} type={'success'} />
-    );
-  };
+  const renderStoredAlert = () => (
+    <Alert
+      type={'success'}
+      message={t(
+        hasPersistedEnabledModel
+          ? 'aiProviderSettings.sharedOAuth.success.published'
+          : 'aiProviderSettings.sharedOAuth.success.needsModels',
+      )}
+    />
+  );
 
   const renderBody = () => {
     if (state === 'requesting') {

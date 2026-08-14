@@ -7,11 +7,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SharedOAuthConnect from './SharedOAuthConnect';
 
 const mocks = vi.hoisted(() => ({
+  aiProviderModelList: [] as { enabled: boolean; id: string }[],
+  enabledAiModels: [] as { id: string; providerId: string }[],
   flow: {
     connect: vi.fn(),
     deviceCode: undefined as unknown,
     error: undefined as unknown,
-    outcome: undefined as unknown,
     reset: vi.fn(),
     state: 'idle' as string,
   },
@@ -31,6 +32,11 @@ vi.mock('@/libs/trpc/client', () => ({
 
 vi.mock('@/store/aiInfra', () => ({
   useAiInfraStoreApi: () => ({ getState: () => ({}) }),
+  useScopedAiInfraStore: (selector: (state: Record<string, unknown>) => unknown) =>
+    selector({
+      aiProviderModelList: mocks.aiProviderModelList,
+      enabledAiModels: mocks.enabledAiModels,
+    }),
 }));
 
 vi.mock('./useAdminSharedOAuthFlow', () => ({
@@ -59,10 +65,11 @@ const swrResult = (data: unknown) => ({
 
 beforeEach(() => {
   mocks.swr.mockReset();
+  mocks.aiProviderModelList = [];
+  mocks.enabledAiModels = [];
   mocks.flow.connect = vi.fn();
   mocks.flow.deviceCode = undefined;
   mocks.flow.error = undefined;
-  mocks.flow.outcome = undefined;
   mocks.flow.reset = vi.fn();
   mocks.flow.state = 'idle';
   mocks.flowOptions.value = undefined;
@@ -139,35 +146,38 @@ describe('SharedOAuthConnect', () => {
     await Promise.resolve();
   });
 
-  it('tells the operator to add models when the publish only waits on models', () => {
+  it('asks for a model when the connected provider has no persisted enabled model', () => {
     mocks.flow.state = 'success';
-    mocks.flow.outcome = { publishError: 'model_required', published: false, revision: 3 };
+    // The merged list carries enabled model-bank DEFAULTS even with zero platform rows —
+    // claiming "live" off that is exactly the bug: runtime drops a model-less provider.
+    mocks.aiProviderModelList = [
+      { enabled: true, id: 'gpt-5' },
+      { enabled: true, id: 'gpt-5-mini' },
+    ];
+    mocks.enabledAiModels = [];
 
     render(<SharedOAuthConnect providerId="chatgpt" />);
 
     expect(screen.getByText('aiProviderSettings.sharedOAuth.success.needsModels')).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.success.published')).toBeNull();
   });
 
-  it('points at the draft banner with the stable code when publishing failed otherwise', () => {
+  it('confirms the provider is live once a persisted model row is enabled', () => {
     mocks.flow.state = 'success';
-    mocks.flow.outcome = { publishError: 'connection_test_failed', published: false, revision: 3 };
-
-    render(<SharedOAuthConnect providerId="chatgpt" />);
-
-    expect(screen.queryByText('aiProviderSettings.sharedOAuth.success.needsModels')).toBeNull();
-    expect(
-      screen.getByText(
-        'aiProviderSettings.sharedOAuth.success.publishFailed:{"code":"connection_test_failed"}',
-      ),
-    ).toBeTruthy();
-  });
-
-  it('confirms the provider is live when the publish landed', () => {
-    mocks.flow.state = 'success';
-    mocks.flow.outcome = { publishError: null, published: true, revision: 4 };
+    mocks.enabledAiModels = [{ id: 'gpt-5', providerId: 'chatgpt' }];
 
     render(<SharedOAuthConnect providerId="chatgpt" />);
 
     expect(screen.getByText('aiProviderSettings.sharedOAuth.success.published')).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.success.needsModels')).toBeNull();
+  });
+
+  it('ignores persisted models that belong to a different provider', () => {
+    mocks.flow.state = 'success';
+    mocks.enabledAiModels = [{ id: 'claude-x', providerId: 'anthropic' }];
+
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.success.needsModels')).toBeTruthy();
   });
 });

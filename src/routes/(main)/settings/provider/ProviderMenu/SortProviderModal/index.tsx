@@ -24,6 +24,22 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
+/**
+ * Cross-boundary marker set by the admin AI-infra adapter after it has already shown a mapped
+ * failure toast (reauth cancelled, rate limited, validation…). Read through the global symbol
+ * registry rather than importing the enterprise module, which this route may not depend on;
+ * the owner is `enterprise/client/services/adminAiInfraAdapter/errors.ts`, which uses the same
+ * `Symbol.for` key precisely so shared surfaces can check it.
+ */
+const ADMIN_AI_INFRA_ERROR_TOASTED = Symbol.for('lobe.adminAiInfraErrorToasted');
+
+const isAlreadyToasted = (error: unknown): boolean =>
+  Boolean(
+    error &&
+    typeof error === 'object' &&
+    (error as Record<PropertyKey, unknown>)[ADMIN_AI_INFRA_ERROR_TOASTED] === true,
+  );
+
 interface ConfigGroupModalProps {
   defaultItems: AiProviderListItem[];
   onCancel: () => void;
@@ -85,31 +101,9 @@ const ConfigGroupModal = memo<ConfigGroupModalProps>(({ open, onCancel, defaultI
               toast.success(t('sortModal.success'));
               onCancel();
             } catch (error) {
-              const failures =
-                error &&
-                typeof error === 'object' &&
-                'code' in error &&
-                error.code === 'ADMIN_AI_PROVIDER_ORDER_PARTIAL_PUBLISH' &&
-                'failures' in error &&
-                Array.isArray(error.failures)
-                  ? (error.failures as { providerId: string }[])
-                  : [];
-              if (failures.length > 0) {
-                const failedNames = failures
-                  .map(
-                    ({ providerId }) =>
-                      items.find((item) => item.id === providerId)?.name || providerId,
-                  )
-                  .join(', ');
-                toast.warning(
-                  t('sortModal.partialFailure', {
-                    count: failures.length,
-                    providers: failedNames,
-                  }),
-                );
-              } else {
-                toast.error(t('sortModal.failure'));
-              }
+              // The admin adapter maps its own failures (reauth, rate limit, validation) to one
+              // toast already — don't stack a generic one on top of it.
+              if (!isAlreadyToasted(error)) toast.error(t('sortModal.failure'));
             } finally {
               setLoading(false);
             }

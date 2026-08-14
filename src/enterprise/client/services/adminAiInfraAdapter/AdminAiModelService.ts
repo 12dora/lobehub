@@ -13,13 +13,7 @@ import { lambdaClient } from '@/libs/trpc/client';
 import type { GetAiProviderModelListParams } from '@/services/aiModel';
 
 import { mapModelListItem } from './mappers';
-import {
-  DEFAULT_REASON,
-  getDetail,
-  isPlatformNotFoundError,
-  recordPublishOutcome,
-  withReauth,
-} from './shared';
+import { DEFAULT_REASON, getDetail, isPlatformNotFoundError, withReauth } from './shared';
 
 const normalizeContextWindowTokens = (value: number | null | undefined) =>
   value === 0 ? null : value;
@@ -38,8 +32,8 @@ export class AdminAiModelService {
 
   createAiModel = async (params: CreateAiModelParams) => {
     const detail = await getDetail(params.providerId);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         abilities: params.abilities as Record<string, unknown> | undefined,
         contextWindowTokens: normalizeContextWindowTokens(params.contextWindowTokens) ?? null,
         displayName: params.displayName ?? null,
@@ -51,10 +45,8 @@ export class AdminAiModelService {
         reason: DEFAULT_REASON,
         settings: params.settings as Record<string, unknown> | undefined,
         type: params.type ?? 'chat',
-      });
-      recordPublishOutcome(params.providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 
   getAiProviderModelList = async (
@@ -93,8 +85,8 @@ export class AdminAiModelService {
   toggleModelEnabled = async (params: ToggleAiModelEnableParams) => {
     const { detail, model } = await this.#resolveModelUuid(params.providerId, params.id);
     if (!model) throw new Error(`Model not found: ${params.id}`);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         enabled: params.enabled,
         expectedDraftToken: detail.draftToken,
         expectedRevision: model.revision,
@@ -102,17 +94,15 @@ export class AdminAiModelService {
         operation: 'update',
         providerId: detail.draft.id,
         reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(params.providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 
   updateAiModel = async (id: string, providerId: string, value: UpdateAiModelParams) => {
     const { detail, model } = await this.#resolveModelUuid(providerId, id);
     if (!model) throw new Error(`Model not found: ${id}`);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         abilities: value.abilities as Record<string, unknown> | undefined,
         config: value.config as Record<string, unknown> | null | undefined,
         contextWindowTokens: normalizeContextWindowTokens(value.contextWindowTokens),
@@ -125,10 +115,8 @@ export class AdminAiModelService {
         reason: DEFAULT_REASON,
         settings: value.settings as Record<string, unknown> | undefined,
         type: value.type,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 
   batchUpdateAiModels = async (providerId: string, models: AiProviderModelListItem[]) => {
@@ -148,17 +136,15 @@ export class AdminAiModelService {
         type: m.type,
       };
     });
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         expectedDraftToken: detail.draftToken,
         models: mapped,
         operation: 'batchUpdate',
         providerId: detail.draft.id,
         reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 
   batchToggleAiModels = async (providerId: string, models: string[], enabled: boolean) => {
@@ -168,32 +154,28 @@ export class AdminAiModelService {
       if (!found) throw new Error(`Model not found: ${key}`);
       return found.id;
     });
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         enabled,
         expectedDraftToken: detail.draftToken,
         modelIds,
         operation: 'batchToggle',
         providerId: detail.draft.id,
         reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 
   clearModelsByProvider = async (providerId: string) => {
     const detail = await getDetail(providerId);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         expectedDraftToken: detail.draftToken,
         operation: 'clear',
         providerId: detail.draft.id,
         reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 
   clearRemoteModels = async (providerId: string) => this.clearModelsByProvider(providerId);
@@ -212,33 +194,29 @@ export class AdminAiModelService {
         .filter((m) => !requested.has(m.id))
         .map((m, index) => ({ id: m.id, sort: mapped.length + index })),
     ];
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         expectedDraftToken: detail.draftToken,
         items: complete,
         operation: 'reorder',
         providerId: detail.draft.id,
         reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 
   deleteAiModel = async (params: { id: string; providerId: string }) => {
     const { detail, model } = await this.#resolveModelUuid(params.providerId, params.id);
     if (!model) throw new Error(`Model not found: ${params.id}`);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiModels.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiModels.applyImmediate.mutate({
         expectedDraftToken: detail.draftToken,
         id: model.id,
         operation: 'delete',
         providerId: detail.draft.id,
         reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(params.providerId, result);
-      return result;
-    });
+      }),
+    );
   };
 }
 

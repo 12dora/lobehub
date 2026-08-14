@@ -219,9 +219,7 @@ describe('AiModelAction', () => {
       const batchUpdateSpy = vi
         .spyOn(result.current, 'batchUpdateAiModels')
         .mockResolvedValue(undefined);
-      const refreshSpy = vi
-        .spyOn(result.current, 'refreshAiModelList')
-        .mockResolvedValue(undefined);
+      vi.spyOn(result.current, 'refreshAiModelList').mockResolvedValue(undefined);
 
       // Mock dynamic import
       vi.resetModules();
@@ -501,7 +499,7 @@ describe('AiModelAction', () => {
       expect(serviceSpy).not.toHaveBeenCalled();
     });
 
-    it('should handle service errors and throw without clearing loading state', async () => {
+    it('should rethrow service errors and still clear the loading state', async () => {
       const { result } = renderHook(() => useStore());
       const toggleLoadingSpy = vi
         .spyOn(result.current, 'internal_toggleAiModelLoading')
@@ -516,8 +514,9 @@ describe('AiModelAction', () => {
       }).rejects.toThrow('Service error');
 
       expect(toggleLoadingSpy).toHaveBeenCalledWith('model-1', true);
-      // Loading state is not cleared when error occurs since there's no try-finally
-      expect(toggleLoadingSpy).toHaveBeenCalledTimes(1);
+      // A rejected write already surfaced a toast; the switch must not spin forever after it.
+      expect(toggleLoadingSpy).toHaveBeenCalledWith('model-1', false);
+      expect(toggleLoadingSpy).toHaveBeenCalledTimes(2);
     });
   });
 

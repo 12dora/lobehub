@@ -1,6 +1,7 @@
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
 import type { AdminAiProviderGetOutput } from '@/enterprise/client/features/admin/ai/types';
+import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { lambdaClient } from '@/libs/trpc/client';
 import type {
   AiProviderDetailItem,
@@ -14,7 +15,7 @@ import type {
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
 import { adminAiModelService } from './AdminAiModelService';
-import { createAdminAiProviderPartialLoadError } from './errors';
+import { createAdminAiProviderPartialLoadError, reportAdminAiInfraError } from './errors';
 import {
   buildAdminRuntimeState,
   mapProviderDetail,
@@ -27,7 +28,6 @@ import {
   findBuiltinProviderCard,
   getDetail,
   isPlatformNotFoundError,
-  recordPublishOutcome,
   withReauth,
 } from './shared';
 
@@ -37,26 +37,11 @@ export {
   isAdminAiInfraErrorToasted,
   withAdminAiInfraErrorToast,
 } from './errors';
-export type { AdminPublishOutcome } from './shared';
-export { clearLastAdminPublishOutcome, useAdminPublishOutcome } from './shared';
-
-export interface AdminAiProviderOrderPublishFailure {
-  providerId: string;
-  publishError: string | null;
-}
-
-export class AdminAiProviderOrderPublishError extends Error {
-  code = 'ADMIN_AI_PROVIDER_ORDER_PARTIAL_PUBLISH' as const;
-
-  constructor(public failures: AdminAiProviderOrderPublishFailure[]) {
-    super('ADMIN_AI_PROVIDER_ORDER_PARTIAL_PUBLISH');
-    this.name = 'AdminAiProviderOrderPublishError';
-  }
-}
 
 /**
  * Admin adapter implementing the same surface as user AiProviderService.
- * Writes = draft mutation + immediate publish via applyImmediate.
+ * Every write is a single `applyImmediate` that is live site-wide once it resolves —
+ * there is no draft state to publish afterwards, and a rejected call means nothing changed.
  * Secrets: merge-only for updates; baseURL maps to public config.endpoint.
  */
 export class AdminAiProviderService {
@@ -71,8 +56,8 @@ export class AdminAiProviderService {
       ...((params.config ?? {}) as Record<string, unknown>),
       ...(typeof endpoint === 'string' ? { endpoint } : {}),
     };
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiProviders.applyImmediate.mutate({
         config,
         description: params.description ?? null,
         displayName: params.name || params.id,
@@ -86,10 +71,8 @@ export class AdminAiProviderService {
           : { operation: 'keep' as const },
         settings: (params.settings ?? {}) as Record<string, unknown>,
         source: params.source === AiProviderSourceEnum.Builtin ? 'builtin' : 'custom',
-      });
-      recordPublishOutcome(params.id, result);
-      return result;
-    });
+      }),
+    );
   };
 
   getAiProviderList = async () => {
@@ -150,24 +133,22 @@ export class AdminAiProviderService {
 
   toggleProviderEnabled = async (id: string, enabled: boolean) => {
     const detail = await this.#getOrCreateDetail(id);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiProviders.applyImmediate.mutate({
         enabled,
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,
         id: detail.draft.id,
         mode: 'update',
         reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(id, result);
-      return result;
-    });
+      }),
+    );
   };
 
   updateAiProvider = async (id: string, value: UpdateAiProviderParams) => {
     const detail = await this.#getOrCreateDetail(id);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiProviders.applyImmediate.mutate({
         description: value.description === null ? null : (value.description ?? undefined),
         displayName: value.name,
         expectedDraftToken: detail.draftToken,
@@ -179,10 +160,8 @@ export class AdminAiProviderService {
         settings: value.settings
           ? ({ ...detail.draft.settings, ...value.settings } as Record<string, unknown>)
           : undefined,
-      });
-      recordPublishOutcome(id, result);
-      return result;
-    });
+      }),
+    );
   };
 
   updateAiProviderConfig = async (id: string, value: UpdateAiProviderConfigParams) => {
@@ -209,8 +188,8 @@ export class AdminAiProviderService {
       ? { operation: 'merge' as const, value: secretParts as Record<string, string> }
       : undefined;
 
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
+    return withReauth(() =>
+      lambdaClient.admin.aiProviders.applyImmediate.mutate({
         checkModel: value.checkModel,
         config: nextConfig,
         expectedDraftToken: detail.draftToken,
@@ -219,23 +198,25 @@ export class AdminAiProviderService {
         mode: 'update',
         reason: DEFAULT_REASON,
         secret,
-      });
-      recordPublishOutcome(id, result);
-      return result;
-    });
+      }),
+    );
   };
 
   /**
    * Reorder providers.
    *
    * Intentionally sequential applyImmediate (not a multi-provider batch endpoint):
-   * each provider has independent draftToken/revision CAS and may auto-publish with
-   * side effects. A multi-resource batch would need multi-CAS + partial-failure /
-   * multi-publish atomicity that the current revision model does not offer safely.
+   * each provider has independent draftToken/revision CAS and applies with side effects.
+   * A multi-resource batch would need multi-CAS + partial-failure atomicity that the
+   * current revision model does not offer safely.
    * (Per-provider model reorder is already a single complete-set endpoint.)
    *
-   * Resolves all provider details once (O(M) providerKey lookups, no full-list scan),
-   * then applies sort mutations sequentially under reauth.
+   * Resolves all provider details once (O(M) providerKey lookups, no full-list scan), then
+   * applies EVERY sort mutation — a rejected write must not abort the rest, or the catalog is
+   * left in a half-applied order that matches neither the old nor the requested one. Individual
+   * writes therefore run untoasted (`withAdminReauthRetry` only) so N failures cannot fire N
+   * toasts; the first failure is reported exactly once and rethrown, and the caller resyncs the
+   * list to server truth (`updateAiProviderSort` refreshes in a finally).
    */
   updateAiProviderOrder = async (items: AiProviderSortMap[]) => {
     const details = await Promise.all(
@@ -244,53 +225,43 @@ export class AdminAiProviderService {
         item,
       })),
     );
-    const failures: AdminAiProviderOrderPublishFailure[] = [];
+    const failures: unknown[] = [];
     for (const { detail, item } of details) {
-      await withReauth(async () => {
-        const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
-          expectedDraftToken: detail.draftToken,
-          expectedRevision: detail.baseRevision,
-          id: detail.draft.id,
-          mode: 'update',
-          reason: DEFAULT_REASON,
-          sort: item.sort,
-        });
-        recordPublishOutcome(item.id, result);
-        if (result.published === false) {
-          failures.push({
-            providerId: item.id,
-            publishError: result.publishError ?? null,
-          });
-        }
-        return result;
-      });
+      try {
+        await withAdminReauthRetry(() =>
+          lambdaClient.admin.aiProviders.applyImmediate.mutate({
+            expectedDraftToken: detail.draftToken,
+            expectedRevision: detail.baseRevision,
+            id: detail.draft.id,
+            mode: 'update',
+            reason: DEFAULT_REASON,
+            sort: item.sort,
+          }),
+        );
+      } catch (cause) {
+        failures.push(cause);
+      }
     }
-    if (failures.length > 0) throw new AdminAiProviderOrderPublishError(failures);
+    if (failures.length > 0) reportAdminAiInfraError(failures[0]);
   };
 
+  /**
+   * Remove a provider from the platform catalog — a TRUE hard delete for every provider,
+   * published or not. The row, its models, its stored credentials and its revision history are
+   * purged; in-flight conversations get a clean "provider removed" error on their next message.
+   * Re-adding the same builtin providerKey later goes back through the normal
+   * get-or-create + applyImmediate path.
+   */
   deleteAiProvider = async (id: string) => {
     const detail = await getDetail(id);
     return withReauth(() =>
-      lambdaClient.admin.aiProviders.archive.mutate({
+      lambdaClient.admin.aiProviders.delete.mutate({
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,
         id: detail.draft.id,
         reason: DEFAULT_REASON,
       }),
     );
-  };
-
-  /** Banner: retry publish (retest if revision 0). */
-  publishNow = async (providerKeyOrId: string) => {
-    const detail = await getDetail(providerKeyOrId);
-    return withReauth(async () => {
-      const result = await lambdaClient.admin.aiProviders.publishNow.mutate({
-        id: detail.draft.id,
-        reason: DEFAULT_REASON,
-      });
-      recordPublishOutcome(detail.draft.providerKey, result);
-      return result;
-    });
   };
 
   /**

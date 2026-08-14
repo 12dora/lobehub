@@ -3,20 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { adminAiCatalogService } from './adminAiCatalog';
 
 const mocks = vi.hoisted(() => ({
-  getCreateDraftContext: vi.fn(),
-  getDeleteDraftContext: vi.fn(),
-  getUpdateDraftContext: vi.fn(),
-  listCreateTargets: vi.fn(),
+  get: vi.fn(),
+  list: vi.fn(),
+  listRevisions: vi.fn(),
 }));
 
 vi.mock('@/libs/trpc/client', () => ({
   lambdaClient: {
     admin: {
-      aiModels: {
-        getCreateDraftContext: { query: mocks.getCreateDraftContext },
-        getDeleteDraftContext: { query: mocks.getDeleteDraftContext },
-        getUpdateDraftContext: { query: mocks.getUpdateDraftContext },
-        listCreateTargets: { query: mocks.listCreateTargets },
+      aiProviders: {
+        get: { query: mocks.get },
+        list: { query: mocks.list },
+        listRevisions: { query: mocks.listRevisions },
       },
     },
   },
@@ -25,41 +23,28 @@ vi.mock('@/libs/trpc/client', () => ({
 describe('admin AI catalog client service', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('requests only the model draft context for model-only mutations', async () => {
-    const context = {
-      baseRevision: 2,
-      draftToken: 'a'.repeat(64),
-      modelIds: ['model-1', 'model-2'],
-      providerId: 'provider-1',
-    };
-    mocks.getCreateDraftContext.mockResolvedValue(context);
-    mocks.getDeleteDraftContext.mockResolvedValue(context);
-    mocks.getUpdateDraftContext.mockResolvedValue(context);
+  it('reads provider detail by the caller-supplied lookup', async () => {
+    mocks.get.mockResolvedValue({ baseRevision: 2 });
 
-    await Promise.all([
-      adminAiCatalogService.getModelCreateDraftContext({ providerId: 'provider-1' }),
-      adminAiCatalogService.getModelDeleteDraftContext({ providerId: 'provider-1' }),
-      adminAiCatalogService.getModelUpdateDraftContext({ providerId: 'provider-1' }),
-    ]);
-    for (const query of [
-      mocks.getCreateDraftContext,
-      mocks.getDeleteDraftContext,
-      mocks.getUpdateDraftContext,
-    ]) {
-      expect(query).toHaveBeenCalledWith({ providerId: 'provider-1' });
-    }
+    await expect(adminAiCatalogService.getProvider({ id: 'provider-1' })).resolves.toMatchObject({
+      baseRevision: 2,
+    });
+    expect(mocks.get).toHaveBeenCalledWith({ id: 'provider-1' });
   });
 
-  it('uses the create-only searchable Provider target endpoint', async () => {
-    mocks.listCreateTargets.mockResolvedValue({
-      items: [{ displayName: 'Empty Provider', id: 'provider-empty', providerKey: 'empty' }],
-      nextCursor: 'empty',
-    });
-    const input = { cursor: 'before', limit: 20, query: 'empty' };
+  it('passes list filters straight through (one server page per query)', async () => {
+    mocks.list.mockResolvedValue({ items: [], nextCursor: null });
+    const input = { limit: 100, query: 'open', status: 'published' as const };
 
-    await expect(adminAiCatalogService.listModelCreateTargets(input)).resolves.toMatchObject({
-      items: [expect.objectContaining({ id: 'provider-empty' })],
-    });
-    expect(mocks.listCreateTargets).toHaveBeenCalledWith(input);
+    await adminAiCatalogService.listProviders(input);
+    expect(mocks.list).toHaveBeenCalledWith(input);
+  });
+
+  it('reads revision history for the exact published checksum join', async () => {
+    mocks.listRevisions.mockResolvedValue({ items: [], nextCursor: null });
+    const input = { beforeRevision: 4, id: 'provider-1', limit: 100 };
+
+    await adminAiCatalogService.listProviderRevisions(input);
+    expect(mocks.listRevisions).toHaveBeenCalledWith(input);
   });
 });

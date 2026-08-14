@@ -93,23 +93,32 @@ describe('SortProviderModal', () => {
     vi.clearAllMocks();
   });
 
-  it('keeps the modal open and names providers whose order was only saved as a draft', async () => {
-    mocks.updateAiProviderSort.mockRejectedValue({
-      code: 'ADMIN_AI_PROVIDER_ORDER_PARTIAL_PUBLISH',
-      failures: [{ providerId: 'provider-b', publishError: 'connection_test_required' }],
-    });
+  it('keeps the modal open and reports a failed reorder', async () => {
+    mocks.updateAiProviderSort.mockRejectedValue(new Error('nope'));
 
     render(<SortProviderModal open defaultItems={providers} onCancel={mocks.onCancel} />);
     fireEvent.click(screen.getByRole('button', { name: 'sortModal.update' }));
 
-    await waitFor(() =>
-      expect(mocks.toastWarning).toHaveBeenCalledWith('sortModal.partialFailure: 1 Provider B'),
-    );
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('sortModal.failure'));
     expect(mocks.onCancel).not.toHaveBeenCalled();
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });
 
-  it('closes only after the complete order publishes', async () => {
+  it('stays silent when the admin adapter already toasted the mapped failure', async () => {
+    const marked = new Error('order write failed');
+    Object.defineProperty(marked, Symbol.for('lobe.adminAiInfraErrorToasted'), { value: true });
+    mocks.updateAiProviderSort.mockRejectedValue(marked);
+
+    render(<SortProviderModal open defaultItems={providers} onCancel={mocks.onCancel} />);
+    fireEvent.click(screen.getByRole('button', { name: 'sortModal.update' }));
+
+    // Exactly one toast total: the adapter's mapped one, not a second generic one on top.
+    await waitFor(() => expect(mocks.onCancel).not.toHaveBeenCalled());
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it('closes only after the complete order is applied', async () => {
     mocks.updateAiProviderSort.mockResolvedValue(undefined);
 
     render(<SortProviderModal open defaultItems={providers} onCancel={mocks.onCancel} />);

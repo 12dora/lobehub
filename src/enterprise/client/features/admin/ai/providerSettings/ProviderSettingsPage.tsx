@@ -1,10 +1,10 @@
 'use client';
 
 import { Text } from '@lobehub/ui';
-import { createStaticStyles, cssVar } from 'antd-style';
+import { createStaticStyles } from 'antd-style';
 import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, useNavigate, useParams } from 'react-router';
+import { useNavigate, useParams } from 'react-router';
 
 import AdminAiRuntimeLoadAlert from '@/enterprise/client/features/admin/ai/shared/AdminAiRuntimeLoadAlert';
 import SettingContainer from '@/features/Setting/SettingContainer';
@@ -16,19 +16,9 @@ import ProviderMenu from '@/routes/(main)/settings/provider/ProviderMenu';
 import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import { AdminProviderSettingsStoreProvider } from './AdminProviderSettingsStore';
-import DraftPublishBanner from './DraftPublishBanner';
 import SharedOAuthConnect from './SharedOAuthConnect';
 
 const styles = createStaticStyles(({ css }) => ({
-  advancedLink: css`
-    font-size: 12px;
-    color: ${cssVar.colorTextTertiary};
-    text-decoration: none;
-
-    &:hover {
-      color: ${cssVar.colorTextSecondary};
-    }
-  `,
   body: css`
     overflow: hidden;
     display: flex;
@@ -46,23 +36,11 @@ const styles = createStaticStyles(({ css }) => ({
     flex-shrink: 0;
     gap: 12px;
     align-items: center;
-    justify-content: space-between;
 
     padding-block: 8px 12px;
     padding-inline: 4px;
   `,
 }));
-
-const AdvancedCatalogLink = memo(() => {
-  const { t } = useTranslation('admin');
-  return (
-    <Link className={styles.advancedLink} to="/admin/ai/catalog/providers">
-      {t('aiProviderSettings.advancedCatalog', {
-        defaultValue: 'Advanced catalog management',
-      })}
-    </Link>
-  );
-});
 
 const renderSharedOAuthPanel = (providerId: string) => (
   <SharedOAuthConnect key={providerId} providerId={providerId} />
@@ -72,6 +50,7 @@ const renderSharedOAuthPanel = (providerId: string) => (
  * Sync secretConfigured + admin UI flags into ProviderSettingsContext from active detail.
  */
 const AdminProviderSettingsContextBridge = memo<{ children: React.ReactNode }>(({ children }) => {
+  const { t } = useTranslation('admin');
   const activeId = useAiInfraStore((s) => s.activeAiProvider);
   const detail = useAiInfraStore((s) => (activeId ? s.aiProviderDetailMap[activeId] : undefined));
   const secretConfigured = Boolean(
@@ -81,6 +60,9 @@ const AdminProviderSettingsContextBridge = memo<{ children: React.ReactNode }>((
   return (
     <ProviderSettingsContext
       value={{
+        // Platform delete is a true hard delete for everyone — say so, instead of reusing the
+        // personal-provider copy that only describes the viewer's own settings.
+        deleteConfirmDescription: t('aiProviderSettings.deleteConfirmDescription'),
         hideFetchOnClient: true,
         // Personal OAuth connects write to the viewer's own key vault — never offer them
         // on the platform catalog surface.
@@ -125,11 +107,10 @@ const AdminProviderSettingsLayout = memo(() => {
           </Text>
           <Text style={{ fontSize: 12 }} type="secondary">
             {t('aiProviderSettings.description', {
-              defaultValue: 'Manage global platform AI providers. Changes publish immediately.',
+              defaultValue: 'Manage global platform AI providers. Changes apply immediately.',
             })}
           </Text>
         </div>
-        <AdvancedCatalogLink />
       </div>
       <div className={styles.body}>
         <ProviderMenu mobile={false} onProviderSelect={onProviderSelect} />
@@ -137,7 +118,6 @@ const AdminProviderSettingsLayout = memo(() => {
           {runtimeError ? (
             <AdminAiRuntimeLoadAlert error={runtimeError} onRetry={retryRuntime} />
           ) : null}
-          <DraftPublishBanner />
           {id ? (
             <ProviderDetailPageComponent id={id} onProviderSelect={onProviderSelect} />
           ) : (

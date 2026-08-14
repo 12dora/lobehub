@@ -114,20 +114,35 @@ export const isAdminAiInfraErrorToasted = (err: unknown): boolean =>
     (err as Record<PropertyKey, unknown>)[ADMIN_AI_INFRA_ERROR_TOASTED] === true,
   );
 
+const markToasted = (error: unknown): void => {
+  if (!error || typeof error !== 'object') return;
+  Object.defineProperty(error, ADMIN_AI_INFRA_ERROR_TOASTED, {
+    configurable: true,
+    enumerable: false,
+    value: true,
+    writable: false,
+  });
+};
+
+/**
+ * Toast one already-collected failure, mark it, and rethrow.
+ *
+ * For multi-write operations (provider reorder) that must attempt EVERY write: the individual
+ * calls run untoasted so N failures cannot produce N toasts, then the caller reports exactly one.
+ */
+export const reportAdminAiInfraError = (cause: unknown): never => {
+  notifyAdminAiInfraError(cause);
+  markToasted(cause);
+  throw cause;
+};
+
 /** Wrap an async write so failures toast without swallowing the rejection. */
 export const withAdminAiInfraErrorToast = async <T>(fn: () => Promise<T>): Promise<T> => {
   try {
     return await fn();
   } catch (error) {
     notifyAdminAiInfraError(error);
-    if (error && typeof error === 'object') {
-      Object.defineProperty(error, ADMIN_AI_INFRA_ERROR_TOASTED, {
-        configurable: true,
-        enumerable: false,
-        value: true,
-        writable: false,
-      });
-    }
+    markToasted(error);
     throw error;
   }
 };

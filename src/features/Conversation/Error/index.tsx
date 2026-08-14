@@ -22,7 +22,10 @@ import { useProviderName } from '@/hooks/useProviderName';
 import dynamic from '@/libs/next/dynamic';
 import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
 import { formatIntergerNumber, formatNumber } from '@/utils/format';
-import { getRuntimeErrorMessage } from '@/utils/locale/runtimeErrorMessage';
+import {
+  getRuntimeErrorMessage,
+  isPlatformLocalizedErrorType,
+} from '@/utils/locale/runtimeErrorMessage';
 
 import ChatInvalidAPIKey from './ChatInvalidApiKey';
 import { isHeterogeneousAgentStatusGuideError } from './heterogeneous';
@@ -137,8 +140,9 @@ const LEGACY_LOCALIZED_ERROR_TYPES = new Set<string>(
 
 /**
  * Whether `getRuntimeErrorMessage` resolves a dedicated localized message for
- * this error type — known runtime codes (spec table) plus legacy
- * `error:response.<X>` entries (ChatErrorType members and HTTP status codes).
+ * this error type — known runtime codes (spec table), registered platform error
+ * codes, plus legacy `error:response.<X>` entries (ChatErrorType members and
+ * HTTP status codes).
  */
 const hasLocalizedErrorMessage = (
   errorType?: IToolErrorType | ILobeAgentRuntimeErrorType | ErrorType,
@@ -146,6 +150,7 @@ const hasLocalizedErrorMessage = (
   if (errorType === undefined || errorType === null) return false;
   if (typeof errorType === 'number') return true;
   if (getErrorCodeSpec(String(errorType))) return true;
+  if (isPlatformLocalizedErrorType(String(errorType))) return true;
   return LEGACY_LOCALIZED_ERROR_TYPES.has(String(errorType));
 };
 

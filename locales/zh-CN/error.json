@@ -82,6 +82,7 @@
   "response.InvalidAccessCode": "访问密码为空或不正确。请重新输入，或改用自定义 API Key",
   "response.LobeHubModelDeprecated": "模型「{{model}}」已下架，请到模型选择器中重新选择可用模型。",
   "response.NoOpenAIAPIKey": "OpenAI API Key 为空或不正确，请添加自定义 OpenAI API Key",
+  "response.PLATFORM_AI_PROVIDER_DISABLED": "该服务商已被管理员移除或停用，请切换其他模型后重试。",
   "response.PlatformAgentDependencyUnavailable": "此 Agent 因所需资源不可用而无法启动。请联系管理员检查其配置。",
   "response.PlatformAgentStartFailed": "此 Agent 无法启动，请重试。如果问题持续，请联系管理员。",
   "response.PlatformAgentUnavailable": "此 Agent 已不可用。请返回 Agent 列表并选择其他 Agent。",

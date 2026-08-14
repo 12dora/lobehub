@@ -39,9 +39,9 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/ai/providers/:id');
     expect(paths).toContain('/admin/ai/service-model');
     expect(paths).toContain('/admin/ai/memory');
-    expect(paths).toContain('/admin/ai/catalog/providers');
-    expect(paths).toContain('/admin/ai/catalog/providers/:id');
-    expect(paths).toContain('/admin/ai/catalog/models');
+    // The hidden advanced draft/publish catalog is gone: admin provider writes apply
+    // immediately from /admin/ai/providers, so no /admin/ai/catalog/* route may come back.
+    expect(paths.some((path) => path.startsWith('/admin/ai/catalog'))).toBe(false);
     expect(paths).toContain('/admin/skills');
     expect(paths).toContain('/admin/skills/:id');
     expect(paths).toContain('/admin/connectors');

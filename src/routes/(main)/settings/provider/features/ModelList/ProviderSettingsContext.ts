@@ -2,6 +2,12 @@ import { createContext, type ReactNode } from 'react';
 
 export interface ProviderSettingsContextValue {
   /**
+   * Override for the "delete provider" confirmation body. Supplied by the admin platform
+   * catalog, where a delete is site-wide and purges credentials plus version history — a much
+   * heavier consequence than deleting a personal provider. Absent = the normal user copy.
+   */
+  deleteConfirmDescription?: string;
+  /**
    * When true (admin platform catalog), hide client-side fetch toggle — no global equivalent.
    */
   hideFetchOnClient?: boolean;

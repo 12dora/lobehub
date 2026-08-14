@@ -7,7 +7,14 @@ import { lambdaClient } from '@/libs/trpc/client';
 
 export type SharedOAuthFlowState = 'idle' | 'requesting' | 'awaiting' | 'success' | 'error';
 
-export type SharedOAuthFlowError = 'authError' | 'codeExpired' | 'denied';
+export type SharedOAuthFlowError = 'authError' | 'codeExpired' | 'denied' | 'providerStoreFailed';
+
+/**
+ * Server code for "the grant was redeemed but the credentials could not be stored". It arrives
+ * on a `denied` poll, so it MUST be split out: the admin did consent, and telling them the
+ * provider refused authorization sends them to the wrong fix.
+ */
+const PROVIDER_STORE_FAILED = 'provider_store_failed';
 
 export interface SharedOAuthDeviceCode {
   deviceCode: string;
@@ -18,10 +25,12 @@ export interface SharedOAuthDeviceCode {
   verificationUriComplete: string | null;
 }
 
+/**
+ * Result of the one write the flow performs. The server applies the connected account
+ * unconditionally, so a `success` poll means the credentials are already live site-wide;
+ * `revision` is only kept so callers can tell a fresh create from an update.
+ */
 export interface SharedOAuthStoreOutcome {
-  published: boolean;
-  publishError: string | null;
-  /** Catalog revision after the store; 0 means the provider was created by this flow. */
   revision: number | null;
 }
 
@@ -200,18 +209,16 @@ export const useAdminSharedOAuthFlow = ({
         case 'success': {
           clearTimers();
           runIdRef.current += 1;
-          const stored: SharedOAuthStoreOutcome = {
-            publishError: result.publishError,
-            published: result.published,
-            revision: result.revision,
-          };
+          const stored: SharedOAuthStoreOutcome = { revision: result.revision };
           setOutcome(stored);
           setState('success');
           onSuccessRef.current?.(stored);
           return;
         }
         case 'denied': {
-          fail('denied');
+          // The grant is single-use and already spent, so the operator must reconnect either
+          // way — but only a real denial is the provider's doing.
+          fail(result.error === PROVIDER_STORE_FAILED ? 'providerStoreFailed' : 'denied');
           return;
         }
         case 'expired': {
