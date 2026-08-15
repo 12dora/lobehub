@@ -1,5 +1,5 @@
 import { getEventListeners } from 'node:events';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,42 +9,26 @@ import { createCurlImpersonateFetch } from './curlImpersonateFetch';
 import { ChatGPTWebTransportUnavailableError } from './errors';
 
 /**
- * A fake `curl-impersonate`: it parses the same CLI surface the transport emits —
- * INCLUDING the `--config /dev/fd/4` file that carries the url, method, proxy and every
- * header — echoes the request back on demand, and writes the header block to fd 3 exactly
- * like curl (HTTP/2 status lines with no reason phrase, 1xx and CONNECT pre-blocks).
+ * A fake `curl-impersonate` that mirrors the REAL wiring this transport depends on:
+ *
+ * - the config arrives on STDIN (`--config -`) and carries the url, method, proxy and
+ *   every header;
+ * - the request body is read back from the temp file named by `data-binary = "@path"`;
+ * - the header block goes to STDOUT (`--dump-header -`) immediately AHEAD of the body,
+ *   exactly like curl — HTTP/2 status lines with no reason phrase, 1xx and CONNECT
+ *   pre-blocks included.
+ *
+ * The previous fake used inherited fds 3/4, which is precisely why the `/dev/fd` recipe
+ * passed every test and then failed on Linux, where those fds are socketpairs.
  */
 const FAKE_BIN_SOURCE = String.raw`#!/usr/bin/env node
 const fs = require('node:fs');
 
 const argv = process.argv.slice(2);
-const read = (flag) => {
-  const index = argv.indexOf(flag);
-  return index === -1 ? undefined : argv[index + 1];
-};
 
-// curl config grammar: name = "value", with \" and \\ escapes.
-const configPath = read('--config');
-const configText = configPath ? fs.readFileSync(configPath, 'utf8') : '';
-const config = [];
-for (const line of configText.split('\n')) {
-  const match = /^(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/.exec(line);
-  if (!match) continue;
-  config.push([match[1], match[2].replace(/\\(.)/g, (_, c) => (c === 't' ? '\t' : c))]);
-}
-const first = (name) => {
-  const entry = config.find(([key]) => key === name);
-  return entry ? entry[1] : undefined;
-};
-const headers = config.filter(([key]) => key === 'header').map(([, value]) => value);
-const url = first('url') || '';
-const method = first('request') || 'GET';
-const proxy = first('proxy');
-const cacert = first('cacert');
-const hasBody = argv.includes('--data-binary');
-
-const dump = (text) => fs.writeSync(3, text);
 const out = (text) => fs.writeSync(1, text);
+// Real curl writes the header dump to the same stdout, before any body byte.
+const dump = out;
 
 const readStdin = () =>
   new Promise((resolve) => {
@@ -57,7 +41,43 @@ const readStdin = () =>
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const main = async () => {
-  const body = hasBody ? await readStdin() : '';
+  if (argv.indexOf('--config') === -1 || argv[argv.indexOf('--config') + 1] !== '-') {
+    fs.writeSync(2, "curl: cannot read config from '-'");
+    process.exit(26);
+  }
+
+  // curl config grammar: name = "value", with \" and \\ escapes.
+  const configText = await readStdin();
+  const config = [];
+  for (const line of configText.split('\n')) {
+    const match = /^([\w-]+)\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/.exec(line);
+    if (!match) continue;
+    config.push([match[1], match[2].replace(/\\(.)/g, (_, c) => (c === 't' ? '\t' : c))]);
+  }
+  const first = (name) => {
+    const entry = config.find(([key]) => key === name);
+    return entry ? entry[1] : undefined;
+  };
+  const headers = config.filter(([key]) => key === 'header').map(([, value]) => value);
+  const url = first('url') || '';
+  const method = first('request') || 'GET';
+  const proxy = first('proxy');
+  const cacert = first('cacert');
+  const dataBinary = first('data-binary');
+
+  let body = '';
+  let bodyPath;
+  let bodyMode;
+  if (dataBinary) {
+    if (dataBinary[0] !== '@') {
+      fs.writeSync(2, 'curl: (26) expected an @file data-binary parameter');
+      process.exit(26);
+    }
+    bodyPath = dataBinary.slice(1);
+    bodyMode = fs.statSync(bodyPath).mode & 0o777;
+    body = fs.readFileSync(bodyPath, 'utf8');
+  }
+
   const path = new URL(url).pathname;
 
   if (path === '/prefail') {
@@ -101,7 +121,16 @@ const main = async () => {
 
   if (path === '/echo') {
     dump('HTTP/2 200 \r\ncontent-type: application/json\r\n\r\n');
-    out(JSON.stringify({ argv, body, cacert, headers, method, proxy, url }));
+    out(JSON.stringify({ argv, body, bodyMode, bodyPath, cacert, headers, method, proxy, url }));
+    return;
+  }
+
+  if (path === '/split') {
+    // The header terminator straddles two writes AND the second one already carries body
+    // bytes — the exact shape that broke a naive "headers, then body" reader.
+    out('HTTP/2 200 \r\ncontent-type: application/json\r\nx-split: yes\r\n\r');
+    await sleep(30);
+    out('\n{"split":true}');
     return;
   }
 
@@ -149,6 +178,26 @@ let bin: string;
 let impersonateFetch: typeof fetch;
 
 const readAll = async (response: Response) => await response.text();
+
+/** Where the transport stages request bodies; used to prove nothing is left behind. */
+const TEMP_BODY_DIR = join(tmpdir(), 'aihub-chatgptweb');
+
+const listTempBodies = (): string[] => {
+  try {
+    return readdirSync(TEMP_BODY_DIR);
+  } catch {
+    return [];
+  }
+};
+
+/** The temp file is unlinked on the child's `close`, which lands after the response. */
+const waitFor = async (predicate: () => boolean, timeoutMs = 3000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('condition was not met in time');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'curl-impersonate-test-'));
@@ -199,6 +248,21 @@ describe('createCurlImpersonateFetch', () => {
     expect(response.statusText).toBe('');
     expect(response.headers.getSetCookie()).toEqual(['a=1', 'b=2']);
     await expect(response.json()).resolves.toEqual({ continued: true });
+  });
+
+  /**
+   * The regression that ships with `--dump-header -`: head and body now travel on the SAME
+   * pipe, so the terminating blank line can be cut in half by a chunk boundary and the
+   * first body bytes can ride in the chunk that completes it.
+   */
+  it('splits head from body when the terminator straddles two chunks', async () => {
+    const response = await impersonateFetch('https://chatgpt.com/split');
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-split')).toBe('yes');
+    // The body must be exactly the bytes after the blank line — no leading newline, and
+    // no header text bleeding into it.
+    await expect(response.text()).resolves.toBe('{"split":true}');
   });
 
   it('streams the body incrementally instead of buffering the whole response', async () => {
@@ -342,8 +406,58 @@ describe('createCurlImpersonateFetch', () => {
 });
 
 /**
+ * The request body cannot travel on stdin any more — the config owns it — so it is staged
+ * in a file. That file holds whatever the user is sending to ChatGPT, so its permissions
+ * and its lifetime are part of the transport's contract.
+ */
+describe('staged request body file', () => {
+  it('is 0600, readable by the child, and removed once the request completes', async () => {
+    const response = await impersonateFetch('https://chatgpt.com/echo', {
+      body: new TextEncoder().encode('staged-bytes'),
+      method: 'POST',
+    });
+    const echoed = (await response.json()) as { body: string; bodyMode: number; bodyPath: string };
+
+    expect(echoed.body).toBe('staged-bytes');
+    // Owner read/write only, while the child still had it open.
+    expect(echoed.bodyMode).toBe(0o600);
+    expect(echoed.bodyPath.startsWith(TEMP_BODY_DIR)).toBe(true);
+
+    await waitFor(() => !existsSync(echoed.bodyPath));
+  });
+
+  it('is removed when curl fails before the headers', async () => {
+    const before = new Set(listTempBodies());
+
+    await expect(
+      impersonateFetch('https://chatgpt.com/prefail', { body: 'doomed', method: 'POST' }),
+    ).rejects.toThrow(/fetch failed/);
+
+    await waitFor(() => listTempBodies().every((entry) => before.has(entry)));
+  });
+
+  it('is removed when the request is aborted mid-stream', async () => {
+    const before = new Set(listTempBodies());
+    const controller = new AbortController();
+    const response = await impersonateFetch('https://chatgpt.com/hang', {
+      body: 'streaming',
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const reader = response.body!.getReader();
+    await reader.read();
+
+    controller.abort();
+
+    await expect(reader.read()).rejects.toMatchObject({ name: 'AbortError' });
+    await waitFor(() => listTempBodies().every((entry) => before.has(entry)));
+  });
+});
+
+/**
  * argv is world-readable (`ps`, `/proc/<pid>/cmdline`, crash reports). Everything that can
- * identify or authenticate the caller therefore travels on the inherited config fd.
+ * identify or authenticate the caller therefore travels on the config that goes in
+ * through stdin.
  */
 describe('secret handling', () => {
   const SECRET_TOKEN = 'Bearer secret-access-token-value';
@@ -378,12 +492,28 @@ describe('secret handling', () => {
     expect(argv).not.toContain('proxypass');
     expect(argv).not.toContain('oaiusercontent.com');
     expect(argv).not.toContain('authorization');
-    expect(echoed.argv).toContain('--config');
-    expect(echoed.argv).toContain('/dev/fd/4');
+    // Config on stdin, header dump on stdout: no inherited /dev/fd descriptor survives.
+    expect(argv).not.toContain('/dev/fd');
+    expect(echoed.argv.join(' ')).toContain('--config -');
+    expect(echoed.argv.join(' ')).toContain('--dump-header -');
     expect(echoed.argv).toContain('--suppress-connect-headers');
     // No redirect following, ever.
     expect(echoed.argv).not.toContain('-L');
     expect(echoed.argv).not.toContain('--location');
+  });
+
+  it('keeps the staged body path out of argv too', async () => {
+    const response = await impersonateFetch('https://chatgpt.com/echo', {
+      body: JSON.stringify({ secret: 'body-secret-value' }),
+      method: 'POST',
+    });
+    const echoed = (await response.json()) as { argv: string[]; body: string; bodyPath: string };
+
+    expect(echoed.body).toBe('{"secret":"body-secret-value"}');
+    expect(echoed.bodyPath).toContain('aihub-chatgptweb');
+    expect(echoed.argv.join(' ')).not.toContain('aihub-chatgptweb');
+    expect(echoed.argv.join(' ')).not.toContain('body-secret-value');
+    expect(echoed.argv).not.toContain('--data-binary');
   });
 
   /**
@@ -399,11 +529,18 @@ describe('secret handling', () => {
     expect(echoed.argv[0]).toBe('--disable');
   });
 
-  it('omits --data-binary when there is no request body', async () => {
+  it('omits data-binary entirely when there is no request body', async () => {
     const response = await impersonateFetch('https://chatgpt.com/echo');
-    const echoed = (await response.json()) as { argv: string[]; method: string };
+    const echoed = (await response.json()) as {
+      argv: string[];
+      bodyPath?: string;
+      method: string;
+    };
 
+    // Neither on the command line nor in the config: a bare `data-binary` would turn this
+    // GET into a zero-length form POST.
     expect(echoed.argv).not.toContain('--data-binary');
+    expect(echoed.bodyPath).toBeUndefined();
     expect(echoed.method).toBe('GET');
   });
 
@@ -451,6 +588,31 @@ describe.skipIf(!process.env.CHATGPT_WEB_CURL_IMPERSONATE_BIN)('real curl-impers
     });
 
     expect(response.status).toBe(401);
+    expect(response.headers.get('cf-mitigated')).toBeNull();
+    await response.text();
+  }, 30_000);
+
+  /**
+   * The other half of the recipe: a request BODY, which now reaches curl through
+   * `data-binary = "@tempfile"` inside the stdin config. The origin answers this endpoint
+   * with 401/429/500 depending on the anonymous device state — anything but a Cloudflare
+   * 403 means the body was posted through a working impersonated connection.
+   */
+  it('posts a JSON body from the staged temp file', async () => {
+    const realFetch = createCurlImpersonateFetch();
+    const response = await realFetch(
+      'https://chatgpt.com/backend-anon/sentinel/chat-requirements',
+      {
+        body: JSON.stringify({ p: 'smoke' }),
+        headers: {
+          'Content-Type': 'application/json',
+          'OAI-Language': 'en-US',
+        },
+        method: 'POST',
+      },
+    );
+
+    expect(response.status).not.toBe(403);
     expect(response.headers.get('cf-mitigated')).toBeNull();
     await response.text();
   }, 30_000);

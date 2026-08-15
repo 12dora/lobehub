@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { HeaderDumpReader } from './headerDump';
 
+const encode = (text: string) => new TextEncoder().encode(text);
+const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
 const feed = (...chunks: string[]) => {
   const reader = new HeaderDumpReader();
-  let head;
-  for (const chunk of chunks) head = reader.push(chunk) ?? head;
-  return { head, reader };
+  let split;
+  for (const chunk of chunks) split = reader.push(encode(chunk)) ?? split;
+  return { body: split?.body, head: split?.head, reader };
 };
 
 describe('HeaderDumpReader', () => {
@@ -89,13 +92,71 @@ describe('HeaderDumpReader', () => {
   it('resolves across chunk boundaries and then stays stable', () => {
     const reader = new HeaderDumpReader();
 
-    expect(reader.push('HTTP/2 200 \r\ncontent-')).toBeUndefined();
-    const head = reader.push('type: text/event-stream\r\n\r\n');
+    expect(reader.push(encode('HTTP/2 200 \r\ncontent-'))).toBeUndefined();
+    const split = reader.push(encode('type: text/event-stream\r\n\r\n'));
 
-    expect(head!.headers.get('content-type')).toBe('text/event-stream');
-    // A trailing block (curl re-dumping, an alternate build) must not replace the head.
-    expect(reader.push('HTTP/2 500 \r\n\r\n')).toBe(head);
-    expect(reader.head).toBe(head);
+    expect(split!.head.headers.get('content-type')).toBe('text/event-stream');
+    expect(split!.body).toHaveLength(0);
+    // Everything after the head is body, verbatim — even bytes that look like a header
+    // block (curl re-dumping, an alternate build) must not replace the head.
+    const later = reader.push(encode('HTTP/2 500 \r\n\r\n'));
+    expect(later!.head).toBe(split!.head);
+    expect(decode(later!.body)).toBe('HTTP/2 500 \r\n\r\n');
+    expect(reader.head).toBe(split!.head);
+  });
+
+  /**
+   * With `--dump-header -` the head and the body share stdout, so the first body bytes
+   * routinely arrive in the same chunk that completes the head.
+   */
+  it('returns the body bytes that follow the head in the same chunk', () => {
+    const { head, body } = feed('HTTP/2 200 \r\ncontent-type: text/plain\r\n\r\nhello world');
+
+    expect(head).toMatchObject({ status: 200 });
+    expect(decode(body!)).toBe('hello world');
+  });
+
+  it('keeps the body intact when the terminator is split across chunks', () => {
+    const reader = new HeaderDumpReader();
+
+    expect(reader.push(encode('HTTP/2 200 \r\nx: 1\r\n\r'))).toBeUndefined();
+    const split = reader.push(encode('\ndata: one\n\n'));
+
+    expect(split!.head).toMatchObject({ status: 200 });
+    expect(decode(split!.body)).toBe('data: one\n\n');
+  });
+
+  it('passes binary body bytes through untouched', () => {
+    const reader = new HeaderDumpReader();
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00]);
+    const header = encode('HTTP/2 200 \r\ncontent-type: image/png\r\n\r\n');
+    const chunk = new Uint8Array(header.length + png.length);
+    chunk.set(header);
+    chunk.set(png, header.length);
+
+    const split = reader.push(chunk);
+
+    expect(split!.head.headers.get('content-type')).toBe('image/png');
+    expect([...split!.body]).toEqual([...png]);
+  });
+
+  it('skips a pre-block and still returns only the body after the real head', () => {
+    const { head, body } = feed(
+      'HTTP/1.1 100 Continue\r\n\r\nHTTP/2 200 \r\nx: 1\r\n\r\n{"ok":true}',
+    );
+
+    expect(head).toMatchObject({ status: 200 });
+    expect(decode(body!)).toBe('{"ok":true}');
+  });
+
+  it('refuses to buffer an unterminated header block forever', () => {
+    const reader = new HeaderDumpReader();
+    const filler = encode(`x-pad: ${'a'.repeat(256 * 1024)}\r\n`);
+
+    expect(reader.push(encode('HTTP/2 200 \r\n'))).toBeUndefined();
+    expect(() => {
+      for (let i = 0; i < 8; i += 1) reader.push(filler);
+    }).toThrow(/header block exceeds/);
   });
 
   it('ignores malformed blocks and continues to the real head', () => {
@@ -113,7 +174,9 @@ describe('HeaderDumpReader', () => {
   it('reports no head until a block is terminated', () => {
     const reader = new HeaderDumpReader();
 
-    expect(reader.push('HTTP/2 200 \r\ncontent-type: application/json\r\n')).toBeUndefined();
+    expect(
+      reader.push(encode('HTTP/2 200 \r\ncontent-type: application/json\r\n')),
+    ).toBeUndefined();
     expect(reader.head).toBeUndefined();
   });
 });

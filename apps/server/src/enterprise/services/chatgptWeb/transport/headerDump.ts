@@ -1,12 +1,17 @@
 /**
- * Parser for curl's `--dump-header` output (written to an extra stdio fd so it never
- * mixes with the response body on stdout).
+ * Parser for curl's `--dump-header -` output, which curl writes to STDOUT immediately
+ * ahead of the response body.
  *
  * The dump can contain SEVERAL blocks: `HTTP/1.1 100 Continue`, `HTTP/1.1 103 Early
  * Hints`, a proxy's `HTTP/1.1 200 Connection established` CONNECT answer, and — with
  * HTTP/2 — a status line that carries no reason phrase at all (`HTTP/2 200 `). Only the
  * first block that is none of those describes the response we hand back; anything after
- * it is ignored (redirects are never followed).
+ * its terminating blank line is body.
+ *
+ * The reader therefore works on BYTES, not on a decoded string: the body may be binary
+ * (an image download), the terminator may straddle two chunks, and the first body bytes
+ * routinely arrive in the same chunk as the head. Header text is decoded as `latin1`,
+ * which maps one byte to one code unit, so string offsets are byte offsets.
  */
 
 /** Hop-by-hop / transport-encoding headers: curl already decoded the body for us. */
@@ -92,28 +97,59 @@ const parseBlock = (block: string): RawHeaderBlock | undefined => {
 };
 
 /**
- * Incremental reader: feed raw fd3 chunks, get the final response head as soon as its
- * terminating blank line has arrived (so streaming responses resolve on first byte).
+ * Guard against an origin (or a broken proxy) that never terminates its header block:
+ * without a cap the reader would buffer the whole response in memory while still
+ * reporting "no headers yet". curl's own limit per response header is 100 KiB.
+ */
+const MAX_HEADER_BYTES = 1024 * 1024;
+
+const EMPTY = new Uint8Array(0);
+
+export class HeaderDumpTooLargeError extends Error {
+  constructor() {
+    super(`response header block exceeds the ${MAX_HEADER_BYTES}-byte limit`);
+    this.name = 'HeaderDumpTooLargeError';
+  }
+}
+
+export interface HeaderDumpSplit {
+  /** Bytes of THIS chunk that belong to the body (empty when the chunk was all header). */
+  body: Uint8Array;
+  head: ParsedHeaderBlock;
+}
+
+/**
+ * Incremental reader: feed raw stdout chunks, get the response head as soon as its
+ * terminating blank line has arrived (so a streaming response resolves on its first
+ * byte) together with the body bytes that followed it in the same chunk.
  */
 export class HeaderDumpReader {
-  private buffer = '';
+  private buffer: Buffer = Buffer.alloc(0);
   private result: ParsedHeaderBlock | undefined;
 
-  /** @returns the response head once it is complete, otherwise undefined. */
-  push(chunk: string): ParsedHeaderBlock | undefined {
-    if (this.result) return this.result;
+  /**
+   * @returns the head plus this chunk's body bytes once the head is complete; undefined
+   * while the header block is still incomplete. Once the head has been found every later
+   * chunk is pure body and is returned unchanged.
+   */
+  push(chunk: Uint8Array): HeaderDumpSplit | undefined {
+    if (this.result) return { body: chunk, head: this.result };
 
-    this.buffer += chunk;
+    this.buffer = Buffer.concat([this.buffer, chunk]);
 
     for (;;) {
-      const end = this.buffer.search(/\r?\n\r?\n/);
-      if (end === -1) return undefined;
+      // latin1: one byte per code unit, so a string index IS a byte offset.
+      const text = this.buffer.toString('latin1');
+      const separator = /\r?\n\r?\n/.exec(text);
+      if (!separator) {
+        if (this.buffer.length > MAX_HEADER_BYTES) throw new HeaderDumpTooLargeError();
+        return undefined;
+      }
 
-      const block = this.buffer.slice(0, end);
-      const separator = /\r?\n\r?\n/.exec(this.buffer.slice(end))![0];
-      this.buffer = this.buffer.slice(end + separator.length);
-
+      const block = text.slice(0, separator.index);
+      const consumed = separator.index + separator[0].length;
       const parsed = parseBlock(block);
+
       // Skip everything that precedes the origin's own head: informational (1xx) blocks
       // and the proxy's CONNECT-established block. Redirects are never followed, so the
       // first block that is neither IS the last one — settling here (rather than waiting
@@ -121,8 +157,13 @@ export class HeaderDumpReader {
       if (parsed && parsed.status >= 200 && !parsed.connectEstablished) {
         const { connectEstablished: _connect, ...head } = parsed;
         this.result = head;
-        return head;
+        // Copy the tail off the header buffer so the buffer itself can be released.
+        const body = new Uint8Array(this.buffer.subarray(consumed));
+        this.buffer = Buffer.alloc(0);
+        return { body: body.byteLength > 0 ? body : EMPTY, head };
       }
+
+      this.buffer = this.buffer.subarray(consumed);
     }
   }
 

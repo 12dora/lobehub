@@ -1,8 +1,12 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import type { Readable, Writable } from 'node:stream';
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { Readable } from 'node:stream';
 
 import { ChatGPTWebTransportPolicyError, ChatGPTWebTransportUnavailableError } from './errors';
-import { HeaderDumpReader, type ParsedHeaderBlock } from './headerDump';
+import { HeaderDumpReader, type HeaderDumpSplit, type ParsedHeaderBlock } from './headerDump';
 import { createAbortError, hasControlCharacters, normalizeRequest } from './request';
 import {
   resolveCurlImpersonateBinary,
@@ -40,6 +44,9 @@ const BODY_STALL_TIMEOUT_MS = 60_000;
 
 /** Statuses whose response is defined to have no body (Response would throw). */
 const NULL_BODY_STATUS = new Set([204, 205, 304]);
+
+/** Owner-only directory under the system temp dir holding in-flight request bodies. */
+const TEMP_BODY_DIR = 'aihub-chatgptweb';
 
 export interface CurlImpersonateFetchOptions {
   /** Absolute path to the binary; overrides env + PATH discovery. */
@@ -85,16 +92,22 @@ const assertConfigSafe = (label: string, value: string): string => {
 
 /**
  * Split the invocation into ARGV (non-secret constants only) and a CONFIG FILE handed to
- * the child on an inherited pipe as `--config /dev/fd/4`.
+ * the child on STDIN as `--config -`.
  *
  * Everything credential-bearing lives in the config: the URL (signed download links carry
  * their signature in the query), the proxy (may embed user:password) and every header
  * (`Authorization: Bearer …`). argv is world-readable through `ps` / `/proc/<pid>/cmdline`
  * and is copied into crash reports and process telemetry; a pipe is readable only by the
  * two processes that hold it.
+ *
+ * Why stdin and not an extra inherited fd: libuv's `spawn` gives extra `pipe` fds as UNIX
+ * SOCKETPAIRS, and on Linux `fopen("/dev/fd/N")` on a socket fails with ENXIO — so
+ * `--config /dev/fd/4` died with `curl: cannot read config from '/dev/fd/4'` (exit 26) in
+ * every container. It only ever worked on macOS, whose fdesc filesystem re-opens sockets.
+ * stdin is a pipe curl opens by descriptor, so it works on both.
  */
 const buildInvocation = (params: {
-  body: boolean;
+  bodyFilePath?: string;
   caBundle?: string;
   headers: [string, string][];
   impersonate: string;
@@ -122,19 +135,16 @@ const buildInvocation = (params: {
     String(Math.max(1, Math.ceil(params.timeoutMs / 1000))),
     '--connect-timeout',
     String(CONNECT_TIMEOUT_SECONDS),
-    // Header dump on fd 3: stdout stays a pure body stream.
+    // Headers first on STDOUT, body after: curl writes the dump before any body byte, so
+    // the two are split by position, not by descriptor (see the note above on /dev/fd).
     '--dump-header',
-    '/dev/fd/3',
-    // Secret-bearing options on fd 4, never on the command line.
+    '-',
+    // Secret-bearing options on stdin, never on the command line.
     '--config',
-    '/dev/fd/4',
+    '-',
   ];
 
   if (params.proxyUrl) args.push('--suppress-connect-headers');
-
-  // Only when there IS a body: `--data-binary @-` alone would turn a GET into a
-  // zero-length entity request with a form content-type.
-  if (params.body) args.push('--data-binary', '@-');
 
   const lines = [
     `url = ${quoteConfigValue(assertConfigSafe('url', params.url))}`,
@@ -145,6 +155,14 @@ const buildInvocation = (params: {
   }
   if (params.caBundle) {
     lines.push(`cacert = ${quoteConfigValue(assertConfigSafe('cacert', params.caBundle))}`);
+  }
+  // Only when there IS a body: `data-binary` alone would turn a GET into a zero-length
+  // entity request with a form content-type. stdin is taken by the config, so the bytes
+  // travel through an owner-only temp file that is unlinked as soon as curl exits.
+  if (params.bodyFilePath) {
+    lines.push(
+      `data-binary = ${quoteConfigValue(assertConfigSafe('body file', `@${params.bodyFilePath}`))}`,
+    );
   }
   for (const [name, value] of params.headers) {
     // curl reads `Name:` as "drop this header"; `Name;` sends it with an empty value.
@@ -163,6 +181,31 @@ const readEnv = (options: CurlImpersonateFetchOptions, env: TransportEnvironment
 });
 
 /**
+ * Stage the request body where curl can read it back with `data-binary = "@path"`.
+ *
+ * `0600` inside a `0700` directory, an unguessable name, and `wx` (fail if it exists, and
+ * never follow a symlink) so a pre-planted entry in a shared `/tmp` cannot redirect the
+ * write. The path is never logged and never appears in argv — only inside the config that
+ * travels down the child's stdin pipe.
+ */
+const writeRequestBodyFile = (body: Uint8Array): string => {
+  const directory = join(tmpdir(), TEMP_BODY_DIR);
+  mkdirSync(directory, { mode: 0o700, recursive: true });
+  const path = join(directory, randomBytes(16).toString('hex'));
+  writeFileSync(path, body, { flag: 'wx', mode: 0o600 });
+  return path;
+};
+
+const removeQuietly = (path: string | undefined): void => {
+  if (!path) return;
+  try {
+    unlinkSync(path);
+  } catch {
+    // Already gone, or the directory was cleaned underneath us.
+  }
+};
+
+/**
  * Bridge the child's stdout to a web ReadableStream. The stream is closed ONLY on the
  * process `close` event, so a mid-stream curl failure (18 partial transfer, 56 recv
  * error) errors the body instead of being delivered as a clean, silently truncated
@@ -175,6 +218,7 @@ const createBodyStream = (params: {
 }): {
   fail: (error: unknown) => void;
   finish: () => void;
+  push: (chunk: Uint8Array) => void;
   stream: ReadableStream<Uint8Array>;
 } => {
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -245,10 +289,14 @@ const createBodyStream = (params: {
     stallTimer.unref?.();
   };
 
-  params.stdout.on('data', (chunk: Buffer) => {
+  /**
+   * Body bytes only: the caller splits the head off the shared stdout stream first, so
+   * this never sees a header byte.
+   */
+  const push = (chunk: Uint8Array) => {
     if (settled) return;
     try {
-      controller?.enqueue(new Uint8Array(chunk));
+      controller?.enqueue(chunk);
     } catch {
       settled = true;
       clearStall();
@@ -258,9 +306,9 @@ const createBodyStream = (params: {
       params.stdout.pause();
       armStall();
     }
-  });
+  };
 
-  return { fail, finish, stream };
+  return { fail, finish, push, stream };
 };
 
 const attachUrl = (response: Response, url: string): Response => {
@@ -306,8 +354,26 @@ export const createCurlImpersonateFetch = (
 
     if (request.signal?.aborted) throw createAbortError();
 
+    let tempBodyPath: string | undefined;
+    let tempBodyRemoved = false;
+    const removeTempBody = () => {
+      if (tempBodyRemoved) return;
+      tempBodyRemoved = true;
+      removeQuietly(tempBodyPath);
+    };
+
+    if (request.body) {
+      try {
+        tempBodyPath = writeRequestBodyFile(request.body);
+      } catch (error) {
+        throw new ChatGPTWebTransportUnavailableError(
+          `ChatGPT Web transport unavailable: the request body could not be staged (${(error as Error).message}).`,
+        );
+      }
+    }
+
     const invocation = buildInvocation({
-      body: Boolean(request.body),
+      ...(tempBodyPath ? { bodyFilePath: tempBodyPath } : {}),
       caBundle: settings.caBundle,
       headers: request.headers,
       impersonate: settings.impersonate,
@@ -319,11 +385,12 @@ export const createCurlImpersonateFetch = (
 
     let child: ChildProcessWithoutNullStreams;
     try {
-      // fd 3 = header dump (child → us), fd 4 = curl config (us → child).
+      // stdin = curl config (us → child), stdout = header dump followed by the body.
       child = spawn(binary, invocation.args, {
-        stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       }) as ChildProcessWithoutNullStreams;
     } catch (error) {
+      removeTempBody();
       throw new ChatGPTWebTransportUnavailableError(
         `ChatGPT Web transport unavailable: failed to start curl-impersonate (${(error as Error).message}).`,
       );
@@ -380,14 +447,33 @@ export const createCurlImpersonateFetch = (
       };
     });
 
-    const headerStream = child.stdio[3] as Readable;
-    headerStream.setEncoding('utf8');
-    headerStream.on('data', (chunk: string) => {
-      const head = headerReader.push(chunk);
-      if (head) settleResponse?.(buildResponse(head, body.stream, request.url));
+    /**
+     * stdout carries the header dump and then the body, so every chunk goes through the
+     * splitter first. Body bytes routinely share the chunk that completes the head, and
+     * the terminating blank line can straddle two chunks — both are the splitter's job.
+     */
+    let responded = false;
+    child.stdout.on('data', (chunk: Buffer) => {
+      let split: HeaderDumpSplit | undefined;
+      try {
+        split = headerReader.push(chunk);
+      } catch (error) {
+        // Only the header-size guard throws here.
+        const failure = new TypeError(`fetch failed: ${(error as Error).message}`);
+        settleError?.(failure);
+        body.fail(failure);
+        kill();
+        return;
+      }
+      if (!split) return;
+      if (!responded) {
+        responded = true;
+        settleResponse?.(buildResponse(split.head, body.stream, request.url));
+      }
+      if (split.body.byteLength > 0) body.push(split.body);
     });
-    // A dump fd that never yields a block is handled by the `close` handler below.
-    headerStream.on('error', () => undefined);
+    // stdout ending without a complete block is handled by the `close` handler below.
+    child.stdout.on('error', () => undefined);
 
     /**
      * The abort listener is per-request but the signal usually is NOT (one controller can
@@ -399,11 +485,15 @@ export const createCurlImpersonateFetch = (
       settleError?.(abortError);
       body.fail(abortError);
       kill();
+      // The child is on its way out and an unlinked file stays readable through the fd it
+      // already holds, so the bytes never outlive the request even if SIGTERM is slow.
+      removeTempBody();
     };
     const detachAbort = () => request.signal?.removeEventListener('abort', onAbort);
 
     child.on('error', (error) => {
       detachAbort();
+      removeTempBody();
       // spawn failure surfaces here on some platforms (ENOENT after the sync call).
       const failure = new ChatGPTWebTransportUnavailableError(
         `ChatGPT Web transport unavailable: curl-impersonate could not run (${error.message}).`,
@@ -414,6 +504,7 @@ export const createCurlImpersonateFetch = (
 
     child.on('close', (code) => {
       detachAbort();
+      removeTempBody();
       if (killTimer) clearTimeout(killTimer);
       if (code === 0) {
         if (!headerReader.head) {
@@ -432,15 +523,12 @@ export const createCurlImpersonateFetch = (
 
     request.signal?.addEventListener('abort', onAbort, { once: true });
 
-    // curl parses its config before it opens a connection, so the whole (small) config is
-    // written up-front; the pipe closes with it so curl never waits for more.
-    const configStream = child.stdio[4] as Writable;
-    configStream.on('error', () => undefined);
-    configStream.end(invocation.config);
-
+    // `--config -` reads stdin to EOF before the connection is opened, so the whole
+    // (small) config is written up-front and the pipe is closed with it — otherwise curl
+    // would wait for more config forever. The request body is NOT here: it is on disk,
+    // referenced by `data-binary = "@…"` inside this config.
     child.stdin.on('error', () => undefined);
-    if (request.body) child.stdin.end(Buffer.from(request.body));
-    else child.stdin.end();
+    child.stdin.end(invocation.config);
 
     return responsePromise;
   };
