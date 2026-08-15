@@ -66,14 +66,15 @@ describe('admin procedure authorization registry', () => {
     // applyImmediate and archive gave way to a true hard delete: 14 procedures removed
     // (10 mutations + 4 queries). The read-only aiProviders.listRevisions history query
     // stays — agent dependency pinning reads the published revision checksum from it.
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(183);
+    // +1 mutation since: admin.aiProviderOAuth.disconnect (withdraw the shared account).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(184);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(86);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(97);
-    expect(mutationPaths).toHaveLength(97);
+    ).toHaveLength(98);
+    expect(mutationPaths).toHaveLength(98);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

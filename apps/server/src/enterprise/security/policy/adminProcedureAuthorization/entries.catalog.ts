@@ -147,6 +147,19 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.aiProviderOAuth.disconnect',
+    // Update + publish of an existing row only — it can never create one, so CREATE is
+    // deliberately absent (and nothing is deleted, so DELETE is not it either).
+    permission: {
+      mode: 'all',
+      permissions: [
+        PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+        PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+      ],
+    },
+  },
+  {
     kind: 'query',
     path: 'admin.aiProviderOAuth.getConnectionStatus',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ] },

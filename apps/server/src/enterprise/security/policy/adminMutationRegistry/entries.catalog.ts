@@ -113,6 +113,14 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'Apply model mutation(s) and publish the parent provider immediately (the only model write).',
     { reauth: recentReauth },
   ),
+  // No outbound call at all: the provider-side grant is NOT revoked here, only the local
+  // credential is withdrawn — so `outbound` stays at the default no-remote-request.
+  'admin.aiProviderOAuth.disconnect': dangerousMutation(
+    'admin.aiProviderOAuth.disconnect',
+    'high',
+    'Remove the stored shared platform provider account and disable the provider immediately.',
+    { reauth: recentReauth },
+  ),
   // Persists nothing itself, so it stays a regular mutation — but it opens the single-use
   // grant whose redemption stores a shared platform credential, so it carries the same
   // reauth gate and permission union as the store step (a stale session must fail here,

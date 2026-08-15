@@ -17,6 +17,8 @@ import { getOAuthService } from '@/server/services/oauthDeviceFlow/providers/git
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
 import {
+  adminAiProviderOAuthDisconnectInputSchema,
+  adminAiProviderOAuthDisconnectOutputSchema,
   adminAiProviderOAuthInitiateInputSchema,
   adminAiProviderOAuthInitiateOutputSchema,
   adminAiProviderOAuthPollInputSchema,
@@ -109,7 +111,110 @@ const sharedAccountPermissions = [
   PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
 ] as const;
 
+/**
+ * Withdrawing the shared account only ever UPDATES an existing row and publishes the
+ * result — it can never create one. AI_PROVIDER_CREATE is deliberately NOT required:
+ * gating the withdrawal of a live shared credential behind a permission the operation
+ * does not use would leave an operator unable to stop it. Nothing is deleted either
+ * (the provider row survives), so AI_PROVIDER_DELETE is equally wrong.
+ */
+const disconnectPermissions = [
+  PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+  PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+] as const;
+
 export const adminAiProviderOAuthRouter = router({
+  /**
+   * Withdraw the shared platform account: clear the whole vault and turn the provider off,
+   * applied + published in one write.
+   *
+   * `enabled: false` is the one update on this router allowed to touch `enabled`, and it is
+   * required for honesty: an ENABLED provider with an empty vault stays in the managed set
+   * and every member's request reaches it unauthenticated — a site-wide outage members
+   * cannot self-serve out of (the managed surface suppresses personal auth). Disabled +
+   * empty resolves to NOT_FOUND on the current-pointer path, which hands the provider back
+   * to each user's own BYOK config.
+   *
+   * NOT a revocation at the authorization server: the provider-side grant stays valid until
+   * it expires or is revoked in the provider's own console. The copy must not imply otherwise.
+   */
+  disconnect: adminBase
+    .use(withAllPlatformPermissions([...disconnectPermissions]))
+    .input(adminAiProviderOAuthDisconnectInputSchema)
+    .output(adminAiProviderOAuthDisconnectOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      // Admission first: an unsupported provider is rejected before any audit row exists.
+      resolveRotatingOAuthCard(input.id);
+
+      const service = createService(ctx.serverDB);
+      // Read-only lookup: gives the CAS baseline and the denial audit a stored credential
+      // to sanitize the operator reason against.
+      let detail;
+      try {
+        detail = await service.getDetail({ providerKey: input.id });
+      } catch (error) {
+        if (!(error instanceof AiCatalogNotFoundError)) return mapServiceError(error);
+      }
+
+      // Gate before the branch below: the freshness requirement is a property of the
+      // action, never of how much state happens to exist.
+      await assertDangerousReauth({
+        action: 'admin.aiProviderOAuth.disconnect',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        existingSecretTargetId: detail?.draft.id ?? null,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: detail?.draft.id ?? input.id,
+      });
+
+      // Nothing was ever connected: idempotent no-op, and no audit row for a write that
+      // did not happen.
+      if (!detail) return { disconnected: false, revision: null };
+
+      const audit = new PlatformAuditService(ctx.serverDB);
+      let result;
+      try {
+        result = await service.applyProviderImmediate(ctx.userId!, {
+          // See the procedure note: the ONLY update on this router that sets `enabled`.
+          enabled: false,
+          expectedDraftToken: detail.draftToken,
+          expectedRevision: detail.baseRevision,
+          id: detail.draft.id,
+          mode: 'update',
+          reason: input.reason,
+          // `clear` (not merge+unset): the vault of these providers holds OAuth leaves
+          // only, and an empty `merge.value` is rejected by the credential schema. It also
+          // makes the status query short-circuit on `secretConfigured: false`.
+          secret: { operation: 'clear' },
+        });
+      } catch (error) {
+        await audit.append({
+          action: 'admin.aiProviderOAuth.disconnect',
+          actorUserId: ctx.userId!,
+          // Service errors may carry issue prose — only a stable code is stored.
+          afterDiff: { error: 'provider_store_failed', providerKey: input.id },
+          result: 'failure',
+          targetId: detail.draft.id,
+          targetType: 'provider',
+        });
+        return mapServiceError(error);
+      }
+
+      await audit.append({
+        action: 'admin.aiProviderOAuth.disconnect',
+        actorUserId: ctx.userId!,
+        // Stable outcome codes only — never the withdrawn account identity.
+        afterDiff: { enabled: false, providerKey: input.id, revision: result.revision },
+        result: 'success',
+        targetId: result.draft?.id ?? detail.draft.id,
+        targetType: 'provider',
+      });
+
+      return { disconnected: true, revision: result.revision };
+    }),
+
   /**
    * Read the shared connection state of one rotating-refresh provider.
    * Presence + expiry + masked account only; token material never leaves the server.
@@ -283,8 +388,9 @@ export const adminAiProviderOAuthRouter = router({
    * that check (which audits only when it denies) a tick that finds no authorization yet
    * writes nothing.
    *
-   * Storing applies immediately (the service publishes unconditionally), so a `stored: true`
-   * result is always live. If the store fails after the grant was redeemed the poll returns
+   * Storing applies immediately (the service publishes unconditionally): a `stored: true`
+   * result means the credentials are committed, while the provider's existing `enabled` state
+   * is preserved. If the store fails after the grant was redeemed the poll returns
    * a terminal `denied` outcome with a stable code rather than throwing.
    */
   pollAuthStatus: adminBase

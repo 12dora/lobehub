@@ -6,8 +6,10 @@
  * store branches with their audits, sanitized failure audits, and the presence-only
  * projection of the status query.
  */
+import { eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -65,7 +67,13 @@ vi.mock('./aiCatalogSupport', async (importOriginal) => {
 
 const db: LobeChatDatabase = await getTestDB();
 const createCaller = createCallerFactory(adminRouter);
-const ids = { aiAdmin: 'oauth-shared-ai-admin' };
+const ids = {
+  aiAdmin: 'oauth-shared-ai-admin',
+  /** UPDATE + PUBLISH but no CREATE — the exact set disconnect is supposed to accept. */
+  withdrawer: 'oauth-shared-withdrawer',
+  /** UPDATE only — publishing the withdrawal is part of the operation, so this must fail. */
+  updateOnly: 'oauth-shared-update-only',
+};
 
 const ACCESS_TOKEN = 'shared-access-token-value';
 const REFRESH_TOKEN = 'shared-refresh-token-value';
@@ -92,6 +100,22 @@ const cleanup = async () => {
   await db.delete(users);
 };
 
+/** Grant exactly one ad-hoc global role carrying the given permission codes. */
+const grantPermissions = async (userId: string, roleName: string, codes: string[]) => {
+  const [role] = await db
+    .insert(roles)
+    .values({ displayName: roleName, name: roleName })
+    .returning();
+  const granted = await db
+    .select({ code: permissions.code, id: permissions.id })
+    .from(permissions)
+    .where(inArray(permissions.code, codes));
+  await db
+    .insert(rolePermissions)
+    .values(granted.map(({ id }) => ({ permissionId: id, roleId: role.id })));
+  await db.insert(userRoles).values({ roleId: role.id, userId, workspaceId: null });
+};
+
 beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
@@ -106,6 +130,13 @@ beforeEach(async () => {
     roleName: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
     userId: ids.aiAdmin,
   });
+  await grantPermissions(ids.withdrawer, 'oauth-shared-withdrawer-role', [
+    PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
+  ]);
+  await grantPermissions(ids.updateOnly, 'oauth-shared-update-only-role', [
+    PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+  ]);
 });
 
 afterEach(async () => {
@@ -115,7 +146,11 @@ afterEach(async () => {
 });
 
 const callerFor = async (
-  auth: { authenticatedAt: Date | null; authMethod: 'api-key' | 'better-auth' } = {
+  auth: {
+    authenticatedAt: Date | null;
+    authMethod: 'api-key' | 'better-auth';
+    userId?: string;
+  } = {
     authenticatedAt: new Date(),
     authMethod: 'better-auth',
   },
@@ -124,7 +159,7 @@ const callerFor = async (
     ...(await createContextInner({
       authenticatedAt: auth.authenticatedAt,
       authMethod: auth.authMethod,
-      userId: ids.aiAdmin,
+      userId: auth.userId ?? ids.aiAdmin,
     })),
     serverDB: db,
   } as never);
@@ -266,7 +301,7 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
   });
 
   it('stores the authorized connection through the catalog admin service', async () => {
-    // Storing publishes unconditionally, so a successful poll is always live.
+    // Storing publishes unconditionally; the provider's `enabled` state is left untouched.
     const applyImmediate = vi.fn().mockResolvedValue({
       auditId: 'apply-audit-id',
       draft: { id: 'created-provider-row-id' },
@@ -482,6 +517,9 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
         },
       },
     });
+    // A reconnect must never resurrect a provider an admin turned off on purpose — and it
+    // is the disconnect procedure, not this one, that is allowed to write `enabled`.
+    expect(applyImmediate.mock.calls[0]?.[1]).not.toHaveProperty('enabled');
     expect(
       (await auditRowsFor('admin.aiProviderOAuth.pollAuthStatus')).filter(
         (row) => row.result === 'success',
@@ -553,6 +591,208 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
     ]);
     expect(JSON.stringify(audits)).not.toContain(prose);
     expect(JSON.stringify(audits)).not.toContain('dev-secret-material');
+  });
+});
+
+describe('admin.aiProviderOAuth.disconnect', () => {
+  const DISCONNECT_REASON = 'withdraw the shared account';
+
+  /** Connect for real (unmocked service) so the disconnect has durable state to remove. */
+  const connect = async () => {
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+    const caller = await callerFor();
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+    return caller;
+  };
+
+  it('rejects providers that cannot hold a shared rotating-refresh account', async () => {
+    const caller = await callerFor();
+
+    await expect(
+      caller.aiProviderOAuth.disconnect({ id: 'openai', reason: DISCONNECT_REASON }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(
+      caller.aiProviderOAuth.disconnect({ id: 'githubcopilot', reason: DISCONNECT_REASON }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    // Admission runs before anything is audited: an unsupported key leaves no trail.
+    expect(await db.select().from(platformAuditLogs)).toEqual([]);
+  });
+
+  it('is a no-op when no shared account was ever stored', async () => {
+    const applyImmediate = vi.fn();
+    serviceSeam.applyProviderImmediate = applyImmediate;
+
+    const result = await (
+      await callerFor()
+    ).aiProviderOAuth.disconnect({ id: 'supergrok', reason: DISCONNECT_REASON });
+
+    expect(result).toEqual({ disconnected: false, revision: null });
+    expect(applyImmediate).not.toHaveBeenCalled();
+    // No write happened, so there is no outcome to audit.
+    expect(await auditRowsFor('admin.aiProviderOAuth.disconnect')).toEqual([]);
+  });
+
+  it('clears the whole shared vault and turns the provider off', async () => {
+    const caller = await connect();
+    const [connected] = await db.select().from(platformAiProviders);
+    expect(connected).toMatchObject({ enabled: true, providerKey: 'chatgpt' });
+
+    const result = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: DISCONNECT_REASON,
+    });
+
+    expect(result.disconnected).toBe(true);
+    expect(result.revision).toBeGreaterThan(connected.revision);
+
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row).toMatchObject({
+      // An enabled provider with an empty vault is a site-wide outage members cannot
+      // escape; disabled hands them back to their own BYOK config instead.
+      enabled: false,
+      providerKey: 'chatgpt',
+      // `clear` unlinks the ciphertext entirely — the account email goes with it.
+      encryptedKeyVaults: null,
+      secretFingerprint: null,
+      status: 'published',
+    });
+
+    // The status query must answer cleanly on an empty vault rather than throwing.
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).toEqual({
+      accountEmail: null,
+      accountIdMasked: null,
+      connected: false,
+      expired: false,
+      expiresAt: null,
+      secretConfigured: false,
+    });
+  });
+
+  it('audits the withdrawal with stable codes only', async () => {
+    const caller = await connect();
+
+    const result = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: DISCONNECT_REASON,
+    });
+
+    const audits = await auditRowsFor('admin.aiProviderOAuth.disconnect');
+    expect(audits).toMatchObject([
+      {
+        actorUserId: ids.aiAdmin,
+        afterDiff: { enabled: false, providerKey: 'chatgpt', revision: result.revision },
+        result: 'success',
+        targetType: 'provider',
+      },
+    ]);
+    const serialized = JSON.stringify(audits);
+    expect(serialized).not.toContain(ACCESS_TOKEN);
+    expect(serialized).not.toContain(REFRESH_TOKEN);
+    // The account identity is projected to the panel, but it is never audit material.
+    expect(serialized).not.toContain(ACCOUNT_EMAIL);
+  });
+
+  it('denies a stale session and writes nothing', async () => {
+    await connect();
+    const [before] = await db.select().from(platformAiProviders);
+    const stale = await staleCaller();
+
+    await expect(
+      stale.aiProviderOAuth.disconnect({
+        id: 'chatgpt',
+        // The stored token must not survive into the denial audit reason.
+        reason: `disconnect ${ACCESS_TOKEN}`,
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    const [after] = await db.select().from(platformAiProviders);
+    expect(after).toMatchObject({ enabled: true, revision: before.revision });
+    expect(after.encryptedKeyVaults).toBe(before.encryptedKeyVaults);
+
+    const denied = await auditRowsFor('admin.aiProviderOAuth.disconnect');
+    expect(denied).toMatchObject([
+      { afterDiff: { error: 'reauth_required' }, result: 'denied', targetType: 'provider' },
+    ]);
+    expect(JSON.stringify(denied)).not.toContain(ACCESS_TOKEN);
+  });
+
+  it('is idempotent: withdrawing an already-empty vault still succeeds', async () => {
+    const caller = await connect();
+    await caller.aiProviderOAuth.disconnect({ id: 'chatgpt', reason: DISCONNECT_REASON });
+
+    const again = await caller.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: DISCONNECT_REASON,
+    });
+
+    expect(again.disconnected).toBe(true);
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row).toMatchObject({ enabled: false, encryptedKeyVaults: null });
+  });
+
+  /**
+   * The shared-refresh lease is deliberately NOT cancelled on disconnect (it self-expires,
+   * and a holder that started before the clear still owns it). That holder can finish by
+   * CAS-rewriting the secret VERSION row it consumed — `clear` only unlinks that row from
+   * the provider. This pins the consequence: presence is read from the provider row, so a
+   * late rotation cannot bring the connection back.
+   */
+  it('cannot be resurrected by a rotation that was already holding the refresh lease', async () => {
+    const caller = await connect();
+    const [version] = await db.select().from(platformAiProviderSecrets);
+    expect(version).toBeTruthy();
+
+    await caller.aiProviderOAuth.disconnect({ id: 'chatgpt', reason: DISCONNECT_REASON });
+
+    // Stand in for the late CAS persist of an in-flight refresh. The rewritten content is
+    // irrelevant precisely because nothing on the live path reads this row any more.
+    await db
+      .update(platformAiProviderSecrets)
+      .set({ ciphertext: version.ciphertext })
+      .where(eq(platformAiProviderSecrets.id, version.id));
+
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).toMatchObject({
+      connected: false,
+      secretConfigured: false,
+    });
+    const [row] = await db.select().from(platformAiProviders);
+    expect(row).toMatchObject({
+      enabled: false,
+      encryptedKeyVaults: null,
+      secretFingerprint: null,
+    });
+  });
+
+  it('accepts UPDATE + PUBLISH without requiring CREATE, and rejects UPDATE alone', async () => {
+    await connect();
+
+    // Withdrawal only ever updates an existing row: gating it behind CREATE would leave an
+    // operator unable to stop a live shared credential.
+    const withdrawer = await callerFor({
+      authenticatedAt: new Date(),
+      authMethod: 'better-auth',
+      userId: ids.withdrawer,
+    });
+    const result = await withdrawer.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: DISCONNECT_REASON,
+    });
+    expect(result.disconnected).toBe(true);
+
+    // Publishing is part of the operation — UPDATE alone cannot make the change live.
+    const updateOnly = await callerFor({
+      authenticatedAt: new Date(),
+      authMethod: 'better-auth',
+      userId: ids.updateOnly,
+    });
+    await expect(
+      updateOnly.aiProviderOAuth.disconnect({ id: 'chatgpt', reason: DISCONNECT_REASON }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 });
 

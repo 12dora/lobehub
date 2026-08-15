@@ -1,13 +1,17 @@
 'use client';
 
 import { Alert, CopyButton, Flexbox, Icon, Skeleton, Tag, Text } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { CheckCircle2Icon, ExternalLinkIcon, Loader2Icon, UnplugIcon } from 'lucide-react';
 import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 
+import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import { notifyAdminAiInfraError } from '@/enterprise/client/services/adminAiInfraAdapter/errors';
+import { usePlatformAiTakeover } from '@/features/ManagedResources';
 import { useClientDataSWR } from '@/libs/swr';
 import { lambdaClient } from '@/libs/trpc/client';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
@@ -44,6 +48,15 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 export const ADMIN_SHARED_OAUTH_STATUS_KEY = 'admin.aiProviderOAuth.getConnectionStatus' as const;
 
+/** Audit reason recorded for the reauth-gated withdrawal of the shared account. */
+const DISCONNECT_REASON = 'admin shared provider account disconnect';
+
+/**
+ * Managed-resources tab of the unified admin page: the ONLY place where the shared
+ * catalog is handed to members ("Platform managed").
+ */
+const MANAGED_RESOURCES_PATH = '/admin/unified?tab=managed';
+
 export const buildAdminSharedOAuthStatusKey = (providerId: string) =>
   [ADMIN_SHARED_OAUTH_STATUS_KEY, providerId] as const;
 
@@ -71,6 +84,29 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   const { t } = useTranslation('admin');
   const storeApi = useAiInfraStoreApi();
   const name = providerDisplayName(providerId);
+  const [disconnecting, setDisconnecting] = useState(false);
+  /**
+   * Whether the platform AI catalog actually OVERRIDES what members use right now
+   * (published `managed + enforced` + the feature flag) — not merely whether their settings
+   * UI is blocked. `useManagedResource('aiProviders').managed` is the wrong signal here: it
+   * is also true for `ui-only`, where members keep using their own accounts and this shared
+   * one reaches nobody. Read from the app-wide capability context: no extra request, and no
+   * POLICY_READ requirement on an operator who only administers AI.
+   *
+   * While it is loading or failed we say nothing: a hint that guesses wrong is worse than
+   * no hint.
+   */
+  const { loading: platformLoading, error: platformError, takeover } = usePlatformAiTakeover();
+  const takeoverKnown = !platformLoading && platformError === null;
+  const showEnforcementHint = takeoverKnown && !takeover;
+  /**
+   * Same source as the header EnableSwitch (`aiProviderSelectors.isProviderEnabled`), so the
+   * success copy cannot claim a provider is serving members while that switch reads off.
+   * Storing a credential never enables anything on the update path — only first connect does.
+   */
+  const providerEnabled = useAiInfraStore((s) =>
+    (s.aiProviderList ?? []).some((item) => item.id === providerId && item.enabled === true),
+  );
   /**
    * Follow-up hint source: PERSISTED platform model rows only.
    *
@@ -97,16 +133,25 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   );
 
   const handleStored = useCallback(async () => {
-    // The connection is already committed server-side; a failing refresh must not be
-    // reported as a failed connect — the panel keeps its success state either way.
-    // Uses the bound mutate: useClientDataSWR augments the key with the workspace id.
+    // The write is already committed server-side; a failing refresh must not be reported as
+    // a failed write — the panel keeps its outcome state either way.
     try {
-      await refreshStatus();
-      await storeApi.getState().refreshAiProviderDetail();
-      await storeApi.getState().refreshAiProviderList();
-      // The create path activates the provider server-side, so the runtime projection (which
-      // drives the "live" hint and the model list) is stale until it is re-read.
-      await storeApi.getState().refreshAiProviderRuntimeState();
+      const state = storeApi.getState();
+      /**
+       * allSettled, NOT a sequential await chain: these four reads are independent, and one
+       * rejection used to skip every later refresh. The runtime-state read is the one that
+       * must not be skipped — it drives the header EnableSwitch and the provider grid, both
+       * of which would keep showing a provider this write just turned off.
+       *
+       * refreshStatus uses the bound mutate: useClientDataSWR augments the key with the
+       * workspace id.
+       */
+      await Promise.allSettled([
+        refreshStatus(),
+        state.refreshAiProviderDetail(),
+        state.refreshAiProviderList(),
+        state.refreshAiProviderRuntimeState(),
+      ]);
     } catch {
       /* stale view only; the next revalidation recovers it */
     }
@@ -133,26 +178,88 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
   }, [connect]);
 
+  /**
+   * Withdraw the shared account. Confirmation is mandatory: unlike the user-side disconnect
+   * (one person, self-serve reconnect) this removes the credential EVERY member is using and
+   * turns the provider off, and members have no way to restore it themselves.
+   */
+  const handleDisconnect = useCallback(() => {
+    confirmModal({
+      content: t('aiProviderSettings.sharedOAuth.disconnectConfirm', { name }),
+      okButtonProps: { danger: true },
+      okText: t('aiProviderSettings.sharedOAuth.disconnect'),
+      onOk: async () => {
+        setDisconnecting(true);
+        try {
+          // Same reauth handling as connect: the step-up prompt replays the SAME call.
+          await withAdminReauthRetry(() =>
+            lambdaClient.admin.aiProviderOAuth.disconnect.mutate({
+              id: providerId,
+              reason: DISCONNECT_REASON,
+            }),
+          );
+          // The write is already committed site-wide; handleStored never rejects, so a
+          // failing revalidation cannot be reported as a failed disconnect.
+          await handleStored();
+          toast.success(t('aiProviderSettings.sharedOAuth.disconnectSuccess'));
+        } catch (error) {
+          // Shared enterprise-error mapping (reauth cancelled/blocked, rate limit, mapped
+          // codes) with a disconnect-specific fallback instead of the generic "save failed".
+          notifyAdminAiInfraError(error, 'aiProviderSettings.sharedOAuth.disconnectFailed');
+          // Rethrow: base-ui keeps a rejected confirm open, so the operator can retry
+          // without re-reading the consequences.
+          throw error;
+        } finally {
+          setDisconnecting(false);
+        }
+      },
+      title: t('aiProviderSettings.sharedOAuth.disconnect'),
+    });
+  }, [handleStored, name, providerId, t]);
+
   const handleOpenVerification = useCallback(() => {
     const uri = deviceCode?.verificationUriComplete || deviceCode?.verificationUri;
     if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
   }, [deviceCode?.verificationUri, deviceCode?.verificationUriComplete]);
 
   /**
-   * A `success` poll means the account was applied unconditionally — it is already live for
-   * every member. Anything that failed on the way surfaces as an error state instead, so the
-   * only variation left here is the follow-up hint for a provider that still has no model on.
+   * A connected account is not the same as an account members use. This says so, and points
+   * at the one page that changes it. Rendered in BOTH the just-connected view and the idle
+   * connected view — the moment right after connecting is exactly when an operator concludes
+   * "done", so leaving it out there was the whole gap.
    */
-  const renderStoredAlert = () => (
-    <Alert
-      type={'success'}
-      message={t(
-        hasPersistedEnabledModel
+  const renderEnforcementHint = () =>
+    showEnforcementHint ? (
+      <Text className={styles.hint}>
+        {t('aiProviderSettings.sharedOAuth.enforcementHint')}{' '}
+        <Link to={MANAGED_RESOURCES_PATH}>
+          {t('aiProviderSettings.sharedOAuth.enforcementHintLink')}
+        </Link>
+      </Text>
+    ) : null;
+
+  /**
+   * A `success` poll means the account was applied unconditionally — the CREDENTIAL is
+   * stored and published. That alone promises nothing to members, so every claim below is
+   * read from real state instead, in the order an operator would have to fix them:
+   *   - provider off (only first connect enables the row; a reconnect after a disconnect
+   *     deliberately leaves it off) ⇒ turn it on;
+   *   - no persisted enabled model ⇒ turn one on;
+   *   - no platform AI takeover ⇒ members are still on their own accounts;
+   *   - otherwise, and only then, the provider really is on for members.
+   */
+  const renderStoredAlert = () => {
+    const messageKey = !providerEnabled
+      ? 'aiProviderSettings.sharedOAuth.success.providerOff'
+      : !hasPersistedEnabledModel
+        ? 'aiProviderSettings.sharedOAuth.success.needsModels'
+        : // Fails closed, unlike the additive hint: "on for members" needs a POSITIVE
+          // takeover reading, never merely the absence of one.
+          takeover
           ? 'aiProviderSettings.sharedOAuth.success.published'
-          : 'aiProviderSettings.sharedOAuth.success.needsModels',
-      )}
-    />
-  );
+          : 'aiProviderSettings.sharedOAuth.success.pendingTakeover';
+    return <Alert message={t(messageKey)} type={'success'} />;
+  };
 
   const renderBody = () => {
     if (state === 'requesting') {
@@ -223,6 +330,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
       return (
         <Flexbox gap={12}>
           {renderStoredAlert()}
+          {renderEnforcementHint()}
           <Flexbox horizontal>
             <Button onClick={reset}>{t('aiProviderSettings.sharedOAuth.done')}</Button>
           </Flexbox>
@@ -268,13 +376,14 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
                 ? t('aiProviderSettings.sharedOAuth.expiresAt', { time: expiry })
                 : t('aiProviderSettings.sharedOAuth.autoRefresh')}
             </Text>
+            {renderEnforcementHint()}
           </Flexbox>
         ) : (
           <Text className={styles.meta}>
             {t('aiProviderSettings.sharedOAuth.disconnectedHint', { name })}
           </Text>
         )}
-        <Flexbox horizontal>
+        <Flexbox horizontal gap={8}>
           <Button type={status?.connected ? 'default' : 'primary'} onClick={handleConnect}>
             {t(
               status?.connected
@@ -282,6 +391,11 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
                 : 'aiProviderSettings.sharedOAuth.connect',
             )}
           </Button>
+          {status?.connected && (
+            <Button danger loading={disconnecting} onClick={handleDisconnect}>
+              {t('aiProviderSettings.sharedOAuth.disconnect')}
+            </Button>
+          )}
         </Flexbox>
       </Flexbox>
     );

@@ -54,12 +54,33 @@ export const adminAiProviderOAuthPollOutputSchema = z
     error: z.string().max(200).nullable().optional(),
     /**
      * Provider revision after a successful store; null while the flow is unfinished.
-     * A `stored: true` poll is always live — storing publishes unconditionally.
+     * `stored: true` means the credentials were committed and published; the provider's
+     * existing `enabled` state is preserved (a reconnect never re-enables a provider the
+     * admin turned off), and members are served only under platform-managed takeover.
      */
     revision: z.number().int().nonnegative().nullable(),
     /** true when this poll stored the shared connection in the platform vault. */
     stored: z.boolean(),
     status: z.enum(['denied', 'expired', 'pending', 'slow_down', 'success']),
+  })
+  .strict();
+
+export const adminAiProviderOAuthDisconnectInputSchema = z
+  .object({
+    id: providerKeySchema,
+    reason: adminReasonSchema,
+  })
+  .strict();
+
+export const adminAiProviderOAuthDisconnectOutputSchema = z
+  .object({
+    /**
+     * false only when there is no platform row for this provider at all — there was
+     * nothing to withdraw, so the call is a no-op rather than a failure.
+     */
+    disconnected: z.boolean(),
+    /** Provider revision after the withdrawal published; null on the no-op path. */
+    revision: z.number().int().nonnegative().nullable(),
   })
   .strict();
 

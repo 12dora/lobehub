@@ -26,9 +26,10 @@ export interface SharedOAuthDeviceCode {
 }
 
 /**
- * Result of the one write the flow performs. The server applies the connected account
- * unconditionally, so a `success` poll means the credentials are already live site-wide;
- * `revision` is only kept so callers can tell a fresh create from an update.
+ * Result of the one write the flow performs. The server applies and publishes the connected
+ * account unconditionally, so a `success` poll means the credentials are committed — NOT that
+ * members are served: the provider's `enabled` state is preserved and takeover requires the
+ * platform-managed policy. `revision` is only kept so callers can tell a create from an update.
  */
 export interface SharedOAuthStoreOutcome {
   revision: number | null;
