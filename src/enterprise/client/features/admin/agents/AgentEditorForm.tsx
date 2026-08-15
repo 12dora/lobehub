@@ -9,6 +9,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import EmojiPicker from '@/components/EmojiPicker';
+import { DEFAULT_AVATAR } from '@/const/meta';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import BackgroundSwatches from '@/features/AgentSetting/AgentMeta/BackgroundSwatches';
 
@@ -133,7 +134,9 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
             <EmojiPicker
               background={background}
               size={48}
-              value={config.avatar ?? undefined}
+              // Display-only fallback: an unset avatar must not render as the text "NU"
+              // (`String(null)`); the platform default stays out of the persisted config.
+              value={config.avatar ?? DEFAULT_AVATAR}
               onChange={(next: string) => form.patchConfig('avatar', next || null)}
             />
             <BackgroundSwatches
