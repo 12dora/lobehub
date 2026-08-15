@@ -596,13 +596,32 @@ export const getEmptyAiProviderRuntimeState = (): AiProviderRuntimeState => ({
  * process-wide and keyed by the catalog token, so a per-user state must never reach it. The
  * managed state is treated as immutable here for the same reason.
  */
+/**
+ * Under takeover only providers the member has actually configured themselves survive the
+ * union: a custom provider, or a builtin one they stored credentials for. Model-bank
+ * "enabled by default" builtins with an empty vault are NOT the member's own configuration —
+ * vanilla LobeHub lists them so the user can go and add a key, but the settings page is
+ * boundary-blocked under 平台托管, so listing them would only offer models that cannot run.
+ */
+const isUserConfiguredProvider = (
+  provider: EnabledProvider,
+  runtimeConfig: AiProviderRuntimeState['runtimeConfig'] | undefined,
+): boolean => {
+  if (provider.source === 'custom') return true;
+  const keyVaults = runtimeConfig?.[provider.id]?.keyVaults ?? {};
+  return Object.values(keyVaults).some(
+    (value) => typeof value === 'string' && value.trim().length > 0,
+  );
+};
+
 export const mergeUnmanagedUpstreamProviders = (
   managed: AiProviderRuntimeState,
   upstream: AiProviderRuntimeState,
 ): AiProviderRuntimeState => {
   const managedIds = new Set(managed.enabledAiProviders.map((provider) => provider.id));
   const unmanagedProviders = upstream.enabledAiProviders.filter(
-    (provider) => !managedIds.has(provider.id),
+    (provider) =>
+      !managedIds.has(provider.id) && isUserConfiguredProvider(provider, upstream.runtimeConfig),
   );
   const unmanagedConfigKeys = Object.keys(upstream.runtimeConfig ?? {}).filter(
     (key) => !managedIds.has(key),

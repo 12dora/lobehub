@@ -459,6 +459,56 @@ describe('AiCatalogRuntimeAdapter', () => {
     expect(mergeUnmanagedUpstreamProviders(shared, getEmptyAiProviderRuntimeState())).toBe(shared);
   });
 
+  it('unions only providers the member configured themselves (custom, or builtin with a stored key)', async () => {
+    await createPublishedProvider();
+    clearAiCatalogRuntimeCache();
+    const shared = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+
+    const model = (providerId: string) => ({
+      abilities: {},
+      enabled: true,
+      id: `${providerId}-model`,
+      providerId,
+      type: 'chat' as const,
+    });
+    const upstream = {
+      ...getEmptyAiProviderRuntimeState(),
+      enabledAiModels: [model('anthropic'), model('openai'), model('my-gateway')],
+      enabledAiProviders: [
+        // model-bank "enabled by default" builtin, no credentials → not the member's own config
+        { id: 'anthropic', name: 'Anthropic', source: 'builtin' as const },
+        // builtin the member stored a key for → survives
+        { id: 'openai', name: 'OpenAI', source: 'builtin' as const },
+        // custom provider (may legitimately have no key, e.g. a local gateway) → survives
+        { id: 'my-gateway', name: 'Gateway', source: 'custom' as const },
+      ],
+      enabledChatAiProviders: [
+        { id: 'anthropic', name: 'Anthropic', source: 'builtin' as const },
+        { id: 'openai', name: 'OpenAI', source: 'builtin' as const },
+        { id: 'my-gateway', name: 'Gateway', source: 'custom' as const },
+      ],
+      runtimeConfig: {
+        'anthropic': { config: {}, keyVaults: { apiKey: '   ' }, settings: {} },
+        'my-gateway': { config: {}, keyVaults: {}, settings: {} },
+        'openai': { config: {}, keyVaults: { apiKey: 'sk-user-own' }, settings: {} },
+      },
+    };
+
+    const merged = mergeUnmanagedUpstreamProviders(shared, upstream as never);
+    expect(merged.enabledAiProviders.map((item) => item.id)).toEqual([
+      'alpha',
+      'openai',
+      'my-gateway',
+    ]);
+    expect(merged.enabledChatAiProviders.map((item) => item.id)).toEqual([
+      'alpha',
+      'openai',
+      'my-gateway',
+    ]);
+    expect(merged.enabledAiModels.some((item) => item.providerId === 'anthropic')).toBe(false);
+    expect(merged.enabledAiModels.some((item) => item.providerId === 'openai')).toBe(true);
+  });
+
   describe('resolveAiCatalogRuntimeState enforcement gate', () => {
     const publishAiProviderPolicy = async (managed: boolean) => {
       const model = new PlatformManagedResourcePolicyModel(db);
