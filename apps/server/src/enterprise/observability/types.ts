@@ -22,6 +22,9 @@ import type {
   EnterpriseSsrfDenialCategory,
 } from '@lobechat/observability-otel/modules/enterprise-platform';
 
+/** Closed publication vocabulary (`publish` | `rollback` | `save`) re-exported for services. */
+export type { EnterpriseConfigPublishOperation };
+
 export type EnterpriseObservabilityErrorClass =
   'ConflictError' | 'TimeoutError' | 'UnavailableError' | 'UnexpectedError' | 'ValidationError';
 

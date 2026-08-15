@@ -12,6 +12,7 @@ import {
   buildRevisionLagAttributes,
   buildSsrfDenialAttributes,
   ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES,
+  ENTERPRISE_CONFIG_PUBLISH_OPERATIONS,
   ENTERPRISE_OIDC_FAILURE_CATEGORIES,
   ENTERPRISE_OIDC_LOGIN_STAGES,
   ENTERPRISE_SSRF_DENIAL_CATEGORIES,
@@ -243,6 +244,29 @@ describe('enterprise platform OpenTelemetry instruments', () => {
       'enterprise.outcome': 'success',
     });
     expect(JSON.stringify(attributes)).not.toContain('raw-');
+  });
+
+  it('exposes save as a closed publication operation alongside publish and rollback', () => {
+    expect(ENTERPRISE_CONFIG_PUBLISH_OPERATIONS).toEqual(['publish', 'rollback', 'save']);
+    expect(
+      buildConfigPublishAttributes({
+        domain: 'agent_catalog',
+        operation: 'save',
+        outcome: 'success',
+      }),
+    ).toEqual({
+      'enterprise.domain': 'agent_catalog',
+      'enterprise.operation': 'save',
+      'enterprise.outcome': 'success',
+    });
+    // Anything outside the closed set is still dropped rather than exported as a label.
+    expect(
+      buildConfigPublishAttributes({
+        domain: 'agent_catalog',
+        operation: 'draft-save',
+        outcome: 'success',
+      } as never),
+    ).toEqual({ 'enterprise.domain': 'agent_catalog', 'enterprise.outcome': 'success' });
   });
 
   it('drops runtime values outside the closed unions', () => {

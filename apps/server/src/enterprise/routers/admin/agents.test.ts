@@ -10,8 +10,10 @@ import {
   platformAgentAssignments,
   platformAgents,
   platformAgentVersions,
+  platformAiProviders,
   platformAuditLogs,
   platformJobs,
+  platformResourceRevisions,
   rolePermissions,
   roles,
   userRoles,
@@ -32,13 +34,74 @@ const createCaller = (context: Parameters<typeof createRootCaller>[0]) =>
   createRootCaller(context).agents;
 const ids = {
   assigner: 'm10-router-assigner',
+  /** AGENT_CREATE + AGENT_PUBLISH — create publishes, so it needs both. */
   creator: 'm10-router-creator',
+  /** AGENT_CREATE only — must be denied by the compound create gate. */
+  creatorNoPublish: 'm10-router-creator-nopublish',
   deleter: 'm10-router-deleter',
+  /** AGENT_UPDATE + AGENT_PUBLISH — the save gate. */
+  editor: 'm10-router-editor',
   normal: 'm10-router-normal',
   publisher: 'm10-router-publisher',
   reader: 'm10-router-reader',
   updater: 'm10-router-updater',
 };
+
+const PROVIDER_CHECKSUM = 'c'.repeat(64);
+
+const dependencySnapshot = {
+  connectors: [],
+  model: {
+    modelKey: 'chat',
+    providerChecksum: PROVIDER_CHECKSUM,
+    providerKey: 'provider',
+    providerRevision: 1,
+  },
+  skills: [],
+};
+
+const agentConfig = (displayName: string) => ({
+  avatar: null,
+  backgroundColor: null,
+  description: null,
+  displayName,
+  modelParameters: {},
+  openingMessage: null,
+  openingQuestions: [],
+  systemRole: 'Help users.',
+  tags: [],
+});
+
+/** Minimal published provider + revision so agent dependency revalidation succeeds. */
+const seedPublishedProvider = async () => {
+  await db.insert(platformAiProviders).values({
+    displayName: 'Provider',
+    enabled: true,
+    id: 'provider-id',
+    providerKey: 'provider',
+    revision: 1,
+    status: 'published',
+  });
+  await db.insert(platformResourceRevisions).values({
+    checksum: PROVIDER_CHECKSUM,
+    id: 'provider-revision-1',
+    payload: {
+      models: [{ enabled: true, modelKey: 'chat', type: 'chat' }],
+      provider: { enabled: true, providerKey: 'provider' },
+    },
+    publishedAt: new Date(),
+    resourceId: 'provider-id',
+    resourceType: 'provider',
+    revision: 1,
+    status: 'published',
+  });
+};
+
+const createAgent = async (
+  caller: Awaited<ReturnType<typeof callerFor>>,
+  agentKey: string,
+  reason: string,
+) => caller.create({ agentKey, config: agentConfig(agentKey), dependencySnapshot, reason });
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: databaseMocks.getServerDB,
@@ -52,6 +115,8 @@ const cleanup = async () => {
       ${platformAgentAssignments},
       ${platformAgentVersions},
       ${platformAgents},
+      ${platformResourceRevisions},
+      ${platformAiProviders},
       ${userRoles},
       ${rolePermissions},
       ${roles},
@@ -99,13 +164,24 @@ beforeEach(async () => {
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
   await seedPlatformRoles(db);
   await grantPermissions(ids.reader, 'm10_agent_reader', [PLATFORM_PERMISSIONS.AGENT_READ]);
-  await grantPermissions(ids.creator, 'm10_agent_creator', [PLATFORM_PERMISSIONS.AGENT_CREATE]);
+  await grantPermissions(ids.creator, 'm10_agent_creator', [
+    PLATFORM_PERMISSIONS.AGENT_CREATE,
+    PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+  ]);
+  await grantPermissions(ids.creatorNoPublish, 'm10_agent_creator_nopublish', [
+    PLATFORM_PERMISSIONS.AGENT_CREATE,
+  ]);
+  await grantPermissions(ids.editor, 'm10_agent_editor', [
+    PLATFORM_PERMISSIONS.AGENT_UPDATE,
+    PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+  ]);
   await grantPermissions(ids.updater, 'm10_agent_updater', [PLATFORM_PERMISSIONS.AGENT_UPDATE]);
   await grantPermissions(ids.publisher, 'm10_agent_publisher', [
     PLATFORM_PERMISSIONS.AGENT_PUBLISH,
   ]);
   await grantPermissions(ids.deleter, 'm10_agent_deleter', [PLATFORM_PERMISSIONS.AGENT_DELETE]);
   await grantPermissions(ids.assigner, 'm10_agent_assigner', [PLATFORM_PERMISSIONS.AGENT_ASSIGN]);
+  await seedPublishedProvider();
 });
 
 afterEach(async () => {
@@ -129,24 +205,36 @@ describe('adminAgentsRouter security gates', () => {
       nextCursor: null,
     });
     await expect(
-      reader.create({ agentKey: 'reader-denied', reason: 'reader cannot create' }),
+      createAgent(reader, 'reader-denied', 'reader cannot create'),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    // Compound create gate: AGENT_CREATE alone is not enough now that create publishes.
+    const creatorNoPublish = await callerFor({
+      authenticatedAt: new Date(),
+      userId: ids.creatorNoPublish,
+    });
+    await expect(
+      createAgent(creatorNoPublish, 'half-granted', 'create without publish'),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const creator = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
-    const created = await creator.create({ agentKey: 'router-agent', reason: 'create Agent' });
+    const created = await createAgent(creator, 'router-agent', 'create Agent');
+    // Create publishes live in the same transaction.
+    expect(created.identity).toMatchObject({ revision: 1, status: 'published' });
+    expect(created.version).toMatchObject({ version: '1.0.0' });
+    expect(created.identity.currentVersionId).toBe(created.version.id);
     await expect(creator.list({ limit: 10 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
+    // Compound save gate: UPDATE alone and PUBLISH alone are both denied.
     const updater = await callerFor({ authenticatedAt: new Date(), userId: ids.updater });
-    await expect(
-      updater.updateDraft({
-        agentId: created.identity.id,
-        expectedDraftToken: created.draftToken,
-        expectedRevision: created.identity.revision,
-        isDefault: false,
-        reason: 'update Agent draft',
-        systemKey: null,
-      }),
-    ).resolves.toMatchObject({ identity: { draftSequence: 1 } });
+    const saveInput = {
+      agentId: created.identity.id,
+      config: agentConfig('router-agent'),
+      dependencySnapshot,
+      expectedDraftToken: created.draftToken,
+      expectedRevision: created.identity.revision,
+      reason: 'save Agent',
+    };
+    await expect(updater.save(saveInput)).rejects.toMatchObject({ code: 'FORBIDDEN' });
     await expect(updater.list({ limit: 10 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const assigner = await callerFor({ authenticatedAt: new Date(), userId: ids.assigner });
@@ -173,15 +261,26 @@ describe('adminAgentsRouter security gates', () => {
     const publisher = await callerFor({ authenticatedAt: new Date(), userId: ids.publisher });
     const detail = await reader.get({ id: created.identity.id });
     await expect(
-      publisher.publish({
-        agentId: detail.identity.id,
-        expectedDraftToken: detail.draftToken,
-        expectedRevision: detail.identity.revision,
-        reason: 'publish missing version',
-        versionId: 'missing-version',
-      }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      publisher.save({ ...saveInput, expectedDraftToken: detail.draftToken }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
     await expect(publisher.list({ limit: 10 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // The editor holds both halves of the compound gate and saves a live new version.
+    const editor = await callerFor({ authenticatedAt: new Date(), userId: ids.editor });
+    const saved = await editor.save({
+      ...saveInput,
+      config: agentConfig('router-agent v2'),
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.identity.revision,
+    });
+    expect(saved.identity).toMatchObject({ revision: 2, status: 'published' });
+    // Server-generated label: patch bump of the created 1.0.0.
+    expect(saved.version).toMatchObject({ version: '1.0.1' });
+    expect(saved.identity.currentVersionId).toBe(saved.version.id);
+    // Stale CAS is a conflict, not a silent overwrite.
+    await expect(
+      editor.save({ ...saveInput, expectedDraftToken: detail.draftToken }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
 
     const deleter = await callerFor({ authenticatedAt: new Date(), userId: ids.deleter });
     await expect(
@@ -196,16 +295,18 @@ describe('adminAgentsRouter security gates', () => {
   });
 
   it('rejects dangerous operations before mutation when recent reauth is absent', async () => {
-    const stalePublisher = await callerFor({ authenticatedAt: null, userId: ids.publisher });
+    const staleEditor = await callerFor({ authenticatedAt: null, userId: ids.editor });
     await expect(
-      stalePublisher.publish({
+      staleEditor.save({
         agentId: 'missing-agent',
+        config: agentConfig('needs reauth'),
+        dependencySnapshot,
         expectedDraftToken: 'a'.repeat(64),
         expectedRevision: 0,
-        reason: 'publish needs reauth',
-        versionId: 'missing-version',
+        reason: 'save needs reauth',
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    const stalePublisher = await callerFor({ authenticatedAt: null, userId: ids.publisher });
     await expect(
       stalePublisher.setDefaultInbox({
         currentDefault: null,
@@ -240,7 +341,7 @@ describe('adminAgentsRouter security gates', () => {
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(await db.select().from(platformAuditLogs)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ action: 'admin.agents.publish', result: 'denied' }),
+        expect.objectContaining({ action: 'admin.agents.save', result: 'denied' }),
         expect.objectContaining({ action: 'admin.agents.setDefaultInbox', result: 'denied' }),
         expect.objectContaining({ action: 'admin.agents.archive', result: 'denied' }),
         expect.objectContaining({ action: 'admin.agents.rollouts.start', result: 'denied' }),
@@ -250,10 +351,11 @@ describe('adminAgentsRouter security gates', () => {
 
   it('guards assignment create, update and remove before business writes', async () => {
     const creator = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
-    const created = await creator.create({
-      agentKey: 'reauth-assignment-agent',
-      reason: 'create assignment test Agent',
-    });
+    const created = await createAgent(
+      creator,
+      'reauth-assignment-agent',
+      'create assignment test Agent',
+    );
     const createInput = {
       agentId: created.identity.id,
       enabled: true,
@@ -527,9 +629,9 @@ describe('adminAgentsRouter hard delete', () => {
   const agentRows = (agentId: string) =>
     db.select().from(platformAgents).where(eq(platformAgents.id, agentId));
 
-  it('hard-deletes a draft agent and writes a success audit', async () => {
+  it('hard-deletes a published agent and writes a success audit', async () => {
     const creator = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
-    const created = await creator.create({ agentKey: 'delete-me', reason: 'seed for delete' });
+    const created = await createAgent(creator, 'delete-me', 'seed for delete');
     const deleter = await callerFor({ authenticatedAt: new Date(), userId: ids.deleter });
 
     await expect(
@@ -567,7 +669,7 @@ describe('adminAgentsRouter hard delete', () => {
 
   it('rejects a stale-reauth delete before mutating and records a denied audit', async () => {
     const creator = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
-    const created = await creator.create({ agentKey: 'delete-stale', reason: 'seed for delete' });
+    const created = await createAgent(creator, 'delete-stale', 'seed for delete');
     const staleDeleter = await callerFor({ authenticatedAt: null, userId: ids.deleter });
 
     await expect(

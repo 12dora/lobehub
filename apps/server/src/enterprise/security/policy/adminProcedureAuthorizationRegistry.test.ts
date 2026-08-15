@@ -70,14 +70,16 @@ describe('admin procedure authorization registry', () => {
     // −6/+2 mutations since: 统一管理 de-draft replaced
     // admin.settings.{saveDraft,validateDraft,publish,rollback} with admin.settings.save and
     // admin.managedResources.{saveDraft,publish} with admin.managedResources.save.
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(180);
+    // −3/+1 mutations since: 平台助理 de-draft replaced
+    // admin.agents.{updateDraft,appendVersion,publish} with admin.agents.save.
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(178);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(86);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(94);
-    expect(mutationPaths).toHaveLength(94);
+    ).toHaveLength(92);
+    expect(mutationPaths).toHaveLength(92);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -156,7 +158,7 @@ describe('admin procedure authorization registry', () => {
     );
 
     expect(() => reconcile({ registry: duplicate })).toThrow(
-      'duplicate registry path: admin.agents.appendVersion',
+      'duplicate registry path: admin.agents.archive',
     );
     expect(() => reconcile({ registry: stale })).toThrow('stale registry path: admin.future');
     expect(() => reconcile({ registry: kindChanged })).toThrow('kind mismatch: admin.audit.get');

@@ -2,7 +2,6 @@ import debug from 'debug';
 
 import {
   acquirePlatformAgentReferenceLock,
-  type ExactPlatformAgentVersion,
   type PlatformAgentAssignmentSafeItem,
   PlatformAgentCatalogRepository,
 } from '@/database/repositories/platformAgentCatalog';
@@ -10,7 +9,6 @@ import type { PlatformAgentItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type {
-  AdminPlatformAgentAppendVersionInput,
   AdminPlatformAgentArchiveInput,
   AdminPlatformAgentAssignmentListInput,
   AdminPlatformAgentAssignmentPreviewInput,
@@ -21,16 +19,13 @@ import type {
   AdminPlatformAgentDependentsInput,
   AdminPlatformAgentListInput,
   AdminPlatformAgentSetDefaultInboxInput,
-  AdminPlatformAgentUpdateDraftInput,
   AdminPlatformAgentVersionsListInput,
 } from '../../contracts/platformAgents';
 import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
-import {
-  acquirePlatformDefaultInboxLock,
-  acquirePlatformDependencyPublicationLock,
-} from '../platformDependencyLock';
-import { assertExactPlatformAgentDependencies } from './dependencyValidator';
+import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import { acquirePlatformDefaultInboxLock } from '../platformDependencyLock';
+import type { assertExactPlatformAgentDependencies } from './dependencyValidator';
 import {
   PlatformAgentDefaultRequiredError,
   PlatformAgentInvalidInputError,
@@ -39,37 +34,22 @@ import {
   PlatformAgentRevisionConflictError,
 } from './errors';
 import { translatePlatformAgentPgError } from './pgErrors';
-import { assertExpectedPlatformAgentIdentity, platformAgentDraftToken } from './publication';
+import {
+  appendAndPublishPlatformAgentVersion,
+  assertExpectedPlatformAgentIdentity,
+  FIRST_PLATFORM_AGENT_VERSION,
+  invalidatePlatformAgentPublication,
+  observePlatformAgentPublication,
+  platformAgentIdentityView,
+  platformAgentMutationView,
+  platformAgentVersionView,
+} from './publication';
 
 const log = debug('lobe-server:platform-agent-admin');
 
-const identityView = (identity: PlatformAgentItem) => ({
-  agentKey: identity.agentKey,
-  currentVersionId: identity.currentVersionId,
-  draftSequence: identity.draftSequence,
-  id: identity.id,
-  isDefault: identity.isDefault,
-  migrationRequired: identity.migrationRequired,
-  revision: identity.revision,
-  status: identity.status as 'archived' | 'draft' | 'published',
-  systemKey: identity.systemKey === 'default-inbox' ? ('default-inbox' as const) : null,
-});
-
-const mutationView = (identity: PlatformAgentItem) => ({
-  draftToken: platformAgentDraftToken(identity),
-  identity: identityView(identity),
-});
-
-const versionView = (version: ExactPlatformAgentVersion) => ({
-  agentId: version.agentId,
-  checksum: version.checksum,
-  config: version.config,
-  createdAt: version.createdAt,
-  createdBy: version.createdBy,
-  dependencySnapshot: version.dependencySnapshot,
-  id: version.id,
-  version: version.version,
-});
+const identityView = platformAgentIdentityView;
+const mutationView = platformAgentMutationView;
+const versionView = platformAgentVersionView;
 
 /**
  * Stable failure-audit category. Records the mutation's failure class only — never the
@@ -95,8 +75,16 @@ const assignmentView = (assignment: PlatformAgentAssignmentSafeItem) => ({
   versionPolicy: assignment.versionPolicy,
 });
 
+export interface PlatformAgentAdminServiceOptions {
+  invalidation?: PlatformConfigInvalidationPublisher;
+  validateDependencies?: typeof assertExactPlatformAgentDependencies;
+}
+
 export class PlatformAgentAdminService {
-  constructor(private readonly db: LobeChatDatabase) {}
+  constructor(
+    private readonly db: LobeChatDatabase,
+    private readonly options: PlatformAgentAdminServiceOptions = {},
+  ) {}
 
   private appendAudit = async (params: {
     action: AuditAction;
@@ -178,32 +166,69 @@ export class PlatformAgentAdminService {
     }
   };
 
-  create = async (actorUserId: string, input: AdminPlatformAgentCreateInput) =>
-    this.atomicMutation({
-      action: 'admin.agents.create',
-      actorUserId,
-      reason: input.reason,
-      run: async (tx) => {
-        // Enter the shared default-inbox singleton lock (same lock as bootstrap /
-        // setDefaultInbox / archive) before any validation or write, so create participates
-        // in the one serialization point for the default pointer (ADM-01). The default-inbox
-        // singleton is owned exclusively by `setDefaultInbox`; creation can never seed it, so
-        // a freshly created Agent is always a non-default draft.
-        await acquirePlatformDefaultInboxLock(tx);
-        if (input.isDefault || input.systemKey !== null) {
-          throw new PlatformAgentInvalidInputError();
-        }
-        const identity = await new PlatformAgentCatalogRepository(tx).createIdentity({
-          agentKey: input.agentKey,
-          createdBy: actorUserId,
-          isDefault: false,
-          systemKey: null,
-        });
-        return mutationView(identity);
-      },
-      summarize: ({ identity }) => ({ agentKey: identity.agentKey }),
-      targetId: input.agentKey,
-    });
+  /**
+   * De-drafted create: the identity, its first immutable version (`1.0.0`) and the published
+   * pointer are written in ONE transaction, so a created Agent is live for its assignees
+   * immediately. Caches are invalidated after the commit, exactly like `save`.
+   */
+  create = async (actorUserId: string, input: AdminPlatformAgentCreateInput) => {
+    const startedAt = Date.now();
+    try {
+      const result = await this.atomicMutation({
+        action: 'admin.agents.create',
+        actorUserId,
+        reason: input.reason,
+        run: async (tx) => {
+          // Enter the shared default-inbox singleton lock (same lock as bootstrap /
+          // setDefaultInbox / archive) before any validation or write, so create participates
+          // in the one serialization point for the default pointer (ADM-01). The default-inbox
+          // singleton is owned exclusively by `setDefaultInbox`; creation can never seed it, so
+          // a freshly created Agent is never the default one.
+          await acquirePlatformDefaultInboxLock(tx);
+          if (input.isDefault || input.systemKey !== null) {
+            throw new PlatformAgentInvalidInputError();
+          }
+          const created = await new PlatformAgentCatalogRepository(tx).createIdentity({
+            agentKey: input.agentKey,
+            createdBy: actorUserId,
+            isDefault: false,
+            systemKey: null,
+          });
+          const { identity, version } = await appendAndPublishPlatformAgentVersion(tx, {
+            actorUserId,
+            config: input.config,
+            dependencySnapshot: input.dependencySnapshot,
+            identity: created,
+            validateDependencies: this.options.validateDependencies,
+            version: FIRST_PLATFORM_AGENT_VERSION,
+          });
+          return { identity, version };
+        },
+        summarize: ({ identity, version }) => ({
+          agentKey: identity.agentKey,
+          revision: identity.revision,
+          version: version.version,
+          versionChecksum: version.checksum,
+          versionId: version.id,
+        }),
+        targetId: input.agentKey,
+      });
+      const invalidationStatus = await invalidatePlatformAgentPublication({
+        agentId: result.identity.id,
+        invalidation: this.options.invalidation,
+        revision: result.identity.revision,
+      });
+      observePlatformAgentPublication({ operation: 'save', startedAt });
+      return {
+        ...mutationView(result.identity),
+        invalidationStatus,
+        version: platformAgentVersionView(result.version),
+      };
+    } catch (error) {
+      observePlatformAgentPublication({ error, operation: 'save', startedAt });
+      throw error;
+    }
+  };
 
   get = async (id: string) => {
     const identity = await new PlatformAgentCatalogRepository(this.db).getIdentity(id);
@@ -239,80 +264,6 @@ export class PlatformAgentAdminService {
       nextCursor: page.nextCursor,
     };
   };
-
-  updateDraft = async (actorUserId: string, input: AdminPlatformAgentUpdateDraftInput) =>
-    this.atomicMutation({
-      action: 'admin.agents.updateDraft',
-      actorUserId,
-      reason: input.reason,
-      run: async (tx) => {
-        const repository = new PlatformAgentCatalogRepository(tx);
-        const locked = await repository.lockIdentity(input.agentId);
-        if (!locked) throw new PlatformAgentNotFoundError();
-        assertExpectedPlatformAgentIdentity(
-          locked,
-          input.expectedDraftToken,
-          input.expectedRevision,
-        );
-        // updateDraft must never be a side door into the default-inbox singleton. The
-        // default flag / system key are managed solely by `setDefaultInbox` and `archive`;
-        // any attempt to flip them here (promote or de-default) is rejected, and the CAS
-        // patch never carries them (ADM-01).
-        const lockedSystemKey = locked.systemKey === 'default-inbox' ? 'default-inbox' : null;
-        if (input.isDefault !== locked.isDefault || input.systemKey !== lockedSystemKey) {
-          throw new PlatformAgentInvalidInputError();
-        }
-        const updated = await repository.updateDraftCas({
-          expectedDraftSequence: locked.draftSequence,
-          expectedRevision: locked.revision,
-          id: locked.id,
-          patch: { updatedBy: actorUserId },
-        });
-        if (!updated) throw new PlatformAgentRevisionConflictError();
-        return mutationView(updated);
-      },
-      summarize: ({ identity }) => ({ draftSequence: identity.draftSequence }),
-      targetId: input.agentId,
-    });
-
-  appendVersion = async (actorUserId: string, input: AdminPlatformAgentAppendVersionInput) =>
-    this.atomicMutation({
-      action: 'admin.agents.createVersion',
-      actorUserId,
-      reason: input.reason,
-      run: async (tx) => {
-        const repository = new PlatformAgentCatalogRepository(tx);
-        const locked = await repository.lockIdentity(input.agentId);
-        if (!locked) throw new PlatformAgentNotFoundError();
-        assertExpectedPlatformAgentIdentity(
-          locked,
-          input.expectedDraftToken,
-          input.expectedRevision,
-        );
-        await acquirePlatformDependencyPublicationLock(tx);
-        await assertExactPlatformAgentDependencies(tx, input.dependencySnapshot);
-        const version = await repository.appendVersionCas({
-          agentId: locked.id,
-          config: input.config,
-          createdBy: actorUserId,
-          dependencySnapshot: input.dependencySnapshot,
-          expectedDraftSequence: locked.draftSequence,
-          expectedRevision: locked.revision,
-          version: input.version,
-        });
-        if (!version) throw new PlatformAgentRevisionConflictError();
-        const identity = await repository.getIdentity(locked.id);
-        if (!identity) throw new PlatformAgentNotFoundError();
-        return { ...mutationView(identity), version: versionView(version) };
-      },
-      summarize: ({ identity, version }) => ({
-        draftSequence: identity.draftSequence,
-        version: version.version,
-        versionChecksum: version.checksum,
-        versionId: version.id,
-      }),
-      targetId: input.agentId,
-    });
 
   listVersions = async (input: AdminPlatformAgentVersionsListInput) => {
     // Repository pages by opaque id cursor. Full-detail aggregates (client

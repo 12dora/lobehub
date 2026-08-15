@@ -21,6 +21,9 @@ export const AUDIT_ACTIONS = [
   'admin.agents.rollouts.retry',
   'admin.agents.rollouts.rollback',
   'admin.agents.rollouts.start',
+  // De-drafted agent write. `createVersion` / `publish` / `updateDraft` stay in the catalog
+  // so historical log rows keep resolving to a label.
+  'admin.agents.save',
   'admin.agents.setDefaultInbox',
   'admin.agents.updateDraft',
   'admin.agents.validateDependencies',

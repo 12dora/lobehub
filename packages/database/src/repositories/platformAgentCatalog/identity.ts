@@ -184,6 +184,25 @@ export class PlatformAgentIdentityRepository {
     return row as ExactPlatformAgentVersion | undefined;
   };
 
+  /**
+   * Every version label an Agent already owns, oldest first (`createdAt` asc with the opaque
+   * id as a stable tie-break: version ids are generated identifiers and MUST NOT be read as
+   * creation order alone).
+   *
+   * The next server-generated label is derived from the highest VALID SemVer in this set, so
+   * the caller needs the whole set rather than just the newest row. Legacy / non-exact rows
+   * are deliberately included: `(agent_id, version)` is unique across ALL version rows, so a
+   * label chosen while ignoring them would collide on insert.
+   */
+  listVersionLabels = async (agentId: string): Promise<string[]> => {
+    const rows = await this.db
+      .select({ version: platformAgentVersions.version })
+      .from(platformAgentVersions)
+      .where(eq(platformAgentVersions.agentId, agentId))
+      .orderBy(asc(platformAgentVersions.createdAt), asc(platformAgentVersions.id));
+    return rows.map((row) => row.version);
+  };
+
   listExactVersions = async (params: {
     agentId: string;
     cursor?: string;

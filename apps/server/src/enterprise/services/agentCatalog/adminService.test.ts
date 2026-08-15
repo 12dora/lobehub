@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import { setEnterprisePlatformObserverForTest } from '../../observability';
 import { PlatformAgentAdminService } from './adminService';
 import {
   PlatformAgentDefaultRequiredError,
@@ -34,7 +36,9 @@ const mocks = vi.hoisted(() => ({
   listAssignments: vi.fn(),
   listDependentMaterializations: vi.fn(),
   listIdentities: vi.fn(),
+  listVersionLabels: vi.fn(),
   lockIdentity: vi.fn(),
+  pointToVersionCas: vi.fn(),
   updateAssignment: vi.fn(),
   updateDraftCas: vi.fn(),
 }));
@@ -58,7 +62,9 @@ vi.mock('@/database/repositories/platformAgentCatalog', () => ({
     listAssignments = mocks.listAssignments;
     listDependentMaterializations = mocks.listDependentMaterializations;
     listIdentities = mocks.listIdentities;
+    listVersionLabels = mocks.listVersionLabels;
     lockIdentity = mocks.lockIdentity;
+    pointToVersionCas = mocks.pointToVersionCas;
     updateAssignment = mocks.updateAssignment;
     updateDraftCas = mocks.updateDraftCas;
   },
@@ -89,6 +95,30 @@ const identity = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+/** Minimal publishable payload every de-drafted create carries. */
+const createConfig = {
+  avatar: null,
+  backgroundColor: null,
+  description: null,
+  displayName: 'Support',
+  modelParameters: {},
+  openingMessage: null,
+  openingQuestions: [],
+  systemRole: 'Help users.',
+  tags: [],
+};
+
+const createDependencySnapshot = {
+  connectors: [],
+  model: {
+    modelKey: 'chat',
+    providerChecksum: 'a'.repeat(64),
+    providerKey: 'provider',
+    providerRevision: 1,
+  },
+  skills: [],
+};
+
 const pointer = (value: ReturnType<typeof identity>) => ({
   agentId: value.id,
   expectedDraftToken: platformAgentDraftToken(value),
@@ -106,11 +136,17 @@ const db = {
   ),
 } as unknown as LobeChatDatabase;
 
+const observed: EnterpriseObservabilityEvent[] = [];
+
 describe('PlatformAgentAdminService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    observed.length = 0;
+    setEnterprisePlatformObserverForTest({ record: (event) => observed.push(event) });
     mocks.appendAudit.mockResolvedValue(undefined);
   });
+
+  afterEach(() => setEnterprisePlatformObserverForTest(null));
 
   it('keeps assignment writes behind Agent CAS and advances the draft token', async () => {
     const locked = identity();
@@ -232,59 +268,89 @@ describe('PlatformAgentAdminService', () => {
     );
   });
 
-  it('appends a secret-free version under CAS and dependency-lock revalidation', async () => {
-    const locked = identity({ currentVersionId: null, status: 'draft' });
-    const dependencySnapshot = {
-      connectors: [],
-      model: {
-        modelKey: 'chat',
-        providerChecksum: 'a'.repeat(64),
-        providerKey: 'provider',
-        providerRevision: 1,
-      },
-      skills: [],
-    };
-    const config = {
-      avatar: null,
-      backgroundColor: null,
-      description: null,
-      displayName: 'Support',
-      modelParameters: {},
-      openingMessage: null,
-      openingQuestions: [],
-      systemRole: 'Help users.',
-      tags: [],
-    };
-    mocks.lockIdentity.mockResolvedValue(locked);
-    mocks.appendVersionCas.mockResolvedValue({
-      agentId: locked.id,
+  it('creates, appends the first version and publishes it in one transaction', async () => {
+    const created = identity({
+      agentKey: 'plain',
+      currentVersionId: null,
+      draftSequence: 0,
+      id: 'plain-agent',
+      revision: 0,
+      status: 'draft',
+    });
+    const publishedVersion = {
+      agentId: created.id,
       checksum: 'f'.repeat(64),
-      config,
-      createdAt: new Date('2026-07-17T00:00:00Z'),
+      config: createConfig,
+      createdAt: new Date('2026-08-15T00:00:00Z'),
       createdBy: 'admin-id',
-      dependencySnapshot,
+      dependencySnapshot: createDependencySnapshot,
       id: 'version-id',
       version: '1.0.0',
+    };
+    mocks.createIdentity.mockResolvedValue(created);
+    mocks.appendVersionCas.mockResolvedValue(publishedVersion);
+    mocks.pointToVersionCas.mockResolvedValue({
+      ...created,
+      currentVersionId: publishedVersion.id,
+      draftSequence: 2,
+      revision: 1,
+      status: 'published',
     });
-    mocks.getIdentity.mockResolvedValue({ ...locked, draftSequence: 5 });
 
-    await new PlatformAgentAdminService(db).appendVersion('admin-id', {
-      ...pointer(locked),
-      config,
-      dependencySnapshot,
-      reason: 'create reviewed version',
-      version: '1.0.0',
+    const result = await new PlatformAgentAdminService(db, {
+      invalidation: { publish: vi.fn() },
+    }).create('admin-id', {
+      agentKey: 'plain',
+      config: createConfig,
+      dependencySnapshot: createDependencySnapshot,
+      isDefault: false,
+      reason: 'normal create',
+      systemKey: null,
     });
+
+    expect(result).toMatchObject({
+      identity: { currentVersionId: 'version-id', revision: 1, status: 'published' },
+      invalidationStatus: 'delivered',
+      version: { version: '1.0.0' },
+    });
+    // ADM-01: create enters the shared singleton lock before writing …
+    expect(mocks.acquireDefaultLock).toHaveBeenCalledBefore(mocks.createIdentity);
+    // … and the version is revalidated under the dependency publication lock.
     expect(mocks.acquireLock).toHaveBeenCalledBefore(mocks.assertDependencies);
     expect(mocks.assertDependencies).toHaveBeenCalledBefore(mocks.appendVersionCas);
+    expect(mocks.appendVersionCas).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedDraftSequence: 0, expectedRevision: 0, version: '1.0.0' }),
+    );
+    expect(mocks.pointToVersionCas).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedDraftSequence: 1, expectedRevision: 0 }),
+    );
+    expect(mocks.appendAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'admin.agents.create',
+        afterDiff: expect.objectContaining({ version: '1.0.0', versionId: 'version-id' }),
+        result: 'success',
+      }),
+    );
+    // De-drafted write: the publication metric reports the `save` operation, not `publish`.
+    expect(observed).toEqual([
+      {
+        domain: 'agent_catalog',
+        durationMs: expect.any(Number),
+        operation: 'save',
+        outcome: 'success',
+        type: 'config_publish',
+      },
+    ]);
   });
 
-  // ADM-01: create / updateDraft can never touch the managed default-inbox singleton.
+  // ADM-01: create can never touch the managed default-inbox singleton.
   describe('default-inbox state machine (ADM-01)', () => {
     it('rejects create attempting to seed a default Agent', async () => {
       await expect(
         new PlatformAgentAdminService(db).create('admin-id', {
           agentKey: 'seed-default',
+          config: createConfig,
+          dependencySnapshot: createDependencySnapshot,
           isDefault: true,
           reason: 'sneak a default',
           systemKey: 'default-inbox',
@@ -293,65 +359,49 @@ describe('PlatformAgentAdminService', () => {
       expect(mocks.createIdentity).not.toHaveBeenCalled();
     });
 
-    it('forces a plain create to a non-default draft', async () => {
-      mocks.createIdentity.mockResolvedValue(
-        identity({ agentKey: 'plain', currentVersionId: null, id: 'plain-agent', status: 'draft' }),
-      );
-      await new PlatformAgentAdminService(db).create('admin-id', {
+    it('forces a plain create to a non-default Agent', async () => {
+      const created = identity({
         agentKey: 'plain',
-        isDefault: false,
-        reason: 'normal create',
-        systemKey: null,
+        currentVersionId: null,
+        draftSequence: 0,
+        id: 'plain-agent',
+        revision: 0,
+        status: 'draft',
       });
+      mocks.createIdentity.mockResolvedValue(created);
+      mocks.appendVersionCas.mockResolvedValue({
+        agentId: created.id,
+        checksum: 'f'.repeat(64),
+        config: createConfig,
+        createdAt: new Date('2026-08-15T00:00:00Z'),
+        createdBy: 'admin-id',
+        dependencySnapshot: createDependencySnapshot,
+        id: 'version-id',
+        version: '1.0.0',
+      });
+      mocks.pointToVersionCas.mockResolvedValue({
+        ...created,
+        currentVersionId: 'version-id',
+        draftSequence: 2,
+        revision: 1,
+        status: 'published',
+      });
+      await new PlatformAgentAdminService(db, { invalidation: { publish: vi.fn() } }).create(
+        'admin-id',
+        {
+          agentKey: 'plain',
+          config: createConfig,
+          dependencySnapshot: createDependencySnapshot,
+          isDefault: false,
+          reason: 'normal create',
+          systemKey: null,
+        },
+      );
       expect(mocks.createIdentity).toHaveBeenCalledWith(
         expect.objectContaining({ isDefault: false, systemKey: null }),
       );
       // ADM-01: create enters the shared singleton lock before writing.
       expect(mocks.acquireDefaultLock).toHaveBeenCalledBefore(mocks.createIdentity);
-    });
-
-    it('rejects updateDraft that tries to promote to default', async () => {
-      const locked = identity({ id: 'plain', isDefault: false, systemKey: null });
-      mocks.lockIdentity.mockResolvedValue(locked);
-      await expect(
-        new PlatformAgentAdminService(db).updateDraft('admin-id', {
-          ...pointer(locked),
-          isDefault: true,
-          reason: 'promote via updateDraft',
-          systemKey: 'default-inbox',
-        }),
-      ).rejects.toBeInstanceOf(PlatformAgentInvalidInputError);
-      expect(mocks.updateDraftCas).not.toHaveBeenCalled();
-    });
-
-    it('rejects updateDraft that tries to directly de-default', async () => {
-      const locked = identity({ id: 'default-agent', isDefault: true, systemKey: 'default-inbox' });
-      mocks.lockIdentity.mockResolvedValue(locked);
-      await expect(
-        new PlatformAgentAdminService(db).updateDraft('admin-id', {
-          ...pointer(locked),
-          isDefault: false,
-          reason: 'drop default directly',
-          systemKey: null,
-        }),
-      ).rejects.toBeInstanceOf(PlatformAgentInvalidInputError);
-      expect(mocks.updateDraftCas).not.toHaveBeenCalled();
-    });
-
-    it('lets updateDraft touch a draft without carrying the default flag in the patch', async () => {
-      const locked = identity({ id: 'plain', isDefault: false, systemKey: null });
-      mocks.lockIdentity.mockResolvedValue(locked);
-      mocks.updateDraftCas.mockResolvedValue({ ...locked, draftSequence: 5 });
-      await new PlatformAgentAdminService(db).updateDraft('admin-id', {
-        ...pointer(locked),
-        isDefault: false,
-        reason: 'touch',
-        systemKey: null,
-      });
-      const patch = mocks.updateDraftCas.mock.calls[0]?.[0].patch;
-      expect(patch).toEqual({ updatedBy: 'admin-id' });
-      expect(patch).not.toHaveProperty('isDefault');
-      expect(patch).not.toHaveProperty('systemKey');
     });
   });
 
@@ -469,6 +519,8 @@ describe('PlatformAgentAdminService', () => {
       const error = await new PlatformAgentAdminService(db)
         .create('admin-id', {
           agentKey: 'dup',
+          config: createConfig,
+          dependencySnapshot: createDependencySnapshot,
           isDefault: false,
           reason: 'duplicate key',
           systemKey: null,
@@ -486,6 +538,18 @@ describe('PlatformAgentAdminService', () => {
           result: 'failure',
         }),
       );
+      // De-drafted write: the failed create reports the `save` operation, redacted.
+      expect(observed).toEqual([
+        {
+          domain: 'agent_catalog',
+          durationMs: expect.any(Number),
+          errorClass: 'UnexpectedError',
+          operation: 'save',
+          outcome: 'failure',
+          type: 'config_publish',
+        },
+      ]);
+      expect(JSON.stringify(observed)).not.toContain('dup');
     });
 
     it('maps a default-inbox unique race to a RevisionConflict', async () => {

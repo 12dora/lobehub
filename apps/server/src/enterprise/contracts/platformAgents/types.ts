@@ -1,8 +1,6 @@
 import type { z } from 'zod';
 
 import type {
-  adminPlatformAgentAppendVersionInputSchema,
-  adminPlatformAgentAppendVersionOutputSchema,
   adminPlatformAgentArchiveInputSchema,
   adminPlatformAgentArchiveOutputSchema,
   adminPlatformAgentCreateInputSchema,
@@ -16,14 +14,12 @@ import type {
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
   adminPlatformAgentMutationOutputSchema,
-  adminPlatformAgentPublishInputSchema,
-  adminPlatformAgentPublishOutputSchema,
   adminPlatformAgentRollbackInputSchema,
   adminPlatformAgentRollbackOutputSchema,
+  adminPlatformAgentSaveInputSchema,
+  adminPlatformAgentSaveOutputSchema,
   adminPlatformAgentSetDefaultInboxInputSchema,
   adminPlatformAgentSetDefaultInboxOutputSchema,
-  adminPlatformAgentUpdateDraftInputSchema,
-  adminPlatformAgentUpdateDraftOutputSchema,
   adminPlatformAgentValidateDependenciesInputSchema,
   adminPlatformAgentValidateDependenciesOutputSchema,
   adminPlatformAgentVersionsListInputSchema,
@@ -60,12 +56,6 @@ import type {
   adminPlatformAgentRolloutStartOutputSchema,
 } from './rollout';
 
-export type AdminPlatformAgentAppendVersionInput = z.input<
-  typeof adminPlatformAgentAppendVersionInputSchema
->;
-export type AdminPlatformAgentAppendVersionOutput = z.output<
-  typeof adminPlatformAgentAppendVersionOutputSchema
->;
 export type AdminPlatformAgentArchiveInput = z.input<typeof adminPlatformAgentArchiveInputSchema>;
 export type AdminPlatformAgentArchiveOutput = z.output<
   typeof adminPlatformAgentArchiveOutputSchema
@@ -114,10 +104,6 @@ export type AdminPlatformAgentListOutput = z.output<typeof adminPlatformAgentLis
 export type AdminPlatformAgentMutationOutput = z.output<
   typeof adminPlatformAgentMutationOutputSchema
 >;
-export type AdminPlatformAgentPublishInput = z.input<typeof adminPlatformAgentPublishInputSchema>;
-export type AdminPlatformAgentPublishOutput = z.output<
-  typeof adminPlatformAgentPublishOutputSchema
->;
 export type AdminPlatformAgentRollbackInput = z.input<typeof adminPlatformAgentRollbackInputSchema>;
 export type AdminPlatformAgentRollbackOutput = z.output<
   typeof adminPlatformAgentRollbackOutputSchema
@@ -158,17 +144,13 @@ export type AdminPlatformAgentRolloutStartInput = z.input<
 export type AdminPlatformAgentRolloutStartOutput = z.output<
   typeof adminPlatformAgentRolloutStartOutputSchema
 >;
+export type AdminPlatformAgentSaveInput = z.input<typeof adminPlatformAgentSaveInputSchema>;
+export type AdminPlatformAgentSaveOutput = z.output<typeof adminPlatformAgentSaveOutputSchema>;
 export type AdminPlatformAgentSetDefaultInboxInput = z.input<
   typeof adminPlatformAgentSetDefaultInboxInputSchema
 >;
 export type AdminPlatformAgentSetDefaultInboxOutput = z.output<
   typeof adminPlatformAgentSetDefaultInboxOutputSchema
->;
-export type AdminPlatformAgentUpdateDraftInput = z.input<
-  typeof adminPlatformAgentUpdateDraftInputSchema
->;
-export type AdminPlatformAgentUpdateDraftOutput = z.output<
-  typeof adminPlatformAgentUpdateDraftOutputSchema
 >;
 export type AdminPlatformAgentValidateDependenciesInput = z.input<
   typeof adminPlatformAgentValidateDependenciesInputSchema

@@ -16,9 +16,42 @@ import {
 } from './common';
 import { platformAgentIdentityDraftSchema, platformAgentImmutableVersionSchema } from './domain';
 
+/**
+ * De-drafted write: append an immutable version AND publish it in one transaction. The
+ * version label is server-generated (first `1.0.0`, then a patch bump of the latest one),
+ * so clients never negotiate version numbers.
+ */
+export const adminPlatformAgentSaveInputSchema = z
+  .object({
+    agentId: idSchema,
+    config: platformAgentVersionConfigSchema,
+    dependencySnapshot: platformAgentDependencySnapshotSchema,
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
+    reason: reasonSchema,
+  })
+  .strict();
+
+export const adminPlatformAgentSaveOutputSchema = z
+  .object({
+    draftToken: draftTokenSchema,
+    /** Always `status === 'published'` after a successful save. */
+    identity: platformAgentIdentityDraftSchema,
+    invalidationStatus: z.enum(['deferred', 'delivered']),
+    /** The version created by this save — already the published pointer target. */
+    version: platformAgentImmutableVersionSchema,
+  })
+  .strict();
+
+/**
+ * Create = create + publish live in one transaction, so the payload carries the full
+ * config / dependency snapshot and the result is an already-published agent.
+ */
 export const adminPlatformAgentCreateInputSchema = z
   .object({
     agentKey: platformAgentKeySchema,
+    config: platformAgentVersionConfigSchema,
+    dependencySnapshot: platformAgentDependencySnapshotSchema,
     isDefault: z.boolean().default(false),
     reason: reasonSchema,
     systemKey: platformAgentSystemKeySchema.default(null),
@@ -78,54 +111,8 @@ export const adminPlatformAgentMutationOutputSchema = z
   })
   .strict();
 
-export const adminPlatformAgentCreateOutputSchema = adminPlatformAgentMutationOutputSchema;
-export const adminPlatformAgentUpdateDraftOutputSchema = adminPlatformAgentMutationOutputSchema;
-
-export const adminPlatformAgentUpdateDraftInputSchema = z
-  .object({
-    agentId: idSchema,
-    expectedDraftToken: draftTokenSchema,
-    expectedRevision: revisionSchema,
-    isDefault: z.boolean(),
-    reason: reasonSchema,
-    systemKey: platformAgentSystemKeySchema,
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    if (input.isDefault !== (input.systemKey === PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY)) {
-      ctx.addIssue({ code: 'custom', message: 'default Agent and system key must agree' });
-    }
-  });
-
-export const adminPlatformAgentAppendVersionInputSchema = z
-  .object({
-    agentId: idSchema,
-    config: platformAgentVersionConfigSchema,
-    dependencySnapshot: platformAgentDependencySnapshotSchema,
-    expectedDraftToken: draftTokenSchema,
-    expectedRevision: revisionSchema,
-    reason: reasonSchema,
-    version: platformAgentVersionSchema,
-  })
-  .strict();
-
-export const adminPlatformAgentPublishInputSchema = z
-  .object({
-    agentId: idSchema,
-    expectedDraftToken: draftTokenSchema,
-    expectedRevision: revisionSchema,
-    reason: reasonSchema,
-    versionId: idSchema,
-  })
-  .strict();
-
-export const adminPlatformAgentAppendVersionOutputSchema = z
-  .object({
-    draftToken: draftTokenSchema,
-    identity: platformAgentIdentityDraftSchema,
-    version: platformAgentImmutableVersionSchema,
-  })
-  .strict();
+/** Create publishes, so it returns exactly what `save` returns. */
+export const adminPlatformAgentCreateOutputSchema = adminPlatformAgentSaveOutputSchema;
 
 export const adminPlatformAgentRollbackInputSchema = z
   .object({
@@ -150,7 +137,6 @@ export const platformAgentPublicationOutputSchema = z
   })
   .strict();
 
-export const adminPlatformAgentPublishOutputSchema = platformAgentPublicationOutputSchema;
 export const adminPlatformAgentRollbackOutputSchema = platformAgentPublicationOutputSchema;
 
 export const adminPlatformAgentArchiveInputSchema = z

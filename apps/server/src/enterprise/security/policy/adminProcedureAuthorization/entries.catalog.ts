@@ -6,11 +6,6 @@ import type { AdminProcedureAuthorization } from './types';
 export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   {
     kind: 'mutation',
-    path: 'admin.agents.appendVersion',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
-  },
-  {
-    kind: 'mutation',
     path: 'admin.agents.archive',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_DELETE] },
   },
@@ -37,7 +32,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   {
     kind: 'mutation',
     path: 'admin.agents.create',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_CREATE] },
+    // create publishes the first version live — both CREATE and PUBLISH are required.
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.AGENT_CREATE, PLATFORM_PERMISSIONS.AGENT_PUBLISH],
+    },
   },
   {
     kind: 'mutation',
@@ -63,11 +62,6 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
     kind: 'query',
     path: 'admin.agents.listVersions',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_READ] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.agents.publish',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_PUBLISH] },
   },
   {
     kind: 'mutation',
@@ -106,13 +100,17 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
   },
   {
     kind: 'mutation',
-    path: 'admin.agents.setDefaultInbox',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_PUBLISH] },
+    path: 'admin.agents.save',
+    // save always publishes — both UPDATE and PUBLISH are required.
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE, PLATFORM_PERMISSIONS.AGENT_PUBLISH],
+    },
   },
   {
     kind: 'mutation',
-    path: 'admin.agents.updateDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
+    path: 'admin.agents.setDefaultInbox',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_PUBLISH] },
   },
   {
     kind: 'mutation',

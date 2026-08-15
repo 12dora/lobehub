@@ -45,12 +45,12 @@ const meter = metrics.getMeter('server-enterprise-platform');
 export const configPublishCounter = meter.createCounter(
   'enterprise_platform_config_publish_total',
   {
-    description: 'Enterprise configuration publish and rollback outcomes.',
+    description: 'Enterprise configuration save, publish and rollback outcomes.',
   },
 );
 export const configPublishDuration = meter.createHistogram(
   'enterprise_platform_config_publish_duration_ms',
-  { description: 'Enterprise configuration publish and rollback duration.', unit: 'ms' },
+  { description: 'Enterprise configuration save, publish and rollback duration.', unit: 'ms' },
 );
 export const invalidationCounter = meter.createCounter('enterprise_platform_invalidation_total', {
   description: 'Enterprise configuration invalidation delivery outcomes.',

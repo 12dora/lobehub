@@ -60,7 +60,12 @@ export const ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES = [
   'archived',
   'failure',
 ] as const;
-export const ENTERPRISE_CONFIG_PUBLISH_OPERATIONS = ['publish', 'rollback'] as const;
+/**
+ * Closed publication vocabulary. `save` is the de-drafted single write (append an immutable
+ * version + move the published pointer in one transaction); `publish` stays for domains that
+ * still promote a stored draft, `rollback` for pointer moves onto an older version.
+ */
+export const ENTERPRISE_CONFIG_PUBLISH_OPERATIONS = ['publish', 'rollback', 'save'] as const;
 export const ENTERPRISE_CONFIG_PUBLISH_OUTCOMES = ['conflict', 'failure', 'success'] as const;
 export const ENTERPRISE_INVALIDATION_BACKENDS = ['memory', 'redis'] as const;
 export const ENTERPRISE_INVALIDATION_OUTCOMES = [

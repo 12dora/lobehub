@@ -26,11 +26,6 @@ const fixedProviderEndpointOutbound = conditional(
 );
 
 export const ADMIN_MUTATION_ENTRIES_CATALOG = {
-  'admin.agents.appendVersion': regularMutation(
-    'admin.agents.appendVersion',
-    'medium',
-    'Append an immutable agent version.',
-  ),
   'admin.agents.archive': dangerousMutation(
     'admin.agents.archive',
     'high',
@@ -49,17 +44,15 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'Create or change an agent assignment.',
     { reauth: recentReauth },
   ),
-  'admin.agents.create': regularMutation('admin.agents.create', 'medium', 'Create an agent draft.'),
+  'admin.agents.create': regularMutation(
+    'admin.agents.create',
+    'medium',
+    'Create an agent and publish its first version live in one transaction.',
+  ),
   'admin.agents.delete': dangerousMutation(
     'admin.agents.delete',
     'critical',
     'Hard delete a platform agent and all its versions, assignments, and materializations.',
-    { reauth: recentReauth },
-  ),
-  'admin.agents.publish': dangerousMutation(
-    'admin.agents.publish',
-    'high',
-    'Publish an agent version to its consumers.',
     { reauth: recentReauth },
   ),
   'admin.agents.rollback': dangerousMutation(
@@ -92,16 +85,17 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'Start materializing an agent assignment across users.',
     { reauth: recentReauth },
   ),
+  'admin.agents.save': dangerousMutation(
+    'admin.agents.save',
+    'high',
+    'Append an agent version and publish it to its consumers immediately (the only agent write).',
+    { reauth: recentReauth },
+  ),
   'admin.agents.setDefaultInbox': dangerousMutation(
     'admin.agents.setDefaultInbox',
     'critical',
     'Replace the global default inbox agent.',
     { reauth: recentReauth },
-  ),
-  'admin.agents.updateDraft': regularMutation(
-    'admin.agents.updateDraft',
-    'medium',
-    'Change an agent draft.',
   ),
   'admin.agents.validateDependencies': validationMutation(
     'admin.agents.validateDependencies',

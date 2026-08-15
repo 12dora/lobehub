@@ -149,6 +149,43 @@ describe('PlatformAgentCatalogRepository', () => {
     ).rejects.toThrow();
   });
 
+  it('reads every existing version label as the source for the next one', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'latest-version',
+      isDefault: false,
+      systemKey: null,
+    });
+    expect(await repository.listVersionLabels(agent.id)).toEqual([]);
+
+    await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    await repository.appendVersionCas({
+      agentId: agent.id,
+      config: { ...config, displayName: 'Research Agent v2' },
+      dependencySnapshot,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      version: '1.0.1',
+    });
+
+    // Whole label set, oldest first — the next label is derived from the highest VALID
+    // SemVer among them, which the newest row alone cannot answer.
+    expect(await repository.listVersionLabels(agent.id)).toEqual(['1.0.0', '1.0.1']);
+    // Another Agent's labels never leak into the set.
+    const other = await repository.createIdentity({
+      agentKey: 'other-version-owner',
+      isDefault: false,
+      systemKey: null,
+    });
+    expect(await repository.listVersionLabels(other.id)).toEqual([]);
+  });
+
   it('moves the published pointer with same-Agent and stale-CAS protection', async () => {
     const first = await repository.createIdentity({
       agentKey: 'first',

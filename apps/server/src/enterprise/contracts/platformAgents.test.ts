@@ -2,25 +2,25 @@ import { PLATFORM_AGENT_GLOBAL_TARGET_ID } from '@lobechat/types';
 import { describe, expect, it } from 'vitest';
 
 import {
-  adminPlatformAgentAppendVersionInputSchema,
   adminPlatformAgentArchiveInputSchema,
   adminPlatformAgentAssignmentListOutputSchema,
   adminPlatformAgentAssignmentPreviewInputSchema,
   adminPlatformAgentAssignmentRemoveInputSchema,
   adminPlatformAgentAssignmentUpsertInputSchema,
+  adminPlatformAgentCreateInputSchema,
   adminPlatformAgentDependentsOutputSchema,
   adminPlatformAgentDetailOutputSchema,
   adminPlatformAgentGetInputSchema,
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
-  adminPlatformAgentPublishInputSchema,
   adminPlatformAgentRolloutCancelInputSchema,
   adminPlatformAgentRolloutListOutputSchema,
   adminPlatformAgentRolloutRetryInputSchema,
   adminPlatformAgentRolloutRollbackInputSchema,
   adminPlatformAgentRolloutStartInputSchema,
+  adminPlatformAgentSaveInputSchema,
+  adminPlatformAgentSaveOutputSchema,
   adminPlatformAgentSetDefaultInboxInputSchema,
-  adminPlatformAgentUpdateDraftInputSchema,
   adminPlatformAgentVersionsListOutputSchema,
   platformAgentAssignmentSchema,
   platformAgentDependencySnapshotSchema,
@@ -136,24 +136,64 @@ describe('platform Agent contracts', () => {
     ).toBe(false);
   });
 
-  it('rejects secret material and client-supplied immutable checksum fields', () => {
+  it('rejects secret material, client-supplied checksums and client-chosen version labels', () => {
     const input = {
       agentId: 'agent-id',
       config,
       dependencySnapshot,
       expectedDraftToken: 'b'.repeat(64),
       expectedRevision: 0,
-      reason: 'create reviewed version',
-      version: '1.0.0',
+      reason: 'save reviewed change',
     };
-    expect(adminPlatformAgentAppendVersionInputSchema.safeParse(input).success).toBe(true);
+    expect(adminPlatformAgentSaveInputSchema.safeParse(input).success).toBe(true);
+    expect(adminPlatformAgentSaveInputSchema.safeParse({ ...input, checksum }).success).toBe(false);
+    // The version label is server-generated — clients may not propose one.
     expect(
-      adminPlatformAgentAppendVersionInputSchema.safeParse({ ...input, checksum }).success,
+      adminPlatformAgentSaveInputSchema.safeParse({ ...input, version: '2.0.0' }).success,
     ).toBe(false);
     expect(
-      adminPlatformAgentAppendVersionInputSchema.safeParse({
+      adminPlatformAgentSaveInputSchema.safeParse({
         ...input,
         config: { ...config, systemRole: 'Authorization: Bearer a-secret-token-value' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('creates and publishes in one payload and returns the published identity + version', () => {
+    const createInput = {
+      agentKey: 'research',
+      config,
+      dependencySnapshot,
+      reason: 'create research agent',
+    };
+    expect(adminPlatformAgentCreateInputSchema.safeParse(createInput)).toMatchObject({
+      data: { isDefault: false, systemKey: null },
+      success: true,
+    });
+    // A created Agent can never seed the default-inbox singleton through this contract.
+    expect(
+      adminPlatformAgentCreateInputSchema.safeParse({ ...createInput, isDefault: true }).success,
+    ).toBe(false);
+    // Config / dependencies are mandatory now that create publishes.
+    expect(
+      adminPlatformAgentCreateInputSchema.safeParse({
+        agentKey: 'research',
+        reason: 'create without config',
+      }).success,
+    ).toBe(false);
+
+    const output = {
+      draftToken: 'b'.repeat(64),
+      identity: { ...draft, revision: 1 },
+      invalidationStatus: 'delivered' as const,
+      version,
+    };
+    expect(adminPlatformAgentSaveOutputSchema.safeParse(output).success).toBe(true);
+    // A published save output must carry a version pointer on the identity.
+    expect(
+      adminPlatformAgentSaveOutputSchema.safeParse({
+        ...output,
+        identity: { ...output.identity, currentVersionId: null },
       }).success,
     ).toBe(false);
   });
@@ -310,24 +350,18 @@ describe('platform Agent contracts', () => {
       expectedRevision: 1,
       reason: 'approved change',
     };
-    expect(adminPlatformAgentUpdateDraftInputSchema.safeParse(base).success).toBe(false);
+    // save carries the full payload behind the identity CAS; the default flag is not a save
+    // concern at all (setDefaultInbox / archive own the singleton).
+    expect(adminPlatformAgentSaveInputSchema.safeParse(base).success).toBe(false);
     expect(
-      adminPlatformAgentUpdateDraftInputSchema.safeParse({ ...base, isDefault: false }).success,
-    ).toBe(false);
-    expect(
-      adminPlatformAgentUpdateDraftInputSchema.safeParse({ ...base, systemKey: null }).success,
-    ).toBe(false);
-    expect(
-      adminPlatformAgentUpdateDraftInputSchema.safeParse({
-        ...base,
-        isDefault: false,
-        systemKey: null,
-      }).success,
+      adminPlatformAgentSaveInputSchema.safeParse({ ...base, config, dependencySnapshot }).success,
     ).toBe(true);
     expect(
-      adminPlatformAgentUpdateDraftInputSchema.safeParse({
+      adminPlatformAgentSaveInputSchema.safeParse({
         ...base,
-        isDefault: true,
+        config,
+        dependencySnapshot,
+        isDefault: false,
         systemKey: null,
       }).success,
     ).toBe(false);
@@ -344,27 +378,12 @@ describe('platform Agent contracts', () => {
     ).toBe(false);
   });
 
-  it('publishes an existing immutable version and switches the default atomically', () => {
+  it('switches the default atomically', () => {
     const pointer = {
       agentId: 'agent-id',
       expectedDraftToken: 'b'.repeat(64),
       expectedRevision: 1,
     };
-    expect(
-      adminPlatformAgentPublishInputSchema.safeParse({
-        ...pointer,
-        reason: 'publish reviewed version',
-        versionId: 'version-id',
-      }).success,
-    ).toBe(true);
-    expect(
-      adminPlatformAgentPublishInputSchema.safeParse({
-        ...pointer,
-        config,
-        reason: 'publish reviewed version',
-        versionId: 'version-id',
-      }).success,
-    ).toBe(false);
     expect(
       adminPlatformAgentSetDefaultInboxInputSchema.safeParse({
         currentDefault: { ...pointer, agentId: 'old-agent-id' },

@@ -3,8 +3,6 @@ import { authedProcedure, preAccessAuthedProcedure, router } from '@/libs/trpc/l
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
-  adminPlatformAgentAppendVersionInputSchema,
-  adminPlatformAgentAppendVersionOutputSchema,
   adminPlatformAgentArchiveInputSchema,
   adminPlatformAgentArchiveOutputSchema,
   adminPlatformAgentAssignmentListInputSchema,
@@ -25,8 +23,6 @@ import {
   adminPlatformAgentGetOutputSchema,
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
-  adminPlatformAgentPublishInputSchema,
-  adminPlatformAgentPublishOutputSchema,
   adminPlatformAgentRollbackInputSchema,
   adminPlatformAgentRollbackOutputSchema,
   adminPlatformAgentRolloutCancelInputSchema,
@@ -41,10 +37,10 @@ import {
   adminPlatformAgentRolloutRollbackOutputSchema,
   adminPlatformAgentRolloutStartInputSchema,
   adminPlatformAgentRolloutStartOutputSchema,
+  adminPlatformAgentSaveInputSchema,
+  adminPlatformAgentSaveOutputSchema,
   adminPlatformAgentSetDefaultInboxInputSchema,
   adminPlatformAgentSetDefaultInboxOutputSchema,
-  adminPlatformAgentUpdateDraftInputSchema,
-  adminPlatformAgentUpdateDraftOutputSchema,
   adminPlatformAgentValidateDependenciesInputSchema,
   adminPlatformAgentValidateDependenciesOutputSchema,
   adminPlatformAgentVersionsListInputSchema,
@@ -52,7 +48,10 @@ import {
 } from '../../contracts/platformAgents';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withAllPlatformPermissions,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 import {
   PlatformAgentAdminService,
   PlatformAgentPublicationService,
@@ -296,19 +295,6 @@ const rolloutsRouter = router({
 });
 
 export const adminAgentsRouter = router({
-  appendVersion: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_UPDATE))
-    .input(adminPlatformAgentAppendVersionInputSchema)
-    .output(adminPlatformAgentAppendVersionOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      assertAgentFeatureEnabled();
-      try {
-        return await new PlatformAgentAdminService(ctx.serverDB).appendVersion(ctx.userId!, input);
-      } catch (error) {
-        return mapAgentServiceError(error);
-      }
-    }),
-
   archive: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_DELETE))
     .input(adminPlatformAgentArchiveInputSchema)
@@ -333,8 +319,15 @@ export const adminAgentsRouter = router({
 
   assignments: assignmentsRouter,
 
+  // Create publishes the first version live, so it needs CREATE *and* PUBLISH (one gate —
+  // denials are audited as admin.permission.denied).
   create: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_CREATE))
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.AGENT_CREATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ]),
+    )
     .input(adminPlatformAgentCreateInputSchema)
     .output(adminPlatformAgentCreateOutputSchema)
     .mutation(async ({ ctx, input }) => {
@@ -420,28 +413,6 @@ export const adminAgentsRouter = router({
       }
     }),
 
-  publish: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
-    .input(adminPlatformAgentPublishInputSchema)
-    .output(adminPlatformAgentPublishOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      assertAgentFeatureEnabled();
-      await assertAgentDangerousReauth({
-        action: 'admin.agents.publish',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        serverDB: ctx.serverDB,
-        targetId: input.agentId,
-      });
-      try {
-        return await new PlatformAgentPublicationService(ctx.serverDB).publish(ctx.userId!, input);
-      } catch (error) {
-        return mapAgentServiceError(error);
-      }
-    }),
-
   rollback: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
     .input(adminPlatformAgentRollbackInputSchema)
@@ -466,6 +437,38 @@ export const adminAgentsRouter = router({
 
   rollouts: rolloutsRouter,
 
+  /**
+   * The single de-drafted agent write: appends an immutable version and publishes it live in
+   * one transaction. Requires both AGENT_UPDATE and AGENT_PUBLISH (one gate) plus
+   * dangerous-mutation reauth, exactly like the publish it replaced.
+   */
+  save: adminBase
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.AGENT_UPDATE,
+        PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+      ]),
+    )
+    .input(adminPlatformAgentSaveInputSchema)
+    .output(adminPlatformAgentSaveOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.save',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentPublicationService(ctx.serverDB).save(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
   setDefaultInbox: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
     .input(adminPlatformAgentSetDefaultInboxInputSchema)
@@ -486,19 +489,6 @@ export const adminAgentsRouter = router({
           ctx.userId!,
           input,
         );
-      } catch (error) {
-        return mapAgentServiceError(error);
-      }
-    }),
-
-  updateDraft: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_UPDATE))
-    .input(adminPlatformAgentUpdateDraftInputSchema)
-    .output(adminPlatformAgentUpdateDraftOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      assertAgentFeatureEnabled();
-      try {
-        return await new PlatformAgentAdminService(ctx.serverDB).updateDraft(ctx.userId!, input);
       } catch (error) {
         return mapAgentServiceError(error);
       }

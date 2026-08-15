@@ -274,7 +274,10 @@ const fullJobProjection = (job: PlatformJobItem): AdminSystemJob => {
 };
 
 const publicationDomains = {
+  // 平台助理 de-drafted: `.save` is the live write, `.publish` is kept so historical
+  // failures still roll up into publish health.
   'admin.agents.publish': 'agent_catalog',
+  'admin.agents.save': 'agent_catalog',
   'admin.aiProviders.publish': 'ai_catalog',
   'admin.branding.publish': 'branding',
   'admin.connectors.publish': 'connector_catalog',

@@ -501,13 +501,23 @@ run('PlatformAgentAdminService (PostgreSQL) — constraints / locks', () => {
 
       const make = () => {
         const pool = new Pool({ connectionString, max: 1 });
-        return { pool, service: new PlatformAgentAdminService(drizzle(pool, { schema }) as never) };
+        return {
+          pool,
+          // This suite exercises lock ordering, not dependency revalidation: the created
+          // Agent publishes its first version, so the catalog validator is stubbed out while
+          // the dependency publication lock is still taken by the real code path.
+          service: new PlatformAgentAdminService(drizzle(pool, { schema }) as never, {
+            validateDependencies: async () => undefined,
+          }),
+        };
       };
       const [creator, switcher, archiver] = [make(), make(), make()];
       try {
         const results = await Promise.allSettled([
           creator.service.create('admin', {
             agentKey: 'ord-new',
+            config: config('ord-new'),
+            dependencySnapshot,
             isDefault: false,
             reason: 'concurrent create',
             systemKey: null,
