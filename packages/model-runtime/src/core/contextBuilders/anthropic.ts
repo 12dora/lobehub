@@ -3,6 +3,7 @@ import { imageUrlToBase64, resolveImageMimeTypeFromBase64 } from '@lobechat/util
 import type OpenAI from 'openai';
 
 import type { OpenAIChatMessage, UserMessageContentPart } from '../../types';
+import { fileUrlPartPlaceholder } from '../../types/chat';
 import { parseDataUri } from '../../utils/uriParser';
 
 const ANTHROPIC_SUPPORTED_IMAGE_TYPES = new Set([
@@ -54,6 +55,13 @@ export const buildAnthropicBlock = async (
       if (!!content.text) return content as any;
 
       return undefined;
+    }
+
+    // Native `file_url` parts are produced only for models with
+    // `abilities.files`; Anthropic has no matching block here, so keep the
+    // signal as text rather than dropping the attachment silently.
+    case 'file_url': {
+      return { text: fileUrlPartPlaceholder(content), type: 'text' } as any;
     }
 
     case 'image_url': {

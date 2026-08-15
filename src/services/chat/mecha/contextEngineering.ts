@@ -77,6 +77,7 @@ import {
   getRuntimeModelDisplayName,
   getRuntimeModelKnowledgeCutoff,
   isCanUseAudio,
+  isCanUseFiles,
   isCanUseVideo,
   isCanUseVision,
 } from '../helper';
@@ -714,6 +715,7 @@ export const contextEngineering = async ({
     capabilities: {
       isCanUseAudio,
       isCanUseFC,
+      isCanUseFiles,
       isCanUseVideo,
       isCanUseVision,
     },

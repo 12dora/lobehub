@@ -42,11 +42,38 @@ interface UserMessageContentPartAudio {
   type: 'audio_url';
 }
 
+/**
+ * A user-attached document carried as a native content part instead of being
+ * flattened into the `<files_info>` text block. Emitted by the context engine
+ * only for providers that implement native file input (`isProviderNativeFileInput`)
+ * with a model declaring `abilities.files`; every other provider downgrades or
+ * drops it before dispatch.
+ *
+ * Mirrors `UserMessageContentPartFile` in `@lobechat/model-runtime`.
+ */
+export interface UserMessageContentPartFile {
+  file_url: {
+    /**
+     * Server-parsed text of the document, when available. Lets a runtime fall
+     * back to text injection if the native upload fails.
+     */
+    content?: string;
+    /** Id of the file record in the LobeHub file store */
+    fileId?: string;
+    mimeType?: string;
+    name: string;
+    size?: number;
+    url: string;
+  };
+  type: 'file_url';
+}
+
 export type UserMessageContentPart =
   | UserMessageContentPartText
   | UserMessageContentPartImage
   | UserMessageContentPartVideo
-  | UserMessageContentPartAudio;
+  | UserMessageContentPartAudio
+  | UserMessageContentPartFile;
 
 export interface OpenAIChatMessage {
   /**

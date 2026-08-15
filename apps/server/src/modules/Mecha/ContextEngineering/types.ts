@@ -27,6 +27,8 @@ export interface ServerModelCapabilities {
   isCanUseAudio?: (model: string, provider: string) => boolean;
   /** Check if function calling is supported */
   isCanUseFC?: (model: string, provider: string) => boolean;
+  /** Check if documents can be attached natively (`abilities.files`) */
+  isCanUseFiles?: (model: string, provider: string) => boolean;
   /** Check if video is supported */
   isCanUseVideo?: (model: string, provider: string) => boolean;
   /** Check if vision is supported */

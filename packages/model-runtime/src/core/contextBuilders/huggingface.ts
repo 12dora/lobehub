@@ -1,4 +1,5 @@
 import type { OpenAIChatMessage, UserMessageContentPart } from '../../types';
+import { fileUrlPartPlaceholder, isFileUrlPart } from '../../types/chat';
 
 /**
  * Converts OpenAI-style chat messages to Hugging Face chat completion format.
@@ -45,6 +46,10 @@ export function convertOpenAIMessagesToHFFormat(messages: OpenAIChatMessage[]): 
             },
             type: 'image_url' as const,
           };
+        } else if (isFileUrlPart(part)) {
+          // HF endpoints have no native document block — keep the attachment
+          // visible as text instead of emitting an empty part.
+          return { text: fileUrlPartPlaceholder(part), type: 'text' as const };
         }
         // Fallback for unknown content types
         return { text: '', type: 'text' as const };

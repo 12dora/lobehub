@@ -572,6 +572,25 @@ describe('LobeOllamaAI', () => {
       });
     });
 
+    // `file_url` parts are only emitted for models with `abilities.files`;
+    // Ollama has no mapping for them and must simply skip them.
+    it('should ignore a native file_url content part', async () => {
+      const message = {
+        content: [
+          {
+            file_url: { name: 'report.pdf', url: 'https://example.com/report.pdf' },
+            type: 'file_url',
+          },
+          { text: 'summarize it', type: 'text' },
+        ],
+        role: 'user',
+      };
+
+      const ollamaMessage = await ollamaAI['convertContentToOllamaMessage'](message as any);
+
+      expect(ollamaMessage).toEqual({ content: 'summarize it', role: 'user' });
+    });
+
     it('should ignore invalid image_url content', async () => {
       const message = {
         content: [

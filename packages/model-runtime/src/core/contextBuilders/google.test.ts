@@ -51,6 +51,17 @@ describe('google contextBuilders', () => {
       expect(result).toEqual({ text: 'Hello', thoughtSignature: GEMINI_MAGIC_THOUGHT_SIGNATURE });
     });
 
+    // `file_url` parts are only emitted for models with `abilities.files`;
+    // Gemini has no matching mapping here, so it must be dropped, not thrown on.
+    it('should ignore a native file_url part', async () => {
+      const content: UserMessageContentPart = {
+        file_url: { name: 'report.pdf', url: 'https://example.com/report.pdf' },
+        type: 'file_url',
+      };
+
+      await expect(buildGooglePart(content)).resolves.toBeUndefined();
+    });
+
     it('should handle thinking type messages', async () => {
       const content: UserMessageContentPart = {
         signature: 'abc',

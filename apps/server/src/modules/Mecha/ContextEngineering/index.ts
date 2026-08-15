@@ -95,6 +95,7 @@ export const serverMessagesEngine = async ({
     capabilities: {
       isCanUseAudio: capabilities?.isCanUseAudio,
       isCanUseFC: capabilities?.isCanUseFC,
+      isCanUseFiles: capabilities?.isCanUseFiles,
       isCanUseVideo: capabilities?.isCanUseVideo,
       isCanUseVision: capabilities?.isCanUseVision,
     },

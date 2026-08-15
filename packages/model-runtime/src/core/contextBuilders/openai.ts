@@ -5,6 +5,7 @@ import { toFile } from 'openai';
 
 import { disableStreamModels, systemToUserModels } from '../../providers/openai/openaiModelId';
 import type { ChatStreamPayload, OpenAIChatMessage, UserMessageContentPart } from '../../types';
+import { fileUrlPartPlaceholder, isFileUrlTypedPart } from '../../types/chat';
 import { isDeepSeekThinkingEligibleModel } from '../../utils/modelParse';
 import type { SignatureScope } from '../../utils/signatureScope';
 import { resolveScopedSignature } from '../../utils/signatureScope';
@@ -39,6 +40,14 @@ export const convertMessageContent = async (
   content: OpenAI.ChatCompletionContentPart | ExtendedChatCompletionContentPart,
   options?: ConvertMessageContentOptions,
 ): Promise<OpenAI.ChatCompletionContentPart | ExtendedChatCompletionContentPart> => {
+  // Native `file_url` parts are only understood by providers that opt into them
+  // (see `isProviderNativeFileInput`). OpenAI-compatible endpoints would reject
+  // the raw object, so downgrade it to a text marker instead of forwarding it.
+  // Deliberately the loose check: even a malformed part must not reach the wire.
+  if (isFileUrlTypedPart(content)) {
+    return { text: fileUrlPartPlaceholder(content), type: 'text' };
+  }
+
   if (content.type === 'image_url') {
     const { type } = parseDataUri(content.image_url.url);
 

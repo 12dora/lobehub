@@ -48,12 +48,98 @@ interface UserMessageContentPartAudio {
   type: 'audio_url';
 }
 
+/**
+ * A user-attached document carried as a native content part instead of being
+ * flattened into the `<files_info>` text block. Only emitted by the context
+ * engine when the target model declares `abilities.files`, so a runtime can
+ * upload the real file to its upstream (e.g. ChatGPT Web).
+ */
+export interface UserMessageContentPartFile {
+  file_url: {
+    /**
+     * Server-parsed text of the document, when available. Lets a runtime fall
+     * back to text injection if the native upload fails.
+     */
+    content?: string;
+    /** Id of the file record in the LobeHub file store */
+    fileId?: string;
+    mimeType?: string;
+    name: string;
+    size?: number;
+    url: string;
+  };
+  type: 'file_url';
+}
+
 export type UserMessageContentPart =
   | UserMessageContentPartText
   | UserMessageContentPartImage
   | UserMessageContentPartVideo
   | UserMessageContentPartAudio
+  | UserMessageContentPartFile
   | UserMessageContentPartThinking;
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
+const isOptionalString = (value: unknown): boolean =>
+  value === undefined || typeof value === 'string';
+
+/**
+ * Loose check: does this part *claim* to be a native file part?
+ *
+ * Providers that cannot carry documents must drop / downgrade every part that
+ * claims the `file_url` type, including malformed ones — otherwise an unknown
+ * object reaches the upstream wire. Use `isFileUrlPart` instead whenever the
+ * part's fields are actually read.
+ */
+export const isFileUrlTypedPart = (part: unknown): boolean =>
+  !!part && typeof part === 'object' && (part as { type?: unknown }).type === 'file_url';
+
+/**
+ * Type guard for the native `file_url` part.
+ *
+ * Takes `unknown` on purpose: providers that never opt into native files still
+ * need to recognise (and drop) the part while their local content-part unions
+ * do not include it.
+ *
+ * The whole declared shape is validated, not just `file_url.url`: callers use
+ * the narrowed value to build placeholders (`[file omitted: <name>]`) and
+ * upstream upload payloads, so a partially-valid object must be rejected
+ * outright rather than surface as `undefined` / `[object Object]` on the wire.
+ */
+export const isFileUrlPart = (part: unknown): part is UserMessageContentPartFile => {
+  if (!part || typeof part !== 'object' || Array.isArray(part)) return false;
+  if ((part as { type?: unknown }).type !== 'file_url') return false;
+
+  const fileUrl = (part as { file_url?: unknown }).file_url;
+  if (!fileUrl || typeof fileUrl !== 'object' || Array.isArray(fileUrl)) return false;
+
+  const { content, fileId, mimeType, name, size, url } = fileUrl as Record<string, unknown>;
+
+  return (
+    isNonEmptyString(url) &&
+    isNonEmptyString(name) &&
+    isOptionalString(mimeType) &&
+    isOptionalString(fileId) &&
+    isOptionalString(content) &&
+    (size === undefined || (typeof size === 'number' && Number.isFinite(size)))
+  );
+};
+
+/**
+ * Text stand-in for a `file_url` part that the target provider cannot carry
+ * natively — keeps the signal that a document was attached without leaking an
+ * unknown object onto the wire.
+ *
+ * Accepts `unknown` and degrades gracefully: a malformed part must never render
+ * as `[file omitted: undefined]` or `[file omitted: [object Object]]`.
+ */
+export const fileUrlPartPlaceholder = (part: unknown): string => {
+  const name = (part as { file_url?: { name?: unknown } } | undefined)?.file_url?.name;
+
+  return isNonEmptyString(name) ? `[file omitted: ${name}]` : '[file omitted]';
+};
 
 export interface OpenAIChatMessage {
   content: string | UserMessageContentPart[];

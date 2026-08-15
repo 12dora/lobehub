@@ -56,6 +56,12 @@ export interface MessageContentConfig {
   fileContext?: FileContextConfig;
   /** Function to check if audio input is supported */
   isCanUseAudio?: (model: string, provider: string) => boolean | undefined;
+  /**
+   * Function to check if the model accepts documents natively (`abilities.files`).
+   * When true, `fileList` entries are emitted as `file_url` parts instead of
+   * being flattened into the `<files_info>` text block.
+   */
+  isCanUseFiles?: (model: string, provider: string) => boolean | undefined;
   /** Function to check if video is supported */
   isCanUseVideo?: (model: string, provider: string) => boolean | undefined;
   /** Function to check if vision is supported */
@@ -70,6 +76,14 @@ export interface UserMessageContentPart {
   audio_url?: {
     url: string;
   };
+  file_url?: {
+    content?: string;
+    fileId?: string;
+    mimeType?: string;
+    name: string;
+    size?: number;
+    url: string;
+  };
   googleThoughtSignature?: string;
   image_url?: {
     detail?: string;
@@ -78,7 +92,7 @@ export interface UserMessageContentPart {
   signature?: string;
   text?: string;
   thinking?: string;
-  type: 'text' | 'image_url' | 'thinking' | 'video_url' | 'audio_url';
+  type: 'text' | 'image_url' | 'thinking' | 'video_url' | 'audio_url' | 'file_url';
   video_url?: {
     url: string;
   };
@@ -161,6 +175,15 @@ export class MessageContentProcessor extends BaseProcessor {
     const canUseVision = !!this.config.isCanUseVision?.(this.config.model, this.config.provider);
     const canUseVideo = !!this.config.isCanUseVideo?.(this.config.model, this.config.provider);
     const canUseAudio = !!this.config.isCanUseAudio?.(this.config.model, this.config.provider);
+    const canUseFiles = !!this.config.isCanUseFiles?.(this.config.model, this.config.provider);
+
+    // Models declaring `abilities.files` receive the documents as native
+    // `file_url` parts so the runtime can upload the real file upstream; those
+    // documents are then excluded from the `<files_info>` text injection to
+    // avoid sending the same payload twice. Images/videos/audios are unaffected.
+    const nativeFileList: any[] = canUseFiles && hasFiles ? message.fileList : [];
+    const promptFileList: any[] = canUseFiles ? [] : message.fileList || [];
+    const hasPromptFiles = promptFileList.length > 0;
 
     // Historical messages may already be stored in multimodal parts form
     // (content is an array of {type, text|image_url|video_url}). Those parts
@@ -217,13 +240,16 @@ export class MessageContentProcessor extends BaseProcessor {
     }
 
     // Add file context (if file context is enabled and has files, images, videos or audios)
-    if ((hasFiles || hasImages || hasVideos || hasAudios) && this.config.fileContext?.enabled) {
+    if (
+      (hasPromptFiles || hasImages || hasVideos || hasAudios) &&
+      this.config.fileContext?.enabled
+    ) {
       const filesContext = filesPrompts({
         // File access URLs are needed by sandbox/code tools that fetch attachments from text.
         // Call sites can still disable them for environments such as desktop local files.
         addUrl: this.config.fileContext.includeFileUrl ?? true,
         audioList: message.audioList || [],
-        fileList: message.fileList,
+        fileList: promptFileList,
         imageList: message.imageList || [],
         messageId: message.id,
         videoList: message.videoList || [],
@@ -232,6 +258,12 @@ export class MessageContentProcessor extends BaseProcessor {
       if (filesContext) {
         textContent = (textContent + '\n\n' + filesContext).trim();
       }
+    }
+
+    // Native document parts lead the content array: an attachment logically
+    // precedes the prompt that refers to it, matching how the composer shows it.
+    if (nativeFileList.length > 0) {
+      contentParts.push(...this.processFileList(nativeFileList));
     }
 
     // Add text part
@@ -269,10 +301,11 @@ export class MessageContentProcessor extends BaseProcessor {
 
     // Explicitly return fields, keeping only necessary message fields
     const hasFileContext =
-      (hasFiles || hasImages || hasVideos || hasAudios) && this.config.fileContext?.enabled;
+      (hasPromptFiles || hasImages || hasVideos || hasAudios) && this.config.fileContext?.enabled;
     const hasVisionContent = (hasImages || arrayImageUrlCount > 0) && canUseVision;
     const hasVideoContent = hasVideos && canUseVideo;
     const hasAudioContent = hasAudios && canUseAudio;
+    const hasNativeFileContent = nativeFileList.length > 0;
 
     // If only text content and no file context added and no vision/video/audio content, return plain text
     if (
@@ -281,7 +314,8 @@ export class MessageContentProcessor extends BaseProcessor {
       !hasFileContext &&
       !hasVisionContent &&
       !hasVideoContent &&
-      !hasAudioContent
+      !hasAudioContent &&
+      !hasNativeFileContent
     ) {
       return {
         content: contentParts[0].text,
@@ -504,6 +538,30 @@ export class MessageContentProcessor extends BaseProcessor {
   }
 
   /**
+   * Process document list into native `file_url` parts.
+   *
+   * Only called when the target model declares `abilities.files`. `content` is
+   * the server-parsed text of the document (may be undefined) and lets a
+   * runtime fall back to text injection when the native upload fails.
+   */
+  private processFileList(fileList: any[]): UserMessageContentPart[] {
+    return fileList.map(
+      (file) =>
+        ({
+          file_url: {
+            content: file.content,
+            fileId: file.id,
+            mimeType: file.fileType,
+            name: file.name,
+            size: file.size,
+            url: file.url,
+          },
+          type: 'file_url',
+        }) as UserMessageContentPart,
+    );
+  }
+
+  /**
    * Process video list
    */
   private async processVideoList(videoList: any[]): Promise<UserMessageContentPart[]> {
@@ -556,6 +614,9 @@ export class MessageContentProcessor extends BaseProcessor {
       }
       case 'audio_url': {
         return !!(part.audio_url && part.audio_url.url);
+      }
+      case 'file_url': {
+        return !!(part.file_url && part.file_url.url && part.file_url.name);
       }
       default: {
         return false;

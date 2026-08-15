@@ -469,6 +469,9 @@ export class MessagesEngine {
       new MessageContentProcessor({
         fileContext: fileContext || { enabled: true, includeFileUrl: true },
         isCanUseAudio: capabilities?.isCanUseAudio || (() => false),
+        // Native file parts are opt-in: default off so every existing provider
+        // keeps the `<files_info>` text injection it expects.
+        isCanUseFiles: capabilities?.isCanUseFiles || (() => false),
         isCanUseVideo: capabilities?.isCanUseVideo || (() => false),
         isCanUseVision: capabilities?.isCanUseVision || (() => true),
         model,

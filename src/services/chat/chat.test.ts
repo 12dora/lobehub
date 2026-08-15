@@ -1450,8 +1450,11 @@ describe('ChatService', () => {
             }) as any,
         );
 
-        // Mock AI infra store state - model has built-in search
-        vi.spyOn(aiModelSelectors, 'isModelHasBuiltinSearch').mockReturnValueOnce(() => true);
+        // Mock AI infra store state - model has built-in search.
+        // `getSearchConfig` reads the model's search IMPLEMENTATION (it feeds
+        // `resolveSearchDecision`), not the derived `isModelHasBuiltinSearch` boolean, so
+        // mocking the latter leaves the decision with no impl and `enabledSearch` undefined.
+        vi.spyOn(aiModelSelectors, 'modelBuiltinSearchImpl').mockReturnValue(() => 'params');
         vi.spyOn(aiModelSelectors, 'isModelHasExtendParams').mockReturnValueOnce(() => false);
 
         // Mock createChatToolsEngine to return tools with web browsing

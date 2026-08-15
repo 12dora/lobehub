@@ -9,6 +9,7 @@ import {
 } from '@lobechat/model-runtime';
 import type { UIChatMessage } from '@lobechat/types';
 import { type ExtendParamsType, ModelProvider } from 'model-bank';
+import { isProviderNativeFileInput } from 'model-bank/modelProviders';
 
 import { AiModelModel } from '@/database/models/aiModel';
 
@@ -26,6 +27,7 @@ export interface ServerCallLlmContextHints {
   capabilities: {
     isCanUseAudio: (model: string, provider: string) => boolean;
     isCanUseFC: (model: string, provider: string) => boolean;
+    isCanUseFiles: (model: string, provider: string) => boolean;
     isCanUseVideo: (model: string, provider: string) => boolean;
     isCanUseVision: (model: string, provider: string) => boolean;
   };
@@ -176,6 +178,16 @@ export const resolveServerCallLlmContextHints = async ({
       isCanUseFC: (targetModel, targetProvider) =>
         builtinModels.find((item) => item.id === targetModel && item.providerId === targetProvider)
           ?.abilities?.functionCall ?? true,
+      // Native `file_url` parts need BOTH the model ability and a provider
+      // runtime that implements the wire format (see `isProviderNativeFileInput`):
+      // `abilities.files` alone is already set by catalogs whose providers have
+      // no file part, and emitting it there would silently drop the document.
+      // Invariant relied on downstream: only native-file providers can receive a
+      // `file_url` part, so pass-through runtimes (azureai, cloudflare, …) never
+      // see one. Ability resolution mirrors `isCanUseVision` below exactly.
+      isCanUseFiles: (targetModel, targetProvider) =>
+        isProviderNativeFileInput(targetProvider) &&
+        (findModelInfo(targetModel, targetProvider)?.abilities?.files ?? false),
       isCanUseVideo: (targetModel, targetProvider) =>
         findModelInfo(targetModel, targetProvider)?.abilities?.video ?? false,
       isCanUseVision: (targetModel, targetProvider) =>

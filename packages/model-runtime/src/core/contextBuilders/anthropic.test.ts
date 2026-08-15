@@ -38,6 +38,19 @@ describe('anthropicHelpers', () => {
       expect(result).toEqual(content);
     });
 
+    // Anthropic has no native document block: a `file_url` part (emitted only
+    // for models with `abilities.files`) must degrade to text, never throw.
+    it('should downgrade a native file_url part to a text placeholder', async () => {
+      const content: UserMessageContentPart = {
+        file_url: { name: 'report.pdf', url: 'https://example.com/report.pdf' },
+        type: 'file_url',
+      };
+
+      const result = await buildAnthropicBlock(content);
+
+      expect(result).toEqual({ text: '[file omitted: report.pdf]', type: 'text' });
+    });
+
     it('should transform an image URL into an Anthropic.ImageBlockParam', async () => {
       const content: UserMessageContentPart = {
         type: 'image_url',

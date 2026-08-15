@@ -1,5 +1,6 @@
 import type { EnabledAiModel } from 'model-bank';
 import { ModelProvider } from 'model-bank';
+import { isProviderNativeFileInput } from 'model-bank/modelProviders';
 
 import { getAiInfraStoreState } from '@/store/aiInfra';
 import { aiProviderSelectors } from '@/store/aiInfra/selectors';
@@ -24,6 +25,25 @@ const getModelAbilities = (model: string, provider: string) => {
 
 export const isCanUseVision = (model: string, provider: string): boolean => {
   return getModelAbilities(model, provider)?.vision || false;
+};
+
+/**
+ * Whether the model accepts user documents natively (as a `file_url` content
+ * part) instead of the `<files_info>` text injection.
+ *
+ * Requires BOTH the model ability and a provider runtime that implements the
+ * native wire format: `abilities.files` alone is already set by catalogs whose
+ * providers have no file part (e.g. OpenCode Zen), and emitting `file_url`
+ * there would silently drop the document from the prompt.
+ *
+ * Invariant relied on downstream: only providers in the native set can ever
+ * receive a `file_url` part, so runtimes that pass their payload through
+ * verbatim (azureai, cloudflare, …) never see one.
+ */
+export const isCanUseFiles = (model: string, provider: string): boolean => {
+  if (!isProviderNativeFileInput(provider)) return false;
+
+  return getModelAbilities(model, provider)?.files || false;
 };
 
 export const isCanUseVideo = (model: string, provider: string): boolean => {

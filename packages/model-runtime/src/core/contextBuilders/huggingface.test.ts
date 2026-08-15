@@ -18,6 +18,30 @@ describe('convertOpenAIMessagesToHFFormat', () => {
     ]);
   });
 
+  // `file_url` parts are only emitted for models with `abilities.files`; HF has
+  // no native document block, so keep the signal as text instead of `''`.
+  it('should downgrade a native file_url part to a text placeholder', () => {
+    const messages: OpenAIChatMessage[] = [
+      {
+        content: [
+          {
+            file_url: { name: 'report.pdf', url: 'https://example.com/report.pdf' },
+            type: 'file_url',
+          },
+          { text: 'summarize it', type: 'text' },
+        ],
+        role: 'user',
+      },
+    ];
+
+    const result = convertOpenAIMessagesToHFFormat(messages);
+
+    expect(result[0].content).toEqual([
+      { text: '[file omitted: report.pdf]', type: 'text' },
+      { text: 'summarize it', type: 'text' },
+    ]);
+  });
+
   it('should convert messages with name property', () => {
     const messages: OpenAIChatMessage[] = [{ role: 'user', content: 'Hello', name: 'John' }];
 

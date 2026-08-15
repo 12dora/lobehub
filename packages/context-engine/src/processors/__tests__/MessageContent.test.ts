@@ -1,4 +1,10 @@
-import type { ChatAudioItem, ChatImageItem, ChatVideoItem, UIChatMessage } from '@lobechat/types';
+import type {
+  ChatAudioItem,
+  ChatImageItem,
+  ChatVideoItem,
+  UIChatMessage,
+  UserMessageContentPart as SharedUserMessageContentPart,
+} from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PipelineContext } from '../../types';
@@ -486,6 +492,145 @@ describe('MessageContentProcessor', () => {
       expect(textPart.text).not.toContain('[object Object]');
       // Must preserve the original text payload.
       expect(textPart.text).toContain('Hello');
+    });
+  });
+
+  describe('Native file parts (abilities.files)', () => {
+    const docFile = {
+      content: 'PARSED TEXT',
+      fileType: 'application/pdf',
+      id: 'file1',
+      name: 'report.pdf',
+      size: 2048,
+      url: 'http://example.com/report.pdf',
+    };
+
+    const createProcessor = (canUseFiles: boolean) =>
+      new MessageContentProcessor({
+        fileContext: { enabled: true },
+        isCanUseFiles: () => canUseFiles,
+        isCanUseVision: mockIsCanUseVision,
+        model: 'auto',
+        provider: 'chatgptweb',
+      });
+
+    const userMessage = (overrides: Partial<UIChatMessage> = {}): UIChatMessage =>
+      ({
+        content: 'summarize it',
+        createdAt: Date.now(),
+        fileList: [docFile],
+        id: 'test',
+        role: 'user',
+        updatedAt: Date.now(),
+        ...overrides,
+      }) as UIChatMessage;
+
+    it('should declare file_url in the shared message content union', () => {
+      // Compile-time coverage: `MessagesEngine` casts its output to
+      // `OpenAIChatMessage[]` from `@lobechat/types`, so that union must be able
+      // to carry the native part this processor emits — otherwise the cast hides
+      // the mismatch from every downstream consumer.
+      const part: SharedUserMessageContentPart = {
+        file_url: { name: 'report.pdf', url: 'http://example.com/report.pdf' },
+        type: 'file_url',
+      };
+
+      expect(part.type).toBe('file_url');
+    });
+
+    it('should emit a file_url part before the text and skip the files_info entry', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const result = await createProcessor(true).process(createContext([userMessage()]));
+
+      const content = result.messages[0].content as any[];
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual({
+        file_url: {
+          content: 'PARSED TEXT',
+          fileId: 'file1',
+          mimeType: 'application/pdf',
+          name: 'report.pdf',
+          size: 2048,
+          url: 'http://example.com/report.pdf',
+        },
+        type: 'file_url',
+      });
+      expect(content[1].type).toBe('text');
+      // The document is attached natively, so it must not be duplicated into
+      // the `<files_info>` text block.
+      expect(content[1].text).toBe('summarize it');
+      expect(content[1].text).not.toContain('files_info');
+      expect(content[1].text).not.toContain('<file ');
+    });
+
+    it('should keep the legacy text injection byte-identical when files are not supported', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const withCapability = await createProcessor(false).process(createContext([userMessage()]));
+      // No `isCanUseFiles` at all — the pre-existing behaviour.
+      const withoutConfig = await new MessageContentProcessor({
+        fileContext: { enabled: true },
+        isCanUseVision: mockIsCanUseVision,
+        model: 'auto',
+        provider: 'chatgptweb',
+      }).process(createContext([userMessage()]));
+
+      const content = withCapability.messages[0].content as any[];
+      expect(content).toEqual(withoutConfig.messages[0].content);
+      expect(content).toHaveLength(1);
+      expect(content[0].type).toBe('text');
+      expect(content[0].text).toContain(
+        '<file id="file1" name="report.pdf" type="application/pdf" size="2048" url="http://example.com/report.pdf">PARSED TEXT</file>',
+      );
+    });
+
+    it('should keep images on the vision path while documents go native', async () => {
+      mockIsCanUseVision.mockReturnValue(true);
+
+      const result = await createProcessor(true).process(
+        createContext([
+          userMessage({
+            imageList: [{ alt: 'shot.png', id: 'img1', url: 'http://example.com/shot.png' }],
+          }),
+        ]),
+      );
+
+      const content = result.messages[0].content as any[];
+      expect(content.map((part) => part.type)).toEqual(['file_url', 'text', 'image_url']);
+      expect(content[2].image_url.url).toBe('http://example.com/shot.png');
+      // Images are still described in files_info; the document is not.
+      expect(content[1].text).toContain('<image ref=');
+      expect(content[1].text).not.toContain('<file ');
+    });
+
+    it('should emit only the file_url part when the message has no text', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const result = await createProcessor(true).process(
+        createContext([userMessage({ content: '' })]),
+      );
+
+      const content = result.messages[0].content as any[];
+      expect(content).toHaveLength(1);
+      expect(content[0].type).toBe('file_url');
+      expect(content[0].file_url.name).toBe('report.pdf');
+    });
+
+    it('should carry an undefined content field when the document was not parsed', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const result = await createProcessor(true).process(
+        createContext([
+          userMessage({
+            fileList: [{ ...docFile, content: undefined }],
+          }),
+        ]),
+      );
+
+      const content = result.messages[0].content as any[];
+      expect(content[0].file_url.content).toBeUndefined();
+      expect(content[0].file_url.url).toBe('http://example.com/report.pdf');
     });
   });
 

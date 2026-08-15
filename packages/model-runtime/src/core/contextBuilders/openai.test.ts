@@ -36,6 +36,19 @@ describe('convertMessageContent', () => {
     expect(result).toEqual(content);
   });
 
+  // `file_url` parts are only emitted for models with `abilities.files`; an
+  // OpenAI-compatible endpoint would reject the raw object, so downgrade it.
+  it('should downgrade a native file_url part to a text placeholder', async () => {
+    const content = {
+      file_url: { name: 'report.pdf', url: 'https://example.com/report.pdf' },
+      type: 'file_url',
+    } as unknown as OpenAI.ChatCompletionContentPart;
+
+    const result = await convertMessageContent(content);
+
+    expect(result).toEqual({ text: '[file omitted: report.pdf]', type: 'text' });
+  });
+
   it('should convert image URL to base64 when necessary', async () => {
     // 设置环境变量
     process.env.LLM_VISION_IMAGE_USE_BASE64 = '1';
