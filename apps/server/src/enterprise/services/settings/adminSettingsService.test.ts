@@ -83,22 +83,21 @@ const validDraft = {
   },
 };
 
-const deferred = () => {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-};
-
-const saveCurrentDraft = async (
+/** De-drafted write against the current CAS base (the only settings write path). */
+const saveCurrent = async (
   target: AdminSettingsService,
-  params: Omit<Parameters<AdminSettingsService['saveDraft']>[0], 'expectedDraftToken'>,
-) =>
-  target.saveDraft({
+  params: Omit<
+    Parameters<AdminSettingsService['save']>[0],
+    'expectedDraftToken' | 'expectedRevision'
+  >,
+) => {
+  const base = await target.getDraft();
+  return target.save({
     ...params,
-    expectedDraftToken: (await target.getDraft()).draftToken,
+    expectedDraftToken: base.draftToken,
+    expectedRevision: base.baseRevision,
   });
+};
 
 describe('AdminSettingsService', () => {
   it('getDraft returns registry + empty draft for new bundle', async () => {
@@ -110,11 +109,11 @@ describe('AdminSettingsService', () => {
     expect(draft.draftToken).toMatch(/^[\da-f]{64}$/);
   });
 
-  it('saveDraft validates whole bundle before write; rejects unknown path', async () => {
+  it('save validates the whole payload before write; rejects unknown path', async () => {
     await expect(
-      saveCurrentDraft(service, {
+      saveCurrent(service, {
         actorUserId: 'admin-1',
-        draft: {
+        policies: {
           'not.registered': {
             mode: 'default',
             schemaVersion: 1,
@@ -132,39 +131,22 @@ describe('AdminSettingsService', () => {
     const audits = await serverDB.select().from(platformAuditLogs);
     expect(audits).toMatchObject([
       {
-        action: 'admin.settings.saveDraft',
-        afterDiff: { issueCount: 1 },
+        action: 'admin.settings.save',
+        afterDiff: { error: 'validation' },
         result: 'failure',
       },
     ]);
     expect(JSON.stringify(audits)).not.toContain('not.registered');
   });
 
-  it('rejects publishing AI references whose target is not currently published', async () => {
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'systemAgent.topic.model': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: 'missing-model',
-          visibility: 'visible',
-        },
-        'systemAgent.topic.provider': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: 'missing-provider',
-          visibility: 'visible',
-        },
-      },
-      reason: 'reference missing target',
-    });
-
+  it('rejects applying AI references whose target is not currently published', async () => {
     await expect(
-      service.publish({
+      service.applyImmediate({
         actorUserId: 'admin-1',
-        expectedDraftToken: (await service.getDraft()).draftToken,
-        expectedRevision: 0,
+        patch: {
+          'systemAgent.topic.model': 'missing-model',
+          'systemAgent.topic.provider': 'missing-provider',
+        },
         reason: 'must fail closed',
       }),
     ).rejects.toBeInstanceOf(PlatformDependencyTargetNotPublishedError);
@@ -214,30 +196,13 @@ describe('AdminSettingsService', () => {
         status: 'published',
       },
     ]);
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'systemAgent.topic.model': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: 'orphan-only',
-          visibility: 'visible',
-        },
-        'systemAgent.topic.provider': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: 'alpha',
-          visibility: 'visible',
-        },
-      },
-      reason: 'orphan history must not authorize settings',
-    });
-
     await expect(
-      service.publish({
+      service.applyImmediate({
         actorUserId: 'admin-1',
-        expectedDraftToken: (await service.getDraft()).draftToken,
-        expectedRevision: 0,
+        patch: {
+          'systemAgent.topic.model': 'orphan-only',
+          'systemAgent.topic.provider': 'alpha',
+        },
         reason: 'must use current pointer',
       }),
     ).rejects.toBeInstanceOf(PlatformDependencyTargetNotPublishedError);
@@ -291,31 +256,14 @@ describe('AdminSettingsService', () => {
       .update(platformAiProviders)
       .set({ revision: 1 })
       .where(eq(platformAiProviders.id, 'provider-alpha'));
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'systemAgent.topic.model': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: 'rollback-model',
-          visibility: 'visible',
-        },
-        'systemAgent.topic.provider': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: 'alpha',
-          visibility: 'visible',
-        },
-      },
-      reason: 'rolled back model is current',
-    });
-
     await expect(
-      service.publish({
+      service.applyImmediate({
         actorUserId: 'admin-1',
-        expectedDraftToken: (await service.getDraft()).draftToken,
-        expectedRevision: 0,
-        reason: 'publish against rollback pointer',
+        patch: {
+          'systemAgent.topic.model': 'rollback-model',
+          'systemAgent.topic.provider': 'alpha',
+        },
+        reason: 'apply against rollback pointer',
       }),
     ).resolves.toMatchObject({ revision: 1 });
     expect(await serverDB.select().from(platformSettingPolicies)).toEqual(
@@ -325,43 +273,28 @@ describe('AdminSettingsService', () => {
     );
   });
 
-  it('saveDraft + publish + rollback append-only flow', async () => {
-    await saveCurrentDraft(service, {
+  it('appends one revision per save and keeps history append-only', async () => {
+    const v1 = await saveCurrent(service, {
       actorUserId: 'admin-1',
-      draft: validDraft,
+      policies: validDraft,
       reason: 'set defaults',
     });
+    expect(v1.revision).toBe(1);
 
-    const published = await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.getDraft()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish v1',
-    });
-    expect(published.revision).toBe(1);
-
-    // concurrent stale publish fails
+    // a replayed CAS base is stale and cannot append a second revision
     await expect(
-      service.publish({
+      service.save({
         actorUserId: 'admin-1',
         expectedDraftToken: (await service.getDraft()).draftToken,
         expectedRevision: 0,
+        policies: validDraft,
         reason: 'stale',
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
-    const conflictAudits = await serverDB.select().from(platformAuditLogs);
-    expect(conflictAudits).toContainEqual(
-      expect.objectContaining({
-        action: 'admin.settings.publish',
-        afterDiff: { error: 'revision_conflict' },
-        result: 'failure',
-      }),
-    );
 
-    // change draft and publish v2
-    await saveCurrentDraft(service, {
+    const v2 = await saveCurrent(service, {
       actorUserId: 'admin-1',
-      draft: {
+      policies: {
         ...validDraft,
         'general.fontSize': {
           mode: 'default',
@@ -372,27 +305,15 @@ describe('AdminSettingsService', () => {
       },
       reason: 'bump font',
     });
-    const v2 = await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.getDraft()).draftToken,
-      expectedRevision: 1,
-      reason: 'publish v2',
-    });
     expect(v2.revision).toBe(2);
 
-    const rolled = await service.rollback({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.getDraft()).draftToken,
-      expectedRevision: 2,
-      reason: 'restore v1',
-      targetRevision: 1,
-    });
-    expect(rolled.revision).toBe(3);
-
     const after = await service.getDraft();
-    expect(after.baseRevision).toBe(3);
-    expect(after.publishedPolicies['general.fontSize']?.value).toBe(18);
-    expect(after.draft['general.fontSize']?.value).toBe(18);
+    expect(after.baseRevision).toBe(2);
+    expect(after.publishedPolicies['general.fontSize']?.value).toBe(20);
+    expect(after.draft).toEqual(after.publishedPolicies);
+    expect(
+      (await serverDB.select().from(platformResourceRevisions)).map((row) => row.revision).sort(),
+    ).toEqual([1, 2]);
   });
 
   it('validateDraft estimates override impact without scanning users', async () => {
@@ -431,12 +352,7 @@ describe('AdminSettingsService', () => {
     expect(badType.issues[0]?.code).toBe('MANAGED_SETTING_INVALID_VALUE');
   });
 
-  it('classifies publish availability failures with a dedicated afterDiff.error category', async () => {
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: validDraft,
-      reason: 'seed draft for availability audit',
-    });
+  it('classifies write availability failures with a dedicated afterDiff.error category', async () => {
     const failing = new AdminSettingsService(serverDB, {
       lifecycle: {
         afterMaterialization: async () => {
@@ -446,18 +362,17 @@ describe('AdminSettingsService', () => {
     });
 
     await expect(
-      failing.publish({
+      saveCurrent(failing, {
         actorUserId: 'admin-1',
-        expectedDraftToken: (await failing.getDraft()).draftToken,
-        expectedRevision: 0,
-        reason: 'publish while DB unavailable',
+        policies: validDraft,
+        reason: 'save while DB unavailable',
       }),
     ).rejects.toMatchObject({ code: 'ECONNREFUSED' });
 
     const audits = await serverDB.select().from(platformAuditLogs);
     expect(audits).toContainEqual(
       expect.objectContaining({
-        action: 'admin.settings.publish',
+        action: 'admin.settings.save',
         afterDiff: { error: 'availability' },
         result: 'failure',
       }),
@@ -470,70 +385,23 @@ describe('AdminSettingsService', () => {
     const auditAppend = vi.fn().mockRejectedValue(new Error('audit unavailable'));
 
     await expect(
-      saveCurrentDraft(new AdminSettingsService(serverDB, { auditAppend }), {
+      saveCurrent(new AdminSettingsService(serverDB, { auditAppend }), {
         actorUserId: 'admin-1',
-        draft: validDraft,
+        policies: validDraft,
         reason: 'must be audited',
       }),
     ).rejects.toThrow('audit unavailable');
     consoleSpy.mockRestore();
 
-    const [bundle, audits] = await Promise.all([
+    const [bundle, audits, policies] = await Promise.all([
       new AdminSettingsService(serverDB).getDraft(),
       serverDB.select().from(platformAuditLogs),
+      serverDB.select().from(platformSettingPolicies),
     ]);
     expect(bundle.draft).toEqual({});
+    expect(bundle.baseRevision).toBe(0);
+    expect(policies).toEqual([]);
     expect(audits).toEqual([]);
-  });
-
-  it('uses a locked draft CAS so two admins with one token cannot silently overwrite', async () => {
-    const firstLocked = deferred();
-    const releaseFirst = deferred();
-    const first = new AdminSettingsService(serverDB, {
-      lifecycle: {
-        afterDraftLock: async () => {
-          firstLocked.resolve();
-          await releaseFirst.promise;
-        },
-      },
-    });
-    const second = new AdminSettingsService(serverDB);
-    const sharedToken = (await first.getDraft()).draftToken;
-    const firstDraft = validDraft;
-    const secondDraft = {
-      ...validDraft,
-      'general.fontSize': { ...validDraft['general.fontSize'], value: 22 },
-    };
-
-    const firstSave = first.saveDraft({
-      actorUserId: 'admin-1',
-      draft: firstDraft,
-      expectedDraftToken: sharedToken,
-      reason: 'first writer',
-    });
-    await firstLocked.promise;
-    const secondSave = second.saveDraft({
-      actorUserId: 'admin-2',
-      draft: secondDraft,
-      expectedDraftToken: sharedToken,
-      reason: 'second writer',
-    });
-
-    releaseFirst.resolve();
-    const firstResult = await firstSave;
-    await expect(secondSave).rejects.toBeInstanceOf(PlatformRevisionConflictError);
-
-    const [current, audits] = await Promise.all([
-      second.getDraft(),
-      serverDB.select().from(platformAuditLogs),
-    ]);
-    expect(current.draft).toEqual(firstDraft);
-    expect(current.draftToken).toBe(firstResult.draftToken);
-    expect(current.draftToken).not.toBe(sharedToken);
-    expect(audits.filter((row) => row.action === 'admin.settings.saveDraft')).toMatchObject([
-      { actorUserId: 'admin-1', result: 'success' },
-      { actorUserId: 'admin-2', result: 'failure' },
-    ]);
   });
 });
 

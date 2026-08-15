@@ -79,9 +79,12 @@ afterEach(async () => {
 describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
   it('forces platform locked approvalMode over caller headless', async () => {
     const admin = new AdminSettingsService(serverDB);
-    await admin.saveDraft({
+    const base = await admin.getDraft();
+    await admin.save({
       actorUserId: 'admin',
-      draft: {
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: {
         'tool.humanIntervention.approvalMode': {
           mode: 'locked',
           schemaVersion: 1,
@@ -89,13 +92,6 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
           visibility: 'visible',
         },
       },
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      reason: 'lock',
-    });
-    await admin.publish({
-      actorUserId: 'admin',
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      expectedRevision: 0,
       reason: 'p',
     });
 
@@ -109,9 +105,12 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
 
   it('uses a permitted personal override when platform mode is default', async () => {
     const admin = new AdminSettingsService(serverDB);
-    await admin.saveDraft({
+    const base = await admin.getDraft();
+    await admin.save({
       actorUserId: 'admin',
-      draft: {
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: {
         'tool.humanIntervention.approvalMode': {
           mode: 'default',
           schemaVersion: 1,
@@ -119,13 +118,6 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
           visibility: 'visible',
         },
       },
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      reason: 'default',
-    });
-    await admin.publish({
-      actorUserId: 'admin',
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      expectedRevision: 0,
       reason: 'publish',
     });
     await new EffectiveSettingsService(serverDB).patchSettingOverride({
@@ -145,9 +137,12 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
 
   it('excludes personal overrides from workspace execution', async () => {
     const admin = new AdminSettingsService(serverDB);
-    await admin.saveDraft({
+    const base = await admin.getDraft();
+    await admin.save({
       actorUserId: 'admin',
-      draft: {
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: {
         'tool.humanIntervention.approvalMode': {
           mode: 'default',
           schemaVersion: 1,
@@ -155,13 +150,6 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
           visibility: 'visible',
         },
       },
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      reason: 'default',
-    });
-    await admin.publish({
-      actorUserId: 'admin',
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      expectedRevision: 0,
       reason: 'publish',
     });
     await new EffectiveSettingsService(serverDB).patchSettingOverride({

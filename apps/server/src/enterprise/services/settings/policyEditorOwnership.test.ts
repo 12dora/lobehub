@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import {
   isServiceModelManagedPath,
   mergePolicyEditorDraft,
-  overlayCurrentForeignPolicies,
   preserveForeignPublishedInDraft,
 } from './policyEditorOwnership';
 
@@ -82,50 +81,5 @@ describe('policyEditorOwnership', () => {
     ]);
     expect(next['defaultAgent.config.model']?.value).toBe('from-published');
     expect(next['general.fontSize']?.value).toBe(18);
-  });
-
-  it('overlayCurrentForeignPolicies restores owned history but keeps current foreign', () => {
-    const historical = {
-      'general.fontSize': {
-        mode: 'default' as const,
-        schemaVersion: 1,
-        value: 14,
-        visibility: 'visible' as const,
-      },
-      'image.defaultImageNum': {
-        mode: 'default' as const,
-        schemaVersion: 1,
-        value: 2,
-        visibility: 'visible' as const,
-      },
-    };
-    const currentPublished = [
-      {
-        mode: 'locked',
-        path: 'image.defaultImageNum',
-        schemaVersion: 1,
-        value: 8,
-        visibility: 'hidden',
-      },
-      {
-        mode: 'default',
-        path: 'image.defaultImageSize',
-        schemaVersion: 1,
-        value: '1024x1024',
-        visibility: 'visible',
-      },
-    ];
-
-    const next = overlayCurrentForeignPolicies(historical, currentPublished);
-    expect(next['general.fontSize']?.value).toBe(14);
-    // Stale historical foreign value must not win over newer service-model state.
-    expect(next['image.defaultImageNum']).toEqual({
-      mode: 'locked',
-      schemaVersion: 1,
-      value: 8,
-      visibility: 'hidden',
-    });
-    // Foreign rows added after the target revision stay present.
-    expect(next['image.defaultImageSize']?.value).toBe('1024x1024');
   });
 });

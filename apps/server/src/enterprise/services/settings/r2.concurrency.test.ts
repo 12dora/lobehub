@@ -97,8 +97,8 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
     const admin = new AdminSettingsService(serverDB, {
       invalidation: publishInvalidation,
       lifecycle: {
-        afterMaterialization: async (operation) => {
-          if (operation !== 'publish' || !holdPublish) return;
+        afterMaterialization: async () => {
+          if (!holdPublish) return;
           materialized.resolve();
           await releasePublish.promise;
         },
@@ -119,10 +119,12 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
       },
     });
 
-    const initialToken = (await admin.getDraft()).draftToken;
-    await admin.saveDraft({
+    const base = await admin.getDraft();
+    await admin.save({
       actorUserId: 'admin',
-      draft: {
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: {
         'memory.enabled': {
           mode: 'default',
           schemaVersion: 1,
@@ -130,19 +132,16 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
           visibility: 'visible',
         },
       },
-      expectedDraftToken: initialToken,
-      reason: 'seed',
-    });
-    await admin.publish({
-      actorUserId: 'admin',
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      expectedRevision: 0,
       reason: 'p1',
     });
 
-    await admin.saveDraft({
+    const beforeLock = await admin.getDraft();
+    holdPublish = true;
+    const publish = admin.save({
       actorUserId: 'admin',
-      draft: {
+      expectedDraftToken: beforeLock.draftToken,
+      expectedRevision: beforeLock.baseRevision,
+      policies: {
         'memory.enabled': {
           mode: 'locked',
           schemaVersion: 1,
@@ -150,15 +149,6 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
           visibility: 'visible',
         },
       },
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      reason: 'lock',
-    });
-
-    holdPublish = true;
-    const publish = admin.publish({
-      actorUserId: 'admin',
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      expectedRevision: 1,
       reason: 'p2',
     });
     await materialized.promise;

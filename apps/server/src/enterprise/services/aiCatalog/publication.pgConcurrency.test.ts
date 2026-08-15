@@ -148,25 +148,6 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
       const settings = new AdminSettingsService(secondDb, {
         invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
       });
-      await settings.saveDraft({
-        actorUserId: 'admin',
-        draft: {
-          'systemAgent.topic.model': {
-            mode: 'default',
-            schemaVersion: 1,
-            value: 'retired-chat',
-            visibility: 'visible',
-          },
-          'systemAgent.topic.provider': {
-            mode: 'default',
-            schemaVersion: 1,
-            value: 'lock-target',
-            visibility: 'visible',
-          },
-        },
-        expectedDraftToken: (await settings.getDraft()).draftToken,
-        reason: 'prepare concurrent reference',
-      });
 
       detail = await seedService.getDetail(provider.id);
       const publishService = new AiCatalogAdminService(
@@ -192,11 +173,15 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
       await checked.promise;
 
       let settingsSettled = false;
+      // De-drafted write: the whole reference lands in one transaction, which must queue
+      // behind the AI-catalog publish holding the dependency lock and then fail closed.
       const settingsPublish = settings
-        .publish({
+        .applyImmediate({
           actorUserId: 'admin',
-          expectedDraftToken: (await settings.getDraft()).draftToken,
-          expectedRevision: 0,
+          patch: {
+            'systemAgent.topic.model': 'retired-chat',
+            'systemAgent.topic.provider': 'lock-target',
+          },
           reason: 'publish concurrent reference',
         })
         .finally(() => {

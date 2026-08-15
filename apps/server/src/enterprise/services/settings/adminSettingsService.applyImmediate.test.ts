@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformSettingsModel, type SettingsDraftPolicyMap } from '@/database/models/platform';
 import { users } from '@/database/schemas';
 import { platformAuditLogs, platformSettingPolicies } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
@@ -65,14 +66,24 @@ afterEach(async () => {
   await resetSettingsTables();
 });
 
-const saveCurrentDraft = async (
-  target: AdminSettingsService,
-  params: Omit<Parameters<AdminSettingsService['saveDraft']>[0], 'expectedDraftToken'>,
-) =>
-  target.saveDraft({
-    ...params,
-    expectedDraftToken: (await target.getDraft()).draftToken,
+/**
+ * Write the draft column directly. Both service write paths align the draft with
+ * published, so this is the only way left to reproduce an unpublished draft.
+ */
+const strandLegacyDraft = (draft: SettingsDraftPolicyMap) =>
+  new PlatformSettingsModel(serverDB).saveDraft({ draft, updatedBy: 'admin-legacy' });
+
+/** Publish owned policy paths through the de-drafted write path. */
+const publishPolicies = async (policies: SettingsDraftPolicyMap, reason: string) => {
+  const base = await service.getDraft();
+  return service.save({
+    actorUserId: 'admin-1',
+    expectedDraftToken: base.draftToken,
+    expectedRevision: base.baseRevision,
+    policies,
+    reason,
   });
+};
 
 describe('AdminSettingsService.applyImmediate', () => {
   beforeEach(() => {
@@ -123,17 +134,13 @@ describe('AdminSettingsService.applyImmediate', () => {
   });
 
   it('rejects dirty draft outside the patch', async () => {
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'general.fontSize': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: 20,
-          visibility: 'visible',
-        },
+    await strandLegacyDraft({
+      'general.fontSize': {
+        mode: 'default',
+        schemaVersion: 1,
+        value: 20,
+        visibility: 'visible',
       },
-      reason: 'leave unpublished draft',
     });
 
     await expect(
@@ -155,30 +162,23 @@ describe('AdminSettingsService.applyImmediate', () => {
   });
 
   it('promotes mode user→default and keeps locked', async () => {
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'memory.enabled': {
-          mode: 'user',
-          schemaVersion: 1,
-          value: true,
-          visibility: 'visible',
-        },
+    await publishPolicies(
+      {
         'memory.effort': {
           mode: 'locked',
           schemaVersion: 1,
           value: 'low',
           visibility: 'hidden',
         },
+        'memory.enabled': {
+          mode: 'user',
+          schemaVersion: 1,
+          value: true,
+          visibility: 'visible',
+        },
       },
-      reason: 'seed modes',
-    });
-    await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.getDraft()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish seed',
-    });
+      'seed modes',
+    );
 
     await service.applyImmediate({
       actorUserId: 'admin-1',
@@ -263,17 +263,13 @@ describe('AdminSettingsService.applyImmediate', () => {
 
   it('allows overwriting draft-vs-published diffs on paths inside the patch', async () => {
     // Path inside patch may already differ; only outside-path dirty drafts are rejected.
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'memory.enabled': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: true,
-          visibility: 'visible',
-        },
+    await strandLegacyDraft({
+      'memory.enabled': {
+        mode: 'default',
+        schemaVersion: 1,
+        value: true,
+        visibility: 'visible',
       },
-      reason: 'seed draft-only memory',
     });
 
     await service.applyImmediate({
@@ -291,9 +287,8 @@ describe('AdminSettingsService.applyImmediate', () => {
   });
 
   it('uses published mode as basis (published locked + draft user → stays locked)', async () => {
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
+    await publishPolicies(
+      {
         'memory.effort': {
           mode: 'locked',
           schemaVersion: 1,
@@ -301,27 +296,17 @@ describe('AdminSettingsService.applyImmediate', () => {
           visibility: 'visible',
         },
       },
-      reason: 'publish locked',
-    });
-    await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.getDraft()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish locked effort',
-    });
+      'publish locked effort',
+    );
 
-    // Policy page draft changes mode to user without publishing — applyImmediate must not adopt it.
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'memory.effort': {
-          mode: 'user',
-          schemaVersion: 1,
-          value: 'low',
-          visibility: 'visible',
-        },
+    // A stranded draft changes mode to user without publishing — applyImmediate must not adopt it.
+    await strandLegacyDraft({
+      'memory.effort': {
+        mode: 'user',
+        schemaVersion: 1,
+        value: 'low',
+        visibility: 'visible',
       },
-      reason: 'unpublished mode edit on same path',
     });
 
     // Draft equals published on fingerprint except mode — wait, mode differs so dirty check
@@ -345,11 +330,9 @@ describe('AdminSettingsService.applyImmediate', () => {
     );
   });
 
-  it('restores prior draft with saved.draftToken after publish failure', async () => {
-    // Force publish to fail after saveDraft by rejecting AI references on a model path.
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
+  it('leaves draft and published untouched when the write fails mid-transaction', async () => {
+    await publishPolicies(
+      {
         'memory.enabled': {
           mode: 'default',
           schemaVersion: 1,
@@ -357,15 +340,11 @@ describe('AdminSettingsService.applyImmediate', () => {
           visibility: 'visible',
         },
       },
-      reason: 'seed published memory',
-    });
-    await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.getDraft()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish seed',
-    });
+      'publish seed',
+    );
+    const before = await service.getDraft();
 
+    // Unpublished AI reference → the single transaction fails on materialize.
     await expect(
       service.applyImmediate({
         actorUserId: 'admin-1',
@@ -377,111 +356,18 @@ describe('AdminSettingsService.applyImmediate', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformDependencyTargetNotPublishedError);
 
-    // Restore should have returned draft to pre-applyImmediate state (memory only).
+    // Nothing half-applied: same revision, same draft column, same published rows.
     const after = await service.getDraft();
-    expect(after.draft).toEqual({
-      'memory.enabled': {
-        mode: 'default',
-        schemaVersion: 1,
-        value: true,
-        visibility: 'visible',
-      },
-    });
-    // Published unchanged (publish failed).
+    expect(after.baseRevision).toBe(before.baseRevision);
+    expect(after.draftToken).toBe(before.draftToken);
+    expect(after.draft).toEqual(before.draft);
     expect(await serverDB.select().from(platformSettingPolicies)).toEqual(
       expect.arrayContaining([expect.objectContaining({ path: 'memory.enabled', value: true })]),
     );
-  });
-
-  it('does not overwrite concurrent draft when restore token mismatches', async () => {
-    await saveCurrentDraft(service, {
-      actorUserId: 'admin-1',
-      draft: {
-        'memory.enabled': {
-          mode: 'default',
-          schemaVersion: 1,
-          value: true,
-          visibility: 'visible',
-        },
-      },
-      reason: 'seed',
-    });
-    await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.getDraft()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish seed',
-    });
-
-    // Sequence:
-    // 1) applyImmediate saveDraft succeeds with nextDraft
-    // 2) publish fails (AI ref not published)
-    // 3) in restore window, concurrent admin saves a different draft with the post-step-1 token
-    // 4) restore with saved.draftToken fails (token advanced) → concurrent draft preserved
-    const concurrentDraft = {
-      'memory.enabled': {
-        mode: 'default' as const,
-        schemaVersion: 1,
-        value: true,
-        visibility: 'visible' as const,
-      },
-      'general.fontSize': {
-        mode: 'default' as const,
-        schemaVersion: 1,
-        value: 22,
-        visibility: 'visible' as const,
-      },
-    };
-
-    const originalSaveDraft = service.saveDraft.bind(service);
-    let applySaveToken: string | undefined;
-    const saveSpy = vi.spyOn(service, 'saveDraft').mockImplementation(async (params) => {
-      if (!applySaveToken) {
-        const result = await originalSaveDraft(params);
-        applySaveToken = result.draftToken;
-        return result;
-      }
-
-      // Restore attempt: race concurrent writer first with the apply save token.
-      if (String(params.reason).includes('restore after publish failure')) {
-        await originalSaveDraft({
-          actorUserId: 'admin-2',
-          draft: concurrentDraft,
-          expectedDraftToken: applySaveToken,
-          reason: 'concurrent policy edit',
-        });
-        // Restore must now fail with token mismatch (do not swallow).
-        return originalSaveDraft(params);
-      }
-
-      return originalSaveDraft(params);
-    });
-
-    await expect(
-      service.applyImmediate({
-        actorUserId: 'admin-1',
-        patch: {
-          'systemAgent.topic.model': 'missing-model',
-          'systemAgent.topic.provider': 'missing-provider',
-        },
-        reason: 'fail publish + concurrent restore race',
-      }),
-    ).rejects.toBeInstanceOf(PlatformDependencyTargetNotPublishedError);
-
-    saveSpy.mockRestore();
-
-    const current = await service.getDraft();
-    // Concurrent draft must survive — restore abandoned due to token mismatch.
-    expect(current.draft).toEqual(concurrentDraft);
-
-    const audits = await serverDB.select().from(platformAuditLogs);
     expect(
-      audits.some(
-        (row) =>
-          row.action === 'admin.settings.applyImmediate' &&
-          row.result === 'failure' &&
-          String(row.reason ?? '').includes('restore abandoned'),
+      (await serverDB.select().from(platformSettingPolicies)).some((row) =>
+        row.path.startsWith('systemAgent.'),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });

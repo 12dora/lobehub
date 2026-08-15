@@ -93,28 +93,3 @@ export const preserveForeignPublishedInDraft = (
   }
   return next;
 };
-
-/**
- * Rollback ownership: owned (policy-editor) paths come from the historical target payload;
- * foreign service-model paths always come from *current* published state so newer
- * service-model edits remain byte-identical after rolling back an older policy revision.
- */
-export const overlayCurrentForeignPolicies = (
-  target: SettingsDraftPolicyMap,
-  currentPublished: PublishedPolicyRow[],
-): SettingsDraftPolicyMap => {
-  const next: SettingsDraftPolicyMap = {};
-
-  for (const [path, policy] of Object.entries(target)) {
-    if (!isServiceModelManagedPath(path)) {
-      next[path] = policy;
-    }
-  }
-
-  for (const row of currentPublished) {
-    if (!isServiceModelManagedPath(row.path)) continue;
-    next[row.path] = toDraftPolicy(row);
-  }
-
-  return next;
-};

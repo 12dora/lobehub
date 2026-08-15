@@ -121,31 +121,27 @@ describe('M05 transaction fault injection', () => {
     expect(invalidation.events).toEqual([]);
   });
 
-  it('rolls back revision, pointer, materialized policies and success audit on publish fault', async () => {
+  it('rolls back revision, pointer, materialized policies and success audit on save fault', async () => {
     const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
     const admin = new AdminSettingsService(serverDB, {
       invalidation,
       lifecycle: {
         afterMaterialization: async () => {
-          throw new Error('publish materialization fault');
+          throw new Error('save materialization fault');
         },
       },
     });
-    await admin.saveDraft({
-      actorUserId: 'admin',
-      draft: policy(true),
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      reason: 'draft',
-    });
+    const base = await admin.getDraft();
 
     await expect(
-      admin.publish({
+      admin.save({
         actorUserId: 'admin',
-        expectedDraftToken: (await admin.getDraft()).draftToken,
-        expectedRevision: 0,
-        reason: 'publish',
+        expectedDraftToken: base.draftToken,
+        expectedRevision: base.baseRevision,
+        policies: policy(true),
+        reason: 'save',
       }),
-    ).rejects.toThrow('publish materialization fault');
+    ).rejects.toThrow('save materialization fault');
 
     const [bundles, revisions, policies, audits] = await Promise.all([
       serverDB.select().from(platformSettingsBundle),
@@ -154,77 +150,66 @@ describe('M05 transaction fault injection', () => {
       serverDB.select().from(platformAuditLogs),
     ]);
     expect(bundles[0]?.revision).toBe(0);
+    expect(bundles[0]?.draft).toEqual({});
     expect(revisions).toEqual([]);
     expect(policies).toEqual([]);
-    expect(audits.filter((row) => row.result === 'success')).toHaveLength(1);
-    expect(audits.filter((row) => row.action === 'admin.settings.publish')).toMatchObject([
+    expect(audits.filter((row) => row.result === 'success')).toEqual([]);
+    expect(audits.filter((row) => row.action === 'admin.settings.save')).toMatchObject([
       { afterDiff: { error: 'internal' }, result: 'failure' },
     ]);
     expect(invalidation.events).toEqual([]);
   });
 
-  it('rolls back a failed rollback head, pointer, draft and materialized policies', async () => {
-    const seedInvalidation = new InMemoryPlatformConfigInvalidationPublisher();
-    const seed = new AdminSettingsService(serverDB, { invalidation: seedInvalidation });
-    await seed.saveDraft({
-      actorUserId: 'admin',
-      draft: policy(true),
-      expectedDraftToken: (await seed.getDraft()).draftToken,
-      reason: 'draft-1',
+  it('rolls back the entire applyImmediate write when materialization faults', async () => {
+    const seed = new AdminSettingsService(serverDB, {
+      invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
     });
-    await seed.publish({
+    await seed.applyImmediate({
       actorUserId: 'admin',
-      expectedDraftToken: (await seed.getDraft()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish-1',
+      patch: { 'memory.enabled': true },
+      reason: 'seed published state',
     });
-    await seed.saveDraft({
-      actorUserId: 'admin',
-      draft: policy(false),
-      expectedDraftToken: (await seed.getDraft()).draftToken,
-      reason: 'draft-2',
-    });
-    await seed.publish({
-      actorUserId: 'admin',
-      expectedDraftToken: (await seed.getDraft()).draftToken,
-      expectedRevision: 1,
-      reason: 'publish-2',
-    });
+    const before = await seed.getDraft();
+    expect(before.baseRevision).toBe(1);
 
     const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
     const failing = new AdminSettingsService(serverDB, {
       invalidation,
       lifecycle: {
-        afterMaterialization: async (operation) => {
-          if (operation === 'rollback') throw new Error('rollback materialization fault');
+        afterMaterialization: async () => {
+          throw new Error('apply materialization fault');
         },
       },
     });
-    await expect(
-      failing.rollback({
-        actorUserId: 'admin',
-        expectedDraftToken: (await failing.getDraft()).draftToken,
-        expectedRevision: 2,
-        reason: 'rollback',
-        targetRevision: 1,
-      }),
-    ).rejects.toThrow('rollback materialization fault');
 
+    await expect(
+      failing.applyImmediate({
+        actorUserId: 'admin',
+        patch: { 'general.fontSize': 20, 'memory.enabled': false },
+        reason: 'apply',
+      }),
+    ).rejects.toThrow('apply materialization fault');
+
+    // Draft alignment and materialization share ONE transaction now: a mid-way fault
+    // leaves NOTHING behind — there is no half-written draft to restore afterwards.
     const model = new PlatformSettingsModel(serverDB);
-    const [bundle, revisions, published, audits] = await Promise.all([
+    const [bundle, revisions, memoryPolicy, fontPolicy, audits] = await Promise.all([
       model.getBundle(),
       serverDB.select().from(platformResourceRevisions),
       model.getPublishedPolicy('memory.enabled'),
+      model.getPublishedPolicy('general.fontSize'),
       serverDB.select().from(platformAuditLogs),
     ]);
-    expect(bundle?.revision).toBe(2);
-    expect(bundle?.draft).toEqual(policy(false));
-    expect(revisions).toHaveLength(2);
-    expect(published?.value).toBe(false);
-    expect(audits.filter((row) => row.action === 'platform.settings.rollback')).toEqual([]);
-    expect(audits.filter((row) => row.action === 'admin.settings.rollback')).toMatchObject([
-      { result: 'failure' },
-    ]);
+    expect(bundle?.revision).toBe(1);
+    expect(bundle?.draft).toEqual(before.draft);
+    expect(revisions).toHaveLength(1);
+    expect(memoryPolicy?.value).toBe(true);
+    expect(fontPolicy).toBeUndefined();
+    expect(
+      audits.filter(
+        (row) => row.action === 'admin.settings.applyImmediate' && row.result === 'failure',
+      ),
+    ).toMatchObject([{ afterDiff: { error: 'internal' } }]);
     expect(invalidation.events).toEqual([]);
   });
 

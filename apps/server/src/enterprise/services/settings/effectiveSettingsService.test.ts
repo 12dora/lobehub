@@ -67,9 +67,12 @@ afterEach(async () => {
 });
 
 const publishDefault = async () => {
-  await admin.saveDraft({
+  const base = await admin.getDraft();
+  await admin.save({
     actorUserId: 'admin',
-    draft: {
+    expectedDraftToken: base.draftToken,
+    expectedRevision: base.baseRevision,
+    policies: {
       'general.fontSize': {
         mode: 'default',
         schemaVersion: 1,
@@ -89,14 +92,7 @@ const publishDefault = async () => {
         visibility: 'hidden',
       },
     },
-    expectedDraftToken: (await admin.getDraft()).draftToken,
     reason: 'seed',
-  });
-  await admin.publish({
-    actorUserId: 'admin',
-    expectedDraftToken: (await admin.getDraft()).draftToken,
-    expectedRevision: 0,
-    reason: 'publish',
   });
 };
 
@@ -362,9 +358,11 @@ describe('EffectiveSettingsService (flag ON)', () => {
     );
 
     const draft = await admin.getDraft();
-    await admin.saveDraft({
+    await admin.save({
       actorUserId: 'admin',
-      draft: {
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: draft.baseRevision,
+      policies: {
         'general.fontSize': {
           mode: 'default',
           schemaVersion: 1,
@@ -372,13 +370,6 @@ describe('EffectiveSettingsService (flag ON)', () => {
           visibility: 'visible',
         },
       },
-      expectedDraftToken: draft.draftToken,
-      reason: 'race draft',
-    });
-    await admin.publish({
-      actorUserId: 'admin',
-      expectedDraftToken: (await admin.getDraft()).draftToken,
-      expectedRevision: 1,
       reason: 'race publish',
     });
 
