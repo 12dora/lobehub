@@ -228,6 +228,36 @@ export default {
     'Are you sure you want to disconnect? You will need to re-authorize to use this provider.',
   'providerModels.config.oauth.enterCode': 'Enter the code on the opened page:',
   'providerModels.config.oauth.openBrowser': 'Open browser to authorize',
+  'providerModels.config.oauth.paste.accessTokenNoRenewHint':
+    'An access token cannot be renewed automatically — you will have to reconnect when it expires.',
+  'providerModels.config.oauth.paste.accessTokenLabel': 'Access token',
+  'providerModels.config.oauth.paste.accessTokenPlaceholder': 'Paste your access token',
+  'providerModels.config.oauth.paste.accessTokenSubmit': 'Connect with this token',
+  'providerModels.config.oauth.paste.accessTokenToggle': 'Use an access token instead',
+  'providerModels.config.oauth.paste.callbackLabel': 'Callback URL',
+  'providerModels.config.oauth.paste.callbackPlaceholder':
+    'https://platform.openai.com/auth/callback?code=…',
+  'providerModels.config.oauth.paste.cannotAutoRenew':
+    'This connection cannot be renewed automatically. Reconnect it before it expires.',
+  'providerModels.config.oauth.paste.cannotAutoRenewBefore':
+    'This connection cannot be renewed automatically. Reconnect it before {{time}}.',
+  'providerModels.config.oauth.paste.connectedEmail': 'Signed in as {{email}}',
+  'providerModels.config.oauth.paste.errors.accessTokenInvalid':
+    'That access token was rejected. Copy it again, or use the authorization page instead.',
+  'providerModels.config.oauth.paste.errors.authError':
+    'The connection could not be completed. Please try again.',
+  'providerModels.config.oauth.paste.errors.exchangeFailed':
+    'The authorization could not be exchanged. Generate a new link and sign in again.',
+  'providerModels.config.oauth.paste.errors.invalidCallback':
+    'That does not look like the callback URL. Copy the whole address from the browser after signing in.',
+  'providerModels.config.oauth.paste.errors.stateMismatch':
+    'This link belongs to a different attempt. Generate a new link and sign in again.',
+  'providerModels.config.oauth.paste.expiresAt': 'Expires {{time}}',
+  'providerModels.config.oauth.paste.instruction':
+    'Sign in on the page that opens. You will land on a blank page at platform.openai.com/auth/callback — copy that full address from the browser and paste it below.',
+  'providerModels.config.oauth.paste.openAuthorizePage': 'Open authorization page',
+  'providerModels.config.oauth.paste.regenerate': 'Generate a new link',
+  'providerModels.config.oauth.paste.submit': 'Complete connection',
   'providerModels.config.oauth.polling': 'Waiting for authorization...',
   'providerModels.config.oauth.retry': 'Retry',
   'providerModels.config.oauth.serviceNote': 'Service provided by {{name}}',

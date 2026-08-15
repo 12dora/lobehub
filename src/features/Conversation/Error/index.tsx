@@ -29,6 +29,7 @@ import {
 
 import ChatInvalidAPIKey from './ChatInvalidApiKey';
 import { isHeterogeneousAgentStatusGuideError } from './heterogeneous';
+import OAuthExpiredError, { readErrorProviderId } from './OAuthExpiredError';
 import { useHeterogeneousAutoRetry } from './useHeterogeneousAutoRetry';
 
 // Re-export so existing barrel consumers (ContentBlock, message action bar) can
@@ -425,6 +426,12 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(
 
       case AgentRuntimeErrorType.ExceededContextWindow: {
         return <ExceededContextWindowError id={data.id} />;
+      }
+
+      case AgentRuntimeErrorType.OAuthAuthorizationExpired: {
+        // `body` is `any` — narrow it to a real provider id here, at the boundary, so a
+        // malformed one degrades to the provider list instead of a broken navigation.
+        return <OAuthExpiredError id={data.id} provider={readErrorProviderId(data.error?.body)} />;
       }
 
       case AgentRuntimeErrorType.NoOpenAIAPIKey: {

@@ -105,6 +105,13 @@ const CHECK_MODEL_REASON_KEYS: Record<string, string> = {
   connection_failed_shared_account_expired: 'llm.checker.reason.sharedAccountExpired',
   connection_failed_the_shared_account_connection_expired_reconnect_it:
     'llm.checker.reason.sharedAccountExpired',
+  /**
+   * Its own code, not a flavour of `invalid_config`: nothing in the provider's settings is
+   * wrong — a server-side component the transport needs (curl-impersonate) is not installed,
+   * and only an administrator can fix it. Telling the user to check their configuration would
+   * send them down a road with no exit.
+   */
+  connection_failed_transport: 'llm.checker.reason.connectionFailedTransport',
 };
 
 /**

@@ -16,6 +16,12 @@ export interface RedactOptions {
    * `parentKey` (the key of the enclosing object; undefined at the walked root)
    * lets predicates position-scope the relaxation, e.g. OAuth device-flow config
    * keys are benign only directly under `oauthDeviceFlow`.
+   *
+   * `value` is the key's own value, so predicates can additionally shape-check it:
+   * a key name that only ever labels configuration (`allowAccessTokenPaste`,
+   * `grantFlow`, `authorizationCode`) must not launder an opaque credential just
+   * because it sits in the right place. Callers that cannot supply the value pass
+   * `undefined`, which the M07 predicate treats as "nothing to leak".
    */
-  isBenignKey?: (key: string, parentKey?: string) => boolean;
+  isBenignKey?: (key: string, parentKey?: string, value?: unknown) => boolean;
 }

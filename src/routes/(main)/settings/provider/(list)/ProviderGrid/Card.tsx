@@ -26,7 +26,7 @@ const ProviderCard = memo<ProviderCardProps>(
     const { t } = useTranslation(['providers', 'modelProvider']);
     const isDarkMode = useIsDark();
     const { hidePersonalAuth } = use(ProviderSettingsContext);
-    // Admin platform surface: chatgpt/supergrok are hosted through ONE shared platform
+    // Admin platform surface: chatgpt/chatgptweb/supergrok are hosted through ONE shared platform
     // account (connected in the provider detail), so label them — they stay enableable.
     const sharedOAuthAdmin = Boolean(hidePersonalAuth && isRotatingRefreshOAuthProvider(id));
 

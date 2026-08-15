@@ -19,6 +19,11 @@ const mocks = vi.hoisted(() => ({
     error: undefined as unknown,
     reset: vi.fn(),
     state: 'idle' as string,
+    submitAccessToken: vi.fn(),
+    submitCallback: vi.fn(),
+    submitError: undefined as unknown,
+    submitErrorSource: undefined as unknown,
+    submitting: false,
   },
   flowOptions: { value: undefined as Record<string, unknown> | undefined },
   managedResource: {
@@ -168,6 +173,11 @@ beforeEach(() => {
   mocks.flow.error = undefined;
   mocks.flow.reset = vi.fn();
   mocks.flow.state = 'idle';
+  mocks.flow.submitAccessToken = vi.fn();
+  mocks.flow.submitCallback = vi.fn();
+  mocks.flow.submitError = undefined;
+  mocks.flow.submitErrorSource = undefined;
+  mocks.flow.submitting = false;
   mocks.flowOptions.value = undefined;
   mocks.swr.mockReturnValue(
     swrResult({
@@ -512,6 +522,220 @@ describe('SharedOAuthConnect', () => {
 
     // Guessing "not in effect" from an unloaded capability would be worse than no hint.
     expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.enforcementHint\b/)).toBeNull();
+  });
+
+  it('renders the paste form instead of a user code for the authorization-code flow', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.instruction')).toBeTruthy();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.openAuthorizePage')).toBeTruthy();
+    // No code to type and nothing to wait for: the device-code chrome must not show up.
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.enterCode/)).toBeNull();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.polling')).toBeNull();
+  });
+
+  it('submits the pasted callback URL through the flow', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: false,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    const input = screen.getByPlaceholderText(
+      'aiProviderSettings.sharedOAuth.paste.callbackPlaceholder',
+    );
+    fireEvent.change(input, {
+      target: { value: '  https://platform.openai.com/auth/callback?code=abc&state=s  ' },
+    });
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.submit'));
+
+    expect(mocks.flow.submitCallback).toHaveBeenCalledWith(
+      'https://platform.openai.com/auth/callback?code=abc&state=s',
+    );
+    // The token fallback is opt-in per provider; this card did not offer it.
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.accessTokenToggle')).toBeNull();
+  });
+
+  it('warns that a hand-pasted token connection cannot renew itself', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: 'ops@example.com',
+        accountIdMasked: 'acc1…',
+        canRefresh: false,
+        connected: true,
+        expiresAt: String(Date.UTC(2030, 0, 1)),
+        flow: 'authorization_code_paste',
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    expect(
+      screen.getByText(/aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenewBefore/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeNull();
+  });
+
+  it('leaves the connected copy of device-code providers untouched', () => {
+    // GitHub Copilot-style providers report canRefresh=false by design; the paste flow's
+    // renewal warning must not leak into the cards that shipped before it.
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: 'ops@example.com',
+        accountIdMasked: 'acc1…',
+        canRefresh: false,
+        connected: true,
+        expiresAt: String(Date.UTC(2030, 0, 1)),
+        flow: 'device_code',
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+
+    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeTruthy();
+    expect(
+      screen.queryByText(/aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenew/),
+    ).toBeNull();
+  });
+
+  it('still shows the user code and polling hint for a device-code provider', () => {
+    // SuperGrok keeps the RFC 8628 chrome: the paste flow must not have replaced it.
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: false,
+      deviceCode: 'dc-1',
+      expiresIn: 600,
+      flow: 'device_code',
+      interval: 5,
+      userCode: 'ABCD-EFGH',
+      verificationUri: 'https://x.ai/device',
+      verificationUriComplete: 'https://x.ai/device?code=ABCD-EFGH',
+    };
+    vi.stubGlobal('open', vi.fn());
+
+    render(<SharedOAuthConnect providerId="supergrok" />);
+
+    expect(screen.getByText('ABCD-EFGH')).toBeTruthy();
+    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.enterCode/)).toBeTruthy();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.polling')).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.instruction')).toBeNull();
+
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.openPage'));
+    // The provider's page never gets a handle on the admin window.
+    expect(window.open).toHaveBeenCalledWith(
+      'https://x.ai/device?code=ABCD-EFGH',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('associates inline errors and labels with the paste inputs', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+    mocks.flow.submitError = 'invalidCallback';
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    const field = screen.getByPlaceholderText(
+      'aiProviderSettings.sharedOAuth.paste.callbackPlaceholder',
+    );
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    const describedBy = field.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toBe(
+      'aiProviderSettings.sharedOAuth.paste.errors.invalidCallback',
+    );
+    // Every input is named by a label pointing at its own id.
+    const callbackId = field.getAttribute('id')!;
+    expect(document.querySelector(`label[for="${callbackId}"]`)?.textContent).toBe(
+      'aiProviderSettings.sharedOAuth.paste.callbackLabel',
+    );
+
+    const toggle = screen
+      .getByText('aiProviderSettings.sharedOAuth.paste.accessTokenToggle')
+      .closest('button')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    const tokenField = screen.getByPlaceholderText(
+      'aiProviderSettings.sharedOAuth.paste.accessTokenPlaceholder',
+    );
+    const tokenId = tokenField.getAttribute('id')!;
+    expect(tokenId).not.toBe(callbackId);
+    expect(document.querySelector(`label[for="${tokenId}"]`)?.textContent).toBe(
+      'aiProviderSettings.sharedOAuth.paste.accessTokenLabel',
+    );
+    // A pasted token is a credential: it must never be readable on screen by default.
+    expect(tokenField.getAttribute('type')).toBe('password');
+    // The callback error stays on the callback field only.
+    expect(tokenField.getAttribute('aria-invalid')).toBeNull();
+  });
+
+  it('keeps a generic token failure on the token field it was submitted from', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+    // A network blip during a token submit maps to the generic `authError`, which carries no
+    // field of its own: only the submit SOURCE says where it belongs.
+    mocks.flow.submitError = 'authError';
+    mocks.flow.submitErrorSource = 'token';
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.accessTokenToggle'));
+
+    const tokenField = screen.getByPlaceholderText(
+      'aiProviderSettings.sharedOAuth.paste.accessTokenPlaceholder',
+    );
+    expect(
+      screen
+        .getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.callbackPlaceholder')
+        .getAttribute('aria-invalid'),
+    ).toBeNull();
+    expect(tokenField.getAttribute('aria-invalid')).toBe('true');
+    expect(document.getElementById(tokenField.getAttribute('aria-describedby')!)?.textContent).toBe(
+      'aiProviderSettings.sharedOAuth.paste.errors.authError',
+    );
   });
 
   it('ignores persisted models that belong to a different provider', () => {

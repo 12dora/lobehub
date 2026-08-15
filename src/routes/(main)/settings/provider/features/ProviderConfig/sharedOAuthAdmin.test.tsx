@@ -63,6 +63,25 @@ describe('ProviderConfig shared OAuth surfaces', () => {
     expect(screen.getByText('providerModels.config.sharedOAuth.tag')).toBeTruthy();
   });
 
+  it('gives the paste-flow provider (chatgptweb) the shared panel like any rotating-refresh one', () => {
+    render(
+      <ProviderSettingsContext value={{ hidePersonalAuth: true, sharedOAuthPanel: sharedPanel }}>
+        <ProviderConfig id="chatgptweb" name="ChatGPT Web" settings={oauthSettings} />
+      </ProviderSettingsContext>,
+    );
+
+    expect(screen.getByTestId('shared-panel').textContent).toBe('chatgptweb');
+    expect(screen.queryByTestId('personal-oauth')).toBeNull();
+    expect(screen.queryByText('providerModels.config.sharedOAuth.perUserOnlyNotice')).toBeNull();
+  });
+
+  it('keeps the personal connect panel for chatgptweb on the user surface', () => {
+    render(<ProviderConfig id="chatgptweb" name="ChatGPT Web" settings={oauthSettings} />);
+
+    expect(screen.getByTestId('personal-oauth')).toBeTruthy();
+    expect(screen.queryByTestId('shared-panel')).toBeNull();
+  });
+
   it('admin surface explains per-user-only device flow providers (githubcopilot)', () => {
     render(
       <ProviderSettingsContext value={{ hidePersonalAuth: true, sharedOAuthPanel: sharedPanel }}>

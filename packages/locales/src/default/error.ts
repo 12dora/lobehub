@@ -254,6 +254,11 @@ export default {
   'unlock.oauth.success': 'Sign-in successful',
   'unlock.oauth.title': 'Sign in to your account',
   'unlock.oauth.welcome': 'Welcome!',
+  'unlock.oauthExpired.action': 'Reconnect in provider settings',
+  'unlock.oauthExpired.description':
+    'Your {{name}} connection has expired. Reconnect the account in provider settings, then send the message again.',
+  'unlock.oauthExpired.genericProvider': 'the AI provider',
+  'unlock.oauthExpired.title': 'Reconnect {{name}}',
   'unlock.password.description':
     'The application encryption has been enabled by the administrator. Enter the application password to unlock the application. The password only needs to be filled in once.',
   'unlock.password.placeholder': 'Please enter password',

@@ -169,7 +169,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
     // Admin platform surface: the personal connect panel would store credentials in the
     // viewer's own key vault, so it never renders there.
     const showPersonalAuth = isOAuthProvider && !hidePersonalAuth;
-    // Admin platform surface + rotating-refresh device flow (chatgpt/supergrok): the platform
+    // Admin platform surface + rotating-refresh device flow (chatgpt/chatgptweb/supergrok): the platform
     // holds ONE shared account for everyone, connected through the admin-owned panel slot.
     const sharedOAuthAdmin = Boolean(hidePersonalAuth && isRotatingRefreshOAuthProvider(id));
     // Admin platform surface + device flow without a shared-account path (githubcopilot):

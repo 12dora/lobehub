@@ -7,6 +7,7 @@ import { Button, confirmModal } from '@lobehub/ui/base-ui';
 import { Avatar, Typography } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { ExternalLinkIcon, Loader2Icon, LogOutIcon, UnplugIcon } from 'lucide-react';
+import { getProviderOAuthGrantFlow } from 'model-bank/modelProviders';
 import { type ReactNode } from 'react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { usePermission } from '@/hooks/usePermission';
 import { lambdaQuery } from '@/libs/trpc/client';
 
+import PasteFlowPanel from './PasteFlowPanel';
 import { useOAuthDeviceFlow } from './useOAuthDeviceFlow';
 
 const { Text, Link } = Typography;
@@ -121,6 +123,14 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
+/** Vault timestamps arrive as epoch millis (string or number); anything unparsable is unknown. */
+const formatExpiry = (expiresAt?: number | string): string | undefined => {
+  if (expiresAt === undefined || expiresAt === null || expiresAt === '') return undefined;
+  const millis = Number(expiresAt);
+  if (!Number.isFinite(millis) || millis <= 0) return undefined;
+  return new Date(millis).toLocaleString();
+};
+
 export interface OAuthDeviceFlowAuthProps {
   extra?: ReactNode;
   name: string;
@@ -145,6 +155,20 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
     const isAuthenticated = authStatus?.status === 'ACTIVE';
     const username = authStatus?.username;
     const avatarUrl = authStatus?.avatarUrl;
+    /**
+     * K3's identity/expiry additions belong to the authorization-code paste flow, whose
+     * credential really can die without notice. They must NOT change the connected card of
+     * the providers that shipped before it: `canRefresh` is false for GitHub Copilot by
+     * design (it stores a stable OAuth token that mints new bearer tokens), so a generic
+     * reading would warn its users to reconnect before an expiry that never bites.
+     */
+    const isPasteFlowProvider =
+      getProviderOAuthGrantFlow(providerId) === 'authorization_code_paste';
+    const accountEmail = isPasteFlowProvider ? authStatus?.email : undefined;
+    const expiresAtLabel = isPasteFlowProvider ? formatExpiry(authStatus?.expiresAt) : undefined;
+    // Only a POSITIVE "cannot refresh" reading warns: silence must never be read as a
+    // credential that will die without notice.
+    const cannotAutoRenew = isPasteFlowProvider && authStatus?.canRefresh === false;
 
     const revokeAuth = lambdaQuery.oauthDeviceFlow.revokeAuth.useMutation({
       onSuccess: () => {
@@ -161,10 +185,31 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       setIsAuthenticating(false);
     }, [onAuthChange, providerId, utils.oauthDeviceFlow.getAuthStatus]);
 
-    const { state, deviceCodeInfo, error, startAuth, cancelAuth } = useOAuthDeviceFlow({
+    const handleStatusStale = useCallback(() => {
+      // A run the user walked away from can still have stored a credential server-side:
+      // re-read the status so the card cannot keep claiming "not connected". A failing
+      // revalidation is a stale view only, never a user-visible error.
+      void utils.oauthDeviceFlow.getAuthStatus.invalidate({ providerId }).catch(() => {});
+    }, [providerId, utils.oauthDeviceFlow.getAuthStatus]);
+
+    const {
+      state,
+      deviceCodeInfo,
+      error,
+      startAuth,
+      cancelAuth,
+      submitAccessToken,
+      submitCallback,
+      submitError,
+      submitErrorSource,
+      submitting,
+    } = useOAuthDeviceFlow({
+      onStatusStale: handleStatusStale,
       onSuccess: handleSuccess,
       providerId,
     });
+
+    const isPasteFlow = deviceCodeInfo?.flow === 'authorization_code_paste';
 
     const handleDisconnect = useCallback(() => {
       if (!canManageProvider) return;
@@ -187,11 +232,17 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       setIsAuthenticating(true);
       const info = await startAuth();
 
+      // The paste flow opens the authorization page from its own explicit step: the user
+      // has to come back with the callback URL, so throwing them into a browser tab before
+      // they have read what to bring back is exactly the wrong order.
+      if (info?.flow === 'authorization_code_paste') return;
+
       // Auto-open the verification page right away — the Connect click still
       // counts as transient user activation, so popup blockers normally allow
       // it. The manual "open browser" button stays as a fallback when blocked.
       const uri = info?.verificationUriComplete || info?.verificationUri;
-      if (uri) window.open(uri, '_blank');
+      // noopener/noreferrer: the provider's page must never get a handle on this window.
+      if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
     }, [canManageProvider, startAuth]);
 
     const handleCancelAuth = useCallback(() => {
@@ -203,7 +254,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       // Prefer the code-prefilled URI so the user doesn't need to type the code
       const uri = deviceCodeInfo?.verificationUriComplete || deviceCodeInfo?.verificationUri;
       if (uri) {
-        window.open(uri, '_blank');
+        window.open(uri, '_blank', 'noopener,noreferrer');
       }
     }, [deviceCodeInfo?.verificationUri, deviceCodeInfo?.verificationUriComplete]);
 
@@ -232,10 +283,29 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
               {avatarUrl && <Avatar className={styles.userAvatar} size={56} src={avatarUrl} />}
               <div className={styles.userInfo}>
                 {username && <span className={styles.username}>{username}</span>}
+                {accountEmail && (
+                  <Text type="secondary">
+                    {t('providerModels.config.oauth.paste.connectedEmail', { email: accountEmail })}
+                  </Text>
+                )}
                 <div className={styles.successBadge}>
                   <CheckCircleFilled />
                   <span>{t('providerModels.config.oauth.connected')}</span>
                 </div>
+                {expiresAtLabel && (
+                  <Text style={{ fontSize: 13 }} type="secondary">
+                    {t('providerModels.config.oauth.paste.expiresAt', { time: expiresAtLabel })}
+                  </Text>
+                )}
+                {cannotAutoRenew && (
+                  <Text style={{ fontSize: 13 }} type="warning">
+                    {expiresAtLabel
+                      ? t('providerModels.config.oauth.paste.cannotAutoRenewBefore', {
+                          time: expiresAtLabel,
+                        })
+                      : t('providerModels.config.oauth.paste.cannotAutoRenew')}
+                  </Text>
+                )}
               </div>
             </Flexbox>
             <Button
@@ -255,17 +325,9 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
 
       // Authenticating state - show device code
       if (isAuthenticating) {
-        // Loading state
-        if (state === 'requesting' || !deviceCodeInfo) {
-          return (
-            <div className={styles.content}>
-              <Icon spin icon={Loader2Icon} size={24} />
-              <Text type="secondary">{t('providerModels.config.oauth.connecting')}</Text>
-            </div>
-          );
-        }
-
-        // Error state
+        // Error state — BEFORE the loading guard on purpose: a failed initiation (or
+        // regeneration) drops the envelope, so `!deviceCodeInfo` would otherwise swallow the
+        // retry/cancel UI and leave the user staring at a spinner that never resolves.
         if (state === 'error' && error) {
           const errorKey = `providerModels.config.oauth.${error}`;
           return (
@@ -287,6 +349,39 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
                   {t('providerModels.config.oauth.cancel')}
                 </Button>
               </Flexbox>
+            </div>
+          );
+        }
+
+        // Loading state
+        if (state === 'requesting' || !deviceCodeInfo) {
+          return (
+            <div className={styles.content}>
+              <Icon spin icon={Loader2Icon} size={24} />
+              <Text type="secondary">{t('providerModels.config.oauth.connecting')}</Text>
+            </div>
+          );
+        }
+
+        // Authorization-code paste flow: open the provider's page, come back with the URL.
+        if (isPasteFlow) {
+          return (
+            <div className={styles.content}>
+              <PasteFlowPanel
+                allowAccessTokenPaste={deviceCodeInfo.allowAccessTokenPaste}
+                disabled={!canManageProvider}
+                submitError={submitError}
+                submitErrorSource={submitErrorSource}
+                submitting={submitting}
+                authorizeUri={
+                  deviceCodeInfo.verificationUriComplete || deviceCodeInfo.verificationUri
+                }
+                onCancel={handleCancelAuth}
+                onOpenAuthorizePage={handleOpenBrowser}
+                onRegenerate={handleStartAuth}
+                onSubmitAccessToken={submitAccessToken}
+                onSubmitCallback={submitCallback}
+              />
             </div>
           );
         }

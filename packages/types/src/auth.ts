@@ -28,6 +28,12 @@ export interface ClientSecretPayload {
    * ChatGPT account identifier associated with an OAuth access token.
    */
   chatgptAccountId?: string;
+  /**
+   * Stable per-connection device identifier (`oai-device-id`) used by the
+   * ChatGPT Web protocol. Not a secret, but it must stay stable across requests
+   * for the same connected account.
+   */
+  chatgptDeviceId?: string;
   cloudflareBaseURLOrAccountID?: string;
   customHeaders?: Record<string, string>;
   /**

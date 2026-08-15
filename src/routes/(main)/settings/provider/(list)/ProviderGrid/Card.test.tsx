@@ -32,6 +32,16 @@ describe('ProviderGrid Card shared OAuth providers', () => {
     expect(screen.queryByText('providerModels.config.sharedOAuth.tag')).toBeNull();
   });
 
+  it('labels chatgptweb as a shared account on the admin surface too', () => {
+    render(
+      <ProviderSettingsContext value={{ hidePersonalAuth: true }}>
+        <Card {...cardProps} id="chatgptweb" name="ChatGPT Web" />
+      </ProviderSettingsContext>,
+    );
+
+    expect(screen.getByText('providerModels.config.sharedOAuth.tag')).toBeTruthy();
+  });
+
   it('keeps the enable switch and labels the shared account on the admin surface', () => {
     render(
       <ProviderSettingsContext value={{ hidePersonalAuth: true }}>

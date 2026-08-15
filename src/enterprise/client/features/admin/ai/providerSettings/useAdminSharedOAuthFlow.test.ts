@@ -34,12 +34,26 @@ vi.mock('@/enterprise/client/services/adminAiInfraAdapter/shared', () => ({
 }));
 
 const deviceCodeResponse = {
+  allowAccessTokenPaste: false,
   deviceCode: 'device-code-1',
   expiresIn: 600,
+  flow: 'device_code' as const,
   interval: 5,
   userCode: 'ABCD-1234',
   verificationUri: 'https://example.com/device',
   verificationUriComplete: 'https://example.com/device?user_code=ABCD-1234',
+};
+
+/** chatgptweb: the operator signs in in a browser and pastes the callback URL back. */
+const pasteResponse = {
+  allowAccessTokenPaste: true,
+  deviceCode: '{"v":1,"state":"s1"}',
+  expiresIn: 600,
+  flow: 'authorization_code_paste' as const,
+  interval: 0,
+  userCode: '',
+  verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+  verificationUriComplete: 'https://auth.openai.com/api/accounts/authorize?x=1',
 };
 
 const pending = {
@@ -443,5 +457,244 @@ describe('useAdminSharedOAuthFlow', () => {
     });
     expect(mocks.poll).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('useAdminSharedOAuthFlow paste flow', () => {
+  const renderPasteFlow = (options: FlowOptions = {}) => {
+    mocks.initiate.mockResolvedValue(pasteResponse);
+    return renderHook(() => useAdminSharedOAuthFlow({ ...options, providerId: 'chatgptweb' }));
+  };
+
+  const startPaste = async (options: FlowOptions = {}) => {
+    const rendered = renderPasteFlow(options);
+    await act(async () => {
+      await rendered.result.current.connect();
+    });
+    return rendered;
+  };
+
+  it('never polls: the authorization code never reaches this deployment', async () => {
+    const { result } = await startPaste();
+
+    expect(result.current.deviceCode?.flow).toBe('authorization_code_paste');
+    expect(result.current.deviceCode?.allowAccessTokenPaste).toBe(true);
+    expect(result.current.state).toBe('awaiting');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(mocks.poll).not.toHaveBeenCalled();
+  });
+
+  it('redeems a pasted callback URL against the envelope', async () => {
+    mocks.poll.mockResolvedValue(success);
+    const onSuccess = vi.fn();
+    const { result } = await startPaste({ onSuccess });
+
+    await act(async () => {
+      await result.current.submitCallback('https://platform.openai.com/auth/callback?code=a');
+    });
+
+    expect(mocks.poll).toHaveBeenCalledWith({
+      callbackUrl: 'https://platform.openai.com/auth/callback?code=a',
+      deviceCode: pasteResponse.deviceCode,
+      id: 'chatgptweb',
+      reason: 'admin shared provider account connect',
+    });
+    expect(result.current.state).toBe('success');
+    expect(onSuccess).toHaveBeenCalledWith({ revision: 2 });
+  });
+
+  it.each([
+    ['invalid_callback', 'invalidCallback'],
+    ['state_mismatch', 'stateMismatch'],
+    ['exchange_failed', 'exchangeFailed'],
+    ['access_token_invalid', 'accessTokenInvalid'],
+  ])('maps the %s literal to a recoverable inline error', async (code, mapped) => {
+    mocks.poll.mockResolvedValue({ error: code, revision: null, status: 'error', stored: false });
+    const { result } = await startPaste();
+
+    await act(async () => {
+      await result.current.submitCallback('anything');
+    });
+
+    expect(result.current.submitError).toBe(mapped);
+    // Recoverable: the form stays open so the operator can fix the paste in place.
+    expect(result.current.state).toBe('awaiting');
+  });
+
+  it('falls back to a generic error for a literal it does not know', async () => {
+    mocks.poll.mockResolvedValue({
+      error: 'something_new',
+      revision: null,
+      status: 'error',
+      stored: false,
+    });
+    const { result } = await startPaste();
+
+    await act(async () => {
+      await result.current.submitCallback('anything');
+    });
+
+    expect(result.current.submitError).toBe('authError');
+    expect(result.current.state).toBe('awaiting');
+  });
+
+  it('keeps the submitted field with a generic failure so the form can point at it', async () => {
+    // An unmapped literal (and a network blip) becomes the generic `authError`, which names
+    // no field of its own: only the submit source says which box the operator must fix.
+    mocks.poll.mockResolvedValue({
+      error: 'something_new',
+      revision: null,
+      status: 'error',
+      stored: false,
+    });
+    const { result } = await startPaste();
+
+    await act(async () => {
+      await result.current.submitAccessToken('sk-pasted');
+    });
+    expect(result.current.submitError).toBe('authError');
+    expect(result.current.submitErrorSource).toBe('token');
+
+    await act(async () => {
+      await result.current.submitCallback('anything');
+    });
+    expect(result.current.submitErrorSource).toBe('callback');
+  });
+
+  it('treats an expired envelope as terminal and re-reads the stored status', async () => {
+    mocks.poll.mockResolvedValue({
+      error: 'expired',
+      revision: null,
+      status: 'error',
+      stored: false,
+    });
+    const onStatusStale = vi.fn();
+    const { result } = await startPaste({ onStatusStale });
+
+    await act(async () => {
+      await result.current.submitCallback('anything');
+    });
+
+    expect(result.current.state).toBe('error');
+    expect(result.current.error).toBe('codeExpired');
+    expect(onStatusStale).toHaveBeenCalled();
+  });
+
+  it('discards a paste result that lands after cancel, but re-reads a stored connection', async () => {
+    const inFlight = deferred<typeof success>();
+    mocks.poll.mockReturnValue(inFlight.promise);
+    const onStatusStale = vi.fn();
+    const onSuccess = vi.fn();
+    const { result } = await startPaste({ onStatusStale, onSuccess });
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitCallback('https://platform.openai.com/auth/callback?code=a');
+    });
+    act(() => {
+      result.current.reset();
+    });
+    onStatusStale.mockClear();
+
+    await act(async () => {
+      inFlight.settle(success);
+      await submitted;
+    });
+
+    // The operator abandoned this run; its outcome may only arrive as a status re-read.
+    expect(result.current.state).toBe('idle');
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onStatusStale).toHaveBeenCalled();
+    // The latch was released with the run, so the next flow can submit immediately.
+    expect(result.current.submitting).toBe(false);
+  });
+
+  it('does not let a paste result replace the run that superseded it', async () => {
+    const inFlight = deferred<typeof success>();
+    mocks.poll.mockReturnValue(inFlight.promise);
+    const onSuccess = vi.fn();
+    const { result } = await startPaste({ onSuccess });
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitCallback('https://platform.openai.com/auth/callback?code=a');
+    });
+
+    // Regenerate: a brand-new envelope the operator is about to use.
+    mocks.initiate.mockResolvedValue({ ...pasteResponse, deviceCode: '{"v":1,"state":"s2"}' });
+    await act(async () => {
+      await result.current.connect();
+    });
+
+    await act(async () => {
+      inFlight.settle(success);
+      await submitted;
+    });
+
+    expect(result.current.state).toBe('awaiting');
+    expect(result.current.deviceCode?.deviceCode).toBe('{"v":1,"state":"s2"}');
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when the hook unmounts while a paste submit is in flight', async () => {
+    const inFlight = deferred<typeof success>();
+    mocks.poll.mockReturnValue(inFlight.promise);
+    const onSuccess = vi.fn();
+    const { result, unmount } = await startPaste({ onSuccess });
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitCallback('https://platform.openai.com/auth/callback?code=a');
+    });
+
+    unmount();
+
+    await act(async () => {
+      inFlight.settle(success);
+      await submitted;
+    });
+
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('redeems the single-use grant once even when the button is clicked twice', async () => {
+    const inFlight = deferred<typeof success>();
+    mocks.poll.mockReturnValue(inFlight.promise);
+    const { result } = await startPaste();
+
+    let both: Promise<unknown> | undefined;
+    act(() => {
+      both = Promise.all([
+        result.current.submitCallback('https://platform.openai.com/auth/callback?code=a'),
+        result.current.submitCallback('https://platform.openai.com/auth/callback?code=a'),
+      ]);
+    });
+    expect(mocks.poll).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      inFlight.settle(success);
+      await both;
+    });
+    expect(result.current.state).toBe('success');
+  });
+
+  it('sends a pasted access token instead of a callback URL', async () => {
+    mocks.poll.mockResolvedValue(success);
+    const { result } = await startPaste();
+
+    await act(async () => {
+      await result.current.submitAccessToken('pasted-token');
+    });
+
+    expect(mocks.poll).toHaveBeenCalledWith({
+      accessToken: 'pasted-token',
+      deviceCode: pasteResponse.deviceCode,
+      id: 'chatgptweb',
+      reason: 'admin shared provider account connect',
+    });
   });
 });

@@ -16,6 +16,7 @@ import BedrockProvider from './bedrock';
 import BflProvider from './bfl';
 import CerebrasProvider from './cerebras';
 import ChatGPTProvider from './chatGPT';
+import ChatGPTWebProvider from './chatgptWeb';
 import CloudflareProvider from './cloudflare';
 import CohereProvider from './cohere';
 import CometAPIProvider from './cometapi';
@@ -150,6 +151,7 @@ export const DEFAULT_MODEL_PROVIDER_LIST = [
   KimiCodingPlanProvider,
   OpenAIProvider,
   ChatGPTProvider,
+  ChatGPTWebProvider,
   DeepSeekProvider,
   XinferenceProvider,
   MoonshotProvider,
@@ -240,6 +242,24 @@ export const isProviderDisableBrowserRequest = (id: string) => {
   return !!provider;
 };
 
+/**
+ * Whether the provider's runtime can carry a user document as a native
+ * `file_url` content part instead of the `<files_info>` text injection.
+ *
+ * This is deliberately a PROVIDER-level capability, not a model ability:
+ * `abilities.files` only says the model can read documents, and many
+ * OpenAI-compatible catalogs (e.g. OpenCode Zen) already set it on models whose
+ * wire format has no file part. Emitting `file_url` for those would silently
+ * drop the document from the prompt, so native parts require this flag too.
+ *
+ * Only builtin provider cards are consulted: a user-created provider cannot
+ * flip its own settings to opt into a wire format its SDK does not implement.
+ */
+export const isProviderNativeFileInput = (id?: string) =>
+  DEFAULT_MODEL_PROVIDER_LIST.some(
+    (provider) => provider.id === id && provider.settings?.nativeFileInput === true,
+  );
+
 export const isProviderOAuthDeviceFlow = (id?: string) =>
   DEFAULT_MODEL_PROVIDER_LIST.some(
     (provider) => provider.id === id && provider.settings?.authType === 'oauthDeviceFlow',
@@ -247,7 +267,7 @@ export const isProviderOAuthDeviceFlow = (id?: string) =>
 
 /**
  * Providers whose device flow issues ROTATING refresh tokens
- * (`settings.oauthDeviceFlow.refreshTokenGrant`) — chatgpt, supergrok. The refresh token
+ * (`settings.oauthDeviceFlow.refreshTokenGrant`) — chatgpt, chatgptweb, supergrok. The refresh token
  * is replaced on every renewal, so whoever stores the credential must also own its
  * refresh lifecycle: personally connected in user settings, or connected as a shared
  * platform account through the admin device flow (with server-side refresh). API-key
@@ -258,6 +278,27 @@ export const isRotatingRefreshOAuthProvider = (id?: string) =>
   DEFAULT_MODEL_PROVIDER_LIST.some(
     (provider) =>
       provider.id === id && provider.settings?.oauthDeviceFlow?.refreshTokenGrant === true,
+  );
+
+/**
+ * Which OAuth grant the provider's connect flow uses. Defaults to the RFC 8628
+ * device authorization grant, which is what every provider used before the
+ * authorization-code paste flow existed.
+ */
+export const getProviderOAuthGrantFlow = (
+  id?: string,
+): 'device_code' | 'authorization_code_paste' =>
+  DEFAULT_MODEL_PROVIDER_LIST.find((provider) => provider.id === id)?.settings?.oauthDeviceFlow
+    ?.grantFlow ?? 'device_code';
+
+/**
+ * Whether the provider accepts a manually pasted access token as a fallback
+ * credential. Such credentials have no refresh token and cannot be auto-renewed.
+ */
+export const isProviderAccessTokenPasteAllowed = (id?: string) =>
+  DEFAULT_MODEL_PROVIDER_LIST.some(
+    (provider) =>
+      provider.id === id && provider.settings?.oauthDeviceFlow?.allowAccessTokenPaste === true,
   );
 
 export { default as Ai21ProviderCard } from './ai21';
@@ -275,6 +316,7 @@ export { default as BedrockProviderCard } from './bedrock';
 export { default as BflProviderCard } from './bfl';
 export { default as CerebrasProviderCard } from './cerebras';
 export { default as ChatGPTProviderCard } from './chatGPT';
+export { default as ChatGPTWebProviderCard } from './chatgptWeb';
 export { default as CloudflareProviderCard } from './cloudflare';
 export { default as CohereProviderCard } from './cohere';
 export { default as CometAPIProviderCard } from './cometapi';

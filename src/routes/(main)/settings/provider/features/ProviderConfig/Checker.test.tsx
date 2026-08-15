@@ -138,6 +138,9 @@ describe('Checker — admin platform catalog', () => {
     ['connection_failed_invalid_config', 'llm.checker.reason.connectionFailedInvalidConfig'],
     // Its own code: only the persisted message survives a superseded concurrent attempt.
     ['connection_failed_shared_account_expired', 'llm.checker.reason.sharedAccountExpired'],
+    // A missing server-side transport component is not a configuration mistake the user
+    // can fix — it must not be folded into the "check your configuration" copy.
+    ['connection_failed_transport', 'llm.checker.reason.connectionFailedTransport'],
     // Backward compat: results persisted before the codes landed are replayed verbatim by
     // testProvider when an attempt is superseded, so the old sentences must still translate.
     ['Connection failed: authentication rejected', 'llm.checker.reason.connectionFailedAuth'],

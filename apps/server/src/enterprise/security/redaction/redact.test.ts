@@ -159,6 +159,158 @@ describe('enterprise redaction entry', () => {
     expect(showApiKeyScoped.nested.deep.showApiKey).toBe('[REDACTED]');
   });
 
+  it('preserves the authorization-code paste-flow config (chatgptweb) under its own parent only', () => {
+    const out = redactForAudit(
+      {
+        oauthDeviceFlow: {
+          allowAccessTokenPaste: true,
+          authorizationCode: {
+            audience: 'https://api.openai.com/v1',
+            authorizeEndpoint: 'https://auth.openai.com/api/accounts/authorize',
+            redirectUri: 'https://platform.openai.com/auth/callback',
+          },
+          grantFlow: 'authorization_code_paste',
+        },
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(out).toEqual({
+      oauthDeviceFlow: {
+        allowAccessTokenPaste: true,
+        authorizationCode: {
+          audience: 'https://api.openai.com/v1',
+          authorizeEndpoint: 'https://auth.openai.com/api/accounts/authorize',
+          redirectUri: 'https://platform.openai.com/auth/callback',
+        },
+        grantFlow: 'authorization_code_paste',
+      },
+    });
+
+    // Position scoping: `authorizationCode` is benign only under `oauthDeviceFlow`, and its
+    // children only under `authorizationCode` — a real pasted code smuggled elsewhere is
+    // still redacted by the key-name rule.
+    const outOfPosition = redactForAudit(
+      {
+        allowAccessTokenPaste: 'smuggled',
+        authorizationCode: 'oauth-code-value',
+        nested: { authorizationCode: { authorizeEndpoint: 'x' } },
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(outOfPosition.allowAccessTokenPaste).toBe('[REDACTED]');
+    expect(outOfPosition.authorizationCode).toBe('[REDACTED]');
+    expect(outOfPosition.nested.authorizationCode).toBe('[REDACTED]');
+
+    // Secret-shaped values under the allow-listed keys are still caught by M01.
+    const smuggled = redactForAudit(
+      {
+        oauthDeviceFlow: {
+          authorizationCode: { authorizeEndpoint: 'Bearer sk-fake-not-real-embedded' },
+        },
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(smuggled.oauthDeviceFlow.authorizationCode.authorizeEndpoint).toBe('[REDACTED]');
+  });
+
+  it('rejects correctly-positioned but wrongly-typed OAuth config values', () => {
+    // The whole point of the exception is that these key names label CONFIGURATION. An
+    // opaque scalar under them is a credential wearing a config name: position alone must
+    // not clear it, or `settings.oauthDeviceFlow.authorizationCode = '<live code>'` walks
+    // straight into revisions/audit payloads.
+    const out = redactForAudit(
+      {
+        oauthDeviceFlow: {
+          allowAccessTokenPaste: 'opaque-secret',
+          authorizationCode: 'opaque-authorization-code',
+          refreshTokenGrant: 'opaque-secret',
+          tokenEndpoint: 'opaque-not-a-url',
+          tokenExchangeEndpoint: 'ftp://auth.example.test/token',
+        },
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(out.oauthDeviceFlow).toEqual({
+      allowAccessTokenPaste: '[REDACTED]',
+      authorizationCode: '[REDACTED]',
+      refreshTokenGrant: '[REDACTED]',
+      tokenEndpoint: '[REDACTED]',
+      tokenExchangeEndpoint: '[REDACTED]',
+    });
+
+    // Object/array impostors under the same keys are rejected too.
+    const structured = redactForAudit(
+      {
+        oauthDeviceFlow: {
+          allowAccessTokenPaste: { code: 'opaque' },
+          authorizationCode: ['opaque-authorization-code'],
+          tokenEndpoint: { url: 'https://auth.example.test/token' },
+        },
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(structured.oauthDeviceFlow).toEqual({
+      allowAccessTokenPaste: '[REDACTED]',
+      authorizationCode: '[REDACTED]',
+      tokenEndpoint: '[REDACTED]',
+    });
+
+    // `authorizationCode` must be the public authorize config and nothing else: an extra
+    // key, or a non-string leaf, discredits the whole object.
+    const extraneous = redactForAudit(
+      {
+        oauthDeviceFlow: {
+          authorizationCode: {
+            authorizeEndpoint: 'https://auth.openai.com/api/accounts/authorize',
+            code: 'opaque-authorization-code',
+          },
+        },
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(extraneous.oauthDeviceFlow.authorizationCode).toBe('[REDACTED]');
+
+    const nestedLeaf = redactForAudit(
+      { oauthDeviceFlow: { authorizationCode: { redirectUri: { href: 'https://x.test/cb' } } } },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(nestedLeaf.oauthDeviceFlow.authorizationCode).toBe('[REDACTED]');
+
+    // Credential-bearing endpoint URLs stay out as well.
+    const signed = redactForAudit(
+      {
+        oauthDeviceFlow: {
+          tokenEndpoint: 'https://auth.example.test/token?X-Amz-Signature=signed-value',
+        },
+      },
+      M07_REDACTION_OPTIONS,
+    );
+    expect(signed.oauthDeviceFlow.tokenEndpoint).toBe('[REDACTED]');
+
+    // A non-boolean `showApiKey` is a smuggled value, not a UI flag.
+    const flag = redactForAudit({ showApiKey: 'opaque-secret' }, M07_REDACTION_OPTIONS);
+    expect(flag.showApiKey).toBe('[REDACTED]');
+
+    // `grantFlow` / `audience` / `authorizeEndpoint` / `redirectUri` are not sensitive key
+    // names at all, so the walker never consults the predicate for them. Assert the
+    // predicate's own contract directly: it is the second gate the contracts validator
+    // relies on, and it must stay type-scoped if M01 ever widens its key heuristic.
+    const { isBenignKey } = M07_REDACTION_OPTIONS;
+    expect(isBenignKey('grantFlow', 'oauthDeviceFlow', 'device_code')).toBe(true);
+    expect(isBenignKey('grantFlow', 'oauthDeviceFlow', 'authorization_code_paste')).toBe(true);
+    expect(isBenignKey('grantFlow', 'oauthDeviceFlow', 'not-a-declared-grant')).toBe(false);
+    expect(isBenignKey('grantFlow', 'oauthDeviceFlow', ['device_code'])).toBe(false);
+    expect(isBenignKey('audience', 'authorizationCode', 'https://api.openai.com/v1')).toBe(true);
+    expect(isBenignKey('audience', 'authorizationCode', 'opaque-audience')).toBe(false);
+    expect(
+      isBenignKey('redirectUri', 'authorizationCode', 'https://platform.openai.com/auth/callback'),
+    ).toBe(true);
+    expect(isBenignKey('redirectUri', 'authorizationCode', { href: 'https://x.test' })).toBe(false);
+    // Absent values carry nothing to leak.
+    expect(isBenignKey('authorizationCode', 'oauthDeviceFlow', undefined)).toBe(true);
+    expect(isBenignKey('allowAccessTokenPaste', 'oauthDeviceFlow', null)).toBe(true);
+  });
+
   it('treats the shared-OAuth account identity leaves as non-secret key names', () => {
     // `oauthAccountEmail` / `oauthAccountId` are display-only identity, projected to admins by
     // getConnectionStatus. They must not need an M07 benign-key exception — if the generic

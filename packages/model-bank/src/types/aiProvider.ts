@@ -32,6 +32,29 @@ export type AiProviderAuthType =
  */
 export interface OAuthDeviceFlowConfig {
   /**
+   * Whether the provider additionally accepts a manually pasted access token as
+   * a fallback credential (no refresh token, so it cannot be auto-renewed).
+   */
+  allowAccessTokenPaste?: boolean;
+  /**
+   * Endpoints used when `grantFlow` is `authorization_code_paste`.
+   */
+  authorizationCode?: {
+    /**
+     * Optional `audience` parameter sent to the authorize endpoint.
+     */
+    audience?: string;
+    /**
+     * URL the user opens in a browser to authorize the app.
+     */
+    authorizeEndpoint: string;
+    /**
+     * Redirect URI registered for the client. The user lands on it after
+     * authorizing and pastes the resulting URL back into the app.
+     */
+    redirectUri: string;
+  };
+  /**
    * OAuth client ID
    */
   clientId: string;
@@ -44,6 +67,14 @@ export interface OAuthDeviceFlowConfig {
    * URL to request device code
    */
   deviceCodeEndpoint: string;
+  /**
+   * Which OAuth grant the connect flow uses.
+   * - `device_code`: RFC 8628 device authorization grant (user code + polling)
+   * - `authorization_code_paste`: authorization code + PKCE where the user pastes
+   *   the callback URL back into the app (no local redirect listener)
+   * @default 'device_code'
+   */
+  grantFlow?: 'device_code' | 'authorization_code_paste';
   /**
    * Whether the provider issues a refresh_token (e.g. via `offline_access`
    * scope) that the server should use to renew the access token before it
@@ -82,10 +113,20 @@ export interface OAuthDeviceFlowKeyVault {
    */
   oauthAccessToken?: string;
   /**
+   * Email of the connected account, shown in the UI so the user can tell which
+   * account is currently linked. Never used for authentication.
+   */
+  oauthAccountEmail?: string;
+  /**
    * Provider account identifier associated with the OAuth token.
    * Some OAuth-backed inference endpoints require it as a request header.
    */
   oauthAccountId?: string;
+  /**
+   * Stable device identifier generated at connect time (`oai-device-id` for
+   * ChatGPT Web). Non-secret, but must stay stable for the connection.
+   */
+  oauthDeviceId?: string;
   /**
    * OAuth refresh token. May rotate on every refresh (e.g. xAI) — always
    * persist the value returned by the latest refresh response.
@@ -179,6 +220,20 @@ export interface AiProviderSettings {
   modelEditable?: boolean;
 
   /**
+   * Whether the provider runtime can carry a user document as a NATIVE
+   * `file_url` content part (uploading the real file upstream) instead of the
+   * `<files_info>` text injection.
+   *
+   * This is a *wire-format* capability of the runtime, deliberately separate
+   * from the per-model `abilities.files`: many OpenAI-compatible providers
+   * advertise `abilities.files` while their wire format has no file part, so
+   * the model ability alone must never switch on native parts.
+   *
+   * Only honoured on builtin provider cards (see `isProviderNativeFileInput`).
+   */
+  nativeFileInput?: boolean;
+
+  /**
    * OAuth Device Flow configuration
    * Only used when authType is 'oauthDeviceFlow'
    */
@@ -218,9 +273,18 @@ const ResponseAnimationType = z.enum(['smooth', 'fadeIn', 'none']);
 const AiProviderAuthTypes = ['apiKey', 'oauthDeviceFlow'] as const;
 
 const OAuthDeviceFlowConfigSchema = z.object({
+  allowAccessTokenPaste: z.boolean().optional(),
+  authorizationCode: z
+    .object({
+      audience: z.string().optional(),
+      authorizeEndpoint: z.string(),
+      redirectUri: z.string(),
+    })
+    .optional(),
   clientId: z.string(),
   defaultPollingInterval: z.number().optional(),
   deviceCodeEndpoint: z.string(),
+  grantFlow: z.enum(['device_code', 'authorization_code_paste']).optional(),
   refreshTokenGrant: z.boolean().optional(),
   scopes: z.array(z.string()),
   tokenEndpoint: z.string(),
@@ -234,6 +298,7 @@ const AiProviderSettingsSchema = z.object({
   maxToolCount: z.number().optional(),
   maxToolPayloadBytes: z.number().optional(),
   modelEditable: z.boolean().optional(),
+  nativeFileInput: z.boolean().optional(),
   oauthDeviceFlow: OAuthDeviceFlowConfigSchema.optional(),
   proxyUrl: z
     .object({

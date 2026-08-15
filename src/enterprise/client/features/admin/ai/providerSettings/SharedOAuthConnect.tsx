@@ -16,6 +16,7 @@ import { useClientDataSWR } from '@/libs/swr';
 import { lambdaClient } from '@/libs/trpc/client';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
+import SharedOAuthPasteForm from './SharedOAuthPasteForm';
 import { useAdminSharedOAuthFlow } from './useAdminSharedOAuthFlow';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
@@ -77,7 +78,7 @@ interface SharedOAuthConnectProps {
 
 /**
  * Platform-owned device-flow connect panel for rotating-refresh providers
- * (chatgpt / supergrok): ONE account is stored in the platform vault and serves
+ * (chatgpt / chatgptweb / supergrok): ONE account is stored in the platform vault and serves
  * every member. Never rendered on the user surface.
  */
 const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
@@ -164,7 +165,18 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     void Promise.resolve(refreshStatus()).catch(() => {});
   }, [refreshStatus]);
 
-  const { connect, deviceCode, error, reset, state } = useAdminSharedOAuthFlow({
+  const {
+    connect,
+    deviceCode,
+    error,
+    reset,
+    state,
+    submitAccessToken,
+    submitCallback,
+    submitError,
+    submitErrorSource,
+    submitting,
+  } = useAdminSharedOAuthFlow({
     onStatusStale: handleStatusStale,
     onSuccess: handleStored,
     providerId,
@@ -172,6 +184,9 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
 
   const handleConnect = useCallback(async () => {
     const info = await connect();
+    // The paste flow opens the authorization page from its own explicit step: the operator
+    // has to come back with the callback URL, so the instructions must be read first.
+    if (info?.flow === 'authorization_code_paste') return;
     // The click still counts as user activation here, so the popup normally opens;
     // the explicit button below stays as the fallback when it is blocked.
     const uri = info?.verificationUriComplete || info?.verificationUri;
@@ -298,6 +313,23 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
       );
     }
 
+    if (state === 'awaiting' && deviceCode?.flow === 'authorization_code_paste') {
+      return (
+        <SharedOAuthPasteForm
+          allowAccessTokenPaste={deviceCode.allowAccessTokenPaste}
+          authorizeUri={deviceCode.verificationUriComplete || deviceCode.verificationUri}
+          submitError={submitError}
+          submitErrorSource={submitErrorSource}
+          submitting={submitting}
+          onCancel={reset}
+          onOpenAuthorizePage={handleOpenVerification}
+          onRegenerate={handleConnect}
+          onSubmitAccessToken={submitAccessToken}
+          onSubmitCallback={submitCallback}
+        />
+      );
+    }
+
     if (state === 'awaiting' && deviceCode) {
       return (
         <Flexbox gap={12}>
@@ -362,6 +394,14 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
      * is only the fallback for connections stored before the email was captured.
      */
     const account = status?.accountEmail ?? status?.accountIdMasked ?? null;
+    /**
+     * K3 addition: an access token pasted by hand has no refresh token, so nothing renews it.
+     * Scoped to the paste flow, so the device-code providers that shipped before it keep
+     * their previous connected copy verbatim — and only a POSITIVE `false` warns, because
+     * silence must never be read as "this credential will die".
+     */
+    const cannotAutoRenew =
+      status?.flow === 'authorization_code_paste' && status?.canRefresh === false;
 
     return (
       <Flexbox gap={12}>
@@ -373,9 +413,15 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
                 : t('aiProviderSettings.sharedOAuth.accountUnknown')}
             </Text>
             <Text className={styles.hint}>
-              {expiry
-                ? t('aiProviderSettings.sharedOAuth.expiresAt', { time: expiry })
-                : t('aiProviderSettings.sharedOAuth.autoRefresh')}
+              {cannotAutoRenew
+                ? expiry
+                  ? t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore', {
+                      time: expiry,
+                    })
+                  : t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenew')
+                : expiry
+                  ? t('aiProviderSettings.sharedOAuth.expiresAt', { time: expiry })
+                  : t('aiProviderSettings.sharedOAuth.autoRefresh')}
             </Text>
             {renderEnforcementHint()}
           </Flexbox>

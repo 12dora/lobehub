@@ -512,6 +512,34 @@ export default {
   'aiProviderSettings.sharedOAuth.expiresAt': 'Access token expires {{time}}',
   'aiProviderSettings.sharedOAuth.notConnected': 'Not connected',
   'aiProviderSettings.sharedOAuth.openPage': 'Open authorization page',
+  'aiProviderSettings.sharedOAuth.paste.accessTokenNoRenewHint':
+    'An access token cannot be renewed automatically — the shared account will stop working when it expires and an administrator has to reconnect it.',
+  'aiProviderSettings.sharedOAuth.paste.accessTokenLabel': 'Access token',
+  'aiProviderSettings.sharedOAuth.paste.accessTokenPlaceholder': 'Paste an access token',
+  'aiProviderSettings.sharedOAuth.paste.accessTokenSubmit': 'Connect with this token',
+  'aiProviderSettings.sharedOAuth.paste.accessTokenToggle': 'Use an access token instead',
+  'aiProviderSettings.sharedOAuth.paste.callbackLabel': 'Callback URL',
+  'aiProviderSettings.sharedOAuth.paste.callbackPlaceholder':
+    'https://platform.openai.com/auth/callback?code=…',
+  'aiProviderSettings.sharedOAuth.paste.cannotAutoRenew':
+    'This connection cannot be renewed automatically. Reconnect it before it expires, or members lose access.',
+  'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore':
+    'This connection cannot be renewed automatically. Reconnect it before {{time}}, or members lose access.',
+  'aiProviderSettings.sharedOAuth.paste.errors.accessTokenInvalid':
+    'That access token was rejected. Copy it again, or use the authorization page instead.',
+  'aiProviderSettings.sharedOAuth.paste.errors.authError':
+    'The connection could not be completed. Please try again.',
+  'aiProviderSettings.sharedOAuth.paste.errors.exchangeFailed':
+    'The authorization could not be exchanged. Generate a new link and sign in again.',
+  'aiProviderSettings.sharedOAuth.paste.errors.invalidCallback':
+    'That does not look like the callback URL. Copy the whole address from the browser after signing in.',
+  'aiProviderSettings.sharedOAuth.paste.errors.stateMismatch':
+    'This link belongs to a different attempt. Generate a new link and sign in again.',
+  'aiProviderSettings.sharedOAuth.paste.instruction':
+    'Sign in with the account the whole platform should use. You will land on a blank page at platform.openai.com/auth/callback — copy that full address from the browser and paste it below.',
+  'aiProviderSettings.sharedOAuth.paste.openAuthorizePage': 'Open authorization page',
+  'aiProviderSettings.sharedOAuth.paste.regenerate': 'Generate a new link',
+  'aiProviderSettings.sharedOAuth.paste.submit': 'Connect shared account',
   'aiProviderSettings.sharedOAuth.polling': 'Waiting for the authorization to complete…',
   'aiProviderSettings.sharedOAuth.reconnect': 'Reconnect',
   'aiProviderSettings.sharedOAuth.requesting': 'Requesting a device code…',
