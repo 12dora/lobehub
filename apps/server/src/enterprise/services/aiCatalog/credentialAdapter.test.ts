@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   credentialStringLeaves,
   normalizeAiCatalogExecutionCredentials,
+  providerCredentialKeys,
   validateAiCatalogCredentialShape,
   validateAiCatalogRuntimeProvider,
 } from './credentialAdapter';
@@ -324,5 +325,53 @@ describe('AI catalog credential adapter', () => {
         source: 'builtin',
       }),
     ).not.toThrow();
+  });
+
+  it('accepts ChatGPT Web with only an access token, plus its device-id and email leaves', () => {
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.ChatGPTWeb, {
+        oauthAccessToken: 'at-1',
+        oauthAccountEmail: 'user@example.com',
+        oauthAccountId: 'acct-1',
+        oauthDeviceId: 'device-1',
+        oauthRefreshToken: 'rt-1',
+        oauthTokenExpiresAt: '1750000000000',
+      }),
+    ).not.toThrow();
+    // Unknown leaves stay hard-rejected.
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.ChatGPTWeb, { apiKey: 'sk-any' }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+
+    // The access-token paste fallback has neither a refresh token nor an account id, and
+    // it still chats — rejecting it as incomplete would break the documented fallback.
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: { oauthAccessToken: 'at-1', oauthDeviceId: 'device-1' },
+        providerKey: ModelProvider.ChatGPTWeb,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: { oauthRefreshToken: 'rt-1' },
+        providerKey: ModelProvider.ChatGPTWeb,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+  });
+
+  it('exposes the credential shape as a capability set', () => {
+    expect(providerCredentialKeys(ModelProvider.ChatGPTWeb).has('oauthDeviceId')).toBe(true);
+    expect(providerCredentialKeys(ModelProvider.ChatGPT).has('oauthDeviceId')).toBe(false);
+    expect(providerCredentialKeys(ModelProvider.SuperGrok).has('oauthAccountEmail')).toBe(false);
+    // Unknown providers fall back to the OpenAI-compatible shape.
+    expect([...providerCredentialKeys('some-custom-provider')]).toEqual(['apiKey', 'baseURL']);
   });
 });

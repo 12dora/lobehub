@@ -42,6 +42,17 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
     'oauthRefreshToken',
     'oauthTokenExpiresAt',
   ]),
+  [ModelProvider.ChatGPTWeb]: new Set([
+    'oauthAccessToken',
+    // Display-only account identity — intentionally absent from SECRET_CREDENTIAL_STRING_KEYS.
+    'oauthAccountEmail',
+    'oauthAccountId',
+    // Stable `oai-device-id` for the sentinel handshake; non-secret, but it must not change.
+    'oauthDeviceId',
+    // Optional: the access-token paste fallback has no refresh grant at all.
+    'oauthRefreshToken',
+    'oauthTokenExpiresAt',
+  ]),
   [ModelProvider.GithubCopilot]: new Set([
     'apiKey',
     'bearerToken',
@@ -58,6 +69,17 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
 };
 
 const OPENAI_COMPATIBLE_KEYS = new Set(['apiKey', 'baseURL']);
+
+/**
+ * Credential shape of a provider, as a capability set.
+ *
+ * Callers that used to branch on `providerKey === ModelProvider.ChatGPT` to decide which
+ * identity leaves to store ask this instead: whether a leaf may be persisted is a
+ * property of the credential SHAPE (unknown keys are hard-rejected downstream), never of
+ * a hard-coded provider id.
+ */
+export const providerCredentialKeys = (runtimeProvider: string): ReadonlySet<string> =>
+  SPECIAL_KEYS[runtimeProvider] ?? OPENAI_COMPATIBLE_KEYS;
 const SUPPORTED_RUNTIME_PROVIDERS = new Set<string>(Object.values(ModelProvider));
 
 export const resolveAiCatalogRuntimeProvider = (
@@ -160,6 +182,18 @@ const assertRequiredCredentials = (
         !hasText(keyVaults.oauthAccountId)
       ) {
         throw new AiCatalogValidationError(['ChatGPT shared OAuth connection is incomplete']);
+      }
+      return;
+    }
+    case ModelProvider.ChatGPTWeb: {
+      /**
+       * Only the access token is required. Unlike the Codex `chatgpt` provider, this one
+       * ALSO supports pasting a bare access token (no refresh grant, no account id from
+       * an id_token), and a connection that can chat must not be rejected as incomplete
+       * just because it cannot auto-renew — the UI states that plainly instead.
+       */
+      if (!hasText(keyVaults.oauthAccessToken)) {
+        throw new AiCatalogValidationError(['ChatGPT Web shared OAuth connection is incomplete']);
       }
       return;
     }

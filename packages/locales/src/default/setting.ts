@@ -527,6 +527,8 @@ export default {
     'The provider rejected the request. Check the provider status and the selected model, then run the check again.',
   'llm.checker.reason.connectionFailedRateLimit':
     'The provider is rate limiting this account, or its quota is exhausted. Wait a moment, then run the check again.',
+  'llm.checker.reason.connectionFailedTransport':
+    'This provider needs a component that is missing on the server. Ask an administrator to install it, then run the check again.',
   'llm.checker.reason.sharedAccountExpired':
     'The shared account connection expired. Reconnect it, then run the check again.',
   'llm.checker.title': 'Connectivity Check',

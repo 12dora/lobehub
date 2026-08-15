@@ -24,14 +24,25 @@ const deviceCodeSchema = z.string().min(1).max(8192);
 
 export const adminAiProviderOAuthInitiateInputSchema = z.object({ id: providerKeySchema }).strict();
 
+/**
+ * `device_code`: RFC 8628 — show a user code, poll the token endpoint.
+ * `authorization_code_paste`: the operator signs in in a browser and pastes the callback
+ * URL back, because the provider's redirect URI cannot point at this deployment.
+ */
+export const adminAiProviderOAuthFlowSchema = z.enum(['authorization_code_paste', 'device_code']);
+
 export const adminAiProviderOAuthInitiateOutputSchema = z
   .object({
+    /** Whether the provider also accepts a manually pasted access token (no auto-renew). */
+    allowAccessTokenPaste: z.boolean(),
     deviceCode: deviceCodeSchema,
     /** Seconds until the device code expires; null when the provider omits it. */
     expiresIn: z.number().int().positive().nullable(),
-    /** Seconds between polls (already includes any provider safety margin). */
-    interval: z.number().int().positive(),
-    userCode: z.string().min(1).max(200),
+    flow: adminAiProviderOAuthFlowSchema,
+    /** Seconds between polls; 0 for the paste flow, which has nothing to poll. */
+    interval: z.number().int().nonnegative(),
+    /** Empty for the paste flow: the authorize URL carries the whole request. */
+    userCode: z.string().max(200),
     verificationUri: z.string().min(1).max(2000),
     verificationUriComplete: z.string().min(1).max(2000).nullable(),
   })
@@ -39,11 +50,36 @@ export const adminAiProviderOAuthInitiateOutputSchema = z
 
 export const adminAiProviderOAuthPollInputSchema = z
   .object({
+    /**
+     * Paste flow only. `callbackUrl` is the pasted redirect URL (or bare authorization
+     * code); `accessToken` is the no-refresh fallback credential. Both are single-use
+     * secrets on the wire and are never echoed back or audited.
+     */
+    accessToken: z.string().min(1).max(8192).optional(),
+    callbackUrl: z.string().min(1).max(4096).optional(),
     deviceCode: deviceCodeSchema,
     id: providerKeySchema,
     reason: adminReasonSchema,
   })
   .strict();
+
+/**
+ * Every stable outcome code a poll may surface. A closed union rather than a free string:
+ * both connect UIs (`useAdminSharedOAuthFlow`, `useOAuthDeviceFlow`) map these literals to
+ * their own copy, and an unlisted one silently degrades to a generic "auth error" instead
+ * of telling the operator what to fix. `ChatGPTWebOAuthErrorCode` is the paste flow's half
+ * of it; `provider_store_failed` is the admin-only "grant redeemed but not stored" case.
+ */
+export const aiProviderOAuthPollErrorSchema = z.enum([
+  'access_token_invalid',
+  'exchange_failed',
+  'expired',
+  'invalid_callback',
+  'provider_store_failed',
+  'state_mismatch',
+]);
+
+export type AiProviderOAuthPollError = z.infer<typeof aiProviderOAuthPollErrorSchema>;
 
 export const adminAiProviderOAuthPollOutputSchema = z
   .object({
@@ -51,7 +87,7 @@ export const adminAiProviderOAuthPollOutputSchema = z
      * Stable machine-readable code when the redeemed grant could not be stored
      * (`status: 'denied'`, `stored: false`). Never prose, never token material.
      */
-    error: z.string().max(200).nullable().optional(),
+    error: aiProviderOAuthPollErrorSchema.nullable().optional(),
     /**
      * Provider revision after a successful store; null while the flow is unfinished.
      * `stored: true` means the credentials were committed and published; the provider's
@@ -61,7 +97,11 @@ export const adminAiProviderOAuthPollOutputSchema = z
     revision: z.number().int().nonnegative().nullable(),
     /** true when this poll stored the shared connection in the platform vault. */
     stored: z.boolean(),
-    status: z.enum(['denied', 'expired', 'pending', 'slow_down', 'success']),
+    /**
+     * `error` is the paste flow's terminal, user-fixable outcome (bad paste, stale
+     * envelope, rejected exchange): `error` then carries the stable reason code.
+     */
+    status: z.enum(['denied', 'error', 'expired', 'pending', 'slow_down', 'success']),
   })
   .strict();
 
@@ -104,6 +144,11 @@ export const adminAiProviderOAuthStatusOutputSchema = z
     accountEmail: z.string().max(320).nullable(),
     /** First characters of the account id plus an ellipsis, for operator recognition only. */
     accountIdMasked: z.string().max(32).nullable(),
+    /**
+     * false when the stored credential has no refresh grant (a pasted access token): it
+     * will expire for good at `expiresAt` and an operator must reconnect by hand.
+     */
+    canRefresh: z.boolean(),
     connected: z.boolean(),
     /**
      * true when the stored grant is dead (`invalid_grant`) and an administrator must
@@ -112,6 +157,8 @@ export const adminAiProviderOAuthStatusOutputSchema = z
     expired: z.boolean(),
     /** Epoch millis as a string, mirroring the vault leaf type. */
     expiresAt: z.string().max(200).nullable(),
+    /** Which connect flow the panel must render for this provider. */
+    flow: adminAiProviderOAuthFlowSchema,
     secretConfigured: z.boolean(),
   })
   .strict();

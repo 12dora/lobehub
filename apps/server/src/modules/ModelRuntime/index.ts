@@ -27,6 +27,7 @@ import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
+import { getChatGPTWebFetch } from '@/server/enterprise/services/chatgptWeb/transport';
 import {
   createPlatformAiModelAllowlistHooks,
   isPlatformManagedAiEnabled,
@@ -111,6 +112,7 @@ export const hasModelRuntimeEnvironmentFallback = (
     // Subscription OAuth providers are personal-only; API-key env vars never make them ready.
     case ModelProvider.GithubCopilot:
     case ModelProvider.ChatGPT:
+    case ModelProvider.ChatGPTWeb:
     case ModelProvider.LobeHub:
     case ModelProvider.SuperGrok: {
       return false;
@@ -173,6 +175,17 @@ export const buildPayloadFromKeyVaults = (
       return {
         apiKey: keyVaults.oauthAccessToken,
         chatgptAccountId: keyVaults.oauthAccountId,
+        runtimeProvider,
+      };
+    }
+
+    case ModelProvider.ChatGPTWeb: {
+      // The chatgpt.com web backend also needs a STABLE device id: the sentinel
+      // handshake binds its proof-of-work token to `oai-device-id`.
+      return {
+        apiKey: keyVaults.oauthAccessToken,
+        chatgptAccountId: keyVaults.oauthAccountId,
+        chatgptDeviceId: keyVaults.oauthDeviceId,
         runtimeProvider,
       };
     }
@@ -367,6 +380,15 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
       };
     }
 
+    case ModelProvider.ChatGPTWeb: {
+      // OAuth-only: never fall back to env API keys
+      return {
+        apiKey: payload.apiKey,
+        chatgptAccountId: payload.chatgptAccountId,
+        chatgptDeviceId: payload.chatgptDeviceId,
+      };
+    }
+
     case ModelProvider.ComfyUI: {
       const {
         COMFYUI_BASE_URL,
@@ -475,6 +497,14 @@ const buildVertexOptions = (
  * @param params
  * @returns A promise that resolves when the agent runtime is initialized.
  */
+/**
+ * `undefined` for every other provider, so the runtime keeps its own default transport.
+ * Never throws: a deployment without the binary must still build every other runtime,
+ * and the ChatGPT Web failure surfaces on the first request instead.
+ */
+const resolveChatGPTWebTransport = (runtimeProvider: string): typeof fetch | undefined =>
+  runtimeProvider === ModelProvider.ChatGPTWeb ? getChatGPTWebFetch() : undefined;
+
 export type ModelRuntimeInitParams = {
   fetch?: typeof fetch;
   requestHandler?: unknown;
@@ -490,7 +520,15 @@ export const initModelRuntimeWithUserPayload = (
   hooks?: ModelRuntimeHooks,
 ) => {
   const runtimeProvider = payload.runtimeProvider ?? provider;
-  const { fetch: customFetch, requestHandler, ...restParams } = params;
+  const { fetch: paramsFetch, requestHandler, ...restParams } = params;
+  /**
+   * ChatGPT Web is the one runtime whose transport is not optional: chatgpt.com is behind
+   * Cloudflare bot-fight and answers Node's own fetch with a 403 challenge whatever
+   * headers are sent, because the TLS/HTTP2 fingerprint is what gets checked. Injected at
+   * THIS seam so every server path (user BYOK, platform-managed, exact-revision pins)
+   * gets it; an explicit `fetch` from the caller still wins.
+   */
+  const customFetch = paramsFetch ?? resolveChatGPTWebTransport(runtimeProvider);
 
   if (runtimeProvider === ModelProvider.VertexAI) {
     const vertexOptions = buildVertexOptions(payload, restParams as never);

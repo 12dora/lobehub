@@ -1,5 +1,10 @@
 import { TRPCError } from '@trpc/server';
-import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
+import {
+  DEFAULT_MODEL_PROVIDER_LIST,
+  getProviderOAuthGrantFlow,
+  isProviderAccessTokenPasteAllowed,
+  isRotatingRefreshOAuthProvider,
+} from 'model-bank/modelProviders';
 import { z } from 'zod';
 
 import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPermission';
@@ -7,7 +12,14 @@ import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceA
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import type { AiProviderOAuthPollError } from '@/server/enterprise/contracts/aiProviderOAuth';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import {
+  type ChatGPTWebConnection,
+  ChatGPTWebOAuthError,
+  ChatGPTWebOAuthService,
+  parsePasteEnvelope,
+} from '@/server/enterprise/services/chatgptWeb/oauthService';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
 import {
@@ -21,6 +33,11 @@ const oauthProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) =>
 
   return opts.next({
     ctx: {
+      // TODO(chatgptweb): workspace scoping. The sibling aiProvider router passes
+      // `ctx.workspaceId`, so in a workspace context every OAuth connect/status/revoke here
+      // targets the PERSONAL provider row instead. Pre-existing for all OAuth providers
+      // (device flow included), so it is tracked as its own change rather than folded into
+      // the ChatGPT Web work — fixing it here alone would move only some of the leaves.
       aiProviderModel: new AiProviderModel(ctx.serverDB, ctx.userId),
       gateKeeper,
     },
@@ -40,6 +57,29 @@ function getOAuthConfig(providerId: string) {
 
   return provider.settings.oauthDeviceFlow;
 }
+
+/**
+ * Authorization-code + PKCE where the user pastes the callback URL back (the redirect
+ * URI belongs to the provider and cannot point at this deployment). There is nothing to
+ * poll: `pollAuthStatus` stays `pending` until the paste arrives.
+ */
+const isPasteFlow = (providerId: string) =>
+  getProviderOAuthGrantFlow(providerId) === 'authorization_code_paste';
+
+/**
+ * K2 vault leaves. EVERY optional leaf moves as a unit with the credential it describes:
+ * `updateConfig` merges `{...existing, ...new}` and `JSON.stringify` drops the explicit
+ * `undefined`s, so a reconnect that provides no refresh token (pasted access token) really
+ * does remove the previous one instead of leaving a foreign account's grant behind it.
+ */
+const connectionKeyVaults = (connection: ChatGPTWebConnection) => ({
+  oauthAccessToken: connection.accessToken,
+  oauthAccountEmail: connection.email,
+  oauthAccountId: connection.accountId,
+  oauthDeviceId: connection.deviceId,
+  oauthRefreshToken: connection.refreshToken,
+  oauthTokenExpiresAt: connection.expiresAt ? String(connection.expiresAt) : undefined,
+});
 
 export const oauthDeviceFlowRouter = router({
   /**
@@ -63,6 +103,14 @@ export const oauthDeviceFlowRouter = router({
       if (keyVaults.oauthAccessToken) {
         return {
           avatarUrl: keyVaults.githubAvatarUrl as string | undefined,
+          /**
+           * A credential without a refresh grant (pasted access token) expires for good.
+           * The card must say so instead of silently going dead mid-conversation.
+           */
+          canRefresh:
+            Boolean(keyVaults.oauthRefreshToken) &&
+            isRotatingRefreshOAuthProvider(input.providerId),
+          email: keyVaults.oauthAccountEmail as string | undefined,
           expiresAt: keyVaults.oauthTokenExpiresAt || keyVaults.bearerTokenExpiresAt,
           status: 'ACTIVE',
           username: keyVaults.githubUsername as string | undefined,
@@ -92,8 +140,11 @@ export const oauthDeviceFlowRouter = router({
       const deviceCodeResponse = await service.initiateDeviceCode(config);
 
       return {
+        /** Paste flow: an opaque client-held envelope, never persisted server-side. */
+        allowAccessTokenPaste: isProviderAccessTokenPasteAllowed(input.providerId),
         deviceCode: deviceCodeResponse.deviceCode,
         expiresIn: deviceCodeResponse.expiresIn,
+        flow: getProviderOAuthGrantFlow(input.providerId),
         interval: deviceCodeResponse.interval,
         userCode: deviceCodeResponse.userCode,
         verificationUri: deviceCodeResponse.verificationUri,
@@ -108,7 +159,12 @@ export const oauthDeviceFlowRouter = router({
     .use(withManagedResourceGuard('oauthDeviceFlow.pollAuthStatus'))
     .input(
       z.object({
-        deviceCode: z.string(),
+        /** Paste flow only: the pasted redirect URL, or the bare authorization code. */
+        accessToken: z.string().max(8192).optional(),
+        callbackUrl: z.string().max(4096).optional(),
+        // Same bound as the admin contract: for the paste flow this is a client-held
+        // envelope, and an unbounded string would be an unbounded server-side JSON parse.
+        deviceCode: z.string().max(8192),
         providerId: z.string(),
       }),
     )
@@ -123,6 +179,59 @@ export const oauthDeviceFlowRouter = router({
       }
 
       const service = getOAuthService(input.providerId);
+
+      if (isPasteFlow(input.providerId)) {
+        if (!(service instanceof ChatGPTWebOAuthService)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Provider ${input.providerId} does not support the paste flow`,
+          });
+        }
+
+        // Nothing pasted yet: the client polls this the same way it polls a device code,
+        // but the server does no network work at all until the user acts.
+        if (!input.callbackUrl && !input.accessToken) return { status: 'pending' as const };
+
+        if (input.accessToken && !isProviderAccessTokenPasteAllowed(input.providerId)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Provider ${input.providerId} does not accept a pasted access token`,
+          });
+        }
+
+        let connection;
+        try {
+          // Both branches REQUIRE a live envelope: it carries the PKCE verifier for the
+          // code exchange and the device id the authorize call was made with. A malformed
+          // or stale one is reported (`invalid_callback` / `expired`) rather than silently
+          // minting a fresh device id, which would break the sentinel handshake the stored
+          // `oai-device-id` is supposed to keep stable.
+          const envelope = parsePasteEnvelope(input.deviceCode);
+          connection = input.callbackUrl
+            ? await service.exchangeCallback(config, input.deviceCode, input.callbackUrl)
+            : await service.verifyAccessToken(input.accessToken!, envelope.deviceId);
+        } catch (error) {
+          // Stable machine-readable codes only: provider prose (and the pasted callback,
+          // which carries a live authorization code) must never reach the client or logs.
+          if (error instanceof ChatGPTWebOAuthError) {
+            // Typed against the SHARED poll-error union: the connect UI maps these literals
+            // to its own copy, so a code that is not in the contract is a silent
+            // server/client drift rather than a compile error.
+            const code: AiProviderOAuthPollError = error.code;
+            return { error: code, status: 'error' as const };
+          }
+          throw error;
+        }
+
+        await ctx.aiProviderModel.updateConfig(
+          input.providerId,
+          { keyVaults: connectionKeyVaults(connection) },
+          ctx.gateKeeper.encrypt,
+          KeyVaultsGateKeeper.getUserKeyVaults,
+        );
+
+        return { status: 'success' as const };
+      }
 
       // For GitHub Copilot, use the specialized service
       if (input.providerId === 'githubcopilot' && service instanceof GithubCopilotOAuthService) {
@@ -204,8 +313,10 @@ export const oauthDeviceFlowRouter = router({
             bearerTokenExpiresAt: undefined,
             githubAvatarUrl: undefined,
             githubUsername: undefined,
+            oauthAccountEmail: undefined,
             oauthAccountId: undefined,
             oauthAccessToken: undefined,
+            oauthDeviceId: undefined,
             oauthRefreshToken: undefined,
             oauthTokenExpiresAt: undefined,
           },

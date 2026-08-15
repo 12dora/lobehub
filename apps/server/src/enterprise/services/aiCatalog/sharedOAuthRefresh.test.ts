@@ -179,6 +179,46 @@ describe('refreshSharedOAuthVault', () => {
     expect(persisted.baseURL).toBe('https://keep.example.com/v1');
   });
 
+  /**
+   * The shared path reaches the same refresh policy as the personal one, so a provider that
+   * overrides the token wire must be selected HERE too — the base service would send no
+   * User-Agent and would surface the provider's `error_description`.
+   */
+  it('uses the ChatGPT Web override for the shared chatgptweb credential', async () => {
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+    );
+    mockCas.mockResolvedValueOnce(true);
+
+    const result = await refreshSharedOAuthVault(makeParams({ providerKey: 'chatgptweb' }));
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe('https://auth.openai.com/oauth/token');
+    expect(init.headers['User-Agent']).toContain('Chrome/136');
+    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+    expect(init.body).toContain('grant_type=refresh_token');
+    expect(init.body).toContain('refresh_token=rt-old');
+    // Bounded strictly below LEASE_SECONDS so the lease cannot expire mid-call.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+
+    expect(result.oauthAccessToken).toBe('at-new');
+    expect(result.oauthRefreshToken).toBe('rt-new');
+    expect(decryptVault(mockCas.mock.calls[0][0].ciphertext).oauthRefreshToken).toBe('rt-new');
+  });
+
+  it('never surfaces the provider error_description for the shared chatgptweb credential', async () => {
+    mockFetch.mockResolvedValue(
+      tokenResponse(
+        { error: 'server_error', error_description: 'REQUEST-ECHO rt-old rejected' },
+        false,
+      ),
+    );
+
+    await expect(
+      refreshSharedOAuthVault(makeParams({ providerKey: 'chatgptweb' })),
+    ).rejects.toMatchObject({ message: expect.not.stringContaining('REQUEST-ECHO') });
+  });
+
   it('survives losing the CAS race to the KEK rewrap worker (same plaintext, new ciphertext)', async () => {
     mockFetch.mockResolvedValueOnce(
       tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),

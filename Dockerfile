@@ -6,6 +6,18 @@ FROM node:${NODEJS_VERSION}-slim AS base
 
 ARG USE_CN_MIRROR
 
+## curl-impersonate: the ChatGPT Web provider transport. chatgpt.com is behind
+## Cloudflare bot-fight and answers Node's own fetch with a 403 challenge whatever
+## headers it sends — the TLS/HTTP2 fingerprint is what gets checked. The musl assets
+## are STATICALLY linked, so the binary runs in the busybox/scratch runtime image.
+## Version + digests are pinned in scripts/curlImpersonate/manifest.json (the single
+## source of truth, read by the dev installer). A shell build stage cannot read JSON, so
+## the two linux/musl digests are duplicated here — change them together.
+ARG CURL_IMPERSONATE_VERSION="v2.1.0"
+ARG CURL_IMPERSONATE_DOWNLOAD_BASE=""
+ARG CURL_IMPERSONATE_SHA256_AARCH64="e6dea0ce4fe5d6e7f01c1926c2b3bf6bbd140e1b890c0788881a10bfc09b25e2"
+ARG CURL_IMPERSONATE_SHA256_X86_64="4fb112bd537ab701c197506b7a06d6711a564f8338dac30a8862683b9f7107e9"
+
 ENV DEBIAN_FRONTEND="noninteractive"
 
 RUN set -e && \
@@ -13,7 +25,7 @@ RUN set -e && \
         sed -i "s/deb.debian.org/mirrors.ustc.edu.cn/g" "/etc/apt/sources.list.d/debian.sources"; \
     fi && \
     apt update && \
-    apt install ca-certificates proxychains-ng -qy && \
+    apt install ca-certificates curl proxychains-ng -qy && \
     mkdir -p /distroless/bin /distroless/etc /distroless/etc/ssl/certs /distroless/lib && \
     cp /usr/lib/$(arch)-linux-gnu/libproxychains.so.4 /distroless/lib/libproxychains.so.4 && \
     cp /usr/lib/$(arch)-linux-gnu/libdl.so.2 /distroless/lib/libdl.so.2 && \
@@ -25,6 +37,35 @@ RUN set -e && \
     cp /usr/local/bin/node /distroless/bin/node && \
     cp /etc/ssl/certs/ca-certificates.crt /distroless/etc/ssl/certs/ca-certificates.crt && \
     rm -rf /tmp/* /var/lib/apt/lists/* /var/tmp/*
+
+RUN set -e && \
+    CURL_IMPERSONATE_BASE="${CURL_IMPERSONATE_DOWNLOAD_BASE}"; \
+    if [ -z "${CURL_IMPERSONATE_BASE}" ]; then \
+        if [ "${USE_CN_MIRROR:-false}" = "true" ]; then \
+            CURL_IMPERSONATE_BASE="https://ghfast.top/https://github.com/lexiforest/curl-impersonate/releases/download"; \
+        else \
+            CURL_IMPERSONATE_BASE="https://github.com/lexiforest/curl-impersonate/releases/download"; \
+        fi; \
+    fi; \
+    case "$(arch)" in \
+        x86_64) CURL_IMPERSONATE_ARCH="x86_64-linux-musl"; CURL_IMPERSONATE_SHA256="${CURL_IMPERSONATE_SHA256_X86_64}" ;; \
+        aarch64|arm64) CURL_IMPERSONATE_ARCH="aarch64-linux-musl"; CURL_IMPERSONATE_SHA256="${CURL_IMPERSONATE_SHA256_AARCH64}" ;; \
+        *) echo "curl-impersonate: unsupported architecture $(arch)" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /distroless/usr/local/bin /tmp/curl-impersonate && \
+    curl -fsSL "${CURL_IMPERSONATE_BASE}/${CURL_IMPERSONATE_VERSION}/curl-impersonate-${CURL_IMPERSONATE_VERSION}.${CURL_IMPERSONATE_ARCH}.tar.gz" \
+        -o /tmp/curl-impersonate/curl-impersonate.tar.gz && \
+    ## Fail closed on anything but the reviewed release: HTTPS says who served the file,
+    ## not that it is the file we pinned — and this binary runs with the server's secrets.
+    echo "${CURL_IMPERSONATE_SHA256}  /tmp/curl-impersonate/curl-impersonate.tar.gz" | sha256sum -c - && \
+    ## Stage, then assert a REGULAR file (a symlink entry would install a pointer at
+    ## something else), then install atomically.
+    tar -xzf /tmp/curl-impersonate/curl-impersonate.tar.gz -C /tmp/curl-impersonate curl-impersonate && \
+    test -f /tmp/curl-impersonate/curl-impersonate && test ! -L /tmp/curl-impersonate/curl-impersonate && \
+    chmod 755 /tmp/curl-impersonate/curl-impersonate && \
+    /tmp/curl-impersonate/curl-impersonate --version | head -n 1 && \
+    mv -f /tmp/curl-impersonate/curl-impersonate /distroless/usr/local/bin/curl-impersonate && \
+    rm -rf /tmp/curl-impersonate
 
 ## Builder image, install all the dependencies and build the app
 FROM base AS builder
@@ -158,6 +199,9 @@ ENV APP_URL="" \
     SYSTEM_AGENT="" \
     FEATURE_FLAGS="" \
     PROXY_URL=""
+
+# ChatGPT Web provider transport (browser-fingerprinted curl, shipped in this image)
+ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate"
 
 # Database
 ENV KEY_VAULTS_SECRET="" \

@@ -5,6 +5,7 @@ import type { PlatformAiProviderItem } from '@/database/schemas/platform';
 import { createSafeOutboundHttpClient } from '../../security/outboundHttp';
 import {
   AiCatalogConnectionTestService,
+  aiConnectionFailureCode,
   classifyAiConnectionFailure,
   createSafeAiConnectionProbe,
   resolveAiConnectionProbeApiMode,
@@ -25,6 +26,11 @@ const streamingResponse = () =>
 const chatMock = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 })),
 );
+
+/** Sentinel standing in for the browser-fingerprinted transport. */
+const impersonatedFetch = vi.hoisted(() => vi.fn());
+
+vi.mock('../chatgptWeb/transport', () => ({ getChatGPTWebFetch: () => impersonatedFetch }));
 
 /** Captures the runtime init options so transport/retry wiring is assertable. */
 const initRuntimeMock = vi.hoisted(() => vi.fn());
@@ -277,6 +283,246 @@ describe('classifyAiConnectionFailure', () => {
     expect(classifyAiConnectionFailure(error)).toMatchObject({
       errorCategory: 'auth',
       status: 401,
+    });
+  });
+});
+
+describe('createSafeAiConnectionProbe ChatGPT Web transport', () => {
+  const probe = () =>
+    createSafeAiConnectionProbe(
+      createSafeOutboundHttpClient({
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+        transport: vi.fn(),
+      }),
+    );
+
+  /**
+   * The SafeOutbound adapter is Node's own fetch underneath, and chatgpt.com answers that
+   * TLS fingerprint with a Cloudflare challenge no matter which credentials are sent — a
+   * probe through it would report a permanent auth failure for a working connection.
+   */
+  it('probes chatgptweb through the impersonated transport, streaming', async () => {
+    chatMock.mockClear();
+    initRuntimeMock.mockClear();
+    chatMock.mockResolvedValueOnce(streamingResponse());
+
+    await probe()({
+      keyVaults: { oauthAccessToken: 'fake-token' },
+      model: 'auto',
+      provider: { ...provider, checkModel: 'auto', providerKey: 'chatgptweb' },
+      runtimeProvider: 'chatgptweb',
+    });
+
+    const transport = initRuntimeMock.mock.calls[0][2] as Record<string, unknown>;
+    // Wrapped, not raw: the child process has no deadline of its own (see below).
+    expect(transport.fetch).not.toBe(impersonatedFetch);
+    // Streaming-first backend + one honest attempt, same as the other subscription runtimes.
+    expect(transport.maxRetries).toBe(0);
+    expect(chatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'auto', stream: true }),
+      expect.anything(),
+    );
+  });
+
+  it('leaves every other runtime on the enterprise outbound adapter', async () => {
+    chatMock.mockClear();
+    initRuntimeMock.mockClear();
+
+    await probe()({
+      keyVaults: { apiKey: 'fake-key' },
+      model: 'gpt-test',
+      provider: { ...provider, checkModel: 'gpt-test' },
+      runtimeProvider: 'openai',
+    });
+
+    expect((initRuntimeMock.mock.calls[0][2] as Record<string, unknown>).fetch).not.toBe(
+      impersonatedFetch,
+    );
+  });
+
+  it('gives a missing transport binary its own stable code', () => {
+    const failure = classifyAiConnectionFailure({
+      code: 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE',
+      message: 'ChatGPT Web transport unavailable: the curl-impersonate binary was not found.',
+      name: 'ChatGPTWebTransportUnavailableError',
+    });
+
+    expect(failure).toMatchObject({
+      errorCategory: 'invalid_config',
+      errorType: 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE',
+    });
+    expect(aiConnectionFailureCode(failure.errorCategory, failure.errorType)).toBe(
+      'connection_failed_transport',
+    );
+  });
+
+  it('bounds the impersonated probe with the streaming connection-test deadline', async () => {
+    chatMock.mockClear();
+    initRuntimeMock.mockClear();
+    impersonatedFetch.mockClear();
+    impersonatedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
+    chatMock.mockResolvedValueOnce(streamingResponse());
+
+    await probe()({
+      keyVaults: { oauthAccessToken: 'fake-token' },
+      model: 'auto',
+      provider: { ...provider, checkModel: 'auto', providerKey: 'chatgptweb' },
+      runtimeProvider: 'chatgptweb',
+    });
+
+    const wrapped = (initRuntimeMock.mock.calls[0][2] as { fetch: typeof fetch }).fetch;
+    const caller = new AbortController();
+    await wrapped('https://chatgpt.com/backend-api/me', { signal: caller.signal });
+
+    const init = impersonatedFetch.mock.calls[0][1] as RequestInit;
+    expect(impersonatedFetch.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/me');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    // Composed, not replaced: cancelling the connection test still hangs up the child.
+    expect(init.signal).not.toBe(caller.signal);
+    caller.abort();
+    expect(init.signal!.aborted).toBe(true);
+  });
+
+  /**
+   * The deadline bounds the PROBE, not a hop. A ChatGPT Web chat is a sequence of requests
+   * (bootstrap, sentinel prepare/finalize, conversation); a timer armed per fetch let one
+   * "check" run for several multiples of the budget before any verdict appeared.
+   */
+  it('arms exactly one deadline per probe and shares it across every hop', async () => {
+    chatMock.mockClear();
+    initRuntimeMock.mockClear();
+    impersonatedFetch.mockClear();
+    impersonatedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
+    chatMock.mockResolvedValueOnce(streamingResponse());
+
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      await probe()({
+        keyVaults: { oauthAccessToken: 'fake-token' },
+        model: 'auto',
+        provider: { ...provider, checkModel: 'auto', providerKey: 'chatgptweb' },
+        runtimeProvider: 'chatgptweb',
+      });
+
+      expect(timeoutSpy).toHaveBeenCalledTimes(1);
+
+      // Two sequential hops on the same probe's transport: the deadline instance is reused,
+      // so the second request inherits whatever is left of the budget rather than a fresh one.
+      const wrapped = (initRuntimeMock.mock.calls[0][2] as { fetch: typeof fetch }).fetch;
+      await wrapped('https://chatgpt.com/backend-api/sentinel/chat-requirements');
+      await wrapped('https://chatgpt.com/backend-api/conversation');
+
+      const first = (impersonatedFetch.mock.calls[0][1] as RequestInit).signal;
+      const second = (impersonatedFetch.mock.calls[1][1] as RequestInit).signal;
+      expect(first).toBeInstanceOf(AbortSignal);
+      expect(second).toBe(first);
+      expect(timeoutSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('passes the probe deadline into runtime.chat, not only into the transport', async () => {
+    chatMock.mockClear();
+    initRuntimeMock.mockClear();
+    impersonatedFetch.mockClear();
+    impersonatedFetch.mockResolvedValue(new Response('{}', { status: 200 }));
+
+    const deadline = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+    let chatSignal: AbortSignal | undefined;
+    let abortedDuringChat: boolean | undefined;
+
+    chatMock.mockImplementationOnce(async (..._args: unknown[]) => {
+      chatSignal = (_args[1] as { signal?: AbortSignal }).signal;
+      // The runtime is still running when the probe budget runs out: the SDK call itself
+      // must be cancelled, not just the next fetch it would have made.
+      deadline.abort();
+      abortedDuringChat = chatSignal?.aborted;
+      return streamingResponse();
+    });
+
+    try {
+      await probe()({
+        keyVaults: { oauthAccessToken: 'fake-token' },
+        model: 'auto',
+        provider: { ...provider, checkModel: 'auto', providerKey: 'chatgptweb' },
+        runtimeProvider: 'chatgptweb',
+      });
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+
+    expect(chatSignal).toBeInstanceOf(AbortSignal);
+    // Composed, not replaced: the probe's own hang-up still works (asserted elsewhere).
+    expect(chatSignal).not.toBe(deadline.signal);
+    expect(abortedDuringChat).toBe(true);
+  });
+
+  /**
+   * The whole path, not a hand-built payload: the injected transport throws the real
+   * `ChatGPTWebTransportUnavailableError`, the runtime wraps it the way model-runtime does
+   * (`AgentRuntimeError.chat` with a generic outer `errorType`), and the probe's classifier
+   * must still land on the transport code rather than "the provider rejected us".
+   */
+  describe('transport-unavailable through the probe', () => {
+    const unavailable = () =>
+      Object.assign(
+        new Error('ChatGPT Web transport unavailable: the curl-impersonate binary was not found.'),
+        { code: 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE', name: 'ChatGPTWebTransportUnavailableError' },
+      );
+
+    const classifyProbeFailure = async (
+      wrap: (error: unknown) => unknown,
+    ): Promise<ReturnType<typeof classifyAiConnectionFailure>> => {
+      initRuntimeMock.mockClear();
+      impersonatedFetch.mockClear();
+      impersonatedFetch.mockRejectedValue(unavailable());
+      chatMock.mockImplementationOnce(async () => {
+        try {
+          const transport = initRuntimeMock.mock.calls[0][2] as { fetch: typeof fetch };
+          return await transport.fetch('https://chatgpt.com/backend-api/conversation');
+        } catch (error) {
+          throw wrap(error);
+        }
+      });
+
+      try {
+        await probe()({
+          keyVaults: { oauthAccessToken: 'fake-token' },
+          model: 'auto',
+          provider: { ...provider, checkModel: 'auto', providerKey: 'chatgptweb' },
+          runtimeProvider: 'chatgptweb',
+        });
+      } catch (error) {
+        return classifyAiConnectionFailure(error);
+      }
+      throw new Error('probe unexpectedly succeeded');
+    };
+
+    it.each([
+      [
+        'wrapped in the runtime payload',
+        (error: unknown) => ({
+          error: {
+            code: (error as { code: string }).code,
+            kind: 'transport_unavailable',
+            message: (error as Error).message,
+          },
+          errorType: 'ProviderBizError',
+          message: (error as Error).message,
+          provider: 'chatgptweb',
+        }),
+      ],
+      ['re-thrown unwrapped', (error: unknown) => error],
+    ])('resolves to connection_failed_transport (%s)', async (_label, wrap) => {
+      const failure = await classifyProbeFailure(wrap);
+
+      expect(failure.errorType).toBe('CHATGPT_WEB_TRANSPORT_UNAVAILABLE');
+      expect(failure.errorCategory).toBe('invalid_config');
+      expect(aiConnectionFailureCode(failure.errorCategory, failure.errorType)).toBe(
+        'connection_failed_transport',
+      );
     });
   });
 });

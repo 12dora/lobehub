@@ -975,6 +975,98 @@ describe('hasModelRuntimeEnvironmentFallback ChatGPT', () => {
   });
 });
 
+describe('hasModelRuntimeEnvironmentFallback ChatGPTWeb', () => {
+  it('never treats CHATGPTWEB_API_KEY as a valid environment fallback', () => {
+    expect(
+      hasModelRuntimeEnvironmentFallback(ModelProvider.ChatGPTWeb, {
+        CHATGPTWEB_API_KEY: 'would-have-been-false-ready',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('buildPayloadFromKeyVaults ChatGPTWeb contract', () => {
+  it('forwards the OAuth access token, account id and the STABLE device id', () => {
+    expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.ChatGPTWeb)).toEqual({
+      apiKey: undefined,
+      chatgptAccountId: undefined,
+      chatgptDeviceId: undefined,
+      runtimeProvider: ModelProvider.ChatGPTWeb,
+    });
+    expect(
+      buildPayloadFromKeyVaults(
+        {
+          oauthAccessToken: 'oauth-token-value',
+          oauthAccountId: 'account-id',
+          oauthDeviceId: 'device-id',
+        },
+        ModelProvider.ChatGPTWeb,
+      ),
+    ).toEqual({
+      apiKey: 'oauth-token-value',
+      chatgptAccountId: 'account-id',
+      chatgptDeviceId: 'device-id',
+      runtimeProvider: ModelProvider.ChatGPTWeb,
+    });
+  });
+});
+
+describe('ChatGPT Web transport injection', () => {
+  const payload: ClientSecretPayload = {
+    apiKey: 'oauth-token-value',
+    chatgptAccountId: 'account-id',
+    chatgptDeviceId: 'device-id',
+    runtimeProvider: ModelProvider.ChatGPTWeb,
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * chatgpt.com is behind Cloudflare bot-fight and 403s any plain-Node TLS fingerprint,
+   * so this runtime cannot use the default transport. Asserted at the single construction
+   * seam every server path (user BYOK, platform-managed, exact-revision pin) goes through.
+   */
+  it('injects the impersonated fetch and forwards the identity params', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload);
+
+    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    expect(params.apiKey).toBe('oauth-token-value');
+    expect(params.chatgptAccountId).toBe('account-id');
+    expect(params.chatgptDeviceId).toBe('device-id');
+    expect(typeof params.fetch).toBe('function');
+  });
+
+  it('lets an explicit transport win (the connection probe supplies its own)', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+    const probeFetch = vi.fn() as unknown as typeof fetch;
+
+    initModelRuntimeWithUserPayload(ModelProvider.ChatGPTWeb, payload, { fetch: probeFetch });
+
+    expect((spy.mock.calls[0][1] as Record<string, unknown>).fetch).toBe(probeFetch);
+  });
+
+  it('leaves every other provider on its own default transport', () => {
+    const spy = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as unknown as ModelRuntime);
+
+    initModelRuntimeWithUserPayload(ModelProvider.OpenAI, {
+      apiKey: 'sk-1',
+      runtimeProvider: ModelProvider.OpenAI,
+    });
+
+    expect((spy.mock.calls[0][1] as Record<string, unknown>).fetch).toBeUndefined();
+  });
+});
+
 describe('buildPayloadFromKeyVaults SuperGrok contract', () => {
   it('only accepts oauthAccessToken — plain apiKey does not become a usable bearer', () => {
     expect(buildPayloadFromKeyVaults({ apiKey: 'sk-ignored' }, ModelProvider.SuperGrok)).toEqual({

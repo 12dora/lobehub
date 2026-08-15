@@ -54,6 +54,7 @@
     "build-migrate-db": "bun run db:migrate",
     "check": "bun run enterprise:check-branding && bun run enterprise:check-paths && bun run .agents/scripts/check/cli.ts",
     "clean:node_modules": "bash -lc 'set -e; echo \"Removing all node_modules...\"; rm -rf node_modules; pnpm -r exec rm -rf node_modules; rm -rf apps/desktop/node_modules; echo \"All node_modules removed.\"'",
+    "curl-impersonate:install": "tsx scripts/curlImpersonate/install.mts",
     "db:generate": "drizzle-kit generate && npm run workflow:dbml",
     "db:migrate": "cross-env MIGRATION_DB=1 tsx ./scripts/migrateServerDB/index.ts",
     "db:studio": "drizzle-kit studio",

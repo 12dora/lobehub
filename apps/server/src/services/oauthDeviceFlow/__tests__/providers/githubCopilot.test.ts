@@ -236,4 +236,25 @@ describe('getOAuthService', () => {
     expect(service).toBeInstanceOf(OAuthDeviceFlowService);
     expect(service).not.toBeInstanceOf(GithubCopilotOAuthService);
   });
+
+  /**
+   * Card-driven, not id-driven: both routers gate the paste flow on `instanceof
+   * ChatGPTWebOAuthService`, so a factory that fell through to the base service here would
+   * turn every ChatGPT Web connect attempt into a PRECONDITION_FAILED.
+   */
+  it('should return ChatGPTWebOAuthService for the authorization-code paste flow', () => {
+    // Identified structurally rather than by importing the enterprise module: this file
+    // is upstream, and the path-boundary check forbids the import.
+    const service = getOAuthService('chatgptweb') as OAuthDeviceFlowService & {
+      exchangeCallback?: unknown;
+      verifyAccessToken?: unknown;
+    };
+
+    expect(service.constructor.name).toBe('ChatGPTWebOAuthService');
+    expect(typeof service.exchangeCallback).toBe('function');
+    expect(typeof service.verifyAccessToken).toBe('function');
+    // The device-code providers must keep their own services.
+    expect(getOAuthService('supergrok').constructor.name).toBe('OAuthDeviceFlowService');
+    expect(getOAuthService('chatgpt').constructor.name).toBe('ChatGPTOAuthService');
+  });
 });

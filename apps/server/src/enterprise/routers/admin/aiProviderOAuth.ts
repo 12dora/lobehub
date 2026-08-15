@@ -1,7 +1,8 @@
 import debug from 'debug';
-import { ModelProvider } from 'model-bank';
 import {
   DEFAULT_MODEL_PROVIDER_LIST,
+  getProviderOAuthGrantFlow,
+  isProviderAccessTokenPasteAllowed,
   isRotatingRefreshOAuthProvider,
 } from 'model-bank/modelProviders';
 
@@ -34,11 +35,18 @@ import {
   withPlatformPermission,
 } from '../../guards/platformPermission';
 import { AiCatalogNotFoundError } from '../../services/aiCatalog/adminService';
+import { providerCredentialKeys } from '../../services/aiCatalog/credentialAdapter';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import {
   isOAuthAuthorizationExpiredError,
   refreshSharedOAuthVault,
 } from '../../services/aiCatalog/sharedOAuthRefresh';
+import {
+  type ChatGPTWebConnection,
+  ChatGPTWebOAuthError,
+  ChatGPTWebOAuthService,
+  parsePasteEnvelope,
+} from '../../services/chatgptWeb/oauthService';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { assertDangerousReauth, createService, mapServiceError } from './aiCatalogSupport';
 
@@ -83,6 +91,67 @@ const resolveRotatingOAuthCard = (providerKey: string): RotatingOAuthProviderCar
     settings: (card.settings ?? {}) as Record<string, unknown>,
   };
 };
+
+/** Provider-agnostic shape of a freshly obtained shared connection. */
+interface SharedConnectionTokens {
+  accessToken: string;
+  accountId?: string;
+  deviceId?: string;
+  email?: string;
+  /** Epoch millis. */
+  expiresAt?: number;
+  refreshToken?: string;
+}
+
+/**
+ * Project a connection onto the provider's credential SHAPE.
+ *
+ * This used to be a chain of `input.id === ModelProvider.ChatGPT` conditionals, which
+ * silently dropped every identity leaf of any other provider. Whether a leaf may be
+ * stored is a property of the credential shape (`credentialAdapter` hard-rejects unknown
+ * keys), so it is read from there.
+ *
+ * EVERY optional leaf moves as a UNIT with the credential it describes: a reconnect that
+ * returns no email/account id must CLEAR the stored one, or the previous account's
+ * identity would be displayed — and its account id sent — next to the new token.
+ *
+ * The refresh token is the sharpest case. Reconnecting with a PASTED ACCESS TOKEN yields
+ * no refresh grant; keeping the previous one would leave the card claiming the connection
+ * auto-renews and, at expiry, let the shared refresh redeem the OLD account's grant and
+ * overwrite the new connection with a different account's credentials. So it is unset like
+ * everything else the new tokens did not provide.
+ */
+const buildSharedVault = (
+  providerKey: string,
+  tokens: SharedConnectionTokens,
+): { clearedLeaves: string[]; vault: Record<string, string> } => {
+  const allowed = providerCredentialKeys(providerKey);
+  const vault: Record<string, string> = { oauthAccessToken: tokens.accessToken };
+  const clearedLeaves: string[] = [];
+
+  const put = (leaf: string, value: string | undefined) => {
+    if (!allowed.has(leaf)) return;
+    if (value) vault[leaf] = value;
+    else clearedLeaves.push(leaf);
+  };
+
+  put('oauthRefreshToken', tokens.refreshToken);
+  put('oauthTokenExpiresAt', tokens.expiresAt ? String(tokens.expiresAt) : undefined);
+  put('oauthAccountId', tokens.accountId);
+  put('oauthAccountEmail', tokens.email);
+  put('oauthDeviceId', tokens.deviceId);
+
+  return { clearedLeaves, vault };
+};
+
+const toSharedTokens = (connection: ChatGPTWebConnection): SharedConnectionTokens => ({
+  accessToken: connection.accessToken,
+  ...(connection.accountId ? { accountId: connection.accountId } : {}),
+  deviceId: connection.deviceId,
+  ...(connection.email ? { email: connection.email } : {}),
+  ...(connection.expiresAt ? { expiresAt: connection.expiresAt } : {}),
+  ...(connection.refreshToken ? { refreshToken: connection.refreshToken } : {}),
+});
 
 /** Recognition affordance only — never enough material to reconstruct the account id. */
 const maskAccountId = (accountId: string | undefined): string | null =>
@@ -229,9 +298,11 @@ export const adminAiProviderOAuthRouter = router({
       const disconnected = {
         accountEmail: null,
         accountIdMasked: null,
+        canRefresh: false,
         connected: false,
         expired: false,
         expiresAt: null,
+        flow: getProviderOAuthGrantFlow(input.id),
         secretConfigured: false,
       };
 
@@ -295,17 +366,28 @@ export const adminAiProviderOAuthRouter = router({
       const expiresAt = asVaultString(keyVaults.oauthTokenExpiresAt);
       // Connections stored before the email leaf existed keep working: decode the claim from
       // the access token we already hold, best-effort and WITHOUT persisting it.
-      const accountEmail =
-        asVaultString(keyVaults.oauthAccountEmail) ??
-        extractChatGPTAccountEmail(undefined, accessToken) ??
-        null;
+      //
+      // Gated on the credential SHAPE. A provider whose vault has no `oauthAccountEmail`
+      // (SuperGrok) deliberately does not surface an account identity, and decoding a
+      // standard `email` claim out of its token would publish exactly what that shape
+      // withholds — to every admin with AI_PROVIDER_READ.
+      const emailProjectable = providerCredentialKeys(input.id).has('oauthAccountEmail');
+      const accountEmail = emailProjectable
+        ? (asVaultString(keyVaults.oauthAccountEmail) ??
+          extractChatGPTAccountEmail(undefined, accessToken) ??
+          null)
+        : null;
 
       return {
         accountEmail,
         accountIdMasked: maskAccountId(accountId),
+        // A pasted access token has no refresh grant at all: it dies at `expiresAt` and
+        // only a manual reconnect brings it back.
+        canRefresh: Boolean(asVaultString(keyVaults.oauthRefreshToken)),
         connected: !expired && Boolean(accessToken),
         expired,
         expiresAt: expiresAt ?? null,
+        flow: getProviderOAuthGrantFlow(input.id),
         secretConfigured,
       };
     }),
@@ -370,8 +452,10 @@ export const adminAiProviderOAuthRouter = router({
       });
 
       return {
+        allowAccessTokenPaste: isProviderAccessTokenPasteAllowed(input.id),
         deviceCode: response.deviceCode,
         expiresIn: Number.isFinite(response.expiresIn) ? response.expiresIn : null,
+        flow: getProviderOAuthGrantFlow(input.id),
         interval: response.interval,
         userCode: response.userCode,
         verificationUri: response.verificationUri,
@@ -424,54 +508,110 @@ export const adminAiProviderOAuthRouter = router({
         targetId,
       });
 
-      let pollResult;
-      try {
-        pollResult = await getOAuthService(input.id).pollForToken(card.config, input.deviceCode);
-      } catch {
-        await audit.append({
-          action: 'admin.aiProviderOAuth.pollAuthStatus',
-          actorUserId: ctx.userId!,
-          // Provider prose may echo request material — only a stable code is stored.
-          afterDiff: { error: 'device_token_exchange_failed', providerKey: input.id },
-          result: 'failure',
-          targetId,
-          targetType: 'provider',
-        });
-        return throwEnterpriseError({
-          code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
-          httpCode: 'PRECONDITION_FAILED',
-        });
+      const oauthService = getOAuthService(input.id);
+      let connectionTokens: SharedConnectionTokens;
+
+      if (getProviderOAuthGrantFlow(input.id) === 'authorization_code_paste') {
+        if (!(oauthService instanceof ChatGPTWebOAuthService)) {
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            httpCode: 'PRECONDITION_FAILED',
+          });
+        }
+        // Nothing pasted yet: the operator has not finished signing in. No network work,
+        // no audit row — the client may poll this the same way it polls a device code.
+        if (!input.callbackUrl && !input.accessToken) {
+          return { ...unfinished, status: 'pending' as const };
+        }
+        if (input.accessToken && !isProviderAccessTokenPasteAllowed(input.id)) {
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            httpCode: 'PRECONDITION_FAILED',
+          });
+        }
+
+        try {
+          // Both branches REQUIRE a live envelope: it carries the PKCE verifier for the
+          // code exchange and the device id the authorize call was made with. A malformed
+          // or stale one is reported (`invalid_callback` / `expired`) rather than silently
+          // minting a fresh device id, which would break the sentinel handshake the stored
+          // `oai-device-id` is supposed to keep stable.
+          const envelope = parsePasteEnvelope(input.deviceCode);
+          const connection = input.callbackUrl
+            ? await oauthService.exchangeCallback(card.config, input.deviceCode, input.callbackUrl)
+            : await oauthService.verifyAccessToken(input.accessToken!, envelope.deviceId);
+          connectionTokens = toSharedTokens(connection);
+        } catch (error) {
+          // Operator-fixable outcomes (bad paste, stale envelope, rejected exchange) are
+          // reported with a stable code — the pasted callback carries a live authorization
+          // code and must never be audited or logged.
+          if (error instanceof ChatGPTWebOAuthError) {
+            await audit.append({
+              action: 'admin.aiProviderOAuth.pollAuthStatus',
+              actorUserId: ctx.userId!,
+              afterDiff: { error: error.code, providerKey: input.id },
+              result: 'failure',
+              targetId,
+              targetType: 'provider',
+            });
+            return { ...unfinished, error: error.code, status: 'error' as const };
+          }
+          await audit.append({
+            action: 'admin.aiProviderOAuth.pollAuthStatus',
+            actorUserId: ctx.userId!,
+            afterDiff: { error: 'device_token_exchange_failed', providerKey: input.id },
+            result: 'failure',
+            targetId,
+            targetType: 'provider',
+          });
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            httpCode: 'PRECONDITION_FAILED',
+          });
+        }
+      } else {
+        let pollResult;
+        try {
+          pollResult = await oauthService.pollForToken(card.config, input.deviceCode);
+        } catch {
+          await audit.append({
+            action: 'admin.aiProviderOAuth.pollAuthStatus',
+            actorUserId: ctx.userId!,
+            // Provider prose may echo request material — only a stable code is stored.
+            afterDiff: { error: 'device_token_exchange_failed', providerKey: input.id },
+            result: 'failure',
+            targetId,
+            targetType: 'provider',
+          });
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            httpCode: 'PRECONDITION_FAILED',
+          });
+        }
+
+        if (pollResult.status !== 'success' || !pollResult.tokens) {
+          return { ...unfinished, status: pollResult.status };
+        }
+
+        const tokens = pollResult.tokens;
+        // Expiry: prefer the explicit expires_in, fall back to the JWT exp claim —
+        // some providers (e.g. xAI) don't always return expires_in.
+        const expiresAt = tokens.expiresIn
+          ? Date.now() + tokens.expiresIn * 1000
+          : parseJwtExpiry(tokens.accessToken);
+        connectionTokens = {
+          accessToken: tokens.accessToken,
+          ...(tokens.accountId ? { accountId: tokens.accountId } : {}),
+          ...(tokens.email ? { email: tokens.email } : {}),
+          ...(expiresAt ? { expiresAt } : {}),
+          ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+        };
       }
 
-      if (pollResult.status !== 'success' || !pollResult.tokens) {
-        return { ...unfinished, status: pollResult.status };
-      }
-
-      const tokens = pollResult.tokens;
-      // Expiry: prefer the explicit expires_in, fall back to the JWT exp claim —
-      // some providers (e.g. xAI) don't always return expires_in.
-      const expiresAt = tokens.expiresIn
-        ? Date.now() + tokens.expiresIn * 1000
-        : parseJwtExpiry(tokens.accessToken);
-      const vault: Record<string, string> = { oauthAccessToken: tokens.accessToken };
-      if (tokens.refreshToken) vault.oauthRefreshToken = tokens.refreshToken;
-      // Only ChatGPT's credential shape accepts an account id; supergrok rejects the key.
-      if (input.id === ModelProvider.ChatGPT && tokens.accountId) {
-        vault.oauthAccountId = tokens.accountId;
-      }
-      // Display-only account identity, same credential shape rule as the account id.
-      if (input.id === ModelProvider.ChatGPT && tokens.email) {
-        vault.oauthAccountEmail = tokens.email;
-      }
-      if (expiresAt) vault.oauthTokenExpiresAt = String(expiresAt);
-
-      /**
-       * Identity leaves move as a UNIT with the credential they describe. A reconnect that
-       * returns no email claim must clear the stored one — a merge alone would leave the
-       * PREVIOUS account's email displayed next to the new account's token.
-       */
-      const clearedIdentityLeaves =
-        input.id === ModelProvider.ChatGPT && !tokens.email ? ['oauthAccountEmail'] : [];
+      const { clearedLeaves: clearedIdentityLeaves, vault } = buildSharedVault(
+        input.id,
+        connectionTokens,
+      );
 
       let result;
       try {

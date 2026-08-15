@@ -67,6 +67,12 @@ export const parseJwtExpiry = (token: string | undefined): number | undefined =>
   }
 };
 
+/** Per-call knobs shared by every `refreshAccessToken` implementation. */
+export interface OAuthRefreshOptions {
+  /** Deadline for the token-endpoint call; see {@link OAuthDeviceFlowService.refreshAccessToken}. */
+  signal?: AbortSignal;
+}
+
 export class OAuthDeviceFlowService {
   /**
    * Initiate OAuth Device Flow by requesting a device code
@@ -164,10 +170,16 @@ export class OAuthDeviceFlowService {
    * The provider may rotate the refresh_token: when the response carries a new
    * one the old one is invalidated server-side, so callers MUST persist
    * `refreshToken` from the returned tokens before relying on them.
+   *
+   * `options.signal` bounds the token call. It matters for SHARED credentials: the
+   * platform path holds a cross-instance refresh lease across this request, and a call
+   * that outlives the lease lets a second instance present the same rotating refresh
+   * token — the reuse that revokes the whole grant family.
    */
   async refreshAccessToken(
     config: OAuthDeviceFlowConfig,
     refreshToken: string,
+    options?: OAuthRefreshOptions,
   ): Promise<TokenResponse> {
     const response = await fetch(config.tokenEndpoint, {
       body: new URLSearchParams({
@@ -180,6 +192,7 @@ export class OAuthDeviceFlowService {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       method: 'POST',
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
 
     const data = await response.json().catch(() => ({}));

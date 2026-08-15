@@ -163,7 +163,10 @@ const validateNonSecretJson = (root: unknown, ctx: z.RefinementCtx): void => {
     }
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const [key, child] = entries[i]!;
-      if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key, parentKey)) {
+      // `child` is passed so the predicate can shape-check the value too: a configuration
+      // key name (`authorizationCode`, `allowAccessTokenPaste`, `grantFlow`) must not let an
+      // opaque credential through this boundary just because it sits in the right place.
+      if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key, parentKey, child)) {
         ctx.addIssue({
           code: 'custom',
           message: 'sensitive key is not allowed',
@@ -502,6 +505,8 @@ export const adminAiProviderTestInputSchema = z
 export const AI_CONNECTION_TEST_ERROR_TYPES = [
   'AccountDeactivated',
   'AgentRuntimeError',
+  // The ChatGPT Web transport binary (curl-impersonate) is not installed on this host.
+  'CHATGPT_WEB_TRANSPORT_UNAVAILABLE',
   'ConnectionCheckFailed',
   'ExceededContextWindow',
   'InsufficientQuota',

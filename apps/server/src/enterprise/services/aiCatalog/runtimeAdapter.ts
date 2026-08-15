@@ -147,6 +147,21 @@ const builtinModelMap = new Map(
 const hasPublishedMetadata = (value: unknown): value is Record<string, unknown> =>
   isRecord(value) && Object.keys(value).length > 0;
 
+/** Bounded server-side log line for a transient shared-OAuth refresh failure. */
+const MAX_REFRESH_FAILURE_CHARS = 200;
+
+/**
+ * Never log a refresh error object: an authorization server's `error_description` is
+ * provider-controlled prose that can echo request material back into our logs, and the
+ * `cause` chain drags the raw transport error (URLs, headers) along with it. Only the error
+ * class and a bounded message survive.
+ */
+const describeRefreshFailure = (error: unknown): string => {
+  if (!(error instanceof Error)) return 'unknown error';
+  const message = error.message.slice(0, MAX_REFRESH_FAILURE_CHARS).replaceAll(/\s+/g, ' ').trim();
+  return message ? `${error.name}: ${message}` : error.name;
+};
+
 const cacheState = (key: string, state: AiProviderRuntimeState): AiProviderRuntimeState => {
   runtimeCache.set(key, state);
   while (runtimeCache.size > MAX_RUNTIME_CACHE_ENTRIES) {
@@ -547,8 +562,7 @@ export class AiCatalogExecutionResolver {
           // re-enters the refresh path.
           if (isOAuthAuthorizationExpiredError(error)) throw error;
           console.error(
-            `[ai-catalog] shared OAuth refresh for ${providerKey} failed transiently; using stored vault:`,
-            error,
+            `[ai-catalog] shared OAuth refresh for ${providerKey} failed transiently; using stored vault: ${describeRefreshFailure(error)}`,
           );
         }
       }

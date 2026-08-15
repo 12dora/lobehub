@@ -30,6 +30,15 @@ const log = debug('lobe-server:ai-catalog-shared-oauth');
  */
 export const SHARED_OAUTH_REFRESH_JOB_TYPE = 'platform.ai.oauth.refresh.v1';
 
+/**
+ * Lease budget for ONE refresh. It must strictly exceed the token call it protects:
+ * `refresh.ts` bounds every token-endpoint request to 20 s (and ChatGPT Web's own override
+ * bounds itself to the same), leaving ~10 s for the CAS persist that follows. If the call
+ * could outlive the lease, another instance would acquire it and present the SAME rotating
+ * refresh token — the reuse providers answer by revoking the entire grant family, killing
+ * the shared credential for every user at once. Raising this value is safe; lowering it
+ * below the refresh bound is not.
+ */
 const LEASE_SECONDS = 30;
 const WAITER_POLL_INTERVAL_MS = 500;
 /** ≤12s of waiting — a refresh round-trip is 1–3s; the 30s lease expiry backstops a crash. */

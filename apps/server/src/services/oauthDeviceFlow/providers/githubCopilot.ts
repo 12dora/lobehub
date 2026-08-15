@@ -1,3 +1,6 @@
+import { getProviderOAuthGrantFlow } from 'model-bank/modelProviders';
+
+import { ChatGPTWebOAuthService } from '@/server/enterprise/services/chatgptWeb/oauthService';
 import { type OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
 import { OAuthDeviceFlowService } from '../index';
@@ -129,6 +132,11 @@ export class GithubCopilotOAuthService extends OAuthDeviceFlowService {
  * Factory function to get the appropriate OAuth service based on provider
  */
 export function getOAuthService(providerId: string): OAuthDeviceFlowService {
+  // Card-driven, not id-driven: the authorization-code paste flow is a property of the
+  // provider's grant, so every provider declaring it gets the same service.
+  if (getProviderOAuthGrantFlow(providerId) === 'authorization_code_paste') {
+    return new ChatGPTWebOAuthService();
+  }
   if (providerId === 'chatgpt') {
     return new ChatGPTOAuthService();
   }

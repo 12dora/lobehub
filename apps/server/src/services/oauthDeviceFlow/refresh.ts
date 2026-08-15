@@ -7,7 +7,8 @@ import { type LobeChatDatabase } from '@/database/type';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { type OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
-import { OAuthDeviceFlowService, OAuthInvalidGrantError, parseJwtExpiry } from './index';
+import { OAuthInvalidGrantError, parseJwtExpiry } from './index';
+import { getOAuthService } from './providers/githubCopilot';
 
 const log = debug('lobe-server:oauth-token-refresh');
 
@@ -16,6 +17,21 @@ const log = debug('lobe-server:oauth-token-refresh');
  * dispatched right at the boundary doesn't hit a mid-flight 401.
  */
 const REFRESH_SKEW_MS = 120_000;
+
+/**
+ * Deadline for ONE token-endpoint call. Deliberately below the shared refresh lease
+ * (`LEASE_SECONDS = 30` in `enterprise/services/aiCatalog/sharedOAuthRefresh.ts`) with room
+ * for the persist that follows: a call that outlives the lease lets a second instance
+ * present the same rotating refresh token, and providers answer that reuse by revoking the
+ * whole grant family — killing a shared credential for every user at once.
+ */
+const REFRESH_REQUEST_TIMEOUT_MS = 20_000;
+
+// TODO(chatgptweb): E2 §1.5 refresh lifecycle beyond the proactive skew — a 24 h refresh
+// skew, a 5-minute backoff after a transient token-endpoint failure, and a forced
+// refresh-token keepalive every three days (an unused refresh token can be invalidated by
+// the provider). Needs durable last-refresh/last-error timestamps plus a background
+// keepalive job, so it is tracked as follow-up work rather than done inline here.
 
 /**
  * Fallback access-token lifetime when the provider returns neither
@@ -235,14 +251,23 @@ const refreshAndPersist = async (
   params: EnsureFreshOAuthTokenWithStoreParams,
 ): Promise<OAuthTokenKeyVaults> => {
   const { config, flightKey, keyVaults, providerId, store } = params;
-  const service = new OAuthDeviceFlowService();
+  /**
+   * The PROVIDER'S service, never the base one: a provider whose token endpoint needs a
+   * different wire (ChatGPT Web: form-encoded with the platform User-Agent, a bounded
+   * request, and errors composed here rather than echoed from the response) overrides
+   * `refreshAccessToken`, and instantiating the base class made that override dead code on
+   * the only path that ever refreshes. Providers without an override get the base service,
+   * exactly as before.
+   */
+  const service = getOAuthService(providerId);
   const usedRefreshToken = keyVaults.oauthRefreshToken!;
   const invalidGrant = params.onInvalidGrant ?? throwInvalidGrant;
+  const refreshOptions = { signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS) };
   let consumedRefreshToken = usedRefreshToken;
 
   let tokens;
   try {
-    tokens = await service.refreshAccessToken(config, usedRefreshToken);
+    tokens = await service.refreshAccessToken(config, usedRefreshToken, refreshOptions);
   } catch (error) {
     if (!(error instanceof OAuthInvalidGrantError)) throw error;
 
@@ -260,10 +285,12 @@ const refreshAndPersist = async (
     // Another instance rotated: its access token may already be fresh enough.
     if (stored.oauthAccessToken && !isExpiring(stored)) return stored;
 
-    // Otherwise retry ONCE with the newer stored refresh token.
+    // Otherwise retry ONCE with the newer stored refresh token. It shares the ORIGINAL
+    // deadline on purpose: the bound covers this whole refresh, which is what has to fit
+    // inside the shared lease — a second full budget would not.
     try {
       consumedRefreshToken = stored.oauthRefreshToken!;
-      tokens = await service.refreshAccessToken(config, consumedRefreshToken);
+      tokens = await service.refreshAccessToken(config, consumedRefreshToken, refreshOptions);
     } catch (retryError) {
       if (retryError instanceof OAuthInvalidGrantError) invalidGrant(providerId);
       throw retryError;

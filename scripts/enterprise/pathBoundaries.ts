@@ -317,6 +317,20 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     owner: 'M09',
     reason: 'Builtin tool-execution mounts the connector-governance resolve gate',
   },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.ts',
+    importSpecifier: '@/server/enterprise/services/chatgptWeb/transport',
+    owner: 'M13',
+    reason:
+      'Single runtime-construction seam injects the ChatGPT Web impersonated transport (chatgpt.com 403s any plain-Node TLS fingerprint); server-only, never bundled into model-runtime',
+  },
+  {
+    file: 'apps/server/src/services/oauthDeviceFlow/providers/githubCopilot.ts',
+    importSpecifier: '@/server/enterprise/services/chatgptWeb/oauthService',
+    owner: 'M13',
+    reason:
+      'getOAuthService factory resolves the authorization-code paste flow service for ChatGPT Web',
+  },
 ] as const satisfies readonly EnterpriseImportAllowance[];
 
 /**
@@ -836,6 +850,20 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
     owner: 'M09',
     reason: 'Covers connector-governance resolve gate at the builtin-governance test',
+  },
+  {
+    file: 'apps/server/src/routers/lambda/oauthDeviceFlow.test.ts',
+    importSpecifier: '@/server/enterprise/services/chatgptWeb/oauthService',
+    owner: 'M13',
+    reason:
+      'Builds a real ChatGPT Web OAuth service with mocked transports; the router branches on `instanceof`',
+  },
+  {
+    file: 'apps/server/src/routers/lambda/oauthDeviceFlow.test.ts',
+    importSpecifier: '@/server/enterprise/guards/managedResource',
+    owner: 'M13',
+    reason:
+      'Pass-through mock of the managed-resource guard (it needs a live DB); the real guard keys stay asserted by managedResourceRealRouters.test.ts',
   },
 ] as const satisfies readonly EnterpriseTestImportAllowance[];
 

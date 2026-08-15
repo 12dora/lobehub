@@ -1,0 +1,24 @@
+{
+  "$comment": "Pinned curl-impersonate release assets for the ChatGPT Web provider transport. SHA-256 values were computed from the exact tarballs served by the GitHub release; a mirror that serves anything else fails closed. The Dockerfile cannot read JSON, so the two linux/musl digests are duplicated there as build args — keep them in sync.",
+  "assets": {
+    "aarch64-linux-musl": {
+      "file": "curl-impersonate-v2.1.0.aarch64-linux-musl.tar.gz",
+      "sha256": "e6dea0ce4fe5d6e7f01c1926c2b3bf6bbd140e1b890c0788881a10bfc09b25e2"
+    },
+    "x86_64-linux-musl": {
+      "file": "curl-impersonate-v2.1.0.x86_64-linux-musl.tar.gz",
+      "sha256": "4fb112bd537ab701c197506b7a06d6711a564f8338dac30a8862683b9f7107e9"
+    },
+    "arm64-macos": {
+      "file": "curl-impersonate-v2.1.0.arm64-macos.tar.gz",
+      "sha256": "eaba6c9f8246310dae2d7168f2264f458518a0894262230da7309b9cdb1c5260"
+    },
+    "x86_64-macos": {
+      "file": "curl-impersonate-v2.1.0.x86_64-macos.tar.gz",
+      "sha256": "8a945a35cb715dab02958ffb4a49ae2f6f9f146c8e366a3201942e30a4993384"
+    }
+  },
+  "baseUrl": "https://github.com/lexiforest/curl-impersonate/releases/download",
+  "binaryName": "curl-impersonate",
+  "version": "v2.1.0"
+}

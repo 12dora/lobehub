@@ -1,6 +1,7 @@
 import { runWithBoundFetch } from '@lobechat/model-runtime';
 import { RequestTrigger } from '@lobechat/types';
 import debug from 'debug';
+import { ModelProvider } from 'model-bank';
 import type { z } from 'zod';
 
 import type { PlatformAiProviderItem } from '@/database/schemas/platform';
@@ -20,6 +21,7 @@ import {
   createSafeOutboundHttpClient,
   type SafeOutboundHttpClient,
 } from '../../security/outboundHttp';
+import { getChatGPTWebFetch } from '../chatgptWeb/transport';
 import { resolveAiCatalogOutboundMode } from './outboundMode';
 import type { PlatformProviderKeyVaults } from './secretManager';
 
@@ -56,7 +58,21 @@ export interface AiConnectionRuntimeTransportOptions {
  * production never uses, so the probe streams for exactly these — every other runtime keeps
  * the cheaper single-shot completion.
  */
-const RESPONSES_ONLY_RUNTIMES = new Set(['chatgpt', 'supergrok', 'xai']);
+const RESPONSES_ONLY_RUNTIMES = new Set(['chatgpt', 'chatgptweb', 'supergrok', 'xai']);
+
+/**
+ * Runtimes whose production transport is NOT the enterprise outbound adapter.
+ *
+ * chatgpt.com is behind Cloudflare bot-fight: the SafeOutbound client is Node's own
+ * fetch underneath, and its TLS/HTTP2 fingerprint is answered with a 403 challenge no
+ * matter which headers or credentials are sent. Probing through it would report a
+ * permanent auth failure for a connection that chats fine, so these runtimes probe
+ * through exactly the transport production uses. The outbound POLICY still applies —
+ * `resolveAiCatalogOutboundMode` continues to drive the shared client the rest of the
+ * probes use — but the DNS/IP guard cannot be enforced on a child process, which is
+ * acceptable here because the endpoint is a fixed, provider-owned host.
+ */
+const IMPERSONATED_TRANSPORT_RUNTIMES = new Set<string>([ModelProvider.ChatGPTWeb]);
 
 const AI_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 /**
@@ -77,6 +93,8 @@ const KNOWN_ERROR_TYPES = new Set<string>(AI_CONNECTION_TEST_ERROR_TYPES);
  */
 const ERROR_TYPE_CATEGORY: Record<string, AiConnectionErrorCategory> = {
   AccountDeactivated: 'auth',
+  // Deployment problem (the impersonation binary is missing), not a provider verdict.
+  CHATGPT_WEB_TRANSPORT_UNAVAILABLE: 'invalid_config',
   ConnectionCheckFailed: 'network',
   ExceededContextWindow: 'invalid_config',
   InsufficientQuota: 'rate_limit',
@@ -138,7 +156,28 @@ const extractStatus = (error: unknown): number => {
   return 0;
 };
 
+/** The transport's own code, and the runtime error kind it is carried as. */
+const TRANSPORT_UNAVAILABLE_CODE = 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE';
+const TRANSPORT_UNAVAILABLE_KIND = 'transport_unavailable';
+
+/**
+ * A missing impersonation binary is a DEPLOYMENT fault, and it is the only failure whose
+ * fix ("install curl-impersonate on the server") no provider-shaped category implies.
+ *
+ * The signal has to be dug out rather than read off the top: the model-runtime wraps it in
+ * `AgentRuntimeError.chat({ errorType: 'ProviderBizError', error: { kind, code, … } })`,
+ * so the outer `errorType` — which the generic extractor finds first — says nothing. Both
+ * markers are accepted (`code` and `kind`) at any depth, so the classification survives
+ * either shape the runtime settles on, and the raw transport error surviving unwrapped.
+ */
+const isTransportUnavailable = (error: unknown): boolean =>
+  errorChain(error).some(
+    (node) => node.code === TRANSPORT_UNAVAILABLE_CODE || node.kind === TRANSPORT_UNAVAILABLE_KIND,
+  );
+
 const extractErrorType = (error: unknown): string | undefined => {
+  if (isTransportUnavailable(error)) return TRANSPORT_UNAVAILABLE_CODE;
+
   for (const node of errorChain(error)) {
     const errorType = node.errorType ?? node.code;
     if (typeof errorType === 'string' && errorType.length > 0) return errorType;
@@ -193,6 +232,9 @@ export const classifyAiConnectionFailure = (error: unknown): AiConnectionFailure
   const message = extractMessage(error).toLowerCase();
 
   const category = ((): AiConnectionErrorCategory => {
+    // Decisive, ahead of every heuristic: the request never left this host, so neither a
+    // wrapper's name nor its message describes what actually failed.
+    if (rawErrorType === TRANSPORT_UNAVAILABLE_CODE) return 'invalid_config';
     // A named abort/timeout is decisive: an aborted request has no verdict from the provider,
     // whatever generic wrapper (`ProviderBizError`) the runtime put around it.
     if (name && NETWORK_ERROR_NAMES.has(name)) return 'network';
@@ -236,6 +278,9 @@ export const aiConnectionFailureCode = (
   errorType?: AiConnectionTestErrorType,
 ): string => {
   if (errorType === 'OAuthAuthorizationExpired') return 'connection_failed_shared_account_expired';
+  // Same reasoning as above: the fix ("install the ChatGPT Web transport on the server")
+  // is not implied by the `invalid_config` category, so it gets its own stable code.
+  if (errorType === 'CHATGPT_WEB_TRANSPORT_UNAVAILABLE') return 'connection_failed_transport';
   return {
     auth: 'connection_failed_auth',
     invalid_config: 'connection_failed_invalid_config',
@@ -257,6 +302,25 @@ export const resolveAiConnectionProbeApiMode = resolveManagedChatApiMode;
  * 1. explicit `fetch` constructor option (OpenAI-compatible, Anthropic, Bedrock handler)
  * 2. AsyncLocalStorage-bound global fetch for SDKs that ignore constructor options (Google)
  */
+/**
+ * Give the impersonated transport the same deadline every other probe hop has.
+ *
+ * The SafeOutbound adapters carry `timeoutMs` themselves; the curl child process does not
+ * — its own `--max-time` budget is 600 s, sized for a long chat stream. Without this an
+ * operator clicking "check" on a wedged connection waited ten minutes for a verdict.
+ *
+ * ONE `deadline` per probe invocation, created by the caller and reused for every hop.
+ * A fresh timer per fetch was not a probe deadline at all: `LobeChatGPTWebAI.chat` runs
+ * bootstrap, sentinel prepare/finalize and the conversation request in sequence, so each
+ * hop restarted the clock and a single "check" could run for several multiples of it.
+ * The caller's signal is composed in, so a cancelled test still hangs up immediately.
+ */
+const withProbeDeadline = (impersonatedFetch: typeof fetch, deadline: AbortSignal): typeof fetch =>
+  ((input: RequestInfo | URL, init?: RequestInit) => {
+    const signal = init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+    return impersonatedFetch(input, { ...init, signal });
+  }) as typeof fetch;
+
 export const createSafeAiConnectionProbe = (
   // G-07: platform provider endpoints are admin-authored, so the probe follows the same
   // private-network switch as connectors and identity providers (see ./outboundMode).
@@ -295,7 +359,18 @@ export const createSafeAiConnectionProbe = (
     // pass or fail for reasons chat never sees.
     const stream = apiMode === 'responses' || RESPONSES_ONLY_RUNTIMES.has(runtimeProvider);
 
-    const fetchAdapter = stream ? streamingFetchAdapter : bufferedFetchAdapter;
+    // One deadline for the WHOLE probe, not per hop — see `withProbeDeadline`. It is armed
+    // here, once per invocation, and reaches both the transport and the runtime call.
+    const impersonated = IMPERSONATED_TRANSPORT_RUNTIMES.has(runtimeProvider);
+    const probeDeadline = impersonated
+      ? AbortSignal.timeout(AI_CONNECTION_TEST_STREAM_TIMEOUT_MS)
+      : undefined;
+
+    const fetchAdapter = probeDeadline
+      ? withProbeDeadline(getChatGPTWebFetch(), probeDeadline)
+      : stream
+        ? streamingFetchAdapter
+        : bufferedFetchAdapter;
     const transport: AiConnectionRuntimeTransportOptions = {
       fetch: fetchAdapter,
       // One honest attempt. The SDK's default (2 retries) multiplied every deadline by three
@@ -311,6 +386,11 @@ export const createSafeAiConnectionProbe = (
       // socket. This signal is the probe's hang-up: once the verdict is in, the upstream
       // request is aborted instead of being left to run the completion out on our budget.
       const hangUp = new AbortController();
+      // The same probe deadline the transport carries: the runtime's own sequencing (a
+      // ChatGPT Web chat is several requests plus local work) must not outlive it either.
+      const chatSignal = probeDeadline
+        ? AbortSignal.any([hangUp.signal, probeDeadline])
+        : hangUp.signal;
       try {
         const response = await runtime.chat(
           {
@@ -320,7 +400,7 @@ export const createSafeAiConnectionProbe = (
             stream,
             temperature: 0,
           },
-          { metadata: { trigger: RequestTrigger.Api }, signal: hangUp.signal },
+          { metadata: { trigger: RequestTrigger.Api }, signal: chatSignal },
         );
         if (!response.ok) {
           const failure = new Error(

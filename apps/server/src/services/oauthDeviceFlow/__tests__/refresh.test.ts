@@ -412,3 +412,155 @@ describe('ensureFreshOAuthToken', () => {
     });
   });
 });
+
+/**
+ * The refresh POLICY is the only production path that ever refreshes, so a provider whose
+ * token endpoint needs a different wire has to be reachable THROUGH it. Instantiating the
+ * base service here made `ChatGPTWebOAuthService.refreshAccessToken` dead code: refreshes
+ * went out without the platform User-Agent, unbounded, and with provider prose in the
+ * thrown message.
+ */
+describe('ensureFreshOAuthToken (chatgptweb override)', () => {
+  const chatgptWebConfig = {
+    clientId: 'app_2SKx67EdpoN0G6j64rFvigXD',
+    deviceCodeEndpoint: 'https://auth.openai.com/api/accounts/authorize',
+    grantFlow: 'authorization_code_paste' as const,
+    refreshTokenGrant: true,
+    scopes: ['openid', 'offline_access'],
+    tokenEndpoint: 'https://auth.openai.com/oauth/token',
+  };
+
+  const expiringVault = () => ({
+    oauthAccessToken: 'at-old',
+    oauthRefreshToken: 'rt-old',
+    oauthTokenExpiresAt: String(Date.now() - 1000),
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('refreshes through the provider override: form body, User-Agent, bounded, rotated', async () => {
+    mockUpdateConfig.mockResolvedValue(undefined);
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+    );
+
+    const result = await ensureFreshOAuthToken({
+      config: chatgptWebConfig as any,
+      db,
+      keyVaults: expiringVault(),
+      providerId: 'chatgptweb',
+      userId: `user-${++userSeq}`,
+    });
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe(chatgptWebConfig.tokenEndpoint);
+    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+    // The base service sends no UA at all — its presence IS the proof of the override.
+    expect(init.headers['User-Agent']).toContain('Chrome/136');
+    expect(init.body).toContain('grant_type=refresh_token');
+    expect(init.body).toContain('refresh_token=rt-old');
+    // Bounded below the shared refresh lease.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+
+    expect(result.oauthAccessToken).toBe('at-new');
+    expect(result.oauthRefreshToken).toBe('rt-new');
+    expect(mockUpdateConfig).toHaveBeenCalledWith(
+      'chatgptweb',
+      expect.objectContaining({
+        keyVaults: expect.objectContaining({
+          oauthAccessToken: 'at-new',
+          oauthRefreshToken: 'rt-new',
+        }),
+      }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('never echoes the provider error_description into the surfaced error', async () => {
+    mockFetch.mockResolvedValueOnce(
+      tokenResponse(
+        {
+          error: 'server_error',
+          error_description: 'REQUEST-ECHO refresh_token=rt-old was rejected',
+        },
+        false,
+      ),
+    );
+
+    await expect(
+      ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: expiringVault(),
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      }),
+    ).rejects.toMatchObject({
+      message: expect.not.stringContaining('REQUEST-ECHO'),
+    });
+  });
+
+  it('maps invalid_grant to the reconnect-required terminal error', async () => {
+    mockFetch.mockResolvedValue(
+      tokenResponse({ error: 'invalid_grant', error_description: 'consumed' }, false),
+    );
+    mockGetAiProviderById.mockResolvedValue({ keyVaults: expiringVault() });
+
+    await expect(
+      ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: expiringVault(),
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      }),
+    ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.OAuthAuthorizationExpired });
+  });
+
+  /**
+   * A hung token endpoint used to run unbounded — and the platform path holds a 30 s
+   * cross-instance lease across this very call. Once that lease expires, a second instance
+   * refreshes with the SAME rotating token; providers answer that reuse by revoking the
+   * whole grant family. The bound has to fire first, so it is 20 s.
+   */
+  it('aborts a hung token call within the bound instead of pinning the refresh lease', async () => {
+    // Real timers cannot be waited out in a unit test; the deadline is driven directly, and
+    // the timeout VALUE is asserted separately below.
+    const deadline = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+
+    mockFetch.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          // A token endpoint that accepts the connection and then says nothing — undici
+          // rejects with an AbortError when the request signal fires.
+          init.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })),
+          );
+          setTimeout(() => deadline.abort(), 0);
+        }),
+    );
+
+    try {
+      await expect(
+        ensureFreshOAuthToken({
+          config: chatgptWebConfig as any,
+          db,
+          keyVaults: expiringVault(),
+          providerId: 'chatgptweb',
+          userId: `user-${++userSeq}`,
+        }),
+        // Composed here from the error CLASS only — no provider prose, no transport detail.
+      ).rejects.toThrow('Failed to refresh access token: AbortError');
+
+      // Below the shared refresh lease (`LEASE_SECONDS = 30`), with room for the persist.
+      for (const call of timeoutSpy.mock.calls) expect(call[0]).toBeLessThanOrEqual(20_000);
+      expect(timeoutSpy).toHaveBeenCalled();
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+});
