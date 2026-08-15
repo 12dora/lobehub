@@ -26,6 +26,45 @@ let runtimeModeSnapshotCache = new WeakMap<
   }
 >();
 
+/**
+ * Readiness is an administrative HEALTH probe: for `aiProviders`/`aiModels` it loads the whole
+ * published catalog and resolves (decrypting) every provider secret, and the same probe is
+ * registered under both keys. `platform.getCapabilities` is polled by every mounted client, so
+ * running it per request would scale secret decryption with (clients x providers).
+ *
+ * This wrapper is for POLLED, user-facing capability reads only. The admin managed-resources
+ * page and the publish guard must keep calling `resolveManagedResourceReadiness` directly so a
+ * just-fixed catalog is reflected immediately.
+ */
+export const MANAGED_RESOURCE_READINESS_CACHE_TTL_MS = 30_000;
+
+let readinessCache: { expiresAt: number; value: ManagedResourceReadinessMap } | null = null;
+let readinessInFlight: Promise<ManagedResourceReadinessMap> | null = null;
+
+export const resolveManagedResourceReadinessCached = async (options?: {
+  now?: () => number;
+  probe?: () => Promise<ManagedResourceReadinessMap>;
+}): Promise<ManagedResourceReadinessMap> => {
+  const now = options?.now ?? Date.now;
+  const at = now();
+  if (readinessCache && readinessCache.expiresAt > at) return readinessCache.value;
+  // Collapse concurrent polls into a single probe; a rejection is not cached.
+  readinessInFlight ??= (options?.probe ?? resolveManagedResourceReadiness)()
+    .then((value) => {
+      readinessCache = { expiresAt: now() + MANAGED_RESOURCE_READINESS_CACHE_TTL_MS, value };
+      return value;
+    })
+    .finally(() => {
+      readinessInFlight = null;
+    });
+  return readinessInFlight;
+};
+
+export const resetManagedResourceReadinessCacheForTest = (): void => {
+  readinessCache = null;
+  readinessInFlight = null;
+};
+
 export interface ResolvedManagedResourcePolicies {
   effectiveModes: Record<ManagedResourceKind, 'unmanaged' | 'observe' | 'ui-only' | 'enforced'>;
   publicCapabilities: ManagedResourcesCapabilities;
@@ -59,12 +98,20 @@ export const resolvePublishedManagedResourcePolicies = async (params: {
   for (const resource of MANAGED_RESOURCE_KINDS) {
     const policy = published[resource];
     const featureOn = isManagedResourceFeatureEnabled(resource, params.flags);
-    // Skills must never fall back to legacy writes/runtime after enforcement was
-    // published. Readiness is reported separately and the runtime fails closed;
-    // silently changing the effective mode to unmanaged would reopen personal
-    // mutation and name-based execution paths during a catalog outage.
+    // Client/server consistency invariant: the client must block the UI exactly when the
+    // server takes over. The server-side takeover predicates read the PUBLISHED policy
+    // (`isPlatformAiTakeoverActive` for AI, the Skill runtime for skills), so downgrading
+    // `enforced → unmanaged` here on readiness=false would un-hide the settings pages while
+    // the runtime is still platform-governed — users would see editable provider/model/skill
+    // surfaces whose writes are denied and whose credentials are not theirs. Readiness stays
+    // reported separately (`readiness` below) for the admin page, and enforcement can only be
+    // published while ready, so the fail-closed reading is the safe one.
     const catalogSafe =
-      resource === 'skills' || policy.enforcementMode !== 'enforced' || readiness[resource];
+      resource === 'skills' ||
+      resource === 'aiProviders' ||
+      resource === 'aiModels' ||
+      policy.enforcementMode !== 'enforced' ||
+      readiness[resource];
     effectiveModes[resource] =
       featureOn && policy.managed && catalogSafe ? policy.enforcementMode : 'unmanaged';
     publicCapabilities[resource] = ['ui-only', 'enforced'].includes(effectiveModes[resource]);

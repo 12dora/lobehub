@@ -56,6 +56,11 @@ export interface PlatformAiRuntimeImplementation {
   createModelAllowlistHooks: (models: PlatformAiExecutionModel[]) => ModelRuntimeHooks;
   isEnabled: () => boolean;
   /**
+   * True only while the administrator has PUBLISHED 平台托管 for AI providers. The feature
+   * flag alone never authorizes the platform to override a user's own configuration.
+   */
+  isTakeoverActive: (db: LobeChatDatabase) => Promise<boolean>;
+  /**
    * Published model set of an ACTIVELY managed provider, or `null` when the provider is not
    * platform-managed right now (never published, disabled, or archived) — `null` and `[]` are
    * different answers: `[]` means "managed, nothing published yet".
@@ -96,6 +101,16 @@ export const registerPlatformAiRuntime = (next: PlatformAiRuntimeImplementation)
 
 export const isPlatformManagedAiEnabled = (): boolean =>
   implementation?.isEnabled() ?? envFlagEnabled();
+
+/**
+ * Stable seam for upstream (`src/`) and non-enterprise server code: "is the platform AI
+ * catalog currently allowed to override this user's providers?". Never true without the
+ * feature flag AND a published 平台托管 policy.
+ */
+export const isPlatformAiTakeoverActive = async (db: LobeChatDatabase): Promise<boolean> => {
+  if (!isPlatformManagedAiEnabled()) return false;
+  return requireImplementation().isTakeoverActive(db);
+};
 
 export const resolvePlatformAiExecutionConfig = (
   db: LobeChatDatabase,

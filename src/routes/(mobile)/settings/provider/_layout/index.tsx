@@ -2,6 +2,7 @@
 
 import { Outlet, useParams } from 'react-router';
 
+import { ManagedResourceBoundary } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 
 import ProviderMenu from '../../../../(main)/settings/provider/ProviderMenu';
@@ -14,10 +15,14 @@ const Layout = () => {
     navigate(`/settings/provider/${providerKey}`);
   };
 
-  return params.providerId === 'all' ? (
-    <ProviderMenu mobile={true} onProviderSelect={handleProviderSelect} />
-  ) : (
-    <Outlet />
+  return (
+    <ManagedResourceBoundary resource="aiProviders">
+      {params.providerId === 'all' ? (
+        <ProviderMenu mobile={true} onProviderSelect={handleProviderSelect} />
+      ) : (
+        <Outlet />
+      )}
+    </ManagedResourceBoundary>
   );
 };
 

@@ -80,8 +80,7 @@ import {
 import {
   assertPlatformPublishedModel,
   createPlatformAiModelAllowlistHooks,
-  getEmptyPlatformAiRuntimeState,
-  isPlatformManagedAiEnabled,
+  listPlatformPublishedModels,
   type PlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiRuntimeState,
@@ -2415,20 +2414,21 @@ export class MemoryExtractionExecutor {
   ): Promise<AiProviderRuntimeState> {
     const db = await this.db;
     const aiInfraRepos = new AiInfraRepos(db, userId, this.aiProviderConfig, workspaceId);
-    if (isPlatformManagedAiEnabled()) {
-      return resolvePlatformAiRuntimeState({
-        db,
-        upstreamState: getEmptyPlatformAiRuntimeState(),
-      });
-    }
-    return aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
+    // Platform takeover is authorized by the published 平台托管 policy, not by the feature flag:
+    // `resolvePlatformAiRuntimeState` returns the caller's own state verbatim until 平台托管 is
+    // published, and merges the platform catalog over it afterwards. Feeding it the REAL
+    // upstream state keeps the user's BYOK providers selectable for memory extraction under
+    // takeover, mirroring the chat picker and the ModelRuntime BYOK fallback.
+    const upstreamState = await aiInfraRepos.getAiProviderRuntimeState(
+      KeyVaultsGateKeeper.getUserKeyVaults,
+    );
+    return resolvePlatformAiRuntimeState({ db, upstreamState });
   }
 
   private async resolveRuntimeKeyVaults(
     runtimeState: AiProviderRuntimeState,
     memoryServiceConfig: ResolvedMemoryServiceConfig,
   ): Promise<ProviderKeyVaultMap> {
-    const managed = isPlatformManagedAiEnabled();
     const normalizedRuntimeConfig = Object.fromEntries(
       Object.entries(runtimeState.runtimeConfig || {}).map(([providerId, config]) => [
         normalizeProvider(providerId),
@@ -2516,41 +2516,55 @@ export class MemoryExtractionExecutor {
       layerSelectedProviders[0] ??
       normalizeProvider(memoryServiceConfig.agents.layerExtractor.provider || 'openai');
 
-    if (managed) {
-      const db = await this.db;
-      for (const requirement of managedRequirements) {
-        assertPlatformPublishedModel(
-          runtimeState,
-          requirement.providerKey,
-          requirement.modelKey,
-          requirement.type,
-        );
-      }
-      const keyVaults: ManagedProviderKeyVaultMap = {};
-      const executions: Record<string, PlatformAiExecutionConfig> = {};
-      await Promise.all(
-        [...selectedProviders].map(async (providerId) => {
-          const execution = await resolvePlatformAiExecutionConfig(db, providerId);
-          keyVaults[providerId] = toDefinedKeyVaults(execution.keyVaults);
-          executions[providerId] = execution;
-        }),
-      );
-      Object.defineProperty(keyVaults, MANAGED_EXECUTIONS, { value: executions });
-      Object.defineProperty(keyVaults, MANAGED_ROLE_BINDINGS, {
-        value: {
-          embedding: embeddingProvider,
-          gatekeeper: gatekeeperProvider,
-          layerExtractor: layerExtractorProvider,
-        } satisfies ManagedRoleBindings,
-      });
-      return keyVaults;
-    }
+    // The platform governs ONLY the providers it publishes as enabled. `null` means "not
+    // actively managed" (never published, disabled, archived, or 平台托管 not published at all),
+    // in which case the provider is the user's own and keeps their credentials — the same
+    // BYOK boundary `initModelRuntimeFromDB` and the chat picker use.
+    const db = await this.db;
+    const platformOwned = new Set(
+      (
+        await Promise.all(
+          [...selectedProviders].map(async (providerId) =>
+            (await listPlatformPublishedModels(db, providerId)) === null ? null : providerId,
+          ),
+        )
+      ).filter((providerId): providerId is string => providerId !== null),
+    );
 
-    const keyVaults: ProviderKeyVaultMap = {};
+    const keyVaults: ManagedProviderKeyVaultMap = {};
     for (const providerId of selectedProviders) {
+      if (platformOwned.has(providerId)) continue;
       const runtime = normalizedRuntimeConfig[providerId];
       if (runtime?.keyVaults) keyVaults[providerId] = runtime.keyVaults;
     }
+
+    if (platformOwned.size === 0) return keyVaults;
+
+    for (const requirement of managedRequirements) {
+      if (!platformOwned.has(requirement.providerKey)) continue;
+      assertPlatformPublishedModel(
+        runtimeState,
+        requirement.providerKey,
+        requirement.modelKey,
+        requirement.type,
+      );
+    }
+    const executions: Record<string, PlatformAiExecutionConfig> = {};
+    await Promise.all(
+      [...platformOwned].map(async (providerId) => {
+        const execution = await resolvePlatformAiExecutionConfig(db, providerId);
+        keyVaults[providerId] = toDefinedKeyVaults(execution.keyVaults);
+        executions[providerId] = execution;
+      }),
+    );
+    Object.defineProperty(keyVaults, MANAGED_EXECUTIONS, { value: executions });
+    Object.defineProperty(keyVaults, MANAGED_ROLE_BINDINGS, {
+      value: {
+        embedding: embeddingProvider,
+        gatekeeper: gatekeeperProvider,
+        layerExtractor: layerExtractorProvider,
+      } satisfies ManagedRoleBindings,
+    });
     return keyVaults;
   }
 
@@ -2571,18 +2585,26 @@ export class MemoryExtractionExecutor {
       memoryServiceConfig.agents.gatekeeper.provider,
       memoryServiceConfig.agents.layerExtractor.provider,
     ].join(':');
-    const managed = isPlatformManagedAiEnabled();
     const managedMap = keyVaults as ManagedProviderKeyVaultMap | undefined;
     const managedExecutions = managedMap?.[MANAGED_EXECUTIONS];
     const roleBindings = managedMap?.[MANAGED_ROLE_BINDINGS];
+    // One-shot platform credentials are present ⇔ at least one selected provider is
+    // platform-owned. Never cache a bundle that holds them.
+    const managed = Boolean(managedExecutions && roleBindings);
     if (!managed) {
       const cached = this.runtimeCache.get(cacheKey);
       if (cached) return cached;
     }
 
+    // A role bound to a provider the platform does not own resolves through the user's own
+    // key vaults (`undefined` ⇒ resolveRuntimeAgentConfig falls back to `keyVaults`). A role
+    // bound to a platform-owned provider whose execution config is missing stays fail-closed:
+    // resolveRuntimeKeyVaults resolves every platform-owned provider or throws.
+    const platformOwnedProviders = new Set(Object.keys(managedExecutions ?? {}));
     const executionFor = (role: keyof ManagedRoleBindings) => {
       if (!managedExecutions || !roleBindings) return undefined;
       const providerId = roleBindings[role];
+      if (!platformOwnedProviders.has(providerId)) return undefined;
       const execution = managedExecutions[providerId];
       if (!execution) {
         throw new Error('PLATFORM_AI_PROVIDER_NOT_PUBLISHED');

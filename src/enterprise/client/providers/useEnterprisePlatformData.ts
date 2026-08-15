@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
   type PlatformCapabilities,
@@ -18,6 +18,46 @@ import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../servi
 export const PLATFORM_CAPABILITIES_SWR_KEY = 'platform.getCapabilities';
 export const PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY = 'platform.getPublicSnapshot';
 export const PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL = 30_000;
+/**
+ * Capabilities carry managed-resource enforcement, which decides whether whole settings trees
+ * are blocked and whose credentials the chat runtime uses. `revalidateOnFocus` alone leaves a
+ * user sitting on an open page on a stale answer indefinitely after an admin flips 平台托管,
+ * so poll at a modest cadence (half the public-snapshot cadence's sibling — cheap, one query).
+ */
+export const PLATFORM_CAPABILITIES_REFRESH_INTERVAL = 60_000;
+
+/**
+ * Second AI-cache revalidation after a managed-resource transition.
+ *
+ * The server memoizes the platform-AI takeover predicate for a couple of seconds, so the
+ * immediate revalidation can legally still be answered from the OLD regime on an instance that
+ * did not process the publish. Without a follow-up the client would keep that answer forever:
+ * the runtime-state SWR has no polling interval and the capability signal no longer changes.
+ * Must comfortably exceed the server memo horizon.
+ */
+export const AI_CACHE_TRANSITION_SETTLE_DELAY = 6_000;
+
+/**
+ * SWR key prefixes of the aiInfra caches whose CONTENT depends on server-side platform
+ * takeover: the provider list / runtime state (`FETCH_AI_PROVIDER*`, incl. the scoped admin
+ * variants) and the per-provider model list (`aiModel:*`).
+ *
+ * Matches raw keys in every shape they are written in: bare string, `scope:KEY` string,
+ * `[KEY, …]` tuple, `[scope, KEY, …]` tuple, and the workspace-augmented tuples produced by
+ * `augmentKey`.
+ */
+const AI_INFRA_SWR_KEY_PREFIXES = ['FETCH_AI_PROVIDER', 'aiModel:'] as const;
+
+export const isAiInfraPlatformSensitiveSwrKey = (key: unknown): boolean => {
+  const parts: unknown[] = Array.isArray(key) ? key : [key];
+  return parts.some(
+    (part) =>
+      typeof part === 'string' &&
+      AI_INFRA_SWR_KEY_PREFIXES.some(
+        (prefix) => part.startsWith(prefix) || part.includes(`:${prefix}`),
+      ),
+  );
+};
 
 export interface UseEnterprisePlatformDataOptions {
   disableFetch: boolean;
@@ -66,6 +106,7 @@ export const useEnterprisePlatformData = ({
     capabilitiesFetcher,
     {
       fallbackData: DISABLED_PLATFORM_CAPABILITIES,
+      refreshInterval: PLATFORM_CAPABILITIES_REFRESH_INTERVAL,
       revalidateOnFocus: true,
     },
   );
@@ -84,6 +125,42 @@ export const useEnterprisePlatformData = ({
     if (!enabled) return;
     await Promise.all([capabilitiesSWR.mutate(), publicSnapshotSWR.mutate()]);
   }, [capabilitiesSWR, enabled, publicSnapshotSWR]);
+
+  // When 平台托管 for AI providers starts or ends, the server answers `getAiProviderRuntimeState`
+  // / `getAiProviderModelList` with a *different* catalog (platform ⇄ the user's own). Those
+  // caches carry no capability in their key, so nothing else would invalidate them — the user
+  // would keep seeing (and the picker keep offering) the previous regime's providers until a
+  // reload.
+  //
+  // The signal is `aiTakeover` — the server's own runtime-takeover predicate — plus the
+  // managed-resource policy REVISION (`configRevision`) and the UI-blocking `aiProviders`
+  // flag. `aiTakeover` is the precise trigger (`managedResources.aiProviders` is also true for
+  // `ui-only`, where the UI is blocked but the runtime is NOT taken over, so `enforced →
+  // ui-only` would otherwise be invisible); the revision and the flag are kept so any other
+  // policy or readiness-driven capability change also refreshes. Only fire on a real
+  // transition, never on the first observed value.
+  const capabilitySignal = capabilitiesSWR.data
+    ? [
+        capabilitiesSWR.data.aiTakeover === true,
+        capabilitiesSWR.data.managedResources?.aiProviders === true,
+        capabilitiesSWR.data.configRevision,
+      ].join('|')
+    : null;
+  const previousCapabilitySignal = useRef<string | null>(null);
+  useEffect(() => {
+    if (capabilitySignal === null) return;
+    const previous = previousCapabilitySignal.current;
+    previousCapabilitySignal.current = capabilitySignal;
+    if (previous === null || previous === capabilitySignal) return;
+
+    void mutate(isAiInfraPlatformSensitiveSwrKey);
+    // …and once more past the server's takeover memo horizon, so a first fetch answered from a
+    // stale memo cannot become the permanently cached regime.
+    const timer = setTimeout(() => {
+      void mutate(isAiInfraPlatformSensitiveSwrKey);
+    }, AI_CACHE_TRANSITION_SETTLE_DELAY);
+    return () => clearTimeout(timer);
+  }, [capabilitySignal]);
 
   if (!enabled) {
     return {

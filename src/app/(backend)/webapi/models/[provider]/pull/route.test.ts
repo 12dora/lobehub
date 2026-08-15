@@ -16,7 +16,7 @@ const bridgeMocks = vi.hoisted(() => ({
     enabledVideoAiProviders: [],
     runtimeConfig: {},
   })),
-  isPlatformManagedAiEnabled: vi.fn(),
+  isPlatformAiTakeoverActive: vi.fn(),
   resolvePlatformAiRuntimeState: vi.fn(),
 }));
 
@@ -29,7 +29,7 @@ vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', () => bridgeMoc
 
 beforeEach(() => {
   vi.clearAllMocks();
-  bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(true);
+  bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(true);
   vi.mocked(auth.api.getSession).mockResolvedValue({
     session: {} as never,
     user: { id: 'test-user' } as never,
@@ -61,6 +61,29 @@ describe('managed model pull route', () => {
       errorType: PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_PULL_DISABLED,
     });
     expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+  });
+
+  it('keeps the user pull capability while the platform has not taken over', async () => {
+    // Flag on + provider present in the catalog, but 平台托管 is not published: the platform
+    // governs nothing, so the user keeps their own Ollama pull.
+    bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
+
+    const pullResponse = new Response('pulled', { status: 200 });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValue({
+      pullModel: vi.fn().mockResolvedValue(pullResponse),
+    } as never);
+
+    const response = await POST(
+      new Request('https://test.com/webapi/models/ollama/pull', {
+        body: JSON.stringify({ model: 'llama3' }),
+        method: 'POST',
+      }),
+      { params: Promise.resolve({ provider: 'ollama' }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(bridgeMocks.resolvePlatformAiRuntimeState).not.toHaveBeenCalled();
+    expect(initModelRuntimeFromDB).toHaveBeenCalled();
   });
 
   it('allows pull for user BYOK providers not present in the platform catalog', async () => {

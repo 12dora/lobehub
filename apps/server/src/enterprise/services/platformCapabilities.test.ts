@@ -52,6 +52,33 @@ describe('buildPlatformCapabilities', () => {
     expect(caps).not.toHaveProperty('enforcementMode');
   });
 
+  it('exposes aiTakeover only with the managed-AI flag and a resolved server verdict', () => {
+    const flagOff = buildPlatformCapabilities({
+      aiTakeover: true,
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+    });
+    expect(flagOff.aiTakeover).toBe(false);
+
+    const flagOn = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
+    expect(buildPlatformCapabilities({ flags: flagOn }).aiTakeover).toBe(false);
+    expect(buildPlatformCapabilities({ aiTakeover: true, flags: flagOn }).aiTakeover).toBe(true);
+
+    // `ui-only` blocks the UI without a runtime takeover: the two signals must be independent.
+    const uiOnly = buildPlatformCapabilities({
+      aiTakeover: false,
+      flags: flagOn,
+      managedResources: {
+        agents: false,
+        aiModels: true,
+        aiProviders: true,
+        connectors: false,
+        skills: false,
+      },
+    });
+    expect(uiOnly.managedResources.aiProviders).toBe(true);
+    expect(uiOnly.aiTakeover).toBe(false);
+  });
+
   it('sets adminAccess only when flag on and caller marks access', () => {
     const denied = buildPlatformCapabilities({
       adminAccess: true,

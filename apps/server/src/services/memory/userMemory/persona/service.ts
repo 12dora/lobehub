@@ -29,8 +29,7 @@ import {
 import {
   assertPlatformPublishedModel,
   createPlatformAiModelAllowlistHooks,
-  getEmptyPlatformAiRuntimeState,
-  isPlatformManagedAiEnabled,
+  listPlatformPublishedModels,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
@@ -113,18 +112,23 @@ export class UserPersonaService {
     // purely user-level feature with no workspace concept; the payload carries no
     // workspaceId, so provider config is resolved against the user's personal scope.
     const aiInfraRepos = new AiInfraRepos(this.db, payload.userId, {});
-    const managed = isPlatformManagedAiEnabled();
-    const runtimeState = managed
-      ? await resolvePlatformAiRuntimeState({
-          db: this.db,
-          upstreamState: getEmptyPlatformAiRuntimeState(),
-        })
-      : await aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
+    // Platform takeover is authorized by the published 平台托管 policy, not by the feature flag:
+    // `resolvePlatformAiRuntimeState` returns the caller's own state verbatim until 平台托管 is
+    // published, and merges the platform catalog over it afterwards — so the user's BYOK
+    // providers stay selectable in both regimes.
+    const upstreamState = await aiInfraRepos.getAiProviderRuntimeState(
+      KeyVaultsGateKeeper.getUserKeyVaults,
+    );
+    const runtimeState = await resolvePlatformAiRuntimeState({ db: this.db, upstreamState });
     const providerId = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: agentConfig.provider,
       label: 'persona writer',
       modelId: agentConfig.model,
     });
+    // The platform governs only the providers it publishes as enabled. `null` means "not
+    // actively managed" (never published, disabled, archived, or no 平台托管 at all), in which
+    // case this provider is the user's own and runs on their credentials.
+    const managed = (await listPlatformPublishedModels(this.db, providerId)) !== null;
 
     const hooks = getBusinessModelRuntimeHooks(payload.userId, 'lobehub');
     const runtime = managed

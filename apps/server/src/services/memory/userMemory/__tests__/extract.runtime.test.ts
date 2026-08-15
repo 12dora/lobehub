@@ -5,10 +5,43 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
+import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
 import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import * as ModelRuntimeModule from '@/server/modules/ModelRuntime';
+import type * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
 import { makeTaskErrorItem, MemoryExtractionExecutor, resolveRuntimeAgentConfig } from '../extract';
+
+/** Providers the platform does NOT publish as enabled — i.e. the caller's own (BYOK). */
+const userOnlyProviders = vi.hoisted(() => new Set<string>());
+
+// Platform takeover is authorized by the published 平台托管 policy, which lives in the DB; the
+// executor holds a lazy server DB handle these unit cases do not stand up. Mock just that
+// predicate and keep the suite's existing convention that ENABLE_PLATFORM_MANAGED_AI means
+// "the platform governs this user" (the gate itself is covered by enforcement.test.ts).
+// The execution resolver seam is gated on the same predicate; these cases stand up neither a
+// DB nor a policy table, so let the env-flag convention above stand in for it.
+vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOriginal) => ({
+  ...(await importOriginal<typeof AiCatalogEnforcement>()),
+  isPlatformAiTakeoverActive: vi.fn(async () => true),
+}));
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
+  isPlatformAiTakeoverActive: vi.fn(async () =>
+    ['1', 'true', 'yes', 'on'].includes(
+      (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
+    ),
+  ),
+  // `null` = "not actively managed" → the provider is the user's own (BYOK). Default: every
+  // provider is platform-owned while the flag is on, matching this suite's convention.
+  listPlatformPublishedModels: vi.fn(async (_db: unknown, providerKey: string) =>
+    ['1', 'true', 'yes', 'on'].includes(
+      (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
+    ) && !userOnlyProviders.has(providerKey)
+      ? []
+      : null,
+  ),
+}));
 
 const createRuntimeState = (models: EnabledAiModel[], keyVaults: Record<string, any>) =>
   ({
@@ -153,6 +186,66 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       expect(JSON.stringify(runtimeState)).not.toContain('platform-secret');
       expect(secretFactory).toHaveBeenCalledTimes(3);
     } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('leaves a user-only provider on its own credentials while the platform owns the others', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    // The platform governs only what it publishes as enabled; `provider-e` is the user's own.
+    userOnlyProviders.add('provider-e');
+    const secretFactory = vi
+      .spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise')
+      .mockReturnValue({} as PlatformSecretService);
+    const execution = vi
+      .spyOn(AiCatalogExecutionResolver.prototype, 'resolveProviderExecutionConfig')
+      .mockImplementation(async (providerKey) => ({
+        allowedModels: [],
+        config: {},
+        keyVaults: { apiKey: `platform-secret-${providerKey}` },
+        providerKey,
+        revision: 1,
+        runtimeProvider: providerKey,
+      }));
+    const executor = createExecutor();
+    // No embedding model is published, so the embedding role falls back to the configured
+    // `provider-e`. Under the old all-or-nothing branch that combination threw
+    // PLATFORM_AI_MODEL_NOT_PUBLISHED; a user-only provider must simply use the user's vault.
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        ...['layer-act', 'layer-ctx', 'layer-exp', 'layer-id', 'layer-pref'].map((id) => ({
+          abilities: {},
+          enabled: true,
+          id,
+          providerId: 'provider-l',
+          type: 'chat' as const,
+        })),
+      ],
+      {
+        'provider-b': { apiKey: 'user-vault-must-not-win' },
+        'provider-e': { apiKey: 'user-own-embedding-key' },
+      },
+    );
+
+    try {
+      const keyVaults = await resolveRuntimeKeyVaults(executor, runtimeState);
+
+      expect(keyVaults).toEqual({
+        'provider-b': { apiKey: 'platform-secret-provider-b' },
+        'provider-e': { apiKey: 'user-own-embedding-key' },
+        'provider-l': { apiKey: 'platform-secret-provider-l' },
+      });
+      // Platform credentials are resolved only for the providers the platform owns.
+      expect(execution.mock.calls.map(([providerKey]) => providerKey).sort()).toEqual([
+        'provider-b',
+        'provider-l',
+      ]);
+      expect(secretFactory).toHaveBeenCalledTimes(2);
+    } finally {
+      userOnlyProviders.delete('provider-e');
       process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
       vi.restoreAllMocks();
     }

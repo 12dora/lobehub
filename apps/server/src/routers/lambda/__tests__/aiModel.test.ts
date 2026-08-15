@@ -1,9 +1,21 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiModelModel } from '@/database/models/aiModel';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
+import type * as PlatformAiRuntimeBridge from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
 import { aiModelRouter } from '../aiModel';
+
+// The published 平台托管 policy — not the feature flag — authorizes the platform takeover.
+const bridgeMocks = vi.hoisted(() => ({
+  isPlatformAiTakeoverActive: vi.fn(),
+  listPlatformPublishedModels: vi.fn(),
+}));
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof PlatformAiRuntimeBridge>()),
+  isPlatformAiTakeoverActive: bridgeMocks.isPlatformAiTakeoverActive,
+  listPlatformPublishedModels: bridgeMocks.listPlatformPublishedModels,
+}));
 
 vi.mock('@/database/models/aiModel');
 vi.mock('@/database/models/user');
@@ -26,6 +38,11 @@ describe('aiModelRouter', () => {
   const mockCtx = {
     userId: 'test-user',
   };
+
+  beforeEach(() => {
+    bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
+    bridgeMocks.listPlatformPublishedModels.mockReset();
+  });
 
   it('should create ai model', async () => {
     const mockCreate = vi.fn().mockResolvedValue({ id: 'model-1' });
@@ -152,6 +169,43 @@ describe('aiModelRouter', () => {
       limit: undefined,
       offset: undefined,
     });
+  });
+
+  it('applies no published-model overlay while the platform has not taken over', async () => {
+    const mockGetList = vi.fn().mockResolvedValue([]);
+    vi.mocked(AiInfraRepos).mockImplementation(
+      () => ({ getAiProviderModelList: mockGetList }) as any,
+    );
+
+    await aiModelRouter.createCaller(mockCtx).getAiProviderModelList({ id: 'chatgpt' });
+
+    expect(bridgeMocks.listPlatformPublishedModels).not.toHaveBeenCalled();
+    expect(mockGetList).toHaveBeenCalledWith(
+      'chatgpt',
+      expect.not.objectContaining({ publishedModels: expect.anything() }),
+    );
+  });
+
+  it('overlays the admin-published set once 平台托管 is published', async () => {
+    bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(true);
+    bridgeMocks.listPlatformPublishedModels.mockResolvedValue([
+      { abilities: {}, enabled: true, id: 'gpt-5.6-sol', providerId: 'chatgpt', type: 'chat' },
+    ]);
+    const mockGetList = vi.fn().mockResolvedValue([]);
+    vi.mocked(AiInfraRepos).mockImplementation(
+      () => ({ getAiProviderModelList: mockGetList }) as any,
+    );
+
+    await aiModelRouter.createCaller(mockCtx).getAiProviderModelList({ id: 'chatgpt' });
+
+    expect(mockGetList).toHaveBeenCalledWith(
+      'chatgpt',
+      expect.objectContaining({
+        publishedModels: [
+          expect.objectContaining({ enabled: true, id: 'gpt-5.6-sol', type: 'chat' }),
+        ],
+      }),
+    );
   });
 
   it('should remove ai model', async () => {

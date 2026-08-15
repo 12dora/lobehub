@@ -6,7 +6,7 @@ import { checkAuth } from '@/app/(backend)/middleware/auth';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import {
   getEmptyPlatformAiRuntimeState,
-  isPlatformManagedAiEnabled,
+  isPlatformAiTakeoverActive,
   listPlatformPublishedModels,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
@@ -60,9 +60,10 @@ export const GET = checkAuth(async (req, { params, userId, serverDB }) => {
   const provider = (await params)!.provider!;
 
   try {
-    if (isPlatformManagedAiEnabled()) {
-      // Platform catalog membership (enabled published providers). Equivalent to
-      // PLATFORM_NOT_FOUND on resolve: missing/disabled providers are not listed here.
+    if (await isPlatformAiTakeoverActive(serverDB)) {
+      // Platform catalog membership (enabled published providers) while 平台托管 is published.
+      // Equivalent to PLATFORM_NOT_FOUND on resolve: missing/disabled providers — and every
+      // provider while the platform has not taken over — are not listed here.
       // Platform hit → return published models (may be empty). Miss → user BYOK path.
       const platformState = await resolvePlatformAiRuntimeState({
         db: serverDB,

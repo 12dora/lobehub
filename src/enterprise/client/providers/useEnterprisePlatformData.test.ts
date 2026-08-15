@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useClientDataSWR } from '@/libs/swr';
+import { mutate, useClientDataSWR } from '@/libs/swr';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
   type PlatformCapabilities,
@@ -12,13 +12,16 @@ import {
 } from '@/types/platform/publicSnapshot';
 
 import {
+  AI_CACHE_TRANSITION_SETTLE_DELAY,
+  isAiInfraPlatformSensitiveSwrKey,
+  PLATFORM_CAPABILITIES_REFRESH_INTERVAL,
   PLATFORM_CAPABILITIES_SWR_KEY,
   PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
   PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY,
   useEnterprisePlatformData,
 } from './useEnterprisePlatformData';
 
-vi.mock('@/libs/swr', () => ({ useClientDataSWR: vi.fn() }));
+vi.mock('@/libs/swr', () => ({ mutate: vi.fn(), useClientDataSWR: vi.fn() }));
 
 const capabilitiesMutate = vi.fn();
 const publicSnapshotMutate = vi.fn();
@@ -108,7 +111,10 @@ describe('useEnterprisePlatformData', () => {
       1,
       PLATFORM_CAPABILITIES_SWR_KEY,
       expect.any(Function),
-      expect.objectContaining({ fallbackData: DISABLED_PLATFORM_CAPABILITIES }),
+      expect.objectContaining({
+        fallbackData: DISABLED_PLATFORM_CAPABILITIES,
+        refreshInterval: PLATFORM_CAPABILITIES_REFRESH_INTERVAL,
+      }),
     );
     expect(vi.mocked(useClientDataSWR)).toHaveBeenNthCalledWith(
       2,
@@ -196,6 +202,141 @@ describe('useEnterprisePlatformData', () => {
     await act(async () => result.current.refresh());
     expect(capabilitiesMutate).toHaveBeenCalledOnce();
     expect(publicSnapshotMutate).toHaveBeenCalledOnce();
+  });
+
+  describe('aiProviders enforcement transition', () => {
+    const capabilitiesWith = (overrides: Partial<PlatformCapabilities>): PlatformCapabilities => ({
+      ...capabilities,
+      ...overrides,
+      managedResources: {
+        ...capabilities.managedResources,
+        ...overrides.managedResources,
+      },
+    });
+
+    const takenOver = capabilitiesWith({
+      aiTakeover: true,
+      configRevision: '7',
+      managedResources: { ...capabilities.managedResources, aiProviders: true },
+    });
+    const notTakenOver = capabilitiesWith({
+      aiTakeover: false,
+      configRevision: '6',
+      managedResources: { ...capabilities.managedResources, aiProviders: false },
+    });
+    // 平台托管 ended by switching to `ui-only`: the UI-blocking boolean stays true while the
+    // server-side runtime takeover is off.
+    const uiOnly = capabilitiesWith({
+      aiTakeover: false,
+      configRevision: '8',
+      managedResources: { ...capabilities.managedResources, aiProviders: true },
+    });
+
+    const mockCapabilities = (value: PlatformCapabilities) => {
+      vi.mocked(useClientDataSWR).mockImplementation((key) => {
+        const isCapabilities = key === PLATFORM_CAPABILITIES_SWR_KEY;
+        return {
+          data: isCapabilities ? value : publicSnapshot,
+          error: undefined,
+          isLoading: false,
+          mutate: isCapabilities ? capabilitiesMutate : publicSnapshotMutate,
+        } as never;
+      });
+    };
+
+    const renderWith = (value: PlatformCapabilities) => {
+      mockCapabilities(value);
+      return renderHook(() =>
+        useEnterprisePlatformData({
+          disableFetch: false,
+          enterpriseEnabled: true,
+          serverConfigInit: true,
+        }),
+      );
+    };
+
+    it('matches every aiInfra cache whose content depends on platform takeover', () => {
+      expect(isAiInfraPlatformSensitiveSwrKey('FETCH_AI_PROVIDER')).toBe(true);
+      expect(isAiInfraPlatformSensitiveSwrKey(['FETCH_AI_PROVIDER_RUNTIME_STATE', true])).toBe(
+        true,
+      );
+      expect(isAiInfraPlatformSensitiveSwrKey('admin:FETCH_AI_PROVIDER')).toBe(true);
+      expect(
+        isAiInfraPlatformSensitiveSwrKey(['admin', 'FETCH_AI_PROVIDER_RUNTIME_STATE', false, 'ws']),
+      ).toBe(true);
+      expect(isAiInfraPlatformSensitiveSwrKey(['aiModel:list', 'chatgpt'])).toBe(true);
+      expect(isAiInfraPlatformSensitiveSwrKey(PLATFORM_CAPABILITIES_SWR_KEY)).toBe(false);
+      expect(isAiInfraPlatformSensitiveSwrKey(['session:list'])).toBe(false);
+      expect(isAiInfraPlatformSensitiveSwrKey(null)).toBe(false);
+    });
+
+    it('does not invalidate aiInfra caches on the first observed capability value', () => {
+      renderWith(takenOver);
+
+      expect(mutate).not.toHaveBeenCalled();
+    });
+
+    it('invalidates aiInfra caches when 平台托管 starts and when it ends', () => {
+      const { rerender } = renderWith(notTakenOver);
+      expect(mutate).not.toHaveBeenCalled();
+
+      mockCapabilities(takenOver);
+      rerender();
+      expect(mutate).toHaveBeenCalledExactlyOnceWith(isAiInfraPlatformSensitiveSwrKey);
+
+      // A re-render with the same value must not re-invalidate …
+      rerender();
+      expect(mutate).toHaveBeenCalledOnce();
+
+      // … while the end of enforcement must.
+      mockCapabilities(notTakenOver);
+      rerender();
+      expect(mutate).toHaveBeenCalledTimes(2);
+    });
+
+    it('detects enforced → ui-only and ui-only → enforced, which the UI boolean cannot', () => {
+      const { rerender } = renderWith(takenOver);
+      expect(mutate).not.toHaveBeenCalled();
+
+      // enforced → ui-only: `managedResources.aiProviders` stays true, but the server has
+      // handed the runtime back to the user.
+      mockCapabilities(uiOnly);
+      rerender();
+      expect(uiOnly.managedResources.aiProviders).toBe(takenOver.managedResources.aiProviders);
+      expect(mutate).toHaveBeenCalledTimes(1);
+
+      // ui-only → enforced.
+      mockCapabilities(capabilitiesWith({ ...takenOver, configRevision: '9' }));
+      rerender();
+      expect(mutate).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-invalidates past the server takeover memo horizon so a stale first fetch cannot stick', () => {
+      vi.useFakeTimers();
+      try {
+        const { rerender, unmount } = renderWith(notTakenOver);
+        mockCapabilities(takenOver);
+        rerender();
+        expect(mutate).toHaveBeenCalledOnce();
+
+        // The server memoizes the takeover predicate briefly, so the immediate fetch may still
+        // be answered from the old regime. Nothing else would ever refresh it.
+        vi.advanceTimersByTime(AI_CACHE_TRANSITION_SETTLE_DELAY - 1);
+        expect(mutate).toHaveBeenCalledOnce();
+        vi.advanceTimersByTime(1);
+        expect(mutate).toHaveBeenCalledTimes(2);
+        expect(mutate).toHaveBeenLastCalledWith(isAiInfraPlatformSensitiveSwrKey);
+
+        // No further passes, and unmount does not leave a pending timer.
+        vi.advanceTimersByTime(AI_CACHE_TRANSITION_SETTLE_DELAY * 3);
+        expect(mutate).toHaveBeenCalledTimes(2);
+        unmount();
+        vi.advanceTimersByTime(AI_CACHE_TRANSITION_SETTLE_DELAY * 3);
+        expect(mutate).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('does not forward SWR cache keys into the service query-injection boundary', async () => {

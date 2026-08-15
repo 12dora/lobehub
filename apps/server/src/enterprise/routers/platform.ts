@@ -19,12 +19,19 @@ import { ensureBrandingAssetCleanupWorkerStarted } from '../jobs/brandingAssetCl
 import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identityProviderTestAttemptCleanup';
 import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
 import { assertPlatformMasterKeyIfEnterprise } from '../security/secret';
-import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
+import {
+  AiCatalogReadService,
+  getEmptyPublishedAiCatalog,
+  isPlatformAiTakeoverActive,
+} from '../services/aiCatalog';
 import { resolvePlatformPublicSnapshot } from '../services/branding';
 import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
 import { ensureConnectorRuntimeCapabilityStateBootstrapped } from '../services/connectorCatalog/runtimeEffectiveStateBootstrap';
 import { ensureConnectorSecretCleanupWorkerStarted } from '../services/connectorCatalog/secretCleanupWorker';
-import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
+import {
+  resolveManagedResourceReadinessCached,
+  resolvePublishedManagedResourcePolicies,
+} from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { withActiveUserWhenManaged } from './managedActiveUser';
@@ -96,10 +103,17 @@ export const platformRouter = router({
     const managed = await resolvePublishedManagedResourcePolicies({
       db: ctx.serverDB,
       flags,
+      // Every mounted client polls this endpoint; the AI readiness probe decrypts every
+      // published provider secret. Use the short-lived shared snapshot here — admin surfaces
+      // and the publish guard keep resolving readiness fresh.
+      readiness: resolveManagedResourceReadinessCached,
     });
 
     return buildPlatformCapabilities({
       adminAccess,
+      // Explicit runtime-takeover signal: `managedResources.aiProviders` is also true for
+      // `ui-only`, where the UI is blocked but the runtime is NOT platform-governed.
+      aiTakeover: await isPlatformAiTakeoverActive(ctx.serverDB, flags),
       flags,
       managedResources: managed.publicCapabilities,
       revisions: { configRevision: String(managed.revision) },

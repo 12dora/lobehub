@@ -18,7 +18,7 @@ const bridgeMocks = vi.hoisted(() => ({
     enabledVideoAiProviders: [],
     runtimeConfig: {},
   })),
-  isPlatformManagedAiEnabled: vi.fn(),
+  isPlatformAiTakeoverActive: vi.fn(),
   listPlatformPublishedModels: vi.fn(),
   resolvePlatformAiRuntimeState: vi.fn(),
 }));
@@ -48,7 +48,7 @@ beforeEach(() => {
   request = new Request(new URL('https://test.com'), {
     method: 'GET',
   });
-  bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(false);
+  bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
 
   // Default: valid session
   vi.mocked(auth.api.getSession).mockResolvedValue({
@@ -235,7 +235,7 @@ describe('GET handler', () => {
 
   describe('success cases', () => {
     it('returns only published catalog models without initializing a provider runtime', async () => {
-      bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(true);
+      bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(true);
       bridgeMocks.resolvePlatformAiRuntimeState.mockResolvedValue({
         enabledAiModels: [],
         enabledAiProviders: [{ id: 'openai', name: 'OpenAI', source: 'builtin' }],
@@ -267,8 +267,28 @@ describe('GET handler', () => {
       );
     });
 
+    it('falls through to the user runtime while the platform has not taken over', async () => {
+      // Flag on + a published catalog entry, but 平台托管 is not published.
+      bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(false);
+      const mockModelList = [{ id: 'user-model', name: 'User' }];
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValue(
+        new ModelRuntime({
+          baseURL: 'https://user.example/v1',
+          chat: vi.fn(),
+          models: vi.fn().mockResolvedValue(mockModelList),
+        } as LobeRuntimeAI),
+      );
+
+      const response = await GET(request, { params: Promise.resolve({ provider: 'openai' }) });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(mockModelList);
+      expect(bridgeMocks.resolvePlatformAiRuntimeState).not.toHaveBeenCalled();
+      expect(bridgeMocks.listPlatformPublishedModels).not.toHaveBeenCalled();
+    });
+
     it('falls back to the user runtime when the provider is not in the platform catalog', async () => {
-      bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(true);
+      bridgeMocks.isPlatformAiTakeoverActive.mockResolvedValue(true);
       bridgeMocks.resolvePlatformAiRuntimeState.mockResolvedValue({
         enabledAiModels: [],
         enabledAiProviders: [{ id: 'openai', name: 'OpenAI', source: 'builtin' }],

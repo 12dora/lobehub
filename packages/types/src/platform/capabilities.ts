@@ -30,6 +30,17 @@ export interface PlatformCapabilities {
    * Always false when platform admin flag is off or user lacks access.
    */
   adminAccess: boolean;
+  /**
+   * Whether the platform AI catalog currently OVERRIDES users' own provider configuration
+   * (runtime state, settings model list, chat credentials, published-model allowlist).
+   *
+   * True only for `ENABLE_PLATFORM_MANAGED_AI` + a PUBLISHED `aiProviders`
+   * `{managed: true, enforcementMode: 'enforced'}` policy — the server-side
+   * `isPlatformAiTakeoverActive` predicate. Distinct from
+   * `managedResources.aiProviders`, which is also true for `ui-only` (UI blocked, runtime NOT
+   * taken over). Admin surfaces use it to tell operators whether a shared account is live.
+   */
+  aiTakeover: boolean;
   brandingRevision: string | null;
   /**
    * Opaque aggregate revision for client cache keys.
@@ -45,6 +56,7 @@ export interface PlatformCapabilities {
 /** Safe empty snapshot when all enterprise flags are off. */
 export const DISABLED_PLATFORM_CAPABILITIES: PlatformCapabilities = {
   adminAccess: false,
+  aiTakeover: false,
   brandingRevision: null,
   configRevision: '0',
   features: {

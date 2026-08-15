@@ -24,10 +24,11 @@ import {
 import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import { type ClientSecretPayload } from '@lobechat/types';
 import { ModelProvider } from 'model-bank';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
+import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
 
 import {
   buildPayloadFromKeyVaults,
@@ -46,6 +47,14 @@ interface InspectableBedrockRuntime {
   };
   region: string;
 }
+
+// The published 平台托管 policy — not the feature flag — authorizes the platform takeover.
+// The catalog runtime bridge imports `./enforcement` directly, so the mock must target it.
+const enforcementMocks = vi.hoisted(() => ({ takeover: true }));
+vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOriginal) => ({
+  ...(await importOriginal<typeof AiCatalogEnforcement>()),
+  isPlatformAiTakeoverActive: vi.fn(async () => enforcementMocks.takeover),
+}));
 
 // 模拟依赖项
 vi.mock('@/envs/llm', () => ({
@@ -566,6 +575,59 @@ describe('initModelRuntimeWithUserPayload method', () => {
 });
 
 describe('initModelRuntimeFromDB managed model guard', () => {
+  beforeEach(() => {
+    enforcementMocks.takeover = true;
+  });
+
+  it('falls back to the user runtime when the catalog hits but 平台托管 is not published', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    enforcementMocks.takeover = false;
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    // A published, enabled catalog provider with an allowlist that would reject every model:
+    // without the enforcement gate this produced PLATFORM_AI_MODEL_NOT_PUBLISHED on chat.
+    const resolveSpy = vi
+      .spyOn(AiCatalogExecutionResolver.prototype, 'resolveProviderExecutionConfig')
+      .mockResolvedValue({
+        allowedModels: [],
+        config: {},
+        keyVaults: { apiKey: 'platform-secret-must-not-be-used' },
+        providerKey: 'openai',
+        revision: 1,
+        runtimeProvider: 'openai',
+      });
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [providerRow] }) }) }),
+    };
+
+    try {
+      const runtime = await initModelRuntimeFromDB(db as never, 'user-1', 'openai');
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      runtime['_runtime'] = { chat: providerChat } as never;
+
+      // The platform execution resolver is never consulted, and no allowlist hook is composed.
+      expect(resolveSpy).not.toHaveBeenCalled();
+      await expect(runtime.chat({ messages: [], model: 'user-own-model' })).resolves.toBeInstanceOf(
+        Response,
+      );
+      expect(providerChat).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
   it("trusts a custom provider's normalized runtimeProvider even when its key is builtin-shaped", async () => {
     const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';

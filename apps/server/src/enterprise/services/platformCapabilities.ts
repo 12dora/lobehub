@@ -14,6 +14,11 @@ export interface BuildPlatformCapabilitiesInput {
    * (e.g. router-resolved RBAC); this builder only gates it on ENABLE_PLATFORM_ADMIN.
    */
   adminAccess?: boolean;
+  /**
+   * Server-resolved platform-AI takeover (`isPlatformAiTakeoverActive`). Requires
+   * ENABLE_PLATFORM_MANAGED_AI, so it is forced false when the flag is off.
+   */
+  aiTakeover?: boolean;
   flags?: EnterpriseFeatureFlags;
   /** Published, policy-resolved booleans. Draft/mode/readiness are never exposed. */
   managedResources?: ManagedResourcesCapabilities;
@@ -43,6 +48,7 @@ export const buildPlatformCapabilities = (
 
   return {
     adminAccess,
+    aiTakeover: Boolean(input.aiTakeover) && flags.ENABLE_PLATFORM_MANAGED_AI,
     brandingRevision: input.revisions?.brandingRevision ?? null,
     configRevision:
       input.revisions?.configRevision ?? DISABLED_PLATFORM_CAPABILITIES.configRevision,

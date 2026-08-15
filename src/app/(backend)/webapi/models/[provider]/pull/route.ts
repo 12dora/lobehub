@@ -6,7 +6,7 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import {
   getEmptyPlatformAiRuntimeState,
-  isPlatformManagedAiEnabled,
+  isPlatformAiTakeoverActive,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createErrorResponse } from '@/utils/errorResponse';
@@ -17,9 +17,10 @@ export const POST = checkAuth(async (req, { params, userId, serverDB }) => {
   const provider = (await params)!.provider!;
 
   try {
-    if (isPlatformManagedAiEnabled()) {
-      // Platform providers keep pull disabled. User self-built / BYOK providers
-      // (not in the platform catalog) fall through to the user runtime path.
+    if (await isPlatformAiTakeoverActive(serverDB)) {
+      // Platform providers keep pull disabled while 平台托管 is published. User self-built /
+      // BYOK providers (not in the platform catalog) — and every provider while the platform
+      // has not taken over — fall through to the user runtime path.
       const platformState = await resolvePlatformAiRuntimeState({
         db: serverDB,
         upstreamState: getEmptyPlatformAiRuntimeState(),

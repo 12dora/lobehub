@@ -786,6 +786,34 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     reason: 'Mocks platform catalog-authority token at the aiProvider router test',
   },
   {
+    file: 'apps/server/src/routers/lambda/__tests__/aiProvider.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog/enforcement',
+    owner: 'M07',
+    reason:
+      'Mocks the published-平台托管 takeover predicate at the aiProvider router test (the runtime adapter imports ./enforcement directly, so mocking the barrel would not intercept)',
+  },
+  {
+    file: 'src/features/ManagedResources/useManagedResource.test.ts',
+    importSpecifier: '@/enterprise/client/providers/EnterprisePlatformProvider',
+    owner: 'M06',
+    reason:
+      'Mocks the enterprise platform context at the public managed-resource adapter test (the adapter itself is an allowlisted mount point)',
+  },
+  {
+    file: 'apps/server/src/services/memory/userMemory/__tests__/extract.runtime.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog/enforcement',
+    owner: 'M07',
+    reason:
+      'Mocks the published-平台托管 takeover predicate at the memory runtime test (the catalog runtime bridge imports ./enforcement directly)',
+  },
+  {
+    file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog/enforcement',
+    owner: 'M07',
+    reason:
+      'Mocks the published-平台托管 takeover predicate at the ModelRuntime BYOK-fallback test (the catalog runtime bridge imports ./enforcement directly)',
+  },
+  {
     file: 'apps/server/src/services/aiAgent/__tests__/execAgent.connectorGovernance.test.ts',
     importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
     owner: 'M09',

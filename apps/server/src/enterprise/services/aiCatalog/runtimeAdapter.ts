@@ -28,6 +28,7 @@ import {
   reportPlatformRuntimeMaterializationSafely,
 } from '../platformInstance/runtimeReporter';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
+import { isPlatformAiTakeoverActive } from './enforcement';
 import {
   AiCatalogModelNotPublishedError,
   AiCatalogNotFoundError,
@@ -486,10 +487,7 @@ export class AiCatalogExecutionResolver {
     if (provider.enabled !== true) throw new AiCatalogNotFoundError();
     const allowedModels = Array.isArray(revision.payload.models)
       ? revision.payload.models.flatMap((model) =>
-          isRecord(model) &&
-          model.enabled === true &&
-          typeof model.modelKey === 'string' &&
-          typeof model.type === 'string'
+          isRecord(model) && model.enabled === true && typeof model.modelKey === 'string'
             ? [
                 {
                   ...(isRecord(model.abilities) && typeof model.abilities.search === 'boolean'
@@ -503,7 +501,11 @@ export class AiCatalogExecutionResolver {
                         },
                       }
                     : {}),
-                  type: model.type,
+                  // Same default as the projection (`type: … : 'chat'`). A payload without an
+                  // explicit type must not show up in the picker as a chat model while being
+                  // absent from the allowlist — that combination is a guaranteed
+                  // PLATFORM_AI_MODEL_NOT_PUBLISHED on a model the user was offered.
+                  type: typeof model.type === 'string' ? model.type : 'chat',
                 },
               ]
             : [],
@@ -574,63 +576,90 @@ export const getEmptyAiProviderRuntimeState = (): AiProviderRuntimeState => ({
   runtimeConfig: {},
 });
 
-/** `providerId:modelId` — the key shape of a personal model-visibility override. */
-export const personalModelOverlayKey = (providerId: string, modelId: string): string =>
-  `${providerId}:${modelId}`;
-
 /**
- * Remove the caller's personally-hidden models from a shared runtime state.
+ * Union the caller's own (BYOK / self-built) providers into the platform-managed state.
  *
- * Platform models are admin-published, but a user may still hide one from their own picker
- * (their `ai_models` row with `enabled: false`). That is a VIEW preference, not policy: the
- * execution allowlist stays published-only, so a hidden model still runs if something asks
- * for it explicitly.
+ * Under takeover the platform governs the providers it PUBLISHES AS ENABLED; everything else
+ * is still the user's own. That is exactly what the execution path already does
+ * (`PLATFORM_NOT_FOUND` ⇒ `initUserModelRuntimeFromDB`) and what the settings model list does
+ * (`listPublishedModels` returns `null` for an unmanaged provider). Without this merge the
+ * listing layer would be the only layer in the stack without the BYOK fallback: a provider the
+ * user configured and can execute against would never appear in the chat picker.
  *
- * Deliberately a pure post-filter over the cached snapshot: the adapter's runtime cache is
- * process-wide and keyed by the catalog token, so a per-user set must never reach it.
- * BYOK models are unaffected — a user-disabled BYOK model is already absent upstream.
+ * Rules:
+ * - published providers win on id collision (the platform takeover is total for what it publishes);
+ * - `runtimeConfig` merges the same way — managed entries stay credential-free
+ *   (`projectPublicAiProviderRuntimeConfig`), unmanaged entries keep the upstream user config;
+ * - every provider list (`enabledChat/Image/Video`) merges consistently with `enabledAiModels`.
+ *
+ * MUST stay outside `AiCatalogRuntimeAdapter.loadRuntimeState`: that snapshot is cached
+ * process-wide and keyed by the catalog token, so a per-user state must never reach it. The
+ * managed state is treated as immutable here for the same reason.
  */
-export const applyPersonalModelOverlay = (
-  state: AiProviderRuntimeState,
-  hiddenModelKeys: ReadonlySet<string>,
+export const mergeUnmanagedUpstreamProviders = (
+  managed: AiProviderRuntimeState,
+  upstream: AiProviderRuntimeState,
 ): AiProviderRuntimeState => {
-  if (hiddenModelKeys.size === 0) return state;
-  const enabledAiModels = state.enabledAiModels.filter(
-    (model) => !hiddenModelKeys.has(personalModelOverlayKey(model.providerId, model.id)),
+  const managedIds = new Set(managed.enabledAiProviders.map((provider) => provider.id));
+  const unmanagedProviders = upstream.enabledAiProviders.filter(
+    (provider) => !managedIds.has(provider.id),
   );
-  if (enabledAiModels.length === state.enabledAiModels.length) return state;
+  const unmanagedConfigKeys = Object.keys(upstream.runtimeConfig ?? {}).filter(
+    (key) => !managedIds.has(key),
+  );
+  if (unmanagedProviders.length === 0 && unmanagedConfigKeys.length === 0) return managed;
 
-  // A provider whose last model of a type is hidden must leave that type's provider list, or
-  // the picker offers a provider with nothing under it.
-  const keepProvidersOfType = (
-    providers: AiProviderRuntimeState['enabledChatAiProviders'],
-    type: string,
-  ) =>
-    providers.filter((provider) =>
-      enabledAiModels.some((model) => model.providerId === provider.id && model.type === type),
-    );
+  const unmanagedIds = new Set(unmanagedProviders.map((provider) => provider.id));
+  const keepUnmanaged = (providers: EnabledProvider[]) =>
+    providers.filter((provider) => unmanagedIds.has(provider.id));
+
+  const runtimeConfig = { ...managed.runtimeConfig };
+  for (const key of unmanagedConfigKeys) {
+    const config = upstream.runtimeConfig?.[key];
+    if (config) runtimeConfig[key] = config;
+  }
 
   return {
-    ...state,
-    enabledAiModels,
-    enabledChatAiProviders: keepProvidersOfType(state.enabledChatAiProviders, 'chat'),
-    enabledImageAiProviders: keepProvidersOfType(state.enabledImageAiProviders, 'image'),
-    enabledVideoAiProviders: keepProvidersOfType(state.enabledVideoAiProviders, 'video'),
+    enabledAiModels: [
+      ...managed.enabledAiModels,
+      ...upstream.enabledAiModels.filter((model) => unmanagedIds.has(model.providerId)),
+    ],
+    enabledAiProviders: [...managed.enabledAiProviders, ...unmanagedProviders],
+    enabledChatAiProviders: [
+      ...managed.enabledChatAiProviders,
+      ...keepUnmanaged(upstream.enabledChatAiProviders),
+    ],
+    enabledImageAiProviders: [
+      ...managed.enabledImageAiProviders,
+      ...keepUnmanaged(upstream.enabledImageAiProviders),
+    ],
+    enabledVideoAiProviders: [
+      ...managed.enabledVideoAiProviders,
+      ...keepUnmanaged(upstream.enabledVideoAiProviders),
+    ],
+    runtimeConfig,
   };
 };
 
+/**
+ * Platform-managed runtime state, or the caller's own state verbatim when the platform has
+ * not taken over.
+ *
+ * The feature flag alone is NOT authorization: an admin who merely connects a shared account
+ * or publishes a provider must not silently replace every user's configuration. Only the
+ * published 平台托管 policy (`isPlatformAiTakeoverActive`) does that.
+ */
 export const resolveAiCatalogRuntimeState = async (params: {
   db: LobeChatDatabase;
   flags?: EnterpriseFeatureFlags;
-  /** Personal `providerId:modelId` hide-overrides applied after the shared snapshot. */
-  hiddenModelKeys?: ReadonlySet<string>;
   upstreamState: AiProviderRuntimeState;
 }): Promise<AiProviderRuntimeState> => {
   const flags = params.flags ?? parseEnterpriseFeatureFlags(process.env);
   if (!flags.ENABLE_PLATFORM_MANAGED_AI) return params.upstreamState;
+  if (!(await isPlatformAiTakeoverActive(params.db, flags))) return params.upstreamState;
   const state = await new AiCatalogRuntimeAdapter(params.db).resolve({
     flags,
     upstreamState: params.upstreamState,
   });
-  return params.hiddenModelKeys ? applyPersonalModelOverlay(state, params.hiddenModelKeys) : state;
+  return mergeUnmanagedUpstreamProviders(state, params.upstreamState);
 };

@@ -2,6 +2,7 @@
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import { createUnmanagedResourcePolicyMap } from '@/database/models/platform';
 import {
@@ -17,6 +18,10 @@ import {
 
 import { deletePlatformAuditLogsForTest } from '../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../testing/deletePlatformResourceRevisions';
+import {
+  isPlatformAiTakeoverActive,
+  resetPlatformAiTakeoverCacheForTest,
+} from './aiCatalog/enforcement';
 import {
   ManagedResourceCatalogNotReadyError,
   ManagedResourcePolicyService,
@@ -187,6 +192,36 @@ describe('ManagedResourcePolicyService', () => {
     expect(new Set(rows.map((row) => row.status))).toEqual(new Set(['published']));
     expect(invalidation.events).toHaveLength(1);
     expect(invalidation.events[0]?.scopes).toEqual(['managed-policy', 'capabilities']);
+  });
+
+  it('drops the platform-AI takeover memo after the publish transaction commits', async () => {
+    // Otherwise the publishing instance would keep answering runtime/router reads from the
+    // pre-publish regime for the whole memo TTL, and the client's immediate post-transition
+    // revalidation would cache the wrong regime permanently.
+    resetPlatformAiTakeoverCacheForTest();
+    const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true };
+    const service = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
+    const initial = await service.get();
+    const draft = createUnmanagedResourcePolicyMap();
+    draft.aiProviders = { enforcementMode: 'enforced', managed: true };
+    await service.saveDraft({
+      actorUserId: 'admin-1',
+      draft,
+      expectedDraftToken: initial.draftToken,
+      reason: 'prepare policy',
+    });
+
+    // Warm the memo with the pre-publish answer, then publish.
+    expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(false);
+    await service.publish({
+      actorUserId: 'admin-1',
+      expectedDraftToken: (await service.get()).draftToken,
+      expectedRevision: 0,
+      reason: 'publish policy',
+    });
+
+    // No TTL wait: the very next read sees the freshly published policy.
+    expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(true);
   });
 
   it('rejects stale expected revision without changing the published snapshot', async () => {

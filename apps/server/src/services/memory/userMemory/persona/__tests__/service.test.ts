@@ -6,10 +6,18 @@ import { ModelRuntime } from '@lobechat/model-runtime';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { checksumPayload } from '@/database/models/platform';
+import {
+  checksumPayload,
+  createUnmanagedResourcePolicyMap,
+  PlatformManagedResourcePolicyModel,
+} from '@/database/models/platform';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import type * as AiInfraReposModule from '@/database/repositories/aiInfra';
-import { platformAiProviders, platformResourceRevisions } from '@/database/schemas/platform';
+import {
+  platformAiProviders,
+  platformManagedResourcePolicies,
+  platformResourceRevisions,
+} from '@/database/schemas/platform';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import { clearAiCatalogRuntimeCache } from '@/server/enterprise/services/aiCatalog/runtimeAdapter';
@@ -151,6 +159,17 @@ beforeEach(async () => {
   await db.delete(userSettings).where(eq(userSettings.id, userId));
   await db.delete(users).where(eq(users.id, userId));
   await db.insert(users).values({ id: userId });
+
+  // Platform takeover is authorized by the published 平台托管 policy. The managed cases in this
+  // suite additionally set ENABLE_PLATFORM_MANAGED_AI; without the flag the predicate short-
+  // circuits to false and never reads these rows.
+  await db.delete(platformManagedResourcePolicies);
+  const policyModel = new PlatformManagedResourcePolicyModel(db);
+  await policyModel.ensureRows();
+  const policies = createUnmanagedResourcePolicyMap();
+  policies.aiModels = { enforcementMode: 'enforced', managed: true };
+  policies.aiProviders = { enforcementMode: 'enforced', managed: true };
+  await policyModel.materializePublished({ policies, revision: 1 });
 });
 
 afterAll(() => {
@@ -231,6 +250,52 @@ describe('UserPersonaService', () => {
       warn.mockRestore();
       error.mockRestore();
       initialize.mockRestore();
+    }
+  });
+
+  it('runs a user-only provider on the user credentials while 平台托管 is published', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    // The platform publishes `openai`; the persona writer resolves to a provider the platform
+    // does not publish as enabled, so it stays the user's own (BYOK) — the same boundary the
+    // chat runtime and the picker use.
+    await seedPublishedPersonaProvider('chat');
+    aiInfraMocks.tryMatchingProviderFrom.mockResolvedValue('anthropic');
+    aiInfraMocks.getAiProviderRuntimeState.mockResolvedValue({
+      enabledAiModels: [
+        { abilities: {}, enabled: true, id: 'gpt-mock', providerId: 'anthropic', type: 'chat' },
+      ],
+      enabledAiProviders: [{ id: 'anthropic', name: 'Anthropic', source: 'builtin' }],
+      enabledChatAiProviders: [{ id: 'anthropic', name: 'Anthropic', source: 'builtin' }],
+      enabledImageAiProviders: [],
+      enabledVideoAiProviders: [],
+      runtimeConfig: {
+        anthropic: { config: {}, keyVaults: { apiKey: 'user-own-anthropic-key' }, settings: {} },
+      },
+    });
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+
+    try {
+      const result = await new UserPersonaService(db).composeWriting({ userId, username: 'User' });
+
+      expect(result.document.persona).toBe('# Persona');
+      // No platform assertion, no platform credential resolution for an unmanaged provider.
+      expect(execution).not.toHaveBeenCalled();
+      expect(secretFactory).not.toHaveBeenCalled();
+      const [, vaults, options] = vi.mocked(resolveRuntimeAgentConfig).mock.calls[0]!;
+      expect(vaults).toMatchObject({ anthropic: { apiKey: 'user-own-anthropic-key' } });
+      expect(options).toMatchObject({ preferred: { providerIds: ['anthropic'] } });
+      // The managed provider is still merged in, credential-free.
+      expect(vaults).toMatchObject({ openai: {} });
+    } finally {
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      secretFactory.mockRestore();
+      execution.mockRestore();
     }
   });
 

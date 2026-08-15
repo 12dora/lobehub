@@ -13,8 +13,6 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import {
-  getEmptyAiProviderRuntimeState,
-  personalModelOverlayKey,
   recordAiCatalogShadowComparison,
   resolveAiCatalogRuntimeState,
 } from '@/server/enterprise/services/aiCatalog';
@@ -28,9 +26,6 @@ import {
   UpdateAiProviderSchema,
 } from '@/types/aiProvider';
 import { type ProviderConfig } from '@/types/user/settings';
-
-const MAX_AI_CATALOG_SHADOW_PROVIDERS = 20;
-const MAX_AI_CATALOG_SHADOW_MODELS_PER_PROVIDER = 200;
 
 const aiProviderProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -148,62 +143,16 @@ export const aiProviderRouter = router({
     .input(z.object({ isLogin: z.boolean().optional() }))
     .query(async ({ ctx }): Promise<AiProviderRuntimeState> => {
       const flags = parseEnterpriseFeatureFlags(process.env);
-      let upstreamState: AiProviderRuntimeState;
-      if (flags.ENABLE_PLATFORM_MANAGED_AI) {
-        // Shadow comparison needs only provider/model metadata. Never decrypt user vaults here.
-        const providers = (await ctx.aiInfraRepos.getAiProviderList())
-          .filter((provider) => provider.enabled)
-          .slice(0, MAX_AI_CATALOG_SHADOW_PROVIDERS);
-        const models = (
-          await Promise.all(
-            providers.map(async (provider) =>
-              (await ctx.aiInfraRepos.getAiProviderModelList(provider.id, { enabled: true }))
-                .slice(0, MAX_AI_CATALOG_SHADOW_MODELS_PER_PROVIDER)
-                .map((model) => ({
-                  ...model,
-                  abilities: model.abilities ?? {},
-                  enabled: true,
-                  providerId: provider.id,
-                })),
-            ),
-          )
-        ).flat();
-        const providerMetadata = providers.map(({ id, name, source }) => ({ id, name, source }));
-        const hasType = (providerId: string, type: string) =>
-          models.some((model) => model.providerId === providerId && model.type === type);
-        upstreamState = {
-          ...getEmptyAiProviderRuntimeState(),
-          enabledAiModels: models,
-          enabledAiProviders: providerMetadata,
-          enabledChatAiProviders: providerMetadata.filter((provider) =>
-            hasType(provider.id, 'chat'),
-          ),
-          enabledImageAiProviders: providerMetadata.filter((provider) =>
-            hasType(provider.id, 'image'),
-          ),
-          enabledVideoAiProviders: providerMetadata.filter((provider) =>
-            hasType(provider.id, 'video'),
-          ),
-        };
-      } else {
-        upstreamState = await ctx.aiInfraRepos.getAiProviderRuntimeState(
-          KeyVaultsGateKeeper.getUserKeyVaults,
-        );
-      }
-      // Personal hide-overrides: a user may drop an admin-published model from THEIR picker.
-      // View-only — the execution allowlist stays published-only, so a hidden model still runs
-      // when something asks for it by name.
-      const hiddenModelKeys = flags.ENABLE_PLATFORM_MANAGED_AI
-        ? new Set(
-            (await ctx.aiInfraRepos.aiModelModel.getAllModels())
-              .filter((model) => model.enabled === false)
-              .map((model) => personalModelOverlayKey(model.providerId, model.id)),
-          )
-        : undefined;
+      // Always the caller's REAL state (incl. decrypted runtimeConfig keyVaults, uncapped).
+      // Without a published 平台托管 policy this is returned byte-identical to the
+      // flag-off behaviour; under takeover the platform state wins for the providers it
+      // publishes as enabled and this supplies the user's remaining BYOK providers.
+      const upstreamState = await ctx.aiInfraRepos.getAiProviderRuntimeState(
+        KeyVaultsGateKeeper.getUserKeyVaults,
+      );
       const effectiveState = await resolveAiCatalogRuntimeState({
         db: ctx.serverDB,
         flags,
-        hiddenModelKeys,
         upstreamState,
       });
       if (effectiveState !== upstreamState) {

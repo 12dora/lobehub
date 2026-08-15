@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
 import { isCustomBranding } from '@/const/version';
+import { ManagedResourceBoundary } from '@/features/ManagedResources';
 
 import DesktopLayout from '../_layout/Desktop';
 import MobileLayout from '../_layout/Mobile';
@@ -25,11 +26,16 @@ const Page = (props: { mobile?: boolean }) => {
     return <ProviderDetailPage id={provider} onProviderSelect={setProvider} />;
   }, [provider]);
 
+  // This page is also mounted directly (mobile settings tab, workspace settings, the bare
+  // `(list)` route), i.e. outside the desktop provider layout that carries the boundary.
+  // Under 平台托管 every provider-settings entry point must be blocked, not just one.
   return (
-    <ProviderLayout onProviderSelect={setProvider}>
-      {ProviderListPage}
-      {!isCustomBranding && <Footer />}
-    </ProviderLayout>
+    <ManagedResourceBoundary resource="aiProviders">
+      <ProviderLayout onProviderSelect={setProvider}>
+        {ProviderListPage}
+        {!isCustomBranding && <Footer />}
+      </ProviderLayout>
+    </ManagedResourceBoundary>
   );
 };
 

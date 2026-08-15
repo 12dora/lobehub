@@ -16,9 +16,9 @@ import { getPluginMode, upsertPluginMode } from '@lobechat/types';
 import { AgentModel } from '@/database/models/agent';
 import { PluginModel } from '@/database/models/plugin';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
+import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
-  getEmptyPlatformAiRuntimeState,
-  isPlatformManagedAiEnabled,
+  isPlatformAiTakeoverActive,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { DiscoverService } from '@/server/services/discover';
@@ -54,7 +54,8 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
         params: GetAvailableModelsParams,
       ): Promise<ToolExecutionResult> => {
         try {
-          const managed = isPlatformManagedAiEnabled();
+          // Authorized by the published 平台托管 policy, not by the feature flag alone.
+          const managed = await isPlatformAiTakeoverActive(context.serverDB!);
           let enabledProviders: Array<{ id: string; name?: string; sort?: number | null }>;
           let getEnabledChatModels: (providerId: string) => Promise<
             Array<{
@@ -65,11 +66,17 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
           >;
 
           if (managed) {
+            // The platform governs the providers it publishes as enabled; the caller's other
+            // (BYOK / self-built) providers stay theirs and must keep showing up here, exactly
+            // as they do in the chat picker and in `initModelRuntimeFromDB`'s fallback.
             const runtimeState = await resolvePlatformAiRuntimeState({
               db: context.serverDB!,
-              upstreamState: getEmptyPlatformAiRuntimeState(),
+              upstreamState: await aiInfraRepos.getAiProviderRuntimeState(
+                KeyVaultsGateKeeper.getUserKeyVaults,
+              ),
             });
-            // The catalog adapter already applies provider.sort; preserve it exactly.
+            // The catalog adapter already applies provider.sort; preserve it exactly, and the
+            // merge appends the unmanaged providers after it.
             enabledProviders = runtimeState.enabledAiProviders;
             getEnabledChatModels = async (providerId) =>
               runtimeState.enabledAiModels.filter(

@@ -18,9 +18,18 @@ import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/sec
 
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
+import {
+  clearManagedResourceReadinessForTest,
+  resolveManagedResourceReadiness,
+} from '../managedResourceReadiness';
 import { AiCatalogAdminService } from './adminService';
 import { AiCatalogExecutionResolver, clearAiCatalogRuntimeCache } from './runtimeAdapter';
-import { resolveAiCatalogRuntimeReadiness } from './runtimeReadiness';
+import {
+  createSingleFlightReadinessProbe,
+  ensureAiCatalogReadinessRegistered,
+  resetAiCatalogReadinessRegistrationForTest,
+  resolveAiCatalogRuntimeReadiness,
+} from './runtimeReadiness';
 
 const db: LobeChatDatabase = await getTestDB();
 const keyProvider: KeyProvider = {
@@ -201,5 +210,71 @@ describe('AI catalog runtime readiness', () => {
     await expect(
       resolveAiCatalogRuntimeReadiness({ db, flags: managedFlags, secretService }),
     ).resolves.toBe(true);
+  });
+});
+
+describe('AI catalog readiness registration', () => {
+  afterEach(() => {
+    resetAiCatalogReadinessRegistrationForTest();
+    clearManagedResourceReadinessForTest();
+  });
+
+  it('runs the secret-decrypting AI probe once per readiness pass, not once per resource', async () => {
+    // `aiProviders` and `aiModels` share one probe; the resolver invokes every registered
+    // entry concurrently, so an unshared probe would load the catalog and decrypt every
+    // provider secret twice on every capability refresh.
+    resetAiCatalogReadinessRegistrationForTest();
+    clearManagedResourceReadinessForTest();
+    const probe = vi.fn().mockResolvedValue(true);
+    ensureAiCatalogReadinessRegistered(probe);
+
+    const readiness = await resolveManagedResourceReadiness();
+
+    expect(readiness.aiProviders).toBe(true);
+    expect(readiness.aiModels).toBe(true);
+    expect(probe).toHaveBeenCalledOnce();
+
+    // A later pass re-reads: the single-flight is not a cache.
+    expect(await resolveManagedResourceReadiness()).toMatchObject({
+      aiModels: true,
+      aiProviders: true,
+    });
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('single-flight keeps neither results nor rejections beyond the pass', async () => {
+    const probe = vi
+      .fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error('catalog unavailable'))
+      .mockResolvedValue(true);
+    const singleFlight = createSingleFlightReadinessProbe(probe);
+
+    // Concurrent callers within a pass share the failure …
+    const [first, second] = await Promise.allSettled([singleFlight(), singleFlight()]);
+    expect(first).toMatchObject({
+      reason: expect.objectContaining({ message: 'catalog unavailable' }),
+    });
+    expect(second).toMatchObject({
+      reason: expect.objectContaining({ message: 'catalog unavailable' }),
+    });
+    expect(probe).toHaveBeenCalledOnce();
+
+    // … and the next pass retries instead of replaying the cached rejection.
+    expect(await singleFlight()).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed readiness pass still reports both AI resources as not ready', async () => {
+    resetAiCatalogReadinessRegistrationForTest();
+    clearManagedResourceReadinessForTest();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const probe = vi.fn().mockRejectedValue(new Error('catalog unavailable'));
+    ensureAiCatalogReadinessRegistered(probe);
+
+    const readiness = await resolveManagedResourceReadiness();
+
+    expect(readiness).toMatchObject({ aiModels: false, aiProviders: false });
+    expect(probe).toHaveBeenCalledOnce();
+    consoleError.mockRestore();
   });
 });

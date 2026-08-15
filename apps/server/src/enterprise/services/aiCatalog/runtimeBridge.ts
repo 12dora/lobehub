@@ -5,6 +5,8 @@ import {
   registerPlatformAiRuntime,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
+import { isPlatformAiTakeoverActive } from './enforcement';
+import { AiCatalogNotFoundError } from './errors';
 import {
   AiCatalogExecutionResolver,
   createAiCatalogModelAllowlistHooks,
@@ -18,6 +20,7 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
   const implementation: PlatformAiRuntimeImplementation = {
     createModelAllowlistHooks: createAiCatalogModelAllowlistHooks,
     isEnabled: () => parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI,
+    isTakeoverActive: (db) => isPlatformAiTakeoverActive(db),
     listPublishedModels: async (db, providerKey) => {
       const state = await resolveAiCatalogRuntimeState({
         db,
@@ -32,18 +35,27 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
       });
       // Not in the published snapshot ⇒ not actively managed; the caller must fall back to
       // the user's own (BYOK) view rather than treat the provider as an empty catalog.
+      // `resolveAiCatalogRuntimeState` returns the (empty) upstream state whenever the
+      // platform has not taken over, so this is `null` for every provider then.
       const managed = state.enabledAiProviders.some((provider) => provider.id === providerKey);
       if (!managed) return null;
       return state.enabledAiModels.filter((model) => model.providerId === providerKey);
     },
     resolveExecutionConfig: async (db, providerKey) => {
       const flags = parseEnterpriseFeatureFlags(process.env);
+      // No published 平台托管 ⇒ the platform owns nothing on the user's behalf. Reported as
+      // NOT_FOUND (never a platform error) so `initModelRuntimeFromDB` falls back to the
+      // user's own runtime — the same signal an unmanaged/disabled provider produces, so
+      // ModelRuntime needs no knowledge of enforcement.
+      if (!(await isPlatformAiTakeoverActive(db, flags))) throw new AiCatalogNotFoundError();
       const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
       if (!secrets) throw new Error('PLATFORM_SECRET_REQUIRED');
       return new AiCatalogExecutionResolver(db, secrets).resolveProviderExecutionConfig(
         providerKey,
       );
     },
+    // Deliberately NOT gated: a pinned platform-agent operation must keep running on the exact
+    // provider revision it started on, and is terminal by design (no BYOK fallback).
     resolveExecutionConfigAtRevision: async (db, ref) => {
       const flags = parseEnterpriseFeatureFlags(process.env);
       const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);

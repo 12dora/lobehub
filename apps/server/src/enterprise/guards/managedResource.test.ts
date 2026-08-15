@@ -233,10 +233,13 @@ describe('ManagedResourceGuard policy matrix', () => {
         code: 'FORBIDDEN',
         message: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
       });
-      // Skills keep effective mode enforced (metric outcome "denied"); other resources
-      // degrade UI mode to unmanaged but still deny with catalog_not_ready.
+      // Skills and the AI catalog (aiProviders/aiModels) keep effective mode enforced during a
+      // catalog outage — their runtimes fail closed and the server takeover predicate reads the
+      // published policy, so the client must keep the UI blocked (metric outcome "denied").
+      // The remaining resources degrade UI mode to unmanaged but still deny with
+      // catalog_not_ready.
       const outageKey = Object.keys(sink.snapshot())[0] ?? '';
-      if (resource === 'skills') {
+      if (resource === 'skills' || resource === 'aiProviders' || resource === 'aiModels') {
         expect(outageKey).toContain('denied');
       } else {
         expect(outageKey).toContain('catalog_not_ready');

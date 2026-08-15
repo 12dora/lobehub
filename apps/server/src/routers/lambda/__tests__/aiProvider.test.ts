@@ -11,6 +11,7 @@ import {
   AiCatalogExecutionResolver,
   clearAiCatalogRuntimeCache,
 } from '@/server/enterprise/services/aiCatalog';
+import type * as AiCatalogEnforcement from '@/server/enterprise/services/aiCatalog/enforcement';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
@@ -28,6 +29,12 @@ const catalogRepositoryMocks = vi.hoisted(() => ({
 }));
 const catalogAuthorityMocks = vi.hoisted(() => ({
   loadCurrentAiCatalogSnapshot: vi.fn(),
+}));
+// The published 平台托管 policy — not the feature flag — authorizes the platform takeover.
+const enforcementMocks = vi.hoisted(() => ({ takeover: false }));
+vi.mock('@/server/enterprise/services/aiCatalog/enforcement', async (importOriginal) => ({
+  ...(await importOriginal<typeof AiCatalogEnforcement>()),
+  isPlatformAiTakeoverActive: vi.fn(async () => enforcementMocks.takeover),
 }));
 vi.mock('@/database/repositories/platformAiCatalog', () => ({
   PlatformAiCatalogRepository: vi.fn(() => catalogRepositoryMocks),
@@ -83,6 +90,7 @@ describe('aiProviderRouter', () => {
 
   beforeEach(() => {
     delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    enforcementMocks.takeover = false;
     clearAiCatalogRuntimeCache();
     vi.clearAllMocks();
 
@@ -91,8 +99,8 @@ describe('aiProviderRouter', () => {
     } as any);
 
     vi.mocked(KeyVaultsGateKeeper.initWithEnvKey).mockResolvedValue(mockGateKeeper as any);
-    // The runtime-state procedure reads the caller's personal model rows through the repo to
-    // build the hide-overlay; the repo itself is auto-mocked, so give it that accessor.
+    // The personal hide-overlay is gone, but the repo is auto-mocked and some cases still seed
+    // personal `ai_models` rows to prove they no longer affect the runtime state.
     vi.mocked(AiInfraRepos).prototype.aiModelModel = {
       getAllModels: vi.fn().mockResolvedValue([]),
     } as never;
@@ -195,16 +203,47 @@ describe('aiProviderRouter', () => {
       expect(mockGetState).toHaveBeenCalledWith(KeyVaultsGateKeeper.getUserKeyVaults);
     });
 
-    it('hides a personally-disabled published model from the caller state only', async () => {
+    it('returns the caller upstream state byte-identical while the platform has not taken over', async () => {
+      // Flag on + a published catalog is NOT authorization: without 平台托管 the response must
+      // be exactly what the flag-off path returns, including decrypted runtimeConfig keyVaults.
       process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      enforcementMocks.takeover = false;
+      catalogAuthorityMocks.loadCurrentAiCatalogSnapshot.mockRejectedValue(
+        new Error('catalog must not be read without takeover'),
+      );
+      const upstream = {
+        ...mockRuntimeState,
+        enabledAiModels: [
+          { abilities: {}, enabled: true, id: 'gpt-5.5', providerId: 'chatgpt', type: 'chat' },
+        ],
+        enabledAiProviders: [{ id: 'chatgpt', name: 'ChatGPT', source: 'builtin' as const }],
+        enabledChatAiProviders: [{ id: 'chatgpt', name: 'ChatGPT', source: 'builtin' as const }],
+        runtimeConfig: {
+          chatgpt: { config: {}, keyVaults: { apiKey: 'user-own-key' }, settings: {} },
+        },
+      };
+      const mockGetState = vi.fn().mockResolvedValue(upstream);
+      vi.mocked(AiInfraRepos).prototype.getAiProviderRuntimeState = mockGetState;
+
+      const state = await aiProviderRouter
+        .createCaller(createMockContext())
+        .getAiProviderRuntimeState({});
+
+      expect(state).toBe(upstream);
+      expect(mockGetState).toHaveBeenCalledWith(KeyVaultsGateKeeper.getUserKeyVaults);
+    });
+
+    it('unions the caller BYOK providers under takeover; published providers win on collision', async () => {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      enforcementMocks.takeover = true;
       catalogAuthorityMocks.loadCurrentAiCatalogSnapshot.mockResolvedValue({
         revisions: [
           {
             checksum: 'a'.repeat(64),
             payload: {
               models: [
-                { abilities: {}, enabled: true, modelKey: 'kept', sort: 0, type: 'chat' },
-                { abilities: {}, enabled: true, modelKey: 'hidden-by-user', sort: 1, type: 'chat' },
+                { abilities: {}, enabled: true, modelKey: 'published-1', sort: 0, type: 'chat' },
+                { abilities: {}, enabled: true, modelKey: 'published-2', sort: 1, type: 'chat' },
               ],
               provider: {
                 config: {},
@@ -222,14 +261,119 @@ describe('aiProviderRouter', () => {
         ],
         token: { kind: 'immutable_id', value: 'c'.repeat(64) },
       });
-      vi.mocked(AiInfraRepos).prototype.getAiProviderList = vi.fn().mockResolvedValue([]);
-      vi.mocked(AiInfraRepos).prototype.getAiProviderModelList = vi.fn().mockResolvedValue([]);
+      // 300 BYOK models on one provider: the old shadow builder capped at 20 providers /
+      // 200 models per provider; the real response must never truncate the caller's own state.
+      const byokModels = Array.from({ length: 300 }, (_, index) => ({
+        abilities: {},
+        enabled: true,
+        id: `byok-${index}`,
+        providerId: 'byok-provider',
+        type: 'chat',
+      }));
+      vi.mocked(AiInfraRepos).prototype.getAiProviderRuntimeState = vi.fn().mockResolvedValue({
+        ...mockRuntimeState,
+        enabledAiModels: [
+          ...byokModels,
+          // Same id as the published provider ⇒ must lose entirely.
+          {
+            abilities: {},
+            enabled: true,
+            id: 'user-shadow',
+            providerId: 'managed-provider',
+            type: 'chat',
+          },
+        ],
+        enabledAiProviders: [
+          { id: 'byok-provider', name: 'BYOK', source: 'custom' as const },
+          { id: 'managed-provider', name: 'User Copy', source: 'custom' as const },
+        ],
+        enabledChatAiProviders: [
+          { id: 'byok-provider', name: 'BYOK', source: 'custom' as const },
+          { id: 'managed-provider', name: 'User Copy', source: 'custom' as const },
+        ],
+        runtimeConfig: {
+          'byok-provider': { config: {}, keyVaults: { apiKey: 'byok-key' }, settings: {} },
+          'managed-provider': {
+            config: {},
+            keyVaults: { apiKey: 'user-secret-must-not-win' },
+            settings: {},
+          },
+        },
+      });
+
+      clearAiCatalogRuntimeCache();
+      const state = await aiProviderRouter
+        .createCaller(createMockContext())
+        .getAiProviderRuntimeState({});
+
+      expect(state.enabledAiProviders.map((provider) => provider.id)).toEqual([
+        'managed-provider',
+        'byok-provider',
+      ]);
+      expect(
+        state.enabledAiModels
+          .filter((model) => model.providerId === 'managed-provider')
+          .map((model) => model.id),
+      ).toEqual(['published-1', 'published-2']);
+      expect(
+        state.enabledAiModels.filter((model) => model.providerId === 'byok-provider'),
+      ).toHaveLength(300);
+      expect(state.runtimeConfig['managed-provider']?.keyVaults).toEqual({});
+      expect(state.runtimeConfig['byok-provider']?.keyVaults).toEqual({ apiKey: 'byok-key' });
+      expect(JSON.stringify(state)).not.toContain('user-secret-must-not-win');
+      expect(state.enabledChatAiProviders.map((provider) => provider.id)).toEqual([
+        'managed-provider',
+        'byok-provider',
+      ]);
+    });
+
+    it('keeps the picker non-empty for the demo state: 4 published models + 4 personal disabled rows', async () => {
+      // Regression for the reported empty chat picker. The personal hide overlay used to
+      // subtract these four `ai_models` rows (written BEFORE the admin published the same four
+      // models) and collapse `enabledChatAiProviders` to []. The overlay is gone.
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      enforcementMocks.takeover = true;
+      const publishedKeys = ['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'];
+      catalogAuthorityMocks.loadCurrentAiCatalogSnapshot.mockResolvedValue({
+        revisions: [
+          {
+            checksum: 'a'.repeat(64),
+            payload: {
+              models: publishedKeys.map((modelKey, sort) => ({
+                abilities: {},
+                enabled: true,
+                modelKey,
+                sort,
+                type: 'chat',
+              })),
+              provider: {
+                config: {},
+                displayName: 'ChatGPT',
+                enabled: true,
+                providerKey: 'chatgpt',
+                sort: 0,
+                source: 'builtin',
+              },
+            },
+            resourceId: 'provider-row-id',
+            revision: 1,
+            secretFingerprint: null,
+          },
+        ],
+        token: { kind: 'immutable_id', value: 'd'.repeat(64) },
+      });
+      vi.mocked(AiInfraRepos).prototype.getAiProviderRuntimeState = vi
+        .fn()
+        .mockResolvedValue(mockRuntimeState);
       vi.mocked(AiInfraRepos).prototype.aiModelModel = {
-        getAllModels: vi
-          .fn()
-          .mockResolvedValue([
-            { enabled: false, id: 'hidden-by-user', providerId: 'managed-provider', type: 'chat' },
-          ]),
+        getAllModels: vi.fn().mockResolvedValue(
+          publishedKeys.map((id) => ({
+            enabled: false,
+            id,
+            providerId: 'chatgpt',
+            type: 'chat',
+          })),
+        ),
       } as never;
 
       clearAiCatalogRuntimeCache();
@@ -237,18 +381,13 @@ describe('aiProviderRouter', () => {
         .createCaller(createMockContext())
         .getAiProviderRuntimeState({});
 
-      const modelIds = state.enabledAiModels
-        .filter((model) => model.providerId === 'managed-provider')
-        .map((model) => model.id);
-      expect(modelIds).toEqual(['kept']);
-      // The provider keeps its chat slot because another published model survived.
-      expect(state.enabledChatAiProviders.map((provider) => provider.id)).toContain(
-        'managed-provider',
-      );
+      expect(state.enabledAiModels.map((model) => model.id)).toEqual(publishedKeys);
+      expect(state.enabledChatAiProviders.map((provider) => provider.id)).toEqual(['chatgpt']);
     });
 
     it('never exposes execution secret material in either caller/execution order', async () => {
       process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      enforcementMocks.takeover = true;
       const plaintext = 'platform-caller-secret-not-for-client';
       const privateEndpoint = 'https://private-caller-endpoint.example.test/v1';
       const fingerprint = 'sha256:caller-secret-fingerprint';
@@ -327,7 +466,10 @@ describe('aiProviderRouter', () => {
         expect(response).not.toContain('user-secret-must-not-win');
         expect(response).not.toContain('user-endpoint.example.test');
       }
-      expect(mockGetState).not.toHaveBeenCalled();
+      // The caller state is now built from the caller's REAL upstream state (uncapped, with
+      // decrypted vaults) — the platform half still wins for what it publishes, and the
+      // user's same-id config never leaks.
+      expect(mockGetState).toHaveBeenCalledWith(KeyVaultsGateKeeper.getUserKeyVaults);
       expect(catalogAuthorityMocks.loadCurrentAiCatalogSnapshot).toHaveBeenCalled();
     });
   });

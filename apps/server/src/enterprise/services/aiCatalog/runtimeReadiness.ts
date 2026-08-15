@@ -45,11 +45,40 @@ export const resolveAiCatalogRuntimeReadiness = async (
   return true;
 };
 
+/**
+ * Collapse concurrent calls into one execution.
+ *
+ * `aiProviders` and `aiModels` are backed by the SAME probe, and
+ * `resolveManagedResourceReadiness` invokes every registered entry concurrently — so without
+ * this every readiness pass would load the published catalog and decrypt every provider secret
+ * TWICE. Deliberately not a TTL cache: the pending promise is dropped as soon as it settles
+ * (success or failure), so no result — and in particular no rejection — outlives its pass and
+ * admin/publish reads stay fresh.
+ */
+export const createSingleFlightReadinessProbe = (
+  probe: () => Promise<boolean>,
+): (() => Promise<boolean>) => {
+  let inFlight: Promise<boolean> | null = null;
+  return () => {
+    inFlight ??= probe().finally(() => {
+      inFlight = null;
+    });
+    return inFlight;
+  };
+};
+
 /** Registers lazy DB-backed probes; registration itself performs no I/O. */
-export const ensureAiCatalogReadinessRegistered = (): void => {
+export const ensureAiCatalogReadinessRegistered = (
+  probe: () => Promise<boolean> = () => resolveAiCatalogRuntimeReadiness(),
+): void => {
   if (registered) return;
   registered = true;
-  const probe = () => resolveAiCatalogRuntimeReadiness();
-  registerManagedResourceReadiness('aiProviders', probe);
-  registerManagedResourceReadiness('aiModels', probe);
+  // One shared instance for both resources — see createSingleFlightReadinessProbe.
+  const singleFlight = createSingleFlightReadinessProbe(probe);
+  registerManagedResourceReadiness('aiProviders', singleFlight);
+  registerManagedResourceReadiness('aiModels', singleFlight);
+};
+
+export const resetAiCatalogReadinessRegistrationForTest = (): void => {
+  registered = false;
 };

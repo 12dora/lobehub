@@ -4,11 +4,16 @@ import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
-import { PlatformCatalogAuthorityModel } from '@/database/models/platform';
+import {
+  createUnmanagedResourcePolicyMap,
+  PlatformCatalogAuthorityModel,
+  PlatformManagedResourcePolicyModel,
+} from '@/database/models/platform';
 import { checksumPayload } from '@/database/models/platform/checksum';
 import {
   platformAiProviders,
   platformAiProviderSecrets,
+  platformManagedResourcePolicies,
   platformResourceRevisions,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -21,16 +26,17 @@ import { PlatformCatalogTokenInvariantError } from '../platformInstance/catalogT
 import { PlatformDomainTargetResolver } from '../platformInstance/domainTargets';
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import { AiCatalogAdminService } from './adminService';
+import { resetPlatformAiTakeoverCacheForTest } from './enforcement';
 import {
   AiCatalogExecutionResolver,
   AiCatalogRuntimeAdapter,
-  applyPersonalModelOverlay,
   clearAiCatalogRuntimeCache,
   compareAiCatalogRuntimeStates,
   createAiCatalogModelAllowlistHooks,
   getEmptyAiProviderRuntimeState,
-  personalModelOverlayKey,
+  mergeUnmanagedUpstreamProviders,
   recordAiCatalogShadowComparison,
+  resolveAiCatalogRuntimeState,
 } from './runtimeAdapter';
 import {
   cleanup,
@@ -425,31 +431,114 @@ describe('AiCatalogRuntimeAdapter', () => {
     });
   });
 
-  it('applies the personal model overlay without touching the shared snapshot', async () => {
+  it('unions the caller BYOK providers into the managed state without touching the snapshot', async () => {
     await createPublishedProvider();
     clearAiCatalogRuntimeCache();
-    const shared = await new AiCatalogRuntimeAdapter(db).resolve({
-      flags,
-      upstreamState,
-    });
-    const published = shared.enabledAiModels.filter((model) => model.providerId === 'alpha');
-    expect(published.length).toBeGreaterThan(0);
+    const shared = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(shared.enabledAiProviders.map((item) => item.id)).toEqual(['alpha']);
 
-    const hidden = new Set([personalModelOverlayKey('alpha', published[0]!.id)]);
-    const personal = applyPersonalModelOverlay(shared, hidden);
+    const merged = mergeUnmanagedUpstreamProviders(shared, upstreamState);
 
-    // Personal view loses the hidden model …
-    expect(personal.enabledAiModels.map((model) => model.id)).not.toContain(published[0]!.id);
-    // … and the provider drops out of the chat list only once nothing of that type is left.
-    const remainingChat = personal.enabledAiModels.filter(
-      (model) => model.providerId === 'alpha' && model.type === 'chat',
+    // The published provider wins on id collision — the user's own `alpha` row is dropped
+    // together with its models and its credentials.
+    expect(merged.enabledAiProviders.map((item) => item.id)).toEqual(['alpha', 'user-provider']);
+    expect(merged.enabledAiModels.filter((model) => model.providerId === 'alpha')).toEqual(
+      shared.enabledAiModels.filter((model) => model.providerId === 'alpha'),
     );
-    expect(personal.enabledChatAiProviders.some((item) => item.id === 'alpha')).toBe(
-      remainingChat.length > 0,
+    expect(merged.runtimeConfig.alpha).toEqual(shared.runtimeConfig.alpha);
+    expect(JSON.stringify(merged)).not.toContain('user-key-must-not-win');
+
+    // … while the unmanaged provider survives with its models and its own config.
+    expect(merged.enabledAiModels.some((model) => model.providerId === 'user-provider')).toBe(true);
+    expect(merged.runtimeConfig['user-provider']).toEqual(
+      upstreamState.runtimeConfig['user-provider'],
     );
+
     // The shared snapshot is untouched — it is cached process-wide for every user.
-    expect(shared.enabledAiModels.map((model) => model.id)).toContain(published[0]!.id);
-    expect(applyPersonalModelOverlay(shared, new Set())).toBe(shared);
+    expect(shared.enabledAiProviders.map((item) => item.id)).toEqual(['alpha']);
+    expect(mergeUnmanagedUpstreamProviders(shared, getEmptyAiProviderRuntimeState())).toBe(shared);
+  });
+
+  describe('resolveAiCatalogRuntimeState enforcement gate', () => {
+    const publishAiProviderPolicy = async (managed: boolean) => {
+      const model = new PlatformManagedResourcePolicyModel(db);
+      await model.ensureRows();
+      const policies = createUnmanagedResourcePolicyMap();
+      if (managed) {
+        policies.aiProviders = { enforcementMode: 'enforced', managed: true };
+        policies.aiModels = { enforcementMode: 'enforced', managed: true };
+      }
+      await model.materializePublished({ policies, revision: 1 });
+      resetPlatformAiTakeoverCacheForTest();
+    };
+
+    beforeEach(async () => {
+      resetPlatformAiTakeoverCacheForTest();
+      await db.delete(platformManagedResourcePolicies);
+    });
+
+    afterEach(async () => {
+      resetPlatformAiTakeoverCacheForTest();
+      await db.delete(platformManagedResourcePolicies);
+    });
+
+    it('returns the exact upstream state when 平台托管 is not published', async () => {
+      await createPublishedProvider();
+      clearAiCatalogRuntimeCache();
+      // Policy rows exist but stay at 用户自配 — a published catalog alone authorizes nothing.
+      await publishAiProviderPolicy(false);
+
+      const state = await resolveAiCatalogRuntimeState({ db, flags, upstreamState });
+
+      expect(state).toBe(upstreamState);
+    });
+
+    it('returns the exact upstream state when the policy is still a draft', async () => {
+      await createPublishedProvider();
+      clearAiCatalogRuntimeCache();
+      const model = new PlatformManagedResourcePolicyModel(db);
+      await model.ensureRows();
+      const draft = createUnmanagedResourcePolicyMap();
+      draft.aiProviders = { enforcementMode: 'enforced', managed: true };
+      await model.replaceDraft({ draft });
+      resetPlatformAiTakeoverCacheForTest();
+
+      expect(await resolveAiCatalogRuntimeState({ db, flags, upstreamState })).toBe(upstreamState);
+    });
+
+    it('overrides with the platform catalog once 平台托管 is published', async () => {
+      await createPublishedProvider();
+      clearAiCatalogRuntimeCache();
+      await publishAiProviderPolicy(true);
+
+      const state = await resolveAiCatalogRuntimeState({ db, flags, upstreamState });
+
+      expect(state).not.toBe(upstreamState);
+      expect(state.enabledAiProviders.map((item) => item.id)).toEqual(['alpha', 'user-provider']);
+      // Managed provider is credential-free; the caller's own provider keeps its config.
+      expect(state.runtimeConfig.alpha?.keyVaults).toEqual({});
+      expect(state.runtimeConfig['user-provider']?.keyVaults).toEqual({ apiKey: 'user-only' });
+    });
+
+    it('never reads the catalog while the feature flag is off', async () => {
+      await publishAiProviderPolicy(true);
+      const failOnRead = new Proxy(
+        {},
+        {
+          get() {
+            throw new Error('catalog must not be read while ENABLE_PLATFORM_MANAGED_AI is off');
+          },
+        },
+      ) as LobeChatDatabase;
+
+      expect(
+        await resolveAiCatalogRuntimeState({
+          db: failOnRead,
+          flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+          upstreamState,
+        }),
+      ).toBe(upstreamState);
+    });
   });
 
   it('separates public metadata cache from server execution secrets across publish and rollback', async () => {

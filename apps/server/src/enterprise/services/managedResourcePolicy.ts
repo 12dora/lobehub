@@ -14,6 +14,7 @@ import {
   MANAGED_POLICY_RESOURCE_TYPE,
 } from '@/types/platform/managedResources';
 
+import { resetPlatformAiTakeoverCache } from './aiCatalog/enforcement';
 import type { AuditAction } from './audit/auditActionCatalog';
 import { resolveManagedResourceReadiness } from './managedResourceReadiness';
 import {
@@ -190,6 +191,12 @@ export class ManagedResourcePolicyService {
         resourceId: MANAGED_POLICY_RESOURCE_ID,
         resourceType: MANAGED_POLICY_RESOURCE_TYPE,
       });
+      // AFTER commit (never in afterMaterialization, which runs inside the transaction): drop
+      // the in-process platform-AI takeover memo so the next runtime/router read on THIS
+      // instance already sees the policy that was just published. Other instances converge
+      // within the memo TTL — the platform invalidation channel is a pull-based Redis version
+      // bump with no subscriber, so there is no push hook to ride.
+      resetPlatformAiTakeoverCache();
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await this.appendFailureAudit({
