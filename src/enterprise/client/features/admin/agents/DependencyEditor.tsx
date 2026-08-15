@@ -1,6 +1,7 @@
 'use client';
 
 import { Flexbox } from '@lobehub/ui';
+import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ConnectorDependencyField } from './ConnectorDependencyField';
@@ -43,14 +44,40 @@ const useDebouncedQuery = (value: string, delay = CATALOG_SEARCH_DEBOUNCE_MS) =>
   return debounced;
 };
 
+/**
+ * A catalog state that blocks Save. Unlike `issues` (staleness, rendered next to the field it
+ * belongs to), a blocker can originate from a field the host hides — Skills and Connectors live in
+ * a collapsed group — so the host MUST render it where the Save button is.
+ */
+export interface DependencyBlocker {
+  /** i18n key describing what is blocking Save. */
+  message: string;
+  /** Present when the underlying catalog exposes a retry. */
+  retry?: () => Promise<unknown>;
+}
+
 export interface DependencyValidity {
+  /** Save-blocking catalog loading/error states, including ones from hidden fields. */
+  blockers: DependencyBlocker[];
   issues: string[];
   ready: boolean;
+}
+
+/** The three authorable dependency fields, so a caller can place them in different form sections. */
+export interface DependencyEditorSlots {
+  connectors: ReactNode;
+  model: ReactNode;
+  skills: ReactNode;
 }
 
 interface DependencyEditorProps {
   /** Owning Agent id — changing it resets the provider/connector selection so it never bleeds. */
   agentId: string;
+  /**
+   * Optional layout override. Catalog state, fail-closed readiness and authoring handlers stay in
+   * this component; the caller only decides where each field is rendered. Omitted → stacked layout.
+   */
+  children?: (slots: DependencyEditorSlots) => ReactNode;
   dependencies: AdminAgentDraftDependencies;
   editable: boolean;
   enabled: boolean;
@@ -60,6 +87,7 @@ interface DependencyEditorProps {
 
 export const DependencyEditor = ({
   agentId,
+  children,
   dependencies,
   editable,
   enabled,
@@ -179,10 +207,67 @@ export const DependencyEditor = ({
     return list;
   }, [displayModelStale, staleConnectors.length, staleSkills.length]);
 
+  /**
+   * Save-blocking catalog states the caller cannot see: Skills and Connectors are authored inside a
+   * collapsed group, so an errored or still-loading catalog would otherwise disable Save silently.
+   * Each entry carries the catalog's own retry when it has one.
+   */
+  const blockers = useMemo<DependencyBlocker[]>(() => {
+    const list: DependencyBlocker[] = [];
+    const add = (message: string, retry?: () => Promise<unknown>) => {
+      if (list.some((blocker) => blocker.message === message)) return;
+      list.push(retry ? { message, retry } : { message });
+    };
+
+    if (skills.error) add('agentCatalog.dependency.skill.loadError', skills.mutate);
+    else if (!skillsSettled) add('agentCatalog.editor.blocked.skillCatalog');
+
+    if (connectors.error) add('agentCatalog.dependency.connector.loadError', connectors.mutate);
+    else if (!connectorsListUsable) add('agentCatalog.editor.blocked.connectorCatalog');
+
+    if (connectorRefDetails.error) {
+      add('agentCatalog.dependency.connector.validateError', connectorRefDetails.mutate);
+    } else if (dependencies.connectors.length > 0 && !connectorsSettled) {
+      add('agentCatalog.editor.blocked.connectorCatalog');
+    }
+
+    if (connectorId && !connectorDetailReady) {
+      if (connectorDetail.error) {
+        add('agentCatalog.dependency.connector.loadError', connectorDetail.mutate);
+      } else add('agentCatalog.editor.blocked.connectorCatalog');
+    }
+    return list;
+  }, [
+    connectorDetail.error,
+    connectorDetail.mutate,
+    connectorDetailReady,
+    connectorId,
+    connectorRefDetails.error,
+    connectorRefDetails.mutate,
+    connectors.error,
+    connectors.mutate,
+    connectorsListUsable,
+    connectorsSettled,
+    dependencies.connectors.length,
+    skills.error,
+    skills.mutate,
+    skillsSettled,
+  ]);
+
+  // Retry callbacks are not stable identities, so the publish effect keys off the message list and
+  // reads the current blockers through a ref instead of re-firing on every catalog render.
+  const blockersRef = useRef(blockers);
+  blockersRef.current = blockers;
+  const blockersKey = blockers.map((blocker) => blocker.message).join('|');
+
   const issuesKey = issues.join('|');
   useEffect(() => {
-    onValidityChange?.({ issues: issuesKey ? issuesKey.split('|') : [], ready });
-  }, [issuesKey, onValidityChange, ready]);
+    onValidityChange?.({
+      blockers: blockersRef.current,
+      issues: issuesKey ? issuesKey.split('|') : [],
+      ready,
+    });
+  }, [blockersKey, issuesKey, onValidityChange, ready]);
 
   const chooseProvider = (nextId: string | undefined) => {
     if (!providersUsable) return; // never select against a loading/revalidating/errored provider list
@@ -260,35 +345,8 @@ export const DependencyEditor = ({
     truncated: Boolean(connectors.data?.truncated),
   };
 
-  return (
-    <Flexbox gap={20}>
-      <ModelDependencyField
-        displayModelStale={displayModelStale}
-        editable={editable}
-        model={model}
-        providerId={providerId}
-        providerSearch={providerSearch}
-        providers={providersSlice}
-        providersUsable={providersUsable}
-        source={source}
-        sourceSettled={sourceSettled}
-        onChooseModel={chooseModel}
-        onChooseProvider={chooseProvider}
-        onProviderSearchChange={(next) => {
-          setProviderSearch(next);
-          setProviderHydrateQuery('');
-        }}
-      />
-      <SkillDependencyField
-        editable={editable}
-        skillOptions={skillOptions}
-        skills={skills}
-        skillsSettled={skillsSettled}
-        staleSkills={staleSkills}
-        value={dependencies.skills}
-        onAdd={addSkill}
-        onRemove={(skillKey) => onChange(withSkillRemoved(dependencies, skillKey))}
-      />
+  const slots: DependencyEditorSlots = {
+    connectors: (
       <ConnectorDependencyField
         connectorDetail={connectorDetail}
         connectorDetailUsable={connectorDetailUsable}
@@ -309,6 +367,49 @@ export const DependencyEditor = ({
         onSelectConnector={setConnectorId}
         onUpdateExisting={updateExistingConnector}
       />
+    ),
+    model: (
+      <ModelDependencyField
+        // The caller's form section already reads "Model" when it places this slot itself.
+        displayModelStale={displayModelStale}
+        editable={editable}
+        hideTitle={Boolean(children)}
+        model={model}
+        providerId={providerId}
+        providerSearch={providerSearch}
+        providers={providersSlice}
+        providersUsable={providersUsable}
+        source={source}
+        sourceSettled={sourceSettled}
+        onChooseModel={chooseModel}
+        onChooseProvider={chooseProvider}
+        onProviderSearchChange={(next) => {
+          setProviderSearch(next);
+          setProviderHydrateQuery('');
+        }}
+      />
+    ),
+    skills: (
+      <SkillDependencyField
+        editable={editable}
+        skillOptions={skillOptions}
+        skills={skills}
+        skillsSettled={skillsSettled}
+        staleSkills={staleSkills}
+        value={dependencies.skills}
+        onAdd={addSkill}
+        onRemove={(skillKey) => onChange(withSkillRemoved(dependencies, skillKey))}
+      />
+    ),
+  };
+
+  if (children) return <>{children(slots)}</>;
+
+  return (
+    <Flexbox gap={20}>
+      {slots.model}
+      {slots.skills}
+      {slots.connectors}
     </Flexbox>
   );
 };

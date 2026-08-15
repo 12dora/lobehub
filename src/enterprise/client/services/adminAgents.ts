@@ -18,7 +18,6 @@ export const createLambdaAdminAgentsClient = (): AdminAgentsClient => ({
   // Keep the adapter default closed so direct/partial trees cannot accidentally read Rollout APIs.
   capabilities: { rollouts: false },
 
-  appendVersion: (input) => lambdaClient.admin.agents.appendVersion.mutate(input),
   archive: (input) => lambdaClient.admin.agents.archive.mutate(input),
   cancelRollout: (input) => lambdaClient.admin.agents.rollouts.cancel.mutate(input),
   create: (input) => lambdaClient.admin.agents.create.mutate(input),
@@ -30,11 +29,11 @@ export const createLambdaAdminAgentsClient = (): AdminAgentsClient => ({
   listRollouts: (input) => lambdaClient.admin.agents.rollouts.list.query(input),
   listVersions: (input) => lambdaClient.admin.agents.listVersions.query(input),
   previewAssignment: (input) => lambdaClient.admin.agents.assignments.preview.query(input),
-  publish: (input) => lambdaClient.admin.agents.publish.mutate(input),
   removeAssignment: (input) => lambdaClient.admin.agents.assignments.remove.mutate(input),
   retryRollout: (input) => lambdaClient.admin.agents.rollouts.retry.mutate(input),
   rollback: (input) => lambdaClient.admin.agents.rollback.mutate(input),
   rollbackRollout: (input) => lambdaClient.admin.agents.rollouts.rollback.mutate(input),
+  save: (input) => lambdaClient.admin.agents.save.mutate(input),
   setDefaultInbox: (input) => lambdaClient.admin.agents.setDefaultInbox.mutate(input),
   startRollout: (input) => lambdaClient.admin.agents.rollouts.start.mutate(input),
   upsertAssignment: (input) => lambdaClient.admin.agents.assignments.upsert.mutate(input),

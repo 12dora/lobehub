@@ -12,24 +12,18 @@ import {
 } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
-import { adminPlatformAgentAppendVersionInputSchema } from '@/server/enterprise/contracts/platformAgents';
 
-import type { deriveAdminAgentPermissions } from './controller';
-import { toDependencySnapshot } from './dependencyCatalog';
-import type { AdminAgentDetailOutput, AdminPlatformAgentAppendVersionOutput } from './types';
+import type { AdminAgentDetailOutput } from './types';
 import { useAdminAgentReplacementCandidates } from './useAdminAgentReplacementCandidates';
 import { findDefaultAdminAgent } from './useAdminAgents';
-import type { useAgentEditor } from './useAgentEditor';
 import type { RefreshLock } from './useRefreshLock';
 
 type IdentityMutationOutput = Pick<AdminAgentDetailOutput, 'draftToken' | 'identity'>;
 
 interface UseAgentActionsParams {
   authMethod: AdminReauthAuthMethod | null;
-  editor: ReturnType<typeof useAgentEditor>;
   lock: RefreshLock;
   mutate: KeyedMutator<AdminAgentDetailOutput>;
-  permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   snapshot: AdminAgentDetailOutput;
 }
 
@@ -102,175 +96,8 @@ const applyIdentity =
   (current?: AdminAgentDetailOutput): AdminAgentDetailOutput | undefined =>
     current ? { ...current, draftToken: output.draftToken, identity: output.identity } : current;
 
-const applyAppendVersion =
-  (output: AdminPlatformAgentAppendVersionOutput) =>
-  (current?: AdminAgentDetailOutput): AdminAgentDetailOutput | undefined =>
-    current
-      ? {
-          ...current,
-          draftToken: output.draftToken,
-          identity: output.identity,
-          versions: [output.version, ...current.versions],
-        }
-      : current;
-
-export const useAgentActions = ({
-  authMethod,
-  editor,
-  lock,
-  mutate,
-  permissions,
-  snapshot,
-}: UseAgentActionsParams) => {
+export const useAgentActions = ({ authMethod, lock, mutate, snapshot }: UseAgentActionsParams) => {
   const { t } = useTranslation('admin');
-
-  const save = useCallback(() => {
-    // Locked after a committed change whose refresh failed → block the stale-CAS write.
-    if (lock.isLocked() || !permissions.canUpdate || !editor.draft) return;
-    // The draft must be submitted against the exact CAS it was authored from. This synchronous
-    // guard also protects direct/programmatic calls that bypass the disabled Save button during a
-    // refresh race. Never bind a dirty draft to the newer live snapshot implicitly.
-    const baseline = editor.draftBaseline;
-    if (
-      editor.conflict ||
-      !baseline ||
-      baseline.agentId !== snapshot.identity.id ||
-      baseline.revision !== snapshot.identity.revision ||
-      baseline.draftToken !== snapshot.draftToken
-    ) {
-      editor.setConflict(true);
-      return;
-    }
-    const { agentId, draftToken: expectedDraftToken, revision: expectedRevision } = baseline;
-    const dependencySnapshot = toDependencySnapshot(editor.draft.dependencies);
-    if (!dependencySnapshot) {
-      toast.error(t('agentCatalog.dependency.model.required'));
-      return;
-    }
-    const config = structuredClone(editor.draft.config);
-    const version = editor.draft.version;
-    // Recovery storage intentionally accepts temporarily incomplete form values. The complete
-    // append-version contract is enforced only at this explicit submission boundary.
-    if (
-      !adminPlatformAgentAppendVersionInputSchema.safeParse({
-        agentId,
-        config,
-        dependencySnapshot,
-        expectedDraftToken,
-        expectedRevision,
-        reason: 'validate recovered Agent draft',
-        version,
-      }).success
-    ) {
-      editor.setSaveState('failed');
-      toast.error(t('agentCatalog.save.invalid'));
-      return;
-    }
-    // One token for this logical write — captured by both submit and the reauth-abort hook so the
-    // shared-reauth retry is recognised as the SAME write and a cancel releases the frozen baseline.
-    const writeToken = {};
-    openReasonModal({
-      authMethod: authMethod ?? undefined,
-      buildPayload: (reason) => ({
-        agentId,
-        config,
-        dependencySnapshot,
-        expectedDraftToken,
-        expectedRevision,
-        reason,
-        version,
-      }),
-      description: t('agentCatalog.save.description'),
-      onPhaseChange: (phase) => {
-        if (phase === 'idle') lock.abortWrite(writeToken); // reauth cancel / terminal → unlock if uncommitted
-      },
-      onSubmit: async (input) => {
-        if (!lock.beginWrite(writeToken)) return; // lock BEFORE the service; reject concurrent writes
-        editor.setSaveState('saving');
-        let output: AdminPlatformAgentAppendVersionOutput;
-        try {
-          output = await adminAgentsService.appendVersion(
-            input as Parameters<typeof adminAgentsService.appendVersion>[0],
-          );
-        } catch (cause) {
-          if (isAdminReauthRequiredError(cause)) throw cause; // retryable: keep the frozen baseline
-          lock.abortWrite(writeToken);
-          editor.setSaveState('failed');
-          if (cause instanceof Error && cause.message.includes('CONFLICT'))
-            editor.setConflict(true);
-          throw cause;
-        }
-        // Committed on the server — mark synchronously BEFORE any cache apply, so an idle/finally can
-        // never abort a committed write.
-        lock.markCommitted(writeToken);
-        editor.markSaved({
-          agentId: output.identity.id,
-          draftToken: output.draftToken,
-          revision: output.identity.revision,
-        });
-        try {
-          await mutate(applyAppendVersion(output), { revalidate: false });
-          lock.resolveWrite(writeToken); // output carries the advanced CAS → end the cycle, no refresh
-        } catch {
-          // The local cache apply failed AFTER the commit → stay locked and refresh the authoritative
-          // aggregate against the frozen baseline; only a complete fresh aggregate unlocks.
-          await lock.commitWrite(writeToken);
-        }
-        toast.success(t('agentCatalog.toast.saved'));
-      },
-      submitLabel: t('agentCatalog.action.saveVersion'),
-      targetLabel: snapshot.identity.agentKey,
-      title: t('agentCatalog.save.title'),
-    });
-  }, [authMethod, editor, lock, mutate, permissions.canUpdate, snapshot, t]);
-
-  const publish = useCallback(
-    (versionId: string) => {
-      if (lock.isLocked()) return;
-      const writeToken = {};
-      openReasonModal({
-        authMethod: authMethod ?? undefined,
-        buildPayload: (reason) => ({
-          agentId: snapshot.identity.id,
-          expectedDraftToken: snapshot.draftToken,
-          expectedRevision: snapshot.identity.revision,
-          reason,
-          versionId,
-        }),
-        description: t('agentCatalog.publish.description'),
-        onPhaseChange: (phase) => {
-          if (phase === 'idle') lock.abortWrite(writeToken);
-        },
-        onSubmit: async (input) => {
-          if (!lock.beginWrite(writeToken)) return;
-          let invalidationDeferred: boolean;
-          try {
-            const result = await adminAgentsService.publish(
-              input as Parameters<typeof adminAgentsService.publish>[0],
-            );
-            invalidationDeferred = result.invalidationStatus === 'deferred';
-            if (invalidationDeferred) {
-              toast.warning(t('agentCatalog.toast.refreshDeferred'));
-            }
-          } catch (cause) {
-            if (isAdminReauthRequiredError(cause)) throw cause;
-            lock.abortWrite(writeToken);
-            throw cause;
-          }
-          // publish output carries no draftToken → refresh; stays locked on a non-advanced refresh.
-          lock.markCommitted(writeToken);
-          await lock.commitWrite(writeToken);
-          if (!invalidationDeferred) {
-            toast.success(t('agentCatalog.toast.published'));
-          }
-        },
-        submitLabel: t('agentCatalog.publish.submit'),
-        targetLabel: snapshot.identity.agentKey,
-        title: t('agentCatalog.publish.title'),
-      });
-    },
-    [authMethod, lock, snapshot, t],
-  );
 
   const rollback = useCallback(
     (versionId: string) => {
@@ -448,11 +275,9 @@ export const useAgentActions = ({
 
   return {
     archive,
-    publish,
     refreshFailed: lock.refreshFailed,
     retryRefresh: lock.retryRefresh,
     rollback,
-    save,
     setDefaultInbox,
   };
 };

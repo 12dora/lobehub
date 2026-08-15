@@ -140,8 +140,11 @@ describe('useRefreshLock lifecycle (pre-write baseline + immediate lock)', () =>
     const client = createMockAdminAgentsClient();
     // 32+ source chars of agentKey alone filled the old 64-hex truncation window.
     const longKey = `refresh-long-${'k'.repeat(40)}`;
+    const source = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
     const created = await client.create({
       agentKey: longKey,
+      config: source.config,
+      dependencySnapshot: source.dependencySnapshot,
       isDefault: false,
       reason: 'long-key lock chain',
       systemKey: null,

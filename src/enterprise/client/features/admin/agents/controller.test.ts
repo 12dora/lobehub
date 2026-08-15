@@ -50,30 +50,58 @@ describe('deriveAdminAgentPermissions', () => {
 
   it('keeps every detail write action hidden for a read-only auditor', () => {
     const permissions = deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_READ]);
-    expect(
-      deriveAdminAgentActionAvailability({ dirty: false, hasCurrentVersion: true, permissions }),
-    ).toEqual({
+    expect(deriveAdminAgentActionAvailability({ hasCurrentVersion: true, permissions })).toEqual({
       canArchiveNow: false,
       canAssign: false,
-      canPublishNow: false,
+      canCreate: false,
+      canEdit: false,
       canRollbackNow: false,
-      canSaveVersion: false,
+      canSetDefaultNow: false,
     });
   });
 
-  it('locks publish, rollback, and archive while a local version is dirty', () => {
+  it.each([
+    ['update without publish', [PLATFORM_PERMISSIONS.AGENT_UPDATE]],
+    ['publish without update', [PLATFORM_PERMISSIONS.AGENT_PUBLISH]],
+  ])('withholds Edit for %s — saving publishes, so it needs both', (_label, granted) => {
+    const permissions = deriveAdminAgentPermissions(granted);
+    expect(
+      deriveAdminAgentActionAvailability({ hasCurrentVersion: true, permissions }).canEdit,
+    ).toBe(false);
+  });
+
+  it.each([
+    ['create without publish', [PLATFORM_PERMISSIONS.AGENT_CREATE]],
+    ['publish without create', [PLATFORM_PERMISSIONS.AGENT_PUBLISH]],
+  ])('withholds New assistant for %s — creating publishes too', (_label, granted) => {
+    const permissions = deriveAdminAgentPermissions(granted);
+    expect(
+      deriveAdminAgentActionAvailability({ hasCurrentVersion: true, permissions }).canCreate,
+    ).toBe(false);
+  });
+
+  it('opens every write once the compound permissions are granted', () => {
     const permissions = deriveAdminAgentPermissions([
+      PLATFORM_PERMISSIONS.AGENT_CREATE,
       PLATFORM_PERMISSIONS.AGENT_UPDATE,
       PLATFORM_PERMISSIONS.AGENT_DELETE,
       PLATFORM_PERMISSIONS.AGENT_PUBLISH,
     ]);
-    expect(
-      deriveAdminAgentActionAvailability({ dirty: true, hasCurrentVersion: true, permissions }),
-    ).toMatchObject({
-      canArchiveNow: false,
-      canPublishNow: false,
-      canRollbackNow: false,
-      canSaveVersion: true,
+    expect(deriveAdminAgentActionAvailability({ hasCurrentVersion: true, permissions })).toEqual({
+      canArchiveNow: true,
+      canAssign: false,
+      canCreate: true,
+      canEdit: true,
+      canRollbackNow: true,
+      canSetDefaultNow: true,
     });
+  });
+
+  it('keeps the default-Inbox switch closed until a version exists', () => {
+    const permissions = deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_PUBLISH]);
+    expect(
+      deriveAdminAgentActionAvailability({ hasCurrentVersion: false, permissions })
+        .canSetDefaultNow,
+    ).toBe(false);
   });
 });

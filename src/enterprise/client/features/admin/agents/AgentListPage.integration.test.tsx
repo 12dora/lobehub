@@ -21,7 +21,8 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
   adminAgentsService: { capabilities: { rollouts: false }, list: mocks.list },
 }));
-vi.mock('./openCreateAgentModal', () => ({ openCreateAgentModal: vi.fn() }));
+vi.mock('./openAgentEditorModal', () => ({ openAgentEditorModal: vi.fn() }));
+vi.mock('./pruneLegacyAgentDrafts', () => ({ usePruneLegacyAdminAgentDrafts: vi.fn() }));
 vi.mock('@/components/Loading/BrandTextLoading', () => ({
   default: () => <div role="status">loading</div>,
 }));

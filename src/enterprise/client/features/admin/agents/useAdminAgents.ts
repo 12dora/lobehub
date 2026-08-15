@@ -200,6 +200,15 @@ export interface AdminAgentListPagination {
    */
   removeItem: (agentId: string) => Promise<void>;
   retry: () => void;
+  /**
+   * Apply an authoritative post-commit projection to a loaded row, then revalidate. The write is
+   * already committed server-side, so the row must show the new truth immediately; a rejected
+   * revalidation is surfaced by the caller instead of leaving the pre-save row on screen.
+   */
+  updateItem: (
+    agentId: string,
+    apply: (item: AdminAgentListItem) => AdminAgentListItem,
+  ) => Promise<void>;
 }
 
 /**
@@ -274,6 +283,16 @@ export const useAdminAgentListPagination = (
       );
     },
     retry: () => void swr.mutate(),
+    updateItem: async (agentId, apply) => {
+      await swr.mutate(
+        (pages) =>
+          pages?.map((page) => ({
+            ...page,
+            items: page.items.map((item) => (item.identity.id === agentId ? apply(item) : item)),
+          })),
+        { revalidate: true },
+      );
+    },
   };
 };
 

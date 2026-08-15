@@ -12,15 +12,14 @@ import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterpri
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import StatusBadge from '../primitives/StatusBadge';
-import { AgentEditorFields } from './AgentEditorFields';
+import { applyAgentSaveOutputToDetail } from './applySaveOutput';
 import { AssignmentPanel } from './AssignmentPanel';
 import type { deriveAdminAgentPermissions } from './controller';
 import { deriveAdminAgentActionAvailability } from './controller';
-import { DependencyEditor, type DependencyValidity } from './DependencyEditor';
+import { openAgentEditorModal } from './openAgentEditorModal';
 import { RolloutPanel } from './RolloutPanel';
 import type { AdminAgentDetailOutput } from './types';
 import { useAgentActions } from './useAgentActions';
-import type { useAgentEditor } from './useAgentEditor';
 import { useRefreshLock } from './useRefreshLock';
 import {
   selectCurrentPlatformAgentVersion,
@@ -30,7 +29,6 @@ import {
 
 interface AgentDetailViewProps {
   authMethod: AdminReauthAuthMethod | null;
-  editor: ReturnType<typeof useAgentEditor>;
   mutate: KeyedMutator<AdminAgentDetailOutput>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   pollError?: unknown;
@@ -42,27 +40,16 @@ interface AgentDetailViewProps {
 type CollectionKind = 'assignments' | 'rollouts' | 'versions';
 type CollectionLoadState = Record<CollectionKind, 'error' | 'idle' | 'loading'>;
 
-const PERSIST_HINT_KEY = {
-  blocked: 'agentCatalog.recovery.blocked',
-  invalid: 'agentCatalog.recovery.invalid',
-  saved: 'agentCatalog.recovery.saved',
-  too_large: 'agentCatalog.recovery.tooLarge',
-  unavailable: 'agentCatalog.recovery.unavailable',
-} as const;
-
-// Statuses that warrant a visible warning (vs. the subtle "saved"/"pending" secondary text).
-const PERSIST_WARNING = new Set(['blocked', 'too_large', 'unavailable']);
-
 /**
  * A refreshed Agent detail unlocks the refresh gate ONLY when it FIRST parses as a COMPLETE
  * authoritative aggregate — full identity + draftToken + the assignments / versions / rollouts
  * collections — against the same contract Zod schema used at the API boundary (not a handwritten
  * partial shape), AND then demonstrably advances the CAS past the frozen baseline for the SAME
  * Agent: either `revision` OR `draftSequence` STRICTLY greater (monotone), never decreased, AND
- * the draftToken changed. Draft-only mutations (assignments, appendVersion, pinned rollout rollback)
- * advance `draftSequence` without touching published `revision`; requiring revision alone permanently
- * locks the detail page after those commits. A partial object, CAS rollback, token-only change with
- * equal sequences, another Agent, or an undefined/incomplete detail are all rejected.
+ * the draftToken changed. Draft-only mutations (assignments, pinned rollout rollback) advance
+ * `draftSequence` without touching published `revision`; requiring revision alone permanently
+ * locks the detail page after those commits. A partial object, CAS rollback, token-only change
+ * with equal sequences, another Agent, or an undefined/incomplete detail are all rejected.
  */
 export const isAgentDetailFresh = (
   result: AdminAgentDetailOutput | undefined,
@@ -88,7 +75,6 @@ export const isAgentDetailFresh = (
 export const AgentDetailView = memo(
   ({
     authMethod,
-    editor,
     mutate,
     permissions,
     pollError,
@@ -99,16 +85,7 @@ export const AgentDetailView = memo(
     const { t } = useTranslation('admin');
     const current = selectCurrentPlatformAgentVersion(snapshot);
     const latest = selectLatestPlatformAgentVersion(snapshot.versions);
-    // Exact catalog validity of the draft dependencies, reported up by the DependencyEditor.
-    // `ready` means the model/skill/connector refs still match the CURRENT published catalog.
-    const [depValidity, setDepValidity] = useState<DependencyValidity>({
-      issues: [],
-      ready: false,
-    });
-    const onDepValidity = useCallback((value: DependencyValidity) => setDepValidity(value), []);
-    const modelReady = depValidity.ready;
     const availability = deriveAdminAgentActionAvailability({
-      dirty: editor.dirty,
       hasCurrentVersion: Boolean(latest),
       permissions,
     });
@@ -121,7 +98,7 @@ export const AgentDetailView = memo(
       getSnapshot: () => snapshotRef.current,
       isFresh: isAgentDetailFresh,
     });
-    const actions = useAgentActions({ authMethod, editor, lock, mutate, permissions, snapshot });
+    const actions = useAgentActions({ authMethod, lock, mutate, snapshot });
     const [collectionLoadState, setCollectionLoadState] = useState<CollectionLoadState>({
       assignments: 'idle',
       rollouts: 'idle',
@@ -132,6 +109,29 @@ export const AgentDetailView = memo(
       rollouts: false,
       versions: false,
     });
+
+    const editAgent = useCallback(() => {
+      if (lock.isLocked()) return;
+      openAgentEditorModal({
+        agent: snapshotRef.current,
+        authMethod,
+        onSaved: async (output) => {
+          // The write already committed. Freeze the pre-write baseline, apply the authoritative
+          // output to this page's cache, then revalidate through the shared gate: if the refresh
+          // never comes back CAS-advanced, the gate keeps every dependent write locked and the
+          // refresh-failed banner explains why — never a silent, stale detail page.
+          const writeToken = {};
+          lock.beginWrite(writeToken);
+          lock.markCommitted(writeToken);
+          try {
+            await mutate(applyAgentSaveOutputToDetail(output), { revalidate: false });
+          } catch {
+            // Local cache apply failed — the refresh below is now the only path back to truth.
+          }
+          await lock.commitWrite(writeToken);
+        },
+      });
+    }, [authMethod, lock, mutate]);
 
     const loadMoreCollection = useCallback(
       async (kind: CollectionKind) => {
@@ -253,39 +253,16 @@ export const AgentDetailView = memo(
         title={current?.config.displayName ?? snapshot.identity.agentKey}
         actions={
           <Flexbox horizontal gap={8} wrap="wrap">
-            {availability.canSaveVersion && editor.draft ? (
-              <Button
-                type="primary"
-                disabled={
-                  !editor.dirty ||
-                  editor.conflict ||
-                  editor.saveState === 'saving' ||
-                  !modelReady ||
-                  lock.locked
-                }
-                onClick={actions.save}
-              >
-                {editor.saveState === 'saving'
-                  ? t('agentCatalog.action.saving')
-                  : t('agentCatalog.action.saveVersion')}
-              </Button>
-            ) : null}
-            {permissions.canPublish &&
-            latest &&
-            (latest.id !== current?.id || snapshot.identity.status !== 'published') ? (
-              <Button
-                disabled={!availability.canPublishNow || lock.locked}
-                onClick={() => actions.publish(latest.id)}
-              >
-                {t('agentCatalog.publish.submit')}
+            {availability.canEdit ? (
+              <Button disabled={lock.locked} type="primary" onClick={editAgent}>
+                {t('agentCatalog.action.edit')}
               </Button>
             ) : null}
             {permissions.canPublish &&
             !snapshot.identity.isDefault &&
             snapshot.identity.status === 'published' ? (
               <Button
-                danger
-                disabled={!availability.canPublishNow || lock.locked}
+                disabled={!availability.canSetDefaultNow || lock.locked}
                 onClick={() => void actions.setDefaultInbox()}
               >
                 {t('agentCatalog.defaultSwitch.submit')}
@@ -304,17 +281,24 @@ export const AgentDetailView = memo(
         }
       >
         <Flexbox gap={24}>
-          <Flexbox horizontal gap={8} wrap="wrap">
+          <Flexbox horizontal align="center" gap={8} wrap="wrap">
             <StatusBadge status={snapshot.identity.status} />
             {snapshot.identity.isDefault ? <Tag>{t('agentCatalog.defaultInbox')}</Tag> : null}
-            {snapshot.identity.migrationRequired ? (
-              <Tag color="warning">{t('agentCatalog.migrationRequired')}</Tag>
-            ) : null}
             {!permissions.canUpdate ? <Tag>{t('agentCatalog.readOnly.badge')}</Tag> : null}
-            <Text type="secondary">
-              {t('agentCatalog.revision', { revision: snapshot.identity.revision })}
-            </Text>
+            {current ? (
+              <Text type="secondary">
+                {t('agentCatalog.versions.currentVersion', { version: current.version })}
+              </Text>
+            ) : null}
           </Flexbox>
+          {snapshot.identity.migrationRequired ? (
+            <Alert
+              showIcon
+              description={t('agentCatalog.migrationRequiredDescription')}
+              message={t('agentCatalog.migrationRequired')}
+              type="warning"
+            />
+          ) : null}
           {actions.refreshFailed ? (
             <Alert
               showIcon
@@ -328,57 +312,22 @@ export const AgentDetailView = memo(
               }
             />
           ) : null}
-          {editor.conflict ? (
-            <Alert
-              description={t('agentCatalog.conflict.description')}
-              message={t('agentCatalog.conflict.title')}
-              type="error"
-              action={
-                <Button size="small" onClick={editor.discard}>
-                  {t('agentCatalog.conflict.discard')}
-                </Button>
-              }
-            />
-          ) : null}
-          {editor.saveState === 'failed' ? (
-            <Alert message={t('agentCatalog.save.failed')} type="error" />
-          ) : null}
-          {editor.persistState && PERSIST_WARNING.has(editor.persistState) ? (
-            <Alert showIcon message={t(PERSIST_HINT_KEY[editor.persistState])} type="warning" />
-          ) : editor.persistState ? (
-            <Text type="secondary">{t(PERSIST_HINT_KEY[editor.persistState])}</Text>
-          ) : null}
-          {editor.draft ? (
-            <Block padding={20} variant="outlined">
-              <Flexbox gap={20}>
-                <AgentEditorFields
-                  draft={editor.draft}
-                  editable={permissions.canUpdate}
-                  onChange={editor.updateDraft}
-                />
-                <DependencyEditor
-                  agentId={snapshot.identity.id}
-                  dependencies={editor.draft.dependencies}
-                  editable={permissions.canUpdate}
-                  enabled={permissions.canUpdate}
-                  onValidityChange={onDepValidity}
-                  onChange={(next) =>
-                    editor.updateDraft((currentDraft) => ({
-                      ...currentDraft,
-                      dependencies: next,
-                    }))
-                  }
-                />
-                {permissions.canUpdate && depValidity.issues.length > 0 ? (
-                  <Alert
-                    showIcon
-                    message={depValidity.issues.map((issue) => t(issue as never)).join(' · ')}
-                    type="warning"
-                  />
-                ) : null}
-              </Flexbox>
-            </Block>
-          ) : null}
+          <AssignmentPanel
+            assignmentsTruncated={Boolean(snapshot.collectionMeta?.assignmentsTruncated)}
+            authMethod={authMethod}
+            loadMoreError={collectionLoadState.assignments === 'error'}
+            loadingMore={collectionLoadState.assignments === 'loading'}
+            lock={lock}
+            permissions={permissions}
+            refresh={mutate}
+            rolloutsEnabled={rolloutsEnabled}
+            snapshot={snapshot}
+            onLoadMoreAssignments={
+              snapshot.collectionMeta?.assignmentsNextCursor
+                ? () => loadMoreCollection('assignments')
+                : undefined
+            }
+          />
           <Flexbox gap={12}>
             <Text as="h3" fontSize={16} weight={600}>
               {t('agentCatalog.versions.title')}
@@ -413,7 +362,7 @@ export const AgentDetailView = memo(
               <Block key={version.id} padding={16} variant="outlined">
                 <Flexbox horizontal align="center" gap={12} justify="space-between" wrap="wrap">
                   <Flexbox gap={4}>
-                    <Flexbox horizontal gap={8}>
+                    <Flexbox horizontal align="center" gap={8}>
                       <Text strong>{version.version}</Text>
                       {version.id === snapshot.identity.currentVersionId ? (
                         <Tag color="success">{t('agentCatalog.versions.current')}</Tag>
@@ -426,15 +375,9 @@ export const AgentDetailView = memo(
                       · {version.dependencySnapshot.connectors.length}{' '}
                       {t('agentCatalog.versions.connectors')}
                     </Text>
-                    <Text code type="secondary">
-                      {version.checksum.slice(0, 16)}…
-                    </Text>
                   </Flexbox>
-                  {permissions.canPublish &&
-                  version.id !== snapshot.identity.currentVersionId &&
-                  !(snapshot.identity.status === 'draft' && version.id === latest?.id) ? (
+                  {permissions.canPublish && version.id !== snapshot.identity.currentVersionId ? (
                     <Button
-                      danger
                       disabled={!availability.canRollbackNow || lock.locked}
                       onClick={() => actions.rollback(version.id)}
                     >
@@ -445,22 +388,6 @@ export const AgentDetailView = memo(
               </Block>
             ))}
           </Flexbox>
-          <AssignmentPanel
-            assignmentsTruncated={Boolean(snapshot.collectionMeta?.assignmentsTruncated)}
-            authMethod={authMethod}
-            loadMoreError={collectionLoadState.assignments === 'error'}
-            loadingMore={collectionLoadState.assignments === 'loading'}
-            lock={lock}
-            permissions={permissions}
-            refresh={mutate}
-            rolloutsEnabled={rolloutsEnabled}
-            snapshot={snapshot}
-            onLoadMoreAssignments={
-              snapshot.collectionMeta?.assignmentsNextCursor
-                ? () => loadMoreCollection('assignments')
-                : undefined
-            }
-          />
           <RolloutPanel
             authMethod={authMethod}
             enabled={rolloutsEnabled}

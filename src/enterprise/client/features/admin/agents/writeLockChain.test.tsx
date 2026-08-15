@@ -4,22 +4,16 @@ import { act, renderHook } from '@testing-library/react';
 import { useRef } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-
 import { isAgentDetailFresh } from './AgentDetailView';
-import { deriveAdminAgentPermissions } from './controller';
 import type { AdminAgentDetailOutput } from './types';
 import { useAgentActions } from './useAgentActions';
-import type { AgentDraftBaseline } from './useAgentEditor';
 import { useAssignmentEditor } from './useAssignmentEditor';
 import { useRefreshLock } from './useRefreshLock';
 
 const mocks = vi.hoisted(() => ({
   openReasonModal: vi.fn(),
   service: {
-    appendVersion: vi.fn(),
     archive: vi.fn(),
-    publish: vi.fn(),
     removeAssignment: vi.fn(),
     rollback: vi.fn(),
     setDefaultInbox: vi.fn(),
@@ -41,12 +35,6 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   Select: () => null,
   toast: { error: vi.fn(), success: vi.fn() },
 }));
-
-const permissions = deriveAdminAgentPermissions([
-  PLATFORM_PERMISSIONS.AGENT_PUBLISH,
-  PLATFORM_PERMISSIONS.AGENT_UPDATE,
-  PLATFORM_PERMISSIONS.AGENT_ASSIGN,
-]);
 
 /** A COMPLETE authoritative aggregate — the ONLY shape the refresh gate will accept as fresh. */
 const complete = (revision: number, token: string): AdminAgentDetailOutput =>
@@ -95,37 +83,6 @@ const deferred = <T,>() => {
 
 const reauthError = () => new Error('ADMIN_REAUTH_REQUIRED');
 
-const editor = {
-  conflict: false,
-  draft: {
-    config: {
-      avatar: null,
-      backgroundColor: null,
-      description: null,
-      displayName: 'Assistant',
-      modelParameters: {},
-      openingMessage: null,
-      openingQuestions: [],
-      systemRole: 'Help the user.',
-      tags: [],
-    },
-    dependencies: {
-      connectors: [],
-      model: {
-        modelKey: 'gpt-4.1',
-        providerChecksum: 'a'.repeat(64),
-        providerKey: 'openai',
-        providerRevision: 1,
-      },
-      skills: [],
-    },
-    version: '1.0.0',
-  },
-  markSaved: vi.fn(),
-  setConflict: vi.fn(),
-  setSaveState: vi.fn(),
-};
-
 // The shared SWR mutate: an updater arg = optimistic local cache apply; a bare call = a refresh,
 // resolving to whatever `freshRef` currently holds. `cacheApply` lets a test force the optimistic
 // cache apply to REJECT (simulating a post-commit local cache failure) while the bare refresh works.
@@ -147,28 +104,14 @@ const renderHarness = (snapshot: AdminAgentDetailOutput) =>
     ({ snap }: { snap: AdminAgentDetailOutput }) => {
       const snapshotRef = useRef(snap);
       snapshotRef.current = snap;
-      const draftBaselineRef = useRef({
-        agentId: snap.identity.id,
-        draftToken: snap.draftToken,
-        revision: snap.identity.revision,
-      });
       const lock = useRefreshLock<AdminAgentDetailOutput>(mutate, {
         getSnapshot: () => snapshotRef.current,
         isFresh: isAgentDetailFresh,
       });
       const actions = useAgentActions({
         authMethod: null,
-        editor: {
-          ...editor,
-          draftBaseline: draftBaselineRef.current,
-          markSaved: (baseline: AgentDraftBaseline) => {
-            draftBaselineRef.current = baseline;
-            editor.markSaved(baseline);
-          },
-        } as never,
         lock,
         mutate,
-        permissions,
         snapshot: snap,
       });
       const assignment = useAssignmentEditor(snap, null, lock);
@@ -184,10 +127,8 @@ beforeEach(() => {
   mutate.mockClear();
   freshRef.current = undefined;
   for (const fn of Object.values(mocks.service)) fn.mockReset();
-  mocks.service.appendVersion.mockResolvedValue(casOutput());
   mocks.service.setDefaultInbox.mockResolvedValue({ nextDefault: casOutput() });
   mocks.service.archive.mockResolvedValue(casOutput());
-  mocks.service.publish.mockResolvedValue({ agentId: 'agent-1', revision: 8, versionId: 'v1' });
   mocks.service.rollback.mockResolvedValue({ agentId: 'agent-1', revision: 8 });
   mocks.service.upsertAssignment.mockResolvedValue({ id: 'as-1' });
   mocks.service.removeAssignment.mockResolvedValue({ removed: true });
@@ -204,18 +145,6 @@ interface WriteCase {
 }
 
 const AGENT_WRITES: WriteCase[] = [
-  {
-    cas: true,
-    method: 'appendVersion',
-    name: 'append/save',
-    trigger: (h) => h.result.current.actions.save(),
-  },
-  {
-    cas: false,
-    method: 'publish',
-    name: 'publish',
-    trigger: (h) => h.result.current.actions.publish('v1'),
-  },
   {
     cas: false,
     method: 'rollback',
@@ -346,7 +275,7 @@ describe('write-lock chain: refresh writes stay locked until a fresh CAS-advance
       expect(mocks.service[w.method].mock.calls.length).toBe(calls);
 
       // A fresh, strictly-advanced aggregate on retry unlocks.
-      const refreshed = w.method === 'appendVersion' ? complete(8, 'e') : complete(5, 'c');
+      const refreshed = complete(5, 'c');
       freshRef.current = refreshed;
       await act(async () => {
         await h.result.current.lock.retryRefresh();
@@ -372,10 +301,10 @@ describe('write-lock chain: refresh writes stay locked until a fresh CAS-advance
     ['a revision rollback', complete(3, 'c')],
     ['a token-only change', complete(4, 'c')],
     ['undefined (pending/failed refresh)', undefined],
-  ])('publish + adversarial refresh (%s) keeps the lock engaged', async (_label, adversarial) => {
+  ])('rollback + adversarial refresh (%s) keeps the lock engaged', async (_label, adversarial) => {
     const h = renderHarness(complete(4, 'b'));
     freshRef.current = adversarial;
-    await fire(h, AGENT_WRITES[1]); // publish
+    await fire(h, AGENT_WRITES[0]); // rollback
     const config = lastConfig();
     await act(async () => {
       await config.onSubmit(config.buildPayload('reason'));
@@ -406,9 +335,9 @@ describe('write-lock chain: CAS-carrying writes unlock immediately from the auth
 
 describe('write-lock chain: shared-reauth is one logical write', () => {
   it('keeps the frozen baseline across a reauth challenge and releases it only when the retry is cancelled', async () => {
-    mocks.service.publish.mockRejectedValueOnce(reauthError());
+    mocks.service.rollback.mockRejectedValueOnce(reauthError());
     const h = renderHarness(complete(7, 'b'));
-    await fire(h, AGENT_WRITES[1]); // publish
+    await fire(h, AGENT_WRITES[0]); // rollback
     const config = lastConfig();
 
     // The first attempt throws ADMIN_REAUTH_REQUIRED: the modal will run the popup + one retry, so
@@ -425,16 +354,16 @@ describe('write-lock chain: shared-reauth is one logical write', () => {
       config.onPhaseChange?.('idle');
     });
     expect(h.result.current.lock.isLocked()).toBe(false);
-    expect(mocks.service.publish).toHaveBeenCalledTimes(1);
+    expect(mocks.service.rollback).toHaveBeenCalledTimes(1);
   });
 
   it('the reauth retry (same token) commits and unlocks without re-freezing the baseline', async () => {
-    mocks.service.publish
+    mocks.service.rollback
       .mockRejectedValueOnce(reauthError()) // first attempt: challenge
       .mockResolvedValueOnce({ agentId: 'agent-1', revision: 8, versionId: 'v1' }); // retry commits
     freshRef.current = complete(8, 'e');
     const h = renderHarness(complete(7, 'b'));
-    await fire(h, AGENT_WRITES[1]);
+    await fire(h, AGENT_WRITES[0]);
     const config = lastConfig();
 
     await act(async () => {
@@ -446,7 +375,7 @@ describe('write-lock chain: shared-reauth is one logical write', () => {
     await act(async () => {
       await config.onSubmit(config.buildPayload('reason'));
     });
-    expect(mocks.service.publish).toHaveBeenCalledTimes(2);
+    expect(mocks.service.rollback).toHaveBeenCalledTimes(2);
     expect(h.result.current.lock.isLocked()).toBe(false);
   });
 });
@@ -482,7 +411,7 @@ describe('write-lock chain: a committed write survives a local cache-apply failu
 
       // The authoritative aggregate refresh (fresh, strictly advanced) unlocks.
       cacheApply.current = 'ok';
-      const refreshed = w.method === 'appendVersion' ? complete(8, 'e') : complete(5, 'c');
+      const refreshed = complete(5, 'c');
       freshRef.current = refreshed;
       await act(async () => {
         await h.result.current.lock.retryRefresh();

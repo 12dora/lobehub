@@ -13,8 +13,8 @@ import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import { AdminNotFoundSurface } from '../pages/AdminStateSurfaces';
 import { AgentDetailView } from './AgentDetailView';
 import { deriveAdminAgentPermissions } from './controller';
+import { usePruneLegacyAdminAgentDrafts } from './pruneLegacyAgentDrafts';
 import { useFetchAdminAgent } from './useAdminAgents';
-import { useAgentEditor } from './useAgentEditor';
 
 const isNotFoundError = (error: unknown) => {
   if (!error) return false;
@@ -26,6 +26,9 @@ const isNotFoundError = (error: unknown) => {
 
 const AgentDetailPage = memo(() => {
   const { id } = useParams<{ id: string }>();
+  // A deep-linked detail page is an entry point too — clean up the pre-de-draft local drafts here
+  // as well, not only when the admin happens to come through the catalog list.
+  usePruneLegacyAdminAgentDrafts();
   const { authMethod, permissions } = useAdminAccess();
   const { capabilities } = useEnterprisePlatform();
   const agentPermissions = deriveAdminAgentPermissions(permissions);
@@ -37,12 +40,7 @@ const AgentDetailPage = memo(() => {
     rolloutsEnabled,
   );
   // Never surface retained/stale detail for a different route identity.
-  const matchedData = data && id && data.identity.id === id ? data : undefined;
-  const editor = useAgentEditor(matchedData, agentPermissions.canUpdate);
-  // Withhold the view until the editor has hydrated for THIS route agent. Otherwise a B snapshot
-  // can paint one frame with A's still-mounted draftBaseline/draft (A→B navigation race).
-  const editorMatchesRoute = Boolean(id && editor.draftBaseline?.agentId === id);
-  const readyData = matchedData && editorMatchesRoute ? matchedData : undefined;
+  const readyData = data && id && data.identity.id === id ? data : undefined;
 
   if (isNotFoundError(error)) return <AdminNotFoundSurface />;
 
@@ -52,14 +50,13 @@ const AgentDetailPage = memo(() => {
       // Do not suppress the current key's error with a previous agent's data.
       error={readyData ? undefined : error}
       errorVariant="page"
-      isLoading={isLoading || Boolean(matchedData && !editorMatchesRoute)}
+      isLoading={isLoading}
       loading={<Loading debugId="AdminAgentDetail" />}
       onRetry={() => void mutate()}
     >
       {readyData ? (
         <AgentDetailView
           authMethod={authMethod ?? null}
-          editor={editor}
           mutate={mutate}
           permissions={agentPermissions}
           pollError={rolloutPollError}

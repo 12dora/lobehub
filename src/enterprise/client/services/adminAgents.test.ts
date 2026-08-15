@@ -4,15 +4,14 @@ import { adminAgentsService, createLambdaAdminAgentsClient } from './adminAgents
 
 const mocks = vi.hoisted(() => ({
   agents: {
-    appendVersion: vi.fn(),
     archive: vi.fn(),
     create: vi.fn(),
     delete: vi.fn(),
     get: vi.fn(),
     list: vi.fn(),
     listVersions: vi.fn(),
-    publish: vi.fn(),
     rollback: vi.fn(),
+    save: vi.fn(),
     setDefaultInbox: vi.fn(),
   },
   assignments: {
@@ -35,7 +34,6 @@ vi.mock('@/libs/trpc/client', () => ({
   lambdaClient: {
     admin: {
       agents: {
-        appendVersion: { mutate: mocks.agents.appendVersion },
         archive: { mutate: mocks.agents.archive },
         assignments: {
           list: { query: mocks.assignments.list },
@@ -48,8 +46,8 @@ vi.mock('@/libs/trpc/client', () => ({
         get: { query: mocks.agents.get },
         list: { query: mocks.agents.list },
         listVersions: { query: mocks.agents.listVersions },
-        publish: { mutate: mocks.agents.publish },
         rollback: { mutate: mocks.agents.rollback },
+        save: { mutate: mocks.agents.save },
         rollouts: {
           cancel: { mutate: mocks.rollouts.cancel },
           get: { query: mocks.rollouts.get },
@@ -120,25 +118,19 @@ describe('production admin agents adapter (lambdaClient)', () => {
 
     const createInput = {
       agentKey: 'support',
+      config: {} as never,
+      dependencySnapshot: {} as never,
       isDefault: false,
       reason: 'create',
       systemKey: null,
     };
-    const appendInput = {
+    const saveInput = {
       agentId: 'agent-1',
       config: {} as never,
       dependencySnapshot: {} as never,
       expectedDraftToken: 'a'.repeat(64),
       expectedRevision: 1,
       reason: 'save',
-      version: '1.0.0',
-    };
-    const publishInput = {
-      agentId: 'agent-1',
-      expectedDraftToken: 'a'.repeat(64),
-      expectedRevision: 1,
-      reason: 'publish',
-      versionId: 'v1',
     };
     const rollbackInput = {
       agentId: 'agent-1',
@@ -195,8 +187,7 @@ describe('production admin agents adapter (lambdaClient)', () => {
     };
 
     await client.create(createInput);
-    await client.appendVersion(appendInput);
-    await client.publish(publishInput);
+    await client.save(saveInput);
     await client.rollback(rollbackInput);
     await client.archive(archiveInput);
     await client.removeAssignment(removeAssignmentInput);
@@ -205,8 +196,7 @@ describe('production admin agents adapter (lambdaClient)', () => {
     await client.upsertAssignment(upsertAssignmentInput);
 
     expect(mocks.agents.create).toHaveBeenCalledWith(createInput);
-    expect(mocks.agents.appendVersion).toHaveBeenCalledWith(appendInput);
-    expect(mocks.agents.publish).toHaveBeenCalledWith(publishInput);
+    expect(mocks.agents.save).toHaveBeenCalledWith(saveInput);
     expect(mocks.agents.rollback).toHaveBeenCalledWith(rollbackInput);
     expect(mocks.agents.archive).toHaveBeenCalledWith(archiveInput);
     expect(mocks.assignments.remove).toHaveBeenCalledWith(removeAssignmentInput);

@@ -12,14 +12,19 @@ export const deriveAdminAgentPermissions = (permissions: readonly string[]) => {
   };
 };
 
+/**
+ * Which detail/list actions an operator may start. There is no draft any more, so nothing is
+ * gated on a dirty editor: creating and saving both publish in one server transaction, which is
+ * why they need the write permission AND publish (the server enforces the same compound).
+ */
 export const deriveAdminAgentActionAvailability = (params: {
-  dirty: boolean;
-  hasCurrentVersion: boolean;
+  hasCurrentVersion?: boolean;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
 }) => ({
-  canArchiveNow: params.permissions.canDelete && !params.dirty,
+  canArchiveNow: params.permissions.canDelete,
   canAssign: params.permissions.canAssign,
-  canPublishNow: params.permissions.canPublish && params.hasCurrentVersion && !params.dirty,
-  canRollbackNow: params.permissions.canPublish && !params.dirty,
-  canSaveVersion: params.permissions.canUpdate,
+  canCreate: params.permissions.canCreate && params.permissions.canPublish,
+  canEdit: params.permissions.canUpdate && params.permissions.canPublish,
+  canRollbackNow: params.permissions.canPublish,
+  canSetDefaultNow: params.permissions.canPublish && Boolean(params.hasCurrentVersion),
 });

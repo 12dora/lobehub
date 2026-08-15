@@ -27,6 +27,8 @@ interface SwrSlice<T> {
 export interface ModelDependencyFieldProps {
   displayModelStale: boolean;
   editable: boolean;
+  /** Set when the surrounding form section already carries the "Model" heading. */
+  hideTitle?: boolean;
   model: PlatformAgentModelDependencyRef | null;
   onChooseModel: (modelKey: string | undefined) => void;
   onChooseProvider: (providerId: string | undefined) => void;
@@ -42,6 +44,7 @@ export interface ModelDependencyFieldProps {
 export const ModelDependencyField = ({
   displayModelStale,
   editable,
+  hideTitle = false,
   model,
   onChooseModel,
   onChooseProvider,
@@ -57,9 +60,11 @@ export const ModelDependencyField = ({
 
   return (
     <Flexbox gap={8}>
-      <Text as="h4" fontSize={14} weight={600}>
-        {t('agentCatalog.dependency.model.title')}
-      </Text>
+      {hideTitle ? null : (
+        <Text as="h4" fontSize={14} weight={600}>
+          {t('agentCatalog.dependency.model.title')}
+        </Text>
+      )}
       <CatalogListBody
         empty={<Alert showIcon message={t('agentCatalog.dependency.model.empty')} type="warning" />}
         error={providers.error}

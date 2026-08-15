@@ -6,16 +6,13 @@ import {
 } from '@lobechat/types';
 
 import {
-  adminPlatformAgentAppendVersionOutputSchema,
   adminPlatformAgentArchiveOutputSchema,
   adminPlatformAgentAssignmentListOutputSchema,
   adminPlatformAgentAssignmentPreviewOutputSchema,
   adminPlatformAgentAssignmentRemoveOutputSchema,
   adminPlatformAgentAssignmentUpsertOutputSchema,
-  adminPlatformAgentCreateOutputSchema,
   adminPlatformAgentGetOutputSchema,
   adminPlatformAgentListOutputSchema,
-  adminPlatformAgentPublishOutputSchema,
   adminPlatformAgentRollbackOutputSchema,
   adminPlatformAgentRolloutCancelOutputSchema,
   adminPlatformAgentRolloutGetOutputSchema,
@@ -23,6 +20,7 @@ import {
   adminPlatformAgentRolloutRetryOutputSchema,
   adminPlatformAgentRolloutRollbackOutputSchema,
   adminPlatformAgentRolloutStartOutputSchema,
+  adminPlatformAgentSaveOutputSchema,
   adminPlatformAgentSetDefaultInboxOutputSchema,
   adminPlatformAgentVersionsListOutputSchema,
 } from '@/server/enterprise/contracts/platformAgents';
@@ -178,6 +176,12 @@ const toListItem = (detail: AdminAgentDetailOutput): AdminAgentListItem => {
   };
 };
 
+/** Mirrors the server-side patch bump used to label a saved version. */
+const nextPatch = (version: string): string => {
+  const [major = '0', minor = '0', patch = '0'] = version.split(/[+-]/, 1)[0]!.split('.');
+  return `${Number(major)}.${Number(minor)}.${Number(patch) + 1}`;
+};
+
 const page = <T>(items: T[], cursor: string | undefined, limit = 50) => {
   const offset = cursor ? Number(cursor) : 0;
   const pageItems = items.slice(offset, offset + limit);
@@ -221,7 +225,7 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
     }
     return record;
   };
-  /** Draft-only CAS: assignments / appendVersion / updateDraft — draftSequence only. */
+  /** Draft-only CAS: assignment writes — draftSequence only. */
   const advanceDraft = (record: AdminAgentDetailOutput) => {
     record.identity = {
       ...record.identity,
@@ -262,28 +266,6 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
 
   return {
     capabilities: { rollouts: true },
-    appendVersion: async (input) => {
-      const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
-      const id = `version-${input.agentId}-${record.versions.length + 1}`;
-      const version = {
-        agentId: input.agentId,
-        checksum: checksum(record.versions.length.toString(16)),
-        config: input.config,
-        createdAt: new Date(),
-        createdBy: 'mock-admin',
-        dependencySnapshot: input.dependencySnapshot,
-        id,
-        version: input.version,
-      };
-      record.versions.unshift(version);
-      // appendVersion is draft-only CAS in production (draftSequence++, revision unchanged).
-      advanceDraft(record);
-      return adminPlatformAgentAppendVersionOutputSchema.parse({
-        draftToken: record.draftToken,
-        identity: record.identity,
-        version,
-      });
-    },
     archive: async (input) => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       if (record.identity.isDefault && input.replacementAgentId === null) {
@@ -326,20 +308,43 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
         throw new Error('PLATFORM_AGENT_DEFAULT_ALREADY_EXISTS');
       }
       const id = `agent-${crypto.randomUUID()}`;
+      const version = {
+        agentId: id,
+        checksum: checksum('0'),
+        config: input.config,
+        createdAt: new Date(),
+        createdBy: 'mock-admin',
+        dependencySnapshot: input.dependencySnapshot,
+        id: `version-${id}-1`,
+        // The server generates the label; the first version is always 1.0.0.
+        version: '1.0.0',
+      };
+      // Create publishes in the same transaction — a created assistant is immediately live.
       const identity = {
         agentKey: input.agentKey,
-        currentVersionId: null,
-        draftSequence: 0,
+        currentVersionId: version.id,
+        draftSequence: 1,
         id,
         isDefault: input.isDefault ?? false,
         migrationRequired: false,
-        revision: 0,
-        status: 'draft' as const,
+        revision: 1,
+        status: 'published' as const,
         systemKey: input.systemKey ?? null,
       };
       const draftToken = draftTokenFromIdentity(identity);
-      records.set(id, { assignments: [], draftToken, identity, rollouts: [], versions: [] });
-      return adminPlatformAgentCreateOutputSchema.parse({ draftToken, identity });
+      records.set(id, {
+        assignments: [],
+        draftToken,
+        identity,
+        rollouts: [],
+        versions: [version],
+      });
+      return adminPlatformAgentSaveOutputSchema.parse({
+        draftToken,
+        identity,
+        invalidationStatus: 'delivered',
+        version,
+      });
     },
     delete: async (input) => {
       // Full identity CAS — same contract as the live admin delete procedure.
@@ -400,20 +405,6 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
         warnings,
       });
     },
-    publish: async (input) => {
-      const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
-      const version = record.versions.find(({ id }) => id === input.versionId);
-      if (!version) throw new Error('PLATFORM_AGENT_VERSION_NOT_FOUND');
-      advancePublication(record, {
-        currentVersionId: version.id,
-        status: 'published',
-      });
-      return adminPlatformAgentPublishOutputSchema.parse({
-        agentId: input.agentId,
-        revision: record.identity.revision,
-        versionId: version.id,
-      });
-    },
     removeAssignment: async (input) => {
       const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
       record.assignments = record.assignments.filter(({ id }) => id !== input.assignmentId);
@@ -442,6 +433,7 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       });
       return adminPlatformAgentRollbackOutputSchema.parse({
         agentId: input.agentId,
+        invalidationStatus: 'delivered',
         revision: record.identity.revision,
         versionId: version.id,
       });
@@ -457,6 +449,31 @@ export const createMockAdminAgentsClient = (): AdminAgentsClient => {
       rollout.revision += 1;
       rollout.updatedAt = new Date();
       return adminPlatformAgentRolloutRollbackOutputSchema.parse(rollout);
+    },
+    save: async (input) => {
+      const record = requireCas(input.agentId, input.expectedRevision, input.expectedDraftToken);
+      const id = `version-${input.agentId}-${record.versions.length + 1}`;
+      // Server-generated label: first version 1.0.0, then a patch bump of the newest version.
+      const latest = record.versions[0]?.version;
+      const version = {
+        agentId: input.agentId,
+        checksum: checksum(record.versions.length.toString(16)),
+        config: input.config,
+        createdAt: new Date(),
+        createdBy: 'mock-admin',
+        dependencySnapshot: input.dependencySnapshot,
+        id,
+        version: latest ? nextPatch(latest) : '1.0.0',
+      };
+      record.versions.unshift(version);
+      // Append + publish are one transaction, so both CAS counters advance.
+      advancePublication(record, { currentVersionId: version.id, status: 'published' });
+      return adminPlatformAgentSaveOutputSchema.parse({
+        draftToken: record.draftToken,
+        identity: record.identity,
+        invalidationStatus: 'delivered',
+        version,
+      });
     },
     setDefaultInbox: async (input) => {
       const current = input.currentDefault

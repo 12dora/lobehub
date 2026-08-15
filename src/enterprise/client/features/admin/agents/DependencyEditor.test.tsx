@@ -384,6 +384,52 @@ describe('DependencyEditor exact authoring', () => {
     );
   });
 
+  it('reports a hidden Skill catalog failure as a save blocker carrying its retry', async () => {
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    const model = currentModel();
+    hooks.skills = { ...idle, error: new Error('offline'), mutate };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model, skills: [] }, vi.fn(), onValidity);
+
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+    const { blockers } = onValidity.mock.calls.at(-1)![0] as {
+      blockers: { message: string; retry?: () => Promise<unknown> }[];
+    };
+    expect(blockers.map((blocker) => blocker.message)).toEqual([
+      'agentCatalog.dependency.skill.loadError',
+    ]);
+    void blockers[0]!.retry?.();
+    expect(mutate).toHaveBeenCalledOnce();
+  });
+
+  it('reports a still-loading Connector catalog as a save blocker with no retry', async () => {
+    const model = currentModel();
+    hooks.connectors = { ...idle, data: undefined, isLoading: true };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model, skills: [] }, vi.fn(), onValidity);
+
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+    const { blockers } = onValidity.mock.calls.at(-1)![0] as {
+      blockers: { message: string; retry?: () => Promise<unknown> }[];
+    };
+    expect(blockers).toEqual([{ message: 'agentCatalog.editor.blocked.connectorCatalog' }]);
+  });
+
+  it('reports no blockers once every catalog is settled', async () => {
+    const model = currentModel();
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model, skills: [] }, vi.fn(), onValidity);
+
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: true })),
+    );
+    expect(onValidity.mock.calls.at(-1)![0].blockers).toEqual([]);
+  });
+
   it('resets the provider selection when the Agent context changes', () => {
     hooks.providers = {
       ...idle,

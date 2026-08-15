@@ -8,16 +8,25 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import { AgentDetailView } from './AgentDetailView';
 import { deriveAdminAgentPermissions } from './controller';
-import type { AdminAgentDetailOutput, AdminAgentDraft } from './types';
+import type { AdminAgentDetailOutput, AdminAgentEditorValue } from './types';
 
-const validityMock = vi.hoisted(() => ({ value: { issues: [] as string[], ready: true } }));
 const mocks = vi.hoisted(() => ({
+  archive: vi.fn(),
+  beginWrite: vi.fn(),
+  commitWrite: vi.fn(),
   listVersions: vi.fn(),
+  markCommitted: vi.fn(),
+  openEditor: vi.fn(),
   toastError: vi.fn(),
 }));
 
 beforeEach(() => {
+  mocks.archive.mockReset();
+  mocks.beginWrite.mockReset().mockReturnValue(true);
+  mocks.commitWrite.mockReset().mockResolvedValue(undefined);
   mocks.listVersions.mockReset();
+  mocks.markCommitted.mockReset();
+  mocks.openEditor.mockReset();
   mocks.toastError.mockReset();
 });
 
@@ -30,35 +39,29 @@ vi.mock('@/enterprise/client/services/adminAgents', () => ({
 }));
 vi.mock('./useAgentActions', () => ({
   useAgentActions: () => ({
-    archive: vi.fn(),
-    publish: vi.fn(),
+    archive: mocks.archive,
     refreshFailed: false,
     retryRefresh: vi.fn(),
     rollback: vi.fn(),
-    save: vi.fn(),
     setDefaultInbox: vi.fn(),
   }),
 }));
+vi.mock('./openAgentEditorModal', () => ({
+  openAgentEditorModal: (...args: unknown[]) => mocks.openEditor(...args),
+}));
 vi.mock('./useRefreshLock', () => ({
   useRefreshLock: () => ({
+    abortWrite: vi.fn(),
+    beginWrite: mocks.beginWrite,
+    commitWrite: mocks.commitWrite,
     isLocked: () => false,
+    locked: false,
+    markCommitted: mocks.markCommitted,
     refreshFailed: false,
+    resolveWrite: vi.fn(),
     retryRefresh: vi.fn(),
-    syncAfterCommit: vi.fn(),
   }),
 }));
-vi.mock('./AgentEditorFields', () => ({ AgentEditorFields: () => <div>editor-fields</div> }));
-vi.mock('./DependencyEditor', async () => {
-  const { useEffect } = await import('react');
-  return {
-    DependencyEditor: ({ onValidityChange }: { onValidityChange?: (v: unknown) => void }) => {
-      useEffect(() => {
-        onValidityChange?.(validityMock.value);
-      }, [onValidityChange]);
-      return <div>dependency-editor</div>;
-    },
-  };
-});
 vi.mock('./AssignmentPanel', () => ({ AssignmentPanel: () => <div>assignment-panel</div> }));
 vi.mock('./RolloutPanel', () => ({ RolloutPanel: () => <div>rollout-panel</div> }));
 vi.mock('../primitives/AdminPageTemplate', () => ({
@@ -94,7 +97,7 @@ const model = {
   providerRevision: 1,
 };
 
-const draft: AdminAgentDraft = {
+const draft: AdminAgentEditorValue = {
   config: {
     avatar: null,
     backgroundColor: null,
@@ -107,7 +110,6 @@ const draft: AdminAgentDraft = {
     tags: [],
   },
   dependencies: { connectors: [], model, skills: [] },
-  version: '1.0.1',
 };
 
 const snapshot: AdminAgentDetailOutput = {
@@ -139,28 +141,10 @@ const snapshot: AdminAgentDetailOutput = {
   ],
 };
 
-const createEditor = (dirty: boolean): any => ({
-  conflict: false,
-  dirty,
-  discard: vi.fn(),
-  draft,
-  markSaved: vi.fn(),
-  persistState: null,
-  saveState: dirty ? 'dirty' : 'idle',
-  setConflict: vi.fn(),
-  setSaveState: vi.fn(),
-  updateDraft: vi.fn(),
-});
-
-const renderView = (
-  editorDirty: boolean,
-  permissionKeys: string[],
-  detail: AdminAgentDetailOutput = snapshot,
-) =>
+const renderView = (permissionKeys: string[], detail: AdminAgentDetailOutput = snapshot) =>
   render(
     <AgentDetailView
       authMethod={null}
-      editor={createEditor(editorDirty)}
       mutate={vi.fn() as any}
       permissions={deriveAdminAgentPermissions(permissionKeys)}
       snapshot={detail}
@@ -179,7 +163,6 @@ const StatefulDetailView = ({ initial }: { initial: AdminAgentDetailOutput }) =>
   return (
     <AgentDetailView
       authMethod={null}
-      editor={createEditor(false)}
       mutate={mutate as any}
       permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_READ])}
       snapshot={detail}
@@ -189,28 +172,72 @@ const StatefulDetailView = ({ initial }: { initial: AdminAgentDetailOutput }) =>
 
 describe('AgentDetailView write gating', () => {
   it('keeps a read-only auditor on a real detail surface without mutation buttons', () => {
-    validityMock.value = { issues: [], ready: true };
-    renderView(false, [PLATFORM_PERMISSIONS.AGENT_READ]);
+    renderView([PLATFORM_PERMISSIONS.AGENT_READ]);
     expect(screen.getByText('agentCatalog.readOnly.badge')).toBeTruthy();
-    expect(screen.queryByText('agentCatalog.action.saveVersion')).toBeNull();
+    expect(screen.queryByText('agentCatalog.action.edit')).toBeNull();
     expect(screen.queryByText('agentCatalog.archive.submit')).toBeNull();
+    // The version history is still readable, and rollback stays hidden without publish rights.
+    expect(screen.getByText('agentCatalog.versions.title')).toBeTruthy();
+    expect(screen.queryByText('agentCatalog.rollback.submit')).toBeNull();
   });
 
-  it('allows saving but disables destructive actions while the draft is dirty and deps are current', () => {
-    validityMock.value = { issues: [], ready: true };
-    renderView(true, [
-      PLATFORM_PERMISSIONS.AGENT_DELETE,
-      PLATFORM_PERMISSIONS.AGENT_PUBLISH,
-      PLATFORM_PERMISSIONS.AGENT_UPDATE,
-    ]);
-    expect(screen.getByText('agentCatalog.action.saveVersion')).not.toBeDisabled();
-    expect(screen.getByText('agentCatalog.archive.submit')).toBeDisabled();
+  it('withholds Edit from an operator who can update but cannot publish', () => {
+    renderView([PLATFORM_PERMISSIONS.AGENT_UPDATE]);
+    expect(screen.queryByText('agentCatalog.action.edit')).toBeNull();
   });
 
-  it('blocks save until the dependencies validate against the current catalog', () => {
-    validityMock.value = { issues: ['agentCatalog.dependency.issues.modelStale'], ready: false };
-    renderView(true, [PLATFORM_PERMISSIONS.AGENT_UPDATE]);
-    expect(screen.getByText('agentCatalog.action.saveVersion')).toBeDisabled();
+  it('opens the shared editor with the live snapshot and refreshes the detail after a save', async () => {
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AgentDetailView
+        authMethod={null}
+        mutate={mutate as any}
+        snapshot={snapshot}
+        permissions={deriveAdminAgentPermissions([
+          PLATFORM_PERMISSIONS.AGENT_PUBLISH,
+          PLATFORM_PERMISSIONS.AGENT_UPDATE,
+        ])}
+      />,
+    );
+    const edit = screen.getByText('agentCatalog.action.edit');
+    expect(edit).not.toBeDisabled();
+
+    fireEvent.click(edit);
+    expect(mocks.openEditor).toHaveBeenCalledOnce();
+    const [config] = mocks.openEditor.mock.calls[0] as [
+      {
+        agent: AdminAgentDetailOutput;
+        onSaved: (output: unknown) => Promise<void>;
+      },
+    ];
+    expect(config.agent.identity.id).toBe('agent-1');
+
+    const output = {
+      draftToken: 'e'.repeat(64),
+      identity: { ...snapshot.identity, currentVersionId: 'version-2', revision: 3 },
+      invalidationStatus: 'delivered',
+      version: { ...snapshot.versions[0]!, id: 'version-2', version: '1.0.1' },
+    };
+    await config.onSaved(output);
+
+    // The committed output is applied to this page's cache BEFORE revalidating…
+    const [apply, options] = mutate.mock.calls[0] as [
+      (current: AdminAgentDetailOutput) => AdminAgentDetailOutput,
+      { revalidate: boolean },
+    ];
+    expect(options).toEqual({ revalidate: false });
+    const applied = apply(snapshot);
+    expect(applied.draftToken).toBe(output.draftToken);
+    expect(applied.identity.revision).toBe(3);
+    expect(applied.versions[0]!.version).toBe('1.0.1');
+    // …and the shared gate then verifies the refresh, so a failed one locks dependent writes.
+    expect(mocks.markCommitted).toHaveBeenCalled();
+    expect(mocks.commitWrite).toHaveBeenCalled();
+  });
+
+  it('enables archive for a delete-capable admin without any dirty-editor coupling', () => {
+    renderView([PLATFORM_PERMISSIONS.AGENT_DELETE]);
+    expect(screen.getByText('agentCatalog.archive.submit')).not.toBeDisabled();
   });
 
   it('keeps a retry action and surfaces feedback when loading more versions fails', async () => {
@@ -226,7 +253,7 @@ describe('AgentDetailView write gating', () => {
         versionsTruncated: true,
       },
     };
-    renderView(false, [PLATFORM_PERMISSIONS.AGENT_READ], partialSnapshot);
+    renderView([PLATFORM_PERMISSIONS.AGENT_READ], partialSnapshot);
 
     fireEvent.click(screen.getByText('agentCatalog.collection.loadMore'));
 

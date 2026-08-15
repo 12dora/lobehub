@@ -4,7 +4,7 @@ import { Empty, Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 
@@ -16,12 +16,14 @@ import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
-import { deriveAdminAgentPermissions } from './controller';
+import { applyAgentSaveOutputToListItem } from './applySaveOutput';
+import { deriveAdminAgentActionAvailability, deriveAdminAgentPermissions } from './controller';
 import { getAdminAgentErrorMessage } from './errorPresentation';
-import { openCreateAgentModal } from './openCreateAgentModal';
+import { openAgentEditorModal } from './openAgentEditorModal';
 import { openDeleteAgentModal } from './openDeleteAgentModal';
+import { usePruneLegacyAdminAgentDrafts } from './pruneLegacyAgentDrafts';
 import type { AdminAgentListItem } from './types';
-import { useAdminAgentListPagination } from './useAdminAgents';
+import { fetchAdminAgentDetail, useAdminAgentListPagination } from './useAdminAgents';
 
 const styles = createStaticStyles(({ css }) => ({
   identity: css`
@@ -51,15 +53,22 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
+/**
+ * Only the two live statuses are filterable. A legacy `draft` row can still exist in old
+ * databases, so a stale bookmarked `?status=draft` is ignored rather than treated as a filter.
+ */
 const readStatus = (value: string | null): AdminAgentListItem['identity']['status'] | undefined =>
-  value === 'draft' || value === 'published' || value === 'archived' ? value : undefined;
+  value === 'published' || value === 'archived' ? value : undefined;
 
 const AgentListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { authMethod, permissions } = useAdminAccess();
   const agentPermissions = deriveAdminAgentPermissions(permissions);
+  const availability = deriveAdminAgentActionAvailability({ permissions: agentPermissions });
   const [searchParams, setSearchParams] = useSearchParams();
+  // Saving is site-wide and immediate now — drop what the old local recovery drafts left behind.
+  usePruneLegacyAdminAgentDrafts();
   const [queryDraft, setQueryDraft] = useState(searchParams.get('q') ?? '');
   const status = readStatus(searchParams.get('status'));
   const input = useMemo(
@@ -69,7 +78,61 @@ const AgentListPage = memo(() => {
   const list = useAdminAgentListPagination(input, agentPermissions.canRead);
   const refreshList = list.refresh;
   const removeListItem = list.removeItem;
+  const updateListItem = list.updateItem;
   const filtered = Boolean(input.query || input.status);
+
+  // List rows carry no draftToken or version config; both row actions load the authoritative
+  // aggregate first so a stale row can never author a write against an outdated CAS.
+  const openEditor = useCallback(
+    async (item: AdminAgentListItem) => {
+      try {
+        const detail = await fetchAdminAgentDetail(item.identity.id, adminAgentsService, false);
+        openAgentEditorModal({
+          agent: detail,
+          authMethod,
+          onSaved: async (output) => {
+            // The save committed: put the authoritative name / version / CAS on the row first, then
+            // revalidate. A failed revalidation is reported, never swallowed into a stale row.
+            try {
+              await updateListItem(output.identity.id, (row) =>
+                applyAgentSaveOutputToListItem(output, row),
+              );
+            } catch {
+              toast.warning(t('agentCatalog.recovery.refreshFailed'));
+            }
+          },
+        });
+      } catch (cause) {
+        toast.error(getAdminAgentErrorMessage(cause, t));
+      }
+    },
+    [authMethod, t, updateListItem],
+  );
+
+  const openDelete = useCallback(
+    async (item: AdminAgentListItem) => {
+      try {
+        const detail = await adminAgentsService.get({ id: item.identity.id });
+        openDeleteAgentModal({
+          agentId: detail.identity.id,
+          authMethod: authMethod ?? undefined,
+          displayName: item.displayName,
+          expectedDraftToken: detail.draftToken,
+          expectedRevision: detail.identity.revision,
+          // Drop the committed row from bound infinite pages first so a failed refresh cannot
+          // leave a still-actionable deleted assistant on screen.
+          onDeleted: async () => {
+            await removeListItem(detail.identity.id);
+          },
+        });
+      } catch (cause) {
+        // Preflight GET failed — never open a delete modal on unknown CAS.
+        toast.error(getAdminAgentErrorMessage(cause, t));
+      }
+    },
+    [authMethod, removeListItem, t],
+  );
+
   const columns = useMemo<TableColumnsType<AdminAgentListItem>>(
     () => [
       {
@@ -111,58 +174,51 @@ const AgentListPage = memo(() => {
           </Tag>
         ),
       },
-      ...(agentPermissions.canDelete
+      ...(availability.canEdit || agentPermissions.canDelete
         ? [
             {
               key: 'actions',
               title: t('agentCatalog.list.columns.actions'),
-              width: 96,
+              width: 140,
               render: (_: unknown, item: AdminAgentListItem) => {
                 // Default / system assistants cannot be hard-deleted (server refuses too).
                 const deletable = !item.identity.isDefault && item.identity.systemKey === null;
-                if (!deletable) return null;
                 return (
-                  <Button
-                    danger
-                    size="small"
-                    type="text"
-                    onClick={(event) => {
-                      // Row is clickable (navigates to detail) — keep the delete click local.
-                      event.stopPropagation();
-                      // List rows lack draftToken; fetch authoritative identity CAS before confirm
-                      // so concurrent version/assignment edits cannot be wiped by a stale list row.
-                      void (async () => {
-                        try {
-                          const detail = await adminAgentsService.get({ id: item.identity.id });
-                          openDeleteAgentModal({
-                            agentId: detail.identity.id,
-                            authMethod: authMethod ?? undefined,
-                            displayName: item.displayName,
-                            expectedDraftToken: detail.draftToken,
-                            expectedRevision: detail.identity.revision,
-                            // Drop the committed row from bound infinite pages first so a failed
-                            // refresh cannot leave a still-actionable deleted assistant.
-                            onDeleted: async () => {
-                              await removeListItem(detail.identity.id);
-                            },
-                          });
-                        } catch (cause) {
-                          // Preflight GET failed — never open a delete modal on unknown CAS, and
-                          // never leave an unhandled rejection.
-                          toast.error(getAdminAgentErrorMessage(cause, t));
-                        }
-                      })();
-                    }}
-                  >
-                    {t('agentCatalog.delete.action')}
-                  </Button>
+                  <Flexbox horizontal gap={4}>
+                    {availability.canEdit ? (
+                      <Button
+                        size="small"
+                        type="text"
+                        onClick={(event) => {
+                          // Row is clickable (navigates to detail) — keep the edit click local.
+                          event.stopPropagation();
+                          void openEditor(item);
+                        }}
+                      >
+                        {t('agentCatalog.action.edit')}
+                      </Button>
+                    ) : null}
+                    {agentPermissions.canDelete && deletable ? (
+                      <Button
+                        danger
+                        size="small"
+                        type="text"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void openDelete(item);
+                        }}
+                      >
+                        {t('agentCatalog.delete.action')}
+                      </Button>
+                    ) : null}
+                  </Flexbox>
                 );
               },
             },
           ]
         : []),
     ],
-    [t, agentPermissions.canDelete, authMethod, removeListItem],
+    [t, agentPermissions.canDelete, availability.canEdit, openDelete, openEditor],
   );
   const patch = (key: 'q' | 'status', value?: string) => {
     const next = new URLSearchParams(searchParams);
@@ -171,15 +227,19 @@ const AgentListPage = memo(() => {
     setSearchParams(next, { replace: true });
   };
   const createAgent = () =>
-    openCreateAgentModal(async (id) => {
-      // Coherent with delete: revalidate the infinite list via the bound mutate, then navigate.
-      // Refresh failure must not block entry into the new assistant detail.
-      try {
-        await refreshList();
-      } catch {
-        // list will revalidate on next visit / focus; navigation is still valid post-create
-      }
-      navigate(`/admin/agents/${encodeURIComponent(id)}`);
+    openAgentEditorModal({
+      authMethod,
+      onSaved: async (output) => {
+        // Coherent with delete: revalidate the infinite list via the bound mutate, then navigate
+        // into the assistant that is now live. Refresh failure must not block that navigation —
+        // but it is reported, because the list the admin comes back to is then incomplete.
+        try {
+          await refreshList();
+        } catch {
+          toast.warning(t('agentCatalog.recovery.refreshFailed'));
+        }
+        navigate(`/admin/agents/${encodeURIComponent(output.identity.id)}`);
+      },
     });
   const clearFilters = () => {
     setQueryDraft('');
@@ -191,7 +251,7 @@ const AgentListPage = memo(() => {
       description={t('agentCatalog.list.description')}
       title={t('agentCatalog.list.title')}
       actions={
-        agentPermissions.canCreate ? (
+        availability.canCreate ? (
           <Button type="primary" onClick={createAgent}>
             {t('agentCatalog.create.submit')}
           </Button>
@@ -217,7 +277,7 @@ const AgentListPage = memo(() => {
               placeholder={t('agentCatalog.list.status')}
               style={{ width: '100%' }}
               value={status}
-              options={(['draft', 'published', 'archived'] as const).map((value) => ({
+              options={(['published', 'archived'] as const).map((value) => ({
                 label: t(`agentCatalog.status.${value}` as never),
                 value,
               }))}
@@ -241,7 +301,7 @@ const AgentListPage = memo(() => {
             action={
               filtered ? (
                 <Button onClick={clearFilters}>{t('primitives.filterBar.clear')}</Button>
-              ) : agentPermissions.canCreate ? (
+              ) : availability.canCreate ? (
                 <Button type="primary" onClick={createAgent}>
                   {t('agentCatalog.create.submit')}
                 </Button>

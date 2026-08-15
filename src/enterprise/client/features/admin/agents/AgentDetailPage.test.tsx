@@ -9,7 +9,6 @@ import AgentDetailPage from './AgentDetailPage';
 
 const mocks = vi.hoisted(() => ({
   data: undefined as unknown,
-  editorBaselineAgentId: undefined as string | undefined,
   error: undefined as unknown,
   isLoading: false,
   mutate: vi.fn(),
@@ -31,13 +30,6 @@ vi.mock('./useAdminAgents', () => ({
     mutate: mocks.mutate,
     retryRolloutPoll: vi.fn(),
     rolloutPollError: undefined,
-  }),
-}));
-vi.mock('./useAgentEditor', () => ({
-  useAgentEditor: () => ({
-    draftBaseline: mocks.editorBaselineAgentId
-      ? { agentId: mocks.editorBaselineAgentId, draftToken: 'a'.repeat(64), revision: 1 }
-      : null,
   }),
 }));
 vi.mock('./AgentDetailView', () => ({
@@ -68,7 +60,7 @@ const agent = (id: string) => ({
     isDefault: false,
     migrationRequired: false,
     revision: 1,
-    status: 'draft' as const,
+    status: 'published' as const,
     systemKey: null,
   },
   rollouts: [],
@@ -87,7 +79,6 @@ const renderPage = (id = 'agent-1') =>
 describe('AgentDetailPage state precedence', () => {
   beforeEach(() => {
     mocks.data = undefined;
-    mocks.editorBaselineAgentId = undefined;
     mocks.error = undefined;
     mocks.isLoading = false;
   });
@@ -112,35 +103,35 @@ describe('AgentDetailPage state precedence', () => {
     expect(screen.getByRole('status').textContent).toBe('loading');
   });
 
-  it('withholds the detail view during an A→B identity transition until the editor matches B', () => {
-    // Route is agent-B, SWR already has B's snapshot, but the editor still holds A's baseline
-    // (hydration effect not run yet / previous agent retained). Must not paint B with A's editor.
+  it('renders the detail once the snapshot matches the route agent id', () => {
     mocks.data = agent('agent-B');
-    mocks.editorBaselineAgentId = 'agent-A';
-    renderPage('agent-B');
-    expect(screen.getByRole('status').textContent).toBe('loading');
-    expect(screen.queryByText(/agent-detail-data/)).toBeNull();
-  });
-
-  it('renders only when matched snapshot and editor baseline share the route agent id', () => {
-    mocks.data = agent('agent-B');
-    mocks.editorBaselineAgentId = 'agent-B';
     renderPage('agent-B');
     expect(screen.getByText('agent-detail-data:agent-B')).toBeTruthy();
   });
 
   it('rejects a retained previous-agent snapshot under a new agent URL', () => {
     mocks.data = agent('agent-A');
-    mocks.editorBaselineAgentId = 'agent-A';
     renderPage('agent-B');
     expect(screen.queryByText(/agent-detail-data/)).toBeNull();
+  });
+
+  it('prunes the legacy local drafts when the detail page is opened directly', () => {
+    // A bookmarked detail URL is an entry point too: the list may never be visited, and the old
+    // recovery drafts (with their prompts) must not survive in localStorage because of that.
+    localStorage.setItem('aihub.admin.agents.draft.agent-B', '{"draft":{}}');
+    localStorage.setItem('unrelated', 'keep');
+    mocks.data = agent('agent-B');
+
+    renderPage('agent-B');
+
+    expect(localStorage.getItem('aihub.admin.agents.draft.agent-B')).toBeNull();
+    expect(localStorage.getItem('unrelated')).toBe('keep');
   });
 
   it('after A→B navigation, a B load failure does not paint retained A detail under B', () => {
     // Route is B, fetch of B failed, SWR has no keepPreviousData — must not render A under B's URL.
     mocks.data = undefined;
     mocks.error = new Error('offline');
-    mocks.editorBaselineAgentId = 'agent-A';
     renderPage('agent-B');
     expect(screen.queryByText(/agent-detail-data/)).toBeNull();
     expect(screen.getByRole('alert').textContent).toBe('generic-error');

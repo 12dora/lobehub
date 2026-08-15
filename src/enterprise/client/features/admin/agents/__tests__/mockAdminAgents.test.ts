@@ -24,52 +24,48 @@ describe('mock Admin Agents contract adapter', () => {
     const detail = await client.get({ id: 'agent-inbox' });
     const version = (await client.listVersions({ agentId: detail.identity.id })).items[0]!;
     await expect(
-      client.appendVersion({
+      client.save({
         agentId: detail.identity.id,
         config: version.config,
         dependencySnapshot: version.dependencySnapshot,
         expectedDraftToken: 'f'.repeat(64),
         expectedRevision: detail.identity.revision,
         reason: 'stale write test',
-        version: '1.0.1',
       }),
     ).rejects.toThrow('PLATFORM_AGENT_CONFLICT');
   });
 
-  it('covers create, immutable version, publication, rollback, and assignment CAS', async () => {
+  it('publishes on create, bumps the version on save, and keeps assignment/rollback CAS', async () => {
     const client = createMockAdminAgentsClient();
+    const source = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
     const created = await client.create({
       agentKey: 'support-agent',
+      config: { ...source.config, displayName: 'Support Agent' },
+      dependencySnapshot: source.dependencySnapshot,
       isDefault: false,
-      reason: 'create support draft',
+      reason: 'create support assistant',
       systemKey: null,
     });
-    expect((await client.listVersions({ agentId: created.identity.id })).items).toHaveLength(0);
+    // Create appends the first version AND publishes it in one transaction.
+    expect(created.identity.status).toBe('published');
+    expect(created.version.version).toBe('1.0.0');
+    expect(created.identity.currentVersionId).toBe(created.version.id);
+    expect((await client.listVersions({ agentId: created.identity.id })).items).toHaveLength(1);
 
-    const source = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
-    const appended = await client.appendVersion({
+    const saved = await client.save({
       agentId: created.identity.id,
-      config: { ...source.config, displayName: 'Support Agent' },
+      config: { ...source.config, displayName: 'Support Agent v2' },
       dependencySnapshot: source.dependencySnapshot,
       expectedDraftToken: created.draftToken,
       expectedRevision: created.identity.revision,
-      reason: 'add first exact version',
-      version: '1.0.0',
+      reason: 'refine the role',
     });
-    // appendVersion is draft-only: draftSequence advances, published revision does not.
-    expect(appended.identity.revision).toBe(created.identity.revision);
-    expect(appended.identity.draftSequence).toBe(created.identity.draftSequence + 1);
-    expect(appended.draftToken).not.toBe(created.draftToken);
-
-    const published = await client.publish({
-      agentId: created.identity.id,
-      expectedDraftToken: appended.draftToken,
-      expectedRevision: appended.identity.revision,
-      reason: 'publish support',
-      versionId: appended.version.id,
-    });
-    expect(published.versionId).toBe(appended.version.id);
-    expect(published.revision).toBe(appended.identity.revision + 1);
+    // The label is server-generated (patch bump) and the new version is live immediately.
+    expect(saved.version.version).toBe('1.0.1');
+    expect(saved.identity.status).toBe('published');
+    expect(saved.identity.currentVersionId).toBe(saved.version.id);
+    expect(saved.identity.revision).toBe(created.identity.revision + 1);
+    expect(saved.draftToken).not.toBe(created.draftToken);
 
     let detail = await client.get({ id: created.identity.id });
     const publishedRevision = detail.identity.revision;
@@ -92,7 +88,7 @@ describe('mock Admin Agents contract adapter', () => {
     // Assignment CAS matches production: draftSequence + token only (F1/F4).
     expect(detail.identity.revision).toBe(publishedRevision);
     expect(detail.identity.draftSequence).toBe(publishedDraftSequence + 1);
-    expect(detail.draftToken).not.toBe(appended.draftToken);
+    expect(detail.draftToken).not.toBe(saved.draftToken);
 
     await client.removeAssignment({
       agentId: created.identity.id,
@@ -112,16 +108,19 @@ describe('mock Admin Agents contract adapter', () => {
       expectedDraftToken: detail.draftToken,
       expectedRevision: detail.identity.revision,
       reason: 'exercise rollback pointer',
-      targetVersionId: appended.version.id,
+      targetVersionId: created.version.id,
     });
-    expect(rolledBack.versionId).toBe(appended.version.id);
+    expect(rolledBack.versionId).toBe(created.version.id);
     expect(rolledBack.revision).toBe(publishedRevision + 1);
   });
 
   it('draft-only writes change draftToken for long agent keys (full identity digest, F4)', async () => {
     const client = createMockAdminAgentsClient();
+    const source = (await client.listVersions({ agentId: 'agent-inbox' })).items[0]!;
     const created = await client.create({
       agentKey: LONG_AGENT_KEY,
+      config: source.config,
+      dependencySnapshot: source.dependencySnapshot,
       isDefault: false,
       reason: 'long-key draft token',
       systemKey: null,
@@ -211,14 +210,16 @@ describe('mock Admin Agents contract adapter', () => {
   it('switches the default Inbox atomically and requires an archive replacement', async () => {
     const client = createMockAdminAgentsClient();
     const current = await client.get({ id: 'agent-inbox' });
+    // The legacy seed row is still `draft`; saving it publishes it, which is the only path now.
     const nextDraft = await client.get({ id: 'agent-research' });
     const nextVersion = (await client.listVersions({ agentId: nextDraft.identity.id })).items[0]!;
-    await client.publish({
+    await client.save({
       agentId: nextDraft.identity.id,
+      config: nextVersion.config,
+      dependencySnapshot: nextVersion.dependencySnapshot,
       expectedDraftToken: nextDraft.draftToken,
       expectedRevision: nextDraft.identity.revision,
       reason: 'publish replacement',
-      versionId: nextVersion.id,
     });
     const next = await client.get({ id: nextDraft.identity.id });
 
