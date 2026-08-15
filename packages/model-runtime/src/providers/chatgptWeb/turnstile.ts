@@ -5,12 +5,25 @@ import {
   encodeUtf8Base64,
 } from './binary';
 import { TURNSTILE_LOCAL_STORAGE_KEYS } from './constants';
+import {
+  parseJsonPreservingNumbers,
+  PyFloat,
+  pyFloatToStr,
+  pyJsonStringify,
+  pyStr,
+  unwrapPyFloat,
+} from './pyJson';
 
 /**
  * Port of the chatgpt.com turnstile "VM": the `dx` payload decodes to a list of
  * `[opcode, ...args]` instructions that the browser SDK interprets against a
  * numeric register file. No JS engine, no eval — a hand-written interpreter,
  * faithful to the reference implementation.
+ *
+ * The reference is Python, which distinguishes `int` from `float`; the program
+ * is therefore decoded with {@link parseJsonPreservingNumbers}, which tags every
+ * numeral Python would have read as a `float` (see `pyJson.ts`). Integers stay
+ * plain JS numbers.
  */
 
 /** Insertion-ordered map used by `window.Object.create` inside the program. */
@@ -37,28 +50,26 @@ const PSEUDO_GLOBAL_TO_STRING: Record<string, string> = {
   'window.performance.now': 'function () { [native code] }',
 };
 
+/**
+ * The reference's `_turnstile_to_str`. The tail is Python's `str()`, which for a
+ * container is `[1, 1.0]` / `{'k': 1.0}` and not JS's `1,1` / `[object Object]` —
+ * hence {@link pyStr} rather than `String()`.
+ */
 const toStr = (value: unknown): string => {
   if (value === null || value === undefined) return 'undefined';
+  if (value instanceof PyFloat) return pyFloatToStr(value.value);
   if (typeof value === 'string') return PSEUDO_GLOBAL_TO_STRING[value] ?? value;
   if (Array.isArray(value) && value.every((item) => typeof item === 'string'))
     return value.join(',');
-  return String(value);
+  return pyStr(value);
 };
 
 /**
  * Python's `isinstance(x, (str, float))` — integers are deliberately excluded,
  * which is what steers opcode 5 into its `"NaN"` branch.
- *
- * KNOWN DEVIATION (accepted): `JSON.parse` collapses `1` and `1.0` to the same
- * JS number, so an integral-valued float operand takes the `"NaN"` branch here
- * while Python concatenates it. Reproducing it would need a JSON parser that
- * preserves the lexical form of every number. Left as-is because every live
- * `chat-requirements/prepare` response we have seen reports
- * `turnstile.required === false`, so no program is executed at all; revisit if
- * turnstile is ever switched on for this client.
  */
 const isStrOrFloat = (value: unknown): boolean =>
-  typeof value === 'string' || (typeof value === 'number' && !Number.isInteger(value));
+  typeof value === 'string' || value instanceof PyFloat;
 
 export const xorString = (text: string, key: string): string => {
   if (!key) return text;
@@ -81,25 +92,30 @@ export const solveTurnstileToken = (dx: string, p: string): string | undefined =
     // `atob` semantics: the browser SDK XORs the RAW bytes of the payload. A
     // UTF-8 decode would replace every invalid sequence with U+FFFD and destroy
     // the XOR input irreversibly.
-    const parsed: unknown = JSON.parse(xorString(decodeBase64Latin1(dx), p));
+    const parsed: unknown = parseJsonPreservingNumbers(xorString(decodeBase64Latin1(dx), p));
     if (!Array.isArray(parsed)) return undefined;
     program = parsed as Instruction[];
   } catch {
     return undefined;
   }
 
-  const map = new Map<number, unknown>();
+  const map = new Map<unknown, unknown>();
   const startedAt = Date.now();
   let result = '';
 
-  const read = (key: unknown): unknown => map.get(key as number);
+  // Python hashes `2.0` and `2` to the same dict key, so register indices are
+  // compared by value, never by `PyFloat` identity.
+  const read = (key: unknown): unknown => map.get(unwrapPyFloat(key));
+  const write = (key: unknown, value: unknown) => {
+    map.set(unwrapPyFloat(key), value);
+  };
 
   const handlers: Record<number, (...args: any[]) => void> = {
     1: (e: number, t: number) => {
-      map.set(e, xorString(toStr(read(e)), toStr(read(t))));
+      write(e, xorString(toStr(read(e)), toStr(read(t))));
     },
     2: (e: number, t: unknown) => {
-      map.set(e, t);
+      write(e, t);
     },
     3: (e: string) => {
       // the reference implementation calls `.encode()` here (UTF-8, unlike the
@@ -112,75 +128,76 @@ export const solveTurnstileToken = (dx: string, p: string): string | undefined =
       const current = read(e);
       const incoming = read(t);
       if (Array.isArray(current)) {
-        map.set(e, [...current, incoming]);
+        write(e, [...current, incoming]);
         return;
       }
       if (isStrOrFloat(current) || isStrOrFloat(incoming)) {
-        map.set(e, toStr(current) + toStr(incoming));
+        write(e, toStr(current) + toStr(incoming));
         return;
       }
-      map.set(e, 'NaN');
+      write(e, 'NaN');
     },
     6: (e: number, t: number, n: number) => {
       const tv = read(t);
       const nv = read(n);
       if (typeof tv !== 'string' || typeof nv !== 'string') return;
       const value = `${tv}.${nv}`;
-      map.set(e, value === 'window.document.location' ? 'https://chatgpt.com/' : value);
+      write(e, value === 'window.document.location' ? 'https://chatgpt.com/' : value);
     },
     7: (e: number, ...args: number[]) => {
       const target = read(e);
       const values = args.map((arg) => read(arg));
       if (target === 'window.Reflect.set') {
         const [obj, key, value] = values;
-        if (obj instanceof OrderedMap) obj.add(String(key), value);
+        if (obj instanceof OrderedMap) obj.add(pyStr(key), value);
         return;
       }
       if (typeof target === 'function') (target as (...a: unknown[]) => void)(...values);
     },
     8: (e: number, t: number) => {
-      map.set(e, read(t));
+      write(e, read(t));
     },
     14: (e: number, t: number) => {
-      map.set(e, JSON.parse(String(read(t))));
+      write(e, parseJsonPreservingNumbers(String(read(t))));
     },
     15: (e: number, t: number) => {
-      map.set(e, JSON.stringify(read(t)));
+      write(e, pyJsonStringify(read(t)));
     },
     17: (e: number, t: number, ...args: number[]) => {
       const callArgs = args.map((arg) => read(arg));
       const target = read(t);
       switch (target) {
         case 'window.performance.now': {
-          map.set(e, Date.now() - startedAt + Math.random());
+          write(e, new PyFloat(Date.now() - startedAt + Math.random()));
           return;
         }
         case 'window.Object.create': {
-          map.set(e, new OrderedMap());
+          write(e, new OrderedMap());
           return;
         }
         case 'window.Object.keys': {
-          if (callArgs[0] === 'window.localStorage') map.set(e, [...TURNSTILE_LOCAL_STORAGE_KEYS]);
+          if (callArgs[0] === 'window.localStorage') write(e, [...TURNSTILE_LOCAL_STORAGE_KEYS]);
           return;
         }
         case 'window.Math.random': {
-          map.set(e, Math.random());
+          write(e, new PyFloat(Math.random()));
           return;
         }
         default: {
           if (typeof target === 'function')
-            map.set(e, (target as (...a: unknown[]) => unknown)(...callArgs));
+            write(e, (target as (...a: unknown[]) => unknown)(...callArgs));
         }
       }
     },
     18: (e: number) => {
-      map.set(e, decodeBase64Utf8(toStr(read(e))));
+      write(e, decodeBase64Utf8(toStr(read(e))));
     },
     19: (e: number) => {
-      map.set(e, encodeUtf8Base64(toStr(read(e))));
+      write(e, encodeUtf8Base64(toStr(read(e))));
     },
     20: (e: number, t: number, n: number, ...args: number[]) => {
-      if (read(e) !== read(t)) return;
+      // `1 == 1.0` in Python, so compare the unwrapped values
+      if (unwrapPyFloat(read(e)) !== unwrapPyFloat(read(t))) return;
       const target = read(n);
       if (typeof target === 'function')
         (target as (...a: unknown[]) => void)(...args.map((arg) => read(arg)));
@@ -197,7 +214,7 @@ export const solveTurnstileToken = (dx: string, p: string): string | undefined =
     24: (e: number, t: number, n: number) => {
       const tv = read(t);
       const nv = read(n);
-      if (typeof tv === 'string' && typeof nv === 'string') map.set(e, `${tv}.${nv}`);
+      if (typeof tv === 'string' && typeof nv === 'string') write(e, `${tv}.${nv}`);
     },
   };
 
@@ -209,7 +226,7 @@ export const solveTurnstileToken = (dx: string, p: string): string | undefined =
   for (const instruction of program) {
     if (!Array.isArray(instruction)) continue;
     try {
-      const handler = map.get(instruction[0] as number);
+      const handler = map.get(unwrapPyFloat(instruction[0]));
       if (typeof handler === 'function')
         (handler as (...a: unknown[]) => void)(...instruction.slice(1));
     } catch {
@@ -225,7 +242,7 @@ export const solveTurnstileToken = (dx: string, p: string): string | undefined =
 /**
  * Test/helper: encode an instruction program the way the upstream `dx` does —
  * XOR over the raw bytes, then base64, i.e. the inverse of the Latin-1 decode
- * above.
+ * above. `PyFloat` operands are written Python-style (`3.0`).
  */
 export const encodeTurnstileProgram = (program: unknown[], p: string): string =>
-  encodeLatin1Base64(xorString(JSON.stringify(program), p));
+  encodeLatin1Base64(xorString(pyJsonStringify(program) ?? '[]', p));
