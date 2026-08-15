@@ -658,7 +658,7 @@ export default {
   'aiConnectorSettings.select.title': 'Select a connector',
   'nav.aria': 'Admin navigation',
   'nav.audit': 'Audit',
-  'nav.branding': 'Branding',
+  'nav.branding': 'Brand customization',
   'nav.connectors': 'Connectors',
   'nav.connectorDetail': 'Connector detail',
   'nav.identity': 'Identity providers',
