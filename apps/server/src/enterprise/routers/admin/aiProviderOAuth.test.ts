@@ -86,6 +86,12 @@ const ids = {
   aiAdmin: 'oauth-shared-ai-admin',
   /** UPDATE + PUBLISH but no CREATE — the exact set disconnect is supposed to accept. */
   withdrawer: 'oauth-shared-withdrawer',
+  /**
+   * Exactly the three permissions this router requires — and NOT AI_MODEL_CREATE. Proves the
+   * builtin default-model seeding on first connect rides the provider-create grant instead of
+   * locking an otherwise-authorized operator out of the whole flow.
+   */
+  providerOnly: 'oauth-shared-provider-only',
   /** UPDATE only — publishing the withdrawal is part of the operation, so this must fail. */
   updateOnly: 'oauth-shared-update-only',
 };
@@ -157,6 +163,11 @@ beforeEach(async () => {
   ]);
   await grantPermissions(ids.updateOnly, 'oauth-shared-update-only-role', [
     PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+  ]);
+  await grantPermissions(ids.providerOnly, 'oauth-shared-provider-only-role', [
+    PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+    PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH,
   ]);
 });
 
@@ -369,6 +380,8 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
           oauthAccessToken: ACCESS_TOKEN,
           oauthAccountEmail: ACCOUNT_EMAIL,
           oauthAccountId: ACCOUNT_ID,
+          // Connect time is the keepalive anchor of a grant that has never been refreshed.
+          oauthLastRefreshAt: expect.stringMatching(/^\d+$/),
           oauthRefreshToken: REFRESH_TOKEN,
           oauthTokenExpiresAt: expect.stringMatching(/^\d+$/),
         },
@@ -376,6 +389,40 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       settings: expect.any(Object),
       source: 'builtin',
     });
+  });
+
+  /**
+   * The refresh pipeline measures the 3-day forced keepalive from `oauthLastRefreshAt` and
+   * the 5-minute quiet period from `oauthLastRefreshErrorAt`. A connect that stamped
+   * neither would leave the shared grant with no anchor at all, and a RECONNECT that kept a
+   * previous error stamp would sit out the first five minutes of its new life.
+   */
+  it('stamps the keepalive anchor and clears the refresh backoff on connect', async () => {
+    const applyImmediate = vi.fn().mockResolvedValue({
+      auditId: 'apply-audit-id',
+      draft: { id: 'created-provider-row-id' },
+      revision: 1,
+    });
+    serviceSeam.applyProviderImmediate = applyImmediate;
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+
+    const before = Date.now();
+    await (
+      await callerFor()
+    ).aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+    const after = Date.now();
+
+    const secret = applyImmediate.mock.calls[0]?.[1]?.secret;
+    const stamped = Number(secret.value.oauthLastRefreshAt);
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(stamped).toBeLessThanOrEqual(after);
+    // `replace` drops everything the new credential did not provide, so the error stamp is
+    // gone by construction — it must never be written as a value either.
+    expect(secret.value).not.toHaveProperty('oauthLastRefreshErrorAt');
   });
 
   it('omits the account id for providers whose credential shape rejects it', async () => {
@@ -532,10 +579,14 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       reason: 'reconnect shared chatgpt account',
       secret: {
         operation: 'merge',
+        // A reconnect must not inherit the previous grant's refresh backoff, so the error
+        // stamp is explicitly unset rather than left behind by the merge.
+        unset: ['oauthLastRefreshErrorAt'],
         value: {
           oauthAccessToken: ACCESS_TOKEN,
           oauthAccountEmail: ACCOUNT_EMAIL,
           oauthAccountId: ACCOUNT_ID,
+          oauthLastRefreshAt: expect.stringMatching(/^\d+$/),
           oauthRefreshToken: REFRESH_TOKEN,
           oauthTokenExpiresAt: expect.stringMatching(/^\d+$/),
         },
@@ -854,12 +905,38 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
       expired: false,
       expiresAt: expect.stringMatching(/^\d+$/),
       flow: 'device_code',
+      // Epoch millis as a string, exactly like `expiresAt` — both mirror the vault leaf.
+      lastRefreshAt: expect.stringMatching(/^\d+$/),
       secretConfigured: true,
     });
     const serialized = JSON.stringify(status);
     expect(serialized).not.toContain(ACCESS_TOKEN);
     expect(serialized).not.toContain(REFRESH_TOKEN);
     expect(serialized).not.toContain(ACCOUNT_ID);
+  });
+
+  /**
+   * The panel has to be able to distinguish a connection that is quietly renewing itself
+   * from one nothing has touched since it was made — which is exactly the state that ends
+   * with a silently dropped refresh token upstream.
+   */
+  it('projects the refresh anchor stamped at connect', async () => {
+    oauthService.pollForToken.mockResolvedValue(successTokens);
+    const caller = await callerFor();
+
+    const before = Date.now();
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode: 'device-code-1',
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+    const after = Date.now();
+
+    const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' });
+    expect(status.lastRefreshAt).toMatch(/^\d+$/);
+    const stamped = Number(status.lastRefreshAt);
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(stamped).toBeLessThanOrEqual(after);
   });
 
   it('replaces the account email on reconnect, and clears it when the new token has none', async () => {
@@ -1211,5 +1288,91 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     const [row] = await db.select().from(platformAiProviders);
     expect(row.encryptedKeyVaults).not.toContain('web-refresh-1');
     expect(row.encryptedKeyVaults).not.toContain('first@example.test');
+  });
+
+  /**
+   * The finding this locks down: the create branch stored a provider with ZERO model rows,
+   * while the admin model list — a merge of platform rows and the model-bank catalog — already
+   * drew the card's defaults with the toggle ON and the connectivity check answered "check
+   * model not enabled". The displayed state was a promise the database never made.
+   */
+  const connect = async (
+    caller: Awaited<ReturnType<typeof callerFor>>,
+    reason: string,
+    email: string,
+    refreshToken: string,
+  ) => {
+    const { envelope, started } = await startFlow(caller);
+    chatgptWeb.authFetch.mockResolvedValue(
+      jsonResponse({
+        access_token: PASTE_ACCESS_TOKEN,
+        id_token: jwt({ email }),
+        refresh_token: refreshToken,
+      }),
+    );
+    return caller.aiProviderOAuth.pollAuthStatus({
+      callbackUrl: `https://platform.openai.com/auth/callback?code=c&state=${envelope.state}`,
+      deviceCode: started.deviceCode,
+      id: 'chatgptweb',
+      reason,
+    });
+  };
+
+  it('first connect materializes the card default-enabled models as enabled rows', async () => {
+    const caller = await callerFor();
+    expect(
+      await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test', 'r1'),
+    ).toMatchObject({ status: 'success', stored: true });
+
+    const rows = await db.select().from(platformAiModels);
+    expect(rows.map((row) => row.modelKey).sort()).toEqual([
+      'auto',
+      'gpt-5-6',
+      'gpt-5-6-instant',
+      'gpt-5-6-pro',
+      'gpt-5-6-thinking',
+      'gpt-image-2',
+    ]);
+    expect(rows.every((row) => row.enabled)).toBe(true);
+    // Both model types the card enables, not just the chat ones.
+    expect(rows.find((row) => row.modelKey === 'gpt-image-2')?.type).toBe('image');
+    // Card metadata, so the row is not an empty stub the list then contradicts.
+    expect(rows.find((row) => row.modelKey === 'auto')).toMatchObject({
+      contextWindowTokens: 128_000,
+      displayName: 'Auto (ChatGPT Web)',
+    });
+    // Live, not a saved-but-unpublished draft.
+    expect((await db.select().from(platformAiProviders))[0]).toMatchObject({
+      status: 'published',
+    });
+  });
+
+  it('reconnect leaves the materialized rows exactly as they were', async () => {
+    const caller = await callerFor();
+    await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test', 'r1');
+    const before = await db.select().from(platformAiModels);
+
+    expect(
+      await connect(caller, 'reconnect the shared ChatGPT Web account', 'b@example.test', 'r2'),
+    ).toMatchObject({ status: 'success', stored: true });
+
+    const after = await db.select().from(platformAiModels);
+    expect(after).toHaveLength(before.length);
+    expect(after.map((row) => row.id).sort()).toEqual(before.map((row) => row.id).sort());
+  });
+
+  it('seeds the models for an operator holding only the provider grants', async () => {
+    // AI_MODEL_CREATE is deliberately NOT in this role: the seeded rows are the immutable
+    // builtin card, not operator-authored models, so gating them behind it would only make a
+    // legitimate shared-account connect fail outright.
+    const caller = await callerFor({
+      authenticatedAt: new Date(),
+      authMethod: 'better-auth',
+      userId: ids.providerOnly,
+    });
+    expect(
+      await connect(caller, 'connect the shared ChatGPT Web account', 'a@example.test', 'r1'),
+    ).toMatchObject({ status: 'success', stored: true });
+    expect(await db.select().from(platformAiModels)).toHaveLength(6);
   });
 });

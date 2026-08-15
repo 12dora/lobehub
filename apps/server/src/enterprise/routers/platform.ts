@@ -18,6 +18,7 @@ import { ensurePlatformAuditRetentionWorkerStarted } from '../jobs/auditRetentio
 import { ensureBrandingAssetCleanupWorkerStarted } from '../jobs/brandingAssetCleanup';
 import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identityProviderTestAttemptCleanup';
 import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
+import { ensureSharedOAuthKeepaliveWorkerStarted } from '../jobs/sharedOAuthKeepalive';
 import { assertPlatformMasterKeyIfEnterprise } from '../security/secret';
 import {
   AiCatalogReadService,
@@ -62,6 +63,8 @@ ensurePlatformAuditExportWorkerStarted();
 ensurePlatformAuditRetentionWorkerStarted();
 
 ensureBrandingAssetCleanupWorkerStarted();
+
+ensureSharedOAuthKeepaliveWorkerStarted();
 
 /**
  * Platform router (M00 read-only + access status).

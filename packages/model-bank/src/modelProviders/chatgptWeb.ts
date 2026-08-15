@@ -37,6 +37,13 @@ const ChatGPTWeb: ModelProviderCard = {
       // required by the type; unused for the authorization-code paste flow
       deviceCodeEndpoint: 'https://auth.openai.com/api/accounts/authorize',
       grantFlow: 'authorization_code_paste',
+      /**
+       * 24 h, not the 2-minute default: OpenAI drops a refresh token that goes unused, so
+       * the renewal window has to be wide enough that a connection touched once a day
+       * keeps rolling. Pairs with the 3-day forced keepalive for connections that are not
+       * touched at all.
+       */
+      refreshSkewMs: 24 * 60 * 60 * 1000,
       refreshTokenGrant: true,
       scopes: ['openid', 'profile', 'email', 'offline_access'],
       tokenEndpoint: 'https://auth.openai.com/oauth/token',

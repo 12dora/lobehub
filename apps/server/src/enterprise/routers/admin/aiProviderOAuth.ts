@@ -140,6 +140,15 @@ const buildSharedVault = (
   put('oauthAccountId', tokens.accountId);
   put('oauthAccountEmail', tokens.email);
   put('oauthDeviceId', tokens.deviceId);
+  /**
+   * Refresh-lifecycle bookkeeping, mirroring the user path (`lambda/oauthDeviceFlow`).
+   * Connect time is the keepalive anchor of a grant that has never been refreshed, so the
+   * 3-day forced renewal is measured from here instead of leaving the credential without an
+   * anchor. The paired error stamp is CLEARED in the same write: a reconnect must not
+   * inherit the dead grant's backoff and sit out the first five minutes of its new life.
+   */
+  put('oauthLastRefreshAt', String(Date.now()));
+  put('oauthLastRefreshErrorAt', undefined);
 
   return { clearedLeaves, vault };
 };
@@ -364,6 +373,9 @@ export const adminAiProviderOAuthRouter = router({
       const accessToken = asVaultString(keyVaults.oauthAccessToken);
       const accountId = asVaultString(keyVaults.oauthAccountId);
       const expiresAt = asVaultString(keyVaults.oauthTokenExpiresAt);
+      // Raw epoch-ms string, exactly like `expiresAt`: both mirror the vault leaf type, and
+      // formatting belongs to the panel that renders them in the operator's locale.
+      const lastRefreshAt = asVaultString(keyVaults.oauthLastRefreshAt);
       // Connections stored before the email leaf existed keep working: decode the claim from
       // the access token we already hold, best-effort and WITHOUT persisting it.
       //
@@ -388,6 +400,10 @@ export const adminAiProviderOAuthRouter = router({
         expired,
         expiresAt: expiresAt ?? null,
         flow: getProviderOAuthGrantFlow(input.id),
+        // Stamped at connect and moved forward by every successful renewal (including the
+        // one this query just ran), so an operator can tell a connection that is quietly
+        // rolling over from one nothing has touched since it was made.
+        lastRefreshAt: lastRefreshAt ?? null,
         secretConfigured,
       };
     }),

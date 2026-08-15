@@ -76,6 +76,19 @@ export interface OAuthDeviceFlowConfig {
    */
   grantFlow?: 'device_code' | 'authorization_code_paste';
   /**
+   * How long BEFORE the access token expires the server starts refreshing it.
+   *
+   * Defaults to 2 minutes, which is the right budget for a provider that hands out
+   * short-lived access tokens and keeps the refresh token valid regardless of use.
+   * Providers that invalidate an UNUSED refresh token (ChatGPT Web) need a far wider
+   * window — refreshing a full day ahead means a connection that is idle for a few days
+   * still renews from a request that arrives well inside the grant's lifetime, instead of
+   * waking up 2 minutes before expiry with a refresh token the provider already dropped.
+   *
+   * @default 120_000
+   */
+  refreshSkewMs?: number;
+  /**
    * Whether the provider issues a refresh_token (e.g. via `offline_access`
    * scope) that the server should use to renew the access token before it
    * expires. Providers with rotating refresh tokens (e.g. xAI) rely on the
@@ -127,6 +140,21 @@ export interface OAuthDeviceFlowKeyVault {
    * ChatGPT Web). Non-secret, but must stay stable for the connection.
    */
   oauthDeviceId?: string;
+  /**
+   * Timestamp (ms) of the last SUCCESSFUL token refresh — the keepalive anchor.
+   *
+   * Providers that expire an unused refresh token need a forced renewal on a fixed
+   * cadence, and "when did we last renew" is not derivable from the access token alone.
+   * Non-secret bookkeeping; it is written by the refresh pipeline, never by a user.
+   */
+  oauthLastRefreshAt?: number;
+  /**
+   * Timestamp (ms) of the last FAILED refresh attempt — the backoff anchor.
+   *
+   * Cleared on the next success. Without it, a provider outage turns every request into
+   * another token-endpoint call. Non-secret bookkeeping.
+   */
+  oauthLastRefreshErrorAt?: number;
   /**
    * OAuth refresh token. May rotate on every refresh (e.g. xAI) — always
    * persist the value returned by the latest refresh response.
@@ -285,6 +313,13 @@ const OAuthDeviceFlowConfigSchema = z.object({
   defaultPollingInterval: z.number().optional(),
   deviceCodeEndpoint: z.string(),
   grantFlow: z.enum(['device_code', 'authorization_code_paste']).optional(),
+  /**
+   * Proactive-refresh window in milliseconds. Integer and non-negative — `.int()` also
+   * rejects `NaN`/`Infinity`, which would otherwise poison every expiry comparison.
+   * Absent from the schema it was silently stripped from create/update payloads, leaving
+   * the runtime on the 2-minute default for providers that declare a wider window.
+   */
+  refreshSkewMs: z.number().int().nonnegative().optional(),
   refreshTokenGrant: z.boolean().optional(),
   scopes: z.array(z.string()),
   tokenEndpoint: z.string(),

@@ -45,11 +45,14 @@ export class OAuthInvalidGrantError extends Error {
 }
 
 /**
- * Parse the `exp` claim (ms timestamp) from a JWT access token WITHOUT
- * verifying the signature. Only used to decide when to proactively refresh —
- * never for trust decisions. Returns undefined for opaque / non-JWT tokens.
+ * Read a numeric claim (seconds) from a JWT access token as a ms timestamp, WITHOUT
+ * verifying the signature. Only used to schedule refreshes — never for trust decisions.
+ * Returns undefined for opaque / non-JWT tokens.
  */
-export const parseJwtExpiry = (token: string | undefined): number | undefined => {
+const parseJwtNumericClaim = (
+  token: string | undefined,
+  claim: 'exp' | 'iat',
+): number | undefined => {
   if (!token) return undefined;
 
   const parts = token.split('.');
@@ -59,13 +62,28 @@ export const parseJwtExpiry = (token: string | undefined): number | undefined =>
     const payload = Buffer.from(parts[1].replaceAll('-', '+').replaceAll('_', '/'), 'base64');
     const claims = JSON.parse(payload.toString('utf8'));
 
-    if (typeof claims?.exp !== 'number') return undefined;
+    if (typeof claims?.[claim] !== 'number') return undefined;
 
-    return claims.exp * 1000;
+    return claims[claim] * 1000;
   } catch {
     return undefined;
   }
 };
+
+/**
+ * Parse the `exp` claim (ms timestamp) from a JWT access token. Only used to decide when
+ * to proactively refresh. Returns undefined for opaque / non-JWT tokens.
+ */
+export const parseJwtExpiry = (token: string | undefined): number | undefined =>
+  parseJwtNumericClaim(token, 'exp');
+
+/**
+ * Parse the `iat` (issued-at) claim as a ms timestamp. Used as the keepalive anchor when
+ * a credential has no recorded refresh yet: a token minted at connect time dates the
+ * grant just as well as a refresh stamp would.
+ */
+export const parseJwtIssuedAt = (token: string | undefined): number | undefined =>
+  parseJwtNumericClaim(token, 'iat');
 
 /** Per-call knobs shared by every `refreshAccessToken` implementation. */
 export interface OAuthRefreshOptions {

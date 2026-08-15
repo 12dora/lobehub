@@ -159,6 +159,15 @@ export const adminAiProviderOAuthStatusOutputSchema = z
     expiresAt: z.string().max(200).nullable(),
     /** Which connect flow the panel must render for this provider. */
     flow: adminAiProviderOAuthFlowSchema,
+    /**
+     * Epoch millis (as a string, mirroring the vault leaf) of the last successful token
+     * refresh — the anchor the 3-day keepalive is measured from. Lets an operator tell a
+     * connection that is quietly renewing itself from one that has not been touched since
+     * it was made. Optional so the field can be adopted by the status resolver without a
+     * lockstep contract/router change; treat "absent" and `null` the same ("never
+     * refreshed since connect").
+     */
+    lastRefreshAt: z.string().max(200).nullable().optional(),
     secretConfigured: z.boolean(),
   })
   .strict();

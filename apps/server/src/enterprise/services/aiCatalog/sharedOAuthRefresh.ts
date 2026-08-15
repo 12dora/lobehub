@@ -11,9 +11,9 @@ import { platformJobs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import {
   ensureFreshOAuthTokenWithStore,
-  isOAuthTokenExpiring,
   type OAuthTokenKeyVaults,
   type OAuthTokenStore,
+  shouldRefreshOAuthToken,
 } from '@/server/services/oauthDeviceFlow/refresh';
 
 import type { AiCatalogSecretManager, PlatformProviderKeyVaults } from './secretManager';
@@ -52,24 +52,42 @@ const asString = (value: unknown): string | undefined =>
 const toOAuthVault = (vault: PlatformProviderKeyVaults): OAuthTokenKeyVaults => ({
   oauthAccessToken: asString(vault.oauthAccessToken),
   oauthAccountId: asString(vault.oauthAccountId),
+  oauthLastRefreshAt: asString(vault.oauthLastRefreshAt),
+  oauthLastRefreshErrorAt: asString(vault.oauthLastRefreshErrorAt),
   oauthRefreshToken: asString(vault.oauthRefreshToken),
   oauthTokenExpiresAt: asString(vault.oauthTokenExpiresAt),
 });
 
-/** Overlay refreshed token leaves; non-OAuth leaves and unknown keys are preserved. */
+/**
+ * Overlay refreshed token leaves; non-OAuth leaves and unknown keys are preserved.
+ *
+ * The refresh-lifecycle stamps are the only leaves that must also be REMOVABLE: a
+ * successful refresh clears `oauthLastRefreshErrorAt` by passing `undefined`, and an
+ * additive-only overlay would leave the stale error stamp backing off every future
+ * attempt for as long as the vault lives.
+ */
 const mergeTokens = (
   base: PlatformProviderKeyVaults,
   tokens: OAuthTokenKeyVaults,
-): PlatformProviderKeyVaults => ({
-  ...base,
-  ...(tokens.oauthAccessToken ? { oauthAccessToken: tokens.oauthAccessToken } : {}),
-  ...(tokens.oauthAccountId ? { oauthAccountId: tokens.oauthAccountId } : {}),
-  ...(tokens.oauthRefreshToken ? { oauthRefreshToken: tokens.oauthRefreshToken } : {}),
-  // The platform vault only stores string leaves.
-  ...(tokens.oauthTokenExpiresAt === undefined
-    ? {}
-    : { oauthTokenExpiresAt: String(tokens.oauthTokenExpiresAt) }),
-});
+): PlatformProviderKeyVaults => {
+  const merged: PlatformProviderKeyVaults = {
+    ...base,
+    ...(tokens.oauthAccessToken ? { oauthAccessToken: tokens.oauthAccessToken } : {}),
+    ...(tokens.oauthAccountId ? { oauthAccountId: tokens.oauthAccountId } : {}),
+    ...(tokens.oauthRefreshToken ? { oauthRefreshToken: tokens.oauthRefreshToken } : {}),
+    // The platform vault only stores string leaves.
+    ...(tokens.oauthTokenExpiresAt === undefined
+      ? {}
+      : { oauthTokenExpiresAt: String(tokens.oauthTokenExpiresAt) }),
+  };
+  for (const leaf of ['oauthLastRefreshAt', 'oauthLastRefreshErrorAt'] as const) {
+    if (!(leaf in tokens)) continue;
+    const value = tokens[leaf];
+    if (value === undefined) delete merged[leaf];
+    else merged[leaf] = String(value);
+  }
+  return merged;
+};
 
 /** Matches the payload thrown for a dead shared grant (AgentRuntimeError.createError shape). */
 export const isOAuthAuthorizationExpiredError = (error: unknown): boolean =>
@@ -144,6 +162,12 @@ export interface RefreshSharedOAuthVaultParams {
   db: LobeChatDatabase;
   /** Revision-pinned fingerprint; rotation rewrites the ciphertext AT this fingerprint. */
   fingerprint: string;
+  /**
+   * Renew even though the access token is still valid — the keepalive sweep, which has
+   * already established that this credential is past its 3-day forced-renewal cadence.
+   * The post-failure backoff still applies.
+   */
+  force?: boolean;
   keyVaults: PlatformProviderKeyVaults;
   providerKey: string;
   /** platform_ai_providers.id (revision resourceId), not the providerKey. */
@@ -168,7 +192,9 @@ export const refreshSharedOAuthVault = async (
 
   const tokens = toOAuthVault(params.keyVaults);
   if (!tokens.oauthAccessToken || !tokens.oauthRefreshToken) return params.keyVaults;
-  if (!isOAuthTokenExpiring(tokens)) return params.keyVaults;
+  if (!shouldRefreshOAuthToken({ config, force: params.force, keyVaults: tokens })) {
+    return params.keyVaults;
+  }
 
   const repository = new PlatformAiCatalogRepository(params.db);
   // The CAS baseline follows every read: after an invalid_grant self-heal re-read, a
@@ -228,6 +254,17 @@ export const refreshSharedOAuthVault = async (
     read: readVault,
   };
 
+  /**
+   * "Someone else already did the work" is judged by the UNFORCED policy: a keepalive
+   * that another holder just completed leaves durable state with a fresh
+   * `oauthLastRefreshAt`, which satisfies this flow too. Re-asking with `force` would
+   * make every holder rotate in turn.
+   */
+  const isSatisfiedBy = (stored: OAuthTokenKeyVaults): boolean =>
+    Boolean(stored.oauthAccessToken) &&
+    Boolean(stored.oauthRefreshToken) &&
+    !shouldRefreshOAuthToken({ config, keyVaults: stored });
+
   const owner = randomUUID();
   const withRefreshLock = async (
     run: (lockedKeyVaults?: OAuthTokenKeyVaults) => Promise<OAuthTokenKeyVaults>,
@@ -244,7 +281,7 @@ export const refreshSharedOAuthVault = async (
          * first, under the lease.
          */
         const stored = await store.read();
-        if (stored.oauthAccessToken && stored.oauthRefreshToken && !isOAuthTokenExpiring(stored)) {
+        if (isSatisfiedBy(stored)) {
           // Someone else already did the work while we waited — no token call at all.
           log('%s was rotated by another holder while waiting; adopting it', params.providerKey);
           return stored;
@@ -261,9 +298,7 @@ export const refreshSharedOAuthVault = async (
     for (let poll = 0; poll < WAITER_MAX_POLLS; poll += 1) {
       await delay(WAITER_POLL_INTERVAL_MS);
       const stored = await store.read();
-      if (stored.oauthAccessToken && stored.oauthRefreshToken && !isOAuthTokenExpiring(stored)) {
-        return stored;
-      }
+      if (isSatisfiedBy(stored)) return stored;
     }
     // Degraded: proceed with whatever is durable. Worst case this one request 401s and
     // the next attempt re-enters the refresh path — never hard-fail every waiter.
@@ -274,6 +309,7 @@ export const refreshSharedOAuthVault = async (
   const refreshed = await ensureFreshOAuthTokenWithStore({
     config,
     flightKey: `platform:${params.providerKey}`,
+    force: params.force,
     keyVaults: tokens,
     onInvalidGrant: throwSharedGrantExpired,
     providerId: params.providerKey,

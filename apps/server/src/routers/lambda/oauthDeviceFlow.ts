@@ -33,12 +33,10 @@ const oauthProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) =>
 
   return opts.next({
     ctx: {
-      // TODO(chatgptweb): workspace scoping. The sibling aiProvider router passes
-      // `ctx.workspaceId`, so in a workspace context every OAuth connect/status/revoke here
-      // targets the PERSONAL provider row instead. Pre-existing for all OAuth providers
-      // (device flow included), so it is tracked as its own change rather than folded into
-      // the ChatGPT Web work — fixing it here alone would move only some of the leaves.
-      aiProviderModel: new AiProviderModel(ctx.serverDB, ctx.userId),
+      // Workspace-scoped exactly like the sibling aiProvider router: without the workspace
+      // id every OAuth connect/status/revoke would read and write the caller's PERSONAL
+      // provider row while they act inside a workspace.
+      aiProviderModel: new AiProviderModel(ctx.serverDB, ctx.userId, ctx.workspaceId ?? undefined),
       gateKeeper,
     },
   });
@@ -77,6 +75,14 @@ const connectionKeyVaults = (connection: ChatGPTWebConnection) => ({
   oauthAccountEmail: connection.email,
   oauthAccountId: connection.accountId,
   oauthDeviceId: connection.deviceId,
+  /**
+   * Connect time is the keepalive anchor for a grant that has never been refreshed, so
+   * the forced 3-day renewal is measured from here rather than from the first refresh.
+   * The paired error stamp is cleared: a reconnect must not inherit the dead grant's
+   * backoff.
+   */
+  oauthLastRefreshAt: String(Date.now()),
+  oauthLastRefreshErrorAt: undefined,
   oauthRefreshToken: connection.refreshToken,
   oauthTokenExpiresAt: connection.expiresAt ? String(connection.expiresAt) : undefined,
 });
@@ -285,6 +291,9 @@ export const oauthDeviceFlowRouter = router({
             keyVaults: {
               oauthAccountId: pollResult.tokens.accountId,
               oauthAccessToken: pollResult.tokens.accessToken,
+              // Keepalive anchor / backoff reset — see `connectionKeyVaults`.
+              oauthLastRefreshAt: String(Date.now()),
+              oauthLastRefreshErrorAt: undefined,
               oauthRefreshToken: pollResult.tokens.refreshToken,
               oauthTokenExpiresAt: expiresAt ? String(expiresAt) : undefined,
             },
@@ -317,6 +326,8 @@ export const oauthDeviceFlowRouter = router({
             oauthAccountId: undefined,
             oauthAccessToken: undefined,
             oauthDeviceId: undefined,
+            oauthLastRefreshAt: undefined,
+            oauthLastRefreshErrorAt: undefined,
             oauthRefreshToken: undefined,
             oauthTokenExpiresAt: undefined,
           },

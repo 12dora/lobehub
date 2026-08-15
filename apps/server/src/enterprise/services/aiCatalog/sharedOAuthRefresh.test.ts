@@ -51,6 +51,8 @@ const FRESH_AT = () => String(Date.now() + 3_600_000);
 
 const baseVault = (expiresAt: string) => ({
   oauthAccessToken: 'at-old',
+  // Recent keepalive anchor, so only the expiry knob decides whether these cases refresh.
+  oauthLastRefreshAt: String(Date.now()),
   oauthRefreshToken: 'rt-old',
   oauthTokenExpiresAt: expiresAt,
   // Unrelated leaf that must survive the rotation merge untouched.
@@ -249,6 +251,7 @@ describe('refreshSharedOAuthVault', () => {
     mockGetVersion.mockResolvedValue({
       ciphertext: encryptVault({
         oauthAccessToken: 'at-winner',
+        oauthLastRefreshAt: String(Date.now()),
         oauthRefreshToken: 'rt-winner',
         oauthTokenExpiresAt: FRESH_AT(),
       }),
@@ -266,6 +269,7 @@ describe('refreshSharedOAuthVault', () => {
     mockGetVersion.mockResolvedValue({
       ciphertext: encryptVault({
         oauthAccessToken: 'at-holder',
+        oauthLastRefreshAt: String(Date.now()),
         oauthRefreshToken: 'rt-holder',
         oauthTokenExpiresAt: FRESH_AT(),
       }),
@@ -276,6 +280,133 @@ describe('refreshSharedOAuthVault', () => {
     expect(result.oauthAccessToken).toBe('at-holder');
     expect(mockFetch).not.toHaveBeenCalled();
   }, 15_000);
+
+  /**
+   * The refresh-lifecycle stamps have to reach the SHARED vault too — they are what the
+   * keepalive sweep reads to decide who is due, and a sweep that cannot see them would
+   * force-renew every shared connection on every tick.
+   */
+  describe('refresh lifecycle bookkeeping', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    it('stamps the keepalive anchor and clears the error stamp on a successful rotation', async () => {
+      mockFetch.mockResolvedValueOnce(
+        tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+      );
+      mockCas.mockResolvedValueOnce(true);
+
+      const vault = {
+        ...baseVault(EXPIRING_AT()),
+        oauthLastRefreshErrorAt: String(Date.now() - 10 * 60 * 1000),
+      };
+      const result = await refreshSharedOAuthVault(
+        makeParams({ ciphertext: encryptVault(vault), keyVaults: vault }),
+      );
+
+      const persisted = decryptVault(mockCas.mock.calls[0][0].ciphertext);
+      expect(Number(persisted.oauthLastRefreshAt)).toBeGreaterThan(Date.now() - 5000);
+      // A leftover error stamp would back off every future attempt for the vault's lifetime.
+      expect(persisted).not.toHaveProperty('oauthLastRefreshErrorAt');
+      expect(result).not.toHaveProperty('oauthLastRefreshErrorAt');
+    });
+
+    it('persists the backoff stamp without touching the token pair when a refresh fails', async () => {
+      mockFetch.mockResolvedValue(tokenResponse({ error: 'server_error' }, false));
+      mockCas.mockResolvedValue(true);
+      // Durable state still holds the credential that failed, so the stamp applies to it.
+      mockGetVersion.mockResolvedValue({
+        ciphertext: encryptVault(baseVault(EXPIRING_AT())),
+        keyId: 'kek-1',
+      });
+
+      await expect(refreshSharedOAuthVault(makeParams())).rejects.toThrow();
+
+      const persisted = decryptVault(mockCas.mock.calls.at(-1)![0].ciphertext);
+      expect(Number(persisted.oauthLastRefreshErrorAt)).toBeGreaterThan(Date.now() - 5000);
+      // Preserved by the merge base, never by the stamp writing a captured copy back.
+      expect(persisted.oauthAccessToken).toBe('at-old');
+      expect(persisted.oauthRefreshToken).toBe('rt-old');
+    });
+
+    it('does not stamp a failure over another holder’s rotation', async () => {
+      mockFetch.mockResolvedValue(tokenResponse({ error: 'server_error' }, false));
+      mockCas.mockResolvedValue(true);
+      const stale = baseVault(EXPIRING_AT());
+      // Under the lease the flow re-reads and refreshes with `rt-under-lease`; by the time
+      // the failure is stamped, yet another writer has rotated the grant again.
+      mockGetVersion
+        .mockResolvedValueOnce({
+          ciphertext: encryptVault({ ...stale, oauthRefreshToken: 'rt-under-lease' }),
+          keyId: 'kek-1',
+        })
+        .mockResolvedValue({
+          ciphertext: encryptVault({ ...baseVault(FRESH_AT()), oauthRefreshToken: 'rt-winner' }),
+          keyId: 'kek-1',
+        });
+
+      await expect(
+        refreshSharedOAuthVault(makeParams({ ciphertext: encryptVault(stale), keyVaults: stale })),
+      ).rejects.toThrow();
+
+      // Re-arming the backoff would suppress refreshes for the pair that just succeeded.
+      expect(mockCas).not.toHaveBeenCalled();
+    });
+
+    it('force-renews a still-valid shared credential for the keepalive sweep', async () => {
+      mockFetch.mockResolvedValueOnce(
+        tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+      );
+      mockCas.mockResolvedValueOnce(true);
+
+      const vault = {
+        ...baseVault(FRESH_AT()),
+        oauthLastRefreshAt: String(Date.now() - 4 * DAY_MS),
+      };
+      // Same vault in durable state, so the under-lease re-read cannot short-circuit it.
+      mockGetVersion.mockResolvedValue({ ciphertext: encryptVault(vault), keyId: 'kek-1' });
+
+      const result = await refreshSharedOAuthVault(
+        makeParams({ ciphertext: encryptVault(vault), force: true, keyVaults: vault }),
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.oauthRefreshToken).toBe('rt-new');
+    });
+
+    it('adopts a keepalive another holder just completed instead of renewing again', async () => {
+      const vault = {
+        ...baseVault(FRESH_AT()),
+        oauthLastRefreshAt: String(Date.now() - 4 * DAY_MS),
+      };
+      // The holder that won the lease already renewed and stamped a fresh anchor.
+      mockGetVersion.mockResolvedValue({
+        ciphertext: encryptVault({ ...baseVault(FRESH_AT()), oauthRefreshToken: 'rt-holder' }),
+        keyId: 'kek-1',
+      });
+
+      const result = await refreshSharedOAuthVault(
+        makeParams({ ciphertext: encryptVault(vault), force: true, keyVaults: vault }),
+      );
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result.oauthRefreshToken).toBe('rt-holder');
+    });
+
+    it('respects the failure backoff even when the sweep forces a keepalive', async () => {
+      const vault = {
+        ...baseVault(FRESH_AT()),
+        oauthLastRefreshAt: String(Date.now() - 4 * DAY_MS),
+        oauthLastRefreshErrorAt: String(Date.now() - 60 * 1000),
+      };
+
+      const result = await refreshSharedOAuthVault(
+        makeParams({ ciphertext: encryptVault(vault), force: true, keyVaults: vault }),
+      );
+
+      expect(result).toBe(vault);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
 
   it('surfaces an admin-facing error when the shared grant is irrecoverably dead', async () => {
     mockFetch.mockResolvedValue(tokenResponse({ error: 'invalid_grant' }, false));

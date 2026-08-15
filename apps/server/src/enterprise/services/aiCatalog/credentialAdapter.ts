@@ -16,6 +16,13 @@ export interface AiCatalogCredentialVault {
   customHeaders?: Record<string, string>;
 }
 
+/**
+ * Non-secret refresh bookkeeping every rotating-refresh OAuth vault carries: the keepalive
+ * anchor and the post-failure backoff anchor (both epoch ms, stored as strings because the
+ * platform vault only holds string leaves). See `oauthDeviceFlow/refresh.ts`.
+ */
+const REFRESH_LIFECYCLE_KEYS = ['oauthLastRefreshAt', 'oauthLastRefreshErrorAt'] as const;
+
 const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
   [ModelProvider.Azure]: new Set(['apiKey', 'apiVersion', 'baseURL']),
   [ModelProvider.Bedrock]: new Set([
@@ -39,6 +46,11 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
     // Display-only account identity — intentionally absent from SECRET_CREDENTIAL_STRING_KEYS.
     'oauthAccountEmail',
     'oauthAccountId',
+    // Refresh-lifecycle bookkeeping (epoch ms as strings), written only by the server-side
+    // refresh pipeline. Non-secret, but they live in the vault because the whole credential
+    // moves as one encrypted blob — and they MUST be listed here, or the first admin
+    // credential merge after a rotation would be rejected as an unknown key.
+    ...REFRESH_LIFECYCLE_KEYS,
     'oauthRefreshToken',
     'oauthTokenExpiresAt',
   ]),
@@ -49,6 +61,7 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
     'oauthAccountId',
     // Stable `oai-device-id` for the sentinel handshake; non-secret, but it must not change.
     'oauthDeviceId',
+    ...REFRESH_LIFECYCLE_KEYS,
     // Optional: the access-token paste fallback has no refresh grant at all.
     'oauthRefreshToken',
     'oauthTokenExpiresAt',
@@ -62,6 +75,7 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
   [ModelProvider.Ollama]: new Set(['baseURL']),
   [ModelProvider.SuperGrok]: new Set([
     'oauthAccessToken',
+    ...REFRESH_LIFECYCLE_KEYS,
     'oauthRefreshToken',
     'oauthTokenExpiresAt',
   ]),

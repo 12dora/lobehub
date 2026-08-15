@@ -7,7 +7,7 @@ import { type LobeChatDatabase } from '@/database/type';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { type OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
-import { OAuthInvalidGrantError, parseJwtExpiry } from './index';
+import { OAuthInvalidGrantError, parseJwtExpiry, parseJwtIssuedAt } from './index';
 import { getOAuthService } from './providers/githubCopilot';
 
 const log = debug('lobe-server:oauth-token-refresh');
@@ -15,8 +15,31 @@ const log = debug('lobe-server:oauth-token-refresh');
 /**
  * Refresh the access token this long before it actually expires, so a request
  * dispatched right at the boundary doesn't hit a mid-flight 401.
+ *
+ * Per-provider override: `settings.oauthDeviceFlow.refreshSkewMs` (ChatGPT Web uses 24 h,
+ * because OpenAI invalidates a refresh token that goes unused).
  */
-const REFRESH_SKEW_MS = 120_000;
+const DEFAULT_REFRESH_SKEW_MS = 120_000;
+
+/**
+ * How long a failed refresh suppresses the next PROACTIVE attempt.
+ *
+ * A token endpoint that is down, rate-limiting, or 5xx-ing answers the retry the same
+ * way; without this, every request in the (now 24 h wide) refresh window fires another
+ * call. Deliberately does NOT apply once the access token is actually past expiry: at
+ * that point there is no working credential to protect and refusing to retry would take
+ * the connection down for the whole window with no fallback.
+ */
+const REFRESH_ERROR_BACKOFF_MS = 5 * 60 * 1000;
+
+/**
+ * Force a refresh this long after the last one even when the access token is still valid.
+ *
+ * Rotating-refresh providers expire a refresh token that is never presented, so a
+ * credential used rarely (or a shared account nobody touched this week) silently loses
+ * the ability to renew. Renewing on a fixed cadence keeps the grant family alive.
+ */
+const REFRESH_KEEPALIVE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /**
  * Deadline for ONE token-endpoint call. Deliberately below the shared refresh lease
@@ -27,12 +50,6 @@ const REFRESH_SKEW_MS = 120_000;
  */
 const REFRESH_REQUEST_TIMEOUT_MS = 20_000;
 
-// TODO(chatgptweb): E2 §1.5 refresh lifecycle beyond the proactive skew — a 24 h refresh
-// skew, a 5-minute backoff after a transient token-endpoint failure, and a forced
-// refresh-token keepalive every three days (an unused refresh token can be invalidated by
-// the provider). Needs durable last-refresh/last-error timestamps plus a background
-// keepalive job, so it is tracked as follow-up work rather than done inline here.
-
 /**
  * Fallback access-token lifetime when the provider returns neither
  * `expires_in` nor a parseable JWT `exp` claim.
@@ -42,6 +59,10 @@ const DEFAULT_TOKEN_TTL_MS = 3600 * 1000;
 export interface OAuthTokenKeyVaults {
   oauthAccessToken?: string;
   oauthAccountId?: string;
+  /** Keepalive anchor: epoch ms of the last successful refresh (string in platform vaults). */
+  oauthLastRefreshAt?: number | string;
+  /** Backoff anchor: epoch ms of the last failed refresh (cleared on the next success). */
+  oauthLastRefreshErrorAt?: number | string;
   oauthRefreshToken?: string;
   oauthTokenExpiresAt?: number | string;
 }
@@ -70,6 +91,11 @@ export interface EnsureFreshOAuthTokenWithStoreParams {
   config: OAuthDeviceFlowConfig;
   /** In-process single-flight key; concurrent callers with the same key share one refresh. */
   flightKey: string;
+  /**
+   * Refresh even though the access token is still comfortably valid — the keepalive
+   * sweep's entry point. The post-failure backoff still applies.
+   */
+  force?: boolean;
   keyVaults: OAuthTokenKeyVaults;
   /** Override the terminal invalid_grant error (e.g. platform credentials need an admin-facing message). */
   onInvalidGrant?: (providerId: string) => never;
@@ -101,25 +127,111 @@ export interface EnsureFreshOAuthTokenWithStoreParams {
  */
 const inflight = new Map<string, Promise<OAuthTokenKeyVaults>>();
 
-export const isOAuthTokenExpiring = (keyVaults: OAuthTokenKeyVaults): boolean =>
-  isExpiring(keyVaults);
+/** Vault leaves are numbers in user configs and strings in the platform vault. */
+const toTimestamp = (value: number | string | undefined): number | undefined => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
-const isExpiring = (keyVaults: OAuthTokenKeyVaults): boolean => {
-  const now = Date.now();
+/** Provider-configurable proactive-refresh window; 2 minutes unless the card widens it. */
+export const resolveRefreshSkewMs = (config?: Pick<OAuthDeviceFlowConfig, 'refreshSkewMs'>) =>
+  config?.refreshSkewMs ?? DEFAULT_REFRESH_SKEW_MS;
 
-  // Stored expiry is best-effort (the provider may not return expires_in),
-  // so the JWT exp claim acts as a second opinion: expiring when EITHER
-  // signal says so, and when neither is available we conservatively refresh.
-  const storedExpiresAt = keyVaults.oauthTokenExpiresAt
-    ? Number(keyVaults.oauthTokenExpiresAt)
-    : undefined;
+/**
+ * Stored expiry is best-effort (the provider may not return `expires_in`), so the JWT
+ * `exp` claim is a second opinion and the EARLIER of the two wins. Undefined means
+ * "unknown", which every caller treats as the conservative answer.
+ */
+const resolveExpiresAt = (keyVaults: OAuthTokenKeyVaults): number | undefined => {
+  const storedExpiresAt = toTimestamp(keyVaults.oauthTokenExpiresAt);
   const jwtExpiresAt = parseJwtExpiry(keyVaults.oauthAccessToken);
+  if (storedExpiresAt !== undefined && jwtExpiresAt !== undefined) {
+    return Math.min(storedExpiresAt, jwtExpiresAt);
+  }
+  return storedExpiresAt ?? jwtExpiresAt;
+};
 
-  if (!storedExpiresAt && !jwtExpiresAt) return true;
+/** Inside the proactive-refresh window (or expiry unknown, which refreshes conservatively). */
+export const isOAuthTokenExpiring = (
+  keyVaults: OAuthTokenKeyVaults,
+  config?: Pick<OAuthDeviceFlowConfig, 'refreshSkewMs'>,
+  now: number = Date.now(),
+): boolean => {
+  const expiresAt = resolveExpiresAt(keyVaults);
+  if (expiresAt === undefined) return true;
+  return expiresAt - now <= resolveRefreshSkewMs(config);
+};
 
-  if (storedExpiresAt && storedExpiresAt - now <= REFRESH_SKEW_MS) return true;
+/** Past its ACTUAL expiry — i.e. there is no working credential left to protect. */
+const isAccessTokenExpired = (keyVaults: OAuthTokenKeyVaults, now: number): boolean => {
+  const expiresAt = resolveExpiresAt(keyVaults);
+  return expiresAt === undefined || expiresAt <= now;
+};
 
-  return Boolean(jwtExpiresAt && jwtExpiresAt - now <= REFRESH_SKEW_MS);
+/**
+ * When the grant was last proven alive: the recorded refresh, else the access token's
+ * `iat` (a token minted at connect time dates the grant just as well).
+ */
+export const resolveOAuthKeepaliveAnchor = (keyVaults: OAuthTokenKeyVaults): number | undefined =>
+  toTimestamp(keyVaults.oauthLastRefreshAt) ?? parseJwtIssuedAt(keyVaults.oauthAccessToken);
+
+/**
+ * A refresh token that is never presented can be dropped by the provider, so renew on a
+ * fixed cadence even while the access token is still good.
+ *
+ * No anchor at all counts as due: every success stamps `oauthLastRefreshAt`, so a
+ * credential can be in that state at most once, whereas "never due" would leave every
+ * connection made before this bookkeeping existed without keepalive forever.
+ */
+const isOAuthKeepaliveDue = (keyVaults: OAuthTokenKeyVaults, now: number = Date.now()): boolean => {
+  const anchor = resolveOAuthKeepaliveAnchor(keyVaults);
+  if (anchor === undefined) return true;
+  return now - anchor >= REFRESH_KEEPALIVE_MS;
+};
+
+/** Within the post-failure quiet period. */
+const isOAuthRefreshBackedOff = (
+  keyVaults: OAuthTokenKeyVaults,
+  now: number = Date.now(),
+): boolean => {
+  const lastErrorAt = toTimestamp(keyVaults.oauthLastRefreshErrorAt);
+  return lastErrorAt !== undefined && now - lastErrorAt < REFRESH_ERROR_BACKOFF_MS;
+};
+
+export interface OAuthRefreshPolicyParams {
+  config?: Pick<OAuthDeviceFlowConfig, 'refreshSkewMs' | 'refreshTokenGrant'>;
+  /**
+   * Skip the expiry/keepalive gates — the background keepalive sweep has already decided
+   * this credential is due. Backoff still applies: forcing through a provider outage is
+   * exactly the hammering the backoff exists to stop.
+   */
+  force?: boolean;
+  keyVaults: OAuthTokenKeyVaults;
+  now?: number;
+}
+
+/**
+ * The single refresh decision: proactive expiry (provider-configurable skew), forced
+ * keepalive, and the post-failure backoff, in one place so the user path, the platform
+ * path and the keepalive sweep cannot drift apart.
+ */
+export const shouldRefreshOAuthToken = ({
+  config,
+  force,
+  keyVaults,
+  now = Date.now(),
+}: OAuthRefreshPolicyParams): boolean => {
+  // Backoff protects a credential that still works. Once the access token is genuinely
+  // expired there is nothing left to fall back on, so the retry must go through.
+  if (!isAccessTokenExpired(keyVaults, now) && isOAuthRefreshBackedOff(keyVaults, now)) {
+    return false;
+  }
+  if (Boolean(force) || isOAuthTokenExpiring(keyVaults, config, now)) return true;
+  // Keepalive is only meaningful where the provider can drop an unused refresh token,
+  // i.e. the rotating-refresh grants. A provider handing out a stable, storable token
+  // (GitHub Copilot) gains nothing from renewing early and should keep the old behaviour.
+  return config?.refreshTokenGrant === true && isOAuthKeepaliveDue(keyVaults, now);
 };
 
 const readStoredKeyVaults = async (
@@ -137,6 +249,17 @@ const readStoredKeyVaults = async (
   return (providerConfig?.keyVaults || {}) as OAuthTokenKeyVaults;
 };
 
+/**
+ * PARTIAL BY CONSTRUCTION: only the leaves PRESENT on `keyVaults` are written.
+ *
+ * `updateConfig` merges `{...existing, ...patch}` before re-encrypting, so an ABSENT leaf
+ * keeps its stored value while an explicitly `undefined` one is dropped by
+ * `JSON.stringify` — i.e. deleted. Both halves are load-bearing:
+ * - a successful rotation passes all six leaves, which is how `oauthLastRefreshErrorAt`
+ *   gets cleared in the same durable write that stamps the new pair;
+ * - a failed refresh passes the error stamp ALONE, so it can never merge its captured
+ *   (possibly already rotated away) token pair over a concurrent success.
+ */
 const persistKeyVaults = async (
   db: LobeChatDatabase,
   userId: string,
@@ -147,23 +270,31 @@ const persistKeyVaults = async (
   const aiProviderModel = new AiProviderModel(db, userId, workspaceId);
   const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
 
+  const patch: Record<string, string | undefined> = {};
+  if ('oauthAccountId' in keyVaults) patch.oauthAccountId = keyVaults.oauthAccountId;
+  if ('oauthAccessToken' in keyVaults) patch.oauthAccessToken = keyVaults.oauthAccessToken;
+  if ('oauthLastRefreshAt' in keyVaults) {
+    patch.oauthLastRefreshAt = asVaultTimestamp(keyVaults.oauthLastRefreshAt);
+  }
+  if ('oauthLastRefreshErrorAt' in keyVaults) {
+    patch.oauthLastRefreshErrorAt = asVaultTimestamp(keyVaults.oauthLastRefreshErrorAt);
+  }
+  if ('oauthRefreshToken' in keyVaults) patch.oauthRefreshToken = keyVaults.oauthRefreshToken;
+  if ('oauthTokenExpiresAt' in keyVaults) {
+    patch.oauthTokenExpiresAt = asVaultTimestamp(keyVaults.oauthTokenExpiresAt);
+  }
+
   await aiProviderModel.updateConfig(
     providerId,
-    {
-      keyVaults: {
-        oauthAccountId: keyVaults.oauthAccountId,
-        oauthAccessToken: keyVaults.oauthAccessToken,
-        oauthRefreshToken: keyVaults.oauthRefreshToken,
-        oauthTokenExpiresAt:
-          keyVaults.oauthTokenExpiresAt === undefined
-            ? undefined
-            : String(keyVaults.oauthTokenExpiresAt),
-      },
-    },
+    { keyVaults: patch },
     gateKeeper.encrypt,
     KeyVaultsGateKeeper.getUserKeyVaults,
   );
 };
+
+/** `UpdateAiProviderConfigSchema` only accepts string leaves; `undefined` deletes. */
+const asVaultTimestamp = (value: number | string | undefined): string | undefined =>
+  value === undefined ? undefined : String(value);
 
 const throwInvalidGrant = (providerId: string): never => {
   // Deliberately do NOT clear keyVaults here: the stored state is the only
@@ -226,7 +357,7 @@ const persistRotatedKeyVaults = async (
       stored.oauthAccessToken &&
       stored.oauthRefreshToken &&
       stored.oauthRefreshToken !== consumedRefreshToken &&
-      !isExpiring(stored)
+      !isOAuthTokenExpiring(stored, params.config)
     ) {
       return stored;
     }
@@ -247,6 +378,48 @@ const persistRotatedKeyVaults = async (
   return throwRefreshPersistenceFailure(providerId);
 };
 
+/**
+ * Record that a refresh attempt failed, so the next few minutes of requests skip the
+ * token endpoint instead of re-running a call that is currently failing for everyone.
+ *
+ * TRANSIENT failures only. `invalid_grant` is deliberately excluded: it is terminal, and
+ * backing it off would make the following requests skip the refresh and hit the provider
+ * with an expired token — trading the actionable "reconnect this provider" error for an
+ * opaque upstream 401.
+ *
+ * Best-effort by construction: it must never convert a transient refresh failure into a
+ * different (persistence) failure.
+ *
+ * It must also never TOUCH the token pair. Two rules enforce that:
+ * 1. the write carries `oauthLastRefreshErrorAt` and nothing else, so the captured (by now
+ *    possibly stale) tokens cannot be merged back over a concurrent rotation — writing an
+ *    already-consumed refresh token back into durable state would strand the credential;
+ * 2. durable state is re-read first and the stamp is skipped unless it still holds the
+ *    exact refresh token that failed. A different token means another writer rotated and
+ *    deliberately cleared the stamp, and re-arming it would back off a credential that
+ *    currently works.
+ */
+const stampRefreshFailure = async (
+  params: EnsureFreshOAuthTokenWithStoreParams,
+  /** The refresh token the failed token-endpoint call actually presented. */
+  failedRefreshToken: string,
+  now: number,
+): Promise<void> => {
+  try {
+    const stored = await params.store.read();
+    if (!stored.oauthRefreshToken || stored.oauthRefreshToken !== failedRefreshToken) {
+      log(
+        'skipping the refresh backoff stamp for %s: durable state no longer holds the failed refresh token',
+        params.flightKey,
+      );
+      return;
+    }
+    await params.store.persist({ oauthLastRefreshErrorAt: now });
+  } catch (error) {
+    log('failed to record refresh backoff for %s: %O', params.flightKey, error);
+  }
+};
+
 const refreshAndPersist = async (
   params: EnsureFreshOAuthTokenWithStoreParams,
 ): Promise<OAuthTokenKeyVaults> => {
@@ -265,9 +438,28 @@ const refreshAndPersist = async (
   const refreshOptions = { signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS) };
   let consumedRefreshToken = usedRefreshToken;
 
+  /**
+   * One token-endpoint call plus the backoff bookkeeping that belongs to it. Only the
+   * call is wrapped: the persist phase below is a different failure mode with its own
+   * handling, and `invalid_grant` is routed by the caller instead of backed off.
+   */
+  const callTokenEndpoint = async (refreshToken: string) => {
+    try {
+      return await service.refreshAccessToken(config, refreshToken, refreshOptions);
+    } catch (error) {
+      if (!(error instanceof OAuthInvalidGrantError)) {
+        // Keyed to the token THIS call presented: after the invalid_grant self-heal the
+        // retry runs on the re-read token, and stamping against the original would both
+        // measure the wrong credential and risk reviving the rejected pair.
+        await stampRefreshFailure(params, refreshToken, Date.now());
+      }
+      throw error;
+    }
+  };
+
   let tokens;
   try {
-    tokens = await service.refreshAccessToken(config, usedRefreshToken, refreshOptions);
+    tokens = await callTokenEndpoint(usedRefreshToken);
   } catch (error) {
     if (!(error instanceof OAuthInvalidGrantError)) throw error;
 
@@ -283,28 +475,33 @@ const refreshAndPersist = async (
     }
 
     // Another instance rotated: its access token may already be fresh enough.
-    if (stored.oauthAccessToken && !isExpiring(stored)) return stored;
+    if (stored.oauthAccessToken && !isOAuthTokenExpiring(stored, config)) return stored;
 
     // Otherwise retry ONCE with the newer stored refresh token. It shares the ORIGINAL
     // deadline on purpose: the bound covers this whole refresh, which is what has to fit
     // inside the shared lease — a second full budget would not.
     try {
       consumedRefreshToken = stored.oauthRefreshToken!;
-      tokens = await service.refreshAccessToken(config, consumedRefreshToken, refreshOptions);
+      tokens = await callTokenEndpoint(consumedRefreshToken);
     } catch (retryError) {
       if (retryError instanceof OAuthInvalidGrantError) invalidGrant(providerId);
       throw retryError;
     }
   }
 
+  const refreshedAt = Date.now();
   const expiresAt =
-    (tokens.expiresIn ? Date.now() + tokens.expiresIn * 1000 : undefined) ??
+    (tokens.expiresIn ? refreshedAt + tokens.expiresIn * 1000 : undefined) ??
     parseJwtExpiry(tokens.accessToken) ??
-    Date.now() + DEFAULT_TOKEN_TTL_MS;
+    refreshedAt + DEFAULT_TOKEN_TTL_MS;
 
   const nextKeyVaults: OAuthTokenKeyVaults = {
     oauthAccountId: tokens.accountId ?? keyVaults.oauthAccountId,
     oauthAccessToken: tokens.accessToken,
+    // Keepalive anchor moves forward on every success; the backoff stamp is cleared in
+    // the same write, so one good refresh ends the quiet period immediately.
+    oauthLastRefreshAt: refreshedAt,
+    oauthLastRefreshErrorAt: undefined,
     oauthRefreshToken: tokens.refreshToken,
     oauthTokenExpiresAt: expiresAt,
   };
@@ -323,12 +520,12 @@ const refreshAndPersist = async (
 export const ensureFreshOAuthTokenWithStore = async (
   params: EnsureFreshOAuthTokenWithStoreParams,
 ): Promise<OAuthTokenKeyVaults> => {
-  const { flightKey, keyVaults } = params;
+  const { config, flightKey, force, keyVaults } = params;
 
   // Not connected via OAuth (or nothing to refresh with) — leave untouched.
   if (!keyVaults.oauthAccessToken || !keyVaults.oauthRefreshToken) return keyVaults;
 
-  if (!isExpiring(keyVaults)) return keyVaults;
+  if (!shouldRefreshOAuthToken({ config, force, keyVaults })) return keyVaults;
 
   let flight = inflight.get(flightKey);
   if (!flight) {
@@ -348,11 +545,21 @@ export const ensureFreshOAuthTokenWithStore = async (
  * persisting it when it is about to expire.
  *
  * Designed for providers with rotating refresh tokens (e.g. ChatGPT and SuperGrok):
- * - proactive refresh at `expiresAt - 2min`, with the JWT `exp` claim as a
- *   fallback expiry signal
+ * - proactive refresh at `expiresAt - refreshSkewMs` (2 min by default, 24 h for ChatGPT
+ *   Web), with the JWT `exp` claim as a fallback expiry signal
+ * - forced keepalive every 3 days so an unused refresh token is not dropped upstream
+ * - 5-minute backoff after a failed refresh, unless the access token is already expired
  * - in-process single-flight per user/provider
  * - persist-then-use ordering, with invalid_grant "re-read & retry once"
  *   self-healing for multi-instance rotation races
+ *
+ * KEEPALIVE FOR USER-OWNED VAULTS IS LAZY. There is no per-user background job: the
+ * forced renewal happens on the next request that resolves this credential (chat,
+ * connectivity check, model fetch). A personal connection nobody uses for months can
+ * therefore still lapse — the user reconnects from provider settings, which is a
+ * self-service fix. Only SHARED (platform) credentials get the background sweep, because
+ * there the blast radius is every member of the instance and nobody but an admin can fix
+ * it (`enterprise/services/aiCatalog/sharedOAuthKeepalive.ts`).
  *
  * Returns the key vaults to use for this request (possibly refreshed).
  * Throws `OAuthAuthorizationExpired` when the grant is irrecoverably invalid.

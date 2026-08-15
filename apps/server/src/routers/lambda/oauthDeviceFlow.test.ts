@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { AiProviderModel } from '@/database/models/aiProvider';
 import { ChatGPTWebOAuthService } from '@/server/enterprise/services/chatgptWeb/oauthService';
 
 const mocks = vi.hoisted(() => ({
@@ -40,7 +41,8 @@ vi.mock('@/server/services/oauthDeviceFlow/providers/githubCopilot', async (impo
 
 const { oauthDeviceFlowRouter } = await import('./oauthDeviceFlow');
 
-const caller = () => oauthDeviceFlowRouter.createCaller({ userId: 'user-1' } as any);
+const caller = (ctx: Record<string, unknown> = {}) =>
+  oauthDeviceFlowRouter.createCaller({ userId: 'user-1', ...ctx } as any);
 
 const PROVIDER = 'chatgptweb';
 
@@ -133,6 +135,9 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
           oauthAccountEmail: 'user@example.com',
           oauthAccountId: 'acct-42',
           oauthDeviceId: JSON.parse(deviceCode).deviceId,
+          // Connect time anchors the 3-day keepalive for a grant never yet refreshed.
+          oauthLastRefreshAt: expect.any(String),
+          oauthLastRefreshErrorAt: undefined,
           oauthRefreshToken: 'refresh-1',
           oauthTokenExpiresAt: String(futureExp * 1000),
         },
@@ -182,6 +187,8 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
       'oauthAccountEmail',
       'oauthAccountId',
       'oauthDeviceId',
+      'oauthLastRefreshAt',
+      'oauthLastRefreshErrorAt',
       'oauthRefreshToken',
       'oauthTokenExpiresAt',
     ]);
@@ -356,6 +363,58 @@ describe('oauthDeviceFlow.getAuthStatus', () => {
       canRefresh: false,
       status: 'ACTIVE',
     });
+  });
+});
+
+/**
+ * Every OAuth procedure shares ONE provider model, so the scope it is built with decides
+ * which row connect/status/revoke touches. Built without the workspace id, a member acting
+ * inside a workspace would silently read and overwrite their PERSONAL provider credential.
+ */
+describe('oauthDeviceFlow workspace scoping', () => {
+  const scopeOfLastModel = () => {
+    const calls = vi.mocked(AiProviderModel).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return calls.at(-1)!;
+  };
+
+  beforeEach(() => {
+    mocks.getAiProviderById.mockResolvedValue(undefined);
+  });
+
+  it.each([
+    [
+      'getAuthStatus',
+      (ctx: Record<string, unknown>) => caller(ctx).getAuthStatus({ providerId: PROVIDER }),
+    ],
+    [
+      'revokeAuth',
+      (ctx: Record<string, unknown>) => caller(ctx).revokeAuth({ providerId: PROVIDER }),
+    ],
+    [
+      'initiateDeviceCode',
+      (ctx: Record<string, unknown>) => caller(ctx).initiateDeviceCode({ providerId: PROVIDER }),
+    ],
+    [
+      'pollAuthStatus',
+      async (ctx: Record<string, unknown>) => {
+        const { deviceCode } = await caller(ctx).initiateDeviceCode({ providerId: PROVIDER });
+        return caller(ctx).pollAuthStatus({ deviceCode, providerId: PROVIDER });
+      },
+    ],
+  ])('%s builds the provider model in the workspace scope', async (_name, invoke) => {
+    await invoke({ workspaceId: 'ws-1' });
+
+    expect(scopeOfLastModel()).toEqual([expect.anything(), 'user-1', 'ws-1']);
+  });
+
+  it.each([
+    ['no workspace on the context', {}],
+    ['an explicitly null workspace', { workspaceId: null }],
+  ])('stays personal with %s', async (_label, ctx) => {
+    await caller(ctx).getAuthStatus({ providerId: PROVIDER });
+
+    expect(scopeOfLastModel()).toEqual([expect.anything(), 'user-1', undefined]);
   });
 });
 
