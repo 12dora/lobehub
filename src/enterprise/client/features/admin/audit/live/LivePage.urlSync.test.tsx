@@ -106,16 +106,22 @@ vi.mock('../shared/AuditUserSearchSelect', () => ({
 
 vi.mock('../../primitives/AdminPageTemplate', () => ({
   default: ({
+    banner,
     children,
+    notice,
     toolbar,
     title,
   }: {
+    banner?: ReactNode;
     children?: ReactNode;
+    notice?: ReactNode;
     title?: ReactNode;
     toolbar?: ReactNode;
   }) => (
     <div>
       <h1>{title}</h1>
+      <div data-testid="notice">{notice}</div>
+      <div data-testid="banner">{banner}</div>
       <div data-testid="toolbar">{toolbar}</div>
       {children}
     </div>
@@ -182,6 +188,14 @@ describe('LivePage URL synchronization', () => {
     expect(evidence.messagesCalls.some((c) => c.userId === 'B')).toBe(false);
     // List still polls for user B.
     expect(evidence.listCalls.some((c) => c.userId === 'B')).toBe(true);
+  });
+
+  it('renders the metadata-only policy notice next to the page description, not as a banner', () => {
+    renderLive('/admin/audit/live');
+
+    // Policy is metadata_only → warning notice in the header, banner slot stays empty.
+    expect(screen.getByTestId('notice').textContent).toBe('audit.live.banner.metadataOnly');
+    expect(screen.getByTestId('banner').textContent).toBe('');
   });
 
   it('clears user and topic when navigating to bare live URL', async () => {

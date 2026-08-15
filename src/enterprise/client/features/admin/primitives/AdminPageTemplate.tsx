@@ -28,6 +28,10 @@ const styles = createStaticStyles(({ css }) => ({
 
     margin-block-end: 4px;
   `,
+  notice: css`
+    display: block;
+    margin-block-start: 4px;
+  `,
   titleBlock: css`
     display: flex;
     flex-direction: column;
@@ -53,6 +57,17 @@ export interface AdminPageTemplateProps {
   description?: ReactNode;
   /** Suppress the page `<h1>` when embedded under an outer surface (e.g. a tab whose label already names it). */
   hideTitle?: boolean;
+  /**
+   * Center the page body and cap its width (form-style pages, parity with the user
+   * settings panel). Omit on table/list pages so they keep using the full shell width.
+   */
+  maxWidth?: number | string;
+  /**
+   * Short status line tied to the page description (e.g. a policy restriction).
+   * Rendered right below the description inside the title block — use `banner`
+   * instead for standalone, boxed notices.
+   */
+  notice?: ReactNode;
   title: ReactNode;
   /** Filter bar / tabs above the main body */
   toolbar?: ReactNode;
@@ -66,9 +81,15 @@ export interface AdminPageTemplateProps {
  * settings-page refactor in M03.
  */
 const AdminPageTemplate = memo<AdminPageTemplateProps>(
-  ({ title, description, actions, toolbar, banner, children, hideTitle }) => {
+  ({ title, description, actions, toolbar, banner, children, hideTitle, maxWidth, notice }) => {
     return (
-      <Flexbox className={styles.body} gap={16}>
+      <Flexbox
+        className={styles.body}
+        gap={16}
+        style={
+          maxWidth === undefined ? undefined : { marginInline: 'auto', maxWidth, width: '100%' }
+        }
+      >
         <div className={styles.header}>
           <div className={styles.titleBlock}>
             {hideTitle ? null : (
@@ -77,6 +98,7 @@ const AdminPageTemplate = memo<AdminPageTemplateProps>(
               </Text>
             )}
             {description ? <Text type="secondary">{description}</Text> : null}
+            {notice ? <div className={styles.notice}>{notice}</div> : null}
           </div>
           {actions ? <div className={styles.actions}>{actions}</div> : null}
         </div>

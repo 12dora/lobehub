@@ -501,10 +501,13 @@ const LivePage = memo(() => {
           <div className={styles.banner} role="status">
             {t('audit.live.banner.contentAllowed')}
           </div>
-        ) : showPolicyBanner && contentAccessMode === 'metadata_only' ? (
-          <div className={styles.banner} role="status">
+        ) : null
+      }
+      notice={
+        showPolicyBanner && contentAccessMode === 'metadata_only' ? (
+          <Text role="status" type="warning">
             {t('audit.live.banner.metadataOnly')}
-          </div>
+          </Text>
         ) : null
       }
       toolbar={

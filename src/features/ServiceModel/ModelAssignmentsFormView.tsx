@@ -81,7 +81,10 @@ const ContextLimitInput = memo<{
         disabled={!canManage}
         min={1}
         placeholder={placeholder}
-        style={{ alignSelf: 'flex-end', width: 180 }}
+        // Left-aligned under the model select. `alignSelf` used to be inert on the user side
+        // (managed metas wrap the control in a plain div) and only applied on admin — which
+        // made the two surfaces disagree.
+        style={{ width: 180 }}
         value={draft as number | undefined}
         onBlur={commit}
         onChange={(next) => setDraft(typeof next === 'number' ? next : null)}

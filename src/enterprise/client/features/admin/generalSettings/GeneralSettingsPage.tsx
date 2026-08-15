@@ -9,6 +9,7 @@ import type { BlockerFunction } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import { MAX_WIDTH } from '@/const/layoutTokens';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
@@ -378,6 +379,7 @@ const GeneralSettingsPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       <AdminPageTemplate
         description={t('generalSettings.desc')}
         hideTitle={embedded}
+        maxWidth={MAX_WIDTH}
         title={t('generalSettings.title')}
       >
         {disabled && !serverStale && !revisionConflict ? (

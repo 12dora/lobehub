@@ -5,6 +5,7 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { MAX_WIDTH } from '@/const/layoutTokens';
 import { AdminProviderSettingsStoreProvider } from '@/enterprise/client/features/admin/ai/providerSettings/AdminProviderSettingsStore';
 import AdminAiRuntimeLoadAlert from '@/enterprise/client/features/admin/ai/shared/AdminAiRuntimeLoadAlert';
 import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
@@ -129,6 +130,7 @@ const ServiceModelSettingsPage = memo(() => {
   return (
     <AdminPageTemplate
       description={t('aiServiceModel.page.desc')}
+      maxWidth={MAX_WIDTH}
       title={t('aiServiceModel.page.title')}
     >
       <AdminProviderSettingsStoreProvider>

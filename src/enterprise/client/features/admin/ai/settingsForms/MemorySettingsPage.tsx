@@ -6,6 +6,7 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { MAX_WIDTH } from '@/const/layoutTokens';
 import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
 import { MemoryFormView } from '@/features/SettingsForms';
 import { useSaveState } from '@/hooks/useSaveState';
@@ -63,7 +64,11 @@ const MemorySettingsPage = memo(() => {
     : t('aiMemory.fetchFailed');
 
   return (
-    <AdminPageTemplate description={t('aiMemory.page.desc')} title={t('aiMemory.page.title')}>
+    <AdminPageTemplate
+      description={t('aiMemory.page.desc')}
+      maxWidth={MAX_WIDTH}
+      title={t('aiMemory.page.title')}
+    >
       <Text className={styles.note}>{t('aiMemory.autoPublishNote')}</Text>
       {dirtyDraftBlocked && <DirtyDraftAlert onDismiss={clearDirtyDraftBlocked} />}
       {fetchFailed ? (
