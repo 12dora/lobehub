@@ -25,6 +25,7 @@
   "license": "MIT",
   "author": "LobeHub <i@lobehub.com>",
   "sideEffects": [
+    "./src/const/brandIcons.tsx",
     "./src/initialize.ts",
     "./src/spa/entry.auth.tsx",
     "./src/spa/entry.desktop.tsx",
