@@ -13,6 +13,7 @@ import type {
   PinnedTransportResponse,
 } from '../../security/outboundHttp/types';
 import { createSafeAiConnectionProbe } from './connectionTestService';
+import { resolveAiCatalogOutboundMode } from './outboundMode';
 
 const okJson = (body: unknown): PinnedTransportResponse => ({
   body: Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)),
@@ -91,6 +92,65 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
     expect(safeCalls.some((u) => u.includes('openai') || u.includes('api'))).toBe(true);
     expect(globalFetchCalls).toEqual([]);
     expect(JSON.stringify(safeCalls)).not.toContain('sk-test-not-real');
+  });
+
+  it('follows G-07 for provider hosts that resolve to reserved/fake-IP ranges (198.18.0.0/15)', async () => {
+    // A fake-IP proxy resolver (or an intranet gateway) answers with a non-public address.
+    // Connectors and identity providers already honour SSRF_ALLOW_PRIVATE_IP_ADDRESS; the AI
+    // probe must not be the one surface that silently stays public-only.
+    const transport = vi.fn(async () =>
+      okJson({
+        choices: [{ message: { content: 'hi', role: 'assistant' } }],
+        id: 'chatcmpl-test',
+        object: 'chat.completion',
+      }),
+    );
+    const provider = {
+      checkModel: 'gpt-test',
+      config: {},
+      displayName: 'OpenAI',
+      enabled: true,
+      fetchOnClient: false,
+      id: 'p1',
+      providerKey: 'openai',
+      revision: 0,
+      settings: {},
+      sort: 0,
+      source: 'builtin',
+      status: 'draft',
+    } as never;
+    const fakeIpResolver = async () => [{ address: '198.18.1.174', family: 4 as const }];
+
+    // default (unset switch) → allow-private → the probe reaches the transport
+    const allowed = createSafeOutboundHttpClient({
+      mode: resolveAiCatalogOutboundMode({}),
+      resolve: fakeIpResolver,
+      transport,
+    });
+    await createSafeAiConnectionProbe(allowed)({
+      keyVaults: { apiKey: 'sk-test-not-real' },
+      model: 'gpt-test',
+      provider,
+      runtimeProvider: 'openai',
+    });
+    expect(transport).toHaveBeenCalledTimes(1);
+
+    // explicit `0` → public-only → blocked before any transport call
+    const tightened = createSafeOutboundHttpClient({
+      mode: resolveAiCatalogOutboundMode({ SSRF_ALLOW_PRIVATE_IP_ADDRESS: '0' }),
+      resolve: fakeIpResolver,
+      transport,
+    });
+    await expect(
+      createSafeAiConnectionProbe(tightened)({
+        keyVaults: { apiKey: 'sk-test-not-real' },
+        model: 'gpt-test',
+        provider,
+        runtimeProvider: 'openai',
+      }),
+    ).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(globalFetchCalls).toEqual([]);
   });
 
   it('routes Google chat through bound fetch (not unbound global fetch)', async () => {

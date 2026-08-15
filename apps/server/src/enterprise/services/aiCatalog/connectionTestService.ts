@@ -20,6 +20,7 @@ import {
   createSafeOutboundHttpClient,
   type SafeOutboundHttpClient,
 } from '../../security/outboundHttp';
+import { resolveAiCatalogOutboundMode } from './outboundMode';
 import type { PlatformProviderKeyVaults } from './secretManager';
 
 export type AiConnectionTestResult = z.infer<typeof aiConnectionTestResultSchema>;
@@ -257,7 +258,11 @@ export const resolveAiConnectionProbeApiMode = resolveManagedChatApiMode;
  * 2. AsyncLocalStorage-bound global fetch for SDKs that ignore constructor options (Google)
  */
 export const createSafeAiConnectionProbe = (
-  outbound: SafeOutboundHttpClient = createSafeOutboundHttpClient(),
+  // G-07: platform provider endpoints are admin-authored, so the probe follows the same
+  // private-network switch as connectors and identity providers (see ./outboundMode).
+  outbound: SafeOutboundHttpClient = createSafeOutboundHttpClient({
+    mode: resolveAiCatalogOutboundMode(),
+  }),
 ): AiConnectionProbe => {
   const bufferedFetchAdapter = createSafeOutboundFetchAdapter(outbound, {
     maxRedirects: AI_CONNECTION_TEST_MAX_REDIRECTS,
