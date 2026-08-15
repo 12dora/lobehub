@@ -63,6 +63,28 @@ describe('categorizeImageGenerationError', () => {
     });
   });
 
+  it('should map a network-typed provider timeout to a task timeout', () => {
+    // the shape `packages/model-runtime/src/providers/chatgptWeb` emits when its
+    // whole-call budget expires: no branch claims `ProviderNetworkError`, so the
+    // literal word "timeout" in the TOP-LEVEL message is what has to carry it
+    const result = categorizeImageGenerationError({
+      error: {
+        error: {
+          message: 'ChatGPT Web did not finish the image generation within the 200s timeout.',
+        },
+        errorType: AgentRuntimeErrorType.ProviderNetworkError,
+        message: 'ChatGPT Web image generation hit the request timeout.',
+      },
+      isAborted: false,
+      isEditingImage: false,
+    });
+
+    expect(result).toEqual({
+      errorMessage: AsyncTaskErrorType.Timeout,
+      errorType: AsyncTaskErrorType.Timeout,
+    });
+  });
+
   it('should keep generic no-image provider responses as server errors', () => {
     const result = categorizeImageGenerationError({
       error: {
