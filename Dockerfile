@@ -201,7 +201,8 @@ ENV APP_URL="" \
     PROXY_URL=""
 
 # ChatGPT Web provider transport (browser-fingerprinted curl, shipped in this image)
-ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate"
+ENV CHATGPT_WEB_CURL_IMPERSONATE_BIN="/usr/local/bin/curl-impersonate" \
+    CHATGPT_WEB_ALLOWED_HOSTS=""
 
 # Database
 ENV KEY_VAULTS_SECRET="" \

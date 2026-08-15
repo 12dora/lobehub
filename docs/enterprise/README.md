@@ -31,5 +31,6 @@ AIHub 是基于 LobeHub 的企业内部版二次开发。本目录是这套二�
 - **[reference/admin-routes.md](./reference/admin-routes.md)** — `/admin` 路由与页面目录（以 `adminNavMeta.ts` 为准）与路由实现要求。
 - **[reference/permission-matrix.md](./reference/permission-matrix.md)** — RBAC 角色 → 权限矩阵与不变式。
 - **[authentik-setup.md](./authentik-setup.md)** — Authentik / 钉钉 OIDC 从零接入手册。
+- **[chatgpt-web-provider.md](./chatgpt-web-provider.md)** — ChatGPT Web (`chatgptweb`) 服务商：curl-impersonate 传输层环境变量、开发机 / 镜像准备、共享账号接入、能力范围与已知限制。
 - **[runbooks/](./runbooks/)** — 运维手册：回滚、灾难恢复、Prometheus 告警、上线预检、安全验收。
 - **[../security/](../security/)** — 企业威胁模型与 Vault 密钥提供方设计。
