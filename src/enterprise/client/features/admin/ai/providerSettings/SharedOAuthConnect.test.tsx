@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     submitCallback: vi.fn(),
     submitError: undefined as unknown,
     submitErrorSource: undefined as unknown,
+    submitSessionToken: vi.fn(),
     submitting: false,
   },
   flowOptions: { value: undefined as Record<string, unknown> | undefined },
@@ -115,6 +116,18 @@ const render = (ui: ReactElement) =>
     </MemoryRouter>,
   );
 
+const b64url = (value: string) =>
+  Buffer.from(value, 'utf8')
+    .toString('base64')
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '');
+
+/** next-auth compact JWE, the shape of a real chatgpt.com session cookie. */
+const SESSION_JWE = [b64url('{"alg":"dir","enc":"A256GCM"}'), '', 'aXY', 'Y3Q', 'dGFn'].join('.');
+/** Compact JWS — an access token, which cannot renew itself. */
+const ACCESS_JWT = [b64url('{"alg":"RS256"}'), b64url('{"sub":"u"}'), 'sig'].join('.');
+
 const connectedStatus = {
   accountEmail: 'ops@example.com',
   accountIdMasked: 'acc1…',
@@ -177,6 +190,7 @@ beforeEach(() => {
   mocks.flow.submitCallback = vi.fn();
   mocks.flow.submitError = undefined;
   mocks.flow.submitErrorSource = undefined;
+  mocks.flow.submitSessionToken = vi.fn();
   mocks.flow.submitting = false;
   mocks.flowOptions.value = undefined;
   mocks.swr.mockReturnValue(
@@ -572,8 +586,8 @@ describe('SharedOAuthConnect', () => {
     expect(mocks.flow.submitCallback).toHaveBeenCalledWith(
       'https://platform.openai.com/auth/callback?code=abc&state=s',
     );
-    // The token fallback is opt-in per provider; this card did not offer it.
-    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.accessTokenToggle')).toBeNull();
+    // The pasted-credential route is opt-in per provider; this card did not offer it.
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.sessionToggle')).toBeNull();
   });
 
   it('warns that a hand-pasted token connection cannot renew itself', () => {
@@ -595,6 +609,125 @@ describe('SharedOAuthConnect', () => {
       screen.getByText(/aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenewBefore/),
     ).toBeTruthy();
     expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeNull();
+  });
+
+  it('offers the renewable path from inside the warning instead of stating a dead end', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: 'ops@example.com',
+        accountIdMasked: 'acc1…',
+        canRefresh: false,
+        connected: true,
+        expiresAt: null,
+        flow: 'authorization_code_paste',
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    // Both ways out are offered, and both start the same flow — one lands on the web-session
+    // box (the cheap fix), the other on the authorization page.
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.pasteSession'));
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.reconnectRenewable'));
+    expect(mocks.flow.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens the paste panel on the web-session box when the warning sent the operator there', async () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: 'ops@example.com',
+        accountIdMasked: 'acc1…',
+        canRefresh: false,
+        connected: true,
+        expiresAt: null,
+        flow: 'authorization_code_paste',
+        secretConfigured: true,
+      }),
+    );
+    // The flow answers the click by moving into the paste step, exactly as the real hook does.
+    mocks.flow.connect = vi.fn(async () => {
+      mocks.flow.state = 'awaiting';
+      mocks.flow.deviceCode = {
+        allowAccessTokenPaste: true,
+        deviceCode: 'envelope',
+        expiresIn: 600,
+        flow: 'authorization_code_paste',
+        interval: 0,
+        userCode: '',
+        verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+        verificationUriComplete: null,
+      };
+      return mocks.flow.deviceCode;
+    });
+
+    const { rerender } = render(<SharedOAuthConnect providerId="chatgptweb" />);
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.pasteSession'));
+    await Promise.resolve();
+    rerender(
+      <MemoryRouter>
+        <MotionProvider motion={motion}>
+          <SharedOAuthConnect providerId="chatgptweb" />
+        </MotionProvider>
+      </MemoryRouter>,
+    );
+
+    // Already expanded: the operator asked for this box, so it must not be behind a toggle.
+    expect(
+      screen.getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder'),
+    ).toBeTruthy();
+  });
+
+  it('names the renewal path of a self-renewing connection, and when it last renewed', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: 'ops@example.com',
+        accountIdMasked: 'acc1…',
+        canRefresh: true,
+        connected: true,
+        expiresAt: String(Date.UTC(2030, 0, 1)),
+        flow: 'authorization_code_paste',
+        lastRefreshAt: String(Date.UTC(2029, 11, 31)),
+        renewalKind: 'web_session',
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.autoRenewKind/)).toBeTruthy();
+    expect(
+      screen.getByText(/aiProviderSettings\.sharedOAuth\.renewalKind\.webSession/),
+    ).toBeTruthy();
+    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.currentTokenUntil/)).toBeTruthy();
+    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.lastRefreshAt/)).toBeTruthy();
+    // A rollover date is not a deadline: the bare expiry line would read as a warning.
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.expiresAt/)).toBeNull();
+    expect(
+      screen.queryByText(/aiProviderSettings\.sharedOAuth\.paste\.cannotAutoRenew/),
+    ).toBeNull();
+    expect(
+      screen.queryByText('aiProviderSettings.sharedOAuth.paste.reconnectRenewable'),
+    ).toBeNull();
+  });
+
+  it('falls back to the unnamed renewal copy when the stored connection predates the label', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        accountEmail: 'ops@example.com',
+        accountIdMasked: 'acc1…',
+        canRefresh: true,
+        connected: true,
+        expiresAt: null,
+        flow: 'authorization_code_paste',
+        secretConfigured: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.autoRefresh')).toBeTruthy();
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.autoRenewKind/)).toBeNull();
   });
 
   it('leaves the connected copy of device-code providers untouched', () => {
@@ -684,24 +817,93 @@ describe('SharedOAuthConnect', () => {
     );
 
     const toggle = screen
-      .getByText('aiProviderSettings.sharedOAuth.paste.accessTokenToggle')
+      .getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle')
       .closest('button')!;
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
 
     const tokenField = screen.getByPlaceholderText(
-      'aiProviderSettings.sharedOAuth.paste.accessTokenPlaceholder',
+      'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder',
     );
     const tokenId = tokenField.getAttribute('id')!;
     expect(tokenId).not.toBe(callbackId);
     expect(document.querySelector(`label[for="${tokenId}"]`)?.textContent).toBe(
-      'aiProviderSettings.sharedOAuth.paste.accessTokenLabel',
+      'aiProviderSettings.sharedOAuth.paste.sessionLabel',
     );
-    // A pasted token is a credential: it must never be readable on screen by default.
-    expect(tokenField.getAttribute('type')).toBe('password');
+    // A whole cURL command has to fit and stay readable — masking it would make the paste
+    // impossible to check, and the value is a multi-line command, not a single secret field.
+    expect(tokenField.tagName).toBe('TEXTAREA');
     // The callback error stays on the callback field only.
     expect(tokenField.getAttribute('aria-invalid')).toBeNull();
+  });
+
+  it('names what was pasted before anything is submitted, and submits the renewable half', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
+
+    const field = screen.getByPlaceholderText(
+      'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder',
+    );
+
+    // Unrecognised input is named as such, and cannot be submitted.
+    fireEvent.change(field, { target: { value: 'not a credential' } });
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.detected.unknown')).toBeTruthy();
+    expect(
+      screen
+        .getByText('aiProviderSettings.sharedOAuth.paste.sessionSubmit')
+        .closest('button')!
+        .hasAttribute('disabled'),
+    ).toBe(true);
+
+    // A cookie string is a WEB SESSION: it renews itself, and that is what gets stored.
+    fireEvent.change(field, {
+      target: { value: `oai-did=d1; __Secure-next-auth.session-token=${SESSION_JWE}; a=b` },
+    });
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.detected.session')).toBeTruthy();
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionSubmit'));
+    expect(mocks.flow.submitSessionToken).toHaveBeenCalledWith(SESSION_JWE);
+    expect(mocks.flow.submitAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('warns that a pasted access token cannot renew, and submits it as the token it is', () => {
+    mocks.flow.state = 'awaiting';
+    mocks.flow.deviceCode = {
+      allowAccessTokenPaste: true,
+      deviceCode: 'envelope',
+      expiresIn: 600,
+      flow: 'authorization_code_paste',
+      interval: 0,
+      userCode: '',
+      verificationUri: 'https://auth.openai.com/api/accounts/authorize?x=1',
+      verificationUriComplete: null,
+    };
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
+    fireEvent.change(
+      screen.getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder'),
+      { target: { value: `  ${ACCESS_JWT}  ` } },
+    );
+
+    expect(
+      screen.getByText('aiProviderSettings.sharedOAuth.paste.detected.accessToken'),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionSubmit'));
+    expect(mocks.flow.submitAccessToken).toHaveBeenCalledWith(ACCESS_JWT);
+    expect(mocks.flow.submitSessionToken).not.toHaveBeenCalled();
   });
 
   it('keeps a generic token failure on the token field it was submitted from', () => {
@@ -722,10 +924,10 @@ describe('SharedOAuthConnect', () => {
     mocks.flow.submitErrorSource = 'token';
 
     render(<SharedOAuthConnect providerId="chatgptweb" />);
-    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.accessTokenToggle'));
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionToggle'));
 
     const tokenField = screen.getByPlaceholderText(
-      'aiProviderSettings.sharedOAuth.paste.accessTokenPlaceholder',
+      'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder',
     );
     expect(
       screen

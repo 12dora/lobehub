@@ -1,10 +1,17 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import {
+  isChatGPTWebSessionToken,
+  isChatGPTWebSessionTokenSafe,
+} from '@lobechat/utils/chatgptWebPaste';
+import debug from 'debug';
+
+import {
   type DeviceCodeResponse,
   OAuthDeviceFlowService,
   OAuthInvalidGrantError,
   type OAuthRefreshOptions,
+  type OAuthRenewalKind,
   parseJwtExpiry,
   type TokenResponse,
 } from '@/server/services/oauthDeviceFlow';
@@ -27,10 +34,19 @@ import { getChatGPTWebFetch, isChatGPTWebTransportUnavailableError } from './tra
  * the router hands back on the exchange call.
  */
 
+const log = debug('lobe-server:chatgpt-web-oauth');
+
 const AUTH0_CLIENT = 'eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9';
 const CHATGPT_BASE = 'https://chatgpt.com';
 const ACCOUNTS_CHECK_PATH = '/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=0';
 const ME_PATH = '/backend-api/me';
+/**
+ * The endpoint the chatgpt.com web app itself calls to mint an access token from the
+ * browser session — the reason the web app never asks anyone to sign in twice.
+ */
+const SESSION_PATH = '/api/auth/session';
+/** next-auth session cookie; the renewal credential of the web-session connect path. */
+const SESSION_COOKIE_NAME = '__Secure-next-auth.session-token';
 
 /** Coherent with the transport's `chrome136` impersonation profile. */
 const USER_AGENT =
@@ -52,8 +68,109 @@ const IDENTITY_REQUEST_TIMEOUT_MS = 20_000;
 /** The email lookup is a nicety on a path that already holds a redeemed grant. */
 const EMAIL_FALLBACK_TIMEOUT_MS = 10_000;
 
+/**
+ * `/api/auth/session` is behind Cloudflare and answers a bot challenge (403 `cf-mitigated:
+ * challenge`) a large fraction of the time — measured at roughly two calls in three from a
+ * datacentre IP. It is NOT a broken session: the very next call usually returns 200.
+ *
+ * A single-shot call would therefore fail an operator's "connect" click, and most renewals,
+ * most of the time. So the transient outcomes are retried INSIDE the session call, before
+ * anything upstream sees a failure. Terminal outcomes (401, a session that mints no token)
+ * are never retried — retrying a dead session only wastes the budget.
+ *
+ * Whole-operation budget for connect: the session mint AND the identity probes that follow it
+ * live inside this one deadline, so an operator's click is bounded by it end to end. The
+ * refresh path does NOT get its own budget: it inherits the caller's, which is already
+ * bounded below the 30 s shared refresh lease.
+ */
+const CONNECT_SESSION_TIMEOUT_MS = 25_000;
+/**
+ * Bound on ONE attempt, so a single wedged connection cannot silently spend the whole
+ * budget and leave no retries behind. Always intersected with the overall budget, which
+ * therefore still governs the total.
+ */
+const SESSION_ATTEMPT_TIMEOUT_MS = 8000;
+/** Total attempts (not retries). Connect is user-visible; refresh gets another chance later. */
+const SESSION_CONNECT_ATTEMPTS = 4;
+const SESSION_REFRESH_ATTEMPTS = 3;
+/** Backoff before attempts 2, 3, 4. Short: the challenge clears on the next call, not in a minute. */
+const SESSION_RETRY_DELAYS_MS = [400, 900, 1600];
+/** Up to +30 %, so a fleet of instances retrying at once does not resonate. */
+const SESSION_RETRY_JITTER = 0.3;
+
+/** Why an attempt failed — for the debug log only. Never carries response content. */
+type SessionFailureClass = 'challenge' | 'forbidden' | 'network' | 'rate_limit' | 'server_error';
+
+/**
+ * An attempt that failed in a way the NEXT attempt could plausibly survive. Deliberately a
+ * distinct class rather than a flag: the retry loop must not swallow a terminal outcome
+ * (a dead session) or an operator problem (missing transport binary) by mistake.
+ *
+ * The message is composed locally from the status/error class only — provider prose never
+ * crosses this boundary — so it stays safe to surface and to log.
+ */
+class ChatGPTWebSessionRetryableError extends Error {
+  /**
+   * A rotation the failed attempt had ALREADY received. next-auth invalidates the presented
+   * value the moment it rotates, so a later attempt must present this one instead — retrying
+   * the value the upstream just replaced would turn a transient failure into a dead session.
+   */
+  readonly rotatedSessionToken?: string;
+
+  constructor(
+    readonly classification: SessionFailureClass,
+    message: string,
+    options?: { cause?: unknown; rotatedSessionToken?: string },
+  ) {
+    super(message, options);
+    this.name = 'ChatGPTWebSessionRetryableError';
+    this.rotatedSessionToken = options?.rotatedSessionToken;
+  }
+}
+
+/**
+ * Statuses worth another call: the Cloudflare challenge, an explicit rate limit, the
+ * "retry this request" 4xx pair, and every server-side failure. Anything else is still
+ * transient for the caller (it never marks the session dead) but retrying it is pointless.
+ */
+const isRetryableSessionStatus = (status: number): boolean =>
+  status === 403 || status === 408 || status === 425 || status === 429 || status >= 500;
+
+const classifySessionStatus = (response: Response): SessionFailureClass => {
+  if (response.status === 429) return 'rate_limit';
+  if (response.status >= 500) return 'server_error';
+  // Cloudflare marks its own interception; a bare 403 is something else entirely.
+  return response.headers.get('cf-mitigated') === 'challenge' ? 'challenge' : 'forbidden';
+};
+
+/** Backoff that gives up the moment the overall budget is spent, instead of overrunning it. */
+const sleepWithinBudget = (ms: number, signal: AbortSignal): Promise<void> =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+
 export type ChatGPTWebOAuthErrorCode =
-  'access_token_invalid' | 'exchange_failed' | 'expired' | 'invalid_callback' | 'state_mismatch';
+  | 'access_token_invalid'
+  | 'exchange_failed'
+  | 'expired'
+  | 'invalid_callback'
+  /** The pasted web session is expired/revoked — chatgpt.com mints no token for it. */
+  | 'session_invalid'
+  | 'state_mismatch'
+  /** The token works, but belongs to a client without chatgpt.com web permission. */
+  | 'token_not_web';
 
 /** Stable machine-readable outcome; the message is never shown to a client. */
 export class ChatGPTWebOAuthError extends Error {
@@ -75,6 +192,18 @@ export interface ChatGPTWebPasteEnvelope {
   verifier: string;
 }
 
+/**
+ * Which credential the stored connection renews itself WITH — the provider-local name of the
+ * shared {@link OAuthRenewalKind} union (`'oauth' | 'web_session'`), which lives with the
+ * refresh pipeline because the pipeline is what dispatches on it.
+ *
+ * Both kinds live in the same `oauthRefreshToken` vault leaf, so every existing mechanism
+ * (`canRefresh`, the skew/keepalive/backoff policy, the cross-instance refresh lease, the
+ * invalid_grant self-heal) applies to a session connection unchanged. The label only says
+ * how to SPEND it, and is deliberately non-secret so status views can name the path.
+ */
+export type ChatGPTWebRenewalKind = OAuthRenewalKind;
+
 /** Everything the routers persist into the K2 vault leaves. */
 export interface ChatGPTWebConnection {
   accessToken: string;
@@ -84,7 +213,54 @@ export interface ChatGPTWebConnection {
   /** Epoch millis from the access token's `exp` claim. */
   expiresAt?: number;
   refreshToken?: string;
+  /** Absent only on the non-renewable access-token paste path. */
+  renewalKind?: ChatGPTWebRenewalKind;
+  /**
+   * Epoch millis the WEB SESSION itself expires (`expires` from `/api/auth/session`).
+   * Informational: the session rotates whenever it is used, so this is not a deadline.
+   */
+  sessionExpiresAt?: number;
 }
+
+/**
+ * OAuth clients whose access tokens are NOT accepted for chatgpt.com web traffic.
+ *
+ * `app_EMoamEEZ73f0CkXaXp7hrann` is the Codex CLI client: its tokens are valid at the
+ * Responses/Codex surface (that is what the sibling `chatgpt` provider uses) but carry no
+ * web permission, so a connection made with one looks healthy and then fails every chat.
+ * Rejecting it at connect turns a confusing runtime failure into an actionable message.
+ *
+ * Known-good, for reference: `app_X8zY6vW2pQ9tR3dE7nK1jL5gH` (the client the real web app's
+ * session tokens carry) and `app_2SKx67EdpoN0G6j64rFvigXD` (our PKCE client, the same one
+ * the chatgpt2api reference implementation uses for web chat). Any OTHER client id is
+ * ALLOWED: the client list is not a documented contract, an unknown id is more likely a new
+ * web client than a wrong one, and the token is still proven against `/backend-api/me`
+ * before it is stored.
+ */
+const NON_WEB_OAUTH_CLIENT_IDS = new Set(['app_EMoamEEZ73f0CkXaXp7hrann']);
+
+/**
+ * Reject a token minted for a client that has no chatgpt.com web permission.
+ * A token with no readable `client_id` claim passes: opaque and future token shapes must
+ * not be blocked by a check that exists to catch ONE well-known wrong paste.
+ */
+const assertWebCapableAccessToken = (accessToken: string): void => {
+  const parts = accessToken.split('.');
+  if (parts.length !== 3) return;
+  let clientId: unknown;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    clientId = claims['client_id'];
+  } catch {
+    return;
+  }
+  if (typeof clientId === 'string' && NON_WEB_OAUTH_CLIENT_IDS.has(clientId)) {
+    throw new ChatGPTWebOAuthError('token_not_web');
+  }
+};
 
 export interface ChatGPTWebOAuthServiceOptions {
   /** auth.openai.com is reachable from Node directly — no impersonation needed. */
@@ -280,6 +456,179 @@ const sessionHeaders = (accessToken: string, deviceId: string): Record<string, s
   'user-agent': USER_AGENT,
 });
 
+/**
+ * Upper bound on a session token we are willing to hold. next-auth chunks a large session
+ * across several cookies, so the assembled value is legitimately long — but it is stored in
+ * the credential vault and re-sent on every renewal, so an upstream (or a hostile response)
+ * must not be able to grow it without limit. Matches the routers' input bound.
+ */
+const MAX_SESSION_TOKEN_LENGTH = 16_384;
+
+/**
+ * The device id charset. It is interpolated into the same `Cookie` header as the session, and
+ * unlike the connect paths (which mint a uuid v4 or validate the envelope's) a REFRESH reads
+ * it from durable state — which an admin credential edit can write. `oai-did` values are
+ * uuids; anything outside this charset is dropped rather than sent, because the device id is
+ * a best-effort nicety and failing a renewal over it would be worse.
+ */
+const DEVICE_ID_CHARSET = /^[\w-]{1,128}$/;
+
+/**
+ * The one place a session token is admitted into this service.
+ *
+ * It ends up interpolated into a `Cookie:` request header, so a value carrying `;`, `,`, `=`,
+ * whitespace or a control character would let whoever supplied it append or overwrite
+ * cookies. Enforced on EVERY entry point — the pasted connect value, the credential a refresh
+ * spends, and any rotated value the upstream hands back — because each of them is data from
+ * outside this process.
+ */
+const isUsableSessionToken = (value: string): boolean =>
+  Boolean(value) &&
+  value.length <= MAX_SESSION_TOKEN_LENGTH &&
+  isChatGPTWebSessionTokenSafe(value) &&
+  // A value consisting only of separators is well-formed for the charset and useless here.
+  /[\w-]/.test(value);
+
+const assertSessionTokenShape = (value: string): void => {
+  if (!isUsableSessionToken(value)) {
+    throw new ChatGPTWebOAuthError('session_invalid', 'malformed web session token');
+  }
+};
+
+/**
+ * The web app's own request to `/api/auth/session`: the session travels as a COOKIE (which
+ * is what it is in a browser), alongside the stable device id when we have one.
+ *
+ * Both values are validated before they reach this string: a cookie header is a delimiter
+ * format, and everything interpolated into it comes from outside this process.
+ */
+const webSessionHeaders = (sessionToken: string, deviceId?: string): Record<string, string> => {
+  assertSessionTokenShape(sessionToken);
+  const safeDeviceId = deviceId && DEVICE_ID_CHARSET.test(deviceId) ? deviceId : undefined;
+
+  return {
+    'accept': 'application/json',
+    'accept-language': 'en-US,en;q=0.9',
+    'cookie': [
+      ...(safeDeviceId ? [`oai-did=${safeDeviceId}`] : []),
+      `${SESSION_COOKIE_NAME}=${sessionToken}`,
+    ].join('; '),
+    'referer': `${CHATGPT_BASE}/`,
+    'sec-ch-ua': SEC_CH_UA,
+    'sec-ch-ua-mobile': '?0',
+    'user-agent': USER_AGENT,
+  };
+};
+
+/**
+ * `__Secure-next-auth.session-token=<value>`, or its chunked form `…session-token.<n>=<value>`.
+ * Global: ONE `Set-Cookie` entry can only carry one cookie, but the combined-header fallback
+ * carries several, and next-auth emits every chunk of a rotation at once.
+ */
+const SESSION_SET_COOKIE = /__Secure-next-auth\.session-token(?:\.(\d+))?=([^\s,;]*)/g;
+
+/** next-auth deletes a stale chunk with an empty value and/or an immediate expiry. */
+const COOKIE_DELETION = /(?:^|;)\s*(?:max-age\s*=\s*0|expires\s*=\s*Thu,\s*01\s*Jan\s*1970)/i;
+
+/** Some copy/serve paths percent-encode the cookie value; a next-auth JWE never contains `%`. */
+const decodeCookieValue = (value: string): string => {
+  if (!value.includes('%')) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+/**
+ * next-auth rotates the session cookie as it is used, and a rotation invalidates the value we
+ * presented — so a missed (or half-read) `Set-Cookie` strands the connection at the next
+ * renewal.
+ *
+ * The load-bearing case is CHUNKING. A session that outgrows one cookie is emitted as
+ * `…session-token.0`, `.1`, … and reading only the first chunk would persist a truncated
+ * value that is not a session at all, while the value we presented has already been consumed
+ * upstream — an unrecoverable connection with no error to see it by. So every entry is read,
+ * the chunks are re-assembled in index order, and a set that is not CONTIGUOUS FROM 0 is
+ * discarded outright: keeping the presented token merely risks a 401 that the reconnect path
+ * already handles, whereas persisting a partial join guarantees a dead credential.
+ *
+ * `getSetCookie()` is the correct source (several `Set-Cookie` headers are not joinable),
+ * with the combined header as a fallback for runtimes that lack it — hence the name-anchored
+ * sweep rather than splitting on commas, which is unsafe (`Expires=Wed, 01 Jan`).
+ *
+ * The value is returned to the caller and NEVER logged.
+ */
+const readRotatedSessionToken = (response: Response): string | undefined => {
+  const raw =
+    typeof response.headers.getSetCookie === 'function'
+      ? response.headers.getSetCookie()
+      : [response.headers.get('set-cookie') ?? ''];
+
+  const chunks = new Map<number, string>();
+  let plain: string | undefined;
+
+  for (const entry of raw) {
+    if (!entry) continue;
+    // A cleanup header carries the OLD name with no value — it says "this chunk is gone",
+    // which must not be mistaken for a rotation to an empty (or truncated) value.
+    const deleting = COOKIE_DELETION.test(entry);
+    SESSION_SET_COOKIE.lastIndex = 0;
+    for (
+      let match = SESSION_SET_COOKIE.exec(entry);
+      match;
+      match = SESSION_SET_COOKIE.exec(entry)
+    ) {
+      const [, chunkIndex, rawValue] = match;
+      const value = decodeCookieValue(rawValue);
+      if (chunkIndex === undefined) {
+        // next-auth clears the plain cookie by setting it empty; that is a rotation to
+        // NOTHING, and keeping the presented token is the only usable answer.
+        if (!deleting && value) plain = value;
+        continue;
+      }
+      // A chunked rotation supersedes the plain cookie in the same response (next-auth
+      // clears the one it is not using), so the assembled chunks win below.
+      if (deleting || !value) chunks.delete(Number(chunkIndex));
+      else chunks.set(Number(chunkIndex), value);
+    }
+  }
+
+  if (chunks.size > 0) {
+    // Contiguous from 0 by construction: a gap stops the walk short of `chunks.size`.
+    const parts: string[] = [];
+    for (let index = 0; index < chunks.size; index += 1) {
+      const part = chunks.get(index);
+      if (part === undefined) break;
+      parts.push(part);
+    }
+    const joined = parts.join('');
+    // A rotated value is about to be PERSISTED and later interpolated into a Cookie header,
+    // so it is held to the same boundary rule as a pasted one: the upstream is no more
+    // trusted than the operator here.
+    if (parts.length === chunks.size && isUsableSessionToken(joined)) return joined;
+    // Count only — never the values, not even a fragment of one.
+    log('discarding an unusable rotated session cookie (%d chunk(s))', chunks.size);
+    return undefined;
+  }
+
+  if (!plain) return undefined;
+  if (!isUsableSessionToken(plain)) {
+    log('discarding a rotated session cookie that is not a usable cookie value');
+    return undefined;
+  }
+  return plain;
+};
+
+interface WebSessionMint {
+  accessToken: string;
+  email?: string;
+  /** Epoch millis from the response's `expires`, when parseable. */
+  sessionExpiresAt?: number;
+  /** Rotated cookie value when the response carried one, else the presented token. */
+  sessionToken: string;
+}
+
 export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
   private readonly authFetch: typeof fetch;
   private readonly transportFetchOverride?: typeof fetch;
@@ -431,6 +780,216 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
   }
 
   /**
+   * Mint an access token from a chatgpt.com WEB SESSION — the same call the web app makes,
+   * which is why a session connection behaves like the web app: sign in once, never again.
+   *
+   * Failure classification is the whole point of this method:
+   * - a session that mints nothing (401, `{}`, the unauthenticated warning-only body) is
+   *   TERMINAL — the caller decides whether that is a rejected connect or a dead grant;
+   * - a Cloudflare challenge (403 `cf-mitigated`), 429, 5xx or a timeout is TRANSIENT and
+   *   must never be mistaken for an expired session: the endpoint answers 200 most of the
+   *   time and challenges intermittently, so treating a challenge as terminal would kill a
+   *   perfectly good shared credential.
+   *
+   * No provider prose crosses this boundary and no credential is ever logged.
+   */
+  private async mintFromWebSession(params: {
+    /** Total attempts, backoff included. See {@link SESSION_CONNECT_ATTEMPTS}. */
+    attempts: number;
+    deviceId?: string;
+    onInvalidSession: () => never;
+    sessionToken: string;
+    /** Whole-operation budget: every attempt AND every backoff lives inside it. */
+    signal: AbortSignal;
+  }): Promise<WebSessionMint> {
+    const attempts = Math.max(1, params.attempts);
+    let lastRetryable: ChatGPTWebSessionRetryableError | undefined;
+    /**
+     * Carries a rotation across attempts. An attempt can rotate the cookie and STILL fail
+     * (the body never arrives, the connection drops after the headers): the value we
+     * presented is invalid from that moment on, so every later attempt — and the mint's
+     * returned credential — must use the rotated one.
+     */
+    let sessionToken = params.sessionToken;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.mintFromWebSessionOnce({ ...params, sessionToken });
+      } catch (error) {
+        // Terminal outcomes (dead session), operator problems (no transport binary) and a
+        // spent budget all leave through here untouched — only a retryable attempt loops.
+        if (!(error instanceof ChatGPTWebSessionRetryableError)) throw error;
+        if (error.rotatedSessionToken) sessionToken = error.rotatedSessionToken;
+        lastRetryable = error;
+        if (attempt >= attempts || params.signal.aborted) break;
+
+        const base = SESSION_RETRY_DELAYS_MS[Math.min(attempt, SESSION_RETRY_DELAYS_MS.length) - 1];
+        const wait = Math.round(base * (1 + Math.random() * SESSION_RETRY_JITTER));
+        // Attempt count and failure CLASS only: no status body, no headers, no credential.
+        log(
+          'chatgpt.com session attempt %d/%d failed (%s); retrying in %dms',
+          attempt,
+          attempts,
+          error.classification,
+          wait,
+        );
+        await sleepWithinBudget(wait, params.signal);
+      }
+    }
+
+    // Unreachable with attempts >= 1: the loop either returns or records a retryable error.
+    throw lastRetryable!;
+  }
+
+  /** ONE call to `/api/auth/session`, with the outcome classified for {@link mintFromWebSession}. */
+  private async mintFromWebSessionOnce(params: {
+    deviceId?: string;
+    onInvalidSession: () => never;
+    sessionToken: string;
+    signal: AbortSignal;
+  }): Promise<WebSessionMint> {
+    // Built OUTSIDE the try: a malformed credential is a terminal input problem, and the
+    // catch below would otherwise reclassify it as a retryable network failure.
+    const headers = webSessionHeaders(params.sessionToken, params.deviceId);
+
+    let response: Response;
+    try {
+      response = await this.transportFetch(`${CHATGPT_BASE}${SESSION_PATH}`, {
+        headers,
+        method: 'GET',
+        // The overall budget is always part of it, so per-attempt bounding can never
+        // extend the total the caller (or the shared refresh lease) allowed.
+        signal: AbortSignal.any([params.signal, AbortSignal.timeout(SESSION_ATTEMPT_TIMEOUT_MS)]),
+      });
+    } catch (error) {
+      // A missing transport binary is an operator problem, not a dead session — let it out.
+      if (isChatGPTWebTransportUnavailableError(error)) throw error;
+      const message = `ChatGPT Web session request failed: ${error instanceof Error ? error.name : 'network error'}`;
+      // The WHOLE budget is spent (caller deadline / refresh lease): another attempt would
+      // be dead on arrival, and on the refresh path it would run past the lease.
+      if (params.signal.aborted) throw new Error(message, { cause: error });
+      // A per-attempt timeout or a network blip: worth one more call.
+      throw new ChatGPTWebSessionRetryableError('network', message, { cause: error });
+    }
+
+    // Read the rotation BEFORE the body: a failed JSON parse must not lose it.
+    const rotated = readRotatedSessionToken(response);
+
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      // 401 is the only status that means "this session is gone".
+      if (response.status === 401) params.onInvalidSession();
+      const message = `ChatGPT Web session request failed: ${response.status}`;
+      if (!isRetryableSessionStatus(response.status)) throw new Error(message);
+      throw new ChatGPTWebSessionRetryableError(classifySessionStatus(response), message, {
+        ...(rotated ? { rotatedSessionToken: rotated } : {}),
+      });
+    }
+
+    /**
+     * A body that cannot be READ is not an answer about the session.
+     *
+     * Collapsing it into `{}` used to make a dropped connection, a truncated response or a
+     * Cloudflare interstitial served with a 200 indistinguishable from "this session mints
+     * nothing" — i.e. TERMINAL, which kills a shared credential every user depends on and
+     * demands an operator reconnect for a network blip. Only a body we actually parsed can
+     * answer that question; anything else is transient and gets another attempt.
+     */
+    let body: {
+      accessToken?: unknown;
+      expires?: unknown;
+      user?: { email?: unknown } | null;
+    };
+    try {
+      body = (await response.json()) as typeof body;
+    } catch (error) {
+      const message = 'ChatGPT Web session response could not be read';
+      // The whole budget is spent: another attempt would be dead on arrival, and on the
+      // refresh path it would run past the shared lease.
+      if (params.signal.aborted) throw new Error(message, { cause: error });
+      throw new ChatGPTWebSessionRetryableError('network', message, {
+        cause: error,
+        // If this attempt already rotated the cookie, the presented one is gone: the retry
+        // must present the rotation, not the value the upstream just invalidated.
+        ...(rotated ? { rotatedSessionToken: rotated } : {}),
+      });
+    }
+
+    const accessToken = typeof body?.accessToken === 'string' ? body.accessToken.trim() : '';
+    // An unauthenticated session answers 200 with a PARSED `{}` or warning-only banner body —
+    // the session really is gone, so this one is terminal.
+    if (!accessToken) params.onInvalidSession();
+
+    const email =
+      typeof body?.user?.email === 'string' && body.user.email.length > 0
+        ? body.user.email
+        : undefined;
+    const expires = typeof body?.expires === 'string' ? Date.parse(body.expires) : Number.NaN;
+
+    return {
+      accessToken,
+      ...(email ? { email } : {}),
+      ...(Number.isFinite(expires) ? { sessionExpiresAt: expires } : {}),
+      sessionToken: rotated ?? params.sessionToken,
+    };
+  }
+
+  /**
+   * Connect with a pasted chatgpt.com web session instead of an authorization code.
+   *
+   * The session token is stored in the SAME `oauthRefreshToken` leaf an OAuth refresh token
+   * would occupy (tagged by `oauthRenewalKind`), so it inherits every renewal mechanism
+   * already in place rather than adding a second lifecycle to keep in sync.
+   */
+  async connectWithSession(sessionToken: string, deviceId?: string): Promise<ChatGPTWebConnection> {
+    const token = sessionToken.trim();
+    // Boundary check, not a formatting nicety: this value is interpolated into a Cookie
+    // header, so a delimiter or control character in it is a header-injection primitive.
+    assertSessionTokenShape(token);
+
+    const resolvedDeviceId = deviceId ?? randomUUID();
+    /**
+     * ONE deadline for the WHOLE connect, not just the mint.
+     *
+     * The mint's own budget used to be the only bound, while the identity probes that follow
+     * added up to ~30 s more on top of it — so a wedged upstream could hold an operator's
+     * "connect" click (and its HTTP request) for nearly a minute. Every request below
+     * intersects this signal with its own per-request cap, so the total can never exceed it.
+     */
+    const budget = AbortSignal.timeout(CONNECT_SESSION_TIMEOUT_MS);
+    const minted = await this.mintFromWebSession({
+      // An operator is watching this one, and a Cloudflare challenge is far more likely
+      // than not — so it gets the widest retry budget of the two paths.
+      attempts: SESSION_CONNECT_ATTEMPTS,
+      deviceId: resolvedDeviceId,
+      onInvalidSession: () => {
+        throw new ChatGPTWebOAuthError('session_invalid');
+      },
+      sessionToken: token,
+      signal: budget,
+    });
+
+    // A session belonging to a client without web permission would connect and then fail
+    // every chat; say so here instead.
+    assertWebCapableAccessToken(minted.accessToken);
+
+    const connection = await this.buildConnection({
+      accessToken: minted.accessToken,
+      deviceId: resolvedDeviceId,
+      fallbackEmail: minted.email,
+      refreshToken: minted.sessionToken,
+      // Whatever the mint left of the connect budget is all the identity probes may spend.
+      signal: budget,
+    });
+
+    return {
+      ...connection,
+      renewalKind: 'web_session',
+      ...(minted.sessionExpiresAt ? { sessionExpiresAt: minted.sessionExpiresAt } : {}),
+    };
+  }
+
+  /**
    * Refresh with the wire the provider expects (E2 §1.5): form-encoded, the platform
    * User-Agent, and a hard bound. The inherited implementation is otherwise identical, but
    * it sends no UA and is unbounded by default — a hung token endpoint would pin the shared
@@ -449,6 +1008,64 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
     const deadline = AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS);
     // The caller's own bound never widens ours; whichever fires first wins.
     const signal = options?.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+
+    /**
+     * Which credential is in the leaf. The stored `oauthRenewalKind` is authoritative (the
+     * caller has already validated it — an unrecognised label arrives as `undefined`); the
+     * shape sniff only covers connections stored before that leaf existed (and costs
+     * nothing, since an OAuth refresh token is never a five-segment `dir` JWE).
+     */
+    const renewalKind =
+      options?.renewalKind ??
+      (isChatGPTWebSessionToken(refreshToken) ? 'web_session' : ('oauth' as const));
+
+    if (renewalKind === 'web_session') {
+      /**
+       * The stored credential is durable state that reaches a Cookie header, so it is held to
+       * the same boundary rule as a pasted one. `invalid_grant` (not a transient error) is the
+       * right outcome: it makes the pipeline re-read durable state — a concurrent reconnect
+       * may have replaced this leaf — and otherwise ends in the actionable "reconnect this
+       * provider", which is exactly what an unusable stored credential needs.
+       */
+      if (!isUsableSessionToken(refreshToken)) {
+        throw new OAuthInvalidGrantError('stored web session credential is malformed');
+      }
+
+      const minted = await this.mintFromWebSession({
+        /**
+         * One fewer attempt than connect: this whole call has to finish inside the caller's
+         * bound (20 s, below the 30 s shared refresh lease), and an exhausted renewal is not
+         * fatal — the 5-minute backoff retries it long before the 24 h window closes.
+         */
+        attempts: SESSION_REFRESH_ATTEMPTS,
+        /**
+         * The device this connection was made with (`oauthDeviceId`), carried by the refresh
+         * pipeline. Connect presents `oai-did`; a renewal that omitted it looked like a
+         * brand-new device on every call — to a host whose bot filter is the main reason this
+         * path needs an impersonating transport at all.
+         */
+        ...(options?.deviceId ? { deviceId: options.deviceId } : {}),
+        // A dead session is the session-path equivalent of `invalid_grant`: the refresh
+        // pipeline's self-heal (re-read durable state, retry once) and its terminal
+        // "reconnect this provider" outcome are exactly the right handling.
+        onInvalidSession: () => {
+          throw new OAuthInvalidGrantError('web session expired');
+        },
+        sessionToken: refreshToken,
+        // The caller's own deadline IS the budget; the retries live inside it.
+        signal,
+      });
+      const expiresAt = parseJwtExpiry(minted.accessToken);
+      const expiresIn = expiresAt ? Math.floor((expiresAt - Date.now()) / 1000) : undefined;
+
+      return {
+        accessToken: minted.accessToken,
+        ...(expiresIn && expiresIn > 0 ? { expiresIn } : {}),
+        // Rotation is the norm here: presenting a rotated-away session would 401 next time.
+        refreshToken: minted.sessionToken,
+        tokenType: 'bearer',
+      };
+    }
 
     let response: Response;
     try {
@@ -518,6 +1135,11 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
     const token = accessToken.trim();
     if (!token) throw new ChatGPTWebOAuthError('access_token_invalid');
 
+    // Before spending a request on it: a Codex CLI token authenticates fine against some
+    // OpenAI surfaces but has no chatgpt.com web permission, and "invalid token" would send
+    // the operator looking for the wrong problem.
+    assertWebCapableAccessToken(token);
+
     const resolvedDeviceId = deviceId ?? randomUUID();
 
     let response: Response;
@@ -558,6 +1180,8 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
     fallbackEmail?: string;
     idToken?: string;
     refreshToken?: string;
+    /** Caller's whole-operation deadline; each probe intersects it with its own cap. */
+    signal?: AbortSignal;
   }): Promise<ChatGPTWebConnection> {
     const email =
       extractChatGPTWebEmail(params.idToken, params.accessToken) ??
@@ -565,10 +1189,10 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
       // Code exchange with a token that carries no email claim (org accounts do this):
       // ask the backend, best-effort. The admin card names the shared account, so an
       // unnamed connection is a real usability loss — but never worth failing a grant for.
-      (await this.fetchEmail(params.accessToken, params.deviceId));
+      (await this.fetchEmail(params.accessToken, params.deviceId, params.signal));
     const accountId =
       extractChatGPTAccountId(params.idToken, params.accessToken) ??
-      (await this.fetchAccountId(params.accessToken, params.deviceId));
+      (await this.fetchAccountId(params.accessToken, params.deviceId, params.signal));
     const expiresAt = parseJwtExpiry(params.accessToken);
 
     return {
@@ -578,16 +1202,33 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
       ...(email ? { email } : {}),
       ...(expiresAt ? { expiresAt } : {}),
       ...(params.refreshToken ? { refreshToken: params.refreshToken } : {}),
+      // Default for every path that redeems an authorization code; `connectWithSession`
+      // overrides it, and the access-token paste stores no renewal credential at all.
+      ...(params.refreshToken ? { renewalKind: 'oauth' as const } : {}),
     };
   }
 
+  /**
+   * Intersect a per-request cap with the caller's whole-operation deadline, when there is
+   * one. Without this the identity probes would each start a FRESH budget after the call that
+   * already spent the caller's, which is how a bounded connect turned into an unbounded one.
+   */
+  private static probeSignal(capMs: number, budget?: AbortSignal): AbortSignal {
+    const cap = AbortSignal.timeout(capMs);
+    return budget ? AbortSignal.any([budget, cap]) : cap;
+  }
+
   /** Best-effort `/backend-api/me`; a failure only costs the account's display name. */
-  private async fetchEmail(accessToken: string, deviceId: string): Promise<string | undefined> {
+  private async fetchEmail(
+    accessToken: string,
+    deviceId: string,
+    budget?: AbortSignal,
+  ): Promise<string | undefined> {
     try {
       const response = await this.transportFetch(`${CHATGPT_BASE}${ME_PATH}`, {
         headers: sessionHeaders(accessToken, deviceId),
         method: 'GET',
-        signal: AbortSignal.timeout(EMAIL_FALLBACK_TIMEOUT_MS),
+        signal: ChatGPTWebOAuthService.probeSignal(EMAIL_FALLBACK_TIMEOUT_MS, budget),
       });
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
@@ -600,12 +1241,16 @@ export class ChatGPTWebOAuthService extends OAuthDeviceFlowService {
     }
   }
 
-  private async fetchAccountId(accessToken: string, deviceId: string): Promise<string | undefined> {
+  private async fetchAccountId(
+    accessToken: string,
+    deviceId: string,
+    budget?: AbortSignal,
+  ): Promise<string | undefined> {
     try {
       const response = await this.transportFetch(`${CHATGPT_BASE}${ACCOUNTS_CHECK_PATH}`, {
         headers: sessionHeaders(accessToken, deviceId),
         method: 'GET',
-        signal: AbortSignal.timeout(IDENTITY_REQUEST_TIMEOUT_MS),
+        signal: ChatGPTWebOAuthService.probeSignal(IDENTITY_REQUEST_TIMEOUT_MS, budget),
       });
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);

@@ -4,7 +4,6 @@ import { Alert, CopyButton, Flexbox, Icon, Skeleton, Tag, Text } from '@lobehub/
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { CheckCircle2Icon, ExternalLinkIcon, Loader2Icon, UnplugIcon } from 'lucide-react';
-import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -12,6 +11,7 @@ import { Link } from 'react-router';
 import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { notifyAdminAiInfraError } from '@/enterprise/client/services/adminAiInfraAdapter/errors';
 import { usePlatformAiTakeover } from '@/features/ManagedResources';
+import { useProviderName } from '@/hooks/useProviderName';
 import { useClientDataSWR } from '@/libs/swr';
 import { lambdaClient } from '@/libs/trpc/client';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
@@ -61,9 +61,6 @@ const MANAGED_RESOURCES_PATH = '/admin/unified?tab=managed';
 export const buildAdminSharedOAuthStatusKey = (providerId: string) =>
   [ADMIN_SHARED_OAUTH_STATUS_KEY, providerId] as const;
 
-const providerDisplayName = (providerId: string) =>
-  DEFAULT_MODEL_PROVIDER_LIST.find((provider) => provider.id === providerId)?.name ?? providerId;
-
 /** Vault stores epoch millis as a string; anything unparsable is treated as unknown. */
 const formatExpiry = (expiresAt: string | null): string | undefined => {
   if (!expiresAt) return undefined;
@@ -84,7 +81,7 @@ interface SharedOAuthConnectProps {
 const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   const { t } = useTranslation('admin');
   const storeApi = useAiInfraStoreApi();
-  const name = providerDisplayName(providerId);
+  const name = useProviderName(providerId);
   const [disconnecting, setDisconnecting] = useState(false);
   /**
    * Whether the platform AI catalog actually OVERRIDES what members use right now
@@ -175,6 +172,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     submitCallback,
     submitError,
     submitErrorSource,
+    submitSessionToken,
     submitting,
   } = useAdminSharedOAuthFlow({
     onStatusStale: handleStatusStale,
@@ -182,7 +180,15 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     providerId,
   });
 
+  /**
+   * Whether the flow was started from the "cannot renew itself" warning's primary fix, in
+   * which case the paste panel must open ON the web-session box instead of making the
+   * operator hunt for the section they just asked for.
+   */
+  const [openSessionSection, setOpenSessionSection] = useState(false);
+
   const handleConnect = useCallback(async () => {
+    setOpenSessionSection(false);
     const info = await connect();
     // The paste flow opens the authorization page from its own explicit step: the operator
     // has to come back with the callback URL, so the instructions must be read first.
@@ -191,6 +197,12 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
     // the explicit button below stays as the fallback when it is blocked.
     const uri = info?.verificationUriComplete || info?.verificationUri;
     if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
+  }, [connect]);
+
+  /** Same flow, landing on the web-session box — the one-paste route to auto-renewal. */
+  const handleConnectWithSession = useCallback(async () => {
+    setOpenSessionSection(true);
+    await connect();
   }, [connect]);
 
   /**
@@ -318,6 +330,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
         <SharedOAuthPasteForm
           allowAccessTokenPaste={deviceCode.allowAccessTokenPaste}
           authorizeUri={deviceCode.verificationUriComplete || deviceCode.verificationUri}
+          defaultSessionOpen={openSessionSection}
           submitError={submitError}
           submitErrorSource={submitErrorSource}
           submitting={submitting}
@@ -326,6 +339,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
           onRegenerate={handleConnect}
           onSubmitAccessToken={submitAccessToken}
           onSubmitCallback={submitCallback}
+          onSubmitSessionToken={submitSessionToken}
         />
       );
     }
@@ -395,13 +409,28 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
      */
     const account = status?.accountEmail ?? status?.accountIdMasked ?? null;
     /**
-     * K3 addition: an access token pasted by hand has no refresh token, so nothing renews it.
-     * Scoped to the paste flow, so the device-code providers that shipped before it keep
-     * their previous connected copy verbatim — and only a POSITIVE `false` warns, because
-     * silence must never be read as "this credential will die".
+     * K3 addition: an access token pasted by hand has no renewal credential, so nothing
+     * renews it. Scoped to the paste flow, so the device-code providers that shipped before
+     * it keep their previous connected copy verbatim — and only a POSITIVE `false` warns,
+     * because silence must never be read as "this credential will die".
      */
     const cannotAutoRenew =
       status?.flow === 'authorization_code_paste' && status?.canRefresh === false;
+    /**
+     * The good outcome, and only on a POSITIVE reading: the connection holds a renewal
+     * credential (an OAuth refresh token, or a web session that mints tokens the way the web
+     * app does), so it rolls over on its own and its `expiresAt` is a routine rollover date
+     * rather than a deadline. Saying only "expires {{time}}" there reads as a warning it is not.
+     */
+    const autoRenews = status?.flow === 'authorization_code_paste' && status?.canRefresh === true;
+    const lastRefresh = formatExpiry(status?.lastRefreshAt ?? null);
+    /** Which credential does the renewing — the operator's cue for what they connected with. */
+    const renewalKindLabel =
+      status?.renewalKind === 'web_session'
+        ? t('aiProviderSettings.sharedOAuth.renewalKind.webSession')
+        : status?.renewalKind === 'oauth'
+          ? t('aiProviderSettings.sharedOAuth.renewalKind.oauth')
+          : undefined;
 
     return (
       <Flexbox gap={12}>
@@ -412,17 +441,58 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
                 ? t('aiProviderSettings.sharedOAuth.account', { account })
                 : t('aiProviderSettings.sharedOAuth.accountUnknown')}
             </Text>
-            <Text className={styles.hint}>
-              {cannotAutoRenew
-                ? expiry
-                  ? t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore', {
-                      time: expiry,
-                    })
-                  : t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenew')
-                : expiry
-                  ? t('aiProviderSettings.sharedOAuth.expiresAt', { time: expiry })
-                  : t('aiProviderSettings.sharedOAuth.autoRefresh')}
-            </Text>
+            {cannotAutoRenew ? (
+              /**
+               * A dead end stated as a fact is not actionable: there are now TWO ways out and
+               * both are one click away, so the warning carries them in the order of effort.
+               * Pasting a web session is the cheaper fix (one paste, no browser round trip)
+               * and it is what makes the connection behave like the web app — sign in once.
+               */
+              <Alert
+                showIcon
+                type={'warning'}
+                action={
+                  <Flexbox horizontal gap={8}>
+                    <Button size={'small'} type={'primary'} onClick={handleConnectWithSession}>
+                      {t('aiProviderSettings.sharedOAuth.paste.pasteSession')}
+                    </Button>
+                    <Button size={'small'} onClick={handleConnect}>
+                      {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
+                    </Button>
+                  </Flexbox>
+                }
+                message={
+                  expiry
+                    ? t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore', {
+                        time: expiry,
+                      })
+                    : t('aiProviderSettings.sharedOAuth.paste.cannotAutoRenew')
+                }
+              />
+            ) : (
+              <Text className={styles.hint}>
+                {autoRenews
+                  ? renewalKindLabel
+                    ? t('aiProviderSettings.sharedOAuth.autoRenewKind', { kind: renewalKindLabel })
+                    : t('aiProviderSettings.sharedOAuth.autoRefresh')
+                  : expiry
+                    ? t('aiProviderSettings.sharedOAuth.expiresAt', { time: expiry })
+                    : t('aiProviderSettings.sharedOAuth.autoRefresh')}
+              </Text>
+            )}
+            {autoRenews && expiry && (
+              // The rollover date, stated as what it is — the current token's end, not the
+              // connection's.
+              <Text className={styles.hint}>
+                {t('aiProviderSettings.sharedOAuth.currentTokenUntil', { time: expiry })}
+              </Text>
+            )}
+            {autoRenews && lastRefresh && (
+              // Proof the rollover is actually happening, not just promised.
+              <Text className={styles.hint}>
+                {t('aiProviderSettings.sharedOAuth.lastRefreshAt', { time: lastRefresh })}
+              </Text>
+            )}
             {renderEnforcementHint()}
           </Flexbox>
         ) : (

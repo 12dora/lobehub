@@ -7,7 +7,13 @@ import { type LobeChatDatabase } from '@/database/type';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { type OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
-import { OAuthInvalidGrantError, parseJwtExpiry, parseJwtIssuedAt } from './index';
+import {
+  OAuthInvalidGrantError,
+  type OAuthRefreshOptions,
+  parseJwtExpiry,
+  parseJwtIssuedAt,
+  parseOAuthRenewalKind,
+} from './index';
 import { getOAuthService } from './providers/githubCopilot';
 
 const log = debug('lobe-server:oauth-token-refresh');
@@ -59,11 +65,29 @@ const DEFAULT_TOKEN_TTL_MS = 3600 * 1000;
 export interface OAuthTokenKeyVaults {
   oauthAccessToken?: string;
   oauthAccountId?: string;
+  /**
+   * Stable device id the connection was made with. Written at connect, never rewritten by a
+   * refresh, and carried into `OAuthRefreshOptions` so a renewal presents the SAME device the
+   * connect did (ChatGPT Web sends it as the `oai-did` cookie).
+   */
+  oauthDeviceId?: string;
   /** Keepalive anchor: epoch ms of the last successful refresh (string in platform vaults). */
   oauthLastRefreshAt?: number | string;
   /** Backoff anchor: epoch ms of the last failed refresh (cleared on the next success). */
   oauthLastRefreshErrorAt?: number | string;
   oauthRefreshToken?: string;
+  /**
+   * Which credential `oauthRefreshToken` holds, when a provider supports more than one
+   * renewal path (ChatGPT Web: `'oauth'` for the PKCE refresh token, `'web_session'` for the
+   * chatgpt.com session cookie). Non-secret, written at connect, never rewritten by a
+   * refresh — a renewal cannot change what KIND of credential it rotated.
+   *
+   * Typed as a plain string because it is DURABLE state (an old writer, or an admin editing
+   * the platform credential, can put anything here); it is validated with
+   * `parseOAuthRenewalKind` before it reaches the provider, and an unknown value is treated
+   * as absent so the shape fallback still runs.
+   */
+  oauthRenewalKind?: string;
   oauthTokenExpiresAt?: number | string;
 }
 
@@ -435,17 +459,41 @@ const refreshAndPersist = async (
   const service = getOAuthService(providerId);
   const usedRefreshToken = keyVaults.oauthRefreshToken!;
   const invalidGrant = params.onInvalidGrant ?? throwInvalidGrant;
-  const refreshOptions = { signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS) };
-  let consumedRefreshToken = usedRefreshToken;
+  /**
+   * ONE deadline for the whole refresh, created here and shared by every attempt: the bound
+   * is what has to fit inside the shared refresh lease, so the self-heal retry below must
+   * NOT get a second full budget.
+   */
+  const deadline = AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS);
+  /**
+   * Per-CREDENTIAL, not per-flow. The invalid_grant self-heal re-reads durable state and
+   * spends a DIFFERENT credential, and a concurrent reconnect may have switched what that
+   * credential is (ChatGPT Web: web session ⇄ PKCE refresh token) and which device id it
+   * belongs to. Building the options from the vault the token came from is the only way the
+   * retry cannot spend the replacement the way its predecessor was spent.
+   */
+  const buildRefreshOptions = (vault: OAuthTokenKeyVaults): OAuthRefreshOptions => {
+    const renewalKind = parseOAuthRenewalKind(vault.oauthRenewalKind);
+    return {
+      ...(vault.oauthDeviceId ? { deviceId: vault.oauthDeviceId } : {}),
+      // The provider decides how to spend the leaf; the pipeline only carries the label —
+      // and only a label it recognises (an unknown one falls back to the shape sniff).
+      ...(renewalKind ? { renewalKind } : {}),
+      signal: deadline,
+    };
+  };
+  /** The vault whose credential the successful call actually consumed. */
+  let consumedKeyVaults = keyVaults;
 
   /**
    * One token-endpoint call plus the backoff bookkeeping that belongs to it. Only the
    * call is wrapped: the persist phase below is a different failure mode with its own
    * handling, and `invalid_grant` is routed by the caller instead of backed off.
    */
-  const callTokenEndpoint = async (refreshToken: string) => {
+  const callTokenEndpoint = async (vault: OAuthTokenKeyVaults) => {
+    const refreshToken = vault.oauthRefreshToken!;
     try {
-      return await service.refreshAccessToken(config, refreshToken, refreshOptions);
+      return await service.refreshAccessToken(config, refreshToken, buildRefreshOptions(vault));
     } catch (error) {
       if (!(error instanceof OAuthInvalidGrantError)) {
         // Keyed to the token THIS call presented: after the invalid_grant self-heal the
@@ -459,7 +507,7 @@ const refreshAndPersist = async (
 
   let tokens;
   try {
-    tokens = await callTokenEndpoint(usedRefreshToken);
+    tokens = await callTokenEndpoint(keyVaults);
   } catch (error) {
     if (!(error instanceof OAuthInvalidGrantError)) throw error;
 
@@ -477,12 +525,11 @@ const refreshAndPersist = async (
     // Another instance rotated: its access token may already be fresh enough.
     if (stored.oauthAccessToken && !isOAuthTokenExpiring(stored, config)) return stored;
 
-    // Otherwise retry ONCE with the newer stored refresh token. It shares the ORIGINAL
-    // deadline on purpose: the bound covers this whole refresh, which is what has to fit
-    // inside the shared lease — a second full budget would not.
+    // Otherwise retry ONCE with the newer stored credential — spent the way THAT credential
+    // says it must be (see `buildRefreshOptions`), under the ORIGINAL deadline.
     try {
-      consumedRefreshToken = stored.oauthRefreshToken!;
-      tokens = await callTokenEndpoint(consumedRefreshToken);
+      consumedKeyVaults = stored;
+      tokens = await callTokenEndpoint(stored);
     } catch (retryError) {
       if (retryError instanceof OAuthInvalidGrantError) invalidGrant(providerId);
       throw retryError;
@@ -496,20 +543,30 @@ const refreshAndPersist = async (
     refreshedAt + DEFAULT_TOKEN_TTL_MS;
 
   const nextKeyVaults: OAuthTokenKeyVaults = {
-    oauthAccountId: tokens.accountId ?? keyVaults.oauthAccountId,
+    oauthAccountId: tokens.accountId ?? consumedKeyVaults.oauthAccountId,
     oauthAccessToken: tokens.accessToken,
+    // Identity of the credential that was actually spent, carried forward — never
+    // re-derived. The persist paths treat an ABSENT leaf as "keep what is stored", so
+    // passing them also keeps the RETURNED vault an accurate view of durable state. After a
+    // self-heal these come from the REPLACEMENT credential's vault: adopting another
+    // connection's token while keeping the old kind/device would spend it the wrong way.
+    ...(consumedKeyVaults.oauthDeviceId ? { oauthDeviceId: consumedKeyVaults.oauthDeviceId } : {}),
     // Keepalive anchor moves forward on every success; the backoff stamp is cleared in
     // the same write, so one good refresh ends the quiet period immediately.
     oauthLastRefreshAt: refreshedAt,
     oauthLastRefreshErrorAt: undefined,
     oauthRefreshToken: tokens.refreshToken,
+    // A rotation replaces the credential, not its kind.
+    ...(consumedKeyVaults.oauthRenewalKind
+      ? { oauthRenewalKind: consumedKeyVaults.oauthRenewalKind }
+      : {}),
     oauthTokenExpiresAt: expiresAt,
   };
 
   // Persist BEFORE returning: a rotated pair that only exists in memory strands
   // every other instance and the next request on this one (invalid_grant +
   // re-read still sees the consumed token and cannot self-heal).
-  return persistRotatedKeyVaults(params, nextKeyVaults, consumedRefreshToken);
+  return persistRotatedKeyVaults(params, nextKeyVaults, consumedKeyVaults.oauthRefreshToken!);
 };
 
 /**

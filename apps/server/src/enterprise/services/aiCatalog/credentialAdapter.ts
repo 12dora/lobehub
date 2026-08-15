@@ -8,6 +8,7 @@ import {
   hasModelRuntimeEnvironmentFallback,
   resolveModelRuntimeProvider,
 } from '@/server/modules/ModelRuntime';
+import { OAUTH_RENEWAL_KINDS, parseOAuthRenewalKind } from '@/server/services/oauthDeviceFlow';
 
 import { AiCatalogValidationError } from './errors';
 
@@ -64,6 +65,13 @@ const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
     ...REFRESH_LIFECYCLE_KEYS,
     // Optional: the access-token paste fallback has no refresh grant at all.
     'oauthRefreshToken',
+    /**
+     * Which credential `oauthRefreshToken` holds — `'oauth'` (PKCE refresh token) or
+     * `'web_session'` (the chatgpt.com session cookie, which mints access tokens the way
+     * the web app does). Non-secret by design, like the refresh-lifecycle stamps: it is a
+     * label the refresh path dispatches on, and the admin status view names it.
+     */
+    'oauthRenewalKind',
     'oauthTokenExpiresAt',
   ]),
   [ModelProvider.GithubCopilot]: new Set([
@@ -116,12 +124,39 @@ const assertAllowedKeys = (runtimeProvider: string, keyVaults: AiCatalogCredenti
   }
 };
 
+/**
+ * `oauthRenewalKind` decides HOW the renewal credential is spent — at the OAuth token
+ * endpoint, or as a chatgpt.com session cookie — so a value nothing recognises, or one
+ * standing next to no credential at all, is a connection that renews itself the wrong way (or
+ * claims a renewal path it does not have).
+ *
+ * Enforced on the WRITE path only. Durable state written by older code is deliberately
+ * tolerated on the read side, where an unrecognised label falls back to identifying the
+ * credential by shape (see `parseOAuthRenewalKind`) — rejecting it there would take a working
+ * connection down over a label.
+ */
+const assertRenewalKindShape = (keyVaults: AiCatalogCredentialVault): void => {
+  const kind = keyVaults.oauthRenewalKind;
+  if (kind === undefined) return;
+  if (!parseOAuthRenewalKind(kind)) {
+    throw new AiCatalogValidationError([
+      `Unsupported OAuth renewal kind (expected one of: ${OAUTH_RENEWAL_KINDS.join(', ')})`,
+    ]);
+  }
+  // The label describes `oauthRefreshToken`; the two are written and cleared as a UNIT by
+  // every connect path, and a lone label would outlive the credential it names.
+  if (typeof keyVaults.oauthRefreshToken !== 'string' || !keyVaults.oauthRefreshToken) {
+    throw new AiCatalogValidationError(['OAuth renewal kind must accompany a renewal credential']);
+  }
+};
+
 export const validateAiCatalogCredentialShape = (
   runtimeProvider: string,
   keyVaults: AiCatalogCredentialVault,
 ): void => {
   assertSupportedRuntimeProvider(runtimeProvider);
   assertAllowedKeys(runtimeProvider, keyVaults);
+  assertRenewalKindShape(keyVaults);
 };
 
 export const validateAiCatalogRuntimeProvider = (

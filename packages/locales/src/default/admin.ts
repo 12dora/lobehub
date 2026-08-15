@@ -468,9 +468,11 @@ export default {
   'aiProviderSettings.sharedOAuth.account': 'Account {{account}}',
   'aiProviderSettings.sharedOAuth.accountUnknown': 'Account connected',
   'aiProviderSettings.sharedOAuth.autoRefresh': 'The access token refreshes automatically.',
+  'aiProviderSettings.sharedOAuth.autoRenewKind': 'Connected, renewing itself ({{kind}}).',
   'aiProviderSettings.sharedOAuth.cancel': 'Cancel',
   'aiProviderSettings.sharedOAuth.connect': 'Connect account',
   'aiProviderSettings.sharedOAuth.connected': 'Connected',
+  'aiProviderSettings.sharedOAuth.currentTokenUntil': 'Current access token runs to {{time}}',
   'aiProviderSettings.sharedOAuth.description':
     'One {{name}} account is stored on the platform and serves every member. Members never connect their own.',
   'aiProviderSettings.sharedOAuth.disconnect': 'Disconnect',
@@ -495,21 +497,22 @@ export default {
   'aiProviderSettings.sharedOAuth.error.providerStoreFailed':
     'Authorization succeeded, but the credentials could not be saved. Connect the account again.',
   'aiProviderSettings.sharedOAuth.expiresAt': 'Access token expires {{time}}',
+  'aiProviderSettings.sharedOAuth.lastRefreshAt': 'Last renewed {{time}}',
   'aiProviderSettings.sharedOAuth.notConnected': 'Not connected',
   'aiProviderSettings.sharedOAuth.openPage': 'Open authorization page',
-  'aiProviderSettings.sharedOAuth.paste.accessTokenNoRenewHint':
-    'An access token cannot be renewed automatically — the shared account will stop working when it expires and an administrator has to reconnect it.',
-  'aiProviderSettings.sharedOAuth.paste.accessTokenLabel': 'Access token',
-  'aiProviderSettings.sharedOAuth.paste.accessTokenPlaceholder': 'Paste an access token',
-  'aiProviderSettings.sharedOAuth.paste.accessTokenSubmit': 'Connect with this token',
-  'aiProviderSettings.sharedOAuth.paste.accessTokenToggle': 'Use an access token instead',
   'aiProviderSettings.sharedOAuth.paste.callbackLabel': 'Callback URL',
   'aiProviderSettings.sharedOAuth.paste.callbackPlaceholder':
     'https://platform.openai.com/auth/callback?code=…',
   'aiProviderSettings.sharedOAuth.paste.cannotAutoRenew':
-    'This connection cannot be renewed automatically. Reconnect it before it expires, or members lose access.',
+    'This connection was made with a pasted access token, so it cannot renew itself and members lose access when it expires. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
   'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore':
-    'This connection cannot be renewed automatically. Reconnect it before {{time}}, or members lose access.',
+    'This connection was made with a pasted access token, so it cannot renew itself and members lose access on {{time}}. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
+  'aiProviderSettings.sharedOAuth.paste.detected.accessToken':
+    'Detected: access token — this cannot renew itself.',
+  'aiProviderSettings.sharedOAuth.paste.detected.session':
+    'Detected: web session — this renews itself.',
+  'aiProviderSettings.sharedOAuth.paste.detected.unknown':
+    'Not recognised. Paste the cookie, a copied cURL command, or an access token.',
   'aiProviderSettings.sharedOAuth.paste.errors.accessTokenInvalid':
     'That access token was rejected. Copy it again, or use the authorization page instead.',
   'aiProviderSettings.sharedOAuth.paste.errors.authError':
@@ -518,15 +521,30 @@ export default {
     'The authorization could not be exchanged. Generate a new link and sign in again.',
   'aiProviderSettings.sharedOAuth.paste.errors.invalidCallback':
     'That does not look like the callback URL. Copy the whole address from the browser after signing in.',
+  'aiProviderSettings.sharedOAuth.paste.errors.sessionInvalid':
+    'That web session is no longer valid. Sign in at chatgpt.com again and copy the cookie once more.',
   'aiProviderSettings.sharedOAuth.paste.errors.stateMismatch':
     'This link belongs to a different attempt. Generate a new link and sign in again.',
+  'aiProviderSettings.sharedOAuth.paste.errors.tokenNotWeb':
+    'That token belongs to the Codex CLI and has no chatgpt.com web permission. Paste a chatgpt.com web session, or connect through the authorization page.',
   'aiProviderSettings.sharedOAuth.paste.instruction':
     'Sign in with the account the whole platform should use. You will land on a blank page at platform.openai.com/auth/callback — copy that full address from the browser and paste it below.',
   'aiProviderSettings.sharedOAuth.paste.openAuthorizePage': 'Open authorization page',
+  'aiProviderSettings.sharedOAuth.paste.pasteSession': 'Paste a web session',
+  'aiProviderSettings.sharedOAuth.paste.reconnectRenewable': 'Reconnect via authorization page',
   'aiProviderSettings.sharedOAuth.paste.regenerate': 'Generate a new link',
+  'aiProviderSettings.sharedOAuth.paste.sessionHint':
+    'Sign in at chatgpt.com, then open DevTools → Application/Storage → Cookies and copy `__Secure-next-auth.session-token`; or pick any chatgpt.com request in the Network panel, "Copy as cURL", and paste it here. Just like the web app: sign in once and it renews itself from then on. An access token works too, but it cannot renew itself.',
+  'aiProviderSettings.sharedOAuth.paste.sessionLabel': 'ChatGPT web session',
+  'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder':
+    'Paste the cookie, a copied cURL command, or an access token',
+  'aiProviderSettings.sharedOAuth.paste.sessionSubmit': 'Connect with what I pasted',
+  'aiProviderSettings.sharedOAuth.paste.sessionToggle': 'Paste a web session instead',
   'aiProviderSettings.sharedOAuth.paste.submit': 'Connect shared account',
   'aiProviderSettings.sharedOAuth.polling': 'Waiting for the authorization to complete…',
   'aiProviderSettings.sharedOAuth.reconnect': 'Reconnect',
+  'aiProviderSettings.sharedOAuth.renewalKind.oauth': 'authorization sign-in',
+  'aiProviderSettings.sharedOAuth.renewalKind.webSession': 'web session',
   'aiProviderSettings.sharedOAuth.requesting': 'Requesting a device code…',
   'aiProviderSettings.sharedOAuth.retry': 'Try again',
   'aiProviderSettings.sharedOAuth.retryStatus': 'Reload',

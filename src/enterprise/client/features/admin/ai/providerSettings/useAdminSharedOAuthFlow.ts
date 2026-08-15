@@ -21,7 +21,15 @@ export type SharedOAuthGrantFlow = 'device_code' | 'authorization_code_paste';
  * fix the pasted value and submit again without redoing the browser sign-in.
  */
 export type SharedOAuthPasteError =
-  'invalidCallback' | 'stateMismatch' | 'exchangeFailed' | 'accessTokenInvalid' | 'authError';
+  | 'invalidCallback'
+  | 'stateMismatch'
+  | 'exchangeFailed'
+  | 'accessTokenInvalid'
+  /** The pasted web session is expired or revoked — it mints no access token. */
+  | 'sessionInvalid'
+  /** The credential works, but belongs to a client with no chatgpt.com web permission. */
+  | 'tokenNotWeb'
+  | 'authError';
 
 /**
  * Which input produced the material of the failed submit. Kept WITH the error, because a
@@ -36,7 +44,9 @@ const PASTE_ERROR_MAP: Record<string, SharedOAuthPasteError | 'expired'> = {
   exchange_failed: 'exchangeFailed',
   expired: 'expired',
   invalid_callback: 'invalidCallback',
+  session_invalid: 'sessionInvalid',
   state_mismatch: 'stateMismatch',
+  token_not_web: 'tokenNotWeb',
 };
 
 /**
@@ -322,13 +332,13 @@ export const useAdminSharedOAuthFlow = ({
    * operator can fix the paste without repeating the browser sign-in.
    */
   const submitPasted = useCallback(
-    async (payload: { accessToken?: string; callbackUrl?: string }) => {
+    async (payload: { accessToken?: string; callbackUrl?: string; sessionToken?: string }) => {
       const code = deviceCodeRef.current;
       if (!code || submittingRef.current) return;
 
       /** The field this attempt came from; every error of it belongs to that field. */
       const source: SharedOAuthPasteSource =
-        payload.accessToken === undefined ? 'callback' : 'token';
+        payload.callbackUrl === undefined ? 'token' : 'callback';
 
       /**
        * Capture BOTH the run id and the envelope. Cancel / Regenerate bump the run id, and a
@@ -413,6 +423,12 @@ export const useAdminSharedOAuthFlow = ({
     [submitPasted],
   );
 
+  /** The renewable paste: a chatgpt.com web session, stored as the renewal credential. */
+  const submitSessionToken = useCallback(
+    async (sessionToken: string) => submitPasted({ sessionToken }),
+    [submitPasted],
+  );
+
   useEffect(() => {
     disposedRef.current = false;
     return () => {
@@ -436,6 +452,7 @@ export const useAdminSharedOAuthFlow = ({
     submitCallback,
     submitError,
     submitErrorSource,
+    submitSessionToken,
     submitting,
   };
 };

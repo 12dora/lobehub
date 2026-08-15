@@ -746,6 +746,7 @@ describe('admin.aiProviderOAuth.disconnect', () => {
       expired: false,
       expiresAt: null,
       flow: 'device_code',
+      renewalKind: null,
       secretConfigured: false,
     });
   });
@@ -907,6 +908,9 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
       flow: 'device_code',
       // Epoch millis as a string, exactly like `expiresAt` — both mirror the vault leaf.
       lastRefreshAt: expect.stringMatching(/^\d+$/),
+      // A device-code grant stores no kind label, so the credential's shape decides — and
+      // an opaque refresh token is the OAuth one it can only be.
+      renewalKind: 'oauth',
       secretConfigured: true,
     });
     const serialized = JSON.stringify(status);
@@ -1038,6 +1042,7 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
       expired: false,
       expiresAt: null,
       flow: 'device_code',
+      renewalKind: null,
       secretConfigured: false,
     });
   });
@@ -1288,6 +1293,139 @@ describe('admin.aiProviderOAuth paste flow (chatgptweb)', () => {
     const [row] = await db.select().from(platformAiProviders);
     expect(row.encryptedKeyVaults).not.toContain('web-refresh-1');
     expect(row.encryptedKeyVaults).not.toContain('first@example.test');
+  });
+
+  /**
+   * The web-session paste: the credential that makes this provider behave like the web app.
+   * It is stored in the SAME leaf an OAuth refresh token occupies, so `canRefresh` — and
+   * every renewal mechanism behind it — applies without a second lifecycle.
+   */
+  describe('web-session paste', () => {
+    /** next-auth compact JWE: `dir` header, empty encrypted-key segment. */
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+
+    const mockSessionBackend = (body: unknown) => {
+      chatgptWeb.transportFetch.mockImplementation(async (url: string) => {
+        if (String(url).endsWith('/api/auth/session')) return jsonResponse(body);
+        if (String(url).endsWith('/backend-api/me')) {
+          return jsonResponse({ email: 'session@example.test' });
+        }
+        return jsonResponse({ accounts: { default: { account: { id: 'acct-web-3' } } } });
+      });
+    };
+
+    it('stores the session as a RENEWABLE credential and names the renewal path', async () => {
+      const caller = await callerFor();
+      const { started } = await startFlow(caller);
+      mockSessionBackend({
+        accessToken: PASTE_ACCESS_TOKEN,
+        expires: '2026-12-01T00:00:00.000Z',
+        user: { email: 'session@example.test' },
+      });
+
+      const result = await caller.aiProviderOAuth.pollAuthStatus({
+        deviceCode: started.deviceCode,
+        id: 'chatgptweb',
+        reason: 'connect the shared ChatGPT Web account with a web session',
+        sessionToken: sessionJwe,
+      });
+
+      expect(result).toMatchObject({ error: null, status: 'success', stored: true });
+      expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgptweb' })).toMatchObject({
+        accountEmail: 'session@example.test',
+        // The whole point: a pasted credential that DOES renew.
+        canRefresh: true,
+        connected: true,
+        renewalKind: 'web_session',
+      });
+      // The session is a secret on the wire and must never reach the audit trail.
+      expect(JSON.stringify(await db.select().from(platformAuditLogs))).not.toContain(sessionJwe);
+    });
+
+    it('reports a dead session with a stable code and stores nothing', async () => {
+      const caller = await callerFor();
+      const { started } = await startFlow(caller);
+      // The unauthenticated answer: 200 with a warning-only body and no access token.
+      mockSessionBackend({ WARNING_BANNER: 'do not paste' });
+
+      const result = await caller.aiProviderOAuth.pollAuthStatus({
+        deviceCode: started.deviceCode,
+        id: 'chatgptweb',
+        reason: 'connect the shared ChatGPT Web account with a web session',
+        sessionToken: sessionJwe,
+      });
+
+      expect(result).toMatchObject({ error: 'session_invalid', status: 'error', stored: false });
+      expect(await db.select().from(platformAiProviders)).toEqual([]);
+    });
+
+    /**
+     * The pasted session ends up interpolated into a `Cookie:` header on requests this server
+     * makes with a SHARED credential, so the contract — not just the service — refuses a value
+     * carrying cookie/header delimiters. Rejected by the input schema, before any network call
+     * and before the reauth-gated body runs.
+     */
+    it.each([
+      ['a cookie separator', 'jwe; oai-did=attacker'],
+      ['an assignment', 'jwe=attacker'],
+      ['a CRLF header break', 'jwe\r\nX-Injected: 1'],
+      ['a control character', 'jwe\u0001attacker'],
+    ])('rejects %s in the pasted session at the contract boundary', async (_label, pasted) => {
+      const caller = await callerFor();
+      const { started } = await startFlow(caller);
+      chatgptWeb.transportFetch.mockReset();
+
+      await expect(
+        caller.aiProviderOAuth.pollAuthStatus({
+          deviceCode: started.deviceCode,
+          id: 'chatgptweb',
+          reason: 'connect the shared ChatGPT Web account with a web session',
+          sessionToken: pasted,
+        }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      expect(chatgptWeb.transportFetch).not.toHaveBeenCalled();
+    });
+
+    it('flips the renewal kind when the same provider is reconnected through PKCE', async () => {
+      const caller = await callerFor();
+      const first = await startFlow(caller);
+      mockSessionBackend({ accessToken: PASTE_ACCESS_TOKEN, user: { email: 's@example.test' } });
+      await caller.aiProviderOAuth.pollAuthStatus({
+        deviceCode: first.started.deviceCode,
+        id: 'chatgptweb',
+        reason: 'connect with a web session',
+        sessionToken: sessionJwe,
+      });
+
+      const second = await startFlow(caller);
+      chatgptWeb.authFetch.mockResolvedValue(
+        jsonResponse({
+          access_token: PASTE_ACCESS_TOKEN,
+          id_token: jwt({ email: 'pkce@example.test' }),
+          refresh_token: 'web-refresh-2',
+        }),
+      );
+      await caller.aiProviderOAuth.pollAuthStatus({
+        callbackUrl: `https://platform.openai.com/auth/callback?code=c&state=${second.envelope.state}`,
+        deviceCode: second.started.deviceCode,
+        id: 'chatgptweb',
+        reason: 'reconnect through the authorization page',
+      });
+
+      // The label moves with the credential: renewing the new grant at chatgpt.com would fail.
+      expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgptweb' })).toMatchObject({
+        canRefresh: true,
+        renewalKind: 'oauth',
+      });
+      const [row] = await db.select().from(platformAiProviders);
+      expect(row.encryptedKeyVaults).not.toContain(sessionJwe);
+    });
   });
 
   /**

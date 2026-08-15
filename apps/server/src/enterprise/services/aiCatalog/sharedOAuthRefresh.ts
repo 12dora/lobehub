@@ -52,9 +52,23 @@ const asString = (value: unknown): string | undefined =>
 const toOAuthVault = (vault: PlatformProviderKeyVaults): OAuthTokenKeyVaults => ({
   oauthAccessToken: asString(vault.oauthAccessToken),
   oauthAccountId: asString(vault.oauthAccountId),
+  /**
+   * The stable device the connection was made with. Carried for the same reason as the kind
+   * below: the refresh PRESENTS it (ChatGPT Web sends it as `oai-did`), and the re-read under
+   * the cross-instance lease is the snapshot the refresh actually runs on — dropping it here
+   * would make every shared renewal look like a new device even though connect named one.
+   */
+  oauthDeviceId: asString(vault.oauthDeviceId),
   oauthLastRefreshAt: asString(vault.oauthLastRefreshAt),
   oauthLastRefreshErrorAt: asString(vault.oauthLastRefreshErrorAt),
   oauthRefreshToken: asString(vault.oauthRefreshToken),
+  /**
+   * Carried through because the refresh path DISPATCHES on it (ChatGPT Web renews either
+   * with an OAuth refresh token or with the web session cookie). Dropping it here would
+   * silently fall back to identifying the credential by shape — including on the re-read
+   * that happens under the cross-instance lease, which is the call that actually runs.
+   */
+  oauthRenewalKind: asString(vault.oauthRenewalKind),
   oauthTokenExpiresAt: asString(vault.oauthTokenExpiresAt),
 });
 

@@ -562,6 +562,13 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     reason: 'Mocks AI catalog resolver at runtime path test',
   },
   {
+    file: 'apps/server/src/services/oauthDeviceFlow/__tests__/refresh.test.ts',
+    importSpecifier: '@/server/enterprise/services/chatgptWeb/transport',
+    owner: 'M13',
+    reason:
+      'ChatGPT Web renews a web-session credential through the impersonated transport (a real child process); the transport is the only seam that can be stubbed to cover the renewal-kind dispatch in refresh.ts',
+  },
+  {
     file: 'apps/server/src/services/onboarding/index.test.ts',
     importSpecifier: '@/server/enterprise/services/agentCatalog/defaultInbox',
     owner: 'M10',

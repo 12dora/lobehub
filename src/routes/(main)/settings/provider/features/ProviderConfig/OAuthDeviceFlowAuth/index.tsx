@@ -2,7 +2,7 @@
 
 import { CheckCircleFilled } from '@ant-design/icons';
 import { ProviderIcon } from '@lobehub/icons';
-import { CopyButton, Flexbox, Icon } from '@lobehub/ui';
+import { Alert, CopyButton, Flexbox, Icon } from '@lobehub/ui';
 import { Button, confirmModal } from '@lobehub/ui/base-ui';
 import { Avatar, Typography } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
@@ -169,20 +169,60 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
     // Only a POSITIVE "cannot refresh" reading warns: silence must never be read as a
     // credential that will die without notice.
     const cannotAutoRenew = isPasteFlowProvider && authStatus?.canRefresh === false;
+    // The mirror image, and equally positive-only: a renewable connection holds either an
+    // OAuth refresh token or a chatgpt.com web session, so its expiry is a routine rollover
+    // date rather than a deadline — say so, or the bare "Expires {{time}}" line reads as a
+    // warning it is not.
+    const autoRenews = isPasteFlowProvider && authStatus?.canRefresh === true;
+    /** Which credential does the renewing; absent for connections that predate the label. */
+    const renewalKindLabel =
+      authStatus?.renewalKind === 'web_session'
+        ? t('providerModels.config.oauth.renewalKind.webSession')
+        : authStatus?.renewalKind === 'oauth'
+          ? t('providerModels.config.oauth.renewalKind.oauth')
+          : undefined;
+
+    /**
+     * The flow reported the credential stored and the status query has not caught up yet.
+     * Owned here instead of read off the flow's `state === 'success'`: the hook keeps that
+     * value until the next run, so after a disconnect it would strand the card on a
+     * "connected" badge with no way to connect again.
+     */
+    const [justConnected, setJustConnected] = useState(false);
 
     const revokeAuth = lambdaQuery.oauthDeviceFlow.revokeAuth.useMutation({
       onSuccess: () => {
+        setJustConnected(false);
         utils.oauthDeviceFlow.getAuthStatus.invalidate({ providerId });
         onAuthChange?.();
       },
     });
 
-    const handleSuccess = useCallback(async () => {
-      // First invalidate and refetch the auth status
-      await utils.oauthDeviceFlow.getAuthStatus.invalidate({ providerId });
-      // Then notify parent and reset authenticating state
-      onAuthChange?.();
+    /**
+     * Whether the flow was started from the "cannot renew itself" warning's primary fix, in
+     * which case the paste panel must open ON the web-session box rather than making the
+     * user hunt for the section they just asked for.
+     */
+    const [openSessionSection, setOpenSessionSection] = useState(false);
+
+    const handleSuccess = useCallback(() => {
+      /**
+       * Tear the paste form down FIRST, synchronously.
+       *
+       * That form still holds the raw material the user pasted — a chatgpt.com session cookie
+       * or an access token, in plain text on screen. Awaiting the status revalidation before
+       * clearing this flag kept the credential rendered for the whole round trip, and a
+       * REJECTED revalidation kept it rendered for good (and surfaced as an unhandled
+       * rejection, since the flow calls this without awaiting). Nothing about a cache read may
+       * decide how long a secret stays visible.
+       */
       setIsAuthenticating(false);
+      setOpenSessionSection(false);
+      setJustConnected(true);
+      onAuthChange?.();
+      // Background, and caught: a failed revalidation is a stale view the next focus refetch
+      // fixes, never a user-visible error and never a reason to keep the form alive.
+      void utils.oauthDeviceFlow.getAuthStatus.invalidate({ providerId }).catch(() => {});
     }, [onAuthChange, providerId, utils.oauthDeviceFlow.getAuthStatus]);
 
     const handleStatusStale = useCallback(() => {
@@ -202,6 +242,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       submitCallback,
       submitError,
       submitErrorSource,
+      submitSessionToken,
       submitting,
     } = useOAuthDeviceFlow({
       onStatusStale: handleStatusStale,
@@ -228,6 +269,8 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
     const handleStartAuth = useCallback(async () => {
       if (!canManageProvider) return;
 
+      setOpenSessionSection(false);
+      setJustConnected(false);
       hasAutoClosedRef.current = false;
       setIsAuthenticating(true);
       const info = await startAuth();
@@ -245,8 +288,20 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
       if (uri) window.open(uri, '_blank', 'noopener,noreferrer');
     }, [canManageProvider, startAuth]);
 
+    /** Same flow, landing on the web-session box — the one-paste route to auto-renewal. */
+    const handleStartAuthWithSession = useCallback(async () => {
+      if (!canManageProvider) return;
+
+      setOpenSessionSection(true);
+      setJustConnected(false);
+      hasAutoClosedRef.current = false;
+      setIsAuthenticating(true);
+      await startAuth();
+    }, [canManageProvider, startAuth]);
+
     const handleCancelAuth = useCallback(() => {
       setIsAuthenticating(false);
+      setJustConnected(false);
       cancelAuth();
     }, [cancelAuth]);
 
@@ -292,22 +347,81 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
                   <CheckCircleFilled />
                   <span>{t('providerModels.config.oauth.connected')}</span>
                 </div>
-                {expiresAtLabel && (
+                {/*
+                 * The bare date, and ONLY when neither branch below owns it. A connection
+                 * that renews itself has no deadline to state (its expiry is the current
+                 * token's rollover, spelled out as such underneath), and a connection that
+                 * cannot renew has exactly one deadline — the warning's, which would
+                 * otherwise be printed twice in two different voices.
+                 */}
+                {expiresAtLabel && !autoRenews && !cannotAutoRenew && (
                   <Text style={{ fontSize: 13 }} type="secondary">
                     {t('providerModels.config.oauth.paste.expiresAt', { time: expiresAtLabel })}
                   </Text>
                 )}
-                {cannotAutoRenew && (
-                  <Text style={{ fontSize: 13 }} type="warning">
-                    {expiresAtLabel
-                      ? t('providerModels.config.oauth.paste.cannotAutoRenewBefore', {
-                          time: expiresAtLabel,
+                {autoRenews && (
+                  <Text style={{ fontSize: 13 }} type="secondary">
+                    {renewalKindLabel
+                      ? t('providerModels.config.oauth.paste.autoRenewKind', {
+                          kind: renewalKindLabel,
                         })
-                      : t('providerModels.config.oauth.paste.cannotAutoRenew')}
+                      : t('providerModels.config.oauth.paste.autoRenew')}
+                  </Text>
+                )}
+                {autoRenews && expiresAtLabel && (
+                  // The rollover date, stated as what it is: the current token's end, not
+                  // the connection's.
+                  <Text style={{ fontSize: 13 }} type="secondary">
+                    {t('providerModels.config.oauth.paste.currentTokenUntil', {
+                      time: expiresAtLabel,
+                    })}
                   </Text>
                 )}
               </div>
             </Flexbox>
+            {cannotAutoRenew && (
+              /**
+               * A dead end stated in warning-coloured body text is neither loud enough to
+               * read as a problem nor actionable where it stands. Same surface as the admin
+               * panel: one alert that owns the deadline AND both ways out, in order of
+               * effort. Pasting a web session is the cheap one (one paste, no browser round
+               * trip) and it is what makes this connection behave like the web app — sign in
+               * once, never again. The authorization page stays available next to it, and
+               * the pair wraps rather than overflowing a narrow card.
+               */
+              <Alert
+                showIcon
+                style={{ width: '100%' }}
+                type="warning"
+                action={
+                  <Flexbox horizontal gap={8} wrap="wrap">
+                    <Button
+                      disabled={!canManageProvider}
+                      size="small"
+                      type="primary"
+                      onClick={handleStartAuthWithSession}
+                    >
+                      {t('providerModels.config.oauth.paste.pasteSession')}
+                    </Button>
+                    <Button
+                      disabled={!canManageProvider}
+                      icon={<Icon icon={ExternalLinkIcon} />}
+                      size="small"
+                      onClick={handleStartAuth}
+                    >
+                      {t('providerModels.config.oauth.paste.reconnectRenewable')}
+                    </Button>
+                  </Flexbox>
+                }
+                message={
+                  expiresAtLabel
+                    ? t('providerModels.config.oauth.paste.cannotAutoRenewBefore', {
+                        time: expiresAtLabel,
+                      })
+                    : t('providerModels.config.oauth.paste.cannotAutoRenew')
+                }
+              />
+            )}
             <Button
               disabled={!canManageProvider}
               icon={<Icon icon={LogOutIcon} />}
@@ -316,6 +430,28 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
             >
               {t('providerModels.config.oauth.disconnect')}
             </Button>
+            <div className={styles.serviceNote}>
+              {t('providerModels.config.oauth.serviceNote', { name })}
+            </div>
+          </div>
+        );
+      }
+
+      /**
+       * The credential is stored. Nothing below this line may render again — the paste panel
+       * still holds the raw session cookie in its textarea, and it must not survive the
+       * success even for the length of a status revalidation (or forever, if that read
+       * fails). `handleSuccess` already drops `isAuthenticating`; this is the guard that does
+       * not depend on it, and it stands until the refetched status swaps in the connected
+       * card above.
+       */
+      if (justConnected) {
+        return (
+          <div className={styles.content}>
+            <div className={styles.successBadge}>
+              <CheckCircleFilled />
+              <span>{t('providerModels.config.oauth.connected')}</span>
+            </div>
             <div className={styles.serviceNote}>
               {t('providerModels.config.oauth.serviceNote', { name })}
             </div>
@@ -369,6 +505,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
             <div className={styles.content}>
               <PasteFlowPanel
                 allowAccessTokenPaste={deviceCodeInfo.allowAccessTokenPaste}
+                defaultSessionOpen={openSessionSection}
                 disabled={!canManageProvider}
                 submitError={submitError}
                 submitErrorSource={submitErrorSource}
@@ -381,6 +518,7 @@ const OAuthDeviceFlowAuth = memo<OAuthDeviceFlowAuthProps>(
                 onRegenerate={handleStartAuth}
                 onSubmitAccessToken={submitAccessToken}
                 onSubmitCallback={submitCallback}
+                onSubmitSessionToken={submitSessionToken}
               />
             </div>
           );

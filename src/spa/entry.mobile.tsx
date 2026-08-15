@@ -1,4 +1,7 @@
 import '../initialize';
+// Side-effect FIRST: brand icons register into `@lobehub/icons`' mapping arrays before any
+// provider/model icon renders (kept out of the auth entry, which renders no icons).
+import '@/const/brandIcons';
 
 import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router/dom';

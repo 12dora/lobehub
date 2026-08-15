@@ -19,6 +19,18 @@ vi.mock('@/database/repositories/platformAiCatalog', () => ({
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
+/**
+ * ChatGPT Web's web-session renewal goes through the impersonate transport (chatgpt.com
+ * answers Node's own fetch with a bot challenge), which spawns a real child process — so the
+ * transport is the seam here too.
+ */
+const { mockTransportFetch } = vi.hoisted(() => ({ mockTransportFetch: vi.fn() }));
+
+vi.mock('../chatgptWeb/transport', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getChatGPTWebFetch: () => mockTransportFetch,
+}));
+
 /** Chainable drizzle stub: db.update().set().where().returning() resolves claimResult. */
 const makeDb = (claimResult: Array<{ id: string }>) => {
   const chain = {
@@ -206,6 +218,60 @@ describe('refreshSharedOAuthVault', () => {
     expect(result.oauthAccessToken).toBe('at-new');
     expect(result.oauthRefreshToken).toBe('rt-new');
     expect(decryptVault(mockCas.mock.calls[0][0].ciphertext).oauthRefreshToken).toBe('rt-new');
+  });
+
+  /**
+   * The re-read UNDER THE LEASE is the snapshot the refresh actually runs on, so every leaf
+   * the renewal SPENDS has to survive the platform-vault projection. Dropping the kind would
+   * present a session cookie at the OAuth token endpoint; dropping the device id would make
+   * every shared renewal look like a brand-new device to the upstream bot filter.
+   */
+  it('carries the renewal kind AND the device id through the platform re-read', async () => {
+    /** next-auth compact JWE: `dir` header, empty encrypted-key segment. */
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+    const sessionVault = {
+      ...baseVault(EXPIRING_AT()),
+      oauthDeviceId: 'a3f7c0f7-6f6e-4a1b-9c2d-8e5a1b2c3d4e',
+      oauthRefreshToken: sessionJwe,
+      oauthRenewalKind: 'web_session',
+    };
+    mockGetVersion.mockResolvedValue({ ciphertext: encryptVault(sessionVault), keyId: 'kek-1' });
+    mockTransportFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ accessToken: 'at-new' }), {
+        headers: new Headers({
+          'content-type': 'application/json',
+          'set-cookie': '__Secure-next-auth.session-token=session-rotated; Path=/',
+        }),
+        status: 200,
+      }),
+    );
+    mockCas.mockResolvedValueOnce(true);
+
+    const result = await refreshSharedOAuthVault(
+      makeParams({
+        ciphertext: encryptVault(sessionVault),
+        keyVaults: sessionVault,
+        providerKey: 'chatgptweb',
+      }),
+    );
+
+    // The session endpoint, not the OAuth token endpoint.
+    expect(mockFetch).not.toHaveBeenCalled();
+    const [url, init] = mockTransportFetch.mock.calls[0];
+    expect(String(url)).toBe('https://chatgpt.com/api/auth/session');
+    expect(init.headers.cookie).toBe(
+      `oai-did=a3f7c0f7-6f6e-4a1b-9c2d-8e5a1b2c3d4e; __Secure-next-auth.session-token=${sessionJwe}`,
+    );
+    expect(result.oauthRefreshToken).toBe('session-rotated');
+    // The label and the device id survive the merge that persists the rotation.
+    expect(result.oauthRenewalKind).toBe('web_session');
+    expect(result.oauthDeviceId).toBe('a3f7c0f7-6f6e-4a1b-9c2d-8e5a1b2c3d4e');
   });
 
   it('never surfaces the provider error_description for the shared chatgptweb credential', async () => {

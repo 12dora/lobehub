@@ -166,6 +166,56 @@ describe('useOAuthDeviceFlow paste flow', () => {
     expect(result.current.submitError).toBe('accessTokenInvalid');
   });
 
+  it('stores a pasted web session as the renewable credential', async () => {
+    mocks.initiate.mockResolvedValue(pasteInitiateResponse);
+    mocks.poll.mockResolvedValue({ status: 'success' });
+    const onSuccess = vi.fn();
+
+    const { result } = renderHook(() =>
+      useOAuthDeviceFlow({ onSuccess, providerId: 'chatgptweb' }),
+    );
+
+    await act(async () => {
+      await result.current.startAuth();
+    });
+    await act(async () => {
+      await result.current.submitSessionToken('session-jwe');
+    });
+
+    // The session travels in its OWN field: the server stores it as the renewal credential,
+    // which is the entire difference between this paste and an access token.
+    expect(mocks.poll).toHaveBeenCalledWith({
+      deviceCode: '{"v":1}',
+      providerId: 'chatgptweb',
+      sessionToken: 'session-jwe',
+    });
+    expect(result.current.state).toBe('success');
+    expect(onSuccess).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['session_invalid', 'sessionInvalid'],
+    ['token_not_web', 'tokenNotWeb'],
+  ])('maps the %s literal onto the pasted-credential field', async (code, mapped) => {
+    mocks.initiate.mockResolvedValue(pasteInitiateResponse);
+    mocks.poll.mockResolvedValue({ error: code, status: 'error' });
+
+    const { result } = renderHook(() => useOAuthDeviceFlow({ providerId: 'chatgptweb' }));
+
+    await act(async () => {
+      await result.current.startAuth();
+    });
+    await act(async () => {
+      await result.current.submitSessionToken('session-jwe');
+    });
+
+    expect(result.current.submitError).toBe(mapped);
+    // A session submit is a token-field submit, so the error lands on the box that produced it.
+    expect(result.current.submitErrorSource).toBe('token');
+    // Recoverable: the form stays open so the user can paste a fresh session in place.
+    expect(result.current.state).toBe('pending_user_auth');
+  });
+
   it('reports a rejected request as a recoverable error, not a dead flow', async () => {
     mocks.initiate.mockResolvedValue(pasteInitiateResponse);
     mocks.poll.mockRejectedValue(new Error('network'));
@@ -406,6 +456,42 @@ describe('useOAuthDeviceFlow stale reconciliation', () => {
     expect(onStatusStale).toHaveBeenCalledTimes(1);
     expect(onSuccess).not.toHaveBeenCalled();
     expect(result.current.state).toBe('idle');
+  });
+
+  it('re-reads the status when a session submission succeeds after cancel', async () => {
+    mocks.initiate.mockResolvedValue(pasteInitiateResponse);
+    const pending = deferred<{ status: string }>();
+    mocks.poll.mockReturnValue(pending.promise);
+    const onStatusStale = vi.fn();
+    const onSuccess = vi.fn();
+
+    const { result } = renderHook(() =>
+      useOAuthDeviceFlow({ onStatusStale, onSuccess, providerId: 'chatgptweb' }),
+    );
+
+    await act(async () => {
+      await result.current.startAuth();
+    });
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitSessionToken('session-jwe');
+    });
+    act(() => {
+      result.current.cancelAuth();
+    });
+
+    await act(async () => {
+      pending.resolve({ status: 'success' });
+      await submitted;
+    });
+
+    // The session IS stored server-side: the abandoned run must not own the UI, but the card
+    // cannot keep claiming "not connected" either.
+    expect(onStatusStale).toHaveBeenCalledTimes(1);
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(result.current.state).toBe('idle');
+    expect(result.current.submitting).toBe(false);
   });
 
   it('re-reads the status when a paste submission succeeds after a regenerate', async () => {

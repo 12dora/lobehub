@@ -85,8 +85,52 @@ export const parseJwtExpiry = (token: string | undefined): number | undefined =>
 export const parseJwtIssuedAt = (token: string | undefined): number | undefined =>
   parseJwtNumericClaim(token, 'iat');
 
+/**
+ * Which credential the `oauthRefreshToken` vault leaf actually holds, for providers that can
+ * renew in more than one way.
+ * - `oauth`: an OAuth refresh token (RFC 6749 §6), spent at the token endpoint.
+ * - `web_session`: the chatgpt.com next-auth session cookie, presented to
+ *   `/api/auth/session` to mint a fresh access token — exactly what the web app does.
+ *
+ * The single source of truth for the label: it is written by the connect routers, stored in a
+ * non-secret vault leaf, and dispatched on by the provider's `refreshAccessToken`. Spending a
+ * credential the wrong way is a silent, terminal failure, so the value is never carried as a
+ * free-form string across a boundary — {@link parseOAuthRenewalKind} is the only way in.
+ */
+export const OAUTH_RENEWAL_KINDS = ['oauth', 'web_session'] as const;
+
+export type OAuthRenewalKind = (typeof OAUTH_RENEWAL_KINDS)[number];
+
+/**
+ * Validate a persisted/incoming renewal-kind label.
+ *
+ * An UNKNOWN value is treated as ABSENT rather than passed through: the vault is durable
+ * state that older code (and, for platform vaults, an admin credential edit) can write, and
+ * "absent" has a well-defined meaning — fall back to identifying the credential by shape.
+ * Passing an unrecognised label through would instead pick the default branch silently, which
+ * for ChatGPT Web means presenting a session cookie as an OAuth refresh token.
+ */
+export const parseOAuthRenewalKind = (value: unknown): OAuthRenewalKind | undefined =>
+  typeof value === 'string' && (OAUTH_RENEWAL_KINDS as readonly string[]).includes(value)
+    ? (value as OAuthRenewalKind)
+    : undefined;
+
 /** Per-call knobs shared by every `refreshAccessToken` implementation. */
 export interface OAuthRefreshOptions {
+  /**
+   * The stable device id the connection was made with (`oauthDeviceId`), for providers that
+   * bind a credential to one (ChatGPT Web sends it as the `oai-did` cookie / `oai-device-id`
+   * header). Renewing WITHOUT it makes every renewal look like a brand-new device to the
+   * upstream bot filter, even though connect presented one.
+   */
+  deviceId?: string;
+  /**
+   * Which credential the stored `oauthRefreshToken` leaf actually holds; see
+   * {@link OAuthRenewalKind}. Read from the non-secret `oauthRenewalKind` vault leaf and
+   * VALIDATED by the caller ({@link parseOAuthRenewalKind}); absent for every provider with a
+   * single renewal path, which is why implementations fall back to identifying it by shape.
+   */
+  renewalKind?: OAuthRenewalKind;
   /** Deadline for the token-endpoint call; see {@link OAuthDeviceFlowService.refreshAccessToken}. */
   signal?: AbortSignal;
 }

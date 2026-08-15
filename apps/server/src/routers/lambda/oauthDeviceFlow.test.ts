@@ -139,6 +139,8 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
           oauthLastRefreshAt: expect.any(String),
           oauthLastRefreshErrorAt: undefined,
           oauthRefreshToken: 'refresh-1',
+          // A PKCE grant renews at the token endpoint, not through the web session.
+          oauthRenewalKind: 'oauth',
           oauthTokenExpiresAt: String(futureExp * 1000),
         },
       },
@@ -190,11 +192,94 @@ describe('oauthDeviceFlow.pollAuthStatus (paste flow)', () => {
       'oauthLastRefreshAt',
       'oauthLastRefreshErrorAt',
       'oauthRefreshToken',
+      'oauthRenewalKind',
       'oauthTokenExpiresAt',
     ]);
     expect(stored.oauthRefreshToken).toBeUndefined();
+    // The label moves as a unit with the credential it describes.
+    expect(stored.oauthRenewalKind).toBeUndefined();
     expect(stored.oauthAccountEmail).toBeUndefined();
     expect(stored.oauthAccountId).toBeUndefined();
+  });
+
+  it('stores a pasted web session as the renewal credential, labelled as such', async () => {
+    const { deviceCode } = await startFlow();
+    // next-auth compact JWE: `dir` header, empty encrypted-key segment.
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+    transportFetch.mockImplementation(async (url: string) =>
+      String(url).endsWith('/api/auth/session')
+        ? new Response(
+            JSON.stringify({
+              accessToken: jwt({ exp: futureExp }),
+              user: { email: 'me@example.com' },
+            }),
+            {
+              headers: new Headers({
+                'content-type': 'application/json',
+                'set-cookie': '__Secure-next-auth.session-token=rotated-jwe; Path=/',
+              }),
+              status: 200,
+            },
+          )
+        : jsonResponse({ accounts: { default: { account: { id: 'acct-1' } } } }),
+    );
+
+    const result = await caller().pollAuthStatus({
+      deviceCode,
+      providerId: PROVIDER,
+      sessionToken: sessionJwe,
+    });
+
+    expect(result).toEqual({ status: 'success' });
+    const stored = mocks.updateConfig.mock.calls[0][1].keyVaults;
+    // The ROTATED cookie, in the same leaf an OAuth refresh token would occupy.
+    expect(stored.oauthRefreshToken).toBe('rotated-jwe');
+    expect(stored.oauthRenewalKind).toBe('web_session');
+    expect(stored.oauthAccountEmail).toBe('me@example.com');
+    expect(stored.oauthDeviceId).toBe(JSON.parse(deviceCode).deviceId);
+    // No OAuth token endpoint is involved on this path.
+    expect(authFetch).not.toHaveBeenCalled();
+  });
+
+  it('reports a dead web session with a stable code and stores nothing', async () => {
+    const { deviceCode } = await startFlow();
+    transportFetch.mockResolvedValue(jsonResponse({ WARNING_BANNER: 'do not paste' }));
+
+    const result = await caller().pollAuthStatus({
+      deviceCode,
+      providerId: PROVIDER,
+      sessionToken: 'not-a-live-session',
+    });
+
+    expect(result).toEqual({ error: 'session_invalid', status: 'error' });
+    expect(mocks.updateConfig).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The pasted session is interpolated into a `Cookie:` header on the request that mints the
+   * access token, so a value carrying cookie/header delimiters is refused by the INPUT schema
+   * — before the provider service, and before any network call.
+   */
+  it.each([
+    ['a cookie separator', 'jwe; oai-did=attacker'],
+    ['an assignment', 'jwe=attacker'],
+    ['a CRLF header break', 'jwe\r\nX-Injected: 1'],
+    ['a control character', 'jwe\u0001attacker'],
+  ])('rejects %s in a pasted web session', async (_label, pasted) => {
+    const { deviceCode } = await startFlow();
+    transportFetch.mockReset();
+
+    await expect(
+      caller().pollAuthStatus({ deviceCode, providerId: PROVIDER, sessionToken: pasted }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(transportFetch).not.toHaveBeenCalled();
+    expect(mocks.updateConfig).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -361,7 +446,41 @@ describe('oauthDeviceFlow.getAuthStatus', () => {
 
     expect(await caller().getAuthStatus({ providerId: PROVIDER })).toMatchObject({
       canRefresh: false,
+      // Nothing renews it, so there is no renewal path to name.
+      renewalKind: null,
       status: 'ACTIVE',
+    });
+  });
+
+  it('names the renewal path from the stored label', async () => {
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: {
+        oauthAccessToken: 'token',
+        oauthRefreshToken: 'session-jwe',
+        oauthRenewalKind: 'web_session',
+      },
+    });
+
+    expect(await caller().getAuthStatus({ providerId: PROVIDER })).toMatchObject({
+      canRefresh: true,
+      renewalKind: 'web_session',
+    });
+  });
+
+  it('falls back to the credential shape for connections stored before the label', async () => {
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+    mocks.getAiProviderById.mockResolvedValue({
+      keyVaults: { oauthAccessToken: 'token', oauthRefreshToken: sessionJwe },
+    });
+
+    expect(await caller().getAuthStatus({ providerId: PROVIDER })).toMatchObject({
+      renewalKind: 'web_session',
     });
   });
 });

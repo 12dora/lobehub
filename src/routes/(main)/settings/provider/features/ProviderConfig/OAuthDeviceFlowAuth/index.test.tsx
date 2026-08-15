@@ -1,5 +1,5 @@
 import { MotionProvider } from '@lobehub/ui';
-import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen } from '@testing-library/react';
 import { motion } from 'motion/react';
 import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
     submitCallback: vi.fn(),
     submitError: undefined as unknown,
     submitErrorSource: undefined as unknown,
+    submitSessionToken: vi.fn(),
     submitting: false,
   },
   flowOptions: { value: undefined as Record<string, unknown> | undefined },
@@ -54,6 +55,18 @@ vi.mock('@/libs/trpc/client', () => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+
+const b64url = (value: string) =>
+  Buffer.from(value, 'utf8')
+    .toString('base64')
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '');
+
+/** next-auth compact JWE, the shape of a real chatgpt.com session cookie. */
+const SESSION_JWE = [b64url('{"alg":"dir","enc":"A256GCM"}'), '', 'aXY', 'Y3Q', 'dGFn'].join('.');
+/** Compact JWS — an access token, which cannot renew itself. */
+const ACCESS_JWT = [b64url('{"alg":"RS256"}'), b64url('{"sub":"u"}'), 'sig'].join('.');
 
 const pasteDeviceCode = {
   allowAccessTokenPaste: true,
@@ -95,6 +108,7 @@ beforeEach(() => {
   mocks.flow.submitCallback = vi.fn();
   mocks.flow.submitError = undefined;
   mocks.flow.submitErrorSource = undefined;
+  mocks.flow.submitSessionToken = vi.fn();
   mocks.flow.submitting = false;
   mocks.flowOptions.value = undefined;
   mocks.invalidate = vi.fn().mockResolvedValue(undefined);
@@ -125,30 +139,85 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     );
   });
 
-  it('keeps the access-token fallback behind an explicit disclosure', async () => {
+  it('keeps the pasted-credential route behind an explicit disclosure', async () => {
     await startPasteFlow();
 
     expect(
-      screen.queryByPlaceholderText('providerModels.config.oauth.paste.accessTokenPlaceholder'),
+      screen.queryByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder'),
     ).toBeNull();
 
-    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.accessTokenToggle'));
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionToggle'));
     fireEvent.change(
-      screen.getByPlaceholderText('providerModels.config.oauth.paste.accessTokenPlaceholder'),
-      { target: { value: 'sk-pasted' } },
+      screen.getByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder'),
+      { target: { value: `__Secure-next-auth.session-token=${SESSION_JWE}` } },
     );
-    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.accessTokenSubmit'));
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionSubmit'));
 
-    expect(mocks.flow.submitAccessToken).toHaveBeenCalledWith('sk-pasted');
+    // A web session is the renewable half, so it is what gets stored.
+    expect(mocks.flow.submitSessionToken).toHaveBeenCalledWith(SESSION_JWE);
+    expect(mocks.flow.submitAccessToken).not.toHaveBeenCalled();
   });
 
-  it('hides the token fallback for providers that do not accept one', async () => {
+  it('names what was pasted, and falls back to the non-renewable access token', async () => {
+    await startPasteFlow();
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionToggle'));
+
+    const field = screen.getByPlaceholderText(
+      'providerModels.config.oauth.paste.sessionPlaceholder',
+    );
+    fireEvent.change(field, { target: { value: 'nonsense' } });
+    expect(screen.getByText('providerModels.config.oauth.paste.detected.unknown')).toBeTruthy();
+    expect(
+      screen
+        .getByText('providerModels.config.oauth.paste.sessionSubmit')
+        .closest('button')!
+        .hasAttribute('disabled'),
+    ).toBe(true);
+
+    fireEvent.change(field, { target: { value: `Bearer ${ACCESS_JWT}` } });
+    expect(screen.getByText('providerModels.config.oauth.paste.detected.accessToken')).toBeTruthy();
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionSubmit'));
+    expect(mocks.flow.submitAccessToken).toHaveBeenCalledWith(ACCESS_JWT);
+    expect(mocks.flow.submitSessionToken).not.toHaveBeenCalled();
+  });
+
+  it('drops the pasted credential the moment it is stored, even if the status re-read fails', async () => {
+    // The REJECTED revalidation is the load-bearing part: clearing the flow behind an awaited
+    // invalidate left `isAuthenticating` set for good when that read failed, so the textarea
+    // kept a live chatgpt.com session cookie on screen indefinitely (and the rejection went
+    // unhandled, because the flow never awaits this callback).
+    mocks.invalidate = vi.fn().mockRejectedValue(new Error('offline'));
+    const credential = `__Secure-next-auth.session-token=${SESSION_JWE}`;
+
+    await startPasteFlow();
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionToggle'));
+    fireEvent.change(
+      screen.getByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder'),
+      { target: { value: credential } },
+    );
+    expect(screen.getByDisplayValue(credential)).toBeTruthy();
+
+    // The server stored it: the flow reports success and the card is told to re-read.
+    mocks.flow.state = 'success';
+    await act(async () => {
+      (mocks.flowOptions.value?.onSuccess as () => void)();
+    });
+
+    expect(
+      screen.queryByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder'),
+    ).toBeNull();
+    expect(screen.queryByDisplayValue(credential)).toBeNull();
+    expect(document.body.innerHTML).not.toContain(SESSION_JWE);
+    expect(screen.getByText('providerModels.config.oauth.connected')).toBeTruthy();
+  });
+
+  it('hides the pasted-credential route for providers that do not accept one', async () => {
     mocks.flow.deviceCodeInfo = { ...pasteDeviceCode, allowAccessTokenPaste: false };
     mocks.flow.startAuth = vi.fn().mockResolvedValue(mocks.flow.deviceCodeInfo);
 
     await startPasteFlow();
 
-    expect(screen.queryByText('providerModels.config.oauth.paste.accessTokenToggle')).toBeNull();
+    expect(screen.queryByText('providerModels.config.oauth.paste.sessionToggle')).toBeNull();
   });
 
   it('shows a recoverable submit error without tearing the form down', async () => {
@@ -190,10 +259,68 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
 
     expect(screen.getByText('providerModels.config.oauth.paste.connectedEmail')).toBeTruthy();
-    expect(screen.getByText('providerModels.config.oauth.paste.expiresAt')).toBeTruthy();
     expect(
       screen.getByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
     ).toBeTruthy();
+    // ONE deadline, in the warning that explains it — not printed again as a neutral
+    // "Expires {{time}}" line right above it.
+    expect(screen.queryByText('providerModels.config.oauth.paste.expiresAt')).toBeNull();
+
+    // The warning is not a dead end: BOTH ways out are offered right there.
+    expect(screen.getByText('providerModels.config.oauth.paste.pasteSession')).toBeTruthy();
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.reconnectRenewable'));
+    expect(mocks.flow.startAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('lands on the web-session box when the warning sent the user there', async () => {
+    mocks.authStatus = { canRefresh: false, email: 'me@example.com', status: 'ACTIVE' };
+
+    render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.pasteSession'));
+
+    // Already expanded: the user asked for this box, so it must not be behind a toggle.
+    expect(
+      await screen.findByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder'),
+    ).toBeTruthy();
+  });
+
+  it('names the renewal path of a self-renewing connection', () => {
+    mocks.authStatus = {
+      canRefresh: true,
+      email: 'me@example.com',
+      expiresAt: Date.UTC(2030, 0, 1),
+      renewalKind: 'web_session',
+      status: 'ACTIVE',
+    };
+
+    render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
+
+    expect(screen.getByText('providerModels.config.oauth.paste.autoRenewKind')).toBeTruthy();
+    expect(screen.queryByText('providerModels.config.oauth.paste.reconnectRenewable')).toBeNull();
+  });
+
+  it('confirms a renewable connection instead of only dating its expiry', () => {
+    mocks.authStatus = {
+      canRefresh: true,
+      email: 'me@example.com',
+      expiresAt: Date.UTC(2030, 0, 1),
+      status: 'ACTIVE',
+    };
+
+    render(<OAuthDeviceFlowAuth name="ChatGPT Web" providerId="chatgptweb" />);
+
+    // No stored label (a connection made before it existed): the unnamed copy still applies.
+    expect(screen.getByText('providerModels.config.oauth.paste.autoRenew')).toBeTruthy();
+    // The expiry of a self-renewing connection is a rollover date, so it is labelled as one
+    // instead of the bare "Expires {{time}}" that reads as a deadline.
+    expect(screen.getByText('providerModels.config.oauth.paste.currentTokenUntil')).toBeTruthy();
+    expect(screen.queryByText('providerModels.config.oauth.paste.expiresAt')).toBeNull();
+    // Nothing to fix, so no reconnect prompt and no warning.
+    expect(screen.queryByText('providerModels.config.oauth.paste.reconnectRenewable')).toBeNull();
+    expect(screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenew')).toBeNull();
+    expect(
+      screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
+    ).toBeNull();
   });
 
   it('stays quiet about renewal when the server does not report it', () => {
@@ -230,6 +357,9 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     expect(
       screen.queryByText('providerModels.config.oauth.paste.cannotAutoRenewBefore'),
     ).toBeNull();
+    expect(screen.queryByText('providerModels.config.oauth.paste.autoRenew')).toBeNull();
+    expect(screen.queryByText('providerModels.config.oauth.paste.reconnectRenewable')).toBeNull();
+    expect(screen.queryByText('providerModels.config.oauth.paste.pasteSession')).toBeNull();
   });
 
   it('associates inline errors and labels with the paste inputs', async () => {
@@ -253,7 +383,7 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
 
     // The disclosure exposes its state.
     const toggle = screen
-      .getByText('providerModels.config.oauth.paste.accessTokenToggle')
+      .getByText('providerModels.config.oauth.paste.sessionToggle')
       .closest('button')!;
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(toggle);
@@ -264,13 +394,13 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     mocks.flow.submitError = 'accessTokenInvalid';
 
     await startPasteFlow();
-    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.accessTokenToggle'));
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionToggle'));
 
     const callbackField = screen.getByPlaceholderText(
       'providerModels.config.oauth.paste.callbackPlaceholder',
     );
     const tokenField = screen.getByPlaceholderText(
-      'providerModels.config.oauth.paste.accessTokenPlaceholder',
+      'providerModels.config.oauth.paste.sessionPlaceholder',
     );
     expect(callbackField.getAttribute('aria-invalid')).toBeNull();
     expect(tokenField.getAttribute('aria-invalid')).toBe('true');
@@ -283,13 +413,13 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     mocks.flow.submitErrorSource = 'token';
 
     await startPasteFlow();
-    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.accessTokenToggle'));
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionToggle'));
 
     const callbackField = screen.getByPlaceholderText(
       'providerModels.config.oauth.paste.callbackPlaceholder',
     );
     const tokenField = screen.getByPlaceholderText(
-      'providerModels.config.oauth.paste.accessTokenPlaceholder',
+      'providerModels.config.oauth.paste.sessionPlaceholder',
     );
     expect(callbackField.getAttribute('aria-invalid')).toBeNull();
     expect(tokenField.getAttribute('aria-invalid')).toBe('true');
@@ -304,7 +434,7 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     mocks.flow.submitErrorSource = 'callback';
 
     await startPasteFlow();
-    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.accessTokenToggle'));
+    fireEvent.click(screen.getByText('providerModels.config.oauth.paste.sessionToggle'));
 
     expect(
       screen
@@ -313,7 +443,7 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
     ).toBe('true');
     expect(
       screen
-        .getByPlaceholderText('providerModels.config.oauth.paste.accessTokenPlaceholder')
+        .getByPlaceholderText('providerModels.config.oauth.paste.sessionPlaceholder')
         .getAttribute('aria-invalid'),
     ).toBeNull();
   });

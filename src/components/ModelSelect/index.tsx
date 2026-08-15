@@ -19,6 +19,7 @@ import { type CSSProperties, type FC } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useProviderName } from '@/hooks/useProviderName';
 import { type AiProviderSourceType } from '@/types/aiProvider';
 import { formatTokenNumber } from '@/utils/format';
 
@@ -342,6 +343,12 @@ interface ProviderItemRenderProps {
 export const ProviderItemRender = memo<ProviderItemRenderProps>(
   ({ provider, name, source, logo, type = 'mono', size = 16 }) => {
     const isMono = type === 'mono';
+    /**
+     * Builtin ids can opt into a localized name (chatgptweb → 「ChatGPT 网页版」). A custom
+     * provider's name is user-authored and never translated, so it is passed through as the
+     * fallback — which also skips the model-bank lookup in these long list renderers.
+     */
+    const displayName = useProviderName(provider, name);
     return (
       <Flexbox
         horizontal
@@ -358,7 +365,7 @@ export const ProviderItemRender = memo<ProviderItemRenderProps>(
             shape={'circle'}
             size={size}
             style={isMono ? { filter: 'grayscale(1)' } : {}}
-            title={name}
+            title={displayName}
           />
         ) : provider === 'lobehub' ? (
           <LobeHub.Morden size={size} />
@@ -366,7 +373,7 @@ export const ProviderItemRender = memo<ProviderItemRenderProps>(
           <ProviderIcon provider={provider} size={size} type={type} />
         )}
         <Text ellipsis color={'inherit'}>
-          {name}
+          {displayName}
         </Text>
       </Flexbox>
     );

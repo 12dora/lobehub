@@ -335,6 +335,8 @@ describe('AI catalog credential adapter', () => {
         oauthAccountId: 'acct-1',
         oauthDeviceId: 'device-1',
         oauthRefreshToken: 'rt-1',
+        // Which credential `oauthRefreshToken` holds; non-secret, written at connect.
+        oauthRenewalKind: 'web_session',
         oauthTokenExpiresAt: '1750000000000',
       }),
     ).not.toThrow();
@@ -367,8 +369,75 @@ describe('AI catalog credential adapter', () => {
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
   });
 
+  /**
+   * The label decides HOW the renewal credential is spent (OAuth token endpoint vs the
+   * chatgpt.com session cookie). A value nothing recognises would silently take the default
+   * branch — presenting a session cookie as an OAuth refresh token — and a label with no
+   * credential beside it claims a renewal path the connection does not have.
+   */
+  it('rejects an unrecognised renewal kind, and one written without a renewal credential', () => {
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.ChatGPTWeb, {
+        oauthAccessToken: 'at-1',
+        oauthRefreshToken: 'rt-1',
+        oauthRenewalKind: 'browser_cookie',
+      }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+
+    expect(() =>
+      validateAiCatalogCredentialShape(ModelProvider.ChatGPTWeb, {
+        oauthAccessToken: 'at-1',
+        oauthRenewalKind: 'web_session',
+      }),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+
+    // Both kinds of the closed union stay writable.
+    for (const kind of ['oauth', 'web_session']) {
+      expect(() =>
+        validateAiCatalogCredentialShape(ModelProvider.ChatGPTWeb, {
+          oauthAccessToken: 'at-1',
+          oauthRefreshToken: 'rt-1',
+          oauthRenewalKind: kind,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  /**
+   * Read-side tolerance is deliberate and is the OTHER half of the rule above: durable state
+   * written by older code must never take a working connection down over a label — the
+   * refresh path treats an unknown one as absent and identifies the credential by shape.
+   */
+  it('still executes a stored connection whose renewal kind is not recognised', () => {
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults: {
+          oauthAccessToken: 'at-1',
+          oauthRefreshToken: 'rt-1',
+          oauthRenewalKind: 'something-older-wrote',
+        },
+        providerKey: ModelProvider.ChatGPTWeb,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).not.toThrow();
+  });
+
+  it('keeps the renewal-kind label out of the secret leaves it is stored beside', () => {
+    // It travels inside the encrypted vault (the credential moves as one blob) but it is a
+    // LABEL, not secret material: treating it as one would make the leakage checks flag any
+    // public field containing the word.
+    expect(credentialStringLeaves({ oauthRenewalKind: 'web_session' })).toEqual([]);
+    expect(credentialStringLeaves({ oauthRefreshToken: 'session-jwe' })).toEqual(['session-jwe']);
+  });
+
   it('exposes the credential shape as a capability set', () => {
     expect(providerCredentialKeys(ModelProvider.ChatGPTWeb).has('oauthDeviceId')).toBe(true);
+    // The renewal-kind label is part of the shape: a merge carrying it must not be rejected
+    // as an unknown key after the first connect wrote it.
+    expect(providerCredentialKeys(ModelProvider.ChatGPTWeb).has('oauthRenewalKind')).toBe(true);
     expect(providerCredentialKeys(ModelProvider.ChatGPT).has('oauthDeviceId')).toBe(false);
     expect(providerCredentialKeys(ModelProvider.SuperGrok).has('oauthAccountEmail')).toBe(false);
     // Unknown providers fall back to the OpenAI-compatible shape.

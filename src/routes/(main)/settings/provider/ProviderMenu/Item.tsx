@@ -8,6 +8,7 @@ import { useLocation } from 'react-router';
 import { ProductLogo } from '@/components/Branding/ProductLogo';
 import { isCustomBranding } from '@/const/version';
 import NavItem from '@/features/NavPanel/components/NavItem';
+import { useProviderName } from '@/hooks/useProviderName';
 import { type AiProviderListItem } from '@/types/aiProvider';
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
@@ -18,6 +19,9 @@ interface ProviderItemProps extends AiProviderListItem {
 const ProviderItem = memo<ProviderItemProps>(
   ({ id, name, source, enabled, logo, onClick = () => {} }) => {
     const location = useLocation();
+    // Builtin ids can opt into a localized name (chatgptweb → 「ChatGPT 网页版」); a custom
+    // provider's own name is the fallback, so it is echoed back untouched.
+    const displayName = useProviderName(id, name || id);
 
     // Extract providerId from pathname:
     // - /settings/provider/xxx
@@ -39,7 +43,7 @@ const ProviderItem = memo<ProviderItemProps>(
     const providerIcon =
       isCustom && logo ? (
         <Avatar
-          alt={name || id}
+          alt={displayName}
           avatar={logo}
           shape={'square'}
           size={22}
@@ -61,7 +65,7 @@ const ProviderItem = memo<ProviderItemProps>(
       <NavItem
         active={activeKey === id}
         icon={() => providerIcon}
-        title={name}
+        title={displayName}
         extra={
           enabled ? (
             <Center width={24}>

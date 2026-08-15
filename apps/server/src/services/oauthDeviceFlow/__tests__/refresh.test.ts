@@ -27,6 +27,18 @@ vi.mock('@/server/modules/KeyVaultsEncrypt', () => ({
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
+/**
+ * ChatGPT Web's web-session renewal goes through the impersonate transport (chatgpt.com
+ * answers Node's own fetch with a bot challenge), which spawns a real child process — so
+ * the transport itself is the seam.
+ */
+const { mockTransportFetch } = vi.hoisted(() => ({ mockTransportFetch: vi.fn() }));
+
+vi.mock('@/server/enterprise/services/chatgptWeb/transport', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getChatGPTWebFetch: () => mockTransportFetch,
+}));
+
 /** Build an unsigned JWT with the given exp claim (seconds) */
 const buildJwt = (expSeconds: number) => {
   const encode = (obj: object) => Buffer.from(JSON.stringify(obj)).toString('base64url');
@@ -565,6 +577,216 @@ describe('ensureFreshOAuthToken (chatgptweb override)', () => {
     } finally {
       timeoutSpy.mockRestore();
     }
+  });
+
+  /**
+   * Web-session renewal: the pipeline is untouched — the same skew/keepalive/backoff policy,
+   * the same single-flight and persist-then-use ordering. Only HOW the leaf is spent
+   * differs. The renewal kind travels from the vault to the provider through
+   * `OAuthRefreshOptions`, which is the one seam that had to exist for this.
+   */
+  describe('web-session renewal credential', () => {
+    /** next-auth compact JWE: `dir` header, empty encrypted-key segment. */
+    const sessionJwe = [
+      Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })).toString('base64url'),
+      '',
+      'aXY',
+      'Y3Q',
+      'dGFn',
+    ].join('.');
+
+    const sessionResponse = (accessToken: string, rotated?: string) => {
+      const headers = new Headers({ 'content-type': 'application/json' });
+      if (rotated) headers.append('set-cookie', `__Secure-next-auth.session-token=${rotated}`);
+      return new Response(JSON.stringify({ accessToken }), { headers, status: 200 });
+    };
+
+    it('spends the leaf at chatgpt.com when the vault labels it a web session', async () => {
+      mockUpdateConfig.mockResolvedValue(undefined);
+      mockTransportFetch.mockResolvedValueOnce(sessionResponse('at-new', 'session-rotated'));
+
+      const result = await ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: {
+          oauthAccessToken: 'at-old',
+          oauthRefreshToken: sessionJwe,
+          oauthRenewalKind: 'web_session',
+          oauthTokenExpiresAt: String(Date.now() - 1000),
+        },
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      });
+
+      // The OAuth token endpoint is never called on this path.
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(String(mockTransportFetch.mock.calls[0][0])).toBe(
+        'https://chatgpt.com/api/auth/session',
+      );
+      expect(result.oauthAccessToken).toBe('at-new');
+      // The rotated cookie is what gets stored — the consumed one would 401 next time.
+      expect(result.oauthRefreshToken).toBe('session-rotated');
+      // The kind is carried forward: a rotation replaces the credential, not its kind.
+      expect(result.oauthRenewalKind).toBe('web_session');
+      expect(mockUpdateConfig).toHaveBeenCalledWith(
+        'chatgptweb',
+        expect.objectContaining({
+          keyVaults: expect.objectContaining({
+            oauthAccessToken: 'at-new',
+            oauthRefreshToken: 'session-rotated',
+          }),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('identifies a session credential by shape when the vault predates the label', async () => {
+      mockUpdateConfig.mockResolvedValue(undefined);
+      mockTransportFetch.mockResolvedValueOnce(sessionResponse('at-new'));
+
+      const result = await ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: {
+          oauthAccessToken: 'at-old',
+          oauthRefreshToken: sessionJwe,
+          oauthTokenExpiresAt: String(Date.now() - 1000),
+        },
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result.oauthAccessToken).toBe('at-new');
+      // Nothing rotated: the presented session stays the renewal credential.
+      expect(result.oauthRefreshToken).toBe(sessionJwe);
+    });
+
+    /**
+     * Connect presents `oai-did`; a renewal that omitted it looked like a brand-new device
+     * every time, to the one host whose bot filter is why this path exists. The id travels
+     * from the vault leaf through `OAuthRefreshOptions`, exactly like the renewal kind.
+     */
+    it('presents the stored device id on the session renewal', async () => {
+      mockUpdateConfig.mockResolvedValue(undefined);
+      mockTransportFetch.mockResolvedValueOnce(sessionResponse('at-new'));
+
+      await ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: {
+          oauthAccessToken: 'at-old',
+          oauthDeviceId: 'a3f7c0f7-6f6e-4a1b-9c2d-8e5a1b2c3d4e',
+          oauthRefreshToken: sessionJwe,
+          oauthRenewalKind: 'web_session',
+          oauthTokenExpiresAt: String(Date.now() - 1000),
+        },
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      });
+
+      expect(mockTransportFetch.mock.calls[0][1].headers.cookie).toBe(
+        `oai-did=a3f7c0f7-6f6e-4a1b-9c2d-8e5a1b2c3d4e; __Secure-next-auth.session-token=${sessionJwe}`,
+      );
+    });
+
+    /**
+     * The leaf is durable state an older writer (or an admin credential edit) can put anything
+     * in. An unrecognised label must be treated as ABSENT so the shape fallback still runs —
+     * passing it through would take the default branch and present a session cookie as an
+     * OAuth refresh token.
+     */
+    it('treats an unrecognised stored kind as absent and identifies the credential by shape', async () => {
+      mockUpdateConfig.mockResolvedValue(undefined);
+      mockTransportFetch.mockResolvedValueOnce(sessionResponse('at-new'));
+
+      const result = await ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: {
+          oauthAccessToken: 'at-old',
+          oauthRefreshToken: sessionJwe,
+          oauthRenewalKind: 'browser_cookie',
+          oauthTokenExpiresAt: String(Date.now() - 1000),
+        },
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result.oauthAccessToken).toBe('at-new');
+    });
+
+    /**
+     * The self-heal spends a DIFFERENT credential than the one that failed, and a concurrent
+     * reconnect may have switched what that credential IS. Reusing the original kind would
+     * present a freshly stored OAuth refresh token at chatgpt.com as a session cookie (or the
+     * reverse) — a terminal failure on a connection that was just made.
+     */
+    it('spends the replacement credential the way ITS OWN vault says, after a kind switch', async () => {
+      mockUpdateConfig.mockResolvedValue(undefined);
+      // The stored session is dead: a parsed 200 that mints nothing is invalid_grant here.
+      mockTransportFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({}), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      );
+      // Meanwhile an operator reconnected through the authorization page: same leaf, other kind.
+      mockGetAiProviderById.mockResolvedValueOnce({
+        keyVaults: {
+          oauthAccessToken: 'at-reconnected-but-stale',
+          oauthRefreshToken: 'rt-from-pkce',
+          oauthRenewalKind: 'oauth',
+          oauthTokenExpiresAt: String(Date.now() - 1000),
+        },
+      });
+      mockFetch.mockResolvedValueOnce(
+        tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+      );
+
+      const result = await ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: {
+          oauthAccessToken: 'at-old',
+          oauthRefreshToken: sessionJwe,
+          oauthRenewalKind: 'web_session',
+          oauthTokenExpiresAt: String(Date.now() - 1000),
+        },
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      });
+
+      // The retry went to the TOKEN ENDPOINT with the replacement credential — not back to
+      // chatgpt.com, which is what the original kind would have done.
+      expect(mockTransportFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch.mock.calls[0][1].body).toContain('refresh_token=rt-from-pkce');
+      expect(result.oauthAccessToken).toBe('at-new');
+      expect(result.oauthRefreshToken).toBe('rt-new');
+      // And the kind that comes back is the one actually consumed, not the one we started on.
+      expect(result.oauthRenewalKind).toBe('oauth');
+    });
+
+    it('still uses the token endpoint for an ordinary OAuth refresh token', async () => {
+      mockUpdateConfig.mockResolvedValue(undefined);
+      mockFetch.mockResolvedValueOnce(
+        tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+      );
+
+      await ensureFreshOAuthToken({
+        config: chatgptWebConfig as any,
+        db,
+        keyVaults: { ...expiringVault(), oauthRenewalKind: 'oauth' },
+        providerId: 'chatgptweb',
+        userId: `user-${++userSeq}`,
+      });
+
+      expect(mockTransportFetch).not.toHaveBeenCalled();
+      expect(mockFetch.mock.calls[0][0]).toBe(chatgptWebConfig.tokenEndpoint);
+    });
   });
 });
 

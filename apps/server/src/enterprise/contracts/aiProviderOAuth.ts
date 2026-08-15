@@ -1,3 +1,4 @@
+import { CHATGPT_WEB_SESSION_TOKEN_PATTERN } from '@lobechat/utils/chatgptWebPaste';
 import { z } from 'zod';
 
 /**
@@ -21,6 +22,22 @@ const adminReasonSchema = z.string().trim().min(1).max(2000);
  * RFC 8628 device_code, so the bound is generous but still finite.
  */
 const deviceCodeSchema = z.string().min(1).max(8192);
+
+/**
+ * A chatgpt.com web session (next-auth compact JWE).
+ *
+ * The charset is enforced HERE as well as in the service, because the value is interpolated
+ * into a `Cookie:` request header downstream: a pasted string carrying `;`, `,`, `=`,
+ * whitespace or a control character would be a header-injection primitive, and the contract
+ * is where operator input stops being arbitrary text. Roomier than an access token because
+ * next-auth chunks a large session cookie and the client re-assembles it before submitting.
+ */
+export const chatgptWebSessionTokenSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(16_384)
+  .regex(CHATGPT_WEB_SESSION_TOKEN_PATTERN);
 
 export const adminAiProviderOAuthInitiateInputSchema = z.object({ id: providerKeySchema }).strict();
 
@@ -52,14 +69,17 @@ export const adminAiProviderOAuthPollInputSchema = z
   .object({
     /**
      * Paste flow only. `callbackUrl` is the pasted redirect URL (or bare authorization
-     * code); `accessToken` is the no-refresh fallback credential. Both are single-use
-     * secrets on the wire and are never echoed back or audited.
+     * code); `accessToken` is the no-refresh fallback credential; `sessionToken` is the
+     * chatgpt.com web session cookie, which DOES renew (it mints fresh access tokens the
+     * way the web app does). All three are secrets on the wire and are never echoed back
+     * or audited.
      */
     accessToken: z.string().min(1).max(8192).optional(),
     callbackUrl: z.string().min(1).max(4096).optional(),
     deviceCode: deviceCodeSchema,
     id: providerKeySchema,
     reason: adminReasonSchema,
+    sessionToken: chatgptWebSessionTokenSchema.optional(),
   })
   .strict();
 
@@ -76,7 +96,9 @@ export const aiProviderOAuthPollErrorSchema = z.enum([
   'expired',
   'invalid_callback',
   'provider_store_failed',
+  'session_invalid',
   'state_mismatch',
+  'token_not_web',
 ]);
 
 export type AiProviderOAuthPollError = z.infer<typeof aiProviderOAuthPollErrorSchema>;
@@ -168,6 +190,13 @@ export const adminAiProviderOAuthStatusOutputSchema = z
      * refreshed since connect").
      */
     lastRefreshAt: z.string().max(200).nullable().optional(),
+    /**
+     * WHICH credential keeps the connection alive when `canRefresh` is true: `'oauth'` (the
+     * PKCE refresh token) or `'web_session'` (the chatgpt.com session cookie, which mints
+     * access tokens exactly as the web app does). Null when nothing renews it, or when the
+     * provider has a single renewal path. Never token material — a label only.
+     */
+    renewalKind: z.enum(['oauth', 'web_session']).nullable().optional(),
     secretConfigured: z.boolean(),
   })
   .strict();

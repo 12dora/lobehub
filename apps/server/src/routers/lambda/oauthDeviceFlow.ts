@@ -1,3 +1,4 @@
+import { isChatGPTWebSessionToken } from '@lobechat/utils/chatgptWebPaste';
 import { TRPCError } from '@trpc/server';
 import {
   DEFAULT_MODEL_PROVIDER_LIST,
@@ -12,7 +13,10 @@ import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceA
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import type { AiProviderOAuthPollError } from '@/server/enterprise/contracts/aiProviderOAuth';
+import {
+  type AiProviderOAuthPollError,
+  chatgptWebSessionTokenSchema,
+} from '@/server/enterprise/contracts/aiProviderOAuth';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import {
   type ChatGPTWebConnection,
@@ -21,7 +25,11 @@ import {
   parsePasteEnvelope,
 } from '@/server/enterprise/services/chatgptWeb/oauthService';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
-import { parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
+import {
+  type OAuthRenewalKind,
+  parseJwtExpiry,
+  parseOAuthRenewalKind,
+} from '@/server/services/oauthDeviceFlow';
 import {
   getOAuthService,
   GithubCopilotOAuthService,
@@ -65,6 +73,15 @@ const isPasteFlow = (providerId: string) =>
   getProviderOAuthGrantFlow(providerId) === 'authorization_code_paste';
 
 /**
+ * Stored label first, credential shape as the fallback for pre-existing connections.
+ * An unrecognised stored value is treated as ABSENT (`parseOAuthRenewalKind`) so the shape
+ * fallback still runs, exactly as the refresh path does with the same leaf.
+ */
+const resolveRenewalKind = (stored: unknown, refreshCredential: string): OAuthRenewalKind =>
+  parseOAuthRenewalKind(stored) ??
+  (isChatGPTWebSessionToken(refreshCredential) ? 'web_session' : 'oauth');
+
+/**
  * K2 vault leaves. EVERY optional leaf moves as a unit with the credential it describes:
  * `updateConfig` merges `{...existing, ...new}` and `JSON.stringify` drops the explicit
  * `undefined`s, so a reconnect that provides no refresh token (pasted access token) really
@@ -75,6 +92,13 @@ const connectionKeyVaults = (connection: ChatGPTWebConnection) => ({
   oauthAccountEmail: connection.email,
   oauthAccountId: connection.accountId,
   oauthDeviceId: connection.deviceId,
+  /**
+   * How the stored renewal credential must be spent (`oauth` vs the chatgpt.com
+   * `web_session` cookie). Moves as a unit with `oauthRefreshToken`: reconnecting the other
+   * way round must not leave the previous kind behind, or the renewal would spend the new
+   * credential at the wrong endpoint.
+   */
+  oauthRenewalKind: connection.refreshToken ? connection.renewalKind : undefined,
   /**
    * Connect time is the keepalive anchor for a grant that has never been refreshed, so
    * the forced 3-day renewal is measured from here rather than from the first refresh.
@@ -118,6 +142,15 @@ export const oauthDeviceFlowRouter = router({
             isRotatingRefreshOAuthProvider(input.providerId),
           email: keyVaults.oauthAccountEmail as string | undefined,
           expiresAt: keyVaults.oauthTokenExpiresAt || keyVaults.bearerTokenExpiresAt,
+          /**
+           * WHICH credential renews it — the PKCE refresh token, or the chatgpt.com web
+           * session that mints access tokens the way the web app does. Null when nothing
+           * renews it. The stored label wins; connections made before it existed are
+           * identified by the credential's shape. Never token material.
+           */
+          renewalKind: keyVaults.oauthRefreshToken
+            ? resolveRenewalKind(keyVaults.oauthRenewalKind, keyVaults.oauthRefreshToken)
+            : null,
           status: 'ACTIVE',
           username: keyVaults.githubUsername as string | undefined,
         };
@@ -172,6 +205,14 @@ export const oauthDeviceFlowRouter = router({
         // envelope, and an unbounded string would be an unbounded server-side JSON parse.
         deviceCode: z.string().max(8192),
         providerId: z.string(),
+        /**
+         * Paste flow only: the chatgpt.com web session cookie (a next-auth JWE). Unlike a
+         * bare access token this one RENEWS — it mints fresh access tokens the way the web
+         * app does. Same schema as the admin contract: roomier bound (next-auth chunks a
+         * large session cookie) and a charset that cannot carry cookie-header delimiters,
+         * because this value ends up interpolated into a `Cookie:` header.
+         */
+        sessionToken: chatgptWebSessionTokenSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -196,12 +237,19 @@ export const oauthDeviceFlowRouter = router({
 
         // Nothing pasted yet: the client polls this the same way it polls a device code,
         // but the server does no network work at all until the user acts.
-        if (!input.callbackUrl && !input.accessToken) return { status: 'pending' as const };
+        if (!input.callbackUrl && !input.accessToken && !input.sessionToken) {
+          return { status: 'pending' as const };
+        }
 
-        if (input.accessToken && !isProviderAccessTokenPasteAllowed(input.providerId)) {
+        // One gate for both pasted-credential kinds: whether a user may hand this provider
+        // a credential out of band is one decision, not two.
+        if (
+          (input.accessToken || input.sessionToken) &&
+          !isProviderAccessTokenPasteAllowed(input.providerId)
+        ) {
           throw new TRPCError({
             code: 'BAD_REQUEST',
-            message: `Provider ${input.providerId} does not accept a pasted access token`,
+            message: `Provider ${input.providerId} does not accept a pasted credential`,
           });
         }
 
@@ -213,9 +261,14 @@ export const oauthDeviceFlowRouter = router({
           // minting a fresh device id, which would break the sentinel handshake the stored
           // `oai-device-id` is supposed to keep stable.
           const envelope = parsePasteEnvelope(input.deviceCode);
+          // Callback URL → PKCE exchange; web session → the renewable paste; access token →
+          // the non-renewable fallback. Checked in that order so a paste carrying both a
+          // session and a token stores the one that can renew itself.
           connection = input.callbackUrl
             ? await service.exchangeCallback(config, input.deviceCode, input.callbackUrl)
-            : await service.verifyAccessToken(input.accessToken!, envelope.deviceId);
+            : input.sessionToken
+              ? await service.connectWithSession(input.sessionToken, envelope.deviceId)
+              : await service.verifyAccessToken(input.accessToken!, envelope.deviceId);
         } catch (error) {
           // Stable machine-readable codes only: provider prose (and the pasted callback,
           // which carries a live authorization code) must never reach the client or logs.
@@ -329,6 +382,7 @@ export const oauthDeviceFlowRouter = router({
             oauthLastRefreshAt: undefined,
             oauthLastRefreshErrorAt: undefined,
             oauthRefreshToken: undefined,
+            oauthRenewalKind: undefined,
             oauthTokenExpiresAt: undefined,
           },
         },

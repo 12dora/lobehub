@@ -19,7 +19,15 @@ export type OAuthGrantFlow = 'device_code' | 'authorization_code_paste';
  * paste and submit again) instead of tearing the whole flow down.
  */
 export type PasteSubmitError =
-  'invalidCallback' | 'stateMismatch' | 'exchangeFailed' | 'accessTokenInvalid' | 'authError';
+  | 'invalidCallback'
+  | 'stateMismatch'
+  | 'exchangeFailed'
+  | 'accessTokenInvalid'
+  /** The pasted web session is expired or revoked — it mints no access token. */
+  | 'sessionInvalid'
+  /** The credential works, but belongs to a client with no chatgpt.com web permission. */
+  | 'tokenNotWeb'
+  | 'authError';
 
 /**
  * Which input produced the material of the failed submit. Kept WITH the error, because a
@@ -34,7 +42,9 @@ const PASTE_ERROR_MAP: Record<string, PasteSubmitError | 'expired'> = {
   exchange_failed: 'exchangeFailed',
   expired: 'expired',
   invalid_callback: 'invalidCallback',
+  session_invalid: 'sessionInvalid',
   state_mismatch: 'stateMismatch',
+  token_not_web: 'tokenNotWeb',
 };
 
 /** Seconds added to the interval each time the authorization server says slow_down. */
@@ -86,6 +96,8 @@ interface UseOAuthDeviceFlowResult {
   submitError?: PasteSubmitError;
   /** Paste flow: which input the failed submit came from, so the error lands on it. */
   submitErrorSource?: PasteSubmitSource;
+  /** Paste flow: hand over a chatgpt.com web session — the renewable pasted credential. */
+  submitSessionToken: (sessionToken: string) => Promise<void>;
   /** Paste flow: a submit is in flight. */
   submitting: boolean;
 }
@@ -335,12 +347,12 @@ export function useOAuthDeviceFlow({
    * other failure keeps the form open, because the user can fix a bad paste in place.
    */
   const submitPasted = useCallback(
-    async (payload: { accessToken?: string; callbackUrl?: string }) => {
+    async (payload: { accessToken?: string; callbackUrl?: string; sessionToken?: string }) => {
       const deviceCode = deviceCodeRef.current;
       if (!deviceCode || submittingRef.current) return;
 
       /** The field this attempt came from; every error of it belongs to that field. */
-      const source: PasteSubmitSource = payload.accessToken === undefined ? 'callback' : 'token';
+      const source: PasteSubmitSource = payload.callbackUrl === undefined ? 'token' : 'callback';
 
       // Capture BOTH: the result may only be applied while this run and this envelope are
       // still the current ones, or a late success replaces the run that superseded it.
@@ -408,6 +420,12 @@ export function useOAuthDeviceFlow({
     [submitPasted],
   );
 
+  /** The renewable paste: a chatgpt.com web session, stored as the renewal credential. */
+  const submitSessionToken = useCallback(
+    async (sessionToken: string) => submitPasted({ sessionToken }),
+    [submitPasted],
+  );
+
   useEffect(() => {
     disposedRef.current = false;
     return () => {
@@ -430,6 +448,7 @@ export function useOAuthDeviceFlow({
     submitCallback,
     submitError,
     submitErrorSource,
+    submitSessionToken,
     submitting,
   };
 }

@@ -30,6 +30,7 @@ import { z } from 'zod';
 import { FormInput, FormPassword } from '@/components/FormInput';
 import { SkeletonInput, SkeletonSwitch } from '@/components/Skeleton';
 import { usePermission } from '@/hooks/usePermission';
+import { useProviderName } from '@/hooks/useProviderName';
 import { lambdaQuery } from '@/libs/trpc/client';
 import {
   aiProviderSelectors,
@@ -160,6 +161,12 @@ const ProviderConfig = memo<ProviderConfigProps>(
       supportResponsesApi,
     } = settings || {};
     const { t } = useTranslation('modelProvider');
+    /**
+     * Everything the operator READS calls the provider by this name. Builtin ids can opt into
+     * a localized one (chatgptweb → 「ChatGPT 网页版」); a custom provider's own name is the
+     * fallback and comes back untouched.
+     */
+    const displayName = useProviderName(id, name || id);
     const [form] = Form.useForm();
     const { allowed: canManageProvider } = usePermission('manage_provider_key');
     const { hideFetchOnClient, hidePersonalAuth, secretConfigured, sharedOAuthPanel } =
@@ -310,8 +317,10 @@ const ProviderConfig = memo<ProviderConfigProps>(
                   autoComplete={'new-password'}
                   placeholder={
                     secretConfigured
-                      ? t('providerModels.config.apiKey.configuredPlaceholder', { name })
-                      : t('providerModels.config.apiKey.placeholder', { name })
+                      ? t('providerModels.config.apiKey.configuredPlaceholder', {
+                          name: displayName,
+                        })
+                      : t('providerModels.config.apiKey.placeholder', { name: displayName })
                   }
                   suffix={
                     configUpdating && (
@@ -324,7 +333,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
                 <Trans
                   i18nKey="providerModels.config.apiKey.descWithUrl"
                   ns={'modelProvider'}
-                  values={{ name }}
+                  values={{ name: displayName }}
                   components={[
                     <span key="0" />,
                     <span key="1" />,
@@ -333,7 +342,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
                   ]}
                 />
               ) : (
-                t(`providerModels.config.apiKey.desc`, { name })
+                t(`providerModels.config.apiKey.desc`, { name: displayName })
               ),
               label: t(`providerModels.config.apiKey.title`),
               name: [KeyVaultsConfigKey, LLMProviderApiTokenKey],
@@ -542,7 +551,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
         {showPersonalAuth && (
           <OAuthDeviceFlowAuth
             extra={headerExtra}
-            name={name || id}
+            name={displayName}
             providerId={id}
             title={headerTitle}
             onAuthChange={handleOAuthChange}
@@ -560,7 +569,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
               <Alert
                 type={'info'}
                 message={t('providerModels.config.sharedOAuth.perUserOnlyNotice', {
-                  name: name || id,
+                  name: displayName,
                 })}
               />
             )}

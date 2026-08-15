@@ -682,6 +682,73 @@ describe('useAdminSharedOAuthFlow paste flow', () => {
     expect(result.current.state).toBe('success');
   });
 
+  it('stores a pasted web session as the renewable credential', async () => {
+    mocks.poll.mockResolvedValue(success);
+    const onSuccess = vi.fn();
+    const { result } = await startPaste({ onSuccess });
+
+    await act(async () => {
+      await result.current.submitSessionToken('session-jwe');
+    });
+
+    // The session travels in its OWN field: the server stores it as the renewal credential,
+    // which is the entire difference between this paste and an access token.
+    expect(mocks.poll).toHaveBeenCalledWith({
+      deviceCode: pasteResponse.deviceCode,
+      id: 'chatgptweb',
+      reason: 'admin shared provider account connect',
+      sessionToken: 'session-jwe',
+    });
+    expect(result.current.state).toBe('success');
+    expect(onSuccess).toHaveBeenCalledWith({ revision: 2 });
+  });
+
+  it.each([
+    ['session_invalid', 'sessionInvalid'],
+    ['token_not_web', 'tokenNotWeb'],
+  ])('maps the %s literal onto the pasted-credential field', async (code, mapped) => {
+    mocks.poll.mockResolvedValue({ error: code, revision: null, status: 'error', stored: false });
+    const { result } = await startPaste();
+
+    await act(async () => {
+      await result.current.submitSessionToken('session-jwe');
+    });
+
+    expect(result.current.submitError).toBe(mapped);
+    // A session submit is a token-field submit, so the error lands on the box that produced it.
+    expect(result.current.submitErrorSource).toBe('token');
+    // Recoverable: the form stays open so the operator can paste a fresh session in place.
+    expect(result.current.state).toBe('awaiting');
+  });
+
+  it('discards a session result that lands after cancel, but re-reads the connection', async () => {
+    const inFlight = deferred<typeof success>();
+    mocks.poll.mockReturnValue(inFlight.promise);
+    const onStatusStale = vi.fn();
+    const onSuccess = vi.fn();
+    const { result } = await startPaste({ onStatusStale, onSuccess });
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = result.current.submitSessionToken('session-jwe');
+    });
+    act(() => {
+      result.current.reset();
+    });
+    onStatusStale.mockClear();
+
+    await act(async () => {
+      inFlight.settle(success);
+      await submitted;
+    });
+
+    // The session IS stored server-side; the abandoned run may only surface it as a re-read.
+    expect(result.current.state).toBe('idle');
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onStatusStale).toHaveBeenCalled();
+    expect(result.current.submitting).toBe(false);
+  });
+
   it('sends a pasted access token instead of a callback URL', async () => {
     mocks.poll.mockResolvedValue(success);
     const { result } = await startPaste();

@@ -1,3 +1,4 @@
+import { isChatGPTWebSessionToken } from '@lobechat/utils/chatgptWebPaste';
 import debug from 'debug';
 import {
   DEFAULT_MODEL_PROVIDER_LIST,
@@ -12,7 +13,11 @@ import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiC
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
-import { parseJwtExpiry } from '@/server/services/oauthDeviceFlow';
+import {
+  type OAuthRenewalKind,
+  parseJwtExpiry,
+  parseOAuthRenewalKind,
+} from '@/server/services/oauthDeviceFlow';
 import { extractChatGPTAccountEmail } from '@/server/services/oauthDeviceFlow/providers/chatGPT';
 import { getOAuthService } from '@/server/services/oauthDeviceFlow/providers/githubCopilot';
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
@@ -101,6 +106,8 @@ interface SharedConnectionTokens {
   /** Epoch millis. */
   expiresAt?: number;
   refreshToken?: string;
+  /** How `refreshToken` must be spent; the closed union, never a free-form label. */
+  renewalKind?: OAuthRenewalKind;
 }
 
 /**
@@ -136,6 +143,12 @@ const buildSharedVault = (
   };
 
   put('oauthRefreshToken', tokens.refreshToken);
+  /**
+   * Moves as a UNIT with the refresh token it labels: a reconnect that switches from a web
+   * session to a PKCE grant (or the other way round) must not leave the previous kind
+   * behind, or every later renewal would spend the new credential the wrong way.
+   */
+  put('oauthRenewalKind', tokens.refreshToken ? tokens.renewalKind : undefined);
   put('oauthTokenExpiresAt', tokens.expiresAt ? String(tokens.expiresAt) : undefined);
   put('oauthAccountId', tokens.accountId);
   put('oauthAccountEmail', tokens.email);
@@ -160,7 +173,21 @@ const toSharedTokens = (connection: ChatGPTWebConnection): SharedConnectionToken
   ...(connection.email ? { email: connection.email } : {}),
   ...(connection.expiresAt ? { expiresAt: connection.expiresAt } : {}),
   ...(connection.refreshToken ? { refreshToken: connection.refreshToken } : {}),
+  ...(connection.renewalKind ? { renewalKind: connection.renewalKind } : {}),
 });
+
+/**
+ * Which credential keeps the connection alive. Shape-sniffing is the fallback for
+ * connections stored before `oauthRenewalKind` existed, and an unrecognised stored value is
+ * treated as absent rather than echoed back — the contract's enum is the boundary, and
+ * `parseOAuthRenewalKind` is the single validator the refresh path uses too.
+ */
+const resolveRenewalKind = (
+  keyVaults: Record<string, unknown>,
+  refreshCredential: string,
+): OAuthRenewalKind =>
+  parseOAuthRenewalKind(keyVaults.oauthRenewalKind) ??
+  (isChatGPTWebSessionToken(refreshCredential) ? 'web_session' : 'oauth');
 
 /** Recognition affordance only — never enough material to reconstruct the account id. */
 const maskAccountId = (accountId: string | undefined): string | null =>
@@ -312,6 +339,7 @@ export const adminAiProviderOAuthRouter = router({
         expired: false,
         expiresAt: null,
         flow: getProviderOAuthGrantFlow(input.id),
+        renewalKind: null,
         secretConfigured: false,
       };
 
@@ -390,12 +418,15 @@ export const adminAiProviderOAuthRouter = router({
           null)
         : null;
 
+      const refreshCredential = asVaultString(keyVaults.oauthRefreshToken);
+
       return {
         accountEmail,
         accountIdMasked: maskAccountId(accountId),
-        // A pasted access token has no refresh grant at all: it dies at `expiresAt` and
-        // only a manual reconnect brings it back.
-        canRefresh: Boolean(asVaultString(keyVaults.oauthRefreshToken)),
+        // A pasted access token has no renewal credential at all: it dies at `expiresAt` and
+        // only a manual reconnect brings it back. A web session counts — it mints fresh
+        // access tokens exactly like an OAuth refresh token does.
+        canRefresh: Boolean(refreshCredential),
         connected: !expired && Boolean(accessToken),
         expired,
         expiresAt: expiresAt ?? null,
@@ -404,6 +435,13 @@ export const adminAiProviderOAuthRouter = router({
         // one this query just ran), so an operator can tell a connection that is quietly
         // rolling over from one nothing has touched since it was made.
         lastRefreshAt: lastRefreshAt ?? null,
+        /**
+         * Names the renewal path so the panel can say WHY the connection keeps working.
+         * The stored label wins; connections made before the leaf existed are identified by
+         * the credential's shape (a next-auth session JWE is unmistakable), and anything
+         * else is the OAuth refresh token it can only be.
+         */
+        renewalKind: refreshCredential ? resolveRenewalKind(keyVaults, refreshCredential) : null,
         secretConfigured,
       };
     }),
@@ -536,10 +574,15 @@ export const adminAiProviderOAuthRouter = router({
         }
         // Nothing pasted yet: the operator has not finished signing in. No network work,
         // no audit row — the client may poll this the same way it polls a device code.
-        if (!input.callbackUrl && !input.accessToken) {
+        if (!input.callbackUrl && !input.accessToken && !input.sessionToken) {
           return { ...unfinished, status: 'pending' as const };
         }
-        if (input.accessToken && !isProviderAccessTokenPasteAllowed(input.id)) {
+        // One gate for BOTH pasted-credential kinds: whether an operator may hand this
+        // provider a credential out of band is one decision, not two.
+        if (
+          (input.accessToken || input.sessionToken) &&
+          !isProviderAccessTokenPasteAllowed(input.id)
+        ) {
           return throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
             httpCode: 'PRECONDITION_FAILED',
@@ -553,9 +596,14 @@ export const adminAiProviderOAuthRouter = router({
           // minting a fresh device id, which would break the sentinel handshake the stored
           // `oai-device-id` is supposed to keep stable.
           const envelope = parsePasteEnvelope(input.deviceCode);
+          // Callback URL → PKCE exchange; web session → the renewable paste; access token →
+          // the non-renewable fallback. Checked in that order so a paste carrying both a
+          // session and a token stores the one that can renew itself.
           const connection = input.callbackUrl
             ? await oauthService.exchangeCallback(card.config, input.deviceCode, input.callbackUrl)
-            : await oauthService.verifyAccessToken(input.accessToken!, envelope.deviceId);
+            : input.sessionToken
+              ? await oauthService.connectWithSession(input.sessionToken, envelope.deviceId)
+              : await oauthService.verifyAccessToken(input.accessToken!, envelope.deviceId);
           connectionTokens = toSharedTokens(connection);
         } catch (error) {
           // Operator-fixable outcomes (bad paste, stale envelope, rejected exchange) are
