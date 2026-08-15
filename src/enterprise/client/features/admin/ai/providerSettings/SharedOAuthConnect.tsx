@@ -185,6 +185,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
    */
   const handleDisconnect = useCallback(() => {
     confirmModal({
+      cancelText: t('cancel', { ns: 'common' }),
       content: t('aiProviderSettings.sharedOAuth.disconnectConfirm', { name }),
       okButtonProps: { danger: true },
       okText: t('aiProviderSettings.sharedOAuth.disconnect'),

@@ -1,6 +1,6 @@
 import { type SwitchProps } from 'antd';
 import { Switch } from 'antd';
-import { memo, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 
 interface InstantSwitchProps {
   disabled?: boolean;
@@ -12,6 +12,12 @@ interface InstantSwitchProps {
 const InstantSwitch = memo<InstantSwitchProps>(({ disabled, enabled, onChange, size }) => {
   const [value, setValue] = useState(enabled);
   const [loading, setLoading] = useState(false);
+  // Follow external changes (another flow flipped the flag server-side, e.g. an admin
+  // disconnect that disables the provider) — but never clobber an in-flight optimistic value.
+  useEffect(() => {
+    if (!loading) setValue(enabled);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
   return (
     <Switch
       disabled={disabled}
