@@ -10,16 +10,17 @@ import {
 
 import {
   adminManagedResourcesGetOutputSchema,
-  adminManagedResourcesPublishInputSchema,
-  adminManagedResourcesPublishOutputSchema,
-  adminManagedResourcesSaveDraftInputSchema,
-  adminManagedResourcesSaveDraftOutputSchema,
+  adminManagedResourcesSaveInputSchema,
+  adminManagedResourcesSaveOutputSchema,
 } from '../../contracts/adminManagedResources';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withAllPlatformPermissions,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import {
   beginConnectorRuntimeEffectiveStateTransition,
@@ -38,7 +39,7 @@ const adminBase = authedProcedure
   .use(withActiveUser())
   .use(withAdminMutationRateLimit());
 
-const assertPublishReauth = async (params: {
+const assertSaveReauth = async (params: {
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -50,7 +51,7 @@ const assertPublishReauth = async (params: {
     authMethod: params.authMethod,
     serverDB: params.serverDB,
     denied: {
-      action: 'admin.managedResources.publish',
+      action: 'admin.managedResources.save',
       actorUserId: params.actorUserId,
       beforeDiff: null,
       reason: params.reason,
@@ -65,12 +66,22 @@ export const adminManagedResourcesRouter = router({
     .output(adminManagedResourcesGetOutputSchema)
     .query(async ({ ctx }) => new ManagedResourcePolicyService(ctx.serverDB).get()),
 
-  publish: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.POLICY_PUBLISH))
-    .input(adminManagedResourcesPublishInputSchema)
-    .output(adminManagedResourcesPublishOutputSchema)
+  /**
+   * De-drafted 统一管理 write: one call persists AND publishes the policy map.
+   * Requires POLICY_UPDATE *and* POLICY_PUBLISH (single middleware gate — denials are
+   * audited as admin.permission.denied) plus a dangerous-mutation reauth.
+   */
+  save: adminBase
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.POLICY_UPDATE,
+        PLATFORM_PERMISSIONS.POLICY_PUBLISH,
+      ]),
+    )
+    .input(adminManagedResourcesSaveInputSchema)
+    .output(adminManagedResourcesSaveOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      await assertPublishReauth({
+      await assertSaveReauth({
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
         authMethod: ctx.authMethod,
@@ -78,7 +89,7 @@ export const adminManagedResourcesRouter = router({
         serverDB: ctx.serverDB,
       });
       let connectorTransitionToken: string | null = null;
-      // Track commit stage (not error class): cancel the transition whenever publish did not commit.
+      // Track commit stage (not error class): cancel the transition whenever the save did not commit.
       let publishCommitted = false;
       let committedResult: { auditId: string; revision: number } | null = null;
       try {
@@ -88,13 +99,14 @@ export const adminManagedResourcesRouter = router({
           : null;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS && !connectorTransitionToken) {
           // Close every direct MCP path before the policy pointer changes. If the
-          // shared authority is unavailable, abort the publish instead of leaving
+          // shared authority is unavailable, abort the save instead of leaving
           // another instance on a stale legacy/enforced decision.
           throw new Error('Connector runtime transition authority unavailable');
         }
-        const result = await new ManagedResourcePolicyService(ctx.serverDB).publish({
+        const result = await new ManagedResourcePolicyService(ctx.serverDB).save({
           actorUserId: ctx.userId!,
           comment: input.comment,
+          draft: input.draft,
           expectedDraftToken: input.expectedDraftToken,
           expectedRevision: input.expectedRevision,
           reason: input.reason,
@@ -119,7 +131,7 @@ export const adminManagedResourcesRouter = router({
         return { ...result, runtimeTransition: 'finalized' as const };
       } catch (error) {
         if (publishCommitted && committedResult) {
-          console.error('[admin.managedResources.publish] runtime transition pending recovery', {
+          console.error('[admin.managedResources.save] runtime transition pending recovery', {
             errorClass: error instanceof Error ? error.name : 'UnknownError',
             revision: committedResult.revision,
           });
@@ -148,35 +160,11 @@ export const adminManagedResourcesRouter = router({
           try {
             await cancelConnectorRuntimeEffectiveStateTransition(connectorTransitionToken);
           } catch (cleanupError) {
-            console.error('[admin.managedResources.publish] transition cleanup failed', {
+            console.error('[admin.managedResources.save] transition cleanup failed', {
               errorClass: cleanupError instanceof Error ? cleanupError.name : 'UnknownError',
             });
           }
         }
-      }
-    }),
-
-  saveDraft: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.POLICY_UPDATE))
-    .input(adminManagedResourcesSaveDraftInputSchema)
-    .output(adminManagedResourcesSaveDraftOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        return await new ManagedResourcePolicyService(ctx.serverDB).saveDraft({
-          actorUserId: ctx.userId!,
-          draft: input.draft,
-          expectedDraftToken: input.expectedDraftToken,
-          reason: input.reason,
-        });
-      } catch (error) {
-        if (error instanceof PlatformRevisionConflictError) {
-          throwEnterpriseError({
-            code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
-            details: error.details as Record<string, string | number | boolean | null> | undefined,
-            httpCode: 'CONFLICT',
-          });
-        }
-        throw error;
       }
     }),
 });

@@ -229,18 +229,13 @@ describe('admin.settings denied audit outcomes', () => {
     );
   });
 
-  it('guards publish and rollback before state writes or invalidation', async () => {
+  it('guards save before state writes or invalidation', async () => {
     policyState.enabled = true;
-    const publishInput = {
+    const saveInput = {
       expectedDraftToken: 'a'.repeat(64),
       expectedRevision: 0,
-      reason: 'publish guarded settings',
-    };
-    const rollbackInput = {
-      expectedDraftToken: 'a'.repeat(64),
-      expectedRevision: 1,
-      reason: 'rollback guarded settings',
-      targetRevision: 1,
+      policies: {},
+      reason: 'save guarded settings',
     };
     const invalidation = vi.spyOn(getPlatformConfigInvalidationPublisher(), 'publish');
 
@@ -253,8 +248,7 @@ describe('admin.settings denied audit outcomes', () => {
       { authenticatedAt: new Date(), authMethod: 'api-key' as const },
     ]) {
       const denied = await caller(ids.allowed, auth);
-      await expect(denied.publish(publishInput)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-      await expect(denied.rollback(rollbackInput)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+      await expect(denied.save(saveInput)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     }
     expect(invalidation).not.toHaveBeenCalled();
     await expect(
@@ -273,12 +267,7 @@ describe('admin.settings denied audit outcomes', () => {
     const deniedAudits = (await serverDB.select().from(platformAuditLogs)).filter(
       ({ result }) => result === 'denied',
     );
-    expect(deniedAudits.filter(({ action }) => action === 'admin.settings.publish')).toHaveLength(
-      3,
-    );
-    expect(deniedAudits.filter(({ action }) => action === 'admin.settings.rollback')).toHaveLength(
-      3,
-    );
+    expect(deniedAudits.filter(({ action }) => action === 'admin.settings.save')).toHaveLength(3);
     expect(deniedAudits).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ afterDiff: { error: 'reauth_required' }, result: 'denied' }),
@@ -286,53 +275,92 @@ describe('admin.settings denied audit outcomes', () => {
     );
 
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const insert = vi
-      .spyOn(serverDB, 'insert')
-      .mockImplementationOnce(() => {
-        throw new Error('publish audit unavailable');
-      })
-      .mockImplementationOnce(() => {
-        throw new Error('rollback audit unavailable');
-      });
+    const insert = vi.spyOn(serverDB, 'insert').mockImplementationOnce(() => {
+      throw new Error('save audit unavailable');
+    });
     const missingReauth = await caller(ids.allowed, { authenticatedAt: null });
-    await expect(missingReauth.publish(publishInput)).rejects.toMatchObject({
-      code: 'UNAUTHORIZED',
-    });
-    await expect(missingReauth.rollback(rollbackInput)).rejects.toMatchObject({
-      code: 'UNAUTHORIZED',
-    });
+    await expect(missingReauth.save(saveInput)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(invalidation).not.toHaveBeenCalled();
     expect(JSON.stringify(consoleError.mock.calls)).not.toMatch(
-      /publish guarded settings|rollback guarded settings|settings-audit-allowed/,
+      /save guarded settings|settings-audit-allowed/,
     );
     insert.mockRestore();
     consoleError.mockRestore();
 
+    // Authorised save publishes site-wide immediately: one revision, one invalidation.
     const fresh = await caller(ids.allowed);
     const draft = await fresh.getDraft();
-    const published = await fresh.publish({
-      ...publishInput,
+    const saved = await fresh.save({
+      ...saveInput,
       expectedDraftToken: draft.draftToken,
       expectedRevision: draft.baseRevision,
+      policies: {
+        'general.fontSize': { mode: 'default', schemaVersion: 1, value: 16, visibility: 'visible' },
+      },
     });
-    expect(published).toMatchObject({ auditId: expect.any(String), revision: 1 });
+    expect(saved).toMatchObject({
+      auditId: expect.any(String),
+      draftToken: expect.any(String),
+      revision: 1,
+    });
     expect(invalidation).toHaveBeenCalledTimes(1);
-    const afterPublish = await fresh.getDraft();
-    const secondPublished = await fresh.publish({
-      ...publishInput,
-      expectedDraftToken: afterPublish.draftToken,
-      expectedRevision: published.revision,
-      reason: 'publish second guarded settings revision',
-    });
-    const afterSecondPublish = await fresh.getDraft();
+    const after = await fresh.getDraft();
+    expect(after.baseRevision).toBe(1);
+    expect(after.publishedPolicies['general.fontSize']?.value).toBe(16);
+    // Draft column is aligned to published — nothing stays pending.
+    expect(after.draft).toEqual(after.publishedPolicies);
+    expect(after.draftToken).toBe(saved.draftToken);
+    expect(await serverDB.select().from(platformAuditLogs)).toContainEqual(
+      expect.objectContaining({ action: 'admin.settings.save', result: 'success' }),
+    );
+
+    // A stale CAS base must be refused so the client refreshes instead of clobbering.
     await expect(
-      fresh.rollback({
-        ...rollbackInput,
-        expectedDraftToken: afterSecondPublish.draftToken,
-        expectedRevision: secondPublished.revision,
-        targetRevision: published.revision,
+      fresh.save({
+        ...saveInput,
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: draft.baseRevision,
       }),
-    ).resolves.toMatchObject({ auditId: expect.any(String), revision: 3 });
-    expect(invalidation).toHaveBeenCalledTimes(3);
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(invalidation).toHaveBeenCalledTimes(1);
+  });
+
+  it('save with an empty policy map restores defaults for owned paths only', async () => {
+    policyState.enabled = true;
+    const fresh = await caller(ids.allowed);
+    const seed = await fresh.getDraft();
+    await fresh.save({
+      expectedDraftToken: seed.draftToken,
+      expectedRevision: seed.baseRevision,
+      policies: {
+        'general.fontSize': { mode: 'default', schemaVersion: 1, value: 18, visibility: 'visible' },
+      },
+      reason: 'seed owned policy',
+    });
+
+    const seeded = await fresh.getDraft();
+    await fresh.save({
+      expectedDraftToken: seeded.draftToken,
+      expectedRevision: seeded.baseRevision,
+      policies: {},
+      reason: 'restore defaults',
+    });
+
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
+    expect((await fresh.getDraft()).baseRevision).toBe(2);
+  });
+
+  it('requires SETTINGS_PUBLISH in addition to SETTINGS_UPDATE to save', async () => {
+    policyState.enabled = true;
+    const updateOnly = await caller(ids.updateOnly);
+    await expect(
+      updateOnly.save({
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 0,
+        policies: {},
+        reason: 'must require publish',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
   });
 });

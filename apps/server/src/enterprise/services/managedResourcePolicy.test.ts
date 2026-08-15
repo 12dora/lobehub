@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
-import { createUnmanagedResourcePolicyMap } from '@/database/models/platform';
+import {
+  createUnmanagedResourcePolicyMap,
+  PlatformManagedResourcePolicyModel,
+} from '@/database/models/platform';
 import {
   platformAuditLogs,
   platformManagedResourcePolicies,
@@ -97,26 +100,32 @@ describe('ManagedResourcePolicyService', () => {
     expect(result.draftToken).toMatch(/^[\da-f]{64}$/);
   });
 
-  it('saves draft atomically with audit and rejects stale draft tokens', async () => {
+  it('applies the policy atomically with audit and rejects stale draft tokens', async () => {
     const service = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
     const initial = await service.get();
     const draft = createUnmanagedResourcePolicyMap();
     draft.connectors = { enforcementMode: 'ui-only', managed: true };
 
-    const saved = await service.saveDraft({
+    const saved = await service.save({
       actorUserId: 'admin-1',
       draft,
       expectedDraftToken: initial.draftToken,
-      reason: 'prepare connector policy',
+      expectedRevision: initial.baseRevision,
+      reason: 'roll out connector policy',
     });
-    expect(saved.draftToken).not.toBe(initial.draftToken);
-    expect((await service.get()).published.connectors.managed).toBe(false);
+    expect(saved.revision).toBe(1);
+    const after = await service.get();
+    expect(after.published.connectors.managed).toBe(true);
+    // Draft column aligned with published: no pending state survives a save.
+    expect(after.draft).toEqual(after.published);
+    expect(after.status).toBe('published');
 
     await expect(
-      service.saveDraft({
+      service.save({
         actorUserId: 'admin-2',
         draft: createUnmanagedResourcePolicyMap(),
         expectedDraftToken: initial.draftToken,
+        expectedRevision: initial.baseRevision,
         reason: 'stale overwrite',
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
@@ -124,13 +133,13 @@ describe('ManagedResourcePolicyService', () => {
     const audits = await serverDB.select().from(platformAuditLogs);
     expect(audits.map((audit) => [audit.action, audit.result])).toEqual(
       expect.arrayContaining([
-        ['admin.managedResources.saveDraft', 'success'],
-        ['admin.managedResources.saveDraft', 'failure'],
+        ['admin.managedResources.save', 'success'],
+        ['admin.managedResources.save', 'failure'],
       ]),
     );
   });
 
-  it('blocks enforced publish until catalog readiness and leaves no partial revision', async () => {
+  it('blocks an enforced save until catalog readiness and leaves no partial revision', async () => {
     const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
     const service = new ManagedResourcePolicyService(serverDB, {
       invalidation,
@@ -139,24 +148,22 @@ describe('ManagedResourcePolicyService', () => {
     const initial = await service.get();
     const draft = createUnmanagedResourcePolicyMap();
     draft.aiProviders = { enforcementMode: 'enforced', managed: true };
-    await service.saveDraft({
-      actorUserId: 'admin-1',
-      draft,
-      expectedDraftToken: initial.draftToken,
-      reason: 'prepare enforcement',
-    });
 
     await expect(
-      service.publish({
+      service.save({
         actorUserId: 'admin-1',
-        expectedDraftToken: (await service.get()).draftToken,
-        expectedRevision: 0,
-        reason: 'unsafe publish',
+        draft,
+        expectedDraftToken: initial.draftToken,
+        expectedRevision: initial.baseRevision,
+        reason: 'unsafe enforcement',
       }),
     ).rejects.toBeInstanceOf(ManagedResourceCatalogNotReadyError);
 
     expect(await ownedRevisions()).toHaveLength(0);
-    expect((await service.get()).published.aiProviders.managed).toBe(false);
+    const after = await service.get();
+    expect(after.published.aiProviders.managed).toBe(false);
+    // The blocked save must not leave the rejected map behind as a draft either.
+    expect(after.draft.aiProviders.managed).toBe(false);
     expect(invalidation.events).toHaveLength(0);
   });
 
@@ -170,17 +177,13 @@ describe('ManagedResourcePolicyService', () => {
     const draft = createUnmanagedResourcePolicyMap();
     draft.aiProviders = { enforcementMode: 'enforced', managed: true };
     draft.skills = { enforcementMode: 'observe', managed: true };
-    await service.saveDraft({
+
+    const result = await service.save({
       actorUserId: 'admin-1',
       draft,
       expectedDraftToken: initial.draftToken,
-      reason: 'prepare policy',
-    });
-    const result = await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.get()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish policy',
+      expectedRevision: initial.baseRevision,
+      reason: 'apply policy',
     });
 
     expect(result.revision).toBe(1);
@@ -194,7 +197,7 @@ describe('ManagedResourcePolicyService', () => {
     expect(invalidation.events[0]?.scopes).toEqual(['managed-policy', 'capabilities']);
   });
 
-  it('drops the platform-AI takeover memo after the publish transaction commits', async () => {
+  it('drops the platform-AI takeover memo after the save transaction commits', async () => {
     // Otherwise the publishing instance would keep answering runtime/router reads from the
     // pre-publish regime for the whole memo TTL, and the client's immediate post-transition
     // revalidation would cache the wrong regime permanently.
@@ -204,52 +207,89 @@ describe('ManagedResourcePolicyService', () => {
     const initial = await service.get();
     const draft = createUnmanagedResourcePolicyMap();
     draft.aiProviders = { enforcementMode: 'enforced', managed: true };
-    await service.saveDraft({
+
+    // Warm the memo with the pre-save answer, then save.
+    expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(false);
+    await service.save({
       actorUserId: 'admin-1',
       draft,
       expectedDraftToken: initial.draftToken,
-      reason: 'prepare policy',
-    });
-
-    // Warm the memo with the pre-publish answer, then publish.
-    expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(false);
-    await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.get()).draftToken,
-      expectedRevision: 0,
-      reason: 'publish policy',
+      expectedRevision: initial.baseRevision,
+      reason: 'apply policy',
     });
 
     // No TTL wait: the very next read sees the freshly published policy.
     expect(await isPlatformAiTakeoverActive(serverDB, flags)).toBe(true);
   });
 
-  it('rejects stale expected revision without changing the published snapshot', async () => {
+  it('rejects a stale expected revision without changing the published snapshot', async () => {
     const service = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
     const initial = await service.get();
-    await service.saveDraft({
+    await service.save({
       actorUserId: 'admin-1',
       draft: initial.draft,
       expectedDraftToken: initial.draftToken,
-      reason: 'seed',
-    });
-    await service.publish({
-      actorUserId: 'admin-1',
-      expectedDraftToken: (await service.get()).draftToken,
-      expectedRevision: 0,
+      expectedRevision: initial.baseRevision,
       reason: 'v1',
     });
 
+    const current = await service.get();
     await expect(
-      service.publish({
+      service.save({
         actorUserId: 'admin-1',
-        expectedDraftToken: (await service.get()).draftToken,
+        draft: current.draft,
+        expectedDraftToken: current.draftToken,
         expectedRevision: 0,
         reason: 'stale revision',
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     expect((await service.get()).baseRevision).toBe(1);
     expect(await ownedRevisions()).toHaveLength(1);
+  });
+
+  it('rejects a save whose expected revision is current but whose draft token is stale', async () => {
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const service = new ManagedResourcePolicyService(serverDB, {
+      invalidation,
+      readiness: allReady,
+    });
+    const base = await service.get();
+    // A stranded legacy draft moves the token without moving the revision.
+    const stranded = createUnmanagedResourcePolicyMap();
+    stranded.skills = { enforcementMode: 'ui-only', managed: true };
+    await new PlatformManagedResourcePolicyModel(serverDB).replaceDraft({
+      draft: stranded,
+      updatedBy: 'admin-1',
+    });
+    const current = await service.get();
+    expect(current.baseRevision).toBe(base.baseRevision);
+    expect(current.draftToken).not.toBe(base.draftToken);
+
+    const next = createUnmanagedResourcePolicyMap();
+    next.agents = { enforcementMode: 'ui-only', managed: true };
+    await expect(
+      service.save({
+        actorUserId: 'admin-1',
+        draft: next,
+        expectedDraftToken: base.draftToken,
+        expectedRevision: current.baseRevision,
+        reason: 'token-only stale base',
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(await ownedRevisions()).toHaveLength(0);
+    expect(invalidation.events).toHaveLength(0);
+    expect((await service.get()).published.agents.managed).toBe(false);
+
+    // Same revision, matching token → the save goes through.
+    await expect(
+      service.save({
+        actorUserId: 'admin-1',
+        draft: next,
+        expectedDraftToken: current.draftToken,
+        expectedRevision: current.baseRevision,
+        reason: 'token-matched save',
+      }),
+    ).resolves.toMatchObject({ revision: 1 });
   });
 
   it('rolls back revision and effective rows when materialization transaction faults', async () => {
@@ -266,137 +306,32 @@ describe('ManagedResourcePolicyService', () => {
     const initial = await service.get();
     const draft = createUnmanagedResourcePolicyMap();
     draft.skills = { enforcementMode: 'ui-only', managed: true };
-    await service.saveDraft({
-      actorUserId: 'admin-1',
-      draft,
-      expectedDraftToken: initial.draftToken,
-      reason: 'prepare fault test',
-    });
 
     await expect(
-      service.publish({
+      service.save({
         actorUserId: 'admin-1',
-        expectedDraftToken: (await service.get()).draftToken,
-        expectedRevision: 0,
-        reason: 'faulted publish',
+        draft,
+        expectedDraftToken: initial.draftToken,
+        expectedRevision: initial.baseRevision,
+        reason: 'faulted save',
       }),
     ).rejects.toThrow('injected materialization fault');
 
     const current = await service.get();
     expect(current.baseRevision).toBe(0);
     expect(current.published.skills.managed).toBe(false);
+    expect(current.draft.skills.managed).toBe(false);
     expect(await ownedRevisions()).toHaveLength(0);
     expect(invalidation.events).toHaveLength(0);
     expect(await serverDB.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({
-        action: 'admin.managedResources.publish',
+        action: 'admin.managedResources.save',
         result: 'failure',
       }),
     );
   });
 
-  it('save-vs-save locked CAS permits exactly one writer', async () => {
-    const locked = deferred();
-    const release = deferred();
-    const first = new ManagedResourcePolicyService(serverDB, {
-      lifecycle: {
-        afterDraftLock: async () => {
-          locked.resolve();
-          await release.promise;
-        },
-      },
-      readiness: allReady,
-    });
-    const second = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
-    const shared = (await first.get()).draftToken;
-    const firstDraft = createUnmanagedResourcePolicyMap();
-    firstDraft.agents = { enforcementMode: 'ui-only', managed: true };
-    const secondDraft = createUnmanagedResourcePolicyMap();
-    secondDraft.skills = { enforcementMode: 'ui-only', managed: true };
-
-    const firstSave = first.saveDraft({
-      actorUserId: 'admin-1',
-      draft: firstDraft,
-      expectedDraftToken: shared,
-      reason: 'first save',
-    });
-    await locked.promise;
-    const secondSave = second.saveDraft({
-      actorUserId: 'admin-2',
-      draft: secondDraft,
-      expectedDraftToken: shared,
-      reason: 'second save',
-    });
-    const secondSaveRejection = expect(secondSave).rejects.toBeInstanceOf(
-      PlatformRevisionConflictError,
-    );
-    release.resolve();
-
-    await expect(firstSave).resolves.toMatchObject({ ok: true });
-    await secondSaveRejection;
-    expect((await second.get()).draft).toEqual(firstDraft);
-    const audits = await serverDB.select().from(platformAuditLogs);
-    expect(audits.filter((row) => row.action === 'admin.managedResources.saveDraft')).toMatchObject(
-      [
-        { actorUserId: 'admin-1', result: 'success' },
-        { actorUserId: 'admin-2', result: 'failure' },
-      ],
-    );
-  });
-
-  it('save-vs-publish locked CAS prevents publishing a stale draft token', async () => {
-    const locked = deferred();
-    const release = deferred();
-    const saver = new ManagedResourcePolicyService(serverDB, {
-      lifecycle: {
-        afterDraftLock: async () => {
-          locked.resolve();
-          await release.promise;
-        },
-      },
-      readiness: allReady,
-    });
-    const publisher = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
-    const initial = await saver.get();
-    const draft = createUnmanagedResourcePolicyMap();
-    draft.connectors = { enforcementMode: 'ui-only', managed: true };
-    const save = saver.saveDraft({
-      actorUserId: 'admin-1',
-      draft,
-      expectedDraftToken: initial.draftToken,
-      reason: 'save wins',
-    });
-    await locked.promise;
-    const publish = publisher.publish({
-      actorUserId: 'admin-2',
-      expectedDraftToken: initial.draftToken,
-      expectedRevision: 0,
-      reason: 'stale publish',
-    });
-    const publishRejection = expect(publish).rejects.toBeInstanceOf(PlatformRevisionConflictError);
-    release.resolve();
-
-    await expect(save).resolves.toMatchObject({ ok: true });
-    await publishRejection;
-    expect(await ownedRevisions()).toHaveLength(0);
-    expect((await publisher.get()).published).toEqual(createUnmanagedResourcePolicyMap());
-    expect(await serverDB.select().from(platformAuditLogs)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          action: 'admin.managedResources.saveDraft',
-          actorUserId: 'admin-1',
-          result: 'success',
-        }),
-        expect.objectContaining({
-          action: 'admin.managedResources.publish',
-          actorUserId: 'admin-2',
-          result: 'failure',
-        }),
-      ]),
-    );
-  });
-
-  it('publish-vs-publish permits one revision and one materialized snapshot', async () => {
+  it('save-vs-save locked CAS permits exactly one writer and one revision', async () => {
     const locked = deferred();
     const release = deferred();
     const first = new ManagedResourcePolicyService(serverDB, {
@@ -409,43 +344,39 @@ describe('ManagedResourcePolicyService', () => {
       readiness: allReady,
     });
     const second = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
-    const initial = await first.get();
-    const draft = createUnmanagedResourcePolicyMap();
-    draft.aiModels = { enforcementMode: 'ui-only', managed: true };
-    await first.saveDraft({
-      actorUserId: 'admin-1',
-      draft,
-      expectedDraftToken: initial.draftToken,
-      reason: 'seed',
-    });
     const shared = await first.get();
-    const firstPublish = first.publish({
+    const firstDraft = createUnmanagedResourcePolicyMap();
+    firstDraft.agents = { enforcementMode: 'ui-only', managed: true };
+    const secondDraft = createUnmanagedResourcePolicyMap();
+    secondDraft.skills = { enforcementMode: 'ui-only', managed: true };
+
+    const firstSave = first.save({
       actorUserId: 'admin-1',
+      draft: firstDraft,
       expectedDraftToken: shared.draftToken,
-      expectedRevision: 0,
-      reason: 'first publish',
+      expectedRevision: shared.baseRevision,
+      reason: 'first save',
     });
     await locked.promise;
-    const secondPublish = second.publish({
+    const secondSave = second.save({
       actorUserId: 'admin-2',
+      draft: secondDraft,
       expectedDraftToken: shared.draftToken,
-      expectedRevision: 0,
-      reason: 'second publish',
+      expectedRevision: shared.baseRevision,
+      reason: 'second save',
     });
-    const secondPublishRejection = expect(secondPublish).rejects.toBeInstanceOf(
+    const secondSaveRejection = expect(secondSave).rejects.toBeInstanceOf(
       PlatformRevisionConflictError,
     );
     release.resolve();
 
-    await expect(firstPublish).resolves.toMatchObject({ revision: 1 });
-    await secondPublishRejection;
+    await expect(firstSave).resolves.toMatchObject({ revision: 1 });
+    await secondSaveRejection;
+    expect((await second.get()).published).toEqual(firstDraft);
     expect(await ownedRevisions()).toHaveLength(1);
     const rows = await serverDB.select().from(platformManagedResourcePolicies);
     expect(rows).toHaveLength(5);
     expect(new Set(rows.map((row) => row.revision))).toEqual(new Set([1]));
-    expect(rows.map((row) => row.config.published)).toEqual(
-      expect.arrayContaining(Object.values(draft)),
-    );
     expect(await serverDB.select().from(platformAuditLogs)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -455,7 +386,13 @@ describe('ManagedResourcePolicyService', () => {
           result: 'success',
         }),
         expect.objectContaining({
-          action: 'admin.managedResources.publish',
+          action: 'admin.managedResources.save',
+          actorUserId: 'admin-1',
+          configRevision: 1,
+          result: 'success',
+        }),
+        expect.objectContaining({
+          action: 'admin.managedResources.save',
           actorUserId: 'admin-2',
           result: 'failure',
         }),

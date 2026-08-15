@@ -279,8 +279,12 @@ const publicationDomains = {
   'admin.branding.publish': 'branding',
   'admin.connectors.publish': 'connector_catalog',
   'admin.identityProviders.publish': 'identity',
+  // 统一管理 de-drafted: `.save` is the live write, `.publish` is kept so historical
+  // failures still roll up into publish health.
   'admin.managedResources.publish': 'managed_policy',
+  'admin.managedResources.save': 'managed_policy',
   'admin.settings.publish': 'settings',
+  'admin.settings.save': 'settings',
   'admin.skills.publish': 'skill_catalog',
 } as const;
 

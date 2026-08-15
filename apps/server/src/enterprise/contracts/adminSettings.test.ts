@@ -1,99 +1,87 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  adminSettingsPublishInputSchema,
-  adminSettingsRollbackInputSchema,
-  adminSettingsSaveDraftInputSchema,
+  adminSettingsApplyImmediateInputSchema,
+  adminSettingsSaveInputSchema,
+  adminSettingsSaveOutputSchema,
 } from './adminSettings';
 
 const draftToken = 'a'.repeat(64);
 const safeReason = '  review global settings change  ';
 const secretReason = 'Authorization: Bearer test-only-settings-credential';
 
-describe('admin settings reason contract', () => {
-  it('trims the shared bounded reason for save, publish and rollback', () => {
+const baseSave = {
+  expectedDraftToken: draftToken,
+  expectedRevision: 0,
+  policies: {},
+  reason: safeReason,
+};
+
+describe('admin settings save contract', () => {
+  it('trims the shared bounded reason for save and applyImmediate', () => {
+    expect(adminSettingsSaveInputSchema.parse(baseSave).reason).toBe(
+      'review global settings change',
+    );
     expect(
-      adminSettingsSaveDraftInputSchema.parse({
-        draft: {},
-        expectedDraftToken: draftToken,
+      adminSettingsApplyImmediateInputSchema.parse({
+        patch: { 'general.fontSize': 16 },
         reason: safeReason,
-      }).reason,
-    ).toBe('review global settings change');
-    expect(
-      adminSettingsPublishInputSchema.parse({
-        expectedDraftToken: draftToken,
-        expectedRevision: 0,
-        reason: safeReason,
-      }).reason,
-    ).toBe('review global settings change');
-    expect(
-      adminSettingsRollbackInputSchema.parse({
-        expectedDraftToken: draftToken,
-        expectedRevision: 1,
-        reason: safeReason,
-        targetRevision: 1,
       }).reason,
     ).toBe('review global settings change');
   });
 
-  it('rejects secret material for save, publish and rollback reasons', () => {
-    for (const result of [
-      adminSettingsSaveDraftInputSchema.safeParse({
-        draft: {},
-        expectedDraftToken: draftToken,
-        reason: secretReason,
-      }),
-      adminSettingsPublishInputSchema.safeParse({
-        expectedDraftToken: draftToken,
-        expectedRevision: 0,
-        reason: secretReason,
-      }),
-      adminSettingsRollbackInputSchema.safeParse({
-        expectedDraftToken: draftToken,
-        expectedRevision: 1,
-        reason: secretReason,
-        targetRevision: 1,
-      }),
-    ]) {
-      expect(result.success).toBe(false);
-    }
-  });
-
-  it('rejects secret material in publication comments', () => {
+  it('rejects secret material in save reasons and comments', () => {
     expect(
-      adminSettingsPublishInputSchema.safeParse({
-        comment: secretReason,
-        expectedDraftToken: draftToken,
-        expectedRevision: 0,
-        reason: safeReason,
-      }).success,
+      adminSettingsSaveInputSchema.safeParse({ ...baseSave, reason: secretReason }).success,
     ).toBe(false);
     expect(
-      adminSettingsPublishInputSchema.safeParse({
-        comment: 'Safe publish note for audit trail',
-        expectedDraftToken: draftToken,
-        expectedRevision: 0,
-        reason: safeReason,
+      adminSettingsSaveInputSchema.safeParse({ ...baseSave, comment: secretReason }).success,
+    ).toBe(false);
+    expect(
+      adminSettingsSaveInputSchema.safeParse({
+        ...baseSave,
+        comment: 'Safe publication note for the audit trail',
       }).success,
     ).toBe(true);
   });
 
-  it('accepts empty publication comments and normalizes them to undefined', () => {
+  it('accepts empty comments and normalizes them to undefined', () => {
     expect(
-      adminSettingsPublishInputSchema.parse({
-        comment: '',
-        expectedDraftToken: draftToken,
-        expectedRevision: 0,
-        reason: safeReason,
-      }).comment,
+      adminSettingsSaveInputSchema.parse({ ...baseSave, comment: '' }).comment,
     ).toBeUndefined();
     expect(
-      adminSettingsPublishInputSchema.parse({
-        comment: '   ',
-        expectedDraftToken: draftToken,
-        expectedRevision: 0,
-        reason: safeReason,
-      }).comment,
+      adminSettingsSaveInputSchema.parse({ ...baseSave, comment: '   ' }).comment,
+    ).toBeUndefined();
+  });
+
+  it('requires the full CAS base and rejects unknown keys', () => {
+    // Empty policies is legal — it means "restore defaults for owned paths".
+    expect(adminSettingsSaveInputSchema.parse(baseSave).policies).toEqual({});
+    expect(() => adminSettingsSaveInputSchema.parse({ ...baseSave, extra: true })).toThrow();
+    expect(() =>
+      adminSettingsSaveInputSchema.parse({ ...baseSave, expectedDraftToken: 'short' }),
+    ).toThrow();
+    const { expectedRevision: _drop, ...missingRevision } = baseSave;
+    expect(() => adminSettingsSaveInputSchema.parse(missingRevision)).toThrow();
+    expect(() =>
+      adminSettingsSaveInputSchema.parse({
+        ...baseSave,
+        policies: { 'general.fontSize': { mode: 'nope', schemaVersion: 1, visibility: 'visible' } },
+      }),
+    ).toThrow();
+  });
+
+  it('returns the fresh CAS base plus optional warnings', () => {
+    expect(
+      adminSettingsSaveOutputSchema.parse({
+        auditId: 'audit-1',
+        draftToken,
+        revision: 3,
+        warnings: ['ignored_service_model_paths:2'],
+      }),
+    ).toMatchObject({ revision: 3, warnings: ['ignored_service_model_paths:2'] });
+    expect(
+      adminSettingsSaveOutputSchema.parse({ auditId: 'audit-1', draftToken, revision: 1 }).warnings,
     ).toBeUndefined();
   });
 });

@@ -119,39 +119,49 @@ describe('admin.managedResources permission contract', () => {
     );
   });
 
-  it('lets auditors read but not save drafts', async () => {
+  it('lets auditors read but not save', async () => {
     const caller = createCaller((await context(ids.auditor)) as never);
     const current = await caller.managedResources.get();
     await expect(
-      caller.managedResources.saveDraft({
+      caller.managedResources.save({
         draft: current.draft,
         expectedDraftToken: current.draftToken,
+        expectedRevision: current.baseRevision,
         reason: 'auditor must not write',
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('lets ai_admin save and publish a ui-only policy with CAS', async () => {
+  it('applies a ui-only policy site-wide in one save with CAS', async () => {
     const caller = createCaller((await context(ids.aiAdmin)) as never);
     const current = await caller.managedResources.get();
     const draft = {
       ...current.draft,
       skills: { enforcementMode: 'ui-only' as const, managed: true },
     };
-    await caller.managedResources.saveDraft({
+    const result = await caller.managedResources.save({
       draft,
       expectedDraftToken: current.draftToken,
-      reason: 'prepare skills rollout',
-    });
-    const saved = await caller.managedResources.get();
-    const result = await caller.managedResources.publish({
-      expectedDraftToken: saved.draftToken,
-      expectedRevision: saved.baseRevision,
-      reason: 'publish skills rollout',
+      expectedRevision: current.baseRevision,
+      reason: 'roll out skills policy',
     });
     expect(result.revision).toBe(1);
     expect(result.runtimeTransition).toBe('finalized');
-    expect((await caller.managedResources.get()).published.skills).toEqual(draft.skills);
+    const after = await caller.managedResources.get();
+    expect(after.published.skills).toEqual(draft.skills);
+    // Draft column is aligned to published: nothing is left pending.
+    expect(after.draft).toEqual(after.published);
+    expect(after.status).toBe('published');
+
+    // Replaying the now-stale CAS base must be refused, not silently re-applied.
+    await expect(
+      caller.managedResources.save({
+        draft,
+        expectedDraftToken: current.draftToken,
+        expectedRevision: current.baseRevision,
+        reason: 'stale replay',
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 
   it('returns the committed revision with pending recovery when connector finalization fails', async () => {
@@ -163,21 +173,51 @@ describe('admin.managedResources permission contract', () => {
       ...current.draft,
       connectors: { enforcementMode: 'ui-only' as const, managed: true },
     };
-    await caller.managedResources.saveDraft({
+
+    const result = await caller.managedResources.save({
       draft,
       expectedDraftToken: current.draftToken,
-      reason: 'prepare connector rollout',
-    });
-    const saved = await caller.managedResources.get();
-
-    const result = await caller.managedResources.publish({
-      expectedDraftToken: saved.draftToken,
-      expectedRevision: saved.baseRevision,
-      reason: 'publish connector rollout',
+      expectedRevision: current.baseRevision,
+      reason: 'roll out connector policy',
     });
     expect(result).toMatchObject({ revision: 1, runtimeTransition: 'pending_recovery' });
     expect((await caller.managedResources.get()).published.connectors).toEqual(draft.connectors);
     expect(runtimeTransition.cancel).not.toHaveBeenCalled();
+  });
+
+  it('cancels the connector transition and writes nothing when the readiness gate blocks save', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
+    const caller = createCaller((await context(ids.aiAdmin)) as never);
+    const current = await caller.managedResources.get();
+    // Nothing is seeded in the connector catalog, so `enforced` is not ready.
+    expect(current.readiness.connectors).toBe(false);
+
+    await expect(
+      caller.managedResources.save({
+        draft: {
+          ...current.draft,
+          connectors: { enforcementMode: 'enforced' as const, managed: true },
+        },
+        expectedDraftToken: current.draftToken,
+        expectedRevision: current.baseRevision,
+        reason: 'enforce before the catalog is ready',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    expect(runtimeTransition.cancel).toHaveBeenCalledWith('managed-transition-token');
+    expect(runtimeTransition.finalize).not.toHaveBeenCalled();
+    expect(
+      await db
+        .select()
+        .from(platformResourceRevisions)
+        .where(
+          and(
+            eq(platformResourceRevisions.resourceType, MANAGED_POLICY_RESOURCE_TYPE),
+            eq(platformResourceRevisions.resourceId, MANAGED_POLICY_RESOURCE_ID),
+          ),
+        ),
+    ).toHaveLength(0);
+    expect((await caller.managedResources.get()).published.connectors.managed).toBe(false);
   });
 
   it.each([
@@ -193,12 +233,13 @@ describe('admin.managedResources permission contract', () => {
       auth: { authenticatedAt: new Date(), authMethod: 'api-key' },
       label: 'api-key',
     },
-  ] as const)('denies $label publish reauth and writes denied audit', async ({ auth, label }) => {
+  ] as const)('denies $label save reauth and writes denied audit', async ({ auth, label }) => {
     const caller = createCaller((await context(ids.aiAdmin, auth)) as never);
     const current = await caller.managedResources.get();
     const reason = `denied-${label}`;
     await expect(
-      caller.managedResources.publish({
+      caller.managedResources.save({
+        draft: current.draft,
         expectedDraftToken: current.draftToken,
         expectedRevision: current.baseRevision,
         reason,
@@ -218,7 +259,7 @@ describe('admin.managedResources permission contract', () => {
     ).toHaveLength(0);
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({
-        action: 'admin.managedResources.publish',
+        action: 'admin.managedResources.save',
         actorUserId: ids.aiAdmin,
         afterDiff: { error: 'reauth_required' },
         reason,

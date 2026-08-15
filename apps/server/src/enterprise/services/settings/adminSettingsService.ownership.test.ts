@@ -140,6 +140,108 @@ describe('AdminSettingsService policy-editor ownership', () => {
     expect(published.find((row) => row.path === 'general.fontSize')).toBeUndefined();
   });
 
+  // R1: the 空草稿 regression (926e53e8d7). An empty policy-editor payload is 恢复默认 for
+  // OWNED paths only — it must never become a whole-table replacement.
+  it('save with an empty policy map preserves foreign published rows', async () => {
+    await seedForeignViaFullOwnership();
+    const before = await service.getDraft();
+    expect(before.publishedPolicies[foreignPath]).toEqual(foreignDefault);
+    expect(before.publishedPolicies['general.fontSize']?.value).toBe(16);
+
+    const result = await service.save({
+      actorUserId: 'admin-policy',
+      expectedDraftToken: before.draftToken,
+      expectedRevision: before.baseRevision,
+      policies: {},
+      reason: 'restore defaults for owned paths only',
+    });
+    expect(result.revision).toBe(2);
+    expect(result.warnings).toBeUndefined();
+
+    const published = await serverDB.select().from(platformSettingPolicies);
+    expect(published.map((row) => row.path)).toEqual([foreignPath]);
+    expect(published[0]).toMatchObject({ mode: 'default', value: 4, visibility: 'visible' });
+
+    // Draft column is aligned to published, so the foreign row survives there too.
+    const after = await service.getDraft();
+    expect(after.draft[foreignPath]).toEqual(foreignDefault);
+    expect(after.draft['general.fontSize']).toBeUndefined();
+    expect(after.draft).toEqual(after.publishedPolicies);
+    expect(after.draftToken).toBe(result.draftToken);
+  });
+
+  it('save ignores service-model paths in the payload and reports them as warnings', async () => {
+    await seedForeignViaFullOwnership();
+    const before = await service.getDraft();
+
+    // Malicious / stale client tries to rewrite the foreign row through the policy editor.
+    const result = await service.save({
+      actorUserId: 'admin-policy',
+      expectedDraftToken: before.draftToken,
+      expectedRevision: before.baseRevision,
+      policies: {
+        [foreignPath]: foreignUpdated,
+        'general.fontSize': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: 20,
+          visibility: 'hidden',
+        },
+      },
+      reason: 'font only',
+    });
+    expect(result.warnings).toEqual(['ignored_service_model_paths:1']);
+
+    const after = await service.getDraft();
+    expect(after.publishedPolicies[foreignPath]).toEqual(foreignDefault);
+    expect(after.publishedPolicies['general.fontSize']).toMatchObject({
+      mode: 'locked',
+      value: 20,
+      visibility: 'hidden',
+    });
+  });
+
+  // R5: a draft stranded by the pre-de-draft workflow must not be adopted silently.
+  it('save starts from published and drops a stranded legacy draft', async () => {
+    await seedForeignViaFullOwnership();
+    // Simulate a legacy unpublished draft left behind by the removed workflow.
+    await saveCurrentDraft(service, {
+      actorUserId: 'admin-legacy',
+      draft: {
+        [foreignPath]: foreignDefault,
+        'general.fontSize': { mode: 'locked', schemaVersion: 1, value: 22, visibility: 'hidden' },
+        'general.isLiteMode': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: true,
+          visibility: 'hidden',
+        },
+      },
+      ownership: 'policy-editor',
+      reason: 'stranded legacy draft',
+    });
+    const stranded = await service.getDraft();
+    expect(stranded.draft['general.isLiteMode']).toBeDefined();
+
+    await service.save({
+      actorUserId: 'admin-policy',
+      expectedDraftToken: stranded.draftToken,
+      expectedRevision: stranded.baseRevision,
+      policies: {
+        'general.fontSize': { mode: 'default', schemaVersion: 1, value: 16, visibility: 'visible' },
+      },
+      reason: 'save only what the editor sent',
+    });
+
+    const after = await service.getDraft();
+    // The stranded path was never published and is not adopted by the save.
+    expect(after.publishedPolicies['general.isLiteMode']).toBeUndefined();
+    expect(after.draft['general.isLiteMode']).toBeUndefined();
+    expect(after.publishedPolicies['general.fontSize']?.value).toBe(16);
+    // Foreign row still intact.
+    expect(after.publishedPolicies[foreignPath]).toEqual(foreignDefault);
+  });
+
   it('full-owner publish can delete foreign service-model policies omitted from draft', async () => {
     await seedForeignViaFullOwnership();
     const before = await serverDB.select().from(platformSettingPolicies);

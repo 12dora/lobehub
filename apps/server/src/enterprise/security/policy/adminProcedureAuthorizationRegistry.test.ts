@@ -67,14 +67,17 @@ describe('admin procedure authorization registry', () => {
     // (10 mutations + 4 queries). The read-only aiProviders.listRevisions history query
     // stays — agent dependency pinning reads the published revision checksum from it.
     // +1 mutation since: admin.aiProviderOAuth.disconnect (withdraw the shared account).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(184);
+    // −6/+2 mutations since: 统一管理 de-draft replaced
+    // admin.settings.{saveDraft,validateDraft,publish,rollback} with admin.settings.save and
+    // admin.managedResources.{saveDraft,publish} with admin.managedResources.save.
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(180);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(86);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(98);
-    expect(mutationPaths).toHaveLength(98);
+    ).toHaveLength(94);
+    expect(mutationPaths).toHaveLength(94);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

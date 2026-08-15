@@ -540,6 +540,40 @@ describe('PlatformSystemAdminService status', () => {
     });
   });
 
+  it('classifies de-drafted 统一管理 save failures into their publication domains', async () => {
+    const now = new Date('2026-08-15T12:00:00.000Z');
+    await db.insert(platformAuditLogs).values([
+      {
+        action: 'admin.settings.save',
+        actorUserId: 'admin-1',
+        afterDiff: { error: 'revision_conflict' },
+        createdAt: new Date(now.getTime() - 60_000),
+        result: 'failure',
+        targetType: 'settings',
+      },
+      {
+        action: 'admin.managedResources.save',
+        actorUserId: 'admin-1',
+        afterDiff: { error: 'operation_failed' },
+        createdAt: new Date(now.getTime() - 30_000),
+        result: 'failure',
+        targetType: 'managed_policy',
+      },
+    ]);
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: { ENABLE_DATABASE_OIDC: '0' },
+      now: () => now,
+    }).getStatus();
+    expect(status.recentPublishFailures.count).toBe(2);
+    expect(status.recentPublishFailures.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'conflict', domain: 'settings' }),
+        expect.objectContaining({ category: 'operation_unavailable', domain: 'managed_policy' }),
+      ]),
+    );
+  });
+
   it('reports unavailable aggregates distinctly and rejects an invalid env KEK as healthy', async () => {
     const service = new PlatformSystemAdminService(db, {
       env: {

@@ -6,9 +6,8 @@ import {
 } from '@/const/platform/managedResources';
 
 import {
-  adminManagedResourcesPublishInputSchema,
-  adminManagedResourcesPublishOutputSchema,
-  adminManagedResourcesSaveDraftInputSchema,
+  adminManagedResourcesSaveInputSchema,
+  adminManagedResourcesSaveOutputSchema,
   managedResourceEnforcementModeSchema,
   managedResourcePolicyMapSchema,
   managedResourceReadinessMapSchema,
@@ -52,49 +51,46 @@ describe('admin managed-resource contracts', () => {
     }
   });
 
-  it('requires CAS tokens and non-empty reasons and rejects unknown input keys', () => {
+  it('requires the full CAS base and non-empty reasons and rejects unknown input keys', () => {
     const input = {
       draft: validMap,
       expectedDraftToken: 'a'.repeat(64),
+      expectedRevision: 0,
       reason: 'progressive rollout',
     };
-    expect(adminManagedResourcesSaveDraftInputSchema.parse(input)).toEqual(input);
+    expect(adminManagedResourcesSaveInputSchema.parse(input)).toEqual(input);
+    expect(() => adminManagedResourcesSaveInputSchema.parse({ ...input, extra: true })).toThrow();
+    expect(() => adminManagedResourcesSaveInputSchema.parse({ ...input, reason: ' ' })).toThrow();
     expect(() =>
-      adminManagedResourcesSaveDraftInputSchema.parse({ ...input, extra: true }),
+      adminManagedResourcesSaveInputSchema.parse({ ...input, expectedDraftToken: 'short' }),
     ).toThrow();
-    expect(() =>
-      adminManagedResourcesSaveDraftInputSchema.parse({ ...input, reason: ' ' }),
-    ).toThrow();
-    expect(() =>
-      adminManagedResourcesPublishInputSchema.parse({
-        expectedDraftToken: 'short',
-        expectedRevision: 0,
-        reason: 'publish',
-      }),
-    ).toThrow();
+    const { expectedRevision: _drop, ...missingRevision } = input;
+    expect(() => adminManagedResourcesSaveInputSchema.parse(missingRevision)).toThrow();
+    const { draft: _dropDraft, ...missingDraft } = input;
+    expect(() => adminManagedResourcesSaveInputSchema.parse(missingDraft)).toThrow();
   });
 
   it('rejects secret material in reasons and publication comments', () => {
+    const base = {
+      draft: validMap,
+      expectedDraftToken: 'a'.repeat(64),
+      expectedRevision: 0,
+    };
     expect(
-      adminManagedResourcesSaveDraftInputSchema.safeParse({
-        draft: validMap,
-        expectedDraftToken: 'a'.repeat(64),
-        reason: secretReason,
-      }).success,
+      adminManagedResourcesSaveInputSchema.safeParse({ ...base, reason: secretReason }).success,
     ).toBe(false);
     expect(
-      adminManagedResourcesPublishInputSchema.safeParse({
+      adminManagedResourcesSaveInputSchema.safeParse({
+        ...base,
         comment: secretReason,
-        expectedDraftToken: 'a'.repeat(64),
-        expectedRevision: 0,
-        reason: 'publish managed policy',
+        reason: 'save managed policy',
       }).success,
     ).toBe(false);
   });
 
   it('distinguishes finalized activation from committed publication pending recovery', () => {
     expect(
-      adminManagedResourcesPublishOutputSchema.parse({
+      adminManagedResourcesSaveOutputSchema.parse({
         auditId: 'audit-1',
         revision: 3,
         runtimeTransition: 'pending_recovery',
@@ -104,5 +100,12 @@ describe('admin managed-resource contracts', () => {
       revision: 3,
       runtimeTransition: 'pending_recovery',
     });
+    expect(() =>
+      adminManagedResourcesSaveOutputSchema.parse({
+        auditId: 'audit-1',
+        revision: 3,
+        runtimeTransition: 'rolled_back',
+      }),
+    ).toThrow();
   });
 });

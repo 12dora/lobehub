@@ -1,5 +1,10 @@
 /**
- * Admin settings draft / validate / publish / rollback (M05).
+ * Admin settings service (M05).
+ *
+ * TRPC surface: `getDraft` (read), `save` (de-drafted immediate site-wide write) and
+ * `applyImmediate` (path→value patch used by the AI settings forms). `saveDraft`,
+ * `validateDraft`, `publish` and `rollback` survive only as internal building blocks —
+ * they have no procedure and must not grow one back.
  *
  * Aggregate resource: resourceType=settings, resourceId=global.
  * Uses PlatformPublisherService for atomic revision + audit + invalidation.
@@ -17,7 +22,6 @@ import {
   PLATFORM_SETTINGS_RESOURCE_TYPE,
   type SettingPolicyMode,
   type SettingPolicyVisibility,
-  type SettingsValidationIssue,
 } from '@/types/platform/settings';
 
 import { classifyEnterpriseError } from '../../observability';
@@ -33,6 +37,9 @@ import {
   assertPublishedPlatformAiReferences,
 } from '../platformDependencyLock';
 import { PlatformPublisherService, PlatformRevisionConflictError } from '../platformPublisher';
+import { applySettingsPatch } from './applySettingsPatch';
+import { validateSettingsDraft } from './draftValidation';
+import { SettingsDirtyDraftError, SettingsDraftValidationError } from './errors';
 import {
   isServiceModelManagedPath,
   mergePolicyEditorDraft,
@@ -42,43 +49,7 @@ import {
 import { settingsRegistry } from './registry';
 
 export { PlatformRevisionConflictError };
-
-export class SettingsDraftValidationError extends Error {
-  readonly issues: SettingsValidationIssue[];
-  constructor(issues: SettingsValidationIssue[]) {
-    super('PLATFORM_CONFIG_VALIDATION_FAILED');
-    this.name = 'SettingsDraftValidationError';
-    this.issues = issues;
-  }
-}
-
-/**
- * Draft has unpublished diffs on paths outside the applyImmediate patch.
- * Callers should direct admins to the Settings Policy page.
- */
-export class SettingsDirtyDraftError extends Error {
-  readonly dirtyPaths: string[];
-  constructor(dirtyPaths: string[]) {
-    super(
-      'Unpublished settings draft differs outside the applied patch. Resolve on the Settings Policy page first.',
-    );
-    this.name = 'SettingsDirtyDraftError';
-    this.dirtyPaths = dirtyPaths;
-  }
-}
-
-const policyFingerprint = (policy: {
-  mode: string;
-  schemaVersion: number;
-  value?: unknown;
-  visibility: string;
-}): string =>
-  JSON.stringify({
-    mode: policy.mode,
-    schemaVersion: policy.schemaVersion,
-    value: policy.value,
-    visibility: policy.visibility,
-  });
+export { SettingsDirtyDraftError, SettingsDraftValidationError } from './errors';
 
 /** Production-empty lifecycle seam for causal transaction fault tests. */
 export interface AdminSettingsMutationLifecycle {
@@ -131,6 +102,19 @@ export class AdminSettingsService {
   private settingsPointer = (params: {
     alignDraft?: boolean;
     expectedDraftToken: string;
+    /**
+     * De-drafted `save` only: the policy-editor payload published in this transaction.
+     * The baseline is the **published** policy set, never the (possibly stranded) draft
+     * column, so a legacy unpublished draft is dropped instead of silently adopted.
+     */
+    incoming?: SettingsDraftPolicyMap;
+    /**
+     * `alignDraft` only: receives the CAS token of the draft row this transaction wrote,
+     * computed from the committed revision. Callers must build their response from this
+     * instead of re-reading the bundle after COMMIT (an unlocked post-commit read can
+     * observe a newer save and pair revision N with the token of revision N+1).
+     */
+    onDraftAligned?: (draftToken: string) => void;
     operation: 'publish' | 'rollback';
     /**
      * Publish only: `policy-editor` re-attaches missing foreign published rows so empty
@@ -152,7 +136,10 @@ export class AdminSettingsService {
             'Platform settings draft conflict: expectedDraftToken does not match locked draft',
           );
         }
-        await assertPublishedPlatformAiReferences(tx, bundle.draft);
+        // `incoming` replaces the draft column wholesale, so a stranded draft referencing
+        // a retired provider must not block the save; materialize re-asserts on the
+        // policies actually being published.
+        if (!params.incoming) await assertPublishedPlatformAiReferences(tx, bundle.draft);
       },
       materializePublished: async (tx, args) => {
         const model = new PlatformSettingsModel(tx);
@@ -176,10 +163,19 @@ export class AdminSettingsService {
           updatedBy: params.updatedBy,
         });
         if (params.alignDraft) {
-          await model.saveDraft({
+          const aligned = await model.saveDraft({
             draft: policies,
             updatedBy: params.updatedBy,
           });
+          // Same transaction, same lock: `aligned.draft` is the stored row a later
+          // `getDraft()` would read, and `args.revision` is the revision the pointer was
+          // just moved to — so this token can never belong to somebody else's revision.
+          params.onDraftAligned?.(
+            this.draftToken({
+              draft: (aligned?.draft ?? policies) as SettingsDraftPolicyMap,
+              revision: args.revision,
+            }),
+          );
         }
         await this.lifecycle.afterMaterialization?.(params.operation);
       },
@@ -188,6 +184,15 @@ export class AdminSettingsService {
         const bundle = await model.getBundle();
         if (!bundle) throw new Error('Failed to load locked platform settings bundle');
         let draft = (bundle.draft ?? {}) as SettingsDraftPolicyMap;
+        if (params.incoming) {
+          // De-drafted save: owned paths come from the payload, foreign service-model
+          // paths from the current PUBLISHED state (R1 + R5).
+          const publishedBase: SettingsDraftPolicyMap = {};
+          for (const row of await model.listPublishedPolicies()) {
+            publishedBase[row.path] = policyToMapEntry(row);
+          }
+          draft = mergePolicyEditorDraft(publishedBase, params.incoming);
+        }
         // Policy-editor only: re-attach foreign published paths absent from the draft so
         // empty/partial policy-editor drafts cannot wipe service-model policies.
         // Full ownership leaves the draft unchanged (intentional foreign deletes stick).
@@ -195,7 +200,7 @@ export class AdminSettingsService {
           const published = await model.listPublishedPolicies();
           draft = preserveForeignPublishedInDraft(draft, published);
         }
-        const validation = await this.validateDraftWithModel(draft, model);
+        const validation = await validateSettingsDraft(draft, model);
         if (!validation.ok) throw new SettingsDraftValidationError(validation.issues);
 
         return {
@@ -249,85 +254,136 @@ export class AdminSettingsService {
   };
 
   /**
-   * Validate entire draft bundle. Fail-closed on unknown/secret/wrong-type paths.
+   * De-drafted 统一管理 write: apply a policy-editor payload site-wide immediately.
+   *
+   * ONE publisher transaction: lock bundle → CAS (`expectedRevision` + `expectedDraftToken`)
+   * → merge owned paths over the **published** baseline (`mergePolicyEditorDraft`, ownership
+   * `policy-editor`) → validate → materialize published + align the draft column → audit →
+   * COMMIT → invalidate scope `settings` (the publisher only emits after commit).
+   *
+   * An empty `policies` map is 恢复默认 **for owned paths only** — service-model rows
+   * (`image.*`, `systemAgent.*`, …) are re-attached from published and never deleted (R1).
+   * Foreign paths present in `policies` are ignored and reported via `warnings`.
    */
-  private validateDraftWithModel = async (
-    draft: SettingsDraftPolicyMap,
-    model: PlatformSettingsModel,
-  ): Promise<{
-    impactEstimate: { pathsWithOverrides: number; totalOverrideRows: number };
-    issues: SettingsValidationIssue[];
-    ok: boolean;
-  }> => {
-    const issues: SettingsValidationIssue[] = [];
+  save = async (params: {
+    actorUserId: string;
+    comment?: string;
+    expectedDraftToken: string;
+    expectedRevision: number;
+    policies: SettingsDraftPolicyMap;
+    reason: string;
+  }) => {
+    await this.model.ensureBundle();
 
-    for (const [path, policy] of Object.entries(draft)) {
-      const gate = settingsRegistry.assertPathWritable({
-        path,
-        requirePlatformEligible: true,
+    const ignoredForeignPathCount = Object.keys(params.policies).filter((path) =>
+      isServiceModelManagedPath(path),
+    ).length;
+    const owned = Object.fromEntries(
+      Object.entries(params.policies).filter(([path]) => !isServiceModelManagedPath(path)),
+    ) as SettingsDraftPolicyMap;
+
+    // Pre-validate the caller's own paths so validation errors point at the admin's edit
+    // rather than at a foreign row merged in under the lock.
+    const prevalidation = await this.validateDraft(owned);
+    if (!prevalidation.ok) {
+      const error = new SettingsDraftValidationError(prevalidation.issues);
+      await this.appendFailureAudit({
+        action: 'admin.settings.save',
+        actorUserId: params.actorUserId,
+        beforeDiff: { expectedRevision: params.expectedRevision },
+        error,
+        reason: params.reason,
       });
-      if (gate) {
-        issues.push({ code: gate, message: gate, path });
-        continue;
-      }
-
-      if (!['user', 'default', 'locked'].includes(policy.mode)) {
-        issues.push({
-          code: 'MANAGED_SETTING_INVALID_VALUE',
-          message: `Invalid mode: ${String(policy.mode)}`,
-          path,
-        });
-      }
-      if (!['visible', 'hidden'].includes(policy.visibility)) {
-        issues.push({
-          code: 'MANAGED_SETTING_INVALID_VALUE',
-          message: `Invalid visibility: ${String(policy.visibility)}`,
-          path,
-        });
-      }
-
-      // mode=user may omit meaningful platform value; default/locked require valid value
-      if (policy.mode === 'default' || policy.mode === 'locked') {
-        const validated = settingsRegistry.validateValue(path, policy.value);
-        if (!validated.ok) {
-          issues.push({
-            code: 'MANAGED_SETTING_INVALID_VALUE',
-            message: validated.message,
-            path,
-          });
-        }
-      } else if (policy.value !== null && policy.value !== undefined) {
-        const validated = settingsRegistry.validateValue(path, policy.value);
-        if (!validated.ok) {
-          issues.push({
-            code: 'MANAGED_SETTING_INVALID_VALUE',
-            message: validated.message,
-            path,
-          });
-        }
-      }
-
-      const entry = settingsRegistry.get(path);
-      if (entry && policy.schemaVersion !== entry.schemaVersion) {
-        issues.push({
-          code: 'PLATFORM_CONFIG_VALIDATION_FAILED',
-          message: `Schema version mismatch: expected ${entry.schemaVersion}, got ${policy.schemaVersion}`,
-          path,
-        });
-      }
+      throw error;
     }
 
-    const impactPaths = Object.entries(draft)
-      .filter(([, p]) => p.mode === 'locked' || p.mode === 'default')
-      .map(([path]) => path);
-    const impactEstimate = await model.countOverridesByPaths(impactPaths);
+    let saveAuditId: string | undefined;
+    let committedDraftToken: string | undefined;
+    let revision: number;
+    try {
+      const result = await this.publisher.publish({
+        actorUserId: params.actorUserId,
+        beforeDiff: { revision: params.expectedRevision },
+        comment: params.comment ?? params.reason,
+        expectedRevision: params.expectedRevision,
+        // Admin-facing audit committed atomically with the revision it describes.
+        finalizeSuccess: async (tx, committed) => {
+          const audit = await this.auditAppend(tx, {
+            action: 'admin.settings.save',
+            actorUserId: params.actorUserId,
+            afterDiff: {
+              ownedPathCount: Object.keys(owned).length,
+              paths: Object.fromEntries(
+                Object.entries(owned).map(([path, policy]) => [
+                  path,
+                  { mode: policy.mode, visibility: policy.visibility },
+                ]),
+              ),
+              revision: committed.revision,
+            },
+            beforeDiff: { revision: params.expectedRevision },
+            configRevision: committed.revision,
+            reason: params.reason,
+            result: 'success',
+            targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+            targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+          });
+          saveAuditId = audit.id;
+        },
+        invalidationScopes: ['settings'],
+        // Replaced by prepareLockedPublish after the settings bundle lock.
+        payload: {},
+        pointer: this.settingsPointer({
+          alignDraft: true,
+          expectedDraftToken: params.expectedDraftToken,
+          incoming: owned,
+          onDraftAligned: (token) => {
+            committedDraftToken = token;
+          },
+          operation: 'publish',
+          ownership: 'policy-editor',
+          updatedBy: params.actorUserId,
+        }),
+        reason: params.reason,
+        resourceId: PLATFORM_SETTINGS_RESOURCE_ID,
+        resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+      });
+      revision = result.revision.revision;
+      saveAuditId ??= result.auditId;
+    } catch (error) {
+      await this.appendFailureAudit({
+        action: 'admin.settings.save',
+        actorUserId: params.actorUserId,
+        beforeDiff: { expectedRevision: params.expectedRevision },
+        error,
+        reason: params.reason,
+      });
+      throw error;
+    }
 
-    return { impactEstimate, issues, ok: issues.length === 0 };
+    // Both are set inside the committed transaction (`finalizeSuccess` / `alignDraft`), so the
+    // response describes exactly this revision — no post-commit read that a concurrent save
+    // could race, and no post-commit failure after a site-wide write already landed.
+    return {
+      auditId: saveAuditId!,
+      draftToken: committedDraftToken!,
+      revision,
+      ...(ignoredForeignPathCount > 0
+        ? { warnings: [`ignored_service_model_paths:${ignoredForeignPathCount}`] }
+        : {}),
+    };
   };
 
-  validateDraft = async (draft: SettingsDraftPolicyMap) =>
-    this.validateDraftWithModel(draft, this.model);
+  /**
+   * Validate entire draft bundle. Fail-closed on unknown/secret/wrong-type paths.
+   * @internal no TRPC surface — reachable through `save` / `applyImmediate` only.
+   */
+  validateDraft = async (draft: SettingsDraftPolicyMap) => validateSettingsDraft(draft, this.model);
 
+  /**
+   * @internal Draft-only write with no TRPC surface. Kept because `applyImmediate`
+   * composes it with `publish`, and because seeding tests need full-ownership writes.
+   */
   saveDraft = async (params: {
     actorUserId: string;
     draft: SettingsDraftPolicyMap;
@@ -390,7 +446,7 @@ export class AdminSettingsService {
 
         // Re-validate merged bundle under the lock (foreign rows + owned changes).
         if (ownership === 'policy-editor') {
-          const validation = await this.validateDraftWithModel(nextDraft, model);
+          const validation = await validateSettingsDraft(nextDraft, model);
           if (!validation.ok) {
             throw new SettingsDraftValidationError(validation.issues);
           }
@@ -441,205 +497,24 @@ export class AdminSettingsService {
   };
 
   /**
-   * Merge path→value patch into draft and publish immediately (W10-C).
-   *
-   * Mode rules (basis = **published** policy, not draft):
-   * - published mode === 'locked' → stay 'locked'
-   * - published mode === 'user' / missing → 'default'
-   * - published mode === 'default' → stay 'default'
-   * Visibility comes from published (fallback draft/visible). schemaVersion from registry.
-   *
-   * Rejects when draft differs from published on any path outside the patch.
-   *
-   * On publish failure, restore uses `saved.draftToken` (not a fresh getDraft token)
-   * so concurrent drafts are not overwritten; token mismatch abandons restore.
+   * Merge a path→value patch into the draft and publish immediately (W10-C).
+   * Body lives in `applySettingsPatch.ts`; it composes the internal saveDraft + publish.
    */
   applyImmediate = async (params: {
     actorUserId: string;
     patch: Record<string, unknown>;
     reason?: string;
-  }) => {
-    const patchPaths = Object.keys(params.patch);
-    if (patchPaths.length === 0) {
-      throw new SettingsDraftValidationError([
-        {
-          code: 'MANAGED_SETTING_INVALID_VALUE',
-          message: 'patch must include at least one path',
-          path: '',
-        },
-      ]);
-    }
-
-    const sortedPaths = [...patchPaths].sort();
-    const reason =
-      params.reason?.trim() ||
-      `applyImmediate: ${sortedPaths.slice(0, 12).join(', ')}${sortedPaths.length > 12 ? ` (+${sortedPaths.length - 12})` : ''}`;
-
-    const snapshot = await this.getDraft();
-    const draft = { ...snapshot.draft } as SettingsDraftPolicyMap;
-    const published = { ...snapshot.publishedPolicies } as SettingsDraftPolicyMap;
-    const patchSet = new Set(patchPaths);
-
-    // Dirty-draft gate: non-patch paths must match published.
-    const dirtyPaths: string[] = [];
-    for (const path of new Set([...Object.keys(draft), ...Object.keys(published)])) {
-      if (patchSet.has(path)) continue;
-      const d = draft[path];
-      const p = published[path];
-      if (!d && !p) continue;
-      if (!d || !p || policyFingerprint(d) !== policyFingerprint(p)) {
-        dirtyPaths.push(path);
-      }
-    }
-    if (dirtyPaths.length > 0) {
-      await this.auditAppend(this.db, {
-        action: 'admin.settings.applyImmediate',
-        actorUserId: params.actorUserId,
-        afterDiff: { dirtyPathCount: dirtyPaths.length },
-        beforeDiff: null,
-        reason,
-        result: 'failure',
-        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
-      });
-      throw new SettingsDirtyDraftError(dirtyPaths.sort());
-    }
-
-    // Start from draft (equals published outside patch when clean). Ensure published
-    // paths remain present so publish does not wipe non-patched policies.
-    const nextDraft: SettingsDraftPolicyMap = { ...published, ...draft };
-
-    for (const path of patchPaths) {
-      const gate = settingsRegistry.assertPathWritable({
-        path,
-        requirePlatformEligible: true,
-      });
-      if (gate) {
-        throw new SettingsDraftValidationError([{ code: gate, message: gate, path }]);
-      }
-
-      const entry = settingsRegistry.get(path);
-      if (!entry) {
-        throw new SettingsDraftValidationError([
-          { code: 'MANAGED_SETTING_UNKNOWN_PATH', message: 'Unknown path', path },
-        ]);
-      }
-
-      const validated = settingsRegistry.validateValue(path, params.patch[path]);
-      if (!validated.ok) {
-        throw new SettingsDraftValidationError([
-          {
-            code: 'MANAGED_SETTING_INVALID_VALUE',
-            message: validated.message,
-            path,
-          },
-        ]);
-      }
-
-      // Mode / visibility basis = published policy (ignore unpublished draft mode edits).
-      const publishedPolicy = published[path];
-      const draftPolicy = draft[path];
-      const nextMode: SettingPolicyMode = publishedPolicy?.mode === 'locked' ? 'locked' : 'default';
-      const nextVisibility = (publishedPolicy?.visibility ??
-        draftPolicy?.visibility ??
-        'visible') as SettingPolicyVisibility;
-
-      nextDraft[path] = {
-        mode: nextMode,
-        schemaVersion: entry.schemaVersion,
-        value: validated.value,
-        visibility: nextVisibility,
-      };
-    }
-
-    const priorDraft = { ...draft } as SettingsDraftPolicyMap;
-
-    const saved = await this.saveDraft({
-      actorUserId: params.actorUserId,
-      draft: nextDraft,
-      expectedDraftToken: snapshot.draftToken,
-      reason,
-    });
-
-    let publishedResult: { auditId: string; revision: number };
-    try {
-      publishedResult = await this.publish({
-        actorUserId: params.actorUserId,
-        expectedDraftToken: saved.draftToken,
-        expectedRevision: saved.baseRevision,
-        reason,
-      });
-    } catch (error) {
-      // Best-effort restore: pin expectedDraftToken to *our* saveDraft result so a
-      // concurrent admin who saved during the publish-failure window is not overwritten.
-      try {
-        await this.saveDraft({
-          actorUserId: params.actorUserId,
-          draft: priorDraft,
-          expectedDraftToken: saved.draftToken,
-          reason: `${reason} (restore after publish failure)`,
-        });
-      } catch (restoreError) {
-        const abandoned =
-          restoreError instanceof PlatformRevisionConflictError
-            ? 'concurrent_draft_write'
-            : 'restore_failed';
-        try {
-          await this.auditAppend(this.db, {
-            action: 'admin.settings.applyImmediate',
-            actorUserId: params.actorUserId,
-            afterDiff: { abandonedRestore: abandoned },
-            beforeDiff: null,
-            reason: `${reason} (restore abandoned: ${abandoned})`,
-            result: 'failure',
-            targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-            targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
-          });
-        } catch {
-          /* best-effort */
-        }
-      }
-      throw error;
-    }
-
-    // Dedicated success audit for the combined applyImmediate operation.
-    let applyAuditId = publishedResult.auditId;
-    try {
-      const audit = await this.auditAppend(this.db, {
-        action: 'admin.settings.applyImmediate',
-        actorUserId: params.actorUserId,
-        afterDiff: {
-          pathCount: sortedPaths.length,
-          paths: Object.fromEntries(
-            sortedPaths.map((path) => [
-              path,
-              {
-                mode: nextDraft[path]?.mode,
-                visibility: nextDraft[path]?.visibility,
-              },
-            ]),
-          ),
-          revision: publishedResult.revision,
-        },
-        beforeDiff: { revision: snapshot.baseRevision },
-        reason,
-        result: 'success',
-        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
-      });
-      applyAuditId = audit.id;
-    } catch {
-      /* best-effort; publish already audited */
-    }
-
-    const after = await this.getDraft();
-    return {
-      auditId: applyAuditId,
-      draftToken: after.draftToken,
-      paths: sortedPaths,
-      revision: publishedResult.revision,
-    };
-  };
+  }) =>
+    applySettingsPatch(
+      {
+        appendAudit: this.auditAppend,
+        db: this.db,
+        getDraft: this.getDraft,
+        publish: this.publish,
+        saveDraft: this.saveDraft,
+      },
+      params,
+    );
 
   publish = async (params: {
     actorUserId: string;

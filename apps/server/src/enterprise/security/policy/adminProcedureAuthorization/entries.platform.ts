@@ -36,13 +36,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'mutation',
-    path: 'admin.managedResources.publish',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.POLICY_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.managedResources.saveDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.POLICY_UPDATE] },
+    path: 'admin.managedResources.save',
+    // save always publishes — both UPDATE and PUBLISH are required.
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.POLICY_UPDATE, PLATFORM_PERMISSIONS.POLICY_PUBLISH],
+    },
   },
   {
     kind: 'mutation',
@@ -90,23 +89,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'mutation',
-    path: 'admin.settings.publish',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.settings.rollback',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.settings.saveDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_UPDATE] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.settings.validateDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_READ] },
+    path: 'admin.settings.save',
+    // save always publishes — both UPDATE and PUBLISH are required.
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.SETTINGS_UPDATE, PLATFORM_PERMISSIONS.SETTINGS_PUBLISH],
+    },
   },
   {
     kind: 'query',

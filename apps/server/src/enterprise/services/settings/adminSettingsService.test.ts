@@ -13,6 +13,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { PlatformDependencyTargetNotPublishedError } from '../platformDependencyLock';
 import {
   AdminSettingsService,
@@ -533,5 +534,109 @@ describe('AdminSettingsService', () => {
       { actorUserId: 'admin-1', result: 'success' },
       { actorUserId: 'admin-2', result: 'failure' },
     ]);
+  });
+});
+
+describe('AdminSettingsService.save', () => {
+  it('publishes the payload site-wide in one transaction and aligns the draft column', async () => {
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const admin = new AdminSettingsService(serverDB, { invalidation });
+    const base = await admin.getDraft();
+
+    const result = await admin.save({
+      actorUserId: 'u1',
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: validDraft,
+      reason: 'apply settings policy',
+    });
+
+    expect(result).toMatchObject({ auditId: expect.any(String), revision: 1 });
+    const after = await admin.getDraft();
+    expect(after.baseRevision).toBe(1);
+    expect(after.publishedPolicies).toEqual(validDraft);
+    expect(after.draft).toEqual(validDraft);
+    expect(after.draftToken).toBe(result.draftToken);
+    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(1);
+    expect(invalidation.events).toHaveLength(1);
+    expect(invalidation.events[0]?.scopes).toEqual(['settings']);
+    const audits = await serverDB.select().from(platformAuditLogs);
+    expect(audits).toContainEqual(
+      expect.objectContaining({
+        action: 'admin.settings.save',
+        actorUserId: 'u1',
+        configRevision: 1,
+        result: 'success',
+      }),
+    );
+    expect(audits.find((row) => row.action === 'admin.settings.save')?.id).toBe(result.auditId);
+  });
+
+  it('rejects an invalid payload with a failure audit and no state change', async () => {
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const admin = new AdminSettingsService(serverDB, { invalidation });
+    const base = await admin.getDraft();
+
+    await expect(
+      admin.save({
+        actorUserId: 'u1',
+        expectedDraftToken: base.draftToken,
+        expectedRevision: base.baseRevision,
+        policies: {
+          'general.fontSize': {
+            mode: 'default',
+            schemaVersion: 1,
+            value: 9999,
+            visibility: 'visible',
+          },
+        },
+        reason: 'out-of-range value',
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
+
+    expect(await serverDB.select().from(platformResourceRevisions)).toEqual([]);
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
+    expect(invalidation.events).toEqual([]);
+    expect((await admin.getDraft()).draftToken).toBe(base.draftToken);
+    expect(await serverDB.select().from(platformAuditLogs)).toContainEqual(
+      expect.objectContaining({
+        action: 'admin.settings.save',
+        afterDiff: { error: 'validation' },
+        result: 'failure',
+      }),
+    );
+  });
+
+  it('rejects a stale CAS base without touching published state', async () => {
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const admin = new AdminSettingsService(serverDB, { invalidation });
+    const base = await admin.getDraft();
+    await admin.save({
+      actorUserId: 'u1',
+      expectedDraftToken: base.draftToken,
+      expectedRevision: base.baseRevision,
+      policies: validDraft,
+      reason: 'first writer',
+    });
+
+    await expect(
+      admin.save({
+        actorUserId: 'u2',
+        expectedDraftToken: base.draftToken,
+        expectedRevision: base.baseRevision,
+        policies: {},
+        reason: 'stale base',
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+
+    const after = await admin.getDraft();
+    expect(after.baseRevision).toBe(1);
+    expect(after.publishedPolicies).toEqual(validDraft);
+    expect(invalidation.events).toHaveLength(1);
+    const failure = (await serverDB.select().from(platformAuditLogs)).find(
+      (row) => row.action === 'admin.settings.save' && row.result === 'failure',
+    );
+    expect(failure?.afterDiff).toEqual({ error: 'revision_conflict' });
+    expect(JSON.stringify(failure)).not.toContain(base.draftToken);
   });
 });

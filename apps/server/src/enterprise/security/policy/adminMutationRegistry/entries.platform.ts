@@ -7,22 +7,16 @@ import {
   regularMutation,
   secretRotationAudit,
   secretRotationExternalGate,
-  validationMutation,
   vaultKeyProviderBoundary,
 } from './helpers';
 import type { AdminMutationDefinition } from './types';
 
 export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
-  'admin.managedResources.publish': dangerousMutation(
-    'admin.managedResources.publish',
+  'admin.managedResources.save': dangerousMutation(
+    'admin.managedResources.save',
     'critical',
-    'Publish global managed-resource enforcement policy.',
+    'Apply the global managed-resource enforcement policy site-wide immediately.',
     { reauth: recentReauth },
-  ),
-  'admin.managedResources.saveDraft': regularMutation(
-    'admin.managedResources.saveDraft',
-    'medium',
-    'Change the managed-resource policy draft.',
   ),
   'admin.security.secretRotation.cancel': dangerousMutation(
     'admin.security.secretRotation.cancel',
@@ -67,26 +61,11 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'Merge path values into global settings and publish immediately.',
     { reauth: recentReauth },
   ),
-  'admin.settings.publish': dangerousMutation(
-    'admin.settings.publish',
+  'admin.settings.save': dangerousMutation(
+    'admin.settings.save',
     'critical',
-    'Publish global platform settings.',
+    'Apply global platform settings policies site-wide immediately.',
     { reauth: recentReauth },
-  ),
-  'admin.settings.rollback': dangerousMutation(
-    'admin.settings.rollback',
-    'critical',
-    'Restore an earlier global settings revision.',
-    { reauth: recentReauth },
-  ),
-  'admin.settings.saveDraft': regularMutation(
-    'admin.settings.saveDraft',
-    'medium',
-    'Change the global settings draft.',
-  ),
-  'admin.settings.validateDraft': validationMutation(
-    'admin.settings.validateDraft',
-    'Validate settings without publishing them.',
   ),
   'admin.sidebarLayout.update': regularMutation(
     'admin.sidebarLayout.update',

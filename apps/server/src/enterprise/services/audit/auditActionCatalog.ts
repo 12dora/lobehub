@@ -114,7 +114,9 @@ export const AUDIT_ACTIONS = [
   'admin.identityProviders.testTerminal',
   'admin.identityProviders.update',
   'admin.identityProviders.validateNetwork',
+  // Retained for historical rows: the draft workflow was removed in favour of `.save`.
   'admin.managedResources.publish',
+  'admin.managedResources.save',
   'admin.managedResources.saveDraft',
   'admin.permission.denied',
   'admin.roles.replaceUserGlobalRoles',
@@ -124,8 +126,10 @@ export const AUDIT_ACTIONS = [
   'admin.security.secretRotation.start',
   'admin.settings.applyImmediate',
   'admin.settings.getDraft',
+  // publish/rollback/saveDraft/validateDraft retained for historical rows only.
   'admin.settings.publish',
   'admin.settings.rollback',
+  'admin.settings.save',
   'admin.settings.saveDraft',
   'admin.settings.validateDraft',
   'admin.sidebarLayout.update',

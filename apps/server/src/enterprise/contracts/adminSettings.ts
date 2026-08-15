@@ -48,68 +48,33 @@ export const adminSettingsGetDraftOutputSchema = z.object({
   status: z.enum(['draft', 'published', 'archived']),
 });
 
-export const adminSettingsSaveDraftInputSchema = z
+/**
+ * Immediate site-wide settings-policy write (de-drafted 统一管理 surface).
+ *
+ * `policies` carries ONLY policy-editor-owned paths — service-model paths
+ * (`image.*`, `systemAgent.*`, `defaultAgent.config.model|provider`, `tts.openAI.ttsModel`)
+ * are ignored server-side and their published rows preserved. An empty `policies`
+ * map therefore means "restore defaults for owned paths only", never a whole-table wipe.
+ *
+ * CAS: `expectedRevision` guards the published pointer, `expectedDraftToken` the bundle.
+ * A stale base fails with PLATFORM_REVISION_CONFLICT (the client refreshes).
+ */
+export const adminSettingsSaveInputSchema = z
   .object({
-    draft: z.record(settingDraftPolicySchema),
-    expectedDraftToken: z.string().length(64),
-    reason: settingsAuditReasonSchema,
-  })
-  .strict();
-
-export const adminSettingsSaveDraftOutputSchema = z.object({
-  baseRevision: z.number().int().nonnegative(),
-  draftToken: z.string().length(64),
-  ok: z.literal(true),
-  registryVersion: z.number().int(),
-});
-
-export const adminSettingsValidateDraftInputSchema = z
-  .object({
-    draft: z.record(settingDraftPolicySchema).optional(),
-  })
-  .strict();
-
-export const adminSettingsValidateDraftOutputSchema = z.object({
-  impactEstimate: z.object({
-    pathsWithOverrides: z.number().int().nonnegative(),
-    totalOverrideRows: z.number().int().nonnegative(),
-  }),
-  issues: z.array(
-    z.object({
-      code: z.string(),
-      message: z.string(),
-      path: z.string(),
-    }),
-  ),
-  ok: z.boolean(),
-});
-
-export const adminSettingsPublishInputSchema = z
-  .object({
-    expectedDraftToken: z.string().length(64),
-    expectedRevision: z.number().int().nonnegative(),
-    reason: settingsAuditReasonSchema,
     comment: secretSafeOptionalCommentSchema,
-  })
-  .strict();
-
-export const adminSettingsPublishOutputSchema = z.object({
-  auditId: z.string(),
-  revision: z.number().int().positive(),
-});
-
-export const adminSettingsRollbackInputSchema = z
-  .object({
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
+    policies: z.record(settingDraftPolicySchema),
     reason: settingsAuditReasonSchema,
-    targetRevision: z.number().int().positive(),
   })
   .strict();
 
-export const adminSettingsRollbackOutputSchema = z.object({
+export const adminSettingsSaveOutputSchema = z.object({
   auditId: z.string(),
+  draftToken: z.string().length(64),
   revision: z.number().int().positive(),
+  /** Non-fatal machine-readable notes, e.g. `ignored_service_model_paths:3`. */
+  warnings: z.array(z.string()).optional(),
 });
 
 /**
@@ -133,16 +98,8 @@ export const adminSettingsApplyImmediateOutputSchema = z.object({
 });
 
 export type AdminSettingsGetDraftOutput = z.infer<typeof adminSettingsGetDraftOutputSchema>;
-export type AdminSettingsSaveDraftInput = z.infer<typeof adminSettingsSaveDraftInputSchema>;
-export type AdminSettingsSaveDraftOutput = z.infer<typeof adminSettingsSaveDraftOutputSchema>;
-export type AdminSettingsValidateDraftInput = z.infer<typeof adminSettingsValidateDraftInputSchema>;
-export type AdminSettingsValidateDraftOutput = z.infer<
-  typeof adminSettingsValidateDraftOutputSchema
->;
-export type AdminSettingsPublishInput = z.infer<typeof adminSettingsPublishInputSchema>;
-export type AdminSettingsPublishOutput = z.infer<typeof adminSettingsPublishOutputSchema>;
-export type AdminSettingsRollbackInput = z.infer<typeof adminSettingsRollbackInputSchema>;
-export type AdminSettingsRollbackOutput = z.infer<typeof adminSettingsRollbackOutputSchema>;
+export type AdminSettingsSaveInput = z.infer<typeof adminSettingsSaveInputSchema>;
+export type AdminSettingsSaveOutput = z.infer<typeof adminSettingsSaveOutputSchema>;
 export type AdminSettingsApplyImmediateInput = z.infer<
   typeof adminSettingsApplyImmediateInputSchema
 >;

@@ -44,7 +44,6 @@ export interface ManagedResourcePolicyServiceOptions {
   ) => Promise<PlatformAuditLogItem>;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: {
-    afterDraftLock?: () => Promise<void>;
     afterMaterialization?: () => Promise<void>;
     afterPublishLock?: () => Promise<void>;
   };
@@ -86,61 +85,30 @@ export class ManagedResourcePolicyService {
     };
   };
 
-  saveDraft = async (params: {
-    actorUserId: string;
-    draft: ManagedResourcePolicyMap;
-    expectedDraftToken: string;
-    reason: string;
-  }) => {
-    await this.model.ensureRows();
-    try {
-      const result = await this.db.transaction(async (tx) => {
-        const model = new PlatformManagedResourcePolicyModel(tx);
-        const revision = await model.lockAndGetRevision();
-        await this.lifecycle.afterDraftLock?.();
-        const current = await model.getSnapshot();
-        if (this.draftToken(current.draft, revision) !== params.expectedDraftToken) {
-          throw new PlatformRevisionConflictError(
-            'Managed resource policy draft token does not match locked draft',
-          );
-        }
-        await model.replaceDraft({ draft: params.draft, updatedBy: params.actorUserId });
-        await this.auditAppend(tx, {
-          action: 'admin.managedResources.saveDraft',
-          actorUserId: params.actorUserId,
-          afterDiff: { policies: params.draft },
-          beforeDiff: { policies: current.draft },
-          configRevision: revision,
-          reason: params.reason,
-          result: 'success',
-          targetId: MANAGED_POLICY_RESOURCE_ID,
-          targetType: MANAGED_POLICY_RESOURCE_TYPE,
-        });
-        return { revision };
-      });
-      return {
-        baseRevision: result.revision,
-        draftToken: this.draftToken(params.draft, result.revision),
-        ok: true as const,
-      };
-    } catch (error) {
-      await this.appendFailureAudit({
-        action: 'admin.managedResources.saveDraft',
-        actorUserId: params.actorUserId,
-        reason: params.reason,
-      });
-      throw error;
-    }
-  };
-
-  publish = async (params: {
+  /**
+   * De-drafted 统一管理 write: persist the incoming policy map **and** publish it in ONE
+   * transaction. Collapses the former `saveDraft` + `publish` pair.
+   *
+   * Order preserved from the old two-step flow (the caller begins/finalizes the connector
+   * runtime transition around this call, see `routers/admin/managedResources.ts`):
+   * CAS on the locked draft token → readiness gate (`ManagedResourceCatalogNotReadyError`)
+   * → revision + materialize (draft and published columns are written together) → audit →
+   * COMMIT → invalidate `['managed-policy','capabilities']` → drop the in-process
+   * platform-AI takeover memo.
+   */
+  save = async (params: {
     actorUserId: string;
     comment?: string;
+    draft: ManagedResourcePolicyMap;
     expectedDraftToken: string;
     expectedRevision: number;
     reason: string;
   }) => {
     await this.model.ensureRows();
+
+    let previousPublished: ManagedResourcePolicyMap | null = null;
+    let saveAuditId: string | undefined;
+
     const pointer = createManagedResourcePolicyPointerAdapter({
       afterMaterialization: this.lifecycle.afterMaterialization,
       assertLockedState: async (tx) => {
@@ -152,11 +120,11 @@ export class ManagedResourcePolicyService {
             'Managed resource policy draft token does not match locked draft',
           );
         }
+        previousPublished = snapshot.published;
       },
-      prepareLockedPublish: async (tx) => {
-        const snapshot = await new PlatformManagedResourcePolicyModel(tx).getSnapshot();
+      prepareLockedPublish: async () => {
         const readiness = await this.readiness();
-        const notReady = Object.entries(snapshot.draft)
+        const notReady = Object.entries(params.draft)
           .filter(([resource, rawItem]) => {
             const item = rawItem as ManagedResourcePolicyItem;
             return (
@@ -168,11 +136,8 @@ export class ManagedResourcePolicyService {
           .map(([resource]) => resource);
         if (notReady.length > 0) throw new ManagedResourceCatalogNotReadyError(notReady);
         return {
-          afterDiff: {
-            policies: snapshot.draft,
-            readiness,
-          },
-          payload: { policies: snapshot.draft },
+          afterDiff: { policies: params.draft, readiness },
+          payload: { policies: params.draft },
         };
       },
       updatedBy: params.actorUserId,
@@ -184,6 +149,21 @@ export class ManagedResourcePolicyService {
         beforeDiff: { revision: params.expectedRevision },
         comment: params.comment ?? params.reason,
         expectedRevision: params.expectedRevision,
+        // Admin-facing audit committed atomically with the revision it describes.
+        finalizeSuccess: async (tx, committed) => {
+          const audit = await this.auditAppend(tx, {
+            action: 'admin.managedResources.save',
+            actorUserId: params.actorUserId,
+            afterDiff: { policies: params.draft },
+            beforeDiff: { policies: previousPublished },
+            configRevision: committed.revision,
+            reason: params.reason,
+            result: 'success',
+            targetId: MANAGED_POLICY_RESOURCE_ID,
+            targetType: MANAGED_POLICY_RESOURCE_TYPE,
+          });
+          saveAuditId = audit.id;
+        },
         invalidationScopes: ['managed-policy', 'capabilities'],
         payload: {},
         pointer,
@@ -197,10 +177,10 @@ export class ManagedResourcePolicyService {
       // within the memo TTL — the platform invalidation channel is a pull-based Redis version
       // bump with no subscriber, so there is no push hook to ride.
       resetPlatformAiTakeoverCache();
-      return { auditId: result.auditId, revision: result.revision.revision };
+      return { auditId: saveAuditId ?? result.auditId, revision: result.revision.revision };
     } catch (error) {
       await this.appendFailureAudit({
-        action: 'admin.managedResources.publish',
+        action: 'admin.managedResources.save',
         actorUserId: params.actorUserId,
         reason: params.reason,
       });

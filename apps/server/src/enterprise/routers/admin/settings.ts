@@ -8,14 +8,8 @@ import {
   adminSettingsApplyImmediateInputSchema,
   adminSettingsApplyImmediateOutputSchema,
   adminSettingsGetDraftOutputSchema,
-  adminSettingsPublishInputSchema,
-  adminSettingsPublishOutputSchema,
-  adminSettingsRollbackInputSchema,
-  adminSettingsRollbackOutputSchema,
-  adminSettingsSaveDraftInputSchema,
-  adminSettingsSaveDraftOutputSchema,
-  adminSettingsValidateDraftInputSchema,
-  adminSettingsValidateDraftOutputSchema,
+  adminSettingsSaveInputSchema,
+  adminSettingsSaveOutputSchema,
 } from '../../contracts/adminSettings';
 import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
@@ -70,7 +64,7 @@ const assertSettingsFeature = async (params: {
 };
 
 const assertSettingsDangerousReauth = async (params: {
-  action: 'admin.settings.applyImmediate' | 'admin.settings.publish' | 'admin.settings.rollback';
+  action: 'admin.settings.applyImmediate' | 'admin.settings.save';
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertDangerousReauthWithAudit>[0]['authMethod'];
@@ -91,7 +85,7 @@ const assertSettingsDangerousReauth = async (params: {
   });
 
 /**
- * admin.settings.* — draft / validate / publish / rollback.
+ * admin.settings.* — read + immediate site-wide writes (no draft workflow).
  * Permissions: platform_settings:read/update/publish:all exactly.
  */
 export const adminSettingsRouter = router({
@@ -182,24 +176,43 @@ export const adminSettingsRouter = router({
       }
     }),
 
-  saveDraft: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SETTINGS_UPDATE))
-    .input(adminSettingsSaveDraftInputSchema)
-    .output(adminSettingsSaveDraftOutputSchema)
+  /**
+   * De-drafted 统一管理 write: merge the policy-editor payload over the published
+   * baseline and publish it site-wide in ONE transaction.
+   * Requires both SETTINGS_UPDATE and SETTINGS_PUBLISH (single middleware gate —
+   * denials are audited as admin.permission.denied) plus dangerous-mutation reauth.
+   */
+  save: adminBase
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+        PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+      ]),
+    )
+    .input(adminSettingsSaveInputSchema)
+    .output(adminSettingsSaveOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertSettingsFeature({
-        action: 'admin.settings.saveDraft',
+        action: 'admin.settings.save',
         actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
+      await assertSettingsDangerousReauth({
+        action: 'admin.settings.save',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
         serverDB: ctx.serverDB,
       });
       const service = new AdminSettingsService(ctx.serverDB);
       try {
-        return await service.saveDraft({
+        return await service.save({
           actorUserId: ctx.userId!,
-          draft: input.draft,
+          comment: input.comment,
           expectedDraftToken: input.expectedDraftToken,
-          // TRPC policy-editor surface: never whole-table replace service-model rows.
-          ownership: 'policy-editor',
+          expectedRevision: input.expectedRevision,
+          policies: input.policies,
           reason: input.reason,
         });
       } catch (error) {
@@ -212,126 +225,6 @@ export const adminSettingsRouter = router({
               error.issues[0]?.message ?? PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
           });
         }
-        if (error instanceof PlatformRevisionConflictError) {
-          throwEnterpriseError({
-            code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
-            httpCode: 'CONFLICT',
-          });
-        }
-        throw error;
-      }
-    }),
-
-  validateDraft: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SETTINGS_READ))
-    .input(adminSettingsValidateDraftInputSchema)
-    .output(adminSettingsValidateDraftOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertSettingsFeature({
-        action: 'admin.settings.validateDraft',
-        actorUserId: ctx.userId!,
-        serverDB: ctx.serverDB,
-      });
-      const service = new AdminSettingsService(ctx.serverDB);
-      const draft =
-        input.draft ??
-        ((await service.getDraft()).draft as Parameters<typeof service.validateDraft>[0]);
-      const result = await service.validateDraft(draft);
-      try {
-        await new PlatformAuditService(ctx.serverDB).append({
-          action: 'admin.settings.validateDraft',
-          actorUserId: ctx.userId!,
-          afterDiff: {
-            issueCount: result.issues.length,
-            ok: result.ok,
-          },
-          result: result.ok ? 'success' : 'failure',
-          targetType: 'settings_validation',
-        });
-      } catch (auditError) {
-        console.error('[admin.settings] validateDraft audit unavailable', {
-          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-        });
-      }
-      return result;
-    }),
-
-  publish: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SETTINGS_PUBLISH))
-    .input(adminSettingsPublishInputSchema)
-    .output(adminSettingsPublishOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertSettingsFeature({
-        action: 'admin.settings.publish',
-        actorUserId: ctx.userId!,
-        serverDB: ctx.serverDB,
-      });
-      await assertSettingsDangerousReauth({
-        action: 'admin.settings.publish',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        serverDB: ctx.serverDB,
-      });
-      const service = new AdminSettingsService(ctx.serverDB);
-      try {
-        return await service.publish({
-          actorUserId: ctx.userId!,
-          comment: input.comment,
-          expectedDraftToken: input.expectedDraftToken,
-          expectedRevision: input.expectedRevision,
-          // TRPC policy-editor surface: never wipe service-model rows on publish.
-          ownership: 'policy-editor',
-          reason: input.reason,
-        });
-      } catch (error) {
-        if (error instanceof SettingsDraftValidationError) {
-          throwEnterpriseError({
-            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
-            details: { issueCount: error.issues.length },
-            httpCode: 'BAD_REQUEST',
-          });
-        }
-        if (error instanceof PlatformRevisionConflictError) {
-          throwEnterpriseError({
-            code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
-            details: error.details as Record<string, string | number | boolean | null> | undefined,
-            httpCode: 'CONFLICT',
-          });
-        }
-        throw error;
-      }
-    }),
-
-  rollback: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SETTINGS_PUBLISH))
-    .input(adminSettingsRollbackInputSchema)
-    .output(adminSettingsRollbackOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertSettingsFeature({
-        action: 'admin.settings.rollback',
-        actorUserId: ctx.userId!,
-        serverDB: ctx.serverDB,
-      });
-      await assertSettingsDangerousReauth({
-        action: 'admin.settings.rollback',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        serverDB: ctx.serverDB,
-      });
-      const service = new AdminSettingsService(ctx.serverDB);
-      try {
-        return await service.rollback({
-          actorUserId: ctx.userId!,
-          expectedDraftToken: input.expectedDraftToken,
-          expectedRevision: input.expectedRevision,
-          reason: input.reason,
-          targetRevision: input.targetRevision,
-        });
-      } catch (error) {
         if (error instanceof PlatformRevisionConflictError) {
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,

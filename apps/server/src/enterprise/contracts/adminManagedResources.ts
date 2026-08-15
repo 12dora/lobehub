@@ -40,49 +40,33 @@ export const adminManagedResourcesGetOutputSchema = z
   })
   .strict();
 
-export const adminManagedResourcesSaveDraftInputSchema = z
-  .object({
-    draft: managedResourcePolicyMapSchema,
-    expectedDraftToken: z.string().length(64),
-    reason: secretSafeAuditReasonSchema,
-  })
-  .strict();
-
-export const adminManagedResourcesSaveDraftOutputSchema = z
-  .object({
-    baseRevision: z.number().int().nonnegative(),
-    draftToken: z.string().length(64),
-    ok: z.literal(true),
-  })
-  .strict();
-
-export const adminManagedResourcesPublishInputSchema = z
+/**
+ * Immediate site-wide managed-resource policy write (de-drafted 统一管理 surface).
+ * Collapses the former saveDraft + publish pair: `draft` is written and published in the
+ * same transaction, so `expectedDraftToken` / `expectedRevision` guard one CAS base.
+ */
+export const adminManagedResourcesSaveInputSchema = z
   .object({
     comment: secretSafeOptionalCommentSchema,
+    draft: managedResourcePolicyMapSchema,
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
     reason: secretSafeAuditReasonSchema,
   })
   .strict();
 
-export const adminManagedResourcesPublishOutputSchema = z
+export const adminManagedResourcesSaveOutputSchema = z
   .object({
     auditId: z.string().min(1),
     revision: z.number().int().positive(),
+    /**
+     * `pending_recovery` still means the policy COMMITTED — only the connector runtime
+     * finalization needs lease self-healing. Never surface it as a failed save.
+     */
     runtimeTransition: z.enum(['finalized', 'pending_recovery']),
   })
   .strict();
 
 export type AdminManagedResourcesGetOutput = z.infer<typeof adminManagedResourcesGetOutputSchema>;
-export type AdminManagedResourcesSaveDraftInput = z.infer<
-  typeof adminManagedResourcesSaveDraftInputSchema
->;
-export type AdminManagedResourcesSaveDraftOutput = z.infer<
-  typeof adminManagedResourcesSaveDraftOutputSchema
->;
-export type AdminManagedResourcesPublishInput = z.infer<
-  typeof adminManagedResourcesPublishInputSchema
->;
-export type AdminManagedResourcesPublishOutput = z.infer<
-  typeof adminManagedResourcesPublishOutputSchema
->;
+export type AdminManagedResourcesSaveInput = z.infer<typeof adminManagedResourcesSaveInputSchema>;
+export type AdminManagedResourcesSaveOutput = z.infer<typeof adminManagedResourcesSaveOutputSchema>;
