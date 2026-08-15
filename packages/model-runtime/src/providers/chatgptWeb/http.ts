@@ -13,6 +13,7 @@ import {
   ChatGPTWebError,
   classifyResponseError,
   classifyTransportError,
+  isChatGPTWebError,
 } from './errors';
 import { buildRequestHeaders, type SessionFingerprint } from './headers';
 
@@ -100,11 +101,54 @@ export interface ManagedResponse {
   response: Response;
 }
 
-export const readBodySafely = async (response: Response): Promise<string | undefined> => {
+/** How much of a non-2xx body is worth keeping for diagnostics. */
+export const MAX_ERROR_BODY_BYTES = 2000;
+
+/**
+ * Read at most {@link MAX_ERROR_BODY_BYTES} of an error body, then hang up.
+ *
+ * `response.text()` buffers the WHOLE body before truncating it, so a huge (or
+ * endlessly chunked) 4xx/5xx would be materialised in full on a path that every
+ * failed request goes through.
+ *
+ * @param fail the owning {@link ManagedResponse}'s classifier. A caller stop or
+ *   our own deadline firing mid-body is a real failure and is rethrown; anything
+ *   else degrades to "no diagnostic body".
+ */
+export const readBodySafely = async (
+  response: Response,
+  fail?: (error: unknown) => Error,
+): Promise<string | undefined> => {
   try {
-    const text = await response.text();
-    return text.slice(0, 2000);
-  } catch {
+    if (!response.body) return (await response.text()).slice(0, MAX_ERROR_BODY_BYTES);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let bytes = 0;
+    try {
+      while (bytes < MAX_ERROR_BODY_BYTES) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        bytes += value.length;
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } finally {
+      // discard the remainder rather than draining it
+      void reader.cancel().catch(() => {});
+    }
+    return text.slice(0, MAX_ERROR_BODY_BYTES);
+  } catch (error) {
+    if (fail) {
+      const classified = fail(error);
+      if (
+        classified?.name === 'AbortError' ||
+        (isChatGPTWebError(classified) && classified.kind === 'timeout')
+      )
+        throw classified;
+    }
     return undefined;
   }
 };
@@ -230,7 +274,7 @@ export abstract class ChatGPTWebHttp {
       // the deadline stays armed while the error body is drained
       let bodyText: string | undefined;
       try {
-        bodyText = await readBodySafely(managed.response);
+        bodyText = await readBodySafely(managed.response, managed.fail);
       } finally {
         managed.release();
       }

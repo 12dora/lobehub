@@ -137,6 +137,52 @@ const urlHost = (url: string): string => {
 };
 
 /**
+ * Structural metadata about an outgoing conversation body — message count, roles
+ * and switches. Deliberately NOT the body: `messages[].content.parts` is the
+ * user's whole prompt (and, on the document-fallback path, whole file contents),
+ * which must never reach a log line.
+ */
+export const describeRequestBody = (
+  body: Record<string, any>,
+  extra: { flow: string; model?: string; thinkingEffort?: string },
+): Record<string, unknown> => {
+  const messages: any[] = Array.isArray(body?.messages) ? body.messages : [];
+  return {
+    ...extra,
+    hasAttachments: messages.some(
+      (message) => (message?.metadata?.attachments as unknown[] | undefined)?.length,
+    ),
+    messageCount: messages.length,
+    roles: messages.map((message) => message?.author?.role),
+    systemHints: body?.system_hints,
+    thinkingEffortSent: body?.thinking_effort,
+  };
+};
+
+/**
+ * The part of a recovered answer the stream has NOT already delivered.
+ *
+ * The chunk contract is additive — a consumer concatenates every `text` chunk
+ * and cannot take one back — so a partially streamed turn whose remainder is
+ * read from the conversation document must be de-duplicated here.
+ */
+export const undeliveredSuffix = (recovered: string, streamed: string): string => {
+  if (!streamed) return recovered;
+  if (recovered.startsWith(streamed)) return recovered.slice(streamed.length);
+  const index = recovered.indexOf(streamed);
+  if (index >= 0) return recovered.slice(index + streamed.length);
+  // the document and the stream disagree: appending would show the answer twice
+  log('recovered answer diverges from the streamed text; appending nothing');
+  return '';
+};
+
+/** Shared settings for a live slug the catalogue does not carry yet. */
+const LIVE_MODEL_SETTINGS: NonNullable<ChatModelCard['settings']> = {
+  searchImpl: 'params',
+  searchProvider: DEFAULT_PROVIDER,
+};
+
+/**
  * Download an attachment referenced by URL. SSRF-safe on the server, plain fetch
  * in the browser bundle.
  *
@@ -153,11 +199,24 @@ const fetchBytes = async (
 
   // `maxContentLength` soft-truncates one byte past the ceiling, which is what
   // lets `readBoundedBody` below tell "at the limit" from "over it".
-  const response = isServer
-    ? await import('@lobechat/ssrf-safe-fetch').then((module) =>
-        module.ssrfSafeFetch(url, { signal }, { maxContentLength: MAX_DOWNLOAD_BYTES + 1 }),
-      )
-    : await globalThis.fetch(url, { signal });
+  // TODO: `ssrfSafeFetch` console.errors its own caught fetch errors verbatim
+  // (shared package). Nothing here can suppress that; fix it at the source.
+  let response: Response;
+  try {
+    response = isServer
+      ? await import('@lobechat/ssrf-safe-fetch').then((module) =>
+          module.ssrfSafeFetch(url, { signal }, { maxContentLength: MAX_DOWNLOAD_BYTES + 1 }),
+        )
+      : await globalThis.fetch(url, { signal });
+  } catch (error) {
+    // the caller pressing stop keeps its own AbortError semantics
+    if (isAbortError(error) || isCallerAbort(signal)) throw error;
+    // host + error class only — a signed URL's query string IS the credential
+    log('asset fetch failed: host=%s error=%s', urlHost(url), (error as Error)?.name ?? 'Error');
+    // the MESSAGE carries the host only; the original stays on `cause`, which is
+    // non-enumerable and therefore never lands in a serialized payload
+    throw new Error(`failed to download attachment from ${urlHost(url)}`, { cause: error });
+  }
 
   if (!response.ok)
     throw new Error(
@@ -217,6 +276,8 @@ export interface LobeChatGPTWebParams {
 
 interface TurnState {
   conversationId?: string;
+  /** the cleanup hook already fired — hiding twice is a wasted round trip */
+  hidden?: boolean;
   /** Epoch SECONDS (the document's own unit) at which this request was sent. */
   startedAtSec?: number;
   /** The id we generated for this turn's last user message. */
@@ -363,7 +424,21 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         ? buildFConversationBody({ messages, model, search, thinkingEffort })
         : buildConversationBody({ messages, model, thinkingEffort });
 
-      if (process.env[DEBUG_FLAG] === '1') log('request body: %O', body);
+      if (process.env[DEBUG_FLAG] === '1')
+        log(
+          'request: %o',
+          describeRequestBody(body, {
+            flow: useFPath
+              ? search
+                ? 'f:search'
+                : hasAttachments
+                  ? 'f:attachments'
+                  : 'f:effort'
+              : 'conversation',
+            model,
+            thinkingEffort,
+          }),
+        );
 
       // Correlation anchors for the document fallback: everything we might read
       // back must descend from THIS user message (or post-date this request).
@@ -394,6 +469,9 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         inputStartAt,
         inputText,
         model,
+        // runs on success, failure AND abort — the created conversation must
+        // never be left visible in the account history
+        onCleanup: ({ conversationId }) => this.hideTurn(turn, conversationId),
         onDone: (context) => this.finalizeTurn(context, turn, search, signal),
         provider: this.provider,
         resolveImage: (pointer) => this.resolveImage(pointer, turn, signal),
@@ -475,7 +553,14 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         imageOutput: card?.abilities?.imageOutput ?? true,
         reasoning: card?.abilities?.reasoning ?? reasoning,
         search: card?.abilities?.search ?? true,
-        settings: card?.settings,
+        // An unknown slug still needs the settings every ChatGPT Web model
+        // shares, or it advertises reasoning/search abilities with no way to
+        // drive them: no effort selector, and a search toggle wired to nothing.
+        settings:
+          card?.settings ??
+          (reasoning
+            ? { ...LIVE_MODEL_SETTINGS, extendParams: ['gpt5_6ReasoningEffort'] }
+            : { ...LIVE_MODEL_SETTINGS }),
         type: 'chat' as const,
         vision: card?.abilities?.vision ?? true,
       };
@@ -567,7 +652,8 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         if (attachment) attachments.push(attachment);
         else if (part.file_url.content)
           texts.push(`[Attached file: ${part.file_url.name}]\n${part.file_url.content}`);
-        else texts.push(`[Attached file: ${part.file_url.name} — upload failed]`);
+        // no parsed content to fall back on: the shared placeholder contract
+        else texts.push(fileUrlPartPlaceholder(part));
         continue;
       }
 
@@ -725,7 +811,15 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
    * Then hide the conversation so the account history does not fill up.
    */
   private finalizeTurn = async (
-    { citationsEmitted, conversationId, hadOutput, searchUsed }: ChatGPTWebDoneContext,
+    {
+      citationsEmitted,
+      conversationId,
+      hadError,
+      hadOutput,
+      recoveryRequired,
+      searchUsed,
+      text,
+    }: ChatGPTWebDoneContext,
     turn: TurnState,
     searchRequested: boolean,
     signal?: AbortSignal,
@@ -734,36 +828,48 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
     const result: ChatGPTWebDoneResult = {};
 
-    try {
-      // A turn that produced nothing at all was handed off to the background and
-      // the resume continuation did not bring it back — fall back to polling.
-      if (!hadOutput) {
-        const answer = await this.pollForAnswer(conversationId, turn, signal);
-        if (answer?.text) result.text = answer.text;
-        if (answer?.citations?.length)
-          result.grounding = { citations: answer.citations.map(toGroundingCitation) };
-      }
+    // Two recoverable shapes: a turn that produced NOTHING (handed off to the
+    // background and never resumed) and a turn whose resume leg failed part-way
+    // (`recoveryRequired`) and may therefore have been cut mid-answer.
+    //
+    // A turn that already reported an ERROR is not recovered: the user has been
+    // shown the failure, and polling would add four minutes of waiting to it.
+    if ((!hadOutput || recoveryRequired) && !hadError) {
+      const answer = await this.pollForAnswer(conversationId, turn, signal);
+      // additive contract: only what the stream has not already delivered
+      const suffix = answer?.text ? undeliveredSuffix(answer.text, text) : '';
+      if (suffix) result.text = suffix;
+      if (answer?.citations?.length)
+        result.grounding = { citations: answer.citations.map(toGroundingCitation) };
+    }
 
-      if (!result.grounding && !citationsEmitted && (searchRequested || searchUsed)) {
-        try {
-          const document = await this.client.getConversation(
-            conversationId,
-            timeoutSignal(CITATION_FETCH_TIMEOUT_MS),
-          );
-          const citations = extractCitations(document, this.turnAnchor(turn));
-          if (citations.length > 0)
-            result.grounding = { citations: citations.map(toGroundingCitation) };
-        } catch (error) {
-          log('citation fetch failed: %s', String(error));
-        }
+    if (!result.grounding && !citationsEmitted && (searchRequested || searchUsed)) {
+      try {
+        const document = await this.client.getConversation(
+          conversationId,
+          timeoutSignal(CITATION_FETCH_TIMEOUT_MS),
+        );
+        const citations = extractCitations(document, this.turnAnchor(turn));
+        if (citations.length > 0)
+          result.grounding = { citations: citations.map(toGroundingCitation) };
+      } catch (error) {
+        log('citation fetch failed: %s', String(error));
       }
-    } finally {
-      // even a timed-out recovery must not leave the turn in the account history
-      // fire-and-forget: hideConversation swallows its own errors
-      void this.client.hideConversation(conversationId, timeoutSignal(HIDE_TIMEOUT_MS));
     }
 
     return result;
+  };
+
+  /**
+   * Soft-hide the conversation this turn created. Idempotent and
+   * fire-and-forget: it runs from the stream's `finally`, so it must never keep
+   * the response open nor throw into it.
+   */
+  private hideTurn = (turn: TurnState, conversationId?: string) => {
+    const id = conversationId ?? turn.conversationId;
+    if (!id || turn.hidden) return;
+    turn.hidden = true;
+    void this.client.hideConversation(id, timeoutSignal(HIDE_TIMEOUT_MS));
   };
 
   private turnAnchor = ({ startedAtSec, userMessageId }: TurnState) => ({
@@ -844,7 +950,9 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
             : error.message;
 
       return AgentRuntimeError.chat({
-        error: { body: error.body, kind: error.kind, message, status: error.status },
+        // NEVER `error.body`: an upstream body carries conversation content and,
+        // on the sentinel/file paths, credentials. Only our own safe fields.
+        error: { code: error.code, kind: error.kind, message, status: error.status },
         errorType: toAgentRuntimeErrorType(error),
         message,
         provider: this.provider,

@@ -162,6 +162,70 @@ describe('applyPatchEvent', () => {
       expect(getPatchedValue(state, '/list')).toEqual(['a', 'b', 'c', 'd']);
     });
 
+    describe('hostile indices', () => {
+      const withList = () => {
+        const state = createPatchState();
+        applyPatchEvent(state, { o: 'add', p: '', v: { list: ['a', 'b'] } });
+        return state;
+      };
+
+      it.each([
+        ['a huge index', '4294967294'],
+        ['past the 2^31-1 ceiling', '2147483648'],
+        ['a negative index', '-1'],
+        ['a non-canonical index', '01'],
+        ['an exponent', '1e3'],
+        ['a padded index', ' 1'],
+        ['a float', '1.0'],
+        ['far past the end', '99'],
+      ])('refuses to add or replace at %s', (_label, index) => {
+        for (const op of ['add', 'replace']) {
+          const state = withList();
+          applyPatchEvent(state, { o: op, p: `/list/${index}`, v: 'x' });
+
+          const list = getPatchedValue(state, '/list');
+          expect(list).toEqual(['a', 'b']);
+          expect(list.length).toBe(2);
+        }
+      });
+
+      it('never lets a sparse array be created through an intermediate segment', () => {
+        const state = withList();
+        applyPatchEvent(state, { o: 'add', p: '/list/4294967294/deep', v: 'x' });
+
+        expect(getPatchedValue(state, '/list')).toEqual(['a', 'b']);
+      });
+
+      it('allows extending an array by exactly one slot', () => {
+        const state = withList();
+        applyPatchEvent(state, { o: 'replace', p: '/list/2', v: 'c' });
+        expect(getPatchedValue(state, '/list')).toEqual(['a', 'b', 'c']);
+      });
+
+      it('refuses to remove a slot that does not exist', () => {
+        const state = withList();
+        expect(applyPatchEvent(state, { o: 'remove', p: '/list/2' })).toBe(false);
+        expect(applyPatchEvent(state, { o: 'remove', p: '/list/-' })).toBe(false);
+        expect(applyPatchEvent(state, { o: 'remove', p: '/list/-1' })).toBe(false);
+        expect(getPatchedValue(state, '/list')).toEqual(['a', 'b']);
+      });
+
+      it('appends with `-` instead of writing a string key onto the array', () => {
+        const state = withList();
+        applyPatchEvent(state, { o: 'append', p: '/list/-', v: 'c' });
+
+        const list = getPatchedValue(state, '/list');
+        expect(list).toEqual(['a', 'b', 'c']);
+        expect(Object.hasOwn(list, '-')).toBe(false);
+      });
+
+      it('refuses `-` as a replace location', () => {
+        const state = withList();
+        applyPatchEvent(state, { o: 'replace', p: '/list/-', v: 'c' });
+        expect(getPatchedValue(state, '/list')).toEqual(['a', 'b']);
+      });
+    });
+
     it('keeps replace overwriting in place', () => {
       const state = createPatchState();
       applyPatchEvent(state, { o: 'add', p: '', v: { list: ['a', 'c'] } });

@@ -1,18 +1,27 @@
-import { citationsFromMessage, isVisibleAssistantMessage } from '../citations';
+import createDebug from 'debug';
+
+import { citationsFromMessage, isAnswerMessage, isVisibleAssistantMessage } from '../citations';
 import { ASSET_POINTER_PREFIXES } from '../constants';
 import type { AssetPointerKind, Citation, ConversationEvent, StreamHandoffOption } from '../types';
 import { sanitizeAnnotations } from './annotations';
 import { applyPatchEvent, createPatchState, type PatchState } from './patch';
 
+const log = createDebug('lobe-chatgptweb:events');
+
 interface MessageState {
   citationCount: number;
+  /** a divergent (non prefix-compatible) replay was already reported once */
+  divergenceLogged: boolean;
   emittedPointers: Set<string>;
   endTurn?: boolean;
+  /** the current snapshot is NOTHING but the history we replayed — an echo */
+  historyOnly: boolean;
   ignored: boolean;
+  /** HIGH-WATER mark of the reasoning already surfaced — never shrinks */
   reasoning: string;
   reasoningDone: boolean;
   status?: string;
-  /** sanitized text already surfaced to the consumer */
+  /** HIGH-WATER mark of the sanitized text already surfaced — never shrinks */
   text: string;
 }
 
@@ -233,7 +242,9 @@ export class ConversationEventRouter {
     if (!state) {
       state = {
         citationCount: 0,
+        divergenceLogged: false,
         emittedPointers: new Set<string>(),
+        historyOnly: false,
         ignored: false,
         reasoning: '',
         reasoningDone: false,
@@ -266,13 +277,13 @@ export class ConversationEventRouter {
 
     if (contentType === 'thoughts') {
       const { summary, text } = reasoningText(message);
+      // Same additive high-water contract as the answer text — see `emitText`.
       if (text.length > state.reasoning.length && text.startsWith(state.reasoning)) {
         const delta = text.slice(state.reasoning.length);
         state.reasoning = text;
         events.push({ delta, messageId, summary, type: 'reasoning.delta' });
-      } else if (text && text !== state.reasoning) {
-        state.reasoning = text;
-        events.push({ delta: text, messageId, summary, type: 'reasoning.delta' });
+      } else if (text && !state.reasoning.startsWith(text)) {
+        this.logDivergence(state, messageId, 'reasoning');
       }
     }
 
@@ -310,7 +321,13 @@ export class ConversationEventRouter {
 
     const status = typeof message.status === 'string' ? message.status : undefined;
     const endTurn = typeof message.end_turn === 'boolean' ? message.end_turn : undefined;
-    if (endTurn === true) this.endTurn = true;
+    // ONLY the current user-visible final answer may complete the turn. The
+    // upstream also replays our own history (`end_turn: true` and all) and emits
+    // `thoughts` / tool / system messages with their own status; promoting any of
+    // those makes a handed-off turn look finished, so the resume leg that
+    // actually carries the answer is never followed.
+    if (endTurn === true && !state.ignored && !state.historyOnly && isAnswerMessage(message))
+      this.endTurn = true;
     if (status !== state.status || endTurn !== state.endTurn) {
       state.status = status;
       state.endTurn = endTurn;
@@ -333,6 +350,9 @@ export class ConversationEventRouter {
 
     // `<replayed history><new text>` → `<new text>` (reference `strip_history`).
     const stripped = stripHistory(raw, this.historyText);
+    // nothing left once the replay is removed ⇒ this snapshot is a pure echo of
+    // a turn we sent, not an answer (so its `end_turn` means nothing either)
+    state.historyOnly = !stripped && !!this.historyText;
 
     // A whole replayed turn coming back as its own message: skip it entirely.
     if (
@@ -366,11 +386,40 @@ export class ConversationEventRouter {
     // still rewrite (an annotation marker and the whitespace before it), so the
     // deltas a consumer concatenates always equal `text`.
     const sanitized = sanitizeAnnotations(stripped, { streaming: !finished });
-    if (sanitized === state.text) return;
 
-    const delta = sanitized.startsWith(state.text) ? sanitized.slice(state.text.length) : sanitized;
+    // HIGH-WATER contract. A resume leg replays the turn from offset 0, so the
+    // very same message id arrives again from `H`, `He`, … Emitting those would
+    // duplicate the answer downstream, because the event contract is ADDITIVE
+    // (the consumer concatenates every delta and can never take text back).
+    //
+    // So: withhold any snapshot that is a prefix of — or equal to — what we have
+    // already surfaced, and emit only the suffix once it grows past the mark.
+    // A snapshot that DIVERGES (upstream rewrote the answer) cannot be expressed
+    // additively at all, so it is withheld too until it grows past the mark AND
+    // extends it; the divergence is logged once.
+    if (sanitized.length <= state.text.length) {
+      if (!state.text.startsWith(sanitized)) this.logDivergence(state, messageId, 'text');
+      return;
+    }
+    if (!sanitized.startsWith(state.text)) {
+      this.logDivergence(state, messageId, 'text');
+      return;
+    }
+
+    const delta = sanitized.slice(state.text.length);
     state.text = sanitized;
     if (delta) events.push({ delta, messageId, text: sanitized, type: 'text.delta' });
+  }
+
+  /** One line per message, whatever how many divergent snapshots follow. */
+  private logDivergence(state: MessageState, messageId: string, channel: 'text' | 'reasoning') {
+    if (state.divergenceLogged) return;
+    state.divergenceLogged = true;
+    log(
+      'withholding a divergent %s replay for %s (the delta contract is additive)',
+      channel,
+      messageId,
+    );
   }
 
   private emitCitations(

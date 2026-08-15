@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ChatGPTWebClient } from './client';
+import { MAX_ERROR_BODY_BYTES, readBodySafely } from './http';
 
 /**
  * A response whose HEADERS arrive immediately but whose BODY trickles in later —
@@ -100,5 +101,87 @@ describe('caller cancellation vs internal deadline', () => {
     await expect(
       (client as any).requestJson({ context: 'probe', path: '/backend-api/me', timeoutMs: 20 }),
     ).rejects.toMatchObject({ kind: 'timeout' });
+  });
+});
+
+describe('readBodySafely', () => {
+  it('reads at most the diagnostic limit and cancels the rest', async () => {
+    let produced = 0;
+    let cancelled = false;
+    const endless = new Response(
+      new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelled = true;
+        },
+        pull(controller) {
+          produced += 1;
+          controller.enqueue(new TextEncoder().encode('x'.repeat(512)));
+        },
+      }),
+      { status: 500 },
+    );
+
+    const body = await readBodySafely(endless);
+
+    expect(body).toHaveLength(MAX_ERROR_BODY_BYTES);
+    // an unbounded body is hung up on, never drained
+    expect(cancelled).toBe(true);
+    expect(produced).toBeLessThan(16);
+  });
+
+  it('never buffers a huge error body through the request path', async () => {
+    let produced = 0;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              produced += 1;
+              controller.enqueue(new TextEncoder().encode('e'.repeat(1024)));
+            },
+          }),
+          { status: 500 },
+        ),
+    );
+
+    await expect(
+      (createClient(fetchMock as unknown as typeof fetch) as any).requestJson({
+        context: 'probe',
+        path: '/backend-api/me',
+      }),
+    ).rejects.toMatchObject({ kind: 'upstream' });
+
+    expect(produced).toBeLessThan(8);
+  });
+
+  it('rethrows a caller abort raised while the error body is read', async () => {
+    const controller = new AbortController();
+    const sentinel = Object.assign(new Error('user pressed stop'), { name: 'AbortError' });
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        pull() {
+          controller.abort(sentinel);
+          throw sentinel;
+        },
+      }),
+      { status: 500 },
+    );
+
+    await expect(
+      readBodySafely(response, () => (controller.signal.reason as Error) ?? sentinel),
+    ).rejects.toBe(sentinel);
+  });
+
+  it('degrades to no body for an ordinary read failure', async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        pull() {
+          throw new TypeError('stream broke');
+        },
+      }),
+      { status: 500 },
+    );
+
+    await expect(readBodySafely(response)).resolves.toBeUndefined();
   });
 });

@@ -218,6 +218,35 @@ describe('buildPrepareBody', () => {
     ).not.toHaveProperty('attachment_mime_types');
   });
 
+  it('never advertises attachment mime types on the search flow', () => {
+    // the live search-plus-attachments turn used to send both
+    expect(
+      buildPrepareBody({
+        attachmentMimeTypes: ['application/pdf'],
+        flow: 'search',
+        model: 'auto',
+        prompt: 'summarize this and search the web',
+      }),
+    ).not.toHaveProperty('attachment_mime_types');
+  });
+
+  it('derives the mandatory system hints from the flow', () => {
+    expect(buildPrepareBody({ flow: 'search', model: 'auto', prompt: 'x' }).system_hints).toEqual([
+      'search',
+    ]);
+    expect(buildPrepareBody({ flow: 'picture', model: 'auto', prompt: 'x' }).system_hints).toEqual([
+      'picture_v2',
+    ]);
+    expect(
+      buildPrepareBody({ flow: 'attachments', model: 'auto', prompt: 'x' }).system_hints,
+    ).toEqual([]);
+    // an explicit list still wins
+    expect(
+      buildPrepareBody({ flow: 'search', model: 'auto', prompt: 'x', systemHints: ['custom'] })
+        .system_hints,
+    ).toEqual(['custom']);
+  });
+
   it('threads a fresh uuid parent for the image flow', () => {
     expect(
       buildPrepareBody({ flow: 'picture', model: 'gpt-5-5', prompt: 'x' }).parent_message_id,

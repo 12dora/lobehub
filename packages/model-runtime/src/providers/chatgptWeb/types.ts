@@ -68,7 +68,18 @@ export type ConversationEvent =
   | { endTurn?: boolean; messageId: string; status?: string; type: 'message.status' }
   | { code?: string; message: string; type: 'error' }
   | { payload: string; type: 'raw' }
-  | { conversationId?: string; endTurn?: boolean; type: 'done' };
+  | {
+      conversationId?: string;
+      endTurn?: boolean;
+      /**
+       * The turn ended WITHOUT the upstream finishing it: the resume leg failed
+       * or ran out of budget. Whatever was streamed may be a truncated prefix of
+       * the answer, so the consumer must recover the rest from the conversation
+       * document (and de-duplicate against what it already emitted).
+       */
+      recoveryRequired?: boolean;
+      type: 'done';
+    };
 
 /**
  * The only values chatgpt.com accepts for `thinking_effort`. Verified live

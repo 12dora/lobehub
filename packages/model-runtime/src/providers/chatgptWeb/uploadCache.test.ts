@@ -6,6 +6,7 @@ import {
   getCachedUpload,
   setCachedUpload,
   uploadCacheKey,
+  uploadCacheWeight,
   uploadNamespace,
 } from './uploadCache';
 
@@ -81,5 +82,36 @@ describe('uploadCache', () => {
     expect(getCachedUpload(keyFor(0))).toBeDefined();
     // …so entry 1 is the one that goes
     expect(getCachedUpload(keyFor(1))).toBeUndefined();
+  });
+});
+
+describe('uploadCache retained size', () => {
+  it('caps user-controlled strings and drops unknown fields', () => {
+    const key = uploadCacheKey('acc:acc-1', BYTES)!;
+    setCachedUpload(key, {
+      ...ref('file-1'),
+      name: 'a'.repeat(5000),
+      // a caller-attached field must not be retained
+      raw: { huge: 'b'.repeat(100_000) },
+    } as any);
+
+    const cached = getCachedUpload(key)!;
+    expect(cached.name).toHaveLength(128);
+    expect((cached as any).raw).toBeUndefined();
+    expect(uploadCacheWeight()).toBeLessThan(1024);
+  });
+
+  it('bounds the TOTAL retained size, not just the entry count', () => {
+    // entries well under the 200-entry cap, but heavy: the weight bound is what
+    // has to evict here
+    const key = (index: number) => `acc:acc-1:${'k'.repeat(400)}:${index}`;
+    for (let index = 0; index < 150; index += 1)
+      setCachedUpload(key(index), { ...ref(`f${index}`), name: 'n'.repeat(128) });
+
+    expect(uploadCacheWeight()).toBeLessThanOrEqual(64 * 1024);
+    // the oldest went first…
+    expect(getCachedUpload(key(0))).toBeUndefined();
+    // …and the newest survived
+    expect(getCachedUpload(key(149))).toBeDefined();
   });
 });

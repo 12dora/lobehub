@@ -437,6 +437,174 @@ describe('ConversationEventRouter', () => {
     });
   });
 
+  describe('resume replay (the same message id arrives again from offset 0)', () => {
+    const textOf = (events: ConversationEvent[]) =>
+      (events.filter((event) => event.type === 'text.delta') as any[]).map((event) => event.delta);
+
+    it('withholds a replayed prefix and emits only the new suffix', () => {
+      const router = new ConversationEventRouter();
+      const events: ConversationEvent[] = [];
+      const feed = (payload: unknown) => events.push(...router.feed(JSON.stringify(payload)));
+
+      // first leg
+      feed(assistantAdd('m1'));
+      feed(append('Hello'));
+      // the resume leg replays the SAME message from the start
+      feed({ o: 'replace', p: '/message/content/parts/0', v: 'H' });
+      feed({ o: 'replace', p: '/message/content/parts/0', v: 'He' });
+      feed({ o: 'replace', p: '/message/content/parts/0', v: 'Hello' });
+      // …and only then extends it
+      feed({ o: 'replace', p: '/message/content/parts/0', v: 'Hello world' });
+
+      expect(textOf(events)).toEqual(['Hello', ' world']);
+      expect(textOf(events).join('')).toBe('Hello world');
+    });
+
+    it('withholds a whole replayed message that re-adds the document', () => {
+      const { events } = feedAll([
+        assistantAdd('m1'),
+        append('Hello world'),
+        // the resume leg re-installs the document with a shorter snapshot
+        {
+          o: 'add',
+          p: '',
+          v: {
+            conversation_id: 'conv-1',
+            message: {
+              author: { role: 'assistant' },
+              channel: 'final',
+              content: { content_type: 'text', parts: ['Hello'] },
+              id: 'm1',
+              status: 'in_progress',
+            },
+          },
+        },
+      ]);
+
+      expect(textOf(events)).toEqual(['Hello world']);
+    });
+
+    it('withholds a divergent replacement rather than duplicating the answer', () => {
+      const { events } = feedAll([
+        assistantAdd('m1'),
+        append('Hello'),
+        {
+          o: 'replace',
+          p: '/message/content/parts/0',
+          v: 'Something else entirely',
+        },
+      ]);
+
+      expect(textOf(events)).toEqual(['Hello']);
+    });
+
+    it('applies the same high-water rule to reasoning', () => {
+      const thoughtsAdd = (content: string) => ({
+        o: 'add',
+        p: '',
+        v: {
+          conversation_id: 'conv-1',
+          message: {
+            author: { role: 'assistant' },
+            channel: 'analysis',
+            content: { content_type: 'thoughts', thoughts: [{ content, summary: 'Thinking' }] },
+            id: 'r1',
+          },
+        },
+      });
+
+      const { events } = feedAll([
+        thoughtsAdd('first step'),
+        // replay from the start
+        thoughtsAdd('fir'),
+        thoughtsAdd('first step'),
+        thoughtsAdd('first step and more'),
+      ]);
+
+      const deltas = (events.filter((event) => event.type === 'reasoning.delta') as any[]).map(
+        (event) => event.delta,
+      );
+      expect(deltas).toEqual(['Thinking\nfirst step', ' and more']);
+    });
+  });
+
+  describe('end_turn promotion', () => {
+    const handoff = { conversation_id: 'conv-1', type: 'stream_handoff' };
+
+    it('ignores end_turn echoed by a replayed historical assistant message', () => {
+      const { events } = feedAll(
+        [
+          // the upstream replays the turn we sent it, `end_turn: true` and all
+          {
+            o: 'add',
+            p: '',
+            v: {
+              conversation_id: 'conv-1',
+              message: {
+                author: { role: 'assistant' },
+                channel: 'final',
+                content: { content_type: 'text', parts: ['an old answer'] },
+                end_turn: true,
+                id: 'echo',
+                status: 'finished_successfully',
+              },
+            },
+          },
+          handoff,
+          '[DONE]',
+        ],
+        { echoHistory: ['an old answer'] },
+      );
+
+      // …so the turn is NOT finished and the caller may resume it
+      expect(events.at(-1)).toMatchObject({ endTurn: false, type: 'done' });
+      expect(events.some((event) => event.type === 'handoff')).toBe(true);
+    });
+
+    it.each([
+      ['a thoughts message', { channel: 'analysis', content_type: 'thoughts' }],
+      ['a tool call', { channel: 'final', content_type: 'text', recipient: 'web' }],
+      ['a hidden message', { channel: 'final', content_type: 'text', hidden: true }],
+    ])('ignores end_turn on %s', (_label, shape: any) => {
+      const { events } = feedAll([
+        {
+          o: 'add',
+          p: '',
+          v: {
+            conversation_id: 'conv-1',
+            message: {
+              author: { role: 'assistant' },
+              channel: shape.channel,
+              content:
+                shape.content_type === 'thoughts'
+                  ? { content_type: 'thoughts', thoughts: [{ content: 'x', summary: 's' }] }
+                  : { content_type: 'text', parts: ['x'] },
+              end_turn: true,
+              id: 'internal',
+              ...(shape.recipient ? { recipient: shape.recipient } : {}),
+              ...(shape.hidden ? { metadata: { is_visually_hidden_from_conversation: true } } : {}),
+              status: 'finished_successfully',
+            },
+          },
+        },
+        '[DONE]',
+      ]);
+
+      expect(events.at(-1)).toMatchObject({ endTurn: false, type: 'done' });
+    });
+
+    it('still promotes end_turn from the real answer', () => {
+      const { events } = feedAll([
+        assistantAdd('m1'),
+        append('done'),
+        { o: 'replace', p: '/message/end_turn', v: true },
+        '[DONE]',
+      ]);
+
+      expect(events.at(-1)).toMatchObject({ endTurn: true, type: 'done' });
+    });
+  });
+
   it('surfaces system_error content as an error event', () => {
     const { events } = feedAll([
       {

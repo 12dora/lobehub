@@ -116,7 +116,16 @@ export const solveSentinelChallenges = async ({
       const callerReason = callerAbortReason(signal);
       if (callerReason !== undefined) throw callerReason;
       if (!isChatGPTWebError(error) || error.kind !== 'pow') throw error;
-      proofToken = await solve();
+      try {
+        proofToken = await solve();
+      } catch (retryError) {
+        // `solveProofToken` maps a signal abort onto `kind: 'timeout'`, so the
+        // SECOND attempt needs the same guard: the user pressing stop must not
+        // be reported as a provider timeout.
+        const retryReason = callerAbortReason(signal);
+        if (retryReason !== undefined) throw retryReason;
+        throw retryError;
+      }
     }
   }
 
@@ -132,13 +141,9 @@ export const toChatRequirements = (
   challenges: { proofToken: string; turnstileToken: string },
 ): ChatRequirements => {
   if (!finalize.token)
-    throw new ChatGPTWebError(
-      'upstream',
-      'sentinel finalize returned an empty requirements token',
-      {
-        body: finalize,
-      },
-    );
+    // deliberately no `body`: the finalize payload is nothing but tokens
+    // (`so_token`, `token`), and an error object is routinely serialized whole
+    throw new ChatGPTWebError('upstream', 'sentinel finalize returned an empty requirements token');
 
   return {
     proofToken: challenges.proofToken,

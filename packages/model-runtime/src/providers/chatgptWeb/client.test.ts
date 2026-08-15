@@ -22,6 +22,25 @@ const sseResponse = (payloads: string[]) =>
     { headers: { 'content-type': 'text/event-stream' }, status: 200 },
   );
 
+/** An SSE leg that streams a few payloads and then the connection breaks. */
+const brokenSseResponse = (payloads: string[]) => {
+  let index = 0;
+  return new Response(
+    // one payload per pull, so the consumer really sees them before the break
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (index >= payloads.length) {
+          controller.error(new Error('connection reset'));
+          return;
+        }
+        controller.enqueue(new TextEncoder().encode(`data: ${payloads[index]}\n\n`));
+        index += 1;
+      },
+    }),
+    { headers: { 'content-type': 'text/event-stream' }, status: 200 },
+  );
+};
+
 const requirements: ChatRequirements = {
   proofToken: 'gAAAAABproof',
   soToken: 'so-token',
@@ -123,7 +142,7 @@ describe('ChatGPTWebClient.uploadFile', () => {
         jsonResponse({
           file_id: 'file_1',
           library_file_id: 'lib_1',
-          upload_url: 'https://blob.example.com/signed',
+          upload_url: 'https://oaiusercontent.blob.core.windows.net/signed',
         }),
       )
       .mockResolvedValueOnce(new Response('', { status: 201 }))
@@ -157,7 +176,7 @@ describe('ChatGPTWebClient.uploadFile', () => {
     });
 
     const put = callAt(1);
-    expect(put.url).toBe('https://blob.example.com/signed');
+    expect(put.url).toBe('https://oaiusercontent.blob.core.windows.net/signed');
     expect(put.init.method).toBe('PUT');
     expect(put.headers['x-ms-blob-type']).toBe('BlockBlob');
     expect(put.headers['x-ms-version']).toBe('2020-04-08');
@@ -518,7 +537,45 @@ describe('ChatGPTWebClient resume', () => {
 
     // a 404 is not retried; the turn ends so the caller can poll the document
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(events.at(-1)).toMatchObject({ conversationId: 'conv-h', type: 'done' });
+    // …and says so: a turn that never finished must not look like a clean one
+    expect(events.at(-1)).toMatchObject({
+      conversationId: 'conv-h',
+      endTurn: false,
+      recoveryRequired: true,
+      type: 'done',
+    });
+  });
+
+  it('flags recovery when a resume leg dies AFTER emitting part of the answer', async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(HANDOFF_PAYLOADS))
+      // the resume leg streams a partial answer and then the body breaks
+      .mockResolvedValueOnce(brokenSseResponse(answerPayloads('the first half').slice(0, -1)));
+
+    const events = [];
+    for await (const event of createClient().streamConversation(
+      {},
+      { maxResumes: 1, requirements, useFPath: true },
+    ))
+      events.push(event);
+
+    expect(events.find((event) => event.type === 'text.delta')).toMatchObject({
+      delta: 'the first half',
+    });
+    expect(events.at(-1)).toMatchObject({ recoveryRequired: true, type: 'done' });
+  });
+
+  it('flags recovery when the resume budget runs out while still handed off', async () => {
+    fetchMock.mockImplementation(async () => sseResponse(HANDOFF_PAYLOADS));
+
+    const events = [];
+    for await (const event of createClient().streamConversation(
+      {},
+      { maxResumes: 1, requirements, useFPath: true },
+    ))
+      events.push(event);
+
+    expect(events.at(-1)).toMatchObject({ recoveryRequired: true, type: 'done' });
   });
 
   it('stops after the resume budget instead of chaining forever', async () => {
@@ -559,17 +616,89 @@ describe('ChatGPTWebClient resume', () => {
 describe('ChatGPTWebClient assets', () => {
   it('resolves file and attachment download urls', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ download_url: 'https://blob/one' }))
-      .mockResolvedValueOnce(jsonResponse({ url: 'https://blob/two' }));
+      .mockResolvedValueOnce(jsonResponse({ download_url: 'https://files.oaiusercontent.com/one' }))
+      .mockResolvedValueOnce(jsonResponse({ url: 'https://files.oaiusercontent.com/two' }));
 
     const client = createClient();
-    expect(await client.getFileDownloadUrl('file_1')).toBe('https://blob/one');
-    expect(await client.getAttachmentDownloadUrl('conv-1', 'sed_1')).toBe('https://blob/two');
+    expect(await client.getFileDownloadUrl('file_1')).toBe('https://files.oaiusercontent.com/one');
+    expect(await client.getAttachmentDownloadUrl('conv-1', 'sed_1')).toBe(
+      'https://files.oaiusercontent.com/two',
+    );
 
     expect(callAt(0).url).toBe('https://chatgpt.com/backend-api/files/file_1/download');
     expect(callAt(1).url).toBe(
       'https://chatgpt.com/backend-api/conversation/conv-1/attachment/sed_1/download',
     );
+  });
+
+  describe('host allowlist (defence in depth against SSRF)', () => {
+    it.each([
+      ['loopback', 'https://127.0.0.1/asset'],
+      ['localhost', 'https://localhost/asset'],
+      ['link-local metadata', 'http://169.254.169.254/latest/meta-data/'],
+      ['a private address', 'https://10.0.0.5/asset'],
+      ['plain http on an allowed host', 'http://chatgpt.com/backend-api/estuary/content'],
+      ['a spoofed suffix', 'https://chatgpt.com.evil.example/asset'],
+      ['a spoofed prefix', 'https://evilchatgpt.com/asset'],
+      ['a userinfo trick', 'https://chatgpt.com@evil.example/asset'],
+      ['a file url', 'file:///etc/passwd'],
+      ['nonsense', 'not a url'],
+    ])('refuses to download from %s', async (_label, url) => {
+      await expect(createClient().downloadBytes(url)).rejects.toMatchObject({
+        kind: 'upstream',
+        name: 'ChatGPTWebError',
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses an upload url the file-create response points off-allowlist', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ file_id: 'file_1', upload_url: 'https://evil.example/put' }),
+      );
+
+      await expect(
+        createClient().uploadFile(new Uint8Array([1]), {
+          kind: 'image',
+          mimeType: 'image/png',
+          name: 'a.png',
+        }),
+      ).rejects.toMatchObject({ kind: 'upstream' });
+      // the create call happened; the blob PUT never did
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['getFileDownloadUrl', (client: any) => client.getFileDownloadUrl('file_1')],
+      [
+        'getAttachmentDownloadUrl',
+        (client: any) => client.getAttachmentDownloadUrl('conv-1', 'sed_1'),
+      ],
+    ])('refuses a download url %s reads off-allowlist', async (_label, call) => {
+      fetchMock.mockResolvedValue(jsonResponse({ download_url: 'http://169.254.169.254/' }));
+
+      await expect(call(createClient())).rejects.toMatchObject({ kind: 'upstream' });
+    });
+
+    it('never puts the url itself into the error message', async () => {
+      const error = await createClient()
+        .downloadBytes('https://evil.example/asset?sig=SECRET-SIGNATURE')
+        .catch((raised: Error) => raised);
+
+      expect(String(error)).not.toContain('SECRET-SIGNATURE');
+      expect(String(error)).not.toContain('evil.example');
+    });
+
+    it('rejects a CR/LF-bearing access token before it reaches the transport', async () => {
+      const client = new ChatGPTWebClient({
+        accessToken: 'token\r\nX-Injected: 1',
+        fetch: fetchMock as unknown as typeof fetch,
+      });
+
+      await expect(
+        client.downloadBytes('https://chatgpt.com/backend-api/estuary/content?id=1'),
+      ).rejects.toMatchObject({ kind: 'upstream' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   it('downloads bytes without leaking the bearer token to blob storage', async () => {
@@ -580,7 +709,9 @@ describe('ChatGPTWebClient assets', () => {
       }),
     );
 
-    const result = await createClient().downloadBytes('https://blob.example.com/signed');
+    const result = await createClient().downloadBytes(
+      'https://oaiusercontent.blob.core.windows.net/signed',
+    );
 
     expect([...result.bytes]).toEqual([1, 2, 3]);
     expect(result.mimeType).toBe('image/png');
@@ -703,7 +834,7 @@ describe('ChatGPTWebClient.downloadBytes bounds', () => {
     );
 
     await expect(
-      createClient().downloadBytes('https://blob.example.com/huge'),
+      createClient().downloadBytes('https://oaiusercontent.blob.core.windows.net/huge'),
     ).rejects.toMatchObject({ kind: 'upstream' });
   });
 
@@ -711,16 +842,21 @@ describe('ChatGPTWebClient.downloadBytes bounds', () => {
     fetchMock.mockResolvedValue(chunkedResponse(10, 1024));
 
     await expect(
-      createClient().downloadBytes('https://blob.example.com/huge', { maxBytes: 4096 }),
+      createClient().downloadBytes('https://oaiusercontent.blob.core.windows.net/huge', {
+        maxBytes: 4096,
+      }),
     ).rejects.toMatchObject({ kind: 'upstream' });
   });
 
   it('accepts a body under the limit', async () => {
     fetchMock.mockResolvedValue(chunkedResponse(2, 8));
 
-    const result = await createClient().downloadBytes('https://blob.example.com/small', {
-      maxBytes: 4096,
-    });
+    const result = await createClient().downloadBytes(
+      'https://oaiusercontent.blob.core.windows.net/small',
+      {
+        maxBytes: 4096,
+      },
+    );
 
     expect(result.bytes.length).toBe(16);
   });

@@ -174,6 +174,78 @@ describe('turnAnswerMessage', () => {
     expect(turnAnswerMessage(document)).toBeUndefined();
   });
 
+  describe('anchored answers outrank the timestamp fallback', () => {
+    const anchoredAt = (time: number) => ({
+      author: { role: 'assistant' },
+      content: { content_type: 'text', parts: ['the answer to THIS turn'] },
+      create_time: time,
+      id: 'anchored',
+    });
+    const unrelatedAt = (time: number) => ({
+      author: { role: 'assistant' },
+      content: { content_type: 'text', parts: ['a different branch'] },
+      create_time: time,
+      id: 'unrelated',
+    });
+
+    it('never lets a newer unrelated branch outrank the anchored answer', () => {
+      const branched = {
+        mapping: {
+          'my-user-message': { message: { author: { role: 'user' }, create_time: 10 } },
+          'anchored': { message: anchoredAt(11), parent: 'my-user-message' },
+          'unrelated': { message: unrelatedAt(12), parent: 'another-turn' },
+        },
+      };
+
+      expect(turnAnswerMessage(branched, { since: 10, userMessageId: 'my-user-message' })?.id).toBe(
+        'anchored',
+      );
+    });
+
+    it('still falls back to the timestamp when nothing descends from the anchor', () => {
+      const noDescendant = {
+        mapping: {
+          unrelated: { message: unrelatedAt(12), parent: 'another-turn' },
+        },
+      };
+
+      expect(
+        turnAnswerMessage(noDescendant, { since: 10, userMessageId: 'my-user-message' })?.id,
+      ).toBe('unrelated');
+    });
+
+    it('keeps the newest anchored answer when several descend from the anchor', () => {
+      const regenerated = {
+        mapping: {
+          'my-user-message': { message: { author: { role: 'user' }, create_time: 10 } },
+          'anchored': { message: anchoredAt(11), parent: 'my-user-message' },
+          'anchored-2': {
+            message: { ...anchoredAt(13), id: 'anchored-newer' },
+            parent: 'my-user-message',
+          },
+        },
+      };
+
+      expect(
+        turnAnswerMessage(regenerated, { since: 10, userMessageId: 'my-user-message' })?.id,
+      ).toBe('anchored-newer');
+    });
+
+    it('accepts an anchored answer whose timestamp equals the request mark', () => {
+      const sameSecond = {
+        mapping: {
+          'my-user-message': { message: { author: { role: 'user' }, create_time: 10 } },
+          'anchored': { message: anchoredAt(10), parent: 'my-user-message' },
+        },
+      };
+
+      // `since` alone would reject it (strictly greater); the anchor carries it
+      expect(
+        turnAnswerMessage(sameSecond, { since: 10, userMessageId: 'my-user-message' })?.id,
+      ).toBe('anchored');
+    });
+  });
+
   it('walks a multi-hop parent chain', () => {
     const deep = {
       mapping: {

@@ -4,7 +4,7 @@ import { AgentRuntimeErrorType } from '../../types/error';
 import { debugStream } from '../../utils/debugStream';
 import type { ConversationEvent } from './client';
 import { bytesToBase64, ChatGPTWebError } from './client';
-import { LobeChatGPTWebAI } from './index';
+import { describeRequestBody, LobeChatGPTWebAI, undeliveredSuffix } from './index';
 import { clearUploadCache } from './uploadCache';
 
 vi.mock('../../utils/debugStream', () => ({ debugStream: vi.fn(async () => {}) }));
@@ -486,6 +486,36 @@ describe('LobeChatGPTWebAI', () => {
       expect(message.content.parts[0]).toContain('parsed text');
       expect(message.metadata?.attachments).toBeUndefined();
     });
+
+    it('uses the shared placeholder when a failed upload has no parsed text', async () => {
+      const client = createFakeClient({
+        uploadFile: vi.fn(async () => {
+          throw new ChatGPTWebError('upstream', 'file creation returned no upload url');
+        }),
+      });
+
+      await createRuntime(client).chat({
+        messages: [
+          {
+            content: [
+              {
+                file_url: {
+                  mimeType: 'application/pdf',
+                  name: 'report.pdf',
+                  url: 'data:application/pdf;base64,aGk=',
+                },
+                type: 'file_url',
+              },
+            ] as any,
+            role: 'user',
+          },
+        ],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(bodyOf(client).messages.at(-1).content.parts[0]).toBe('[file omitted: report.pdf]');
+    });
   });
 
   describe('post-turn work', () => {
@@ -607,6 +637,111 @@ describe('LobeChatGPTWebAI', () => {
       }
     }, 30_000);
 
+    it('recovers only the UNSENT suffix after a failed resume leg', async () => {
+      const client = createFakeClient({
+        getConversation: vi.fn(async () =>
+          documentFor(bodyOf(client), {
+            parts: ['the first half and the second half'],
+            status: 'finished_successfully',
+          }),
+        ),
+        // the resume leg emitted part of the answer and then broke
+        streamConversation: vi.fn(async function* () {
+          yield { conversationId: 'conv-cut', type: 'conversation.start' } as ConversationEvent;
+          yield {
+            delta: 'the first half',
+            text: 'the first half',
+            type: 'text.delta',
+          } as ConversationEvent;
+          yield {
+            conversationId: 'conv-cut',
+            endTurn: false,
+            recoveryRequired: true,
+            type: 'done',
+          } as ConversationEvent;
+        }),
+      });
+
+      const sse = await readSSE(
+        await createRuntime(client).chat({
+          messages: [{ content: 'tell me a long thing', role: 'user' }],
+          model: 'gpt-5-6-thinking',
+          reasoning_effort: 'high',
+          temperature: 1,
+        }),
+      );
+
+      expect(client.getConversation).toHaveBeenCalled();
+      // the already-streamed prefix is NOT repeated
+      expect(sse).toContain('" and the second half"');
+      expect(sse.match(/the first half/g)).toHaveLength(1);
+    }, 20_000);
+
+    it('does not poll for an answer when the turn already failed', async () => {
+      const client = createFakeClient({
+        streamConversation: vi.fn(async function* () {
+          yield { conversationId: 'conv-bad', type: 'conversation.start' } as ConversationEvent;
+          yield { message: 'upstream exploded', type: 'error' } as ConversationEvent;
+          yield { conversationId: 'conv-bad', endTurn: false, type: 'done' } as ConversationEvent;
+        }),
+      });
+
+      const sse = await readSSE(
+        await createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'auto',
+          temperature: 1,
+        }),
+      );
+
+      expect(sse).toContain('upstream exploded');
+      // no 4-minute answer poll piled on top of a failure…
+      expect(client.getConversation).not.toHaveBeenCalled();
+      // …but the conversation is still hidden
+      expect(client.hideConversation).toHaveBeenCalledWith('conv-bad', expect.anything());
+    });
+
+    it('hides the conversation even when the caller aborts mid-turn', async () => {
+      const controller = new AbortController();
+      const client = createFakeClient({
+        streamConversation: vi.fn(async function* () {
+          yield { conversationId: 'conv-stop', type: 'conversation.start' } as ConversationEvent;
+          yield { delta: 'par', text: 'par', type: 'text.delta' } as ConversationEvent;
+          controller.abort();
+          throw new DOMException('The operation was aborted.', 'AbortError');
+        }),
+      });
+
+      const sse = await readSSE(
+        await createRuntime(client).chat(
+          { messages: [{ content: 'hi', role: 'user' }], model: 'auto', temperature: 1 },
+          { signal: controller.signal },
+        ),
+      );
+
+      expect(sse).toContain('event: stop\ndata: "abort"');
+      expect(client.getConversation).not.toHaveBeenCalled();
+      expect(client.hideConversation).toHaveBeenCalledWith('conv-stop', expect.anything());
+    });
+
+    it('reports a timeout raised before the first event as a network error', async () => {
+      const client = createFakeClient({
+        streamConversation: vi.fn(async function* () {
+          throw new ChatGPTWebError('timeout', 'conversation exceeded 300000ms');
+
+          yield undefined as never;
+        }),
+      });
+
+      await expect(
+        createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'auto',
+          temperature: 1,
+        }),
+      ).rejects.toMatchObject({ errorType: AgentRuntimeErrorType.ProviderNetworkError });
+    });
+
     it('redacts blobs and signed urls from the debug tee', async () => {
       const client = createFakeClient({
         streamConversation: vi.fn(async function* () {
@@ -712,6 +847,30 @@ describe('LobeChatGPTWebAI', () => {
         errorType: AgentRuntimeErrorType.ProviderBizError,
         message: expect.stringContaining('curl-impersonate'),
       });
+    });
+
+    it('never forwards an upstream body into the runtime error', async () => {
+      const client = createFakeClient({
+        getChatRequirements: vi.fn(async () => {
+          throw new ChatGPTWebError('upstream', 'conversation failed: status=500', {
+            body: { detail: 'boom', message: 'a whole conversation turn the user typed' },
+            code: 'CHATGPT_WEB_UPSTREAM',
+            status: 500,
+          });
+        }),
+      });
+
+      const error = await createRuntime(client)
+        .chat({ messages: [{ content: 'hi', role: 'user' }], model: 'auto', temperature: 1 })
+        .catch((raised: any) => raised);
+
+      expect(error.error).toEqual({
+        code: 'CHATGPT_WEB_UPSTREAM',
+        kind: 'upstream',
+        message: 'conversation failed: status=500',
+        status: 500,
+      });
+      expect(JSON.stringify(error)).not.toContain('a whole conversation turn');
     });
 
     it('keeps a cancellation raised before the first event as an abort', async () => {
@@ -823,5 +982,69 @@ describe('LobeChatGPTWebAI', () => {
         reasoning: false,
       });
     });
+
+    it('gives a live-only slug the shared settings, not an empty one', async () => {
+      const client = createFakeClient({
+        listModels: vi.fn(async () => [
+          { raw: {}, slug: 'gpt-5-7-thinking' },
+          { raw: {}, slug: 'gpt-5-7-instant' },
+        ]),
+      });
+
+      const models = await createRuntime(client).models();
+
+      // a search toggle needs an implementation behind it…
+      expect(models.find((model) => model.id === 'gpt-5-7-instant')?.settings).toEqual({
+        searchImpl: 'params',
+        searchProvider: 'chatgptweb',
+      });
+      // …and an advertised reasoning ability needs the effort selector
+      expect(models.find((model) => model.id === 'gpt-5-7-thinking')?.settings).toEqual({
+        extendParams: ['gpt5_6ReasoningEffort'],
+        searchImpl: 'params',
+        searchProvider: 'chatgptweb',
+      });
+    });
+  });
+});
+
+describe('debug logging', () => {
+  it('describes a request structurally, never its content', () => {
+    const described = describeRequestBody(
+      {
+        messages: [
+          {
+            author: { role: 'user' },
+            content: { content_type: 'text', parts: ['MY SECRET PROMPT and the whole file text'] },
+            metadata: { attachments: [{ id: 'file-1', name: 'salaries.xlsx' }] },
+          },
+        ],
+        model: 'auto',
+        system_hints: ['search'],
+      },
+      { flow: 'f:search', model: 'auto', thinkingEffort: 'extended' },
+    );
+
+    const serialized = JSON.stringify(described);
+    expect(serialized).not.toContain('MY SECRET PROMPT');
+    expect(serialized).not.toContain('salaries.xlsx');
+    expect(described).toMatchObject({
+      flow: 'f:search',
+      hasAttachments: true,
+      messageCount: 1,
+      roles: ['user'],
+    });
+  });
+});
+
+describe('undeliveredSuffix', () => {
+  it.each([
+    ['nothing streamed yet', 'the whole answer', '', 'the whole answer'],
+    ['a streamed prefix', 'half and half', 'half ', 'and half'],
+    ['an exact match', 'all of it', 'all of it', ''],
+    ['a leading marker the stream dropped', '\u200Bhalf and half', 'half ', 'and half'],
+    ['a divergent document', 'something else', 'half ', ''],
+  ])('handles %s', (_label, recovered, streamed, expected) => {
+    expect(undeliveredSuffix(recovered, streamed)).toBe(expected);
   });
 });

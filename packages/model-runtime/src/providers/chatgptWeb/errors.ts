@@ -26,6 +26,48 @@ export interface ChatGPTWebErrorOptions {
   status?: number;
 }
 
+/**
+ * The only fields a diagnostic body may keep. Everything else is dropped —
+ * upstream payloads carry sentinel tokens (`so_token`, `token`, `proof`), signed
+ * blob URLs (`upload_url`, `download_url`) and conversation content, and an
+ * `Error` is routinely serialized whole (`JSON.stringify(error)`), logged, and
+ * forwarded to the client.
+ */
+const SAFE_BODY_FIELDS = new Set(['status', 'code', 'detail', 'type', 'message']);
+
+const MAX_BODY_FIELD_LENGTH = 500;
+
+/** `"…_token": "…"` / `"upload_url": "…"` inside a raw JSON body string. */
+const SENSITIVE_JSON_FIELD_RE =
+  /("[\w-]*(?:token|secret|password|proof|signature|authorization|cookie|url)[\w-]*"\s*:\s*)"(?:[^"\\]|\\.)*"/gi;
+
+const redactBodyString = (value: string): string =>
+  value
+    .replaceAll(SENSITIVE_JSON_FIELD_RE, '$1"<redacted>"')
+    .replaceAll(/https?:\/\/\S+/gi, '<redacted url>')
+    .slice(0, MAX_BODY_FIELD_LENGTH);
+
+/**
+ * Strip anything credential- or content-bearing off a value before it is
+ * attached to an error. Objects keep only {@link SAFE_BODY_FIELDS} scalars;
+ * strings keep at most {@link MAX_BODY_FIELD_LENGTH} redacted characters;
+ * everything else is dropped entirely.
+ */
+export const sanitizeErrorBody = (body: unknown): unknown => {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body === 'string') return redactBodyString(body) || undefined;
+  if (typeof body === 'number' || typeof body === 'boolean') return body;
+  if (typeof body !== 'object' || Array.isArray(body)) return undefined;
+
+  const safe: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    if (!SAFE_BODY_FIELDS.has(key)) continue;
+    if (typeof value === 'number' || typeof value === 'boolean') safe[key] = value;
+    else if (typeof value === 'string') safe[key] = redactBodyString(value);
+  }
+  return Object.keys(safe).length > 0 ? safe : undefined;
+};
+
 export class ChatGPTWebError extends Error {
   readonly kind: ChatGPTWebErrorKind;
   readonly status?: number;
@@ -39,7 +81,9 @@ export class ChatGPTWebError extends Error {
     this.kind = kind;
     this.status = options.status;
     this.retryAfterMs = options.retryAfterMs;
-    this.body = options.body;
+    // sanitized HERE rather than at every call site: an error is the one object
+    // that always escapes — serialized, logged, forwarded to the client
+    this.body = sanitizeErrorBody(options.body);
     this.code = options.code;
   }
 }

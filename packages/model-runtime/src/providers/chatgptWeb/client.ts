@@ -19,6 +19,7 @@ import {
   buildBlobUploadHeaders,
   buildBootstrapHeaders,
   buildSentinelHeaders,
+  rejectCrlf,
   sanitizeHeaderValue,
 } from './headers';
 import {
@@ -112,6 +113,57 @@ interface LegState {
   resumeToken?: string;
   sawOutput: boolean;
 }
+
+/**
+ * Hosts an upstream-supplied URL may point at.
+ *
+ * Every one of these URLs (`upload_url`, `download_url`, asset pointers) is read
+ * out of a response body, i.e. it is attacker-influenced input to a server-side
+ * fetch. The server transport enforces its own SSRF policy; this is the second
+ * line of defence, so a compromised/spoofed response cannot make the runtime
+ * fetch `http://169.254.169.254/…` or an internal service with the account's
+ * bearer token attached.
+ */
+const ASSET_HOST_SUFFIXES = [
+  'chatgpt.com',
+  'openai.com',
+  'oaiusercontent.com',
+  'oaistatic.com',
+  'blob.core.windows.net',
+];
+
+export const isAllowedAssetUrl = (url: string): boolean => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase();
+  return ASSET_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+};
+
+/**
+ * @returns the parsed URL, so the caller can decide same-origin questions on the
+ *   PARSED host rather than on a string prefix.
+ */
+export const assertAllowedAssetUrl = (url: string, context: string): URL => {
+  if (!isAllowedAssetUrl(url))
+    // the URL itself is never interpolated: its query string is the credential
+    throw new ChatGPTWebError(
+      'upstream',
+      `${context}: refusing to fetch an asset from an unexpected host or scheme`,
+    );
+  return new URL(url);
+};
+
+/** `''` (nothing to download) or an allowlisted URL — never anything else. */
+const checkedAssetUrl = (url: string | undefined, context: string): string => {
+  if (!url) return '';
+  assertAllowedAssetUrl(url, context);
+  return url;
+};
 
 const isRetryableLegError = (error: unknown): boolean => {
   if (!isChatGPTWebError(error)) return false;
@@ -446,11 +498,15 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
           }
         } catch (error) {
           // A failed RESUME is recoverable: the answer is still being written
-          // upstream, so end the turn cleanly and let the caller fall back to
-          // reading the conversation document. A failed FIRST leg is not.
+          // upstream, so end the turn and let the caller fall back to reading
+          // the conversation document. A failed FIRST leg is not.
+          //
+          // `recoveryRequired` is the difference between "recoverable" and
+          // "clean": a leg that already emitted some text would otherwise look
+          // like a finished (but silently truncated) answer to the consumer.
           if (resumes === 0 || callerAbortReason(composed.signal) !== undefined) throw error;
           log('resume leg failed (%s); falling back to document recovery', String(error));
-          yield { conversationId, endTurn: false, type: 'done' };
+          yield { conversationId, endTurn: false, recoveryRequired: true, type: 'done' };
           return;
         } finally {
           managed?.release();
@@ -464,7 +520,10 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
         const handedOff = done?.endTurn !== true && (!!state.handoff || !state.sawOutput);
 
         if (!autoResume || !handedOff || !resumeToken || !resumeId || resumes >= maxResumes) {
-          yield done ?? { conversationId, endTurn: false, type: 'done' };
+          const final = done ?? { conversationId, endTurn: false, type: 'done' as const };
+          // still handed off with nowhere left to go (no token, resume budget
+          // spent, following disabled): the answer lives in the document only
+          yield handedOff ? { ...final, recoveryRequired: true } : final;
           return;
         }
 
@@ -721,6 +780,9 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     mimeType: string,
     signal?: AbortSignal,
   ) {
+    // the upload URL comes back from `POST /backend-api/files`, i.e. from a
+    // response body — validate it before handing it to the transport
+    assertAllowedAssetUrl(uploadUrl, 'file_upload');
     const managed = await this.rawFetch(
       uploadUrl,
       {
@@ -735,7 +797,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     if (response.status >= 300) {
       let bodyText: string | undefined;
       try {
-        bodyText = await readBodySafely(response);
+        bodyText = await readBodySafely(response, managed.fail);
       } finally {
         managed.release();
       }
@@ -809,7 +871,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       path: `${PATHS.files}/${fileId}/download`,
       signal,
     });
-    return raw?.download_url ?? raw?.url ?? '';
+    return checkedAssetUrl(raw?.download_url ?? raw?.url, 'file_download_url');
   }
 
   async getAttachmentDownloadUrl(
@@ -822,7 +884,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       path: `${PATHS.conversation}/${conversationId}/attachment/${attachmentId}/download`,
       signal,
     });
-    return raw?.download_url ?? raw?.url ?? '';
+    return checkedAssetUrl(raw?.download_url ?? raw?.url, 'attachment_download_url');
   }
 
   /**
@@ -845,17 +907,24 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       ? { signal: signalOrOptions }
       : (signalOrOptions ?? {});
 
-    const sameOrigin = url.startsWith(`${CHATGPT_BASE_URL}/`);
+    const parsed = assertAllowedAssetUrl(url, 'asset_download');
+    const sameOrigin = parsed.origin === CHATGPT_BASE_URL;
     const managed = await this.rawFetch(
       url,
       {
         headers: {
           'Accept': 'application/json, text/plain, */*',
           'Accept-Language': 'en-US,en;q=0.8',
-          ...(sameOrigin ? { Authorization: `Bearer ${this.fingerprint.accessToken}` } : {}),
+          // the token is user input; a CR/LF in it is request splitting in the
+          // curl-backed transport, so it is REJECTED rather than mangled
+          ...(sameOrigin
+            ? {
+                Authorization: `Bearer ${rejectCrlf('Authorization', this.fingerprint.accessToken)}`,
+              }
+            : {}),
           'Origin': CHATGPT_BASE_URL,
           'Referer': `${CHATGPT_BASE_URL}/`,
-          'User-Agent': this.userAgent,
+          'User-Agent': sanitizeHeaderValue(this.userAgent),
         },
       },
       { context: 'asset_download', signal, timeoutMs },
@@ -865,7 +934,7 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
     try {
       if (response.status >= 300)
         throw classifyResponseError({
-          bodyText: await readBodySafely(response),
+          bodyText: await readBodySafely(response, managed.fail),
           context: 'asset_download',
           headers: response.headers,
           status: response.status,

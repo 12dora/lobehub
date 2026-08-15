@@ -209,19 +209,32 @@ export const turnAnswerMessage = (
   // the new answer — refuse rather than guess
   if (!userMessageId && since === undefined) return undefined;
 
-  let latest: Record<string, any> | undefined;
+  // Two tiers, never mixed: an answer that ANCHORS to the user message we just
+  // sent is authoritative, and the timestamp is only a fallback for when the
+  // document carries no descendant at all (a fresh conversation whose parent
+  // links we never saw). Merging them lets an unrelated newer branch — a
+  // regenerate, a parallel turn, a clock skew — outrank the real answer.
+  let anchored: Record<string, any> | undefined;
+  let recent: Record<string, any> | undefined;
+
   for (const [nodeId, node] of Object.entries(mapping)) {
     const message = asRecord(node?.message);
     if (!message || !isAnswerMessage(message)) continue;
 
-    const correlated =
-      (!!userMessageId && descendsFrom(mapping, nodeId, userMessageId)) ||
-      (since !== undefined && messageCreateTime(message) > since);
-    if (!correlated) continue;
-
-    if (!latest || messageCreateTime(message) >= messageCreateTime(latest)) latest = message;
+    if (!!userMessageId && descendsFrom(mapping, nodeId, userMessageId)) {
+      if (!anchored || messageCreateTime(message) >= messageCreateTime(anchored))
+        anchored = message;
+      continue;
+    }
+    if (
+      since !== undefined &&
+      messageCreateTime(message) > since &&
+      (!recent || messageCreateTime(message) >= messageCreateTime(recent))
+    )
+      recent = message;
   }
-  return latest;
+
+  return anchored ?? recent;
 };
 
 /**

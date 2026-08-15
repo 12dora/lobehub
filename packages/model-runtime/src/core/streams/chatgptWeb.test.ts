@@ -107,9 +107,12 @@ describe('ChatGPTWebStream', () => {
       citationsEmitted: false,
       conversationId: 'conv-2',
       endTurn: false,
+      hadError: false,
       hadOutput: true,
       hadText: true,
+      recoveryRequired: false,
       searchUsed: true,
+      text: 'v24',
     });
     expect(eventTypes(raw)).toEqual(['text', 'grounding', 'usage', 'stop']);
     expect(raw).toContain('https://nodejs.org');
@@ -247,5 +250,171 @@ describe('ChatGPTWebStream', () => {
 
     expect(eventTypes(raw)).toEqual(['text', 'error', 'usage', 'stop']);
     expect(raw).toContain('connection reset');
+  });
+  describe('failed turns never start the recovery poll', () => {
+    it('reports the hard cap once and tells onDone the turn errored', async () => {
+      const onDone = vi.fn(async () => undefined);
+      const timingOut = async function* (): AsyncGenerator<ConversationEvent> {
+        yield { conversationId: 'conv-1', type: 'conversation.start' };
+        throw new ChatGPTWebError('timeout', 'stream idled out');
+      };
+
+      const raw = await collect(ChatGPTWebStream(timingOut(), { onDone }));
+
+      // exactly one error chunk, then the terminal stop
+      expect(eventTypes(raw)).toEqual(['error', 'usage', 'stop']);
+      expect(raw).toContain('ProviderNetworkError');
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({ hadError: true, hadOutput: false }),
+      );
+    });
+
+    it('marks a moderation block and an upstream error as errored', async () => {
+      const onDone = vi.fn(async () => undefined);
+
+      await collect(
+        ChatGPTWebStream(fromEvents([{ blocked: true, type: 'moderation' }, { type: 'done' }]), {
+          onDone,
+        }),
+      );
+      expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ hadError: true }));
+
+      onDone.mockClear();
+      await collect(
+        ChatGPTWebStream(
+          fromEvents([{ message: 'upstream exploded', type: 'error' }, { type: 'done' }]),
+          { onDone },
+        ),
+      );
+      expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ hadError: true }));
+    });
+
+    it('passes the streamed text and the recovery flag to onDone', async () => {
+      const onDone = vi.fn(async () => undefined);
+
+      await collect(
+        ChatGPTWebStream(
+          fromEvents([
+            { delta: 'half an ', text: 'half an ', type: 'text.delta' },
+            { delta: 'answer', text: 'half an answer', type: 'text.delta' },
+            { recoveryRequired: true, type: 'done' },
+          ]),
+          { onDone },
+        ),
+      );
+
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({ recoveryRequired: true, text: 'half an answer' }),
+      );
+    });
+  });
+
+  it('never re-emits a handoff, not even under debug', async () => {
+    const raw = await collect(
+      ChatGPTWebStream(
+        fromEvents([
+          { conversationId: 'c', resumeToken: 'resume-jwt-SECRET', type: 'handoff' },
+          { delta: 'x', text: 'x', type: 'text.delta' },
+          { type: 'done' },
+        ]),
+        { debug: true },
+      ),
+    );
+
+    expect(eventTypes(raw)).toEqual(['text', 'usage', 'stop']);
+    expect(raw).not.toContain('resume-jwt-SECRET');
+  });
+
+  describe('cleanup', () => {
+    it('runs the cleanup hook on a clean turn', async () => {
+      const onCleanup = vi.fn();
+
+      await collect(
+        ChatGPTWebStream(
+          fromEvents([
+            { conversationId: 'conv-1', type: 'conversation.start' },
+            { delta: 'x', text: 'x', type: 'text.delta' },
+            { type: 'done' },
+          ]),
+          { onCleanup },
+        ),
+      );
+
+      expect(onCleanup).toHaveBeenCalledWith({ aborted: false, conversationId: 'conv-1' });
+    });
+
+    it('runs the cleanup hook when the caller aborts, and starts no recovery', async () => {
+      const controller = new AbortController();
+      const onDone = vi.fn(async () => undefined);
+      const onCleanup = vi.fn();
+      const cancelled = async function* (): AsyncGenerator<ConversationEvent> {
+        yield { conversationId: 'conv-1', type: 'conversation.start' };
+        controller.abort();
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      };
+
+      const raw = await collect(
+        ChatGPTWebStream(cancelled(), { onCleanup, onDone, signal: controller.signal }),
+      );
+
+      expect(raw).toContain('event: stop\ndata: "abort"');
+      expect(onDone).not.toHaveBeenCalled();
+      expect(onCleanup).toHaveBeenCalledWith({ aborted: true, conversationId: 'conv-1' });
+    });
+
+    it('ends as an abort when the caller stops during image resolution', async () => {
+      const controller = new AbortController();
+      const onDone = vi.fn(async () => undefined);
+      const onCleanup = vi.fn();
+      const resolveImage = vi.fn(async () => {
+        controller.abort();
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      });
+
+      const raw = await collect(
+        ChatGPTWebStream(
+          fromEvents([
+            { conversationId: 'conv-1', type: 'conversation.start' },
+            {
+              assetPointer: 'file-service://img-1',
+              fileId: 'img-1',
+              pointerKind: 'file-service',
+              type: 'image.pointer',
+            },
+            { type: 'done' },
+          ]),
+          { onCleanup, onDone, resolveImage, signal: controller.signal },
+        ),
+      );
+
+      expect(raw).toContain('event: stop\ndata: "abort"');
+      expect(raw).not.toContain('event: usage');
+      expect(onDone).not.toHaveBeenCalled();
+      expect(onCleanup).toHaveBeenCalledWith({ aborted: true, conversationId: 'conv-1' });
+    });
+
+    it('still delivers the answer when an image simply fails to resolve', async () => {
+      const resolveImage = vi.fn(async () => {
+        throw new Error('404 from the asset host');
+      });
+
+      const raw = await collect(
+        ChatGPTWebStream(
+          fromEvents([
+            {
+              assetPointer: 'file-service://img-1',
+              fileId: 'img-1',
+              pointerKind: 'file-service',
+              type: 'image.pointer',
+            },
+            { delta: 'here you go', text: 'here you go', type: 'text.delta' },
+            { type: 'done' },
+          ]),
+          { resolveImage },
+        ),
+      );
+
+      expect(eventTypes(raw)).toEqual(['text', 'usage', 'stop']);
+    });
   });
 });

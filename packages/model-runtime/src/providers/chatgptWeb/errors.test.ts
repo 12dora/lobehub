@@ -82,7 +82,8 @@ describe('classifyResponseError', () => {
       context: 'conversation',
       status: 500,
     });
-    expect(String(error.body)).toHaveLength(501);
+    // the sanitizer caps a diagnostic body at 500 characters
+    expect(String(error.body)).toHaveLength(500);
   });
 
   describe('body-signalled failures (E2 §4.7)', () => {
@@ -216,5 +217,64 @@ describe('toAgentRuntimeErrorType', () => {
 
   it('falls back to ProviderBizError for foreign errors', () => {
     expect(toAgentRuntimeErrorType(new Error('boom'))).toBe(AgentRuntimeErrorType.ProviderBizError);
+  });
+});
+
+describe('error body sanitization', () => {
+  const serialized = (error: ChatGPTWebError) =>
+    JSON.stringify({ body: error.body, message: error.message });
+
+  it('drops every field that is not on the allowlist', () => {
+    const error = new ChatGPTWebError('upstream', 'file creation failed', {
+      body: {
+        detail: 'not allowed',
+        file_id: 'file-abcdef',
+        library_file_id: 'lib-1',
+        status: 400,
+        upload_url: 'https://blob.core.windows.net/x?sig=SECRET-SIGNATURE',
+      },
+    });
+
+    expect(error.body).toEqual({ detail: 'not allowed', status: 400 });
+    expect(serialized(error)).not.toContain('SECRET-SIGNATURE');
+    expect(serialized(error)).not.toContain('upload_url');
+  });
+
+  it('keeps no sentinel token when the finalize payload is attached', () => {
+    const error = new ChatGPTWebError('upstream', 'sentinel finalize failed', {
+      body: { proofofwork: {}, so_token: 'so-SECRET', token: 'gAAAAAB-SECRET' },
+    });
+
+    expect(error.body).toBeUndefined();
+    expect(serialized(error)).not.toContain('SECRET');
+  });
+
+  it('redacts urls and token-ish fields out of a raw body string', () => {
+    const error = new ChatGPTWebError('upstream', 'malformed json', {
+      body: '{"so_token": "so-SECRET", "download_url": "https://files.oaiusercontent.com/a?sig=S"}',
+    });
+
+    const body = String(error.body);
+    expect(body).not.toContain('so-SECRET');
+    expect(body).not.toContain('https://');
+    expect(body).toContain('<redacted>');
+  });
+
+  it('never lets a body survive JSON.stringify of the error itself', () => {
+    const error = new ChatGPTWebError('auth', 'conversation failed: status=401', {
+      body: { access_token: 'ya29.SECRET', status: 401 },
+      status: 401,
+    });
+
+    expect(JSON.stringify({ ...error, body: error.body })).not.toContain('SECRET');
+  });
+
+  it('leaves a plain diagnostic object intact', () => {
+    expect(
+      new ChatGPTWebError('upstream', 'x', { body: { code: 'boom', status: 500 } }).body,
+    ).toEqual({
+      code: 'boom',
+      status: 500,
+    });
   });
 });

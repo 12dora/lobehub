@@ -18,6 +18,20 @@ import type { AttachmentRef, ChatGPTWebMessage, ThinkingEffort } from './types';
  */
 export type ConduitFlow = 'search' | 'picture' | 'attachments';
 
+/**
+ * The `system_hints` each flow carries when the caller does not spell them out.
+ *
+ * NOTE the asymmetry, which is faithful to the live traffic: on the `/f/`
+ * CONVERSATION call the search hint rides on the last message
+ * (`metadata.system_hints`) and the top level stays empty, while the PREPARE
+ * call carries it at the top level.
+ */
+const FLOW_SYSTEM_HINTS: Record<ConduitFlow, string[]> = {
+  attachments: [],
+  picture: ['picture_v2'],
+  search: ['search'],
+};
+
 /** Back-compat: infer the flow from the legacy `search` / `systemHints` inputs. */
 const inferFlow = (options: { search?: boolean; systemHints?: string[] }): ConduitFlow => {
   if (options.search) return 'search';
@@ -219,6 +233,10 @@ export const buildPrepareBody = ({
 }: PrepareBodyOptions): Record<string, any> => {
   const effort = normalizeThinkingEffort(thinkingEffort);
   const resolvedFlow = flow ?? inferFlow({ systemHints });
+  // `system_hints` is mandatory on the prepare call and follows the FLOW, not
+  // the caller's diligence: passing `flow: 'search'` alone used to prepare a
+  // turn with no hints at all, which the upstream then served without search.
+  const hints = systemHints.length > 0 ? systemHints : FLOW_SYSTEM_HINTS[resolvedFlow];
   // the image flow threads a fresh uuid; search / attachments use the sentinel
   const parent =
     parentMessageId ?? (resolvedFlow === 'picture' ? randomUuid() : CLIENT_CREATED_ROOT);
@@ -238,9 +256,13 @@ export const buildPrepareBody = ({
     },
     supported_encodings: ['v1'],
     supports_buffering: true,
-    system_hints: systemHints,
+    system_hints: hints,
     ...timezoneFields(timezone),
-    ...(resolvedFlow !== 'picture' && attachmentMimeTypes?.length
+    // `attachment_mime_types` belongs to the DOCUMENT-attachment flow only
+    // (E3 §1.3). The image flow ignores it, and the search flow must not carry
+    // it at all — a search prepare that advertises mime types is not a body the
+    // web client ever sends.
+    ...(resolvedFlow === 'attachments' && attachmentMimeTypes?.length
       ? { attachment_mime_types: attachmentMimeTypes }
       : {}),
     ...(effort ? { thinking_effort: effort } : {}),
@@ -277,7 +299,11 @@ export const buildFConversationBody = ({
   const effort = normalizeThinkingEffort(thinkingEffort);
   const resolvedFlow = flow ?? inferFlow({ search, systemHints });
   const isSearch = resolvedFlow === 'search';
-  const messageHints = isSearch ? ['search'] : systemHints.length > 0 ? systemHints : undefined;
+  // the search flow keeps the TOP level empty and puts its hint on the last
+  // message (live-verified); the image flow advertises `picture_v2` at both
+  const topLevelHints =
+    systemHints.length > 0 ? systemHints : isSearch ? [] : FLOW_SYSTEM_HINTS[resolvedFlow];
+  const messageHints = isSearch ? ['search'] : topLevelHints.length > 0 ? topLevelHints : undefined;
   const parent =
     parentMessageId ?? (resolvedFlow === 'picture' ? randomUuid() : CLIENT_CREATED_ROOT);
 
@@ -297,7 +323,7 @@ export const buildFConversationBody = ({
     parent_message_id: parent,
     supported_encodings: ['v1'],
     supports_buffering: true,
-    system_hints: systemHints,
+    system_hints: topLevelHints,
     ...timezoneFields(timezone),
     ...(isSearch ? { client_reported_search_source: SEARCH_SOURCE, force_use_search: true } : {}),
     ...(effort ? { thinking_effort: effort } : {}),

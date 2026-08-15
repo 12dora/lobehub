@@ -170,6 +170,31 @@ describe('solveSentinelChallenges', () => {
     expect(pow.solveProofToken).toHaveBeenCalledTimes(1);
   });
 
+  it('honours a caller abort raised during the SECOND attempt', async () => {
+    const controller = new AbortController();
+    vi.spyOn(pow, 'solveProofToken')
+      .mockImplementationOnce(async () => {
+        throw new ChatGPTWebError('pow', 'failed to solve');
+      })
+      // the retry is cancelled mid-solve: `solveProofToken` maps that onto its
+      // own `timeout` kind, which must NOT reach the caller as a provider fault
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        throw new ChatGPTWebError('timeout', 'proof of work aborted');
+      });
+
+    await expect(
+      solveSentinelChallenges({
+        prepare: prepareWithPow,
+        requirementsToken: 'p',
+        resources,
+        signal: controller.signal,
+        userAgent: 'UA',
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(pow.solveProofToken).toHaveBeenCalledTimes(2);
+  });
+
   it('refuses an Arkose challenge outright', async () => {
     await expect(
       solveSentinelChallenges({

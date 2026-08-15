@@ -80,7 +80,9 @@ describe('ChatGPTWebClient.downloadBytes over a fake transport', () => {
         new Response(asBody(PNG), { headers: { 'content-type': 'image/png' }, status: 200 }),
     );
 
-    const result = await clientWith(fetchMock).downloadBytes('https://blob.example.com/signed');
+    const result = await clientWith(fetchMock).downloadBytes(
+      'https://files.oaiusercontent.com/signed',
+    );
 
     expect([...result.bytes]).toEqual([...PNG]);
     expect(result.mimeType).toBe('image/png');
@@ -90,7 +92,7 @@ describe('ChatGPTWebClient.downloadBytes over a fake transport', () => {
     const fetchMock = vi.fn(async () => lazyBody(MAX_DOWNLOAD_BYTES + 1));
 
     await expect(
-      clientWith(fetchMock).downloadBytes('https://blob.example.com/huge'),
+      clientWith(fetchMock).downloadBytes('https://files.oaiusercontent.com/huge'),
     ).rejects.toMatchObject({ kind: 'upstream', name: 'ChatGPTWebError' });
   });
 
@@ -104,7 +106,7 @@ describe('ChatGPTWebClient.downloadBytes over a fake transport', () => {
     );
 
     await expect(
-      clientWith(fetchMock).downloadBytes('https://blob.example.com/denied'),
+      clientWith(fetchMock).downloadBytes('https://files.oaiusercontent.com/denied'),
     ).rejects.toMatchObject({ name: 'ChatGPTWebError', status: 403 });
   });
 
@@ -113,13 +115,13 @@ describe('ChatGPTWebClient.downloadBytes over a fake transport', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ download_url: 'https://blob.example.com/one' }), {
+        new Response(JSON.stringify({ download_url: 'https://files.oaiusercontent.com/one' }), {
           headers: { 'content-type': 'application/json' },
           status: 200,
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ download_url: 'https://blob.example.com/two' }), {
+        new Response(JSON.stringify({ download_url: 'https://files.oaiusercontent.com/two' }), {
           headers: { 'content-type': 'application/json' },
           status: 200,
         }),

@@ -49,8 +49,43 @@ const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 export const isUnsafePath = (segments: string[]): boolean =>
   segments.some((segment) => FORBIDDEN_SEGMENTS.has(segment));
 
-/** A JSON-Pointer array position: a numeric index or the `-` (append) token. */
-const isIndexSegment = (segment: string) => /^\d+$/.test(segment) || segment === '-';
+/**
+ * The largest array index we will ever honour. `replace /list/4294967294` is a
+ * legal-looking JSON pointer that turns the target into a 4-billion-slot sparse
+ * array — every later `parts.filter(…)` then walks billions of positions, which
+ * is a CPU/memory kill from a single SSE frame.
+ */
+const MAX_ARRAY_INDEX = 2 ** 31 - 1;
+
+/**
+ * A canonical, non-negative, safe array index: no `-1`, no `+1`, no `01`, no
+ * `1e3`, no ` 1`, nothing past {@link MAX_ARRAY_INDEX}.
+ */
+export const isCanonicalArrayIndex = (segment: string): boolean =>
+  /^(?:0|[1-9]\d*)$/.test(segment) && segment.length <= 10 && Number(segment) <= MAX_ARRAY_INDEX;
+
+/** A JSON-Pointer array position: a canonical index or the `-` (append) token. */
+const isIndexSegment = (segment: string) => segment === '-' || isCanonicalArrayIndex(segment);
+
+/**
+ * Resolve a pointer segment against an array container, or `undefined` when the
+ * segment is out of contract.
+ *
+ * `write` (add / replace / append) may extend the array by AT MOST one slot, so
+ * a hostile index can never create a hole; `remove` must address an existing
+ * one. `-` is the append token and is only meaningful for a write.
+ */
+const arrayIndexFor = (
+  container: unknown[],
+  key: string,
+  mode: 'write' | 'remove',
+): number | undefined => {
+  if (key === '-') return mode === 'write' ? container.length : undefined;
+  if (!isCanonicalArrayIndex(key)) return undefined;
+  const index = Number(key);
+  if (mode === 'remove') return index < container.length ? index : undefined;
+  return index <= container.length ? index : undefined;
+};
 
 /** Own-property read only — never walk into anything inherited. */
 const ownValue = (node: JsonValue, segment: string): JsonValue => {
@@ -69,6 +104,10 @@ const getContainer = (
   let node = root;
   for (const [index, segment] of segments.slice(0, -1).entries()) {
     if (node === null || typeof node !== 'object') return undefined;
+    // an intermediate array position obeys the same bounds as a leaf write, and
+    // `-` is meaningless there (it addresses no existing element)
+    if (Array.isArray(node) && (!isCanonicalArrayIndex(segment) || Number(segment) > node.length))
+      return undefined;
     let next = ownValue(node, segment);
     if (next === undefined) {
       if (!create) return undefined;
@@ -91,6 +130,14 @@ const readAt = (root: JsonValue, path: string): JsonValue => {
 const writeAt = (root: JsonValue, path: string, value: JsonValue): void => {
   const target = getContainer(root, splitPath(path), true);
   if (!target) return;
+  if (Array.isArray(target.container)) {
+    // `-` is not a replace location (RFC 6902); an out-of-range index is refused
+    const index =
+      target.key === '-' ? undefined : arrayIndexFor(target.container, target.key, 'write');
+    if (index === undefined) return;
+    target.container[index] = value;
+    return;
+  }
   target.container[target.key] = value;
 };
 
@@ -102,15 +149,12 @@ const addAt = (root: JsonValue, path: string, value: JsonValue): void => {
   const target = getContainer(root, splitPath(path), true);
   if (!target) return;
   if (Array.isArray(target.container)) {
-    if (target.key === '-') {
-      target.container.push(value);
-      return;
-    }
-    if (/^\d+$/.test(target.key)) {
-      const index = Math.min(Number(target.key), target.container.length);
-      target.container.splice(index, 0, value);
-      return;
-    }
+    const index = arrayIndexFor(target.container, target.key, 'write');
+    // an out-of-contract index is dropped, never clamped: silently appending
+    // what claimed to be position 4294967294 corrupts the document just as badly
+    if (index === undefined) return;
+    target.container.splice(index, 0, value);
+    return;
   }
   target.container[target.key] = value;
 };
@@ -118,6 +162,17 @@ const addAt = (root: JsonValue, path: string, value: JsonValue): void => {
 const appendAt = (root: JsonValue, path: string, value: JsonValue): void => {
   const target = getContainer(root, splitPath(path), true);
   if (!target) return;
+
+  if (Array.isArray(target.container)) {
+    const index = arrayIndexFor(target.container, target.key, 'write');
+    if (index === undefined) return;
+    // `-` appends rather than string-concatenating onto a non-existent slot
+    if (target.key === '-') {
+      target.container.push(value);
+      return;
+    }
+  }
+
   const current = ownValue(target.container, target.key);
   if (typeof current === 'string' || current === undefined || current === null) {
     target.container[target.key] = `${current ?? ''}${typeof value === 'string' ? value : ''}`;
@@ -192,9 +247,13 @@ export const applyPatchEvent = (state: PatchState, event: PatchEvent): boolean =
     case 'remove': {
       const target = getContainer(state.root, splitPath(path), false);
       if (!target) return false;
-      if (Array.isArray(target.container) && /^\d+$/.test(target.key))
-        target.container.splice(Number(target.key), 1);
-      else delete target.container[target.key];
+      if (Array.isArray(target.container)) {
+        const index = arrayIndexFor(target.container, target.key, 'remove');
+        if (index === undefined) return false;
+        target.container.splice(index, 1);
+        return true;
+      }
+      delete target.container[target.key];
       return true;
     }
     default: {
