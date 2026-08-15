@@ -273,59 +273,30 @@ export default {
   'mobile.unsupported.desc':
     'Platform administration requires a desktop browser or the desktop app. Tables and management workflows are not available on mobile.',
   'mobile.unsupported.title': 'Desktop required',
-  'managedResources.actions.publish': 'Publish policy',
-  'managedResources.actions.retryPublish': 'Retry publish',
-  'managedResources.actions.retrySave': 'Retry save',
   'managedResources.actions.save': 'Save',
   'managedResources.saveReason': 'Updated via unified management',
-  'managedResources.boolean.false': 'Off',
-  'managedResources.boolean.true': 'On',
-  'managedResources.conflict.desc':
-    'Another administrator changed this policy. Merge your edits with the latest changes, or discard them.',
-  'managedResources.conflict.discard': 'Discard local edits',
-  'managedResources.conflict.fields':
-    'Local and server drafts changed the same field. Choose which conflicting values to keep.',
-  'managedResources.conflict.keepLocal': 'Keep my values',
-  'managedResources.conflict.rebase': 'Merge with latest changes',
-  'managedResources.conflict.title': 'Managed resource policy conflict',
-  'managedResources.conflict.useLatest': 'Use server values',
   'managedResources.desc':
     "Centrally manage the platform's AI providers, models, skills, connectors, and agents. When central management is on, the platform provides these capabilities and the matching user-side configuration entries are hidden — no personal data is deleted.",
   'managedResources.errors.generic': 'The policy action failed. Check the form and try again.',
-  'managedResources.errors.refresh':
-    'The latest policy could not be loaded. Your local edits are safe; try again.',
   'managedResources.errors.savedRefreshFailed':
-    'Saved successfully, but the latest policy could not be refreshed. Reload if the view looks stale.',
-  'managedResources.errors.publishedRefreshFailed':
-    'Published successfully, but capability refresh failed. Reload if managed flags look stale.',
-  'managedResources.errors.publishedRuntimeRecovering':
-    'Published, but Connector activation is still recovering. Reload in a moment.',
+    'Saved, but the latest policy could not be reloaded. Refresh if the view looks stale.',
+  'managedResources.errors.savedRuntimeRecovering':
+    'Saved, but Connector activation is still recovering. Reload in a moment.',
+  'managedResources.conflict.reloaded':
+    'Someone else saved this policy first, so the latest values were loaded. Reapply your changes.',
+  'managedResources.conflict.reloadFailed': 'Nothing was saved, and reloading failed',
+  'managedResources.conflict.reloadFailedDesc':
+    'Someone else saved this policy first, so your changes were not applied — and the latest policy could not be loaded. Your edits are still here; retry to load the latest values.',
+  'managedResources.conflict.retryReload': 'Retry loading',
+  'managedResources.saveSuccess': 'Managed resource policy applied for everyone.',
   'managedResources.errors.savedWithLocalEdits':
-    'Draft saved. Your later edits were kept — save again to persist them.',
-  'managedResources.draftPendingPublish':
-    'A saved draft differs from the published policy. Publish to apply it.',
-  'managedResources.status.draftPending': 'Draft pending publish',
-  'managedResources.impact.change':
-    'Before: {{beforeManaged}} · {{beforeMode}} → After: {{afterManaged}} · {{afterMode}}',
-  'managedResources.impact.empty': 'The saved draft matches the published policy.',
-  'managedResources.impact.title': 'Change impact',
-  'managedResources.managed': 'Managed by the platform',
-  'managedResources.mode.enforced': 'Enforce',
-  'managedResources.mode.label': 'How it applies',
-  'managedResources.mode.observe': 'Observe (no user impact)',
-  'managedResources.mode.ui-only': 'Hide from users',
+    'Saved. You changed more settings while saving — save again to apply them.',
   'managedResources.uiMode.label': 'Management mode',
   'managedResources.uiMode.platform': 'Platform managed',
   'managedResources.uiMode.user': 'User customizable',
   'managedResources.readiness.blocked':
     'These resources need platform configuration before they can be enforced: {{resources}}.',
-  'managedResources.readiness.notReady': 'Not ready',
-  'managedResources.readiness.ready': 'Ready',
   'managedResources.readOnly': 'You have read-only access to managed resource policy.',
-  'managedResources.reason.label': 'Change reason',
-  'managedResources.reason.placeholder': 'Explain why this policy is changing…',
-  'managedResources.reason.required': 'Enter a reason (1–2000 characters).',
-  // Card titles use nav.* keys; keep resource.* for notices / impact copy.
   'managedResources.resource.agents': 'Agents',
   'managedResources.resource.agents.desc': 'Platform agent definitions and configuration.',
   'managedResources.resource.aiModels': 'Service models',
@@ -469,9 +440,9 @@ export default {
   'aiToolSettings.connectors.retryGovernance': 'Retry permissions',
   'aiToolSettings.connectors.createIncomplete':
     'Connector draft was created, but discovery or publish did not complete. Finish setup in the advanced catalog.',
-  'aiSettingsDefaults.dirtyDraft.title': 'Unpublished settings draft blocks save',
+  'aiSettingsDefaults.dirtyDraft.title': 'Older settings changes are blocking this save',
   'aiSettingsDefaults.dirtyDraft.desc':
-    'The Settings Policy page has an unpublished draft outside this change. Resolve it on the <settingsLink>Settings Policy</settingsLink> page first, then retry.',
+    'An older version left settings changes half-applied. Open <settingsLink>Settings policy</settingsLink> and press Save once to apply them, then retry.',
   'nav.aiSkills': 'Skills',
   'nav.aiSkillDetail': 'Skill detail',
   'nav.aiConnectors': 'Connectors',
@@ -678,11 +649,9 @@ export default {
   'stats.banner.usersActive': 'Active users (30d)',
   'stats.banner.scopeNote': 'All metrics cover every user and workspace.',
   'stats.user.unknown': 'Unknown user {{index}}',
-
   'creds.page.title': 'Credentials',
   'creds.page.desc':
     'Platform-owned global credentials shared by all users. Secrets are envelope-encrypted and never revealed after save.',
-
   'nav.userDetail': 'User detail',
   'nav.users': 'Users',
   'groupRedirect.noAccess': 'You do not have access to any page in this section.',
@@ -1222,62 +1191,38 @@ export default {
   'users.errors.usernameTaken': 'A user with this username already exists.',
   'users.errors.passwordAuthDisabled':
     'Email & password sign-in is disabled on this deployment, so password accounts cannot be created.',
-
-  // M05 settings policy
   'settingsPolicy.title': 'Settings policy',
   'settingsPolicy.desc':
-    'Configure organization defaults, locks, and visibility for registered user settings. Publish applies to all users without rewriting their data.',
+    'Configure organization defaults, locks, and visibility for registered user settings. Saving applies to all users immediately without rewriting their data.',
   'settingsPolicy.featureDisabled':
-    'Platform settings policy is not enabled on this deployment. No draft requests are made.',
+    'Platform settings policy is not enabled on this deployment, so no settings policy is loaded or applied here.',
   'settingsPolicy.readOnlyHint': 'You have read-only access.',
   'settingsPolicy.unsavedLeave': 'You have unsaved settings policy changes. Leave anyway?',
   'settingsPolicy.unsavedTitle': 'Unsaved settings policy changes',
   'settingsPolicy.unsavedStay': 'Keep editing',
   'settingsPolicy.unsavedConfirm': 'Leave without saving',
-  'settingsPolicy.publishRequiresValidate':
-    'Validate the current draft (and review impact) before publishing.',
   'settingsPolicy.changePreview': 'Change preview',
   'settingsPolicy.searchPlaceholder': 'Search settings by name or path…',
-  'settingsPolicy.saveDraft': 'Save draft',
-  'settingsPolicy.retrySave': 'Retry save',
-  'settingsPolicy.validate': 'Validate',
-  'settingsPolicy.publish': 'Publish',
+  'settingsPolicy.save': 'Save',
   'settingsPolicy.resetDefaults': 'Restore defaults',
   'settingsPolicy.resetDefaultsDesc':
-    'Restore the settings on this page to their built-in defaults. This clears the platform overrides configured here and publishes a new revision; users regain control of these settings. Continue?',
+    'Restore the settings on this page to their built-in defaults. This clears the platform overrides configured here and applies immediately; users regain control of these settings. Continue?',
   'settingsPolicy.resetReason': 'Restore settings policy to defaults',
   'settingsPolicy.resetFailed': 'Restore defaults failed',
   'settingsPolicy.resetSuccess': 'Platform defaults restored.',
-  'settingsPolicy.publishSuccess': 'Settings policy published.',
+  'settingsPolicy.saveSuccess': 'Settings applied for everyone.',
+  'settingsPolicy.conflict.reloaded':
+    'Someone else saved these settings first, so the latest values were loaded. Reapply your changes.',
+  'settingsPolicy.conflict.reloadFailed': 'Nothing was saved, and reloading failed',
+  'settingsPolicy.conflict.reloadFailedDesc':
+    'Someone else saved these settings first, so your changes were not applied — and the latest settings could not be loaded. Your edits are still here; retry to load the latest values.',
+  'settingsPolicy.conflict.retryReload': 'Retry loading',
   'settingsPolicy.loadFailed': 'Could not load settings policy. Retry to try again.',
-  'settingsPolicy.validateRequestFailed': 'Could not validate the draft. Try again.',
   'settingsPolicy.errors.generic': 'The operation failed. Try again.',
-  'settingsPolicy.errors.saveFailed': 'Could not save the draft. Try again.',
-  'settingsPolicy.validation.generic': 'Invalid value at {{path}}',
-  'settingsPolicy.validation.MANAGED_SETTING_INVALID_VALUE': 'Invalid value at {{path}}',
-  'settingsPolicy.validation.MANAGED_SETTING_UNKNOWN_PATH': 'Unknown settings path: {{path}}',
-  'settingsPolicy.validation.MANAGED_SETTING_SECRET_PATH':
-    'Secret paths cannot be managed here: {{path}}',
-  'settingsPolicy.validation.PLATFORM_CONFIG_VALIDATION_FAILED':
-    'Configuration validation failed at {{path}}',
-  'settingsPolicy.resetPartial.title': 'Restore defaults partially applied',
-  'settingsPolicy.resetPartial.description':
-    'The draft was cleared on the server, but publishing failed and the previous draft could not be restored. Mutations are locked until you retry the restore or refresh from the server.',
-  'settingsPolicy.resetPartial.retryRestore': 'Retry restore draft',
-  'settingsPolicy.resetPartial.refresh': 'Refresh from server',
-  'settingsPolicy.resetPartial.restoreFailed':
-    'Could not restore the previous draft. The server may still hold an empty draft — try again or refresh.',
-  'settingsPolicy.publishDesc':
-    'Publishing creates an immutable revision and updates effective settings for all users.',
-  'settingsPolicy.saveReason': 'Save settings policy draft',
-  'settingsPolicy.validateOk': 'Draft is valid.',
-  'settingsPolicy.validateRequiresSaved': 'Save the current draft before validating it.',
-  'settingsPolicy.validateFail': 'Validation failed ({{count}}): {{first}}',
-  'settingsPolicy.impactSummary':
-    'Estimated impact: {{rows}} override rows across {{paths}} paths.',
+  'settingsPolicy.errors.saveFailed': 'Could not save. Try again.',
+  'settingsPolicy.saveReason': 'Update settings policy',
   'settingsPolicy.noResults': 'No settings match your search.',
   'settingsPolicy.unknownSetting': 'Setting {{index}}',
-  'settingsPolicy.hidden': 'Hidden',
   'settingsPolicy.publishedValue': 'Published value',
   'settingsPolicy.visibility.visible': 'Visible',
   'settingsPolicy.visibility.hidden': 'Hidden',
@@ -1289,29 +1234,11 @@ export default {
   'settingsPolicy.preview.summary': '{{mode}} · {{visibility}} · {{value}}',
   'settingsPolicy.preview.before': 'Before: {{summary}}',
   'settingsPolicy.preview.after': 'After: {{summary}}',
-  'settingsPolicy.conflict.title': 'Settings changed elsewhere',
-  'settingsPolicy.conflict.description':
-    'This policy changed elsewhere while you were editing. Review the latest values before continuing.',
-  'settingsPolicy.conflict.revisions': 'Your draft is based on older saved settings.',
-  'settingsPolicy.conflict.localValue': 'Your value: {{value}}',
-  'settingsPolicy.conflict.serverValue': 'Latest server value: {{value}}',
-  'settingsPolicy.conflict.noCollisions':
-    'No conflicting values were found. Merging will preserve your edits with the latest settings.',
-  'settingsPolicy.conflict.refresh': 'Refresh latest settings',
-  'settingsPolicy.conflict.retryRefresh': 'Retry loading latest settings',
-  'settingsPolicy.conflict.awaitingServer':
-    'Fetching the latest server draft. Editing actions remain blocked until it is available.',
-  'settingsPolicy.conflict.latestUnavailable':
-    'The latest settings could not be loaded. Your changes are safe; retry before merging or discarding them.',
-  'settingsPolicy.conflict.rebase': 'Merge with latest changes',
-  'settingsPolicy.conflict.discard': 'Discard local changes',
-  'settingsPolicy.revision': 'Revision {{revision}}',
-  'settingsPolicy.saveState.idle': 'No unsaved changes',
   'settingsPolicy.saveState.dirty': 'Unsaved changes',
-  'settingsPolicy.saveState.saving': 'Saving draft…',
-  'settingsPolicy.saveState.saved': 'Draft saved',
+  'settingsPolicy.saveState.saving': 'Saving…',
+  'settingsPolicy.saveState.saved': 'Saved',
   'settingsPolicy.saveState.failed': 'Save failed',
-  'settingsPolicy.upToDate': 'Saved settings are up to date',
+  'settingsPolicy.upToDate': 'All changes are applied',
   'settingsPolicy.refresh.failed':
     'The change was committed, but the latest server state could not be loaded. Retry refresh before making further changes.',
   'settingsPolicy.refresh.committedTitle':
@@ -1491,8 +1418,6 @@ export default {
   'settingsPolicy.options.tts.ttsModel.gpt4oMini': 'gpt-4o-mini-tts',
   'settingsPolicy.options.tts.ttsModel.tts1': 'tts-1',
   'settingsPolicy.options.tts.ttsModel.tts1Hd': 'tts-1-hd',
-
-  // M09 platform Connector catalog
   'connectorCatalog.actions.archive': 'Archive Connector',
   'connectorCatalog.actions.create': 'Create connector',
   'connectorCatalog.actions.deleteDraft': 'Delete draft',
@@ -2452,6 +2377,7 @@ export default {
   'audit.logs.action.admin.identityProviders.update': 'Update sign-in method',
   'audit.logs.action.admin.identityProviders.validateNetwork': 'Validate identity provider network',
   'audit.logs.action.admin.managedResources.publish': 'Publish managed resource policy',
+  'audit.logs.action.admin.managedResources.save': 'Update managed resource policy',
   'audit.logs.action.admin.managedResources.saveDraft': 'Save managed resources',
   'audit.logs.action.admin.permission.denied': 'Permission denied',
   'audit.logs.action.admin.roles.replaceUserGlobalRoles': 'Update user global roles',
@@ -2462,6 +2388,7 @@ export default {
   'audit.logs.action.admin.settings.applyImmediate': 'Apply settings',
   'audit.logs.action.admin.settings.getDraft': 'View settings draft',
   'audit.logs.action.admin.settings.publish': 'Publish settings',
+  'audit.logs.action.admin.settings.save': 'Update settings policy',
   'audit.logs.action.admin.settings.rollback': 'Roll back settings',
   'audit.logs.action.admin.settings.saveDraft': 'Save settings draft',
   'audit.logs.action.admin.settings.validateDraft': 'Validate settings draft',

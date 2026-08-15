@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
-import { CONFLICT_DRAFT_KEY } from './settingsPolicyController';
 import SettingsPolicyPage from './SettingsPolicyPage';
 
 const mocks = vi.hoisted(() => {
@@ -24,14 +23,13 @@ const mocks = vi.hoisted(() => {
     defaultT,
     mutate: vi.fn(),
     openDangerConfirm: vi.fn(),
-    openReasonModal: vi.fn(),
     permissions: [] as string[],
-    publish: vi.fn(),
     refreshAdminSettingsDraft: vi.fn(),
-    saveDraft: vi.fn(),
+    save: vi.fn(),
     /** Overridable translation mock (ASI-006 zh-CN search guard). */
     t: defaultT as (key: string, values?: Record<string, unknown>) => string,
     toastError: vi.fn(),
+    toastSuccess: vi.fn(),
     useBlocker: vi.fn((when: boolean | ((args: unknown) => boolean)) => {
       const enabled = typeof when === 'function' ? true : Boolean(when);
       return enabled && mocks.blocker.state === 'blocked'
@@ -107,7 +105,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
   ),
   createModal: mocks.createModal,
   ModalFooter: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  toast: { error: mocks.toastError, success: vi.fn() },
+  toast: { error: mocks.toastError, success: mocks.toastSuccess },
 }));
 
 vi.mock('../primitives/DangerConfirm', () => ({ openDangerConfirm: mocks.openDangerConfirm }));
@@ -140,15 +138,7 @@ vi.mock('@/enterprise/client/providers/EnterprisePlatformProvider', () => ({
 }));
 
 vi.mock('@/enterprise/client/services/adminSettings', () => ({
-  adminSettingsService: {
-    publish: mocks.publish,
-    saveDraft: mocks.saveDraft,
-    validateDraft: vi.fn().mockResolvedValue({
-      impactEstimate: { pathsWithOverrides: 0, totalOverrideRows: 0 },
-      issues: [],
-      ok: true,
-    }),
-  },
+  adminSettingsService: { save: mocks.save },
 }));
 
 vi.mock('@/enterprise/client/errors/mapEnterpriseError', () => ({
@@ -190,8 +180,6 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
   ),
 }));
 
-vi.mock('../users/modals/openReasonModal', () => ({ openReasonModal: mocks.openReasonModal }));
-
 const oldPolicy = {
   mode: 'default' as const,
   schemaVersion: 1,
@@ -218,8 +206,17 @@ const makeData = (baseRevision: number, value = 'old', token = draftToken) => ({
     },
   ],
   registryVersion: 1,
-  status: 'draft' as const,
+  status: 'published' as const,
 });
+
+const FULL_ACCESS = [
+  PLATFORM_PERMISSIONS.SETTINGS_READ,
+  PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+  PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+];
+
+const editor = () => screen.getByLabelText('editor-font.title:Setting 1');
+const saveButton = () => screen.getByRole('button', { name: 'settingsPolicy.save' });
 
 describe('SettingsPolicyPage', () => {
   beforeEach(() => {
@@ -228,13 +225,17 @@ describe('SettingsPolicyPage', () => {
     mocks.data = makeData(1);
     mocks.mutate.mockReset();
     mocks.openDangerConfirm.mockReset();
-    mocks.openReasonModal.mockReset();
     mocks.permissions = [];
-    mocks.publish.mockReset();
     mocks.refreshAdminSettingsDraft.mockReset();
     mocks.refreshAdminSettingsDraft.mockResolvedValue(undefined);
-    mocks.saveDraft.mockReset();
+    mocks.save.mockReset();
+    mocks.save.mockResolvedValue({
+      auditId: 'audit-1',
+      draftToken: savedDraftToken,
+      revision: 2,
+    });
     mocks.toastError.mockReset();
+    mocks.toastSuccess.mockReset();
     mocks.withAdminReauthRetry.mockClear();
     mocks.t = mocks.defaultT;
     mocks.blocker.state = 'unblocked';
@@ -244,367 +245,263 @@ describe('SettingsPolicyPage', () => {
   });
 
   it.each([
-    ['viewer', [PLATFORM_PERMISSIONS.SETTINGS_READ], true, false, false],
+    ['viewer', [PLATFORM_PERMISSIONS.SETTINGS_READ], false],
     [
-      'publisher-only',
-      [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_PUBLISH],
-      true,
-      true,
-      false,
-    ],
-    [
-      'update-only',
+      'update-only (cannot apply site-wide)',
       [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE],
       false,
-      false,
-      true,
     ],
-  ])(
-    'enforces the %s component permission matrix',
-    async (_role, permissions, editorsDisabled, canValidate, canSave) => {
-      mocks.permissions = permissions as string[];
-      render(<SettingsPolicyPage />);
-      const editor = await screen.findByLabelText('editor-font.title:Setting 1');
-      expect(editor).toHaveProperty('disabled', editorsDisabled);
-      expect(screen.getByLabelText('settingsPolicy.uiMode.label')).toHaveProperty(
-        'disabled',
-        editorsDisabled,
-      );
-      expect(screen.queryByLabelText('visibility-toggle')).toBeNull();
-      const validate = screen.queryByRole('button', { name: 'settingsPolicy.validate' });
-      expect(validate !== null).toBe(canValidate);
-      if (canValidate) expect(validate).toBeEnabled();
-
-      if (canSave) {
-        fireEvent.change(editor, { target: { value: 'local' } });
-        expect(
-          await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }),
-        ).toBeEnabled();
-      } else {
-        expect(screen.queryByRole('button', { name: 'settingsPolicy.saveDraft' })).toBeNull();
-      }
-      expect(screen.queryByRole('button', { name: 'settingsPolicy.publish' })).toBeNull();
-    },
-  );
-
-  it('shows the two-state management mode and normalizes legacy default on save', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.data = makeData(1);
-    // makeData uses mode default → UI shows platform managed
+    [
+      'publish-only (cannot edit)',
+      [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_PUBLISH],
+      false,
+    ],
+    ['settings admin', FULL_ACCESS, true],
+  ])('enforces the %s permission matrix', async (_role, permissions, canSave) => {
+    mocks.permissions = permissions as string[];
     render(<SettingsPolicyPage />);
-    const modeSelect = await screen.findByLabelText('settingsPolicy.uiMode.label');
-    expect(modeSelect).toHaveProperty('value', 'platform');
-    expect(screen.queryByLabelText('visibility-toggle')).toBeNull();
 
-    // Touch value so draft is dirty and save is primary
-    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
+    expect(await screen.findByLabelText('editor-font.title:Setting 1')).toHaveProperty(
+      'disabled',
+      !canSave,
+    );
+    expect(screen.getByLabelText('settingsPolicy.uiMode.label')).toHaveProperty(
+      'disabled',
+      !canSave,
+    );
+    if (canSave) {
+      expect(saveButton()).toBeDisabled();
+      fireEvent.change(editor(), { target: { value: 'local' } });
+      await waitFor(() => expect(saveButton()).toBeEnabled());
+    } else {
+      expect(screen.queryByRole('button', { name: 'settingsPolicy.save' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeNull();
+    }
+  });
+
+  it('applies owned policies in one CAS-guarded save with step-up auth', async () => {
+    mocks.permissions = FULL_ACCESS;
+    render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
       target: { value: 'kept' },
     });
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
+    fireEvent.click(saveButton());
 
-    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalled());
-    const payload = mocks.saveDraft.mock.calls[0]?.[0];
-    expect(payload.draft['general.fontSize']).toMatchObject({
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    const payload = mocks.save.mock.calls[0]?.[0];
+    // Legacy `default` mode is normalized to the two-state platform form on write.
+    expect(payload.policies['general.fontSize']).toMatchObject({
       mode: 'locked',
       value: 'kept',
       visibility: 'hidden',
     });
-  });
-
-  it('blocks stale save, fetches the latest base, persists conflict, and requires rebase', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    const revisionError = Object.assign(new Error('stale'), {
-      code: 'PLATFORM_REVISION_CONFLICT',
-    });
-    mocks.saveDraft
-      .mockRejectedValueOnce(revisionError)
-      .mockResolvedValueOnce({
-        baseRevision: 2,
-        draftToken: savedDraftToken,
-        ok: true,
-        registryVersion: 1,
-      })
-      .mockResolvedValueOnce({
-        baseRevision: 2,
-        draftToken: 'd'.repeat(64),
-        ok: true,
-        registryVersion: 1,
-      });
-    let refreshCount = 0;
-    mocks.mutate.mockImplementation(async () => {
-      refreshCount += 1;
-      mocks.data =
-        refreshCount === 1
-          ? makeData(2, 'server', latestDraftToken)
-          : makeData(2, 'local', savedDraftToken);
-      return mocks.data;
-    });
-
-    render(<SettingsPolicyPage />);
-    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
-      target: { value: 'local' },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
-    expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
-    expect(mocks.saveDraft.mock.calls[0]?.[0].expectedDraftToken).toBe(draftToken);
-    expect(window.localStorage.getItem(CONFLICT_DRAFT_KEY)).toContain('"previousBaseRevision":1');
-    expect(screen.queryByRole('button', { name: 'settingsPolicy.saveDraft' })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.conflict.rebase' }));
-    expect(screen.queryByRole('alert')).toBeNull();
-    const save = await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' });
-    fireEvent.click(save);
-    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalledTimes(2));
-    expect(mocks.saveDraft.mock.calls[1]?.[0].expectedDraftToken).toBe(latestDraftToken);
-    expect(window.localStorage.getItem(CONFLICT_DRAFT_KEY)).toBeNull();
-
-    await waitFor(() => expect(mocks.data.draftToken).toBe(savedDraftToken));
-    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
-      target: { value: 'local-again' },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
-    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalledTimes(3));
-    expect(mocks.saveDraft.mock.calls[2]?.[0].expectedDraftToken).toBe(savedDraftToken);
-  });
-
-  it('keeps rebase and discard blocked when latest refresh fails, then retries without a loop', async () => {
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
-    mocks.saveDraft.mockRejectedValueOnce(
-      Object.assign(new Error('stale token'), { code: 'PLATFORM_REVISION_CONFLICT' }),
-    );
-    mocks.mutate.mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(async () => {
-      mocks.data = makeData(1, 'server', latestDraftToken);
-      return mocks.data;
-    });
-
-    render(<SettingsPolicyPage />);
-    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
-      target: { value: 'local' },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
-
-    expect(await screen.findByText('settingsPolicy.conflict.latestUnavailable')).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'settingsPolicy.conflict.rebase' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'settingsPolicy.conflict.discard' })).toBeNull();
-    expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.conflict.retryRefresh' }));
-    expect(
-      await screen.findByRole('button', { name: 'settingsPolicy.conflict.rebase' }),
-    ).toBeEnabled();
-    expect(mocks.mutate).toHaveBeenCalledTimes(2);
-    expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
-  });
-
-  it('binds publish to the validated token captured when the modal opens and enters conflict on submit', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.publish.mockRejectedValueOnce(
-      Object.assign(new Error('publish token conflict'), {
-        code: 'PLATFORM_REVISION_CONFLICT',
-      }),
-    );
-    mocks.mutate.mockImplementation(async () => mocks.data);
-
-    const { rerender } = render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.validate' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.publish' }));
-    const modal = mocks.openReasonModal.mock.calls[0]?.[0];
-    expect(modal).toBeDefined();
-    expect(modal.authMethod).toBe('better-auth');
-
-    // Another administrator saves after this modal opened. Its callback must
-    // keep the token captured at open instead of silently adopting new data.
-    mocks.data = makeData(1, 'server', latestDraftToken);
-    rerender(<SettingsPolicyPage />);
-    const payload = modal.buildPayload('publish reason');
     expect(payload).toMatchObject({
       expectedDraftToken: draftToken,
       expectedRevision: 1,
-      reason: 'publish reason',
+      reason: 'settingsPolicy.saveReason',
     });
-
-    await expect(modal.onSubmit(payload)).rejects.toThrow('publish token conflict');
-    expect(mocks.publish).toHaveBeenCalledWith(payload);
-    expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
+    expect(mocks.withAdminReauthRetry).toHaveBeenCalledTimes(1);
+    expect(mocks.withAdminReauthRetry.mock.calls[0]?.[1]).toMatchObject({
+      authMethod: 'better-auth',
+    });
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+    expect(mocks.refreshAdminSettingsDraft).toHaveBeenCalled();
   });
 
-  it('restores defaults by saving an empty draft and publishing with the current token', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.saveDraft.mockResolvedValueOnce({
-      baseRevision: 2,
-      draftToken: savedDraftToken,
-      ok: true,
-      registryVersion: 1,
-    });
-    mocks.publish.mockResolvedValueOnce({ auditId: 'audit', revision: 2 });
-    mocks.mutate.mockImplementation(async () => mocks.data);
-
-    render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
-    const confirm = mocks.openDangerConfirm.mock.calls[0]?.[0];
-    expect(confirm).toBeDefined();
-    expect(confirm.title).toBe('settingsPolicy.resetDefaults');
-    await confirm.onConfirm();
-
-    expect(mocks.saveDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ draft: {}, expectedDraftToken: draftToken }),
-    );
-    // Reset uses withAdminReauthRetry (not openReasonModal) — auth method must still propagate.
-    expect(mocks.withAdminReauthRetry).toHaveBeenCalledWith(
-      expect.any(Function),
-      expect.objectContaining({ authMethod: 'better-auth' }),
-    );
-    expect(mocks.publish).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedDraftToken: savedDraftToken, expectedRevision: 2 }),
-    );
-    expect(mocks.toastError).not.toHaveBeenCalled();
-  });
-
-  it('saveDraft does not reauthenticate', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.saveDraft.mockResolvedValueOnce({
-      baseRevision: 1,
-      draftToken: savedDraftToken,
-      ok: true,
-      registryVersion: 1,
-    });
-    mocks.mutate.mockImplementation(async () => mocks.data);
-
-    render(<SettingsPolicyPage />);
-    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
-      target: { value: 'local-only' },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
-
-    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalled());
-    expect(mocks.withAdminReauthRetry).not.toHaveBeenCalled();
-    expect(mocks.openReasonModal).not.toHaveBeenCalled();
-  });
-
-  it('restore-defaults sends empty owned draft (server preserves foreign service-model paths)', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.data = {
-      ...makeData(1),
-      publishedPolicies: {
-        // Owned by the Service Model page — server must keep these (not in client payload).
-        'defaultAgent.config.model': { ...oldPolicy },
-        // This page's own override — cleared by empty owned draft.
-        'general.fontSize': { ...oldPolicy },
-      },
-    };
-    mocks.saveDraft.mockResolvedValueOnce({
-      baseRevision: 2,
-      draftToken: savedDraftToken,
-      ok: true,
-      registryVersion: 1,
-    });
-    mocks.publish.mockResolvedValueOnce({ auditId: 'audit', revision: 2 });
-    mocks.mutate.mockImplementation(async () => mocks.data);
-
-    render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
-    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
-
-    // Client only clears owned paths; server policy-editor ownership re-attaches foreign rows.
-    expect(mocks.saveDraft.mock.calls[0]?.[0].draft).toEqual({});
-  });
-
-  it('disables restore-defaults when the only published overrides belong to the service-model page', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.data = {
-      ...makeData(1),
-      publishedPolicies: { 'defaultAgent.config.model': { ...oldPolicy } },
-    };
-    render(<SettingsPolicyPage />);
-    await screen.findByRole('button', { name: 'settingsPolicy.validate' });
-    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
-  });
-
-  it('enters conflict mode when the reset publish reports a revision conflict', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.saveDraft
-      // reset saveDraft({}) succeeds…
-      .mockResolvedValueOnce({
-        baseRevision: 2,
-        draftToken: savedDraftToken,
-        ok: true,
-        registryVersion: 1,
-      })
-      // …best-effort restore after the failed publish
-      .mockResolvedValueOnce({
-        baseRevision: 2,
-        draftToken: 'e'.repeat(64),
-        ok: true,
-        registryVersion: 1,
-      });
-    mocks.publish.mockRejectedValueOnce(
-      Object.assign(new Error('reset publish conflict'), { code: 'PLATFORM_REVISION_CONFLICT' }),
+  it('reloads the live policy and explains it when someone else saved first', async () => {
+    mocks.permissions = FULL_ACCESS;
+    mocks.save.mockRejectedValueOnce(
+      Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }),
     );
     mocks.mutate.mockImplementation(async () => {
-      mocks.data = makeData(1, 'server', latestDraftToken);
+      mocks.data = makeData(2, 'server-wins', latestDraftToken);
       return mocks.data;
     });
 
+    const { rerender } = render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
+      target: { value: 'mine' },
+    });
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.conflict.reloaded'),
+    );
+    rerender(<SettingsPolicyPage />);
+    // Local edits are dropped for the authoritative server values (no rebase state machine).
+    await waitFor(() => expect(editor()).toHaveValue('server-wins'));
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it('keeps the local edits, explains the failure and retries when the conflict reload fails', async () => {
+    mocks.permissions = FULL_ACCESS;
+    mocks.save.mockRejectedValueOnce(
+      Object.assign(new Error('stale'), { code: 'PLATFORM_REVISION_CONFLICT' }),
+    );
+    mocks.mutate.mockRejectedValueOnce(new Error('offline'));
+
+    const { rerender } = render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
+      target: { value: 'mine' },
+    });
+    fireEvent.click(saveButton());
+
+    // Nothing committed and nothing reloaded — never claim the latest values were loaded.
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.conflict.reloadFailed'),
+    );
+    expect(screen.queryByText('settingsPolicy.conflict.reloaded')).toBeNull();
+    expect(screen.queryByText('settingsPolicy.refresh.committedTitle')).toBeNull();
+    expect(editor()).toHaveValue('mine');
+
+    mocks.mutate.mockImplementation(async () => {
+      mocks.data = makeData(2, 'server-wins', latestDraftToken);
+      return mocks.data;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.conflict.retryReload' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.conflict.reloaded'),
+    );
+    rerender(<SettingsPolicyPage />);
+    await waitFor(() => expect(editor()).toHaveValue('server-wins'));
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a legacy stranded draft with a single save', async () => {
+    mocks.permissions = FULL_ACCESS;
+    mocks.data = {
+      ...makeData(1),
+      // Loaded from the server, never edited here: the editable state already diverges.
+      draft: { 'general.fontSize': { ...oldPolicy, value: 'stranded' } },
+    };
+    render(<SettingsPolicyPage />);
+
+    expect(await screen.findByLabelText('editor-font.title:Setting 1')).toHaveValue('stranded');
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    expect(mocks.save.mock.calls[0]?.[0].policies['general.fontSize']).toMatchObject({
+      value: 'stranded',
+    });
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+  });
+
+  it('disables save again once an edit is reverted', async () => {
+    mocks.permissions = FULL_ACCESS;
+    render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
+      target: { value: 'edited' },
+    });
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+
+    fireEvent.change(editor(), { target: { value: 'old' } });
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+    expect(screen.getByText('settingsPolicy.upToDate')).toBeInTheDocument();
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed save without clearing the pending edits', async () => {
+    mocks.permissions = FULL_ACCESS;
+    mocks.save.mockRejectedValueOnce(Object.assign(new Error('nope'), { code: 'PLATFORM_BOOM' }));
+    render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
+      target: { value: 'mine' },
+    });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    expect(screen.getByText(/settingsPolicy.error/)).toBeInTheDocument();
+    expect(editor()).toHaveValue('mine');
+  });
+
+  it('restores defaults with a single empty-owned save behind a confirmation', async () => {
+    mocks.permissions = FULL_ACCESS;
     render(<SettingsPolicyPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
-    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
-    expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
+
+    expect(mocks.openDangerConfirm).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await mocks.openDangerConfirm.mock.calls[0]![0].onConfirm();
+    });
+
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+    expect(mocks.save.mock.calls[0]?.[0]).toEqual({
+      expectedDraftToken: draftToken,
+      expectedRevision: 1,
+      policies: {},
+      reason: 'settingsPolicy.resetReason',
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalled();
   });
 
-  it('adopts a newer clean token and requires validation before publish', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
+  it('disables restore-defaults when the only published overrides belong to the service-model page', async () => {
+    mocks.permissions = FULL_ACCESS;
+    const foreign = { ...oldPolicy, value: 'gpt-4o' };
+    mocks.data = {
+      ...makeData(1),
+      draft: { 'defaultAgent.config.model': foreign },
+      publishedPolicies: { 'defaultAgent.config.model': foreign },
+    };
+    render(<SettingsPolicyPage />);
+    expect(
+      await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }),
+    ).toBeDisabled();
+  });
+
+  it('surfaces a failed post-commit refresh as retry-only, never as a failed save', async () => {
+    mocks.permissions = FULL_ACCESS;
+    mocks.mutate.mockRejectedValue(new Error('offline'));
+    render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
+      target: { value: 'kept' },
+    });
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle'),
+    );
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('settingsPolicy.saveState.saved')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.refresh.retry' }));
+    await waitFor(() => expect(mocks.mutate).toHaveBeenCalledTimes(2));
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('prunes local drafts left behind by the pre-de-draft editor', async () => {
+    mocks.permissions = FULL_ACCESS;
+    window.localStorage.setItem('aihub.admin.settings.draft:v1:r1', '{"draft":{}}');
+    window.localStorage.setItem('aihub.admin.settings.conflictDraft', '{"draft":{}}');
+    window.localStorage.setItem('aihub.admin.other', 'keep');
+
+    render(<SettingsPolicyPage />);
+    await screen.findByLabelText('editor-font.title:Setting 1');
+
+    expect(window.localStorage.getItem('aihub.admin.settings.draft:v1:r1')).toBeNull();
+    expect(window.localStorage.getItem('aihub.admin.settings.conflictDraft')).toBeNull();
+    expect(window.localStorage.getItem('aihub.admin.other')).toBe('keep');
+  });
+
+  it('adopts newer server snapshots when clean and keeps local edits when dirty', async () => {
+    mocks.permissions = FULL_ACCESS;
     const { rerender } = render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.validate' }));
-    expect(await screen.findByRole('button', { name: 'settingsPolicy.publish' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeEnabled();
+    await screen.findByLabelText('editor-font.title:Setting 1');
 
-    mocks.data = makeData(1, 'server', latestDraftToken);
+    mocks.data = makeData(2, 'server-clean', latestDraftToken);
     rerender(<SettingsPolicyPage embedded />);
-    expect(screen.queryByRole('button', { name: 'settingsPolicy.publish' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'settingsPolicy.validate' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeEnabled();
+    await waitFor(() => expect(editor()).toHaveValue('server-clean'));
+
+    fireEvent.change(editor(), { target: { value: 'local-dirty' } });
+    mocks.data = makeData(3, 'server-newer', savedDraftToken);
+    rerender(<SettingsPolicyPage />);
+
+    await waitFor(() => expect(editor()).toHaveValue('local-dirty'));
   });
 
-  it('protects dirty drafts from SPA navigation', async () => {
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+  it('protects dirty edits from SPA navigation', async () => {
+    mocks.permissions = FULL_ACCESS;
     mocks.blocker.state = 'blocked';
     render(<SettingsPolicyPage />);
     fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
@@ -615,196 +512,53 @@ describe('SettingsPolicyPage', () => {
     expect(mocks.blocker.reset).toHaveBeenCalled();
   });
 
-  it('keeps committed local CAS state when post-save refresh rejects and allows retry', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.saveDraft.mockResolvedValue({
-      baseRevision: 2,
-      draftToken: savedDraftToken,
-      ok: true,
-      registryVersion: 1,
-    });
-    mocks.mutate.mockRejectedValueOnce(new Error('refresh failed'));
-    mocks.refreshAdminSettingsDraft.mockResolvedValue(undefined);
-
+  it('only guards the exit while the editor actually diverges from the published policy', async () => {
+    mocks.permissions = FULL_ACCESS;
     render(<SettingsPolicyPage />);
+    await screen.findByLabelText('editor-font.title:Setting 1');
+
+    // The latest blocker predicate, evaluated for a real cross-page navigation.
+    const blocksPageExit = () => {
+      const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
+      if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
+      return shouldBlock({
+        currentLocation: { pathname: '/admin/unified' },
+        nextLocation: { pathname: '/admin/users' },
+      });
+    };
+
+    expect(blocksPageExit()).toBe(false);
+    fireEvent.change(editor(), { target: { value: 'edited' } });
+    await waitFor(() => expect(blocksPageExit()).toBe(true));
+    // Reverting leaves no effective change → stop nagging even though `dirty` stays set.
+    fireEvent.change(editor(), { target: { value: 'old' } });
+    await waitFor(() => expect(blocksPageExit()).toBe(false));
+  });
+
+  it('guards embedded same-path tab switches while preserving standalone query changes', async () => {
+    mocks.permissions = FULL_ACCESS;
+    const { rerender } = render(<SettingsPolicyPage embedded />);
     fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
-      target: { value: 'local' },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
-
-    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalled());
-    // Alert mock concatenates message+description; assert via container textContent.
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle');
-      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.failed');
-    });
-    // Save still reported success — not a mutation failure.
-    expect(screen.getByText(/settingsPolicy\.saveState\.saved/)).toBeTruthy();
-    expect(screen.queryByText(/settingsPolicy\.revision/)).toBeNull();
-
-    mocks.mutate.mockResolvedValueOnce(makeData(2, 'local', savedDraftToken));
-    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.refresh.retry' }));
-    await waitFor(() => {
-      expect(screen.queryByRole('alert')).toBeNull();
-    });
-  });
-
-  it('surfaces refresh rejection after publish without re-running publish', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.publish.mockResolvedValue({ auditId: 'a1', revision: 2 });
-    mocks.mutate.mockRejectedValueOnce(new Error('publish refresh failed'));
-
-    render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.validate' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.publish' }));
-    await waitFor(() => expect(mocks.openReasonModal).toHaveBeenCalled());
-    await mocks.openReasonModal.mock.calls[0]?.[0].onSubmit({
-      expectedDraftToken: draftToken,
-      expectedRevision: 1,
-      reason: 'publish',
+      target: { value: 'edited' },
     });
 
-    expect(mocks.publish).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle');
-    });
-  });
+    const evaluateLatestBlocker = () => {
+      const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
+      if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
+      return shouldBlock({
+        currentLocation: { pathname: '/admin/unified', search: '?tab=settings' },
+        nextLocation: { pathname: '/admin/unified', search: '?tab=managed' },
+      });
+    };
 
-  it('surfaces refresh rejection after reset defaults without treating it as reset failure', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.saveDraft.mockResolvedValue({
-      baseRevision: 2,
-      draftToken: savedDraftToken,
-      ok: true,
-      registryVersion: 1,
-    });
-    mocks.publish.mockResolvedValue({ auditId: 'a1', revision: 2 });
-    mocks.mutate.mockRejectedValueOnce(new Error('reset refresh failed'));
+    await waitFor(() => expect(evaluateLatestBlocker()).toBe(true));
 
-    render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
-    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
-
-    expect(mocks.publish).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.refresh.committedTitle');
-    });
-    expect(mocks.toastError).not.toHaveBeenCalled();
-  });
-
-  it('locks mutations with partial-failure recovery when publish and restore both fail (ASI-002)', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    mocks.saveDraft
-      // empty draft commits
-      .mockResolvedValueOnce({
-        baseRevision: 2,
-        draftToken: savedDraftToken,
-        ok: true,
-        registryVersion: 1,
-      })
-      // compensating restore fails
-      .mockRejectedValueOnce(new Error('restore interrupted'));
-    mocks.publish.mockRejectedValueOnce(new Error('publish failed'));
-
-    render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
-    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.resetPartial.title');
-    });
-    expect(
-      screen.getByRole('button', { name: 'settingsPolicy.resetPartial.retryRestore' }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole('button', { name: 'settingsPolicy.resetPartial.refresh' }),
-    ).toBeTruthy();
-    // Mutations locked: reset disabled; no primary publish action while locked.
-    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'settingsPolicy.publish' })).toBeNull();
-    // Committed empty-draft token was retained for restore CAS (second saveDraft used it).
-    expect(mocks.saveDraft.mock.calls[1]?.[0]).toMatchObject({
-      expectedDraftToken: savedDraftToken,
-    });
-  });
-
-  it('keeps partial recovery when dismiss refresh fails, then clears on success (dismiss path)', async () => {
-    mocks.permissions = [
-      PLATFORM_PERMISSIONS.SETTINGS_READ,
-      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
-      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
-    ];
-    // Drive the ASI-002 double-failure setup into resetPartialFailure.
-    mocks.saveDraft
-      .mockResolvedValueOnce({
-        baseRevision: 2,
-        draftToken: savedDraftToken,
-        ok: true,
-        registryVersion: 1,
-      })
-      .mockRejectedValueOnce(new Error('restore interrupted'));
-    mocks.publish.mockRejectedValueOnce(new Error('publish failed'));
-
-    render(<SettingsPolicyPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.resetDefaults' }));
-    await mocks.openDangerConfirm.mock.calls[0]?.[0].onConfirm();
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('settingsPolicy.resetPartial.title');
-    });
-
-    // Refresh fails on dismiss — recovery context must stay (do not clear partial).
-    mocks.mutate.mockRejectedValueOnce(new Error('refresh failed'));
-    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.resetPartial.refresh' }));
-
-    await waitFor(() => {
-      const alerts = screen.getAllByRole('alert');
-      expect(
-        alerts.some((el) => el.textContent?.includes('settingsPolicy.refresh.committedTitle')),
-      ).toBe(true);
-      expect(
-        alerts.some((el) => el.textContent?.includes('settingsPolicy.resetPartial.title')),
-      ).toBe(true);
-    });
-    expect(
-      screen.getByRole('button', { name: 'settingsPolicy.resetPartial.retryRestore' }),
-    ).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'settingsPolicy.resetDefaults' })).toBeDisabled();
-
-    // Refresh succeeds on dismiss — clear the partial-failure alert.
-    mocks.mutate.mockResolvedValueOnce(makeData(2, 'old', savedDraftToken));
-    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.resetPartial.refresh' }));
-
-    await waitFor(() => {
-      expect(
-        screen
-          .queryAllByRole('alert')
-          .some((el) => el.textContent?.includes('settingsPolicy.resetPartial.title')),
-      ).toBe(false);
-    });
-    expect(
-      screen.queryByRole('button', { name: 'settingsPolicy.resetPartial.retryRestore' }),
-    ).toBeNull();
+    rerender(<SettingsPolicyPage />);
+    await waitFor(() => expect(evaluateLatestBlocker()).toBe(false));
   });
 
   it('finds settings by translated Chinese title (ASI-006)', async () => {
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    mocks.permissions = FULL_ACCESS;
     mocks.data = {
       ...makeData(1),
       registry: [
@@ -825,7 +579,6 @@ describe('SettingsPolicyPage', () => {
     };
 
     render(<SettingsPolicyPage />);
-    // Row visible before search (translated label on the editor).
     expect(await screen.findByLabelText('editor-字体大小')).toBeTruthy();
 
     fireEvent.change(screen.getByPlaceholderText('settingsPolicy.searchPlaceholder'), {
@@ -834,7 +587,6 @@ describe('SettingsPolicyPage', () => {
     expect(screen.getByLabelText('editor-字体大小')).toBeTruthy();
     expect(screen.queryByText('settingsPolicy.noResults')).toBeNull();
 
-    // Unrelated Chinese query hides the row (search is actually filtering).
     fireEvent.change(screen.getByPlaceholderText('settingsPolicy.searchPlaceholder'), {
       target: { value: '不存在的设置' },
     });
@@ -844,7 +596,7 @@ describe('SettingsPolicyPage', () => {
 
   it('uses a localized safe label when registry title metadata is missing', async () => {
     const sentinelPath = 'machine.private.sentinel';
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    mocks.permissions = FULL_ACCESS;
     mocks.data = {
       ...makeData(1),
       draft: { [sentinelPath]: oldPolicy },
@@ -875,76 +627,11 @@ describe('SettingsPolicyPage', () => {
     expect(container.textContent).not.toContain(sentinelPath);
   });
 
-  it('only guards the exit while the draft actually diverges from the published policy', async () => {
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+  it('issues no request and renders a disabled surface when the capability is off', async () => {
+    mocks.permissions = FULL_ACCESS;
+    mocks.capability = false;
     render(<SettingsPolicyPage />);
-    const editor = await screen.findByLabelText('editor-font.title:Setting 1');
-
-    // The latest blocker predicate, evaluated for a real cross-page navigation.
-    const blocksPageExit = () => {
-      const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
-      if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
-      return shouldBlock({
-        currentLocation: { pathname: '/admin/unified' },
-        nextLocation: { pathname: '/admin/users' },
-      });
-    };
-
-    // Clean editor (draft === published) never prompts.
-    expect(blocksPageExit()).toBe(false);
-
-    // A real edit diverges from the published value → guard the exit.
-    fireEvent.change(editor, { target: { value: 'edited' } });
-    await waitFor(() => expect(blocksPageExit()).toBe(true));
-
-    // Reverting to the published value leaves no effective change → stop nagging even though
-    // the sticky `dirty` flag is still set.
-    fireEvent.change(editor, { target: { value: 'old' } });
-    await waitFor(() => expect(blocksPageExit()).toBe(false));
-  });
-
-  it('guards embedded same-path tab switches while preserving standalone query changes', async () => {
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
-    const { rerender } = render(<SettingsPolicyPage embedded />);
-    fireEvent.change(await screen.findByLabelText('editor-font.title:Setting 1'), {
-      target: { value: 'edited' },
-    });
-
-    const evaluateLatestBlocker = () => {
-      const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
-      if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
-      return shouldBlock({
-        currentLocation: { pathname: '/admin/unified', search: '?tab=settings' },
-        nextLocation: { pathname: '/admin/unified', search: '?tab=managed' },
-      });
-    };
-
-    await waitFor(() => expect(evaluateLatestBlocker()).toBe(true));
-
-    rerender(<SettingsPolicyPage />);
-    await waitFor(() => expect(evaluateLatestBlocker()).toBe(false));
-  });
-
-  it('adopts a newer SWR snapshot when clean and preserves local edits when dirty', async () => {
-    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
-    const { rerender } = render(<SettingsPolicyPage />);
-    await screen.findByLabelText('editor-font.title:Setting 1');
-
-    mocks.data = makeData(2, 'server-clean', latestDraftToken);
-    rerender(<SettingsPolicyPage embedded />);
-    await waitFor(() =>
-      expect(screen.getByLabelText('editor-font.title:Setting 1')).toHaveValue('server-clean'),
-    );
-
-    fireEvent.change(screen.getByLabelText('editor-font.title:Setting 1'), {
-      target: { value: 'local-dirty' },
-    });
-    mocks.data = makeData(3, 'server-newer', savedDraftToken);
-    rerender(<SettingsPolicyPage />);
-
-    await waitFor(() =>
-      expect(screen.getByLabelText('editor-font.title:Setting 1')).toHaveValue('local-dirty'),
-    );
-    expect(screen.getByText('settingsPolicy.conflict.title')).toBeInTheDocument();
+    expect(await screen.findByText('settingsPolicy.featureDisabled')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'settingsPolicy.save' })).toBeNull();
   });
 });

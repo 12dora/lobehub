@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BlockerFunction } from 'react-router';
 
@@ -9,21 +9,16 @@ import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterpriseP
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
 import { useUnsavedChangesGuard } from '../../primitives/useUnsavedChangesGuard';
-import { initialConflictState, reduceConflict } from '../conflictStateMachine';
-import { loadLocalDraft, pruneLocalDrafts, saveLocalDraft } from '../localDraftStorage';
+import { pruneLegacyAdminSettingsDrafts } from '../pruneLegacySettingsDrafts';
 import type { DraftMap, DraftPolicy, SaveState } from '../settingsPolicyController';
 import {
   buildChangePreview,
   deriveSettingsPermissions,
-  fingerprintDraft,
   isServiceModelManaged,
-  loadConflictDraft,
-  resolvePrimaryAction,
   SERVICE_MODEL_MANAGED_PATHS,
 } from '../settingsPolicyController';
-import type { ResetPartialFailure } from '../settingsPolicyReset';
 import { useFetchAdminSettingsDraft } from './useAdminSettings';
-import { useSettingsPolicyConflict } from './useSettingsPolicyConflict';
+import type { SettingsPolicyConflictState } from './useSettingsPolicyPersistence';
 import { useSettingsPolicyPersistence } from './useSettingsPolicyPersistence';
 
 export type SettingsPolicyRegistryEntry = AdminSettingsGetDraftOutput['registry'][number];
@@ -34,6 +29,8 @@ export const useSettingsPolicyEditor = ({ embedded = false }: { embedded?: boole
   const policyEnabled = platform.capabilities.userSettingsPolicyEnabled === true;
   const { authMethod, permissions } = useAdminAccess();
   const { canUpdate, canPublish } = deriveSettingsPermissions(permissions);
+  // Saving applies site-wide in one step, so editing requires both write permissions.
+  const canSave = canUpdate && canPublish;
 
   const { data, error, isLoading, mutate } = useFetchAdminSettingsDraft(policyEnabled);
 
@@ -42,39 +39,17 @@ export const useSettingsPolicyEditor = ({ embedded = false }: { embedded?: boole
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [validationMsg, setValidationMsg] = useState<string | null>(null);
-  const [impact, setImpact] = useState<{
-    pathsWithOverrides: number;
-    totalOverrideRows: number;
-  } | null>(null);
-  const [validatedFingerprint, setValidatedFingerprint] = useState<string | null>(null);
-  const [validatedDraftToken, setValidatedDraftToken] = useState<string | null>(null);
-  const [validatedBaseRevision, setValidatedBaseRevision] = useState<number | null>(null);
-  const resetValidation = useCallback(() => {
-    setValidatedFingerprint(null);
-    setValidatedDraftToken(null);
-    setValidatedBaseRevision(null);
-  }, []);
+  const [conflictState, setConflictState] = useState<SettingsPolicyConflictState>('none');
   const [dirty, setDirty] = useState(false);
   const [activeBaseRevision, setActiveBaseRevision] = useState(0);
   const [activeDraftToken, setActiveDraftToken] = useState('');
-  const [resetPartialFailure, setResetPartialFailure] = useState<ResetPartialFailure | null>(null);
-  const [conflictState, dispatchConflict] = useReducer(
-    reduceConflict,
-    undefined,
-    initialConflictState,
-  );
   const observedServerSnapshotRef = useRef<string | null>(null);
-  const originalBaseDraftRef = useRef<DraftMap>({});
 
-  const revisionConflict =
-    conflictState.phase === 'awaitingServer' ||
-    conflictState.phase === 'latestUnavailable' ||
-    conflictState.phase === 'conflict';
-  /** Partial reset failure locks all mutations until restore or refresh. */
-  const mutationLocked = Boolean(resetPartialFailure) || revisionConflict;
+  // Drafts are never persisted locally any more — drop what older builds left behind.
+  useEffect(() => {
+    pruneLegacyAdminSettingsDrafts();
+  }, []);
 
-  const draftFingerprint = useMemo(() => fingerprintDraft(draft), [draft]);
   const preview = useMemo(
     () =>
       data
@@ -88,18 +63,15 @@ export const useSettingsPolicyEditor = ({ embedded = false }: { embedded?: boole
         : [],
     [draft, data],
   );
-  const primary = resolvePrimaryAction({
-    canPublish,
-    canUpdate,
-    dirty,
-    draftFingerprint,
-    revisionConflict: mutationLocked,
-    saveState,
-    validatedForFingerprint: validatedFingerprint,
-  });
 
-  // Guard when the draft diverges from published policy (preview is the effective change set).
-  const hasUnsavedChanges = dirty && preview.length > 0;
+  /**
+   * The editor diverges from the published policy (preview is the effective change set).
+   * This — not the sticky `dirty` flag — decides whether 保存 does anything: a legacy
+   * stranded draft arrives unedited yet appliable, and reverting an edit leaves nothing to save.
+   */
+  const hasEffectiveChanges = preview.length > 0;
+  // Only guard the exit for edits the admin made in this session.
+  const hasUnsavedChanges = dirty && hasEffectiveChanges;
   const shouldBlockPageExit = useCallback<BlockerFunction>(
     ({ currentLocation, nextLocation }) => {
       if (!hasUnsavedChanges) return false;
@@ -123,112 +95,22 @@ export const useSettingsPolicyEditor = ({ embedded = false }: { embedded?: boole
     shouldBlock: shouldBlockPageExit,
   });
 
-  // Hydrate editor from server + local durable draft / conflict draft
+  /**
+   * Hydrate from the server snapshot. While the admin has unsaved edits we keep them and
+   * skip the incoming snapshot: the server CAS rejects a stale base on save, and that path
+   * reloads with an explicit "someone else saved" notice instead of silently overwriting.
+   */
   useEffect(() => {
-    if (!data) return;
+    if (!data || dirty) return;
     const snapshotIdentity = `${data.registryVersion}:${data.baseRevision}:${data.draftToken}`;
     if (observedServerSnapshotRef.current === snapshotIdentity) return;
-    const isInitialSnapshot = observedServerSnapshotRef.current === null;
     observedServerSnapshotRef.current = snapshotIdentity;
-
-    if (!isInitialSnapshot) {
-      if (dirty) {
-        dispatchConflict({
-          localBaseRevision: activeBaseRevision,
-          localDraft: draft,
-          localDraftToken: activeDraftToken,
-          originalBaseDraft: originalBaseDraftRef.current,
-          type: 'CONFLICT_DETECTED',
-        });
-        dispatchConflict({
-          serverBaseRevision: data.baseRevision,
-          serverDraft: data.draft,
-          serverDraftToken: data.draftToken,
-          type: 'REFRESH_SERVER_SUCCEEDED',
-        });
-        return;
-      }
-      originalBaseDraftRef.current = data.draft;
-      setActiveBaseRevision(data.baseRevision);
-      setActiveDraftToken(data.draftToken);
-      dispatchConflict({ type: 'CLEAR' });
-      setDraft(data.draft ?? {});
-      setDirty(false);
-      setSaveState('idle');
-      resetValidation();
-      pruneLocalDrafts(data.registryVersion, data.baseRevision);
-      return;
-    }
-
-    const conflict = loadConflictDraft();
-    if (conflict && conflict.registryVersion === data.registryVersion) {
-      originalBaseDraftRef.current = conflict.originalBaseDraft;
-      setDraft(conflict.draft);
-      setDirty(true);
-      setActiveBaseRevision(conflict.previousBaseRevision);
-      setActiveDraftToken(conflict.previousDraftToken);
-      dispatchConflict({
-        localBaseRevision: conflict.previousBaseRevision,
-        localDraft: conflict.draft,
-        localDraftToken: conflict.previousDraftToken,
-        originalBaseDraft: conflict.originalBaseDraft,
-        type: 'CONFLICT_DETECTED',
-      });
-      dispatchConflict({
-        serverBaseRevision: data.baseRevision,
-        serverDraft: data.draft,
-        serverDraftToken: data.draftToken,
-        type: 'REFRESH_SERVER_SUCCEEDED',
-      });
-      return;
-    }
-    const local = loadLocalDraft(data.registryVersion, data.baseRevision);
-    if (local) {
-      originalBaseDraftRef.current = local.originalBaseDraft;
-      setDraft(local.draft);
-      setDirty(true);
-      setActiveBaseRevision(local.baseRevision);
-      setActiveDraftToken(local.draftToken);
-      if (local.draftToken !== data.draftToken) {
-        dispatchConflict({
-          localBaseRevision: local.baseRevision,
-          localDraft: local.draft,
-          localDraftToken: local.draftToken,
-          originalBaseDraft: local.originalBaseDraft,
-          type: 'CONFLICT_DETECTED',
-        });
-        dispatchConflict({
-          serverBaseRevision: data.baseRevision,
-          serverDraft: data.draft,
-          serverDraftToken: data.draftToken,
-          type: 'REFRESH_SERVER_SUCCEEDED',
-        });
-      } else {
-        dispatchConflict({ type: 'CLEAR' });
-      }
-    } else {
-      originalBaseDraftRef.current = data.draft;
-      setActiveBaseRevision(data.baseRevision);
-      setActiveDraftToken(data.draftToken);
-      dispatchConflict({ type: 'CLEAR' });
-      setDraft(data.draft ?? {});
-      setDirty(false);
-      pruneLocalDrafts(data.registryVersion, data.baseRevision);
-    }
-  }, [activeBaseRevision, activeDraftToken, data, dirty, draft, resetValidation]);
-
-  // Persist dirty draft locally
-  useEffect(() => {
-    if (!data || !dirty || revisionConflict) return;
-    saveLocalDraft({
-      baseRevision: activeBaseRevision,
-      draft,
-      draftToken: activeDraftToken,
-      originalBaseDraft: originalBaseDraftRef.current,
-      registryVersion: data.registryVersion,
-      savedAt: new Date().toISOString(),
-    });
-  }, [activeBaseRevision, activeDraftToken, data, dirty, draft, revisionConflict]);
+    setActiveBaseRevision(data.baseRevision);
+    setActiveDraftToken(data.draftToken);
+    setDraft(data.draft ?? {});
+    setSaveState('idle');
+    setSaveError(null);
+  }, [data, dirty]);
 
   const registryByPath = useMemo(() => {
     const map = new Map<string, SettingsPolicyRegistryEntry>();
@@ -295,7 +177,7 @@ export const useSettingsPolicyEditor = ({ embedded = false }: { embedded?: boole
 
   const updatePolicy = useCallback(
     (path: string, patch: Partial<DraftPolicy>) => {
-      if (!canUpdate || resetPartialFailure) return;
+      if (!canSave) return;
       setDraft((prev) => {
         const base = prev[path] ?? getPolicy(path);
         return { ...prev, [path]: { ...base, ...patch } };
@@ -303,126 +185,58 @@ export const useSettingsPolicyEditor = ({ embedded = false }: { embedded?: boole
       setDirty(true);
       setSaveState('idle');
       setSaveError(null);
-      setValidationMsg(null);
-      setImpact(null);
-      resetValidation();
+      setConflictState('none');
     },
-    [canUpdate, getPolicy, resetPartialFailure, resetValidation],
+    [canSave, getPolicy],
   );
 
-  const { enterRevisionConflict, handleDiscardConflict, handleRebase, refreshConflictServer } =
-    useSettingsPolicyConflict({
-      activeBaseRevision,
-      activeDraftToken,
-      conflictState,
-      data,
-      dispatchConflict,
-      draft,
+  const { handleResetDefaults, handleSave, retryConflictReload, retryRefresh } =
+    useSettingsPolicyPersistence({
+      authMethod,
+      canSave,
+      editor: {
+        activeBaseRevision,
+        activeDraftToken,
+        data,
+        draft,
+        hasEffectiveChanges,
+        isServiceModelPublishedPath,
+        observedServerSnapshotRef,
+        saveState,
+        setActiveBaseRevision,
+        setActiveDraftToken,
+        setDirty,
+        setDraft,
+      },
+      feedback: { setConflictState, setRefreshError, setSaveError, setSaveState },
       mutate,
-      originalBaseDraftRef,
-      resetValidation,
-      setActiveBaseRevision,
-      setActiveDraftToken,
-      setDirty,
-      setDraft,
-      setImpact,
-      setSaveError,
-      setSaveState,
-      setValidationMsg,
+      ownPublishedOverrideCount,
     });
 
-  const {
-    dismissResetPartialByRefresh,
-    handlePublish,
-    handleResetDefaults,
-    handleSaveDraft,
-    handleValidate,
-    retryRefresh,
-    retryResetRestore,
-  } = useSettingsPolicyPersistence({
-    authMethod,
-    canPublish,
-    canUpdate,
-    cas: {
-      activeBaseRevision,
-      activeDraftToken,
-      conflictState,
-      data,
-      dispatchConflict,
-      enterRevisionConflict,
-      revisionConflict,
-      setActiveBaseRevision,
-      setActiveDraftToken,
-    },
-    draftEditor: {
-      dirty,
-      draft,
-      isServiceModelPublishedPath,
-      observedServerSnapshotRef,
-      originalBaseDraftRef,
-      setDirty,
-      setDraft,
-    },
-    feedback: {
-      impact,
-      resetValidation,
-      setImpact,
-      setRefreshError,
-      setSaveError,
-      setSaveState,
-      setValidatedBaseRevision,
-      setValidatedDraftToken,
-      setValidatedFingerprint,
-      setValidationMsg,
-      validatedBaseRevision,
-      validatedDraftToken,
-      validatedFingerprint,
-    },
-    mutate,
-    ownPublishedOverrideCount,
-    resetPartialFailure,
-    setResetPartialFailure,
-  });
-
   return {
-    activeBaseRevision,
-    activeDraftToken,
-    canPublish,
-    canUpdate,
+    canSave,
     conflictState,
     data,
-    dirty,
+    dismissConflict: useCallback(() => setConflictState('none'), []),
     error,
     filteredEntries,
     getPolicy,
-    handleDiscardConflict,
-    handlePublish,
-    handleRebase,
     handleResetDefaults,
-    handleSaveDraft,
-    handleValidate,
-    impact,
+    handleSave,
+    hasEffectiveChanges,
     isLoading,
     mutate,
     ownPublishedOverrideCount,
     policyEnabled,
     preview,
-    primary,
-    refreshConflictServer,
     refreshError,
     registryByPath,
-    resetPartialFailure,
+    retryConflictReload,
     retryRefresh,
-    retryResetRestore,
-    dismissResetPartialByRefresh,
-    revisionConflict: mutationLocked,
     saveError,
     saveState,
     search,
     setSearch,
     updatePolicy,
-    validatedBaseRevision,
-    validatedDraftToken,
-    validationMsg,
   };
 };

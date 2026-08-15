@@ -12,7 +12,6 @@ import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseErro
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { useSettingsPolicyEditor } from './hooks/useSettingsPolicyEditor';
 import SettingsPolicyChangePreview from './SettingsPolicyChangePreview';
-import SettingsPolicyConflictBanner from './SettingsPolicyConflictBanner';
 import SettingsPolicyGroupGrid from './SettingsPolicyGroupGrid';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -56,45 +55,30 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const reduceMotion = useReducedMotion();
   const editor = useSettingsPolicyEditor({ embedded });
   const {
-    activeBaseRevision,
-    activeDraftToken,
-    canPublish,
-    canUpdate,
+    canSave,
     conflictState,
     data,
-    dirty,
+    dismissConflict,
     error,
     filteredEntries,
     getPolicy,
-    handleDiscardConflict,
-    handlePublish,
-    handleRebase,
     handleResetDefaults,
-    handleSaveDraft,
-    handleValidate,
-    impact,
+    handleSave,
+    hasEffectiveChanges,
     isLoading,
     mutate,
     ownPublishedOverrideCount,
     policyEnabled,
     preview,
-    primary,
-    refreshConflictServer,
     refreshError,
     registryByPath,
-    resetPartialFailure,
+    retryConflictReload,
     retryRefresh,
-    retryResetRestore,
-    dismissResetPartialByRefresh,
-    revisionConflict,
     saveError,
     saveState,
     search,
     setSearch,
     updatePolicy,
-    validatedBaseRevision,
-    validatedDraftToken,
-    validationMsg,
   } = editor;
 
   // U1: policy flag off → disabled surface, zero getDraft
@@ -157,86 +141,45 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
     );
   }
 
-  // Exactly one primary action — sticky footer only (U5)
-  const primaryButton =
-    primary === 'save' || primary === 'retry' ? (
-      <Button
-        disabled={!canUpdate}
-        loading={saveState === 'saving'}
-        type="primary"
-        onClick={() => void handleSaveDraft()}
-      >
-        {primary === 'retry' ? t('settingsPolicy.retrySave') : t('settingsPolicy.saveDraft')}
-      </Button>
-    ) : primary === 'validate' ? (
-      <Button
-        disabled={!canUpdate && !canPublish}
-        type="primary"
-        onClick={() => void handleValidate()}
-      >
-        {t('settingsPolicy.validate')}
-      </Button>
-    ) : primary === 'publish' ? (
-      <Button
-        type="primary"
-        disabled={
-          !canPublish ||
-          validatedDraftToken !== activeDraftToken ||
-          validatedBaseRevision !== activeBaseRevision ||
-          activeBaseRevision !== data.baseRevision ||
-          activeDraftToken !== data.draftToken
-        }
-        onClick={handlePublish}
-      >
-        {t('settingsPolicy.publish')}
-      </Button>
-    ) : null;
-
   return (
     <AdminPageTemplate
       hideTitle={embedded}
       title={t('settingsPolicy.title')}
       actions={
-        <Flexbox horizontal gap={8}>
-          {canPublish && canUpdate ? (
+        canSave ? (
+          <Flexbox horizontal gap={8}>
             <Button
               disabled={
-                dirty ||
-                revisionConflict ||
-                Boolean(resetPartialFailure) ||
-                activeBaseRevision !== data.baseRevision ||
-                activeDraftToken !== data.draftToken ||
-                ownPublishedOverrideCount === 0
+                hasEffectiveChanges || saveState === 'saving' || ownPublishedOverrideCount === 0
               }
               onClick={handleResetDefaults}
             >
               {t('settingsPolicy.resetDefaults')}
             </Button>
-          ) : null}
-        </Flexbox>
+          </Flexbox>
+        ) : null
       }
       banner={
         <>
-          {resetPartialFailure ? (
+          {conflictState === 'reloaded' ? (
+            <Alert
+              closable
+              showIcon
+              message={t('settingsPolicy.conflict.reloaded')}
+              type="warning"
+              onClose={dismissConflict}
+            />
+          ) : null}
+          {conflictState === 'reloadFailed' ? (
             <Alert
               showIcon
-              message={t('settingsPolicy.resetPartial.title')}
-              type="error"
-              description={
-                <>
-                  {t('settingsPolicy.resetPartial.description')}
-                  {resetPartialFailure.lastError ? ` ${resetPartialFailure.lastError}` : null}
-                </>
-              }
+              description={t('settingsPolicy.conflict.reloadFailedDesc')}
+              message={t('settingsPolicy.conflict.reloadFailed')}
+              type="warning"
               extra={
-                <Flexbox horizontal gap={8}>
-                  <Button onClick={() => void retryResetRestore()}>
-                    {t('settingsPolicy.resetPartial.retryRestore')}
-                  </Button>
-                  <Button onClick={() => void dismissResetPartialByRefresh()}>
-                    {t('settingsPolicy.resetPartial.refresh')}
-                  </Button>
-                </Flexbox>
+                <Button onClick={() => void retryConflictReload()}>
+                  {t('settingsPolicy.conflict.retryReload')}
+                </Button>
               }
             />
           ) : null}
@@ -253,20 +196,10 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
               }
             />
           ) : null}
-          {revisionConflict && !resetPartialFailure ? (
-            <SettingsPolicyConflictBanner
-              canUpdate={canUpdate}
-              conflictState={conflictState}
-              registryByPath={registryByPath}
-              onDiscard={handleDiscardConflict}
-              onRebase={handleRebase}
-              onRefresh={() => void refreshConflictServer()}
-            />
-          ) : null}
         </>
       }
       description={
-        canUpdate
+        canSave
           ? t('settingsPolicy.desc')
           : `${t('settingsPolicy.desc')} ${t('settingsPolicy.readOnlyHint')}`
       }
@@ -280,18 +213,9 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
       }
     >
       <div className={styles.scroll}>
-        {validationMsg ? <Text type="secondary">{validationMsg}</Text> : null}
-        {impact ? (
-          <Text type="secondary">
-            {t('settingsPolicy.impactSummary', {
-              paths: impact.pathsWithOverrides,
-              rows: impact.totalOverrideRows,
-            })}
-          </Text>
-        ) : null}
         <SettingsPolicyChangePreview preview={preview} registryByPath={registryByPath} />
         <SettingsPolicyGroupGrid
-          canUpdate={canUpdate}
+          canUpdate={canSave}
           entries={filteredEntries}
           getPolicy={getPolicy}
           publishedPolicies={data.publishedPolicies}
@@ -305,11 +229,22 @@ const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
           {saveState === 'saved' && t('settingsPolicy.saveState.saved')}
           {saveState === 'failed' && (saveError || t('settingsPolicy.saveState.failed'))}
           {saveState === 'idle' &&
-            (dirty ? t('settingsPolicy.saveState.dirty') : t('settingsPolicy.upToDate'))}
+            (hasEffectiveChanges
+              ? t('settingsPolicy.saveState.dirty')
+              : t('settingsPolicy.upToDate'))}
         </span>
-        <Flexbox horizontal gap={8}>
-          {primaryButton}
-        </Flexbox>
+        {canSave ? (
+          <Button
+            /* `saved` covers the window where the commit landed but the published snapshot
+               has not been reloaded yet — the preview is stale, not a pending change. */
+            disabled={!hasEffectiveChanges || saveState === 'saved'}
+            loading={saveState === 'saving'}
+            type="primary"
+            onClick={() => void handleSave()}
+          >
+            {t('settingsPolicy.save')}
+          </Button>
+        ) : null}
       </div>
     </AdminPageTemplate>
   );

@@ -13,8 +13,6 @@ import {
   getUnreadyEnforcedResources,
   MANAGED_RESOURCE_NAV_LABEL_KEY,
   normalizeManagedResourcePolicyMap,
-  rebaseManagedResourceDraft,
-  resolveManagedResourcePrimaryAction,
   toManagedResourceUiMode,
 } from './controller';
 
@@ -101,130 +99,6 @@ describe('managed resource policy controller', () => {
       {
         after: { enforcementMode: 'ui-only', managed: true },
         before: { enforcementMode: 'observe', managed: false },
-        resource: 'connectors',
-      },
-    ]);
-  });
-
-  it('keeps exactly one primary action and blocks publish during conflict/readiness failure', () => {
-    const base = {
-      canPublish: true,
-      canUpdate: true,
-      conflict: false,
-      dirty: true,
-      hasChanges: true,
-      publishReady: true,
-      saveState: 'dirty' as const,
-    };
-    expect(resolveManagedResourcePrimaryAction(base)).toBe('save');
-    expect(resolveManagedResourcePrimaryAction({ ...base, dirty: false, saveState: 'saved' })).toBe(
-      'publish',
-    );
-    // Stranded saved draft (dirty=false, hasChanges) must still offer publish after reload.
-    expect(
-      resolveManagedResourcePrimaryAction({
-        ...base,
-        dirty: false,
-        saveState: 'idle',
-      }),
-    ).toBe('publish');
-    expect(
-      resolveManagedResourcePrimaryAction({
-        ...base,
-        dirty: false,
-        publishReady: false,
-        saveState: 'saved',
-      }),
-    ).toBe('none');
-    expect(resolveManagedResourcePrimaryAction({ ...base, conflict: true })).toBe('none');
-  });
-
-  it('retries the operation that failed (save vs publish)', () => {
-    const base = {
-      canPublish: true,
-      canUpdate: true,
-      conflict: false,
-      dirty: false,
-      hasChanges: true,
-      publishReady: true,
-      saveState: 'failed' as const,
-    };
-    expect(resolveManagedResourcePrimaryAction({ ...base, failedOperation: 'publish' })).toBe(
-      'retryPublish',
-    );
-    expect(resolveManagedResourcePrimaryAction({ ...base, failedOperation: 'save' })).toBe(
-      'retrySave',
-    );
-    // Dirty after a failed save still prefers retrySave over plain save.
-    expect(
-      resolveManagedResourcePrimaryAction({
-        ...base,
-        dirty: true,
-        failedOperation: 'save',
-      }),
-    ).toBe('retrySave');
-  });
-
-  it('never maps a failed publish to retrySave when readiness becomes false', () => {
-    const base = {
-      canPublish: true,
-      canUpdate: true,
-      conflict: false,
-      dirty: false,
-      failedOperation: 'publish' as const,
-      hasChanges: true,
-      publishReady: false,
-      saveState: 'failed' as const,
-    };
-    // Must preserve retryPublish (UI disables until ready) — not silently retrySave.
-    expect(resolveManagedResourcePrimaryAction(base)).toBe('retryPublish');
-    expect(resolveManagedResourcePrimaryAction({ ...base, canPublish: false })).toBe('none');
-  });
-
-  it('rebases local edits while accepting latest values for untouched resources', () => {
-    const original = policy();
-    const local = policy();
-    const latest = policy();
-    local.skills = { enforcementMode: 'ui-only', managed: true };
-    latest.aiModels = { enforcementMode: 'observe', managed: true };
-
-    const rebased = rebaseManagedResourceDraft({ latest, local, original });
-    expect(rebased.draft.skills).toEqual(local.skills);
-    expect(rebased.draft.aiModels).toEqual(latest.aiModels);
-    expect(rebased.conflicts).toEqual([]);
-  });
-
-  it('merges non-conflicting local and remote edits to different fields of one resource', () => {
-    const original = policy();
-    const local = policy();
-    const latest = policy();
-    local.connectors.managed = true;
-    latest.connectors.enforcementMode = 'enforced';
-
-    expect(rebaseManagedResourceDraft({ latest, local, original })).toEqual({
-      conflicts: [],
-      draft: {
-        ...latest,
-        connectors: { enforcementMode: 'enforced', managed: true },
-      },
-    });
-  });
-
-  it('reports divergent edits to the same field instead of silently choosing one', () => {
-    const original = policy();
-    const local = policy();
-    const latest = policy();
-    local.connectors.enforcementMode = 'ui-only';
-    latest.connectors.enforcementMode = 'enforced';
-
-    const rebased = rebaseManagedResourceDraft({ latest, local, original });
-    expect(rebased.draft.connectors.enforcementMode).toBe('ui-only');
-    expect(rebased.conflicts).toEqual([
-      {
-        field: 'enforcementMode',
-        latestValue: 'enforced',
-        localValue: 'ui-only',
-        originalValue: 'observe',
         resource: 'connectors',
       },
     ]);

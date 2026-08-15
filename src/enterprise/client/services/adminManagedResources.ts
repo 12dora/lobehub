@@ -1,10 +1,8 @@
 import { lambdaClient } from '@/libs/trpc/client';
 import type {
   AdminManagedResourcesGetOutput,
-  AdminManagedResourcesPublishInput,
-  AdminManagedResourcesPublishOutput,
-  AdminManagedResourcesSaveDraftInput,
-  AdminManagedResourcesSaveDraftOutput,
+  AdminManagedResourcesSaveInput,
+  AdminManagedResourcesSaveOutput,
 } from '@/server/enterprise/contracts/adminManagedResources';
 
 /** Typed client boundary for `admin.managedResources.*`. */
@@ -13,16 +11,14 @@ class AdminManagedResourcesService {
     return lambdaClient.admin.managedResources.get.query();
   };
 
-  publish = async (
-    input: AdminManagedResourcesPublishInput,
-  ): Promise<AdminManagedResourcesPublishOutput> => {
-    return lambdaClient.admin.managedResources.publish.mutate(input);
-  };
-
-  saveDraft = async (
-    input: AdminManagedResourcesSaveDraftInput,
-  ): Promise<AdminManagedResourcesSaveDraftOutput> => {
-    return lambdaClient.admin.managedResources.saveDraft.mutate(input);
+  /**
+   * Apply the managed-resource policy site-wide in one transaction (no draft step).
+   * Dangerous mutation: wrap the call in `withAdminReauthRetry`.
+   */
+  save = async (
+    input: AdminManagedResourcesSaveInput,
+  ): Promise<AdminManagedResourcesSaveOutput> => {
+    return lambdaClient.admin.managedResources.save.mutate(input);
   };
 }
 

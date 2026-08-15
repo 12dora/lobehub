@@ -11,8 +11,8 @@ describe('shouldPreserveLocalDraftAfterSave', () => {
     expect(shouldPreserveLocalDraftAfterSave(7, 7)).toBe(false);
   });
 
-  it('documents the same epoch guard used after publish refresh', () => {
-    // Publish captures submittedEpoch before mutate(); concurrent UI edits bump the ref.
+  it('documents the same epoch guard used after the post-save refresh', () => {
+    // Save captures submittedEpoch before mutate(); concurrent UI edits bump the ref.
     // Applying refreshed draft only when epochs match prevents clobbering newer local policy edits.
     const submittedEpoch = 10;
     const epochAfterUserEditDuringRefresh = 11;

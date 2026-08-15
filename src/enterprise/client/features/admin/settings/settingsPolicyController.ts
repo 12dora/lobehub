@@ -3,14 +3,7 @@
  */
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import {
-  carriesLocalDraftSecretMaterial,
-  utf8ByteLength,
-} from '@/enterprise/client/features/admin/primitives/localDraftSafety';
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
-
-import { canonicalize } from '../primitives/canonicalize';
-import { isSettingsPolicyDraftMap } from './settingsPolicyDraftValidation';
 
 export type DraftMap = AdminSettingsGetDraftOutput['draft'];
 export type DraftPolicy = DraftMap[string];
@@ -107,48 +100,6 @@ export const deriveSettingsPermissions = (
   };
 };
 
-export type PrimaryActionKind = 'save' | 'retry' | 'publish' | 'validate' | 'none';
-
-/**
- * Exactly one visually dominant primary action (U5-R2).
- * Publish only when draft fingerprint was successfully validated.
- * Otherwise validation is the primary when draft is clean and unvalidated.
- */
-export const resolvePrimaryAction = (params: {
-  canPublish: boolean;
-  canUpdate: boolean;
-  dirty: boolean;
-  revisionConflict: boolean;
-  saveState: SaveState;
-  validatedForFingerprint: string | null;
-  draftFingerprint: string;
-}): PrimaryActionKind => {
-  if (!params.canUpdate && !params.canPublish) return 'none';
-  if (params.revisionConflict) return 'none';
-  if (params.saveState === 'failed' && params.canUpdate) return 'retry';
-  if (params.dirty && params.canUpdate) return 'save';
-  if (
-    !params.dirty &&
-    params.canPublish &&
-    params.validatedForFingerprint === params.draftFingerprint
-  ) {
-    return 'publish';
-  }
-  // Clean but not validated → validate is the one primary (not enabled publish)
-  if (!params.dirty && params.canPublish) return 'validate';
-  return 'none';
-};
-
-export const fingerprintDraft = (draft: DraftMap): string => {
-  const keys = Object.keys(draft).sort();
-  return JSON.stringify(
-    keys.map((k) => {
-      const p = draft[k]!;
-      return [k, p.mode, p.visibility, p.schemaVersion, canonicalize(p.value)];
-    }),
-  );
-};
-
 export type PolicyDiffRow = {
   afterMode: string;
   afterValue: unknown;
@@ -193,96 +144,4 @@ export const buildChangePreview = (params: {
     });
   }
   return rows.filter((r) => r.changed);
-};
-
-/** Local draft key that survives revision advance for conflict rebase. */
-export const CONFLICT_DRAFT_KEY = 'aihub.admin.settings.conflictDraft';
-export const SETTINGS_POLICY_CONFLICT_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CONFLICT_DRAFT_MAX_BYTES = 512_000;
-
-export type ConflictDraftPayload = {
-  /** Server draft the local work was originally based on (for three-way merge). */
-  originalBaseDraft: DraftMap;
-  draft: DraftMap;
-  previousBaseRevision: number;
-  previousDraftToken: string;
-  registryVersion: number;
-  savedAt: string;
-};
-
-export const saveConflictDraft = (payload: ConflictDraftPayload) => {
-  if (typeof window === 'undefined') return;
-  if (
-    carriesLocalDraftSecretMaterial(payload.draft) ||
-    carriesLocalDraftSecretMaterial(payload.originalBaseDraft)
-  ) {
-    return;
-  }
-  try {
-    const raw = JSON.stringify(payload);
-    if (utf8ByteLength(raw) > CONFLICT_DRAFT_MAX_BYTES) return;
-    window.localStorage.setItem(CONFLICT_DRAFT_KEY, raw);
-  } catch {
-    /* ignore */
-  }
-};
-
-export const loadConflictDraft = (): ConflictDraftPayload | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(CONFLICT_DRAFT_KEY);
-    if (!raw) return null;
-    if (utf8ByteLength(raw) > CONFLICT_DRAFT_MAX_BYTES) {
-      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
-      return null;
-    }
-    const parsed = JSON.parse(raw) as Partial<ConflictDraftPayload>;
-    if (
-      !isSettingsPolicyDraftMap(parsed.draft) ||
-      !isSettingsPolicyDraftMap(parsed.originalBaseDraft) ||
-      typeof parsed.previousBaseRevision !== 'number' ||
-      typeof parsed.previousDraftToken !== 'string' ||
-      typeof parsed.registryVersion !== 'number' ||
-      typeof parsed.savedAt !== 'string'
-    ) {
-      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
-      return null;
-    }
-    const age = Date.now() - Date.parse(parsed.savedAt);
-    if (!Number.isFinite(age) || age < 0 || age > SETTINGS_POLICY_CONFLICT_DRAFT_TTL_MS) {
-      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
-      return null;
-    }
-    if (
-      carriesLocalDraftSecretMaterial(parsed.draft) ||
-      carriesLocalDraftSecretMaterial(parsed.originalBaseDraft)
-    ) {
-      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
-      return null;
-    }
-    return {
-      draft: parsed.draft,
-      originalBaseDraft: parsed.originalBaseDraft,
-      previousBaseRevision: parsed.previousBaseRevision,
-      previousDraftToken: parsed.previousDraftToken,
-      registryVersion: parsed.registryVersion,
-      savedAt: parsed.savedAt,
-    };
-  } catch {
-    try {
-      window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
-    } catch {
-      /* private mode */
-    }
-    return null;
-  }
-};
-
-export const clearConflictDraft = () => {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.removeItem(CONFLICT_DRAFT_KEY);
-  } catch {
-    /* ignore */
-  }
 };

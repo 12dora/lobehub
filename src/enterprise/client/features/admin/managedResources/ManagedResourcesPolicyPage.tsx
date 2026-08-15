@@ -21,19 +21,16 @@ import type { ManagedResourcePolicyMap } from '@/types/platform/managedResources
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
-import { publishManagedResourcePolicy, saveManagedResourceDraft } from './actions';
+import { saveManagedResourcePolicy } from './actions';
 import {
   buildManagedResourceDiff,
   deriveManagedResourcePermissions,
   fromManagedResourceUiMode,
   getUnreadyEnforcedResources,
   MANAGED_RESOURCE_NAV_LABEL_KEY,
-  type ManagedResourceFailedOperation,
   type ManagedResourceSaveState,
   type ManagedResourceUiMode,
   normalizeManagedResourcePolicyMap,
-  rebaseManagedResourceDraft,
-  resolveManagedResourcePrimaryAction,
   shouldPreserveLocalDraftAfterSave,
   toManagedResourceUiMode,
 } from './controller';
@@ -79,6 +76,11 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 const UI_MODE_VALUES = ['user', 'platform'] as const satisfies readonly ManagedResourceUiMode[];
+/**
+ * Conflict recovery state. `reloaded` is only reachable after the authoritative reload
+ * succeeded; `reloadFailed` keeps the local edits and offers a retry.
+ */
+type ManagedResourceConflictState = 'none' | 'reloaded' | 'reloadFailed';
 const getManagedResourcesSnapshotIdentity = (snapshot: {
   baseRevision: number;
   draftToken: string;
@@ -89,6 +91,8 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   const { authMethod, permissions } = useAdminAccess();
   const platform = useEnterprisePlatform();
   const { canPublish, canUpdate, canView } = deriveManagedResourcePermissions(permissions);
+  // Saving applies site-wide in one step, so it needs both policy write permissions.
+  const canSave = canUpdate && canPublish;
   const permissionSet = useMemo(() => new Set(permissions), [permissions]);
   // Nested controls have independent procedure gates — do not inherit canSave.
   const canUpdateSidebarLayout = permissionSet.has(PLATFORM_PERMISSIONS.POLICY_UPDATE);
@@ -103,17 +107,16 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
   const [published, setPublished] = useState<ManagedResourcePolicyMap | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<ManagedResourceSaveState>('idle');
-  const [failedOperation, setFailedOperation] = useState<ManagedResourceFailedOperation | null>(
-    null,
-  );
   const [actionError, setActionError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
-  const [fieldConflict, setFieldConflict] = useState(false);
+  const [conflictState, setConflictState] = useState<ManagedResourceConflictState>('none');
+  /**
+   * The server rejected the last save at its readiness gate. Sticky until the draft changes:
+   * the cached readiness map can be stale, so the server verdict has to win on its own.
+   */
+  const [serverReadinessBlocked, setServerReadinessBlocked] = useState(false);
   const [activeDraftToken, setActiveDraftToken] = useState('');
   const [baseRevision, setBaseRevision] = useState(0);
   const observedServerSnapshotRef = useRef<string | null>(null);
-  /** Last clean server draft used as the three-way-merge base for conflict rebase. */
-  const baseDraftRef = useRef<ManagedResourcePolicyMap | null>(null);
   /**
    * Monotonic local-edit epoch. Bumped on every user draft change; captured at save
    * submit so a successful response never overwrites newer in-flight local edits
@@ -144,57 +147,69 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     shouldBlock: shouldBlockPageExit,
   });
 
+  /**
+   * Hydrate from the server snapshot. Unsaved local edits win over an incoming snapshot:
+   * the server CAS rejects a stale base on save, and that path reloads the live policy with
+   * an explicit "someone else saved" notice instead of silently discarding the edits here.
+   */
   useEffect(() => {
-    if (!data) return;
+    if (!data || dirty) return;
     const snapshotIdentity = getManagedResourcesSnapshotIdentity(data);
     if (observedServerSnapshotRef.current === snapshotIdentity) return;
-    const isInitialSnapshot = observedServerSnapshotRef.current === null;
     observedServerSnapshotRef.current = snapshotIdentity;
-    if (!isInitialSnapshot && dirty) {
-      setConflict(true);
-      setFieldConflict(false);
-      setSaveState('failed');
-      setActionError(t('managedResources.conflict.desc'));
-      return;
-    }
     setDraft(data.draft);
     setPublished(data.published);
     setActiveDraftToken(data.draftToken);
     setBaseRevision(data.baseRevision);
-    baseDraftRef.current = data.draft;
     setDirty(false);
     setSaveState('idle');
-    setFailedOperation(null);
-    setConflict(false);
-    setFieldConflict(false);
-  }, [data, dirty, t]);
+  }, [data, dirty]);
 
-  const editorsLocked = saveState === 'saving' || conflict;
-  const canEditPolicy = canUpdate && !editorsLocked;
+  const editorsLocked = saveState === 'saving';
+  const canEditPolicy = canSave && !editorsLocked;
 
   const updateUiMode = useCallback(
     (resource: ManagedResourceKind, mode: ManagedResourceUiMode) => {
-      if (!canUpdate || editorsLocked) return;
+      if (!canSave || editorsLocked) return;
       const next = fromManagedResourceUiMode(mode);
       draftEpochRef.current += 1;
       setDraft((current) => (current ? { ...current, [resource]: next } : current));
       setDirty(true);
       setSaveState('dirty');
-      setFailedOperation(null);
       setActionError(null);
+      setConflictState('none');
+      setServerReadinessBlocked(false);
     },
-    [canUpdate, editorsLocked],
+    [canSave, editorsLocked],
   );
 
   const unready = useMemo(
     () =>
       data && draft
         ? // Evaluate readiness against the canonical platform-managed form so historical
-          // true+ui-only (shown as platform) still requires catalog readiness before publish.
+          // true+ui-only (shown as platform) still requires catalog readiness before save.
           getUnreadyEnforcedResources(normalizeManagedResourcePolicyMap(draft), data.readiness)
         : [],
     [data, draft],
   );
+
+  /**
+   * Resources the blocked alert names. The refreshed readiness map is preferred; when the
+   * server rejected a save the client still believes is ready, fall back to every enforced
+   * resource so the alert never contradicts the disabled save button.
+   */
+  const readinessBlockedResources = useMemo(() => {
+    if (unready.length > 0) return unready;
+    if (!serverReadinessBlocked || !draft) return [];
+    return getUnreadyEnforcedResources(normalizeManagedResourcePolicyMap(draft), {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
+    });
+  }, [draft, serverReadinessBlocked, unready]);
+  const readinessBlocked = readinessBlockedResources.length > 0;
 
   const hasChanges = useMemo(() => {
     if (!draft || !published) return false;
@@ -206,26 +221,12 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     );
   }, [draft, published]);
 
-  const primaryAction = resolveManagedResourcePrimaryAction({
-    canPublish,
-    canUpdate,
-    conflict,
-    dirty,
-    failedOperation,
-    hasChanges,
-    publishReady: unready.length === 0,
-    saveState,
-  });
-
-  const enterConflict = useCallback(() => {
-    setConflict(true);
-    setFieldConflict(false);
-    setSaveState('failed');
-    setActionError(t('managedResources.conflict.desc'));
-  }, [t]);
-
-  // Refetch the authoritative policy and rebaseline (discards local edits — used after a conflict).
-  const handleRefresh = useCallback(async () => {
+  /**
+   * Someone else saved first — nothing of ours committed. Reload the live policy and only
+   * then drop the local edits: on a failed reload the old values are all we have, so keep
+   * them (and the conflict banner's retry) instead of claiming the latest ones loaded.
+   */
+  const reloadAfterStaleBase = useCallback(async () => {
     setActionError(null);
     try {
       const latest = await mutate();
@@ -236,92 +237,32 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       setPublished(latest.published);
       setActiveDraftToken(latest.draftToken);
       setBaseRevision(latest.baseRevision);
-      baseDraftRef.current = latest.draft;
       setDirty(false);
       setSaveState('idle');
-      setFailedOperation(null);
-      setConflict(false);
-      setFieldConflict(false);
+      setConflictState('reloaded');
     } catch {
-      setActionError(t('managedResources.errors.refresh'));
-    }
-  }, [mutate, t]);
-
-  /**
-   * Acknowledge local-wins values after a conflict (or post-rebase field conflict)
-   * and unlock the editor so the admin can review and save.
-   */
-  const handleKeepLocal = useCallback(() => {
-    if (!fieldConflict) return;
-    setConflict(false);
-    setFieldConflict(false);
-    setActionError(null);
-    setFailedOperation(null);
-    // Local draft remains; mark dirty so save is available after unlock.
-    setDirty(true);
-    setSaveState('dirty');
-  }, [fieldConflict]);
-
-  /** Three-way merge local edits onto the latest server draft after a revision conflict. */
-  const handleRebase = useCallback(async () => {
-    if (!draft) return;
-    setActionError(null);
-    try {
-      const latest = await mutate();
-      if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
-      observedServerSnapshotRef.current = getManagedResourcesSnapshotIdentity(latest);
-      const original = baseDraftRef.current ?? latest.draft;
-      const rebased = rebaseManagedResourceDraft({
-        latest: latest.draft,
-        local: draft,
-        original,
-      });
-      draftEpochRef.current += 1;
-      setDraft(rebased.draft);
-      setPublished(latest.published);
-      setActiveDraftToken(latest.draftToken);
-      setBaseRevision(latest.baseRevision);
-      baseDraftRef.current = latest.draft;
-      setDirty(true);
+      setConflictState('reloadFailed');
       setSaveState('dirty');
-      setFailedOperation(null);
-      if (rebased.conflicts.length > 0) {
-        // Local values already win for divergent fields; stay in conflict mode until
-        // the admin explicitly keeps them (unlocks) or discards.
-        setActionError(t('managedResources.conflict.fields'));
-        setFieldConflict(true);
-        return;
-      }
-      setConflict(false);
-      setFieldConflict(false);
-    } catch {
-      setActionError(t('managedResources.errors.refresh'));
     }
-  }, [draft, mutate, t]);
+  }, [mutate]);
 
   const mapActionError = useCallback(
-    (cause: unknown, operation: ManagedResourceFailedOperation) => {
+    (cause: unknown) => {
       const mapped = mapEnterpriseError(cause);
-      if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
-        setFailedOperation(operation);
-        enterConflict();
-        return true;
-      }
       setSaveState('failed');
-      setFailedOperation(operation);
       setActionError(
         mapped
-          ? t(mapped.i18nKey as never, { defaultValue: mapped.code })
+          ? t(mapped.i18nKey as never, { defaultValue: t('managedResources.errors.generic') })
           : t('managedResources.errors.generic'),
       );
-      return false;
     },
-    [enterConflict, t],
+    [t],
   );
 
-  /** Persist the local draft only (does not publish). Readiness gates publish, not draft save. */
+  /** One primary action: write + publish + invalidate in a single server transaction. */
   const handleSave = useCallback(async () => {
-    if (!data || !draft || !canUpdate || conflict || saveState === 'saving') {
+    // No effective change → no site-wide revision, audit row, or cache invalidation.
+    if (!data || !draft || !canSave || saveState === 'saving' || !hasChanges || readinessBlocked) {
       return;
     }
     const reason = t('managedResources.saveReason');
@@ -330,16 +271,32 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
     const submittedEpoch = draftEpochRef.current;
     setSaveState('saving');
     setActionError(null);
+    setConflictState('none');
     try {
-      const saved = await saveManagedResourceDraft({
-        input: { draft: normalizedDraft, expectedDraftToken: activeDraftToken, reason },
-        saveDraft: adminManagedResourcesService.saveDraft,
+      const { capabilityRefreshFailed, output } = await saveManagedResourcePolicy({
+        authMethod: authMethod ?? null,
+        input: {
+          draft: normalizedDraft,
+          expectedDraftToken: activeDraftToken,
+          expectedRevision: baseRevision,
+          reason,
+        },
+        // Committed boundary: report the outcome before any best-effort refresh, so the
+        // admin is told the policy applied even if a later refresh fails.
+        onCommitted: (committed) => {
+          if (committed.runtimeTransition === 'pending_recovery') {
+            toast.warning(t('managedResources.errors.savedRuntimeRecovering'));
+            return;
+          }
+          toast.success(t('managedResources.saveSuccess'));
+        },
+        refreshCapabilities: platform.refresh,
+        save: adminManagedResourcesService.save,
       });
-      setActiveDraftToken(saved.draftToken);
-      setBaseRevision(saved.baseRevision);
-      // Server now holds the submitted snapshot as the clean draft base.
-      baseDraftRef.current = normalizedDraft;
-      setFailedOperation(null);
+      setPublished(normalizedDraft);
+      if (output.runtimeTransition !== 'pending_recovery' && capabilityRefreshFailed) {
+        setActionError(t('managedResources.errors.savedRefreshFailed'));
+      }
 
       // Concurrent local edits made after submit (or that raced the saving lock): keep them.
       if (shouldPreserveLocalDraftAfterSave(submittedEpoch, draftEpochRef.current)) {
@@ -348,76 +305,13 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
         setActionError(t('managedResources.errors.savedWithLocalEdits'));
         return;
       }
-
       setDraft(normalizedDraft);
       setDirty(false);
       setSaveState('saved');
-      // Soft-refresh SWR cache without overwriting a still-dirty editor (already handled).
-      try {
-        const latest = await mutate();
-        // Abort if the admin edited while refresh was in flight.
-        if (shouldPreserveLocalDraftAfterSave(submittedEpoch, draftEpochRef.current)) {
-          setDirty(true);
-          setSaveState('dirty');
-          setActionError(t('managedResources.errors.savedWithLocalEdits'));
-          return;
-        }
-        if (latest) {
-          observedServerSnapshotRef.current = getManagedResourcesSnapshotIdentity(latest);
-          setPublished(latest.published);
-          setActiveDraftToken(latest.draftToken);
-          setBaseRevision(latest.baseRevision);
-          baseDraftRef.current = latest.draft;
-        }
-      } catch (refreshError) {
-        log('post-save refresh failed: %O', refreshError);
-        setActionError(t('managedResources.errors.savedRefreshFailed'));
-      }
-    } catch (cause) {
-      mapActionError(cause, 'save');
-    }
-  }, [activeDraftToken, canUpdate, conflict, data, draft, mapActionError, mutate, saveState, t]);
 
-  /** Publish the already-persisted draft (stranded draft recovery / explicit publish). */
-  const handlePublish = useCallback(async () => {
-    if (
-      !draft ||
-      !canPublish ||
-      dirty ||
-      conflict ||
-      unready.length > 0 ||
-      saveState === 'saving'
-    ) {
-      return;
-    }
-    const reason = t('managedResources.saveReason');
-    // Epoch at submit: post-publish SWR refresh must not clobber edits made while refresh is in flight.
-    const submittedEpoch = draftEpochRef.current;
-    setSaveState('saving');
-    setActionError(null);
-    try {
-      const { capabilityRefreshFailed, output } = await publishManagedResourcePolicy({
-        authMethod: authMethod ?? null,
-        input: {
-          expectedDraftToken: activeDraftToken,
-          expectedRevision: baseRevision,
-          reason,
-        },
-        publish: adminManagedResourcesService.publish,
-        refreshCapabilities: platform.refresh,
-      });
-      setDirty(false);
-      setSaveState('saved');
-      setFailedOperation(null);
-      setPublished(normalizeManagedResourcePolicyMap(draft));
-      if (output.runtimeTransition === 'pending_recovery') {
-        toast.warning(t('managedResources.errors.publishedRuntimeRecovering'));
-      } else if (capabilityRefreshFailed) {
-        setActionError(t('managedResources.errors.publishedRefreshFailed'));
-      }
       try {
         const latest = await mutate();
-        // Abort applying refreshed draft if the admin edited while refresh was in flight.
+        // Abort applying the refreshed policy if the admin edited while refresh was in flight.
         if (shouldPreserveLocalDraftAfterSave(submittedEpoch, draftEpochRef.current)) {
           setDirty(true);
           setSaveState('dirty');
@@ -430,75 +324,58 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
           setPublished(latest.published);
           setActiveDraftToken(latest.draftToken);
           setBaseRevision(latest.baseRevision);
-          baseDraftRef.current = latest.draft;
         }
       } catch (refreshError) {
-        log('post-publish SWR refresh failed: %O', refreshError);
-        // Prefer capability-refresh messaging if both failed; otherwise surface SWR failure.
+        log('post-save refresh failed: %O', refreshError);
         if (!capabilityRefreshFailed) {
-          setActionError(t('managedResources.errors.publishedRefreshFailed'));
+          setActionError(t('managedResources.errors.savedRefreshFailed'));
         }
       }
     } catch (cause) {
-      mapActionError(cause, 'publish');
+      const code = mapEnterpriseError(cause)?.code;
+      if (code === 'PLATFORM_REVISION_CONFLICT') {
+        await reloadAfterStaleBase();
+        return;
+      }
+      // The only validation the managed-resource save performs is its readiness gate, so
+      // this means the cached readiness map was stale: reload it and block the save.
+      if (code === 'PLATFORM_CONFIG_VALIDATION_FAILED') {
+        setServerReadinessBlocked(true);
+        setSaveState('failed');
+        setActionError(null);
+        try {
+          await mutate();
+        } catch (readinessError) {
+          log('readiness refresh after a blocked save failed: %O', readinessError);
+        }
+        return;
+      }
+      mapActionError(cause);
     }
   }, [
     activeDraftToken,
     authMethod,
     baseRevision,
-    canPublish,
-    conflict,
-    dirty,
+    canSave,
+    data,
     draft,
+    hasChanges,
     mapActionError,
     mutate,
     platform,
+    readinessBlocked,
+    reloadAfterStaleBase,
     saveState,
     t,
-    unready.length,
   ]);
-
-  const handlePrimaryAction = useCallback(() => {
-    if (primaryAction === 'save' || primaryAction === 'retrySave') {
-      void handleSave();
-      return;
-    }
-    if (primaryAction === 'publish' || primaryAction === 'retryPublish') {
-      void handlePublish();
-    }
-  }, [handlePublish, handleSave, primaryAction]);
-
-  const primaryLabel =
-    primaryAction === 'publish' || primaryAction === 'retryPublish'
-      ? primaryAction === 'retryPublish'
-        ? t('managedResources.actions.retryPublish')
-        : t('managedResources.actions.publish')
-      : primaryAction === 'retrySave'
-        ? t('managedResources.actions.retrySave')
-        : t('managedResources.actions.save');
 
   const renderPolicySection = () => {
     if (!canView) return null;
     if (!draft) return <Loading debugId="AdminManagedResources > Hydrate" />;
 
-    const canEditResources = canUpdate;
-    const draftPendingPublish = !dirty && hasChanges;
-
     return (
       <>
-        {!canEditResources && !canPublish ? (
-          <Alert showIcon message={t('managedResources.readOnly')} type="info" />
-        ) : null}
-
-        {draftPendingPublish ? (
-          <Alert
-            showIcon
-            type="info"
-            message={t('managedResources.draftPendingPublish', {
-              defaultValue: 'A saved draft differs from the published policy. Publish to apply it.',
-            })}
-          />
-        ) : null}
+        {!canSave ? <Alert showIcon message={t('managedResources.readOnly')} type="info" /> : null}
 
         <div className={styles.grid}>
           {MANAGED_RESOURCE_KINDS.map((resource) => {
@@ -540,12 +417,12 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
           <SidebarLayoutControl canUpdate={canUpdateSidebarLayout} disabled={editorsLocked} />
         </div>
 
-        {unready.length > 0 ? (
+        {readinessBlocked ? (
           <Alert
             showIcon
             type="warning"
             message={t('managedResources.readiness.blocked', {
-              resources: unready
+              resources: readinessBlockedResources
                 .map((resource) => t(MANAGED_RESOURCE_NAV_LABEL_KEY[resource] as never))
                 .join(', '),
             })}
@@ -556,26 +433,17 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
           <Flexbox gap={4}>
             <span className={styles.status}>
               {t(`managedResources.saveState.${saveState}` as never)}
-              {draftPendingPublish
-                ? ` · ${t('managedResources.status.draftPending', {
-                    defaultValue: 'Draft pending publish',
-                  })}`
-                : null}
             </span>
             {actionError ? <Text type="danger">{actionError}</Text> : null}
           </Flexbox>
-          {primaryAction !== 'none' ? (
+          {canSave ? (
             <Button
+              disabled={!hasChanges || readinessBlocked}
               loading={saveState === 'saving'}
               type="primary"
-              disabled={
-                conflict ||
-                ((primaryAction === 'publish' || primaryAction === 'retryPublish') &&
-                  unready.length > 0)
-              }
-              onClick={handlePrimaryAction}
+              onClick={() => void handleSave()}
             >
-              {primaryLabel}
+              {t('managedResources.actions.save')}
             </Button>
           ) : null}
         </div>
@@ -609,30 +477,30 @@ const ManagedResourcesPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) =
       hideTitle={embedded}
       title={t('managedResources.title')}
       banner={
-        conflict ? (
-          <Alert
-            showIcon
-            description={t('managedResources.conflict.desc')}
-            message={t('managedResources.conflict.title')}
-            type="warning"
-            extra={
-              <Flexbox horizontal gap={8} wrap="wrap">
-                {fieldConflict ? (
-                  <Button type="default" onClick={handleKeepLocal}>
-                    {t('managedResources.conflict.keepLocal')}
-                  </Button>
-                ) : (
-                  <Button type="default" onClick={() => void handleRebase()}>
-                    {t('managedResources.conflict.rebase')}
-                  </Button>
-                )}
-                <Button type="primary" onClick={() => void handleRefresh()}>
-                  {t('managedResources.conflict.discard')}
+        <>
+          {conflictState === 'reloaded' ? (
+            <Alert
+              closable
+              showIcon
+              message={t('managedResources.conflict.reloaded')}
+              type="warning"
+              onClose={() => setConflictState('none')}
+            />
+          ) : null}
+          {conflictState === 'reloadFailed' ? (
+            <Alert
+              showIcon
+              description={t('managedResources.conflict.reloadFailedDesc')}
+              message={t('managedResources.conflict.reloadFailed')}
+              type="warning"
+              extra={
+                <Button onClick={() => void reloadAfterStaleBase()}>
+                  {t('managedResources.conflict.retryReload')}
                 </Button>
-              </Flexbox>
-            }
-          />
-        ) : null
+              }
+            />
+          ) : null}
+        </>
       }
     >
       {renderPolicySection()}
