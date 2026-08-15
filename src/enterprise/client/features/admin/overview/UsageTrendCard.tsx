@@ -9,15 +9,20 @@ import { useTranslation } from 'react-i18next';
 
 import { formatTokenNumber } from '@/utils/format';
 
+import type { AdminTimeRange } from '../primitives/timeRange.utils';
 import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
 import { useOverviewUsageTrend } from './useOverviewStats';
 import { isEmptyTokenTrend } from './utils';
 
-const UsageTrendCard = memo(() => {
+interface UsageTrendCardProps {
+  range?: AdminTimeRange;
+}
+
+const UsageTrendCard = memo<UsageTrendCardProps>(({ range }) => {
   const { t } = useTranslation('admin');
   const reduceMotion = useReducedMotion();
-  const { data, error, isLoading, mutate } = useOverviewUsageTrend();
+  const { data, error, isLoading, mutate } = useOverviewUsageTrend(range);
   const loading = isLoading && !data;
   // Emptiness is independent of a stale-refresh error (after the initial-error
   // early return). Gating on `!error` forced a blank AreaChart for empty stale data.
@@ -33,7 +38,9 @@ const UsageTrendCard = memo(() => {
 
   return (
     <section className={styles.card}>
-      <h2 className={styles.sectionTitle}>{t('overview.usage.title')}</h2>
+      <h2 className={styles.sectionTitle}>
+        {t('overview.usage.title', { scope: range?.label ?? '' })}
+      </h2>
       {error && data ? (
         <Alert
           showIcon

@@ -5,7 +5,12 @@ import AsyncBoundary from '@/components/AsyncBoundary';
 import Statistic from '@/components/Statistic';
 import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
-import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
+import {
+  statsFilterParams,
+  useStatsDataSource,
+  useStatsFilter,
+  useStatsSwrKey,
+} from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatIntergerNumber } from '@/utils/format';
@@ -15,14 +20,17 @@ import TotalCard from './ShareButton/TotalCard';
 
 const TotalMessages = memo<{ inShare?: boolean; mobile?: boolean }>(({ inShare }) => {
   const { t } = useTranslation('auth');
-  const { countAgents, scopeKey } = useStatsDataSource();
-  const { data, isLoading, error, mutate } = useClientDataSWR(
-    scopeStatsKey(statsKeys.agents(), scopeKey),
-    async () => ({
-      count: await countAgents(),
-      prevCount: await countAgents({ endDate: lastMonth().format('YYYY-MM-DD') }),
-    }),
-  );
+  const { countAgents } = useStatsDataSource();
+  const params = statsFilterParams(useStatsFilter());
+  const swrKey = useStatsSwrKey(statsKeys.agents());
+  const { data, isLoading, error, mutate } = useClientDataSWR(swrKey, async () => ({
+    count: await countAgents(params),
+    // A month-over-month delta is meaningless against an arbitrary window, so the
+    // comparison is dropped while a filter is active rather than shown as a wrong number.
+    prevCount: params
+      ? undefined
+      : await countAgents({ endDate: lastMonth().format('YYYY-MM-DD') }),
+  }));
 
   if (inShare)
     return (
@@ -37,12 +45,13 @@ const TotalMessages = memo<{ inShare?: boolean; mobile?: boolean }>(({ inShare }
       <StatisticCard
         loading={isLoading || !data}
         statistic={{
-          description: (
-            <Statistic
-              title={t('date.prevMonth')}
-              value={formatIntergerNumber(data?.prevCount) || '--'}
-            />
-          ),
+          description:
+            data?.prevCount === undefined ? undefined : (
+              <Statistic
+                title={t('date.prevMonth')}
+                value={formatIntergerNumber(data?.prevCount) || '--'}
+              />
+            ),
           precision: 0,
           value: data?.count || '--',
         }}

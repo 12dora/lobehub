@@ -8,7 +8,12 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import ImperativeModal from '@/components/ImperativeModal';
-import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
+import {
+  statsFilterParams,
+  useStatsDataSource,
+  useStatsFilter,
+  useStatsSwrKey,
+} from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { getModelDisplayName } from '@/utils/modelLabels';
@@ -18,10 +23,11 @@ import StatsFormGroup from '../components/StatsFormGroup';
 export const TopicsRank = memo(() => {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation('auth');
-  const { rankModels, scopeKey } = useStatsDataSource();
-  const { data, isLoading, error, mutate } = useClientDataSWR(
-    scopeStatsKey(statsKeys.rankModels(), scopeKey),
-    async () => rankModels(),
+  const { rankModels } = useStatsDataSource();
+  const params = statsFilterParams(useStatsFilter());
+  const swrKey = useStatsSwrKey(statsKeys.rankModels());
+  const { data, isLoading, error, mutate } = useClientDataSWR(swrKey, async () =>
+    rankModels(params),
   );
 
   const showExtra = Boolean(data && data?.length > 5);

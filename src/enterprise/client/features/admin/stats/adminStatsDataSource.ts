@@ -77,25 +77,27 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
   countAgents: (params) => adminStatsService.countAgents(params),
   countMessages: (params) => adminStatsService.countMessages(params),
   countTopics: (params) => adminStatsService.countTopics(params),
-  findAndGroupByDay: async (mo) => {
-    const logs = await adminStatsService.usageFindAndGroupByDay(mo);
+  findAndGroupByDay: async (params) => {
+    const logs = await adminStatsService.usageFindAndGroupByDay(params);
     rememberCurrentUsersFromUsage(logs.flatMap((log) => log.records ?? []));
     // Rows are UsageRecordItem & { userDisplay }; assignable to UsageLog.
     return logs as UsageLog[];
   },
-  findByMonth: async (mo) => {
-    const rows = await adminStatsService.usageFindByMonth(mo);
+  findByMonth: async (params) => {
+    const rows = await adminStatsService.usageFindByMonth(params);
     rememberHistoricalUsersFromUsage(rows);
     return rows as UsageRecordItem[];
   },
   getHeatmaps: () => adminStatsService.getHeatmaps(),
   getMaxTaskDuration: () => adminStatsService.getMaxTaskDuration(),
   getTokenHeatmaps: () => adminStatsService.getTokenHeatmaps(),
-  rankAgents: (limit) => adminStatsService.rankAgents(limit),
+  rankAgents: (limit, params) => adminStatsService.rankAgents(limit, params),
   // Server default limit (10); no limit param on StatsDataSource.rankModels.
-  rankModels: () => adminStatsService.rankModels(),
-  rankTopics: (limit) => adminStatsService.rankTopics(limit),
+  rankModels: (params) => adminStatsService.rankModels(params),
+  rankTopics: (limit, params) => adminStatsService.rankTopics(limit, params),
+  rankUsers: (limit, params) => adminStatsService.rankUsers(limit, params),
   scopeKey: ADMIN_GLOBAL_STATS_SCOPE,
+  usageDailyTokenTotals: (params) => adminStatsService.usageDailyTokenTotals(params),
 };
 
 /**

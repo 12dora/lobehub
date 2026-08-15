@@ -632,12 +632,16 @@ export const statsKeys = {
   countMessages: def('stats:countMessages', () => ['stats:countMessages']),
   countSessions: def('stats:countSessions', () => ['stats:countSessions']),
   countTopics: def('stats:countTopics', () => ['stats:countTopics']),
+  /** Aggregate daily token totals over an explicit window (admin stats filter). */
+  dailyTokens: def('stats:dailyTokens', () => ['stats:dailyTokens']),
   heatmaps: def('stats:heatmaps', (type: string) => ['stats:heatmaps', type]),
   maxTaskDuration: def('stats:maxTaskDuration', () => ['stats:maxTaskDuration']),
   messages: def('stats:messages', () => ['stats:messages']),
   rankAgents: def('stats:rankAgents', () => ['stats:rankAgents']),
   rankModels: def('stats:rankModels', () => ['stats:rankModels']),
   rankTopics: def('stats:rankTopics', () => ['stats:rankTopics']),
+  /** Top users by usage — admin stats only. */
+  rankUsers: def('stats:rankUsers', () => ['stats:rankUsers']),
   sessions: def('stats:sessions', () => ['stats:sessions']),
   topics: def('stats:topics', () => ['stats:topics']),
   usageLogs: def('stats:usageLogs', () => ['stats:usageLogs']),

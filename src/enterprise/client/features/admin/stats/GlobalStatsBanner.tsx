@@ -10,6 +10,7 @@ import { adminStatsService } from '@/enterprise/client/services/adminStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { formatIntergerNumber } from '@/utils/format';
 
+import type { AdminTimeRange } from '../primitives/timeRange.utils';
 import { adminGlobalStatsDataSource } from './adminStatsDataSource';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -36,12 +37,34 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-export const GlobalStatsBanner = memo(() => {
+export interface GlobalStatsBannerProps {
+  /** Active window; the active-user figure follows it. */
+  range?: AdminTimeRange;
+  /** The single user the page is pinned to, when any — part of the request, not decoration. */
+  userId?: string;
+  /** Display name of the single user the page is pinned to, when any. */
+  userName?: string;
+}
+
+export const GlobalStatsBanner = memo<GlobalStatsBannerProps>(({ range, userId, userName }) => {
   const { t } = useTranslation('admin');
   const { data, error, isLoading, mutate } = useClientDataSWR(
-    ['admin-stats:totals', adminGlobalStatsDataSource.scopeKey],
+    [
+      'admin-stats:totals',
+      adminGlobalStatsDataSource.scopeKey,
+      range?.startAt,
+      range?.endAt,
+      userId ?? null,
+    ],
     // Banner only needs user totals — avoid unused lifetime message/topic/agent scans.
-    () => adminStatsService.userTotals(30),
+    // The pinned user travels with the request and the cache key: the banner claims the
+    // page is scoped to that user, so its own figures must be asked for under that scope.
+    () =>
+      adminStatsService.userTotals(range ? undefined : 30, {
+        endAt: range?.endAt,
+        startAt: range?.startAt,
+        userId,
+      }),
   );
 
   if (error && !data) {
@@ -90,11 +113,17 @@ export const GlobalStatsBanner = memo(() => {
         </div>
         <div className={styles.metric}>
           <span className={styles.metricValue}>{formatIntergerNumber(data?.usersActive)}</span>
-          <span className={styles.metricLabel}>{t('stats.banner.usersActive')}</span>
+          <span className={styles.metricLabel}>
+            {range
+              ? t('stats.banner.usersActiveInRange', { scope: range.label })
+              : t('stats.banner.usersActive')}
+          </span>
         </div>
-        <Text style={{ fontSize: 12 }} type="secondary">
-          {t('stats.banner.scopeNote')}
-        </Text>
+        {userName ? (
+          <Text style={{ fontSize: 12 }} type="secondary">
+            {t('stats.banner.userScopeNote', { name: userName })}
+          </Text>
+        ) : null}
       </div>
     </div>
   );

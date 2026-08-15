@@ -81,4 +81,93 @@ describe.skipIf(!enabled)('PlatformGlobalStatsModel PostgreSQL UTC buckets', () 
       await pool.end();
     }
   }, 60_000);
+
+  it('keeps explicit instant windows and rankUsers stable on a non-UTC session', async () => {
+    const connectionString = process.env.DATABASE_TEST_URL;
+    if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
+    await ensureServerTestDatabase(connectionString);
+
+    const pool = new Pool({ connectionString, max: 1 });
+    const db = drizzle(pool, { schema }) as unknown as LobeChatDatabase;
+    const suffix = randomUUID().replaceAll('-', '');
+    const heavyUser = `rank-heavy-${suffix}`;
+    const lightUser = `rank-light-${suffix}`;
+    const messageIds = [`rank-heavy-${suffix}`, `rank-light-${suffix}`, `rank-outside-${suffix}`];
+
+    try {
+      await pool.query(`SET TIME ZONE 'Asia/Singapore'`);
+      await db.insert(users).values([
+        { fullName: 'Heavy User', id: heavyUser, username: `heavy-${suffix}` },
+        { id: lightUser, username: `light-${suffix}` },
+      ]);
+      await db.insert(messages).values([
+        {
+          content: 'heavy',
+          createdAt: new Date('2024-06-10T16:30:00.000Z'),
+          id: messageIds[0],
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant',
+          usage: { cost: 1.5, totalInputTokens: 100, totalOutputTokens: 200 },
+          userId: heavyUser,
+        },
+        {
+          content: 'light',
+          createdAt: new Date('2024-06-10T16:35:00.000Z'),
+          id: messageIds[1],
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant',
+          usage: { cost: 0.5, totalInputTokens: 10, totalOutputTokens: 20 },
+          userId: lightUser,
+        },
+        {
+          // Singapore-local next day, still outside the UTC window below.
+          content: 'outside',
+          createdAt: new Date('2024-06-11T00:00:00.000Z'),
+          id: messageIds[2],
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant',
+          usage: { cost: 9, totalInputTokens: 9000, totalOutputTokens: 9000 },
+          userId: lightUser,
+        },
+      ]);
+
+      const model = new PlatformGlobalStatsModel(db);
+      const window = {
+        endAt: '2024-06-11T00:00:00.000Z',
+        startAt: '2024-06-10T00:00:00.000Z',
+      };
+
+      const rank = await model.rankUsers(window);
+      expect(rank.map(({ userId }) => userId)).toEqual([heavyUser, lightUser]);
+      expect(rank[0]).toMatchObject({
+        inputTokens: 100,
+        messages: 1,
+        name: 'Heavy User',
+        outputTokens: 200,
+        totalTokens: 300,
+      });
+      expect(rank[0]?.cost).toBeCloseTo(1.5, 5);
+      expect(rank[1]).toMatchObject({ name: `light-${suffix}`, totalTokens: 30 });
+
+      const scoped = await model.rankUsers({ ...window, userId: heavyUser });
+      expect(scoped.map(({ userId }) => userId)).toEqual([heavyUser]);
+
+      const daily = await model.findDailyTokenTotals(window);
+      expect(daily).toEqual([{ day: '2024-06-10', totalTokens: 330 }]);
+
+      const logs = await model.findAndGroupByDay({ ...window, userId: heavyUser });
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.day).toBe('2024-06-10');
+      expect(logs[0]?.totalRequests).toBe(1);
+      expect(logs[0]?.records.every(({ userId }) => userId === heavyUser)).toBe(true);
+    } finally {
+      await db.delete(messages).where(inArray(messages.id, messageIds));
+      await db.delete(users).where(inArray(users.id, [heavyUser, lightUser]));
+      await pool.query(`SET TIME ZONE 'UTC'`);
+      await pool.end();
+    }
+  }, 60_000);
 });

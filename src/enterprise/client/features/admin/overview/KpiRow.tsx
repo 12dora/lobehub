@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { formatIntergerNumber } from '@/utils/format';
 
-import { OVERVIEW_WINDOW_DAYS } from './constants';
+import type { AdminTimeRange } from '../primitives/timeRange.utils';
 import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
 import { useOverviewKpis } from './useOverviewStats';
@@ -39,11 +39,15 @@ const KpiTile = memo<KpiTileProps>(({ label, value, loading }) => {
 
 KpiTile.displayName = 'AdminOverviewKpiTile';
 
-const KpiRow = memo(() => {
+interface KpiRowProps {
+  range?: AdminTimeRange;
+}
+
+const KpiRow = memo<KpiRowProps>(({ range }) => {
   const { t } = useTranslation('admin');
-  const { data, error, isLoading, mutate } = useOverviewKpis();
+  const { data, error, isLoading, mutate } = useOverviewKpis(range);
   const loading = isLoading && !data;
-  const scope = t('overview.scope.days', { days: OVERVIEW_WINDOW_DAYS });
+  const scope = range?.label ?? '';
 
   if (error && !data) {
     return (
@@ -79,7 +83,7 @@ const KpiRow = memo(() => {
       <div className={styles.kpiGrid}>
         <KpiTile label={t('overview.kpi.usersTotal')} loading={loading} value={data?.usersTotal} />
         <KpiTile
-          label={t('overview.kpi.usersActive', { days: OVERVIEW_WINDOW_DAYS })}
+          label={t('overview.kpi.usersActive', { scope })}
           loading={loading}
           value={data?.usersActive}
         />
@@ -99,9 +103,7 @@ const KpiRow = memo(() => {
           value={data?.agents}
         />
       </div>
-      <span className={styles.scopeNote}>
-        {t('overview.scope.note', { days: OVERVIEW_WINDOW_DAYS })}
-      </span>
+      <span className={styles.scopeNote}>{t('overview.scope.note', { scope })}</span>
     </div>
   );
 });

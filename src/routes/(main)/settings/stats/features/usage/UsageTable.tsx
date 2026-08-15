@@ -2,11 +2,17 @@ import { ProviderIcon } from '@lobehub/icons';
 import { Flexbox, Tag, Text } from '@lobehub/ui';
 import { type TableColumnType } from 'antd';
 import { cssVar } from 'antd-style';
-import { memo, useEffect } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import AsyncBoundary from '@/components/AsyncBoundary';
 import InlineTable from '@/components/InlineTable';
-import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
+import {
+  statsFilterUsageParams,
+  useStatsDataSource,
+  useStatsFilter,
+  useStatsSwrKey,
+} from '@/features/SettingsStats';
 import { parseAsInteger, useQueryParam } from '@/hooks/useQueryParam';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
@@ -18,11 +24,12 @@ import { type UsageChartProps } from '../../types';
 const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
   const { t } = useTranslation('auth');
   const providerLabel = useProviderLabel();
-  const { findByMonth, scopeKey } = useStatsDataSource();
+  const { findByMonth } = useStatsDataSource();
+  const filter = useStatsFilter();
+  const swrKey = useStatsSwrKey(statsKeys.usageLogs());
 
-  const { data, isLoading, mutate } = useClientDataSWR(
-    scopeStatsKey(statsKeys.usageLogs(), scopeKey),
-    async () => findByMonth(dateStrings),
+  const { data, error, isLoading, mutate } = useClientDataSWR(swrKey, async () =>
+    findByMonth(statsFilterUsageParams(filter, dateStrings)),
   );
 
   const [currentPage, setCurrentPage] = useQueryParam('current', parseAsInteger.withDefault(1), {
@@ -37,6 +44,22 @@ const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
       mutate();
     }
   }, [dateStrings]);
+
+  /**
+   * Changing the admin range or the selected user replaces the row set, so a `current`
+   * page carried over from the previous filter can point past the end of the new one —
+   * a blank table with no hint why. Reset to the first page on every filter change.
+   *
+   * Seeded from the first render and gated on an actual page move, so the personal /
+   * workspace page (no filter, no provider) never touches its URL.
+   */
+  const filterSignature = `${filter.startAt ?? ''}|${filter.endAt ?? ''}|${filter.userId ?? ''}`;
+  const lastFilterSignature = useRef(filterSignature);
+  useEffect(() => {
+    if (lastFilterSignature.current === filterSignature) return;
+    lastFilterSignature.current = filterSignature;
+    if (currentPage !== 1) setCurrentPage(1);
+  }, [filterSignature, currentPage, setCurrentPage]);
 
   const columns: TableColumnType<any>[] = [
     {
@@ -130,25 +153,29 @@ const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
     },
   ];
 
+  // A wide custom range can exceed the server's full-fetch ceiling and reject the
+  // query — without this the failure would render as a confident empty table.
   return (
-    <InlineTable
-      columns={columns}
-      dataSource={data}
-      loading={isLoading}
-      rowKey={(record) => record.id || `${record.model}-${record.createdAt}-${record.provider}`}
-      size="small"
-      pagination={{
-        current: currentPage,
-        onChange: (page) => {
-          setCurrentPage(page);
-        },
-        onShowSizeChange: (current, size) => {
-          setCurrentPage(current);
-          setPageSize(size);
-        },
-        pageSize,
-      }}
-    />
+    <AsyncBoundary data={data} error={error} errorVariant={'block'} onRetry={() => mutate()}>
+      <InlineTable
+        columns={columns}
+        dataSource={data}
+        loading={isLoading}
+        rowKey={(record) => record.id || `${record.model}-${record.createdAt}-${record.provider}`}
+        size="small"
+        pagination={{
+          current: currentPage,
+          onChange: (page) => {
+            setCurrentPage(page);
+          },
+          onShowSizeChange: (current, size) => {
+            setCurrentPage(current);
+            setPageSize(size);
+          },
+          pageSize,
+        }}
+      />
+    </AsyncBoundary>
   );
 });
 

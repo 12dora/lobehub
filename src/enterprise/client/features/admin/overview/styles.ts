@@ -13,6 +13,13 @@ export const overviewStyles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgContainer};
   `,
+  cardHead: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+  `,
   empty: css`
     display: flex;
     flex-direction: column;
@@ -116,14 +123,15 @@ export const overviewStyles = createStaticStyles(({ css }) => ({
       grid-template-columns: 1fr;
     }
   `,
+  rankMeta: css`
+    margin-inline-start: 8px;
+    font-size: 12px;
+    color: ${cssVar.colorTextTertiary};
+  `,
   rankGrid: css`
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     gap: 16px;
-
-    @media (width <= 960px) {
-      grid-template-columns: 1fr;
-    }
   `,
   scopeNote: css`
     font-size: 12px;

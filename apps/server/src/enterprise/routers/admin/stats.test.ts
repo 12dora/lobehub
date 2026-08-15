@@ -30,6 +30,7 @@ const createCaller = (context: Parameters<typeof createRootCaller>[0]) =>
   createRootCaller(context).stats;
 
 const ids = {
+  noAccess: 'stats-no-access',
   reader: 'stats-reader',
   superAdmin: 'stats-super',
 };
@@ -68,7 +69,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   await cleanup();
-  await db.insert(users).values([{ id: ids.reader }, { id: ids.superAdmin }]);
+  await db.insert(users).values([{ id: ids.reader }, { id: ids.superAdmin }, { id: ids.noAccess }]);
   await seedPlatformRoles(db);
   await assignGlobalPlatformRole(db, {
     roleName: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
@@ -352,5 +353,162 @@ describe('admin.stats rejects invalid dates', () => {
     await expect(caller.countMessages({ range: ['2026-03-01', '2026-03-31'] })).resolves.toEqual(
       expect.any(Number),
     );
+  });
+
+  it('rejects reversed, oversized, and malformed instant windows', async () => {
+    const caller = await callerFor(ids.reader);
+    await expect(
+      caller.countMessages({
+        endAt: '2026-03-01T00:00:00.000Z',
+        startAt: '2026-03-10T00:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      caller.usageFindAndGroupByDay({
+        endAt: '2028-01-01T00:00:00.000Z',
+        startAt: '2026-01-01T00:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      caller.rankUsers({ endAt: '2026-03-31', startAt: '2026-03-01' } as never),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      caller.usageDailyTokenTotals({ startAt: 'not-a-date' } as never),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+});
+
+describe('admin.stats time-range filter', () => {
+  const WINDOW = {
+    endAt: '2026-03-11T00:00:00.000Z',
+    startAt: '2026-03-10T00:00:00.000Z',
+  };
+
+  it('lets an explicit window win over mo on the usage endpoints', async () => {
+    // Seeded rows live on 2026-03-10 (index 0) and 2026-03-11 (index 1).
+    await seedSensitiveUsageMessage(ids.reader, 0);
+    await seedSensitiveUsageMessage(ids.reader, 1);
+    const caller = await callerFor(ids.reader);
+
+    const rows = await caller.usageFindByMonth({ mo: '2020-01', ...WINDOW });
+    expect(rows.map((row) => row.id)).toEqual(['msg-stats-0']);
+
+    const logs = await caller.usageFindAndGroupByDay({ mo: '2020-01', ...WINDOW });
+    expect(logs.map((log) => log.day)).toEqual(['2026-03-10']);
+    expect(logs[0]?.totalRequests).toBe(1);
+
+    const daily = await caller.usageDailyTokenTotals(WINDOW);
+    expect(daily).toEqual([{ day: '2026-03-10', totalTokens: 30 }]);
+  });
+
+  it('windows and scopes the counts / rankings', async () => {
+    await seedSensitiveUsageMessage(ids.reader, 0);
+    await seedSensitiveUsageMessage(ids.reader, 1);
+    const caller = await callerFor(ids.reader);
+
+    await expect(caller.countMessages(WINDOW)).resolves.toBe(1);
+    await expect(caller.countMessages({ ...WINDOW, userId: ids.superAdmin })).resolves.toBe(0);
+    await expect(caller.rankModels({ limit: 5, ...WINDOW })).resolves.toEqual([
+      { count: 1, id: 'gpt-test' },
+    ]);
+  });
+});
+
+describe('admin.stats.rankUsers', () => {
+  it('denies callers without platform stats read', async () => {
+    const caller = await callerFor(ids.noAccess);
+    await expect(caller.rankUsers({ limit: 5 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('ranks users by token usage without leaking a raw email field', async () => {
+    await seedSensitiveUsageMessage(ids.reader, 0);
+    await seedSensitiveUsageMessage(ids.reader, 1);
+    const caller = await callerFor(ids.reader);
+
+    const rank = await caller.rankUsers({
+      endAt: '2026-04-01T00:00:00.000Z',
+      limit: 5,
+      startAt: '2026-03-01T00:00:00.000Z',
+    });
+
+    expect(rank).toEqual([
+      {
+        avatar: null,
+        cost: expect.closeTo(0.02, 5),
+        inputTokens: 20,
+        messages: 2,
+        name: ids.reader,
+        outputTokens: 40,
+        totalTokens: 60,
+        userId: ids.reader,
+      },
+    ]);
+    expect(JSON.stringify(rank)).not.toContain('email');
+    expect(JSON.stringify(rank)).not.toContain(SECRET_PAYLOAD);
+  });
+
+  it('bounds an omitted window to the last 30 days', async () => {
+    // Seeded rows live in 2026-03, far outside the default window.
+    await seedSensitiveUsageMessage(ids.reader, 0);
+    const caller = await callerFor(ids.reader);
+    await expect(caller.rankUsers()).resolves.toEqual([]);
+
+    await db.insert(messages).values({
+      content: 'recent reply',
+      createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      id: 'msg-recent',
+      model: 'gpt-test',
+      provider: 'openai',
+      role: 'assistant',
+      usage: { cost: 0.05, totalInputTokens: 3, totalOutputTokens: 4 },
+      userId: ids.reader,
+    });
+
+    await expect(caller.rankUsers()).resolves.toEqual([
+      expect.objectContaining({ messages: 1, totalTokens: 7, userId: ids.reader }),
+    ]);
+  });
+
+  it('sorts by the requested metric and rejects unknown ones', async () => {
+    // superAdmin: 3 assistant replies (90 tokens); reader: 2 replies (60) + 3 plain prompts.
+    for (const index of [0, 1]) await seedSensitiveUsageMessage(ids.reader, index);
+    for (const index of [2, 3, 4]) await seedSensitiveUsageMessage(ids.superAdmin, index);
+    await db.insert(messages).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        content: `prompt-${index}`,
+        createdAt: new Date('2026-03-15T12:00:00.000Z'),
+        id: `msg-prompt-${index}`,
+        role: 'user' as const,
+        userId: ids.reader,
+      })),
+    );
+
+    const caller = await callerFor(ids.superAdmin);
+    const window = { endAt: '2026-04-01T00:00:00.000Z', startAt: '2026-03-01T00:00:00.000Z' };
+
+    const byTokens = await caller.rankUsers(window);
+    expect(byTokens.map((row) => row.userId)).toEqual([ids.superAdmin, ids.reader]);
+
+    const byMessages = await caller.rankUsers({ ...window, orderBy: 'messages' });
+    expect(byMessages.map((row) => row.userId)).toEqual([ids.reader, ids.superAdmin]);
+    expect(byMessages.map((row) => row.messages)).toEqual([5, 3]);
+
+    // limit is applied to the requested metric, not to a token-ordered page.
+    await expect(caller.rankUsers({ ...window, limit: 1, orderBy: 'messages' })).resolves.toEqual([
+      expect.objectContaining({ userId: ids.reader }),
+    ]);
+
+    await expect(caller.rankUsers({ ...window, orderBy: 'spend' } as never)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+  });
+
+  it('accepts admin-length user ids and rejects longer ones', async () => {
+    const caller = await callerFor(ids.reader);
+    await expect(caller.rankUsers({ userId: 'u'.repeat(128) })).resolves.toEqual([]);
+    await expect(caller.countMessages({ userId: 'u'.repeat(128) })).resolves.toBe(0);
+    await expect(caller.rankUsers({ userId: 'u'.repeat(129) })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
   });
 });

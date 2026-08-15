@@ -15,10 +15,13 @@ import {
   type GlobalUsageLog,
   type GlobalUsageRecordItem,
   PlatformGlobalStatsModel,
+  type StatsFilterArg,
+  StatsRangeError,
 } from '@/database/models/platform/globalStats';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
+import { userIdSchema } from '../../contracts/adminAudit';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
@@ -62,14 +65,78 @@ const monthString = z
   .regex(/^\d{4}-\d{2}$/, 'Expected YYYY-MM')
   .refine((value) => dayjs(value, 'YYYY-MM', true).isValid(), 'Invalid calendar month');
 
-const monthInput = z
-  .object({
-    mo: monthString.optional(),
-  })
-  .optional();
+/**
+ * Shared admin time-range filter (C7): ISO-8601 instants with offset/Z forming the
+ * half-open window `[startAt, endAt)`. Explicit instants win over the legacy
+ * calendar-day fields (`startDate` / `endDate` / `range`) and over `mo`.
+ * Inputs stay non-strict on purpose so a client may pass the union of all filter
+ * fields to any procedure; unknown keys are stripped rather than rejected.
+ */
+const rangeShape = {
+  endAt: z.string().datetime({ offset: true }).optional(),
+  startAt: z.string().datetime({ offset: true }).optional(),
+};
 
-const countDateInput = z
-  .object({
+/** Longest window an explicit range may span — mirrors MAX_STATS_RANGE_DAYS. */
+const MAX_RANGE_DAYS = 366;
+
+type RangeShapeValue = { endAt?: string; startAt?: string };
+
+const refineRange = (value: RangeShapeValue | undefined, ctx: z.RefinementCtx) => {
+  if (!value?.startAt || !value?.endAt) return;
+  const startAt = new Date(value.startAt).getTime();
+  const endAt = new Date(value.endAt).getTime();
+  if (!(startAt < endAt)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'startAt must be before endAt',
+      path: ['startAt'],
+    });
+    return;
+  }
+  if (endAt - startAt > MAX_RANGE_DAYS * 24 * 60 * 60 * 1000) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `range must not exceed ${MAX_RANGE_DAYS} days`,
+      path: ['startAt'],
+    });
+  }
+};
+
+/** The shared C7 contract shape; every filtered procedure extends it. */
+const statsRangeInput = z.object({
+  ...rangeShape,
+  // Same bound as the rest of the admin surface (audit / users contracts).
+  userId: userIdSchema.optional(),
+});
+
+const monthInput = statsRangeInput
+  .extend({ mo: monthString.optional() })
+  .optional()
+  .superRefine(refineRange);
+
+const rankInput = statsRangeInput
+  .extend({ limit: z.number().int().min(1).max(100).optional() })
+  .optional()
+  .superRefine(refineRange);
+
+const rankUsersInput = statsRangeInput
+  .extend({
+    limit: z.number().int().min(1).max(100).optional(),
+    orderBy: z.enum(['cost', 'messages', 'totalTokens']).default('totalTokens'),
+  })
+  .optional()
+  .superRefine(refineRange)
+  .describe(
+    'Users ranked by usage. `startAt`/`endAt` form the half-open window; when both are ' +
+      'omitted the server falls back to the last 30 days ending now (never a full-table scan). ' +
+      '`limit` defaults to 10, `userId` narrows the ranking to a single user. `orderBy` picks ' +
+      'the sort metric (DESC, tie-break userId ASC) and is applied in SQL, so the result is the ' +
+      'true top-N for that metric — never re-sort a page client-side.',
+  );
+
+const countDateInput = statsRangeInput
+  .extend({
     endDate: isoDateString.optional(),
     range: z.tuple([isoDateString, isoDateString]).optional(),
     startDate: isoDateString.optional(),
@@ -77,6 +144,7 @@ const countDateInput = z
   .optional()
   .superRefine((value, ctx) => {
     if (!value) return;
+    refineRange(value, ctx);
     if (value.range && value.range[0] > value.range[1]) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -92,6 +160,38 @@ const countDateInput = z
       });
     }
   });
+
+const userRankOutput = z.array(
+  z
+    .object({
+      avatar: z.string().nullable(),
+      cost: z.number(),
+      inputTokens: z.number().int(),
+      messages: z.number().int(),
+      name: z.string(),
+      outputTokens: z.number().int(),
+      totalTokens: z.number().int(),
+      userId: z.string(),
+    })
+    .strict(),
+);
+
+/** Map an invalid / oversized window from the model layer to HTTP 400. */
+const withRangeErrors = async <T>(run: () => Promise<T>): Promise<T> => {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof StatsRangeError) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+        details: { reason: 'stats_range_invalid' },
+        httpCode: 'BAD_REQUEST',
+        message: error.message,
+      });
+    }
+    throw error;
+  }
+};
 
 /** Whitelist projection for usage rows — excludes raw metadata / tool snapshots. */
 const usageRecordOutputSchema = z.object({
@@ -163,7 +263,7 @@ export const toSafeUsageLogs = (logs: GlobalUsageLog[]): SafeUsageLog[] =>
 /** @internal exported for truncation regression tests */
 export const loadAllMonthUsage = async (
   model: PlatformGlobalStatsModel,
-  mo?: string,
+  filter?: StatsFilterArg,
 ): Promise<GlobalUsageRecordItem[]> => {
   const failTruncated = () =>
     throwEnterpriseError({
@@ -179,7 +279,7 @@ export const loadAllMonthUsage = async (
 
   // Hot path: one aggregate-sized SELECT with LIMIT maxRows+1 (no 200 serial pages).
   if (typeof model.findByMonthBounded === 'function') {
-    const result = await model.findByMonthBounded(mo, USAGE_FULL_MONTH_MAX_ROWS);
+    const result = await model.findByMonthBounded(filter, USAGE_FULL_MONTH_MAX_ROWS);
     if (result.hasMore) return failTruncated();
     return result.items;
   }
@@ -189,7 +289,7 @@ export const loadAllMonthUsage = async (
     let cursor: string | undefined;
     // Fallback page walk (stubs / older model surface). Fail closed at page budget (F8).
     for (let page = 0; page < USAGE_FULL_MONTH_MAX_PAGES; page += 1) {
-      const result = await model.findByMonthPage(mo, {
+      const result = await model.findByMonthPage(filter, {
         cursor,
         limit: PlatformGlobalStatsModel.USAGE_PAGE_MAX,
       });
@@ -199,7 +299,7 @@ export const loadAllMonthUsage = async (
     }
     return failTruncated();
   }
-  return model.findByMonth(mo);
+  return model.findByMonth(filter);
 };
 
 const attachSafeRecordsByDay = (
@@ -226,17 +326,17 @@ const attachSafeRecordsByDay = (
 export const adminStatsRouter = router({
   countAgents: statsProcedure.input(countDateInput).query(async ({ ctx, input }) => {
     const model = new PlatformGlobalStatsModel(ctx.serverDB);
-    return model.countAgents(input);
+    return withRangeErrors(() => model.countAgents(input));
   }),
 
   countMessages: statsProcedure.input(countDateInput).query(async ({ ctx, input }) => {
     const model = new PlatformGlobalStatsModel(ctx.serverDB);
-    return model.countMessages(input);
+    return withRangeErrors(() => model.countMessages(input));
   }),
 
   countTopics: statsProcedure.input(countDateInput).query(async ({ ctx, input }) => {
     const model = new PlatformGlobalStatsModel(ctx.serverDB);
-    return model.countTopics(input);
+    return withRangeErrors(() => model.countTopics(input));
   }),
 
   getHeatmaps: statsProcedure.query(async ({ ctx }) => {
@@ -254,25 +354,42 @@ export const adminStatsRouter = router({
     return model.getTokenHeatmaps();
   }),
 
-  rankAgents: statsProcedure
-    .input(z.object({ limit: z.number().int().min(1).max(100).optional() }).optional())
-    .query(async ({ ctx, input }) => {
-      const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      return model.rankAgents(input?.limit);
-    }),
+  rankAgents: statsProcedure.input(rankInput).query(async ({ ctx, input }) => {
+    const model = new PlatformGlobalStatsModel(ctx.serverDB);
+    return withRangeErrors(() => model.rankAgents(input?.limit, input));
+  }),
 
-  rankModels: statsProcedure
-    .input(z.object({ limit: z.number().int().min(1).max(100).optional() }).optional())
-    .query(async ({ ctx, input }) => {
-      const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      return model.rankModels(input?.limit);
-    }),
+  rankModels: statsProcedure.input(rankInput).query(async ({ ctx, input }) => {
+    const model = new PlatformGlobalStatsModel(ctx.serverDB);
+    return withRangeErrors(() => model.rankModels(input?.limit, input));
+  }),
 
-  rankTopics: statsTopicRankProcedure
-    .input(z.object({ limit: z.number().int().min(1).max(100).optional() }).optional())
+  rankTopics: statsTopicRankProcedure.input(rankInput).query(async ({ ctx, input }) => {
+    const model = new PlatformGlobalStatsModel(ctx.serverDB);
+    return withRangeErrors(() => model.rankTopics(input?.limit, input));
+  }),
+
+  /**
+   * Users ranked by token usage in the window (admin 用户排行).
+   * Emits a display name (fullName → username → email → id) and the avatar only —
+   * never a standalone email field. Token / cost sums cover assistant rows only;
+   * `messages` counts every role. Defaults to the last 30 days when no window is given,
+   * and to `orderBy: 'totalTokens'` when no metric is given.
+   */
+  rankUsers: statsProcedure
+    .input(rankUsersInput)
+    .output(userRankOutput)
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      return model.rankTopics(input?.limit);
+      return withRangeErrors(() =>
+        model.rankUsers({
+          endAt: input?.endAt,
+          limit: input?.limit ?? 10,
+          orderBy: input?.orderBy ?? 'totalTokens',
+          startAt: input?.startAt,
+          userId: input?.userId,
+        }),
+      );
     }),
 
   totals: statsProcedure
@@ -284,10 +401,24 @@ export const adminStatsRouter = router({
 
   /** User totals only — no lifetime message/topic/agent full-table counts. */
   userTotals: statsProcedure
-    .input(z.object({ activeDays: z.number().int().min(1).max(365).optional() }).optional())
+    .input(
+      z
+        .object({
+          activeDays: z.number().int().min(1).max(365).optional(),
+          ...rangeShape,
+        })
+        .optional()
+        .superRefine(refineRange),
+    )
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      return model.userTotals({ activeDays: input?.activeDays });
+      return withRangeErrors(() =>
+        model.userTotals({
+          activeDays: input?.activeDays,
+          endAt: input?.endAt,
+          startAt: input?.startAt,
+        }),
+      );
     }),
 
   /**
@@ -306,7 +437,7 @@ export const adminStatsRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      return model.findDailyTokenTotals(input?.mo);
+      return withRangeErrors(() => model.findDailyTokenTotals(input));
     }),
 
   usageFindAndGroupByDay: statsProcedure
@@ -314,14 +445,16 @@ export const adminStatsRouter = router({
     .output(z.array(usageLogOutputSchema))
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      const logs = await model.findAndGroupByDay(input?.mo);
-      // Chart models may SQL-aggregate with empty `records`; clients/tests still need
-      // redacted detail under each day (UI aggregates `records`).
-      if (logs.some((log) => log.records.length > 0)) {
-        return toSafeUsageLogs(logs);
-      }
-      const safeRows = (await loadAllMonthUsage(model, input?.mo)).map(toSafeUsageRecord);
-      return attachSafeRecordsByDay(logs, safeRows);
+      return withRangeErrors(async () => {
+        const logs = await model.findAndGroupByDay(input);
+        // Chart models may SQL-aggregate with empty `records`; clients/tests still need
+        // redacted detail under each day (UI aggregates `records`).
+        if (logs.some((log) => log.records.length > 0)) {
+          return toSafeUsageLogs(logs);
+        }
+        const safeRows = (await loadAllMonthUsage(model, input)).map(toSafeUsageRecord);
+        return attachSafeRecordsByDay(logs, safeRows);
+      });
     }),
 
   /**
@@ -334,7 +467,9 @@ export const adminStatsRouter = router({
     .output(z.array(usageRecordOutputSchema))
     .query(async ({ ctx, input }) => {
       const model = new PlatformGlobalStatsModel(ctx.serverDB);
-      const rows = await loadAllMonthUsage(model, input?.mo);
-      return rows.map(toSafeUsageRecord);
+      return withRangeErrors(async () => {
+        const rows = await loadAllMonthUsage(model, input);
+        return rows.map(toSafeUsageRecord);
+      });
     }),
 });

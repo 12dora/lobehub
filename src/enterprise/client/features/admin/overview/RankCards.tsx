@@ -12,9 +12,11 @@ import { DEFAULT_AVATAR } from '@/const/meta';
 import type { AgentRankItem } from '@/types/agent';
 import { getModelDisplayName } from '@/utils/modelLabels';
 
+import type { AdminTimeRangeBounds } from '../primitives/timeRange.utils';
 import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
 import { useOverviewAgentRank, useOverviewModelRank } from './useOverviewStats';
+import UserRankCard from './UserRankCard';
 import { isEmptyRank } from './utils';
 
 // The rank is keyed by the raw model id — icons still match on it, only the label is humanized.
@@ -39,10 +41,14 @@ const mapAgent = (item: AgentRankItem, fallbackName: string) => ({
   value: item.count,
 });
 
-const RankCards = memo(() => {
+interface RankCardsProps {
+  range?: AdminTimeRangeBounds;
+}
+
+const RankCards = memo<RankCardsProps>(({ range }) => {
   const { t } = useTranslation('admin');
-  const models = useOverviewModelRank();
-  const agents = useOverviewAgentRank();
+  const models = useOverviewModelRank(range);
+  const agents = useOverviewAgentRank(range);
 
   const modelsLoading = models.isLoading && !models.data;
   const agentsLoading = agents.isLoading && !agents.data;
@@ -144,6 +150,8 @@ const RankCards = memo(() => {
           )}
         </OverviewCardState>
       </section>
+
+      <UserRankCard range={range} />
     </div>
   );
 });

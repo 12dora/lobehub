@@ -9,7 +9,12 @@ import { useTranslation } from 'react-i18next';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import ImperativeModal from '@/components/ImperativeModal';
 import { DEFAULT_AVATAR } from '@/const/meta';
-import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
+import {
+  statsFilterParams,
+  useStatsDataSource,
+  useStatsFilter,
+  useStatsSwrKey,
+} from '@/features/SettingsStats';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import Link from '@/libs/router/Link';
 import { useClientDataSWR } from '@/libs/swr';
@@ -25,10 +30,11 @@ export const AssistantsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
   const { t } = useTranslation(['auth', 'chat']);
   const navigate = useWorkspaceAwareNavigate();
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
-  const { rankAgents, scopeKey } = useStatsDataSource();
-  const { data, isLoading, error, mutate } = useClientDataSWR(
-    scopeStatsKey(statsKeys.rankAgents(), scopeKey),
-    async () => rankAgents(),
+  const { rankAgents } = useStatsDataSource();
+  const params = statsFilterParams(useStatsFilter());
+  const swrKey = useStatsSwrKey(statsKeys.rankAgents());
+  const { data, isLoading, error, mutate } = useClientDataSWR(swrKey, async () =>
+    rankAgents(undefined, params),
   );
 
   const showExtra = Boolean(data && data?.length > 5);

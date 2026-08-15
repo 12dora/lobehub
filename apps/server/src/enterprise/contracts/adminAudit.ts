@@ -36,6 +36,8 @@ export {
   platformAuditLegalHoldStatusSchema,
   platformAuditRedactionProfileSchema,
   platformAuditResultSchema,
+  /** Central admin user-id bound (min 1 / max 128) — reused outside audit too. */
+  userIdSchema,
 } from './adminAudit/common';
 export {
   adminAuditConversationListItemSchema,

@@ -1,9 +1,12 @@
 'use client';
 
-import { memo, useCallback, useEffect } from 'react';
+import { memo, useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
+import TimeRangeFilter, {
+  useAdminTimeRange,
+} from '@/enterprise/client/features/admin/primitives/TimeRangeFilter';
 import StatsSetting from '@/routes/(main)/settings/stats';
 import { useUserStore } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
@@ -14,6 +17,8 @@ import {
   resolveAdminStatsUser,
 } from './adminStatsDataSource';
 import { GlobalStatsBanner } from './GlobalStatsBanner';
+import StatsUserFilterSelect from './StatsUserFilterSelect';
+import { useStatsUserFilter } from './useStatsUserFilter';
 
 const GlobalStatsPage = memo(() => {
   const { t } = useTranslation('admin');
@@ -24,20 +29,48 @@ const GlobalStatsPage = memo(() => {
     resetAdminStatsUserDisplayCache();
   }, [accountUserId]);
 
+  const { customFrom, customTo, range, rangeKey, setCustomRange, setRangeKey } =
+    useAdminTimeRange();
+
+  // The label is not in the URL (ids are stable, names are not) — it is resolved from the
+  // picker or, for a bookmarked/shared id, from the directory.
+  const { setUser, userId, userName } = useStatsUserFilter();
+
   const resolveUser = useCallback(
-    (userId: string) =>
-      resolveAdminStatsUser(userId, (index) => t('stats.user.unknown', { index })),
+    (id: string) => resolveAdminStatsUser(id, (index) => t('stats.user.unknown', { index })),
     [t],
   );
 
+  const statsRange = useMemo(
+    () => ({ endAt: range.endAt, label: range.label, startAt: range.startAt }),
+    [range.endAt, range.label, range.startAt],
+  );
+
   return (
-    <AdminPageTemplate description={t('stats.page.desc')} title={t('stats.page.title')}>
+    <AdminPageTemplate
+      description={t('stats.page.desc')}
+      title={t('stats.page.title')}
+      actions={
+        <TimeRangeFilter
+          customFrom={customFrom}
+          customTo={customTo}
+          rangeKey={rangeKey}
+          setCustomRange={setCustomRange}
+          setRangeKey={setRangeKey}
+        />
+      }
+    >
       <StatsSetting
         enableUserDimension
         dataSource={adminGlobalStatsDataSource}
-        headerNode={<GlobalStatsBanner />}
+        headerNode={<GlobalStatsBanner range={range} userId={userId} userName={userName} />}
+        range={statsRange}
         resolveUser={resolveUser}
         showSettingHeader={false}
+        userId={userId}
+        headerExtra={
+          <StatsUserFilterSelect value={userId} valueLabel={userName} onChange={setUser} />
+        }
       />
     </AdminPageTemplate>
   );

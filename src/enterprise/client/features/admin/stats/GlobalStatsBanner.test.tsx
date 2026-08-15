@@ -9,7 +9,9 @@ import { GlobalStatsBanner } from './GlobalStatsBanner';
 const mocks = vi.hoisted(() => ({
   data: undefined as { usersActive: number; usersTotal: number } | undefined,
   error: undefined as Error | undefined,
+  fetcher: null as null | (() => Promise<unknown>),
   isLoading: false,
+  key: null as unknown,
   mutate: vi.fn(),
   userTotals: vi.fn(),
 }));
@@ -52,12 +54,16 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 }));
 
 vi.mock('@/libs/swr', () => ({
-  useClientDataSWR: () => ({
-    data: mocks.data,
-    error: mocks.error,
-    isLoading: mocks.isLoading,
-    mutate: mocks.mutate,
-  }),
+  useClientDataSWR: (key: unknown, fetcher: () => Promise<unknown>) => {
+    mocks.key = key;
+    mocks.fetcher = fetcher;
+    return {
+      data: mocks.data,
+      error: mocks.error,
+      isLoading: mocks.isLoading,
+      mutate: mocks.mutate,
+    };
+  },
 }));
 
 vi.mock('@/enterprise/client/services/adminStats', () => ({
@@ -67,11 +73,21 @@ vi.mock('@/enterprise/client/services/adminStats', () => ({
 }));
 
 describe('GlobalStatsBanner', () => {
+  const RANGE = {
+    endAt: '2026-07-22T15:30:00.000Z',
+    key: '7d' as const,
+    label: 'Last 7 days',
+    startAt: '2026-07-16T00:00:00.000Z',
+  };
+
   beforeEach(() => {
     mocks.data = undefined;
     mocks.error = undefined;
+    mocks.fetcher = null;
     mocks.isLoading = false;
+    mocks.key = null;
     mocks.mutate.mockReset();
+    mocks.userTotals.mockReset().mockResolvedValue({ usersActive: 4, usersTotal: 12 });
   });
 
   it('rendersRetryableErrorOnInitialFailure', () => {
@@ -80,6 +96,44 @@ describe('GlobalStatsBanner', () => {
     expect(screen.getByTestId('alert-error')).toHaveTextContent('stats.banner.error');
     fireEvent.click(screen.getByRole('button', { name: 'stats.banner.retry' }));
     expect(mocks.mutate).toHaveBeenCalled();
+  });
+
+  it('scopesItsOwnRequestAndCacheKeyToTheSelectedUser', async () => {
+    mocks.data = { usersActive: 4, usersTotal: 12 };
+    render(<GlobalStatsBanner range={RANGE} userId={'u-42'} userName={'Ada Lovelace'} />);
+
+    // The banner claims the page is pinned to one user — so its own figures must be
+    // asked for under that scope, and cached apart from the all-users answer.
+    expect(mocks.key).toEqual(expect.arrayContaining([RANGE.startAt, RANGE.endAt, 'u-42']));
+    await mocks.fetcher!();
+    expect(mocks.userTotals).toHaveBeenCalledWith(undefined, {
+      endAt: RANGE.endAt,
+      startAt: RANGE.startAt,
+      userId: 'u-42',
+    });
+  });
+
+  it('labelsActiveUsersWithTheSelectedRangeAndNamesASingleUserScope', () => {
+    mocks.data = { usersActive: 4, usersTotal: 12 };
+    render(<GlobalStatsBanner range={RANGE} userId={'u-42'} userName={'Ada Lovelace'} />);
+    expect(screen.getByText('stats.banner.usersActiveInRange')).toBeTruthy();
+    expect(screen.getByText('stats.banner.userScopeNote')).toBeTruthy();
+    // The removed global scope note must not come back.
+    expect(screen.queryByText('stats.banner.scopeNote')).toBeNull();
+  });
+
+  it('omitsTheUserScopeNoteWhenNoUserIsSelected', async () => {
+    mocks.data = { usersActive: 4, usersTotal: 12 };
+    render(<GlobalStatsBanner />);
+    expect(screen.queryByText('stats.banner.userScopeNote')).toBeNull();
+    expect(screen.getByText('stats.banner.usersActive')).toBeTruthy();
+
+    await mocks.fetcher!();
+    expect(mocks.userTotals).toHaveBeenCalledWith(30, {
+      endAt: undefined,
+      startAt: undefined,
+      userId: undefined,
+    });
   });
 
   it('preservesStaleTotalsWithRefreshWarningOnRevalidationFailure', () => {

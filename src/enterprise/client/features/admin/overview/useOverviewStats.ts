@@ -1,11 +1,21 @@
-import { adminStatsService } from '@/enterprise/client/services/adminStats';
+import {
+  adminStatsService,
+  type AdminStatsUserRankItem,
+  type AdminStatsUserRankOrderBy,
+} from '@/enterprise/client/services/adminStats';
 import { ADMIN_GLOBAL_STATS_SCOPE } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 
-import { OVERVIEW_RANK_LIMIT, OVERVIEW_WINDOW_DAYS } from './constants';
-import { currentMonthKey, overviewWindowStartDate } from './utils';
+import type { AdminTimeRangeBounds } from '../primitives/timeRange.utils';
+import { OVERVIEW_RANK_LIMIT } from './constants';
 
 const scope = ADMIN_GLOBAL_STATS_SCOPE;
+
+/** Only the window fields reach the API — the label/key are presentation-only. */
+const windowOf = (range?: AdminTimeRangeBounds) => ({
+  endAt: range?.endAt,
+  startAt: range?.startAt,
+});
 
 export interface OverviewKpiData {
   agents: number;
@@ -15,20 +25,19 @@ export interface OverviewKpiData {
   usersTotal: number;
 }
 
-/** Platform user totals + 30-day counts for messages / topics / agents. */
-export const useOverviewKpis = () => {
-  const days = OVERVIEW_WINDOW_DAYS;
-  const startDate = overviewWindowStartDate(days);
+/** Platform user totals + in-window counts for messages / topics / agents. */
+export const useOverviewKpis = (range?: AdminTimeRangeBounds) => {
+  const window = windowOf(range);
 
   return useClientDataSWR(
-    ['admin-stats:overview-kpi', scope, days],
+    ['admin-stats:overview-kpi', scope, window.startAt, window.endAt],
     async (): Promise<OverviewKpiData> => {
       // userTotals avoids the three unused lifetime table scans from totals().
       const [users, messages, topics, agents] = await Promise.all([
-        adminStatsService.userTotals(days),
-        adminStatsService.countMessages({ startDate }),
-        adminStatsService.countTopics({ startDate }),
-        adminStatsService.countAgents({ startDate }),
+        adminStatsService.userTotals(undefined, window),
+        adminStatsService.countMessages(window),
+        adminStatsService.countTopics(window),
+        adminStatsService.countAgents(window),
       ]);
 
       return {
@@ -42,25 +51,65 @@ export const useOverviewKpis = () => {
   );
 };
 
-/** Current-month daily token totals for the usage trend chart. */
-export const useOverviewUsageTrend = () => {
-  const mo = currentMonthKey();
+/** Daily token totals across the selected window for the usage trend chart. */
+export const useOverviewUsageTrend = (range?: AdminTimeRangeBounds) => {
+  const window = windowOf(range);
 
-  return useClientDataSWR(['admin-stats:overview-usage-day', scope, mo], async () => {
-    const rows = await adminStatsService.usageDailyTokenTotals(mo);
-    return rows.map((row) => ({ day: row.day, tokens: Number(row.totalTokens) || 0 }));
-  });
+  return useClientDataSWR(
+    ['admin-stats:overview-usage-day', scope, window.startAt, window.endAt],
+    async () => {
+      const rows = await adminStatsService.usageDailyTokenTotals(window);
+      return rows.map((row) => ({ day: row.day, tokens: Number(row.totalTokens) || 0 }));
+    },
+  );
 };
 
-/** Top models by message count (platform-wide). */
-export const useOverviewModelRank = () =>
-  useClientDataSWR(['admin-stats:overview-rank-models', scope], async () => {
-    const rows = await adminStatsService.rankModels();
-    return rows.slice(0, OVERVIEW_RANK_LIMIT);
-  });
+/** Top models by message count in the window (platform-wide). */
+export const useOverviewModelRank = (range?: AdminTimeRangeBounds) => {
+  const window = windowOf(range);
 
-/** Top agents by topic count (platform-wide). */
-export const useOverviewAgentRank = () =>
-  useClientDataSWR(['admin-stats:overview-rank-agents', scope, OVERVIEW_RANK_LIMIT], async () =>
-    adminStatsService.rankAgents(OVERVIEW_RANK_LIMIT),
+  return useClientDataSWR(
+    ['admin-stats:overview-rank-models', scope, window.startAt, window.endAt],
+    async () => {
+      const rows = await adminStatsService.rankModels(window);
+      return rows.slice(0, OVERVIEW_RANK_LIMIT);
+    },
   );
+};
+
+/** Top agents by topic count in the window (platform-wide). */
+export const useOverviewAgentRank = (range?: AdminTimeRangeBounds) => {
+  const window = windowOf(range);
+
+  return useClientDataSWR(
+    ['admin-stats:overview-rank-agents', scope, OVERVIEW_RANK_LIMIT, window.startAt, window.endAt],
+    async () => adminStatsService.rankAgents(OVERVIEW_RANK_LIMIT, window),
+  );
+};
+
+/**
+ * Top users in the window for one metric.
+ *
+ * The metric is part of the request (and of the SWR key): the server ranks and truncates
+ * in SQL, so re-sorting a fetched top-5 client-side would show the wrong five users for
+ * every metric except the one that was ordered by.
+ */
+export const useOverviewUserRank = (
+  range?: AdminTimeRangeBounds,
+  orderBy: AdminStatsUserRankOrderBy = 'totalTokens',
+) => {
+  const window = windowOf(range);
+
+  return useClientDataSWR(
+    [
+      'admin-stats:overview-rank-users',
+      scope,
+      OVERVIEW_RANK_LIMIT,
+      orderBy,
+      window.startAt,
+      window.endAt,
+    ],
+    async (): Promise<AdminStatsUserRankItem[]> =>
+      adminStatsService.rankUsers(OVERVIEW_RANK_LIMIT, { ...window, orderBy }),
+  );
+};

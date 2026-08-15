@@ -1,5 +1,6 @@
 // @vitest-environment node
 import dayjs from 'dayjs';
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -8,7 +9,13 @@ import { agentOperations } from '../../schemas/agentOperations';
 import type { LobeChatDatabase } from '../../type';
 import { AgentModel } from '../agent';
 import { MessageModel } from '../message';
-import { MAX_USAGE_DETAIL_ROWS, PlatformGlobalStatsModel } from '../platform/globalStats';
+import {
+  MAX_STATS_RANGE_DAYS,
+  MAX_USAGE_DETAIL_ROWS,
+  PlatformGlobalStatsModel,
+  resolveStatsRange,
+  StatsRangeError,
+} from '../platform/globalStats';
 import { TopicModel } from '../topic';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -536,6 +543,359 @@ describe('PlatformGlobalStatsModel', () => {
       expect(chart.some((d) => d.day === '2024-07-01')).toBe(false);
       const june30 = chart.find((d) => d.day === '2024-06-30');
       expect(june30?.totalRequests).toBe(1);
+    });
+  });
+
+  describe('resolveStatsRange', () => {
+    it('maps a month to a half-open UTC window', () => {
+      const range = resolveStatsRange('2024-06');
+      expect(range.startAt.toISOString()).toBe('2024-06-01T00:00:00.000Z');
+      expect(range.endAt.toISOString()).toBe('2024-07-01T00:00:00.000Z');
+    });
+
+    it('defaults to the current UTC month without arguments', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2024-02-15T12:00:00Z'));
+      const range = resolveStatsRange();
+      expect(range.startAt.toISOString()).toBe('2024-02-01T00:00:00.000Z');
+      expect(range.endAt.toISOString()).toBe('2024-03-01T00:00:00.000Z');
+      vi.useRealTimers();
+    });
+
+    it('lets explicit instants win over mo', () => {
+      const range = resolveStatsRange({
+        endAt: '2024-06-11T09:30:00.000Z',
+        mo: '2020-01',
+        startAt: '2024-06-10T09:30:00.000Z',
+      });
+      expect(range.startAt.toISOString()).toBe('2024-06-10T09:30:00.000Z');
+      expect(range.endAt.toISOString()).toBe('2024-06-11T09:30:00.000Z');
+    });
+
+    it('keeps legacy calendar-day strings inclusive of the end day', () => {
+      const range = resolveStatsRange({ endAt: '2024-06-30', startAt: '2024-06-01' });
+      expect(range.startAt.toISOString()).toBe('2024-06-01T00:00:00.000Z');
+      expect(range.endAt.toISOString()).toBe('2024-07-01T00:00:00.000Z');
+    });
+
+    it('rejects reversed, empty, and oversized windows', () => {
+      expect(() =>
+        resolveStatsRange({
+          endAt: '2024-06-01T00:00:00.000Z',
+          startAt: '2024-06-02T00:00:00.000Z',
+        }),
+      ).toThrow(StatsRangeError);
+      expect(() =>
+        resolveStatsRange({
+          endAt: '2024-06-01T00:00:00.000Z',
+          startAt: '2024-06-01T00:00:00.000Z',
+        }),
+      ).toThrow(StatsRangeError);
+
+      const start = new Date('2024-01-01T00:00:00.000Z');
+      const tooLong = new Date(start.getTime() + (MAX_STATS_RANGE_DAYS + 1) * 24 * 60 * 60 * 1000);
+      expect(() => resolveStatsRange({ endAt: tooLong, startAt: start })).toThrow(StatsRangeError);
+      expect(() =>
+        resolveStatsRange({
+          endAt: new Date(start.getTime() + MAX_STATS_RANGE_DAYS * 24 * 60 * 60 * 1000),
+          startAt: start,
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects unparsable bounds', () => {
+      expect(() => resolveStatsRange({ startAt: 'not-a-date' })).toThrow(StatsRangeError);
+      expect(() => resolveStatsRange({ endAt: 'not-a-date' })).toThrow(StatsRangeError);
+    });
+  });
+
+  describe('time range and user filters', () => {
+    const IN_WINDOW = new Date('2024-06-10T10:00:00.000Z');
+    const OUT_OF_WINDOW = new Date('2024-05-10T10:00:00.000Z');
+    const WINDOW = {
+      endAt: '2024-06-11T00:00:00.000Z',
+      startAt: '2024-06-10T00:00:00.000Z',
+    };
+
+    beforeEach(async () => {
+      await serverDB.insert(agents).values([
+        { createdAt: IN_WINDOW, id: 'rg-a', title: 'A', userId: USER_A, virtual: false },
+        { createdAt: OUT_OF_WINDOW, id: 'rg-old', title: 'Old', userId: USER_A, virtual: false },
+        { createdAt: IN_WINDOW, id: 'rg-b', title: 'B', userId: USER_B, virtual: false },
+      ]);
+      await serverDB.insert(topics).values([
+        { agentId: 'rg-a', createdAt: IN_WINDOW, id: 'rt-a1', title: 'T1', userId: USER_A },
+        { agentId: 'rg-a', createdAt: IN_WINDOW, id: 'rt-a2', title: 'T2', userId: USER_A },
+        { agentId: 'rg-old', createdAt: OUT_OF_WINDOW, id: 'rt-old', title: 'T0', userId: USER_A },
+        { agentId: 'rg-b', createdAt: IN_WINDOW, id: 'rt-b1', title: 'T3', userId: USER_B },
+      ]);
+      await serverDB.insert(messages).values([
+        {
+          content: 'ask',
+          createdAt: IN_WINDOW,
+          id: 'rm-a-user',
+          role: 'user',
+          topicId: 'rt-a1',
+          userId: USER_A,
+        },
+        {
+          content: 'reply',
+          createdAt: IN_WINDOW,
+          id: 'rm-a-1',
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant',
+          topicId: 'rt-a1',
+          usage: { cost: 0.1, totalInputTokens: 10, totalOutputTokens: 20 },
+          userId: USER_A,
+        },
+        {
+          content: 'reply',
+          createdAt: IN_WINDOW,
+          id: 'rm-b-1',
+          model: 'claude',
+          provider: 'anthropic',
+          role: 'assistant',
+          topicId: 'rt-b1',
+          usage: { cost: 0.2, totalInputTokens: 5, totalOutputTokens: 5 },
+          userId: USER_B,
+        },
+        {
+          content: 'old reply',
+          createdAt: OUT_OF_WINDOW,
+          id: 'rm-a-old',
+          model: 'gpt-4',
+          provider: 'openai',
+          role: 'assistant',
+          topicId: 'rt-old',
+          usage: { cost: 5, totalInputTokens: 500, totalOutputTokens: 500 },
+          userId: USER_A,
+        },
+      ]);
+    });
+
+    it('counts inside the half-open window only, with explicit instants beating legacy fields', async () => {
+      expect(await globalStats.countMessages(WINDOW)).toBe(3);
+      expect(await globalStats.countTopics(WINDOW)).toBe(3);
+      expect(await globalStats.countAgents(WINDOW)).toBe(2);
+
+      // Explicit instants win over range / startDate / endDate.
+      expect(
+        await globalStats.countMessages({
+          ...WINDOW,
+          endDate: '2024-05-31',
+          range: ['2024-05-01', '2024-05-31'],
+          startDate: '2024-05-01',
+        }),
+      ).toBe(3);
+
+      // Upper bound is exclusive.
+      expect(
+        await globalStats.countMessages({
+          endAt: '2024-06-10T10:00:00.000Z',
+          startAt: '2024-06-01T00:00:00.000Z',
+        }),
+      ).toBe(0);
+    });
+
+    it('scopes counts to a single user', async () => {
+      expect(await globalStats.countMessages({ ...WINDOW, userId: USER_A })).toBe(2);
+      expect(await globalStats.countTopics({ ...WINDOW, userId: USER_A })).toBe(2);
+      expect(await globalStats.countAgents({ ...WINDOW, userId: USER_B })).toBe(1);
+      expect(await globalStats.countMessages({ userId: USER_B })).toBe(1);
+    });
+
+    it('windows the daily token series and honours the user filter', async () => {
+      const days = await globalStats.findDailyTokenTotals(WINDOW);
+      expect(days).toHaveLength(1);
+      expect(days[0]).toEqual({ day: '2024-06-10', totalTokens: 40 });
+
+      const aliceOnly = await globalStats.findDailyTokenTotals({ ...WINDOW, userId: USER_A });
+      expect(aliceOnly[0]?.totalTokens).toBe(30);
+    });
+
+    it('groups by day across an arbitrary window and filters by user', async () => {
+      const logs = await globalStats.findAndGroupByDay({
+        endAt: '2024-06-12T00:00:00.000Z',
+        startAt: '2024-06-09T00:00:00.000Z',
+      });
+      expect(logs.map((log) => log.day)).toEqual(['2024-06-09', '2024-06-10', '2024-06-11']);
+      const day = logs.find((log) => log.day === '2024-06-10');
+      expect(day?.totalRequests).toBe(2);
+      expect(day?.totalTokens).toBe(40);
+
+      const aliceLogs = await globalStats.findAndGroupByDay({ ...WINDOW, userId: USER_A });
+      expect(aliceLogs).toHaveLength(1);
+      expect(aliceLogs[0]?.totalRequests).toBe(1);
+      expect(aliceLogs[0]?.records.every((record) => record.userId === USER_A)).toBe(true);
+    });
+
+    it('returns detail rows for an explicit window and user', async () => {
+      const rows = await globalStats.findByMonth(WINDOW);
+      expect(rows.map((row) => row.id).sort()).toEqual(['rm-a-1', 'rm-b-1']);
+
+      const aliceRows = await globalStats.findByMonth({ ...WINDOW, userId: USER_A });
+      expect(aliceRows.map((row) => row.id)).toEqual(['rm-a-1']);
+
+      const bounded = await globalStats.findByMonthBounded({ ...WINDOW, userId: USER_B }, 50);
+      expect(bounded.items.map((row) => row.id)).toEqual(['rm-b-1']);
+    });
+
+    it('applies window and user filters to the rankings', async () => {
+      const models = await globalStats.rankModels(10, WINDOW);
+      expect(models.map((row) => row.id).sort()).toEqual(['claude', 'gpt-4']);
+      expect(models.find((row) => row.id === 'gpt-4')?.count).toBe(1);
+
+      const aliceModels = await globalStats.rankModels(10, { ...WINDOW, userId: USER_A });
+      expect(aliceModels.map((row) => row.id)).toEqual(['gpt-4']);
+
+      const rankedAgents = await globalStats.rankAgents(10, WINDOW);
+      expect(rankedAgents.map((row) => row.id)).toEqual(['rg-a', 'rg-b']);
+      expect(rankedAgents[0]?.count).toBe(2);
+
+      const aliceAgents = await globalStats.rankAgents(10, { ...WINDOW, userId: USER_A });
+      expect(aliceAgents.map((row) => row.id)).toEqual(['rg-a']);
+
+      const rankedTopics = await globalStats.rankTopics(10, WINDOW);
+      expect(rankedTopics.map((row) => row.id).sort()).toEqual(['rt-a1', 'rt-b1']);
+
+      const aliceTopics = await globalStats.rankTopics(10, { ...WINDOW, userId: USER_A });
+      expect(aliceTopics.map((row) => row.id)).toEqual(['rt-a1']);
+    });
+
+    it('ranks users by token usage inside the window', async () => {
+      await serverDB
+        .update(users)
+        .set({ avatar: 'https://example.com/alice.png' })
+        .where(eq(users.id, USER_A));
+
+      const rank = await globalStats.rankUsers(WINDOW);
+      expect(rank.map((row) => row.userId)).toEqual([USER_A, USER_B]);
+      expect(rank[0]).toEqual({
+        avatar: 'https://example.com/alice.png',
+        cost: expect.closeTo(0.1, 5),
+        inputTokens: 10,
+        // both the user prompt and the assistant reply belong to the window
+        messages: 2,
+        name: 'Alice Full',
+        outputTokens: 20,
+        totalTokens: 30,
+        userId: USER_A,
+      });
+      expect(rank[1]).toMatchObject({
+        avatar: null,
+        messages: 1,
+        name: 'bob',
+        totalTokens: 10,
+        userId: USER_B,
+      });
+
+      const top1 = await globalStats.rankUsers({ ...WINDOW, limit: 1 });
+      expect(top1).toHaveLength(1);
+      expect(top1[0]?.userId).toBe(USER_A);
+
+      const bobOnly = await globalStats.rankUsers({ ...WINDOW, userId: USER_B });
+      expect(bobOnly.map((row) => row.userId)).toEqual([USER_B]);
+
+      // Outside the window the older, much larger row would have won.
+      const wide = await globalStats.rankUsers({
+        endAt: '2024-06-11T00:00:00.000Z',
+        startAt: '2024-05-01T00:00:00.000Z',
+      });
+      expect(wide[0]).toMatchObject({ totalTokens: 1030, userId: USER_A });
+    });
+
+    it('never counts usage payloads carried by non-assistant rows', async () => {
+      await serverDB.insert(messages).values({
+        content: 'ask with a stray usage payload',
+        createdAt: IN_WINDOW,
+        id: 'rm-a-user-usage',
+        role: 'user',
+        topicId: 'rt-a1',
+        usage: { cost: 99, totalInputTokens: 9990, totalOutputTokens: 9990 },
+        userId: USER_A,
+      });
+
+      const rank = await globalStats.rankUsers(WINDOW);
+      expect(rank[0]).toMatchObject({
+        inputTokens: 10,
+        // the user row is still counted as a message, only its usage is ignored
+        messages: 3,
+        outputTokens: 20,
+        totalTokens: 30,
+        userId: USER_A,
+      });
+      expect(rank[0]?.cost).toBeCloseTo(0.1, 5);
+
+      // The same gate applies to the daily series / day grouping.
+      const days = await globalStats.findDailyTokenTotals(WINDOW);
+      expect(days[0]?.totalTokens).toBe(40);
+    });
+
+    it('orders by the requested metric in SQL so limit is a true top-N', async () => {
+      // Bob trails on tokens but leads on messages and cost.
+      await serverDB.insert(messages).values(
+        Array.from({ length: 3 }, (_, index) => ({
+          content: `bob-ask-${index}`,
+          createdAt: IN_WINDOW,
+          id: `rm-b-ask-${index}`,
+          role: 'user' as const,
+          topicId: 'rt-b1',
+          userId: USER_B,
+        })),
+      );
+
+      const byTokens = await globalStats.rankUsers(WINDOW);
+      expect(byTokens.map((row) => row.userId)).toEqual([USER_A, USER_B]);
+      expect(byTokens.map((row) => row.totalTokens)).toEqual([30, 10]);
+
+      const byMessages = await globalStats.rankUsers({ ...WINDOW, orderBy: 'messages' });
+      expect(byMessages.map((row) => row.userId)).toEqual([USER_B, USER_A]);
+      expect(byMessages.map((row) => row.messages)).toEqual([4, 2]);
+
+      const byCost = await globalStats.rankUsers({ ...WINDOW, orderBy: 'cost' });
+      expect(byCost.map((row) => row.userId)).toEqual([USER_B, USER_A]);
+
+      // Top-1 per metric, not the token top-1 re-sorted.
+      const topMessages = await globalStats.rankUsers({ ...WINDOW, limit: 1, orderBy: 'messages' });
+      expect(topMessages.map((row) => row.userId)).toEqual([USER_B]);
+      const topTokens = await globalStats.rankUsers({ ...WINDOW, limit: 1 });
+      expect(topTokens.map((row) => row.userId)).toEqual([USER_A]);
+    });
+
+    it('falls back to the last 30 days when no window is given', async () => {
+      // Every seeded row is from 2024-06, i.e. outside the default window.
+      expect(await globalStats.rankUsers()).toEqual([]);
+
+      await serverDB.insert(messages).values({
+        content: 'recent',
+        createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+        id: 'rm-recent',
+        model: 'gpt-4',
+        provider: 'openai',
+        role: 'assistant',
+        usage: { cost: 0.4, totalInputTokens: 7, totalOutputTokens: 3 },
+        userId: USER_B,
+      });
+
+      const rank = await globalStats.rankUsers();
+      expect(rank).toHaveLength(1);
+      expect(rank[0]).toMatchObject({ messages: 1, totalTokens: 10, userId: USER_B });
+    });
+
+    it('windows active users by lastActiveAt', async () => {
+      const now = Date.now();
+      const wide = await globalStats.userTotals({
+        endAt: new Date(now + 60_000),
+        startAt: new Date(now - 50 * 24 * 60 * 60 * 1000),
+      });
+      expect(wide).toEqual({ usersActive: 2, usersTotal: 2 });
+
+      const narrow = await globalStats.userTotals({
+        endAt: new Date(now + 60_000),
+        startAt: new Date(now - 10 * 24 * 60 * 60 * 1000),
+      });
+      expect(narrow).toEqual({ usersActive: 1, usersTotal: 2 });
     });
   });
 

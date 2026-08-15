@@ -7,7 +7,12 @@ import { CoinsIcon, FlameIcon, MessageSquareIcon } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
+import {
+  isStatsFilterActive,
+  scopeStatsKey,
+  useStatsDataSource,
+  useStatsFilter,
+} from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatIntergerNumber, formatShortenNumber } from '@/utils/format';
@@ -21,6 +26,9 @@ const AiHeatmaps = memo<
 >(({ inShare, mobile, ...rest }) => {
   const { t } = useTranslation('auth');
   const { getHeatmaps, getTokenHeatmaps, scopeKey } = useStatsDataSource();
+  // The heatmap is always the trailing calendar year — it deliberately ignores the
+  // page filter, so say so rather than letting it read as stale next to filtered cards.
+  const unfiltered = isStatsFilterActive(useStatsFilter());
   const [type, setType] = useState<HeatmapType>(
     inShare ? HeatmapType.Messages : HeatmapType.Tokens,
   );
@@ -134,7 +142,7 @@ const AiHeatmaps = memo<
       afterTitle={typeSwitch}
       extra={dayTags}
       fontSize={16}
-      title={t('stats.lastYearActivity')}
+      title={unfiltered ? t('stats.lastYearActivityUnfiltered') : t('stats.lastYearActivity')}
     >
       <HeatmapStats />
       {content}

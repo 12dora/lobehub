@@ -10,7 +10,9 @@ import type { AgentRankItem, ModelRankItem, TopicRankItem } from '@lobechat/type
 import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
+import type { SQL } from 'drizzle-orm';
 import { and, asc, count, desc, eq, gt, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
 import type { MessageMetadata } from '@/types/message';
 import type { UsageLog, UsageRecordItem } from '@/types/usage/usageRecord';
@@ -44,23 +46,113 @@ const utcDayAfter = (ymd: string): Date | null => {
   return new Date(start.getTime() + 24 * 60 * 60 * 1000);
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Longest window an explicit `[startAt, endAt)` filter may span (admin stats DoS bound). */
+export const MAX_STATS_RANGE_DAYS = 366;
+/** Window used when only one explicit bound is supplied (defensive; clients send both). */
+const DEFAULT_EXPLICIT_RANGE_DAYS = 30;
+
+/** Invalid / oversized explicit window — routers map this to HTTP 400. */
+export class StatsRangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StatsRangeError';
+  }
+}
+
 /**
- * Half-open calendar-day range for platform usage detail/chart (DB-008).
- * Inclusive of `startDate` 00:00:00.000Z; exclusive of the day after `endDate` 00:00:00.000Z.
- * Avoids the upstream `genRangeWhere` end predicate (`<= endDate + 1 day`) that
- * includes exactly midnight of the following day.
+ * Filter accepted by every platform stats aggregate.
+ * `startAt` / `endAt` are exact instants forming a half-open window `[startAt, endAt)`;
+ * they win over `mo`. Legacy `YYYY-MM-DD` strings stay accepted as UTC calendar-day
+ * bounds (`endAt` becomes the following midnight, i.e. the day stays inclusive).
  */
-export const genHalfOpenDayRangeWhere = (
-  range: [string, string] | undefined,
-  key: typeof messages.createdAt,
-): ReturnType<typeof and> | undefined => {
-  if (!range) return;
-  const startAt = range[0] ? utcDayStart(range[0]) : null;
-  const endExclusive = range[1] ? utcDayAfter(range[1]) : null;
-  if (!startAt && !endExclusive) return;
-  if (!startAt && endExclusive) return lt(key, endExclusive);
-  if (startAt && !endExclusive) return gte(key, startAt);
-  return and(gte(key, startAt!), lt(key, endExclusive!));
+export interface StatsRangeParams {
+  endAt?: Date | string;
+  mo?: string;
+  startAt?: Date | string;
+}
+
+export interface StatsFilterParams extends StatsRangeParams {
+  /** Restrict the aggregate to a single platform user. */
+  userId?: string;
+}
+
+/** Month-shaped call sites keep accepting the legacy bare `mo` string. */
+export type StatsFilterArg = string | StatsFilterParams | undefined;
+
+export interface ResolvedStatsRange {
+  /** Exclusive upper bound. */
+  endAt: Date;
+  /** Inclusive lower bound. */
+  startAt: Date;
+}
+
+export const toStatsFilterParams = (arg: StatsFilterArg): StatsFilterParams =>
+  typeof arg === 'string' ? { mo: arg } : (arg ?? {});
+
+/** Instant for a lower bound: calendar days resolve to UTC midnight. */
+const toStartInstant = (value: Date | string): Date | null => {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  return utcDayStart(value);
+};
+
+/** Instant for an exclusive upper bound: a calendar day resolves to the next UTC midnight. */
+const toEndInstantExclusive = (value: Date | string): Date | null => {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return utcDayAfter(value);
+  return utcDayStart(value);
+};
+
+/**
+ * Single seam that turns every accepted stats filter into a half-open instant window.
+ * Explicit `startAt` / `endAt` win over `mo`; without either, the (current) month is used.
+ */
+export const resolveStatsRange = (arg?: StatsFilterArg): ResolvedStatsRange => {
+  const params = toStatsFilterParams(arg);
+
+  if (params.startAt !== undefined || params.endAt !== undefined) {
+    const endAt = params.endAt === undefined ? new Date() : toEndInstantExclusive(params.endAt);
+    if (!endAt) throw new StatsRangeError('Invalid endAt');
+
+    const startAt =
+      params.startAt === undefined
+        ? new Date(endAt.getTime() - DEFAULT_EXPLICIT_RANGE_DAYS * DAY_MS)
+        : toStartInstant(params.startAt);
+    if (!startAt) throw new StatsRangeError('Invalid startAt');
+
+    if (startAt.getTime() >= endAt.getTime())
+      throw new StatsRangeError('startAt must be before endAt');
+    if (endAt.getTime() - startAt.getTime() > MAX_STATS_RANGE_DAYS * DAY_MS)
+      throw new StatsRangeError(`Range must not exceed ${MAX_STATS_RANGE_DAYS} days`);
+
+    return { endAt, startAt };
+  }
+
+  const month =
+    params.mo && dayjs.utc(params.mo, 'YYYY-MM', true).isValid()
+      ? dayjs.utc(params.mo, 'YYYY-MM').startOf('month')
+      : dayjs.utc().startOf('month');
+
+  return { endAt: month.add(1, 'month').toDate(), startAt: month.toDate() };
+};
+
+/**
+ * Half-open `[startAt, endAt)` predicate on a timestamp column (DB-008): the upper
+ * bound is exclusive, so midnight of the following day never leaks into a range.
+ */
+export const genInstantRangeWhere = (range: ResolvedStatsRange, key: AnyPgColumn): SQL =>
+  and(gte(key, range.startAt), lt(key, range.endAt))!;
+
+/** UTC calendar days covered by a half-open window (upper bound exclusive). */
+const eachUtcDayKey = ({ endAt, startAt }: ResolvedStatsRange): string[] => {
+  const first = dayjs.utc(startAt).startOf('day');
+  const last = dayjs.utc(new Date(endAt.getTime() - 1)).startOf('day');
+  const keys: string[] = [];
+  for (let date = first; !date.isAfter(last, 'day'); date = date.add(1, 'day')) {
+    keys.push(date.format('YYYY-MM-DD'));
+  }
+  return keys;
 };
 
 /**
@@ -91,11 +183,64 @@ export const GROUP_BY_DAY_MAX_PROVIDERS = 20;
 /** Synthetic userId for aggregated long-tail users (never blank). */
 export const GROUP_BY_DAY_OTHER_USER_ID = '__other__';
 
+/** Legacy calendar-day filters kept for back-compat with the `countDateInput` shape. */
+export interface CountDateParams {
+  endDate?: string;
+  range?: [string, string];
+  startDate?: string;
+}
+
+/** Build the half-open instant predicate only when an explicit bound was supplied. */
+const explicitRangeWhere = (
+  params: StatsRangeParams | undefined,
+  key: AnyPgColumn,
+): SQL | undefined => {
+  if (!params || (params.startAt === undefined && params.endAt === undefined)) return;
+  return genInstantRangeWhere(
+    resolveStatsRange({ endAt: params.endAt, startAt: params.startAt }),
+    key,
+  );
+};
+
+/** Explicit instants win over the legacy `range` / `startDate` / `endDate` triple. */
+const legacyDateWheres = (
+  explicit: SQL | undefined,
+  params: CountDateParams | undefined,
+  key: AnyPgColumn,
+): Array<SQL | undefined> => {
+  if (explicit) return [explicit];
+  return [
+    params?.range ? genRangeWhere(params.range, key, (date) => date.toDate()) : undefined,
+    params?.endDate ? genEndDateWhere(params.endDate, key, (date) => date.toDate()) : undefined,
+    params?.startDate
+      ? genStartDateWhere(params.startDate, key, (date) => date.toDate())
+      : undefined,
+  ];
+};
+
 /** Usage row with platform-global user display name (join users). */
 export type GlobalUsageRecordItem = UsageRecordItem & { userDisplay: string };
 
 export type GlobalUsageLog = Omit<UsageLog, 'records'> & {
   records: GlobalUsageRecordItem[];
+};
+
+/** Metric the admin 用户排行 sorts by (always DESC, tie-break `userId` ASC). */
+export type UserRankOrderBy = 'cost' | 'messages' | 'totalTokens';
+
+/** One row of the admin 用户排行 (users ranked by token usage). */
+export type UserRankItem = {
+  /** users.avatar; null when unset or the account row is gone. */
+  avatar: string | null;
+  cost: number;
+  inputTokens: number;
+  /** Messages authored in the window (all roles). */
+  messages: number;
+  /** fullName → username → email → id (never a raw email field of its own). */
+  name: string;
+  outputTokens: number;
+  totalTokens: number;
+  userId: string;
 };
 
 export type GlobalStatsTotals = {
@@ -260,18 +405,28 @@ export class PlatformGlobalStatsModel {
 
   countUsers = async (params?: {
     activeDays?: number;
+    endAt?: Date | string;
+    startAt?: Date | string;
   }): Promise<{
     active: number;
     total: number;
   }> => {
-    const activeDays = params?.activeDays ?? 30;
-    const activeSince = dayjs().subtract(activeDays, 'day').toDate();
+    // Explicit window wins over `activeDays` (admin time-range filter).
+    const windowWhere = explicitRangeWhere(params, users.lastActiveAt);
+    const activeSince = dayjs()
+      .subtract(params?.activeDays ?? 30, 'day')
+      .toDate();
 
     const [totalRow] = await this.db.select({ count: count() }).from(users);
     const [activeRow] = await this.db
       .select({ count: count() })
       .from(users)
-      .where(and(isNotNull(users.lastActiveAt), gte(users.lastActiveAt, activeSince)));
+      .where(
+        genWhere([
+          isNotNull(users.lastActiveAt),
+          windowWhere ?? gte(users.lastActiveAt, activeSince),
+        ]),
+      );
 
     return {
       active: activeRow?.count ?? 0,
@@ -279,81 +434,52 @@ export class PlatformGlobalStatsModel {
     };
   };
 
-  countMessages = async (params?: {
-    endDate?: string;
-    range?: [string, string];
-    role?: string;
-    startDate?: string;
-  }): Promise<number> => {
+  countMessages = async (
+    params?: CountDateParams & StatsFilterParams & { role?: string },
+  ): Promise<number> => {
+    const explicit = explicitRangeWhere(params, messages.createdAt);
     const result = await this.db
       .select({ count: count(messages.id) })
       .from(messages)
       .where(
         genWhere([
           params?.role ? eq(messages.role, params.role) : undefined,
-          params?.range
-            ? genRangeWhere(params.range, messages.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.endDate
-            ? genEndDateWhere(params.endDate, messages.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.startDate
-            ? genStartDateWhere(params.startDate, messages.createdAt, (date) => date.toDate())
-            : undefined,
+          params?.userId ? eq(messages.userId, params.userId) : undefined,
+          ...legacyDateWheres(explicit, params, messages.createdAt),
         ]),
       );
 
     return result[0]?.count ?? 0;
   };
 
-  countTopics = async (params?: {
-    endDate?: string;
-    range?: [string, string];
-    startDate?: string;
-  }): Promise<number> => {
+  countTopics = async (params?: CountDateParams & StatsFilterParams): Promise<number> => {
+    const explicit = explicitRangeWhere(params, topics.createdAt);
     const result = await this.db
       .select({ count: count(topics.id) })
       .from(topics)
       .where(
         genWhere([
-          params?.range
-            ? genRangeWhere(params.range, topics.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.endDate
-            ? genEndDateWhere(params.endDate, topics.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.startDate
-            ? genStartDateWhere(params.startDate, topics.createdAt, (date) => date.toDate())
-            : undefined,
+          params?.userId ? eq(topics.userId, params.userId) : undefined,
+          ...legacyDateWheres(explicit, params, topics.createdAt),
         ]),
       );
 
     return result[0]?.count ?? 0;
   };
 
-  countAgents = async (params?: {
-    endDate?: string;
-    range?: [string, string];
-    startDate?: string;
-  }): Promise<number> => {
+  countAgents = async (params?: CountDateParams & StatsFilterParams): Promise<number> => {
     // Align with AgentModel.countAgents: non-virtual only (virtual=false OR virtual IS NULL).
     // Inbox (virtual=true) is intentionally excluded from countAgents; rankAgents uses
     // isNonVirtualAgentSql which additionally includes the inbox slug.
+    const explicit = explicitRangeWhere(params, agents.createdAt);
     const result = await this.db
       .select({ count: count() })
       .from(agents)
       .where(
         genWhere([
           or(eq(agents.virtual, false), isNull(agents.virtual)),
-          params?.range
-            ? genRangeWhere(params.range, agents.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.endDate
-            ? genEndDateWhere(params.endDate, agents.createdAt, (date) => date.toDate())
-            : undefined,
-          params?.startDate
-            ? genStartDateWhere(params.startDate, agents.createdAt, (date) => date.toDate())
-            : undefined,
+          params?.userId ? eq(agents.userId, params.userId) : undefined,
+          ...legacyDateWheres(explicit, params, agents.createdAt),
         ]),
       );
 
@@ -383,6 +509,8 @@ export class PlatformGlobalStatsModel {
    */
   userTotals = async (params?: {
     activeDays?: number;
+    endAt?: Date | string;
+    startAt?: Date | string;
   }): Promise<Pick<GlobalStatsTotals, 'usersActive' | 'usersTotal'>> => {
     const usersCount = await this.countUsers(params);
     return {
@@ -396,9 +524,10 @@ export class PlatformGlobalStatsModel {
    * SQL `GROUP BY day` only — never materializes per-message or per-user rows.
    */
   findDailyTokenTotals = async (
-    mo?: string,
+    arg?: StatsFilterArg,
   ): Promise<Array<{ day: string; totalTokens: number }>> => {
-    const { endAt, startAt } = this.resolveMonthRange(mo);
+    const params = toStatsFilterParams(arg);
+    const range = resolveStatsRange(params);
     const inputTokensExpr = sql<number>`COALESCE(
       (${messages.usage}->>'totalInputTokens')::double precision,
       (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
@@ -415,7 +544,8 @@ export class PlatformGlobalStatsModel {
 
     const rangeWhere = genWhere([
       eq(messages.role, 'assistant'),
-      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
+      genInstantRangeWhere(range, messages.createdAt),
+      params.userId ? eq(messages.userId, params.userId) : undefined,
     ]);
 
     const dayTotals = await this.db
@@ -430,31 +560,47 @@ export class PlatformGlobalStatsModel {
       .orderBy(asc(dayExpr));
 
     const byDay = new Map(dayTotals.map((row) => [row.day, row.totalTokens]));
-    const startDate = dayjs.utc(startAt).startOf('day');
-    const endDate = dayjs.utc(endAt).startOf('day');
-    const padded: Array<{ day: string; totalTokens: number }> = [];
-    for (let date = startDate; !date.isAfter(endDate, 'day'); date = date.add(1, 'day')) {
-      const key = date.format('YYYY-MM-DD');
-      padded.push({ day: key, totalTokens: byDay.get(key) ?? 0 });
-    }
-    return padded;
+    return eachUtcDayKey(range).map((day) => ({ day, totalTokens: byDay.get(day) ?? 0 }));
   };
 
-  rankModels = async (limit: number = 10): Promise<ModelRankItem[]> => {
+  /** Ranks the messages themselves — window and user filter apply to `messages`. */
+  rankModels = async (
+    limit: number = 10,
+    options?: StatsFilterParams,
+  ): Promise<ModelRankItem[]> => {
     return this.db
       .select({
         count: count(messages.id).as('count'),
         id: messages.model,
       })
       .from(messages)
-      .where(isNotNull(messages.model))
+      .where(
+        genWhere([
+          isNotNull(messages.model),
+          explicitRangeWhere(options, messages.createdAt),
+          options?.userId ? eq(messages.userId, options.userId) : undefined,
+        ]),
+      )
       .having(({ count: c }) => gt(c, 0))
       .groupBy(messages.model)
       .orderBy(desc(sql`count`), asc(messages.model))
       .limit(limit) as Promise<ModelRankItem[]>;
   };
 
-  rankAgents = async (limit: number = 10): Promise<AgentRankItem[]> => {
+  /**
+   * Ranks assistants by the topics opened on them. The window / user filter applies to
+   * the counted rows (topics), so an assistant only ranks for what happened in-window.
+   */
+  rankAgents = async (
+    limit: number = 10,
+    options?: StatsFilterParams,
+  ): Promise<AgentRankItem[]> => {
+    const joinWhere = genWhere([
+      eq(topics.agentId, agents.id),
+      explicitRangeWhere(options, topics.createdAt),
+      options?.userId ? eq(topics.userId, options.userId) : undefined,
+    ]);
+
     const rows = await this.db
       .select({
         avatar: agents.avatar,
@@ -465,7 +611,7 @@ export class PlatformGlobalStatsModel {
         title: agents.title,
       })
       .from(agents)
-      .leftJoin(topics, eq(topics.agentId, agents.id))
+      .leftJoin(topics, joinWhere)
       // Same legacy population as countAgents (virtual=false OR NULL) + inbox (DB-009).
       .where(isNonVirtualAgentSql())
       .groupBy(agents.id)
@@ -476,7 +622,16 @@ export class PlatformGlobalStatsModel {
     return rows.map(({ slug, ...row }) => normalizeInboxAgentMeta(row, { slug }));
   };
 
-  rankTopics = async (limit: number = 10): Promise<TopicRankItem[]> => {
+  /** Ranks topics by in-window message volume; the user filter scopes topic ownership. */
+  rankTopics = async (
+    limit: number = 10,
+    options?: StatsFilterParams,
+  ): Promise<TopicRankItem[]> => {
+    const joinWhere = genWhere([
+      eq(topics.id, messages.topicId),
+      explicitRangeWhere(options, messages.createdAt),
+    ]);
+
     return this.db
       .select({
         agentId: topics.agentId,
@@ -485,11 +640,108 @@ export class PlatformGlobalStatsModel {
         title: topics.title,
       })
       .from(topics)
-      .leftJoin(messages, eq(topics.id, messages.topicId))
+      .leftJoin(messages, joinWhere)
+      .where(genWhere([options?.userId ? eq(topics.userId, options.userId) : undefined]))
       .groupBy(topics.id)
       .orderBy(desc(sql`count`))
       .having(({ count: c }) => gt(c, 0))
       .limit(limit);
+  };
+
+  /**
+   * Users ranked by token usage in the window (admin 用户排行).
+   *
+   * `messages` counts every message the user wrote in the window (same population as
+   * {@link countMessages}); tokens / cost are summed over assistant rows only — the same
+   * role gate the other usage aggregates use, so stray usage payloads on a user row can
+   * never inflate a ranking. Never emits the raw email as a separate field — the display
+   * name is the same COALESCE chain used by the usage endpoints.
+   *
+   * Without an explicit window the last {@link DEFAULT_EXPLICIT_RANGE_DAYS} days ending
+   * now are used: this endpoint never scans the whole `messages` table.
+   *
+   * `orderBy` sorts in SQL (DESC, tie-break `userId` ASC) so `limit` really is the top-N
+   * for that metric — a client must not re-sort a token-ordered page.
+   */
+  rankUsers = async (params?: {
+    endAt?: Date | string;
+    limit?: number;
+    orderBy?: UserRankOrderBy;
+    startAt?: Date | string;
+    userId?: string;
+  }): Promise<UserRankItem[]> => {
+    const limit = Math.min(Math.max(Math.floor(params?.limit ?? 10), 1), 100);
+    // Always bounded: a missing endAt resolves to now and a missing startAt to endAt − 30d.
+    const range = resolveStatsRange({
+      endAt: params?.endAt ?? new Date(),
+      startAt: params?.startAt,
+    });
+    const costExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'cost')::double precision,
+      (${messages.metadata}->'usage'->>'cost')::double precision,
+      (${messages.metadata}->>'cost')::double precision,
+      0
+    )`;
+    const inputTokensExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'totalInputTokens')::double precision,
+      (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
+      (${messages.metadata}->>'totalInputTokens')::double precision,
+      0
+    )`;
+    const outputTokensExpr = sql<number>`COALESCE(
+      (${messages.usage}->>'totalOutputTokens')::double precision,
+      (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
+      (${messages.metadata}->>'totalOutputTokens')::double precision,
+      0
+    )`;
+    // users row may be missing (deleted account) — fall back to the message's userId.
+    const nameExpr = sql<string>`COALESCE(NULLIF(TRIM(${users.fullName}), ''), NULLIF(TRIM(${users.username}), ''), NULLIF(TRIM(${users.email}), ''), ${users.id}, ${messages.userId})`;
+    /** Usage lives on assistant replies — gate every SUM, never the message COUNT. */
+    const assistantOnly = sql`FILTER (WHERE ${messages.role} = 'assistant')`;
+    const costSumExpr = sql<number>`COALESCE(SUM(${costExpr}) ${assistantOnly}, 0)`;
+    const inputSumExpr = sql<number>`COALESCE(SUM(${inputTokensExpr}) ${assistantOnly}, 0)`;
+    const outputSumExpr = sql<number>`COALESCE(SUM(${outputTokensExpr}) ${assistantOnly}, 0)`;
+    const totalTokensExpr = sql<number>`COALESCE(SUM(${inputTokensExpr} + ${outputTokensExpr}) ${assistantOnly}, 0)`;
+    const messagesCountExpr = count(messages.id);
+    const orderByExpr = {
+      cost: costSumExpr,
+      messages: messagesCountExpr,
+      totalTokens: totalTokensExpr,
+    }[params?.orderBy ?? 'totalTokens'];
+
+    const rows = await this.db
+      .select({
+        avatar: users.avatar,
+        cost: costSumExpr.mapWith(Number),
+        inputTokens: inputSumExpr.mapWith(Number),
+        messages: messagesCountExpr.mapWith(Number),
+        name: nameExpr,
+        outputTokens: outputSumExpr.mapWith(Number),
+        totalTokens: totalTokensExpr.mapWith(Number),
+        userId: messages.userId,
+      })
+      .from(messages)
+      .leftJoin(users, eq(messages.userId, users.id))
+      .where(
+        genWhere([
+          genInstantRangeWhere(range, messages.createdAt),
+          params?.userId ? eq(messages.userId, params.userId) : undefined,
+        ]),
+      )
+      .groupBy(messages.userId, nameExpr, users.avatar)
+      .orderBy(desc(orderByExpr), asc(messages.userId))
+      .limit(limit);
+
+    return rows.map((row) => ({
+      avatar: row.avatar ?? null,
+      cost: row.cost ?? 0,
+      inputTokens: Math.round(row.inputTokens ?? 0),
+      messages: row.messages ?? 0,
+      name: row.name || row.userId,
+      outputTokens: Math.round(row.outputTokens ?? 0),
+      totalTokens: Math.round(row.totalTokens ?? 0),
+      userId: row.userId,
+    }));
   };
 
   getHeatmaps = async (): Promise<HeatmapsProps['data']> => {
@@ -644,9 +896,9 @@ export class PlatformGlobalStatsModel {
    * Does not return a truncated full-month array — use `nextCursor` to continue.
    */
   findByDateRangePage = async (
-    startAt: string,
-    endAt: string,
-    options?: { cursor?: string; limit?: number },
+    startAt: Date | string,
+    endAt: Date | string,
+    options?: { cursor?: string; limit?: number; userId?: string },
   ): Promise<{ items: GlobalUsageRecordItem[]; nextCursor: string | null }> => {
     const limit = Math.min(
       Math.max(Math.floor(options?.limit ?? PlatformGlobalStatsModel.USAGE_PAGE_DEFAULT), 1),
@@ -655,7 +907,8 @@ export class PlatformGlobalStatsModel {
 
     const conditions = genWhere([
       eq(messages.role, 'assistant'),
-      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
+      genInstantRangeWhere(resolveStatsRange({ endAt, startAt }), messages.createdAt),
+      options?.userId ? eq(messages.userId, options.userId) : undefined,
     ]);
 
     const cursor = options?.cursor;
@@ -732,9 +985,9 @@ export class PlatformGlobalStatsModel {
    * up to {@link MAX_USAGE_DETAIL_ROWS} (hard safety cap against OOM).
    */
   findByDateRange = async (
-    startAt: string,
-    endAt: string,
-    options?: { limit?: number },
+    startAt: Date | string,
+    endAt: Date | string,
+    options?: { limit?: number; userId?: string },
   ): Promise<GlobalUsageRecordItem[]> => {
     if (options?.limit !== undefined) {
       const { items } = await this.findByDateRangePage(startAt, endAt, options);
@@ -750,6 +1003,7 @@ export class PlatformGlobalStatsModel {
       const page = await this.findByDateRangePage(startAt, endAt, {
         cursor,
         limit: Math.min(PlatformGlobalStatsModel.USAGE_PAGE_MAX, remaining),
+        userId: options?.userId,
       });
       items.push(...page.items);
       if (!page.nextCursor || items.length >= MAX_USAGE_DETAIL_ROWS) break;
@@ -762,11 +1016,12 @@ export class PlatformGlobalStatsModel {
    * Explicitly paginated monthly usage detail (bounded page size; never silent full-month cap).
    */
   findByMonthPage = async (
-    mo?: string,
+    arg?: StatsFilterArg,
     options?: { cursor?: string; limit?: number },
   ): Promise<{ items: GlobalUsageRecordItem[]; nextCursor: string | null }> => {
-    const { endAt, startAt } = this.resolveMonthRange(mo);
-    return this.findByDateRangePage(startAt, endAt, options);
+    const params = toStatsFilterParams(arg);
+    const { endAt, startAt } = resolveStatsRange(params);
+    return this.findByDateRangePage(startAt, endAt, { ...options, userId: params.userId });
   };
 
   /**
@@ -775,15 +1030,16 @@ export class PlatformGlobalStatsModel {
    * router can fail closed with `usage_month_truncated` without 200 serial pages.
    */
   findByMonthBounded = async (
-    mo: string | undefined,
+    arg: StatsFilterArg,
     maxRows: number,
   ): Promise<{ hasMore: boolean; items: GlobalUsageRecordItem[] }> => {
     const limit = Math.max(1, Math.floor(maxRows));
     // One range query with LIMIT maxRows+1 — same projection as keyset pages.
-    const { endAt, startAt } = this.resolveMonthRange(mo);
+    const params = toStatsFilterParams(arg);
     const conditions = genWhere([
       eq(messages.role, 'assistant'),
-      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
+      genInstantRangeWhere(resolveStatsRange(params), messages.createdAt),
+      params.userId ? eq(messages.userId, params.userId) : undefined,
     ]);
 
     const spends = await this.db
@@ -839,16 +1095,17 @@ export class PlatformGlobalStatsModel {
    * drains via {@link findByDateRange} (hard-capped at {@link MAX_USAGE_DETAIL_ROWS}).
    */
   findByMonth = async (
-    mo?: string,
+    arg?: StatsFilterArg,
     options?: { limit?: number },
   ): Promise<GlobalUsageRecordItem[]> => {
     if (options?.limit !== undefined) {
-      const { items } = await this.findByMonthPage(mo, options);
+      const { items } = await this.findByMonthPage(arg, options);
       return items;
     }
 
-    const { endAt, startAt } = this.resolveMonthRange(mo);
-    return this.findByDateRange(startAt, endAt);
+    const params = toStatsFilterParams(arg);
+    const { endAt, startAt } = resolveStatsRange(params);
+    return this.findByDateRange(startAt, endAt, { userId: params.userId });
   };
 
   /**
@@ -858,8 +1115,9 @@ export class PlatformGlobalStatsModel {
    * provider cardinality caps (platform-instance/F6). GroupBy.User always gets
    * non-blank userId/displayName series.
    */
-  findAndGroupByDay = async (mo?: string): Promise<GlobalUsageLog[]> => {
-    const { endAt, startAt } = this.resolveMonthRange(mo);
+  findAndGroupByDay = async (arg?: StatsFilterArg): Promise<GlobalUsageLog[]> => {
+    const params = toStatsFilterParams(arg);
+    const range = resolveStatsRange(params);
 
     // Cost / token extraction mirrors findByDateRange fallback chain in SQL.
     const costExpr = sql<number>`COALESCE(
@@ -886,7 +1144,8 @@ export class PlatformGlobalStatsModel {
 
     const rangeWhere = genWhere([
       eq(messages.role, 'assistant'),
-      genHalfOpenDayRangeWhere([startAt, endAt], messages.createdAt),
+      genInstantRangeWhere(range, messages.createdAt),
+      params.userId ? eq(messages.userId, params.userId) : undefined,
     ]);
 
     const [dayTotals, dimResult] = await Promise.all([
@@ -1029,39 +1288,17 @@ export class PlatformGlobalStatsModel {
       ]),
     );
 
-    // Inclusive end day (was exclusive isBefore → dropped last calendar day).
-    const startDate = dayjs.utc(startAt).startOf('day');
-    const endDate = dayjs.utc(endAt).startOf('day');
-    const padded: GlobalUsageLog[] = [];
-    for (let date = startDate; !date.isAfter(endDate, 'day'); date = date.add(1, 'day')) {
-      const key = date.format('YYYY-MM-DD');
-      const found = byDay.get(key);
-      if (found) {
-        padded.push(found);
-      } else {
-        padded.push({
-          date: date.toDate().getTime(),
+    // Every UTC day the half-open window touches, last day inclusive.
+    return eachUtcDayKey(range).map(
+      (key) =>
+        byDay.get(key) ?? {
+          date: dayjs.utc(key).toDate().getTime(),
           day: key,
           records: [],
           totalRequests: 0,
           totalSpend: 0,
           totalTokens: 0,
-        });
-      }
-    }
-    return padded;
-  };
-
-  private resolveMonthRange = (mo?: string): { endAt: string; startAt: string } => {
-    if (mo && dayjs.utc(mo, 'YYYY-MM', true).isValid()) {
-      return {
-        endAt: dayjs.utc(mo, 'YYYY-MM').endOf('month').format('YYYY-MM-DD'),
-        startAt: dayjs.utc(mo, 'YYYY-MM').startOf('month').format('YYYY-MM-DD'),
-      };
-    }
-    return {
-      endAt: dayjs.utc().endOf('month').format('YYYY-MM-DD'),
-      startAt: dayjs.utc().startOf('month').format('YYYY-MM-DD'),
-    };
+        },
+    );
   };
 }

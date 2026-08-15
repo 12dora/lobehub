@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import Statistic from '@/components/Statistic';
 import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
+import { useStatsFilter } from '@/features/SettingsStats';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatNumber } from '@/utils/format';
 
@@ -30,13 +31,18 @@ const computeMonth = (
 
 const MonthSpend = memo<UsageChartProps>(({ data, isLoading }) => {
   const { t } = useTranslation('auth');
+  const { rangeLabel } = useStatsFilter();
 
   const { spend, calls } = computeMonth(data || []);
+  // The card sums whatever window is loaded — say which one instead of claiming "this month".
+  const title = rangeLabel
+    ? t('usage.cards.month.titleInRange', { range: rangeLabel })
+    : t('usage.cards.month.title');
 
   return (
     <StatisticCard
       loading={isLoading}
-      title={<TitleWithPercentage title={t('usage.cards.month.title')} />}
+      title={<TitleWithPercentage title={title} />}
       statistic={{
         description: <Statistic title={t('usage.cards.month.modelCalls')} value={calls} />,
         precision: 2,

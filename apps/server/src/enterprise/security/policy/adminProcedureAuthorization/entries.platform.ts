@@ -157,6 +157,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'query',
+    path: 'admin.stats.rankUsers',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
     path: 'admin.stats.totals',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
   },
