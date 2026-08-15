@@ -31,7 +31,13 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@lobehub/charts', () => ({
-  BarList: () => <div data-testid="bar-list" />,
+  BarList: ({ data }: { data?: Array<{ id: string; name: string }> }) => (
+    <div data-testid="bar-list">
+      {(data ?? []).map((item) => (
+        <span key={item.id}>{item.name}</span>
+      ))}
+    </div>
+  ),
 }));
 
 vi.mock('@lobehub/icons', () => ({
@@ -99,6 +105,17 @@ describe('AdminOverviewRankCards', () => {
     expect(screen.getAllByTestId('alert-warning')).toHaveLength(2);
     expect(screen.getAllByText('overview.rank.emptyTitle')).toHaveLength(2);
     expect(screen.queryByTestId('bar-list')).toBeNull();
+  });
+
+  it('labelsModelsWithTheirCardNameAndKeepsUnknownIdsVerbatim', () => {
+    mocks.models.data = [
+      { count: 5, id: 'gpt-5.6-luna' },
+      { count: 1, id: 'some-self-hosted-model' },
+    ];
+    mocks.agents.data = [];
+    render(<RankCards />);
+    expect(screen.getByText('GPT-5.6 Luna')).toBeInTheDocument();
+    expect(screen.getByText('some-self-hosted-model')).toBeInTheDocument();
   });
 
   it('keepsStaleRankDataWithRefreshWarning', () => {

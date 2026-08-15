@@ -11,6 +11,7 @@ import { useNavigate, useParams } from 'react-router';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { AdminAuditConversationMessage } from '@/enterprise/client/services/adminAudit';
+import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import { openDangerConfirm } from '../../primitives/DangerConfirm';
@@ -76,6 +77,7 @@ const renderBody = (content: string) => {
 
 const ConversationTopicPage = memo(() => {
   const { t } = useTranslation('admin');
+  const providerLabel = useProviderLabel();
   const reduceMotion = useReducedMotion();
   const navigate = useNavigate();
   const { userId = '', topicId = '' } = useParams<{ userId: string; topicId: string }>();
@@ -217,7 +219,13 @@ const ConversationTopicPage = memo(() => {
       ) : null}
       <Flexbox gap={8} style={{ marginBlockEnd: 12 }}>
         <Text type="secondary">
-          {[topic?.provider, topic?.model, topic?.agentId].filter(Boolean).join(' · ') || '—'}
+          {[
+            providerLabel(topic?.provider),
+            getModelDisplayName(topic?.model, topic?.provider),
+            topic?.agentId,
+          ]
+            .filter(Boolean)
+            .join(' · ') || '—'}
         </Text>
         <Text type="secondary">
           {t('audit.conversations.columns.updatedAt')}: {formatAdminDateTime(topic?.updatedAt)}

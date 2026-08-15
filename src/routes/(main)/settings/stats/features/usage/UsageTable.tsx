@@ -1,5 +1,5 @@
 import { ProviderIcon } from '@lobehub/icons';
-import { Flexbox, Tag, Text, Tooltip } from '@lobehub/ui';
+import { Flexbox, Tag, Text } from '@lobehub/ui';
 import { type TableColumnType } from 'antd';
 import { cssVar } from 'antd-style';
 import { memo, useEffect } from 'react';
@@ -11,11 +11,13 @@ import { parseAsInteger, useQueryParam } from '@/hooks/useQueryParam';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatDate, formatNumber } from '@/utils/format';
+import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import { type UsageChartProps } from '../../types';
 
 const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
   const { t } = useTranslation('auth');
+  const providerLabel = useProviderLabel();
   const { findByMonth, scopeKey } = useStatsDataSource();
 
   const { data, isLoading, mutate } = useClientDataSWR(
@@ -45,22 +47,30 @@ const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
     {
       dataIndex: 'model',
       key: 'model',
-      render: (value, record) => (
-        <Flexbox horizontal align={'start'} gap={16}>
-          <ProviderIcon
-            provider={record.provider}
-            size={18}
-            style={{
-              border: `2px solid ${cssVar.colorBgContainer}`,
-              boxSizing: 'content-box',
-              marginRight: -8,
-            }}
-          />
-          <Tooltip title={value}>
-            <Text>{value?.length > 12 ? `${value.slice(0, 12)}...` : value}</Text>
-          </Tooltip>
-        </Flexbox>
-      ),
+      render: (value, record) => {
+        const model = getModelDisplayName(value, record.provider);
+        const provider = providerLabel(record.provider);
+        return (
+          <Flexbox horizontal align={'start'} gap={16}>
+            <ProviderIcon
+              provider={record.provider}
+              size={18}
+              style={{
+                border: `2px solid ${cssVar.colorBgContainer}`,
+                boxSizing: 'content-box',
+                marginRight: -8,
+              }}
+            />
+            {/* Truncated by width, not by character count, so a long name still fills the column. */}
+            <Text
+              ellipsis={{ tooltip: provider ? `${model} · ${provider}` : model }}
+              style={{ maxWidth: 200 }}
+            >
+              {model}
+            </Text>
+          </Flexbox>
+        );
+      },
       title: t('usage.table.model'),
     },
     {

@@ -10,6 +10,7 @@ import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatNumber } from '@/utils/format';
+import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import { type UsageChartProps } from '../../../../types';
 import { GroupBy } from '../../../../types';
@@ -59,6 +60,7 @@ const tableTitleI18n = (
 
 const ActiveModels = memo<UsageChartProps>(({ data, isLoading, groupBy, resolveUser }) => {
   const { t } = useTranslation('auth');
+  const providerLabel = useProviderLabel();
 
   const [open, setOpen] = useState(false);
 
@@ -88,10 +90,21 @@ const ActiveModels = memo<UsageChartProps>(({ data, isLoading, groupBy, resolveU
         />
       );
     }
-    return groupBy === GroupBy.Provider ? (
-      <ProviderIcon key={item} provider={item} size={18} style={baseStyle} />
-    ) : (
-      <ModelIcon key={item} model={item} size={18} style={baseStyle} />
+    // The row is a wall of overlapping glyphs; a hover has to answer "which model is that?".
+    // The icons take no title of their own, so the name rides on a wrapper.
+    const isProvider = groupBy === GroupBy.Provider;
+    return (
+      <span
+        key={item}
+        style={{ display: 'inline-flex' }}
+        title={isProvider ? providerLabel(item) : getModelDisplayName(item)}
+      >
+        {isProvider ? (
+          <ProviderIcon provider={item} size={18} style={baseStyle} />
+        ) : (
+          <ModelIcon model={item} size={18} style={baseStyle} />
+        )}
+      </span>
     );
   };
 

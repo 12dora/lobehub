@@ -10,16 +10,18 @@ import { useTranslation } from 'react-i18next';
 
 import { DEFAULT_AVATAR } from '@/const/meta';
 import type { AgentRankItem } from '@/types/agent';
+import { getModelDisplayName } from '@/utils/modelLabels';
 
 import OverviewCardState from './OverviewCardState';
 import { overviewStyles as styles } from './styles';
 import { useOverviewAgentRank, useOverviewModelRank } from './useOverviewStats';
 import { isEmptyRank } from './utils';
 
+// The rank is keyed by the raw model id — icons still match on it, only the label is humanized.
 const mapModel = (item: ModelRankItem) => ({
   icon: <ModelIcon model={item.id as string} size={20} />,
   id: item.id,
-  name: item.id,
+  name: getModelDisplayName(item.id as string),
   value: item.count,
 });
 

@@ -82,4 +82,16 @@ describe('ActiveModels', () => {
 
     expect(screen.getByTestId('active-user-avatar')).toHaveTextContent('Ada Lovelace');
   });
+
+  it('names the model behind each icon so the glyph row is readable on hover', () => {
+    render(<ActiveModels data={usageLog} groupBy={GroupBy.Model} />);
+
+    expect(screen.getByTitle('GPT-5 mini')).toBeInTheDocument();
+  });
+
+  it('names the provider behind each icon when grouping by provider', () => {
+    render(<ActiveModels data={usageLog} groupBy={GroupBy.Provider} />);
+
+    expect(screen.getByTitle('OpenAI')).toBeInTheDocument();
+  });
 });

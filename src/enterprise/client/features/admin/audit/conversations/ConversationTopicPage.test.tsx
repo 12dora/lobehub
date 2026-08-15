@@ -223,4 +223,10 @@ describe('ConversationTopicPage', () => {
     expect(evidence.toastError).toHaveBeenCalledTimes(2);
     expect(screen.getByText('Cached message evidence')).toBeTruthy();
   });
+
+  it('keeps provider and model ids model-bank cannot describe', () => {
+    const { container } = renderPage();
+
+    expect(container.textContent).toContain('cached-provider · cached-model · agent-1');
+  });
 });

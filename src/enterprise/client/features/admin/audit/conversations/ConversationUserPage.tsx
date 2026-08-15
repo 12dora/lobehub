@@ -13,6 +13,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { AdminAuditConversationListItem } from '@/enterprise/client/services/adminAudit';
+import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable from '../../primitives/DataTable';
@@ -81,6 +82,7 @@ const isForbiddenError = (err: unknown) => {
 
 const ConversationUserPage = memo(() => {
   const { t } = useTranslation('admin');
+  const providerLabel = useProviderLabel();
   const navigate = useNavigate();
   const { userId = '' } = useParams<{ userId: string }>();
   const { permissions } = useAdminAccess();
@@ -160,7 +162,10 @@ const ConversationUserPage = memo(() => {
       {
         key: 'model',
         title: t('audit.conversations.columns.model'),
-        render: (_, row) => [row.provider, row.model].filter(Boolean).join(' / ') || '—',
+        render: (_, row) =>
+          [providerLabel(row.provider), getModelDisplayName(row.model, row.provider)]
+            .filter(Boolean)
+            .join(' / ') || '—',
       },
       {
         dataIndex: 'status',
@@ -178,7 +183,7 @@ const ConversationUserPage = memo(() => {
         render: (v: Date) => formatAdminDateTime(v),
       },
     ],
-    [t],
+    [t, providerLabel],
   );
 
   const goNext = useCallback(() => {

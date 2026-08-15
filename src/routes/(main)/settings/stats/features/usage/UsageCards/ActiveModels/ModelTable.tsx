@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import InlineTable from '@/components/InlineTable';
 import { type UsageLog, type UsageRecordItem } from '@/types/usage/usageRecord';
 import { formatPrice } from '@/utils/format';
+import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import { type UsageChartProps } from '../../../../types';
 import { GroupBy } from '../../../../types';
@@ -84,6 +85,7 @@ const formatData = (
 
 const ModelTable = memo<UsageChartProps>(({ data, isLoading, groupBy, resolveUser }) => {
   const { t } = useTranslation('auth');
+  const providerLabel = useProviderLabel();
   const themeColorRange = useThemeColorRange();
 
   const formattedData = useMemo(
@@ -91,24 +93,30 @@ const ModelTable = memo<UsageChartProps>(({ data, isLoading, groupBy, resolveUse
     [data, groupBy],
   );
 
-  // Sub-row column shows the "other" dimension. For Model→Provider,
-  // Provider→Model, and User→Model.
-  const innerColumnKey =
-    (groupBy ?? GroupBy.Model) === GroupBy.Model
-      ? 'usage.activeModels.table.provider'
-      : 'usage.activeModels.table.model';
+  // Sub-rows show the "other" dimension: Model→Provider, Provider→Model, User→Model.
+  const innerIsProvider = (groupBy ?? GroupBy.Model) === GroupBy.Model;
+
+  const innerColumnKey = innerIsProvider
+    ? 'usage.activeModels.table.provider'
+    : 'usage.activeModels.table.model';
 
   const renderInnerIcon = (id: string, color: string) => {
     const baseStyle = {
       boxShadow: `0 0 0 2px ${cssVar.colorBgContainer}, 0 0 0 4px ${color}`,
       boxSizing: 'content-box' as const,
     };
-    return (groupBy ?? GroupBy.Model) === GroupBy.Provider ? (
+    return innerIsProvider ? (
       <ProviderIcon provider={id} style={baseStyle} />
     ) : (
       <ModelIcon model={id} style={baseStyle} />
     );
   };
+
+  /** `outerId` is the provider only when the table groups by provider — then it disambiguates. */
+  const innerLabel = (id: string, outerId: string) =>
+    innerIsProvider
+      ? providerLabel(id)
+      : getModelDisplayName(id, groupBy === GroupBy.Provider ? outerId : undefined);
 
   const renderOuterLabel = (key: string) => {
     if (groupBy === GroupBy.User) {
@@ -133,7 +141,7 @@ const ModelTable = memo<UsageChartProps>(({ data, isLoading, groupBy, resolveUse
         ) : (
           <ModelIcon model={key} size={24} />
         )}
-        {key}
+        {groupBy === GroupBy.Provider ? providerLabel(key) : getModelDisplayName(key)}
       </Flexbox>
     );
   };
@@ -169,7 +177,7 @@ const ModelTable = memo<UsageChartProps>(({ data, isLoading, groupBy, resolveUse
                       return (
                         <Flexbox horizontal align={'center'} gap={12} key={value}>
                           {renderInnerIcon(record.id, themeColorRange[index])}
-                          {value}
+                          {innerLabel(record.id, key)}
                         </Flexbox>
                       );
                     },

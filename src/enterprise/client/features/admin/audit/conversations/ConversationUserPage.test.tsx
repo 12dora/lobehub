@@ -156,16 +156,34 @@ vi.mock('../../primitives/AdminPageTemplate', () => ({
   ),
 }));
 
+interface MockRow {
+  id: string;
+  model?: string;
+  provider?: string;
+  title?: string;
+}
+
+interface MockColumn {
+  key?: string;
+  render?: (value: unknown, row: MockRow, index: number) => React.ReactNode;
+}
+
 vi.mock('../../primitives/DataTable', () => ({
-  default: ({ dataSource }: { dataSource?: { id: string; title?: string }[] }) => (
-    <div data-testid="topics-table">
-      {(dataSource ?? []).map((row) => (
-        <div data-testid={`topic-${row.id}`} key={row.id}>
-          {row.title}
-        </div>
-      ))}
-    </div>
-  ),
+  default: ({ columns, dataSource }: { columns?: MockColumn[]; dataSource?: MockRow[] }) => {
+    const modelColumn = (columns ?? []).find((column) => column.key === 'model');
+    return (
+      <div data-testid="topics-table">
+        {(dataSource ?? []).map((row, index) => (
+          <div data-testid={`topic-${row.id}`} key={row.id}>
+            {row.title}
+            <span data-testid={`topic-model-${row.id}`}>
+              {modelColumn?.render?.(undefined, row, index)}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  },
 }));
 
 vi.mock('./ContentAccessDisabledState', () => ({
@@ -237,6 +255,12 @@ describe('ConversationUserPage', () => {
     expect(evidence.summaryEnabled.every((e) => e === false)).toBe(true);
     expect(evidence.listEnabled.some(Boolean)).toBe(true);
     expect(evidence.timelineEnabled.some(Boolean)).toBe(true);
+  });
+
+  it('labels the model column with the provider name, keeping ids model-bank cannot describe', () => {
+    renderPage();
+
+    expect(screen.getByTestId('topic-model-topic-1')).toHaveTextContent('OpenAI / gpt');
   });
 
   it('shows timeline retry on hard error instead of emptyTimeline', () => {

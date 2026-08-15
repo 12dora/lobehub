@@ -143,4 +143,10 @@ describe('MessagePane entrance (XC-ANIM-03)', () => {
 
     expect(motionInitials.filter(isEntrance)).toHaveLength(0);
   });
+
+  it('names the provider in the topic header, keeping a model id model-bank cannot describe', () => {
+    const { container } = renderPane([msg('m1', '2024-01-01T00:00:00Z')]);
+
+    expect(container.textContent).toContain('OpenAI · gpt');
+  });
 });

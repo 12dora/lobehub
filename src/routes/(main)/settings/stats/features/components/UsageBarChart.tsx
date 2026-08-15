@@ -12,7 +12,7 @@ interface UsageBarChartProps extends BarChartProps {
 export const UsageBarChart = ({ ...props }: UsageBarChartProps) => (
   <BarChart
     {...props}
-    customTooltip={({ active, payload, label }) => {
+    customTooltip={({ active, payload, label, customCategories }) => {
       if (active && payload) {
         const sum = payload.reduce(
           (acc: number, cur: any) => (typeof cur.value === 'number' ? acc + cur.value : acc),
@@ -44,7 +44,9 @@ export const UsageBarChart = ({ ...props }: UsageBarChartProps) => (
                       <ChartTooltipRow
                         color={color}
                         key={`id-${idx}`}
-                        name={name}
+                        // `name` is the series key (a raw model / provider / user id); the chart's
+                        // `customCategories` map holds what a human should read for it.
+                        name={customCategories?.[name] ?? name}
                         value={
                           props.showType === 'spend'
                             ? formatNumber(value, 2)

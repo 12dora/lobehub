@@ -12,6 +12,7 @@ import type {
   AdminAuditConversationDetail,
   AdminAuditConversationMessage,
 } from '@/enterprise/client/services/adminAudit';
+import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import { formatAdminDateTime } from '../shared/format';
 import {
@@ -92,6 +93,7 @@ export interface MessagePaneProps {
 const MessagePane = memo<MessagePaneProps>(
   ({ topic, userId, messages, bodyHidden, hasOlder, onLoadOlder, loading, loadingOlder }) => {
     const { t } = useTranslation('admin');
+    const providerLabel = useProviderLabel();
     const reduceMotion = useReducedMotion();
     const scrollRef = useRef<HTMLDivElement>(null);
     const stickToBottomRef = useRef(true);
@@ -220,7 +222,13 @@ const MessagePane = memo<MessagePaneProps>(
               {topic.title || t('audit.conversations.untitled')}
             </Text>
             <Text style={{ display: 'block', fontSize: 12 }} type="secondary">
-              {[topic.provider, topic.model, topic.agentId].filter(Boolean).join(' · ') || '—'}
+              {[
+                providerLabel(topic.provider),
+                getModelDisplayName(topic.model, topic.provider),
+                topic.agentId,
+              ]
+                .filter(Boolean)
+                .join(' · ') || '—'}
               {' · '}
               {formatAdminDateTime(topic.createdAt)}
             </Text>

@@ -11,6 +11,7 @@ import ImperativeModal from '@/components/ImperativeModal';
 import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
+import { getModelDisplayName } from '@/utils/modelLabels';
 
 import StatsFormGroup from '../components/StatsFormGroup';
 
@@ -30,7 +31,7 @@ export const TopicsRank = memo(() => {
       icon: <ModelIcon model={item.id as string} size={20} />,
       id: item.id,
 
-      name: item.id,
+      name: getModelDisplayName(item.id as string),
       value: item.count,
     };
   };

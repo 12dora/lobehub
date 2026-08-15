@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { type AgentUsageModelRow } from '@/types/usage/usageRecord';
 import { formatNumber, formatUsageValue } from '@/utils/format';
+import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 interface ModelBreakdownProps {
   isLoading?: boolean;
@@ -16,6 +17,7 @@ interface ModelBreakdownProps {
 
 const ModelBreakdown = memo<ModelBreakdownProps>(({ rows, isLoading }) => {
   const { t } = useTranslation('spend');
+  const providerLabel = useProviderLabel();
 
   const columns = [
     {
@@ -25,9 +27,9 @@ const ModelBreakdown = memo<ModelBreakdownProps>(({ rows, isLoading }) => {
         <Flexbox horizontal align={'center'} gap={8}>
           <ModelIcon model={model} size={20} />
           <Flexbox>
-            <Text ellipsis>{model}</Text>
+            <Text ellipsis>{getModelDisplayName(model, record.provider)}</Text>
             <Text fontSize={12} type={'secondary'}>
-              {record.provider}
+              {providerLabel(record.provider)}
             </Text>
           </Flexbox>
         </Flexbox>

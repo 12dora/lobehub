@@ -8,6 +8,7 @@ import { memo, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { AdminAuditConversationListItem } from '@/enterprise/client/services/adminAudit';
+import { getModelDisplayName } from '@/utils/modelLabels';
 
 import { formatAdminDateTime } from '../shared/format';
 import { relativeTimeMs } from '../shared/liveMessageUtils';
@@ -120,7 +121,7 @@ const TopicListPane = memo<TopicListPaneProps>(
               <p className={styles.title}>{item.title || t('audit.conversations.untitled')}</p>
               <p className={styles.meta}>
                 {formatRelative(new Date(item.updatedAt), now, t as never)}
-                {item.model ? ` · ${item.model}` : ''}
+                {item.model ? ` · ${getModelDisplayName(item.model, item.provider)}` : ''}
               </p>
             </m.div>
           ))}
