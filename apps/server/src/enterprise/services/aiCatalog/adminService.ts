@@ -33,6 +33,7 @@ import { AiCatalogAdminServiceModelOps } from './adminService.models';
 import { AiCatalogReadService } from './catalogReadService';
 import {
   AiCatalogConnectionTestService,
+  aiConnectionFailureCode,
   type AiConnectionProbe,
   type AiConnectionTestResult,
 } from './connectionTestService';
@@ -674,12 +675,18 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
           });
         } catch (error) {
           // A dead shared grant is its own actionable state, not a generic config error.
+          // Same stable codes as the probe itself (`llm.checker.reason.*`): this branch used to
+          // mint English prose that every locale rendered verbatim, and the shared-account code
+          // is what survives into persisted state for a superseded attempt to replay.
+          const expired = isOAuthAuthorizationExpiredError(error);
           result = {
-            errorCategory: isOAuthAuthorizationExpiredError(error) ? 'auth' : 'invalid_config',
+            errorCategory: expired ? 'auth' : 'invalid_config',
+            ...(expired ? { errorType: 'OAuthAuthorizationExpired' as const } : {}),
             latencyMs: 0,
-            sanitizedMessage: isOAuthAuthorizationExpiredError(error)
-              ? 'Connection failed: the shared account connection expired — reconnect it'
-              : 'Connection failed: invalid provider configuration',
+            sanitizedMessage: aiConnectionFailureCode(
+              expired ? 'auth' : 'invalid_config',
+              expired ? 'OAuthAuthorizationExpired' : undefined,
+            ),
             status: 'failure',
             testedAt: new Date(),
           };

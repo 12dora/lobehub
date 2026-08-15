@@ -66,6 +66,42 @@ describe('LobeChatGPTAI', () => {
     expect(instance['client'].chat.completions.create).not.toHaveBeenCalled();
   });
 
+  it('accepts the connectivity probe contract: maxRetries 0 and no sampling params', async () => {
+    // The enterprise admin probe builds this runtime with `maxRetries: 0` so one honest attempt
+    // is made instead of three (each paying the full streaming budget), and sends
+    // `temperature: 0`, which a reasoning model rejects unless it is pruned.
+    const probe = new LobeChatGPTAI({
+      apiKey: 'access-token',
+      chatgptAccountId: 'account-id',
+      maxRetries: 0,
+    });
+    expect(probe['client'].maxRetries).toBe(0);
+    vi.spyOn(probe['client'].responses, 'create').mockResolvedValue(new ReadableStream() as never);
+
+    await probe.chat(
+      {
+        messages: [{ content: 'Hi', role: 'user' }],
+        model: 'gpt-5.5',
+        stream: true,
+        temperature: 0,
+      },
+      { user: 'admin-probe' },
+    );
+
+    const [request] = (probe['client'].responses.create as Mock).mock.calls[0];
+
+    expect(request).toMatchObject({
+      include: ['reasoning.encrypted_content'],
+      model: 'gpt-5.5',
+      reasoning: expect.objectContaining({ summary: 'auto' }),
+      store: false,
+      stream: true,
+    });
+    expect(request.temperature).toBeUndefined();
+    expect(request.top_p).toBeUndefined();
+    expect(request.safety_identifier).toBeUndefined();
+  });
+
   it.each(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
     'uses the Responses Lite request contract for %s',
     async (model) => {

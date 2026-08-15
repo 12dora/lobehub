@@ -8,7 +8,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSafeOutboundHttpClient } from '../../security/outboundHttp';
-import type { PinnedTransportResponse } from '../../security/outboundHttp/types';
+import type {
+  PinnedTransportRequest,
+  PinnedTransportResponse,
+} from '../../security/outboundHttp/types';
 import { createSafeAiConnectionProbe } from './connectionTestService';
 
 const okJson = (body: unknown): PinnedTransportResponse => ({
@@ -332,6 +335,137 @@ L5cQAJVyU/9xX/AcEgAxKA==
     expect(safeCalls.some((u) => u.includes('bedrock'))).toBe(true);
     expect(JSON.stringify(safeCalls)).not.toContain('secret-test-not-real');
     expect(JSON.stringify(safeCalls)).not.toContain('AKIATESTNOTREAL');
+  });
+
+  /**
+   * The shared-ChatGPT (Codex) backend is streaming-first. Before this, the probe asked for
+   * `stream: true` but ran on the BUFFERING adapter, so the SDK call could not return until the
+   * whole completion had arrived — inside a 15s round-trip budget a reasoning model never met.
+   */
+  describe('chatgpt streaming probe', () => {
+    const chatgptProvider = {
+      checkModel: 'gpt-5.5',
+      config: {},
+      displayName: 'ChatGPT',
+      enabled: true,
+      fetchOnClient: false,
+      id: 'p-chatgpt',
+      providerKey: 'chatgpt',
+      revision: 0,
+      settings: {},
+      sort: 0,
+      source: 'builtin',
+      status: 'draft',
+    } as never;
+
+    const lowerCaseHeaders = (headers: Record<string, string>) =>
+      Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
+
+    it('resolves on the first SSE chunk while the upstream stream is still open', async () => {
+      const requests: PinnedTransportRequest[] = [];
+      let streamCancelled = false;
+      const bufferingTransport = vi.fn();
+
+      const streamingTransport = vi.fn(async (req: PinnedTransportRequest) => {
+        requests.push(req);
+        // The real pinned streaming transport tears the socket down on abort; mirror that so
+        // "the probe hung up" is observable here.
+        req.signal?.addEventListener('abort', () => {
+          streamCancelled = true;
+        });
+        const body = new ReadableStream<Uint8Array>({
+          cancel: () => {
+            streamCancelled = true;
+          },
+          start: (controller) => {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"type":"response.created","response":{"id":"resp_probe","status":"in_progress"}}\n\n',
+              ),
+            );
+            // Deliberately never closed: a probe that needs the completion would hang here.
+          },
+        });
+        return new Response(body, {
+          headers: { 'content-type': 'text/event-stream' },
+          status: 200,
+        });
+      });
+
+      const outbound = createSafeOutboundHttpClient({
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+        streamingTransport,
+        transport: bufferingTransport,
+      });
+
+      await createSafeAiConnectionProbe(outbound)({
+        keyVaults: {
+          oauthAccessToken: 'chatgpt-access-token-not-real',
+          oauthAccountId: 'acct-not-real',
+        },
+        model: 'gpt-5.5',
+        provider: chatgptProvider,
+        runtimeProvider: 'chatgpt',
+      });
+
+      expect(streamingTransport).toHaveBeenCalledTimes(1);
+      // A buffering hop here is the bug: it waits for `res.on('end')`.
+      expect(bufferingTransport).not.toHaveBeenCalled();
+      expect(streamCancelled).toBe(true);
+      expect(requests[0]!.signal?.aborted).toBe(true);
+      expect(globalFetchCalls).toEqual([]);
+
+      const request = requests[0]!;
+      expect(request.url.toString()).toBe('https://chatgpt.com/backend-api/codex/responses');
+      const headers = lowerCaseHeaders(request.headers);
+      expect(headers['chatgpt-account-id']).toBe('acct-not-real');
+      expect(headers['originator']).toBe('lobehub');
+
+      const payload = JSON.parse(request.body!.toString('utf8'));
+      expect(payload.model).toBe('gpt-5.5');
+      expect(payload.stream).toBe(true);
+      expect(payload.store).toBe(false);
+      // Reasoning models reject sampling params; the probe must not smuggle its own in.
+      expect(payload).not.toHaveProperty('temperature');
+      expect(JSON.stringify(payload)).not.toContain('chatgpt-access-token-not-real');
+    });
+
+    it('makes exactly one attempt (maxRetries: 0) instead of the SDK retry storm', async () => {
+      const streamingTransport = vi.fn(async () => {
+        // A retryable status: the SDK default (2 retries) would call this three times, each
+        // one paying the full streaming budget before the operator sees any verdict.
+        const body = new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            controller.enqueue(new TextEncoder().encode('{"error":{"message":"upstream down"}}'));
+            controller.close();
+          },
+        });
+        return new Response(body, {
+          headers: { 'content-type': 'application/json' },
+          status: 500,
+        });
+      });
+
+      const outbound = createSafeOutboundHttpClient({
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+        streamingTransport,
+        transport: vi.fn(),
+      });
+
+      await expect(
+        createSafeAiConnectionProbe(outbound)({
+          keyVaults: {
+            oauthAccessToken: 'chatgpt-access-token-not-real',
+            oauthAccountId: 'acct-not-real',
+          },
+          model: 'gpt-5.5',
+          provider: chatgptProvider,
+          runtimeProvider: 'chatgpt',
+        }),
+      ).rejects.toBeDefined();
+
+      expect(streamingTransport).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('ensures every providerRuntimeMap constructor accepts an explicit fetch transport option', () => {

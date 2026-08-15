@@ -75,14 +75,44 @@ interface ConnectionCheckerProps {
 }
 
 /**
- * Stable reasons the platform probe reports when it refuses to run at all. They are actionable
- * by the operator, so they get their own copy instead of the server's terse sanitized string.
- * Matched loosely (case/punctuation-insensitive) so the wording can evolve server-side without
- * silently falling back to the generic message.
+ * Stable reasons the platform probe reports. They are actionable by the operator, so they get
+ * translated copy instead of the server's terse sanitized string — which was server-authored
+ * English rendered verbatim in every locale. Matched loosely (case/punctuation-insensitive) so
+ * the wording can evolve server-side without silently falling back to the generic message.
+ *
+ * The `connection_failed_*` entries are the probe's current stable codes; the sentence forms
+ * below are the pre-code messages, still returned for connection tests persisted before the
+ * codes landed (`testProvider` replays the stored `sanitizedMessage` for a superseded attempt).
  */
 const CHECK_MODEL_REASON_KEYS: Record<string, string> = {
   check_model_not_configured: 'llm.checker.reason.checkModelNotConfigured',
   check_model_not_enabled: 'llm.checker.reason.checkModelNotEnabled',
+  connection_failed_auth: 'llm.checker.reason.connectionFailedAuth',
+  connection_failed_authentication_rejected: 'llm.checker.reason.connectionFailedAuth',
+  connection_failed_invalid_config: 'llm.checker.reason.connectionFailedInvalidConfig',
+  connection_failed_invalid_provider_configuration:
+    'llm.checker.reason.connectionFailedInvalidConfig',
+  connection_failed_network: 'llm.checker.reason.connectionFailedNetwork',
+  connection_failed_provider: 'llm.checker.reason.connectionFailedProvider',
+  connection_failed_provider_network_unavailable: 'llm.checker.reason.connectionFailedNetwork',
+  connection_failed_provider_rate_limit_reached: 'llm.checker.reason.connectionFailedRateLimit',
+  connection_failed_provider_rejected_the_request: 'llm.checker.reason.connectionFailedProvider',
+  connection_failed_rate_limit: 'llm.checker.reason.connectionFailedRateLimit',
+  /**
+   * Its own code, not a flavour of `auth`: only the persisted `sanitizedMessage` survives a
+   * superseded (CAS-losing) attempt, so the reconnect guidance has to live in the code itself.
+   */
+  connection_failed_shared_account_expired: 'llm.checker.reason.sharedAccountExpired',
+  connection_failed_the_shared_account_connection_expired_reconnect_it:
+    'llm.checker.reason.sharedAccountExpired',
+};
+
+/**
+ * Runtime codes worth their own copy regardless of category. A dead shared grant is the one
+ * failure whose fix ("reconnect the account") is not implied by the category message.
+ */
+const CHECK_ERROR_TYPE_KEYS: Record<string, string> = {
+  OAuthAuthorizationExpired: 'llm.checker.reason.sharedAccountExpired',
 };
 
 const normalizeReason = (message: string): string =>
@@ -218,23 +248,24 @@ const Checker = memo<ConnectionCheckerProps>(
             // anything else shows the sanitized message verbatim. `ConnectionCheckFailed` (the
             // "empty response / proxy must not end in /v1" guidance) is now reserved for the
             // transport-level catch below, where it is actually the right advice.
-            const reasonKey = result.sanitizedMessage
-              ? CHECK_MODEL_REASON_KEYS[normalizeReason(result.sanitizedMessage)]
-              : undefined;
-            setErrorTitle(
-              reasonKey
-                ? t(reasonKey as never)
-                : result.sanitizedMessage || getRuntimeErrorMessage(t, 'ConnectionCheckFailed'),
-            );
+            const reasonKey =
+              (result.errorType ? CHECK_ERROR_TYPE_KEYS[result.errorType] : undefined) ??
+              (result.sanitizedMessage
+                ? CHECK_MODEL_REASON_KEYS[normalizeReason(result.sanitizedMessage)]
+                : undefined);
+            const reason = reasonKey
+              ? t(reasonKey as never)
+              : result.sanitizedMessage || getRuntimeErrorMessage(t, 'ConnectionCheckFailed');
+            setErrorTitle(reason);
             setError({
               body: {
                 errorCategory: result.errorCategory,
+                errorType: result.errorType,
                 latencyMs: result.latencyMs,
                 model: checkModel,
                 sanitizedMessage: result.sanitizedMessage,
               },
-              message:
-                result.sanitizedMessage || getRuntimeErrorMessage(t, 'ConnectionCheckFailed'),
+              message: reason,
               type: 'ConnectionCheckFailed',
             });
           }

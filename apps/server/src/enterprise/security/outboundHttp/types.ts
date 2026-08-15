@@ -45,6 +45,12 @@ export interface PinnedTransportResponse {
 /** Injectable low-level transport that already pins to a resolved IP. */
 export type PinnedTransport = (req: PinnedTransportRequest) => Promise<PinnedTransportResponse>;
 
+/**
+ * Injectable streaming transport (pinned to a resolved IP) that resolves as soon as the
+ * response headers arrive and hands back an un-buffered body.
+ */
+export type PinnedStreamingTransport = (req: PinnedTransportRequest) => Promise<Response>;
+
 export interface SafeOutboundRequestInit {
   body?: string | Buffer | Uint8Array;
   headers?: Record<string, string>;
@@ -80,6 +86,11 @@ export interface SafeOutboundHttpClientOptions {
   policyProvider?: () => OutboundPolicySnapshot;
   /** Inject resolver (tests / custom). Default: dns.promises.lookup all. */
   resolve?: DnsResolver;
+  /**
+   * Inject the streaming transport (tests). Default: node http/https with pin that resolves
+   * on headers. Policy / DNS pin / redirect / byte-cap guards run identically either way.
+   */
+  streamingTransport?: PinnedStreamingTransport;
   timeoutMs?: number;
   /** Deployment-specific RFC 6052 NAT64/SIIT prefixes. */
   translationPrefixes?: string[];

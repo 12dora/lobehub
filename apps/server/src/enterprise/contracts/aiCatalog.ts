@@ -493,11 +493,43 @@ export const adminAiProviderTestInputSchema = z
   })
   .strict();
 
+/**
+ * Stable runtime error codes the connection test may surface. Deliberately an allowlist, not
+ * `z.string()`: the probe must never echo provider-authored text (a message can carry request
+ * material), and an operator-facing hint may only be keyed off a code we recognise.
+ * Values are `AgentRuntimeErrorType` members plus the platform catalog's own code.
+ */
+export const AI_CONNECTION_TEST_ERROR_TYPES = [
+  'AccountDeactivated',
+  'AgentRuntimeError',
+  'ConnectionCheckFailed',
+  'ExceededContextWindow',
+  'InsufficientQuota',
+  'InvalidBedrockCredentials',
+  'InvalidProviderAPIKey',
+  'InvalidRequestFormat',
+  'InvalidVertexCredentials',
+  'ModelNotFound',
+  'NoAvailableProvider',
+  'OAuthAuthorizationExpired',
+  'PermissionDenied',
+  'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+  'ProviderBizError',
+  'ProviderNetworkError',
+  'QuotaLimitReached',
+  'RateLimitExceeded',
+  'UserConfigError',
+] as const;
+
+export type AiConnectionTestErrorType = (typeof AI_CONNECTION_TEST_ERROR_TYPES)[number];
+
 export const aiConnectionTestResultSchema = z
   .object({
     errorCategory: z
       .enum(['auth', 'network', 'rate_limit', 'provider', 'invalid_config'])
       .nullable(),
+    /** Present only when the runtime reported a code from the allowlist above. */
+    errorType: z.enum(AI_CONNECTION_TEST_ERROR_TYPES).optional(),
     latencyMs: z.number().int().nonnegative(),
     sanitizedMessage: z.string().max(500),
     status: z.enum(['success', 'failure']),

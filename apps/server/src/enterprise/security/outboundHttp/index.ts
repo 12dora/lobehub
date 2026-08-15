@@ -36,6 +36,7 @@ export {
 export type {
   DnsResolver,
   OutboundPolicySnapshot,
+  PinnedStreamingTransport,
   PinnedTransport,
   PinnedTransportRequest,
   PinnedTransportResponse,

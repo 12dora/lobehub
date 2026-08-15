@@ -20,6 +20,12 @@ export interface SafeOutboundFetchAdapterOptions {
   maxResponseBytes?: number;
   /** When true, Authorization/Cookie are treated as secret-bearing for redirect policy. */
   secretBearing?: boolean;
+  /**
+   * Return an un-buffered `Response` (SafeOutboundHttpClient.streamFetch) instead of buffering
+   * the whole body before resolving. Same policy / DNS pin / redirect / secret-bearing /
+   * byte-cap guards; required by SDKs whose streaming mode must see bytes as they arrive.
+   */
+  streaming?: boolean;
   timeoutMs?: number;
 }
 
@@ -250,6 +256,9 @@ const resolveRequest = async (
  * forwarded into that same controller, and the controller signal is passed into body
  * buffering so a stalled stream cannot hang past `timeoutMs`. Remaining budget is
  * forwarded to the safe client.
+ *
+ * `streaming: true` swaps the buffered hop for `SafeOutboundHttpClient.streamFetch`, which
+ * returns as soon as headers land so the caller can act on the first bytes.
  */
 export const createSafeOutboundFetchAdapter = (
   client: SafeOutboundHttpClient,
@@ -260,6 +269,7 @@ export const createSafeOutboundFetchAdapter = (
   const maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_ADAPTER_MAX_REQUEST_BODY_BYTES;
   const maxRedirects = options.maxRedirects ?? DEFAULT_ADAPTER_MAX_REDIRECTS;
   const secretBearing = options.secretBearing ?? true;
+  const streaming = options.streaming === true;
 
   return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const deadlineAt = Date.now() + timeoutMs;
@@ -285,6 +295,14 @@ export const createSafeOutboundFetchAdapter = (
       else upstreamSignal.addEventListener('abort', onUpstreamAbort, { once: true });
     }
 
+    /**
+     * A streaming response outlives this call: the body is still flowing when we return, so the
+     * upstream abort wiring must stay attached (a caller that hangs up mid-stream is exactly how
+     * a streaming probe releases the socket). The absolute body bound is the identical budget
+     * inside the pinned streaming transport.
+     */
+    let handedOffStreamingBody = false;
+
     try {
       // Deadline (with upstream abort forwarded) bounds normalization — not only the client hop.
       const resolved = await resolveRequest(
@@ -306,7 +324,24 @@ export const createSafeOutboundFetchAdapter = (
       };
 
       try {
+        if (streaming) {
+          // Resolves on response headers; the body keeps flowing. The adapter deadline below
+          // only bounds headers — the body is bounded by the same budget inside the pinned
+          // streaming transport (absolute timer) and by maxResponseBytes.
+          const streamed = await client.streamFetch(resolved.url, requestInit);
+          handedOffStreamingBody = true;
+          return streamed;
+        }
         const response = await client.fetch(resolved.url, requestInit);
+        if (response.truncated) {
+          // A soft-truncated body is not a response: parsing it either throws somewhere far
+          // away or, worse, succeeds on a prefix. Fail loudly instead of discarding the flag.
+          const truncatedError = new Error(
+            'Outbound response exceeded the enterprise network policy byte limit',
+          );
+          truncatedError.name = 'SafeOutboundTruncatedError';
+          throw truncatedError;
+        }
         return new Response(new Uint8Array(response.body), {
           headers: response.headers,
           status: response.status,
@@ -326,7 +361,7 @@ export const createSafeOutboundFetchAdapter = (
       }
     } finally {
       clearTimeout(deadlineTimer);
-      if (upstreamSignal) {
+      if (upstreamSignal && !handedOffStreamingBody) {
         upstreamSignal.removeEventListener('abort', onUpstreamAbort);
       }
     }

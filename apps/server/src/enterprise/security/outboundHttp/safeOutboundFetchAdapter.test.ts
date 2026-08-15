@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
+import { ssrfBlocked } from './errors';
 import {
   createSafeOutboundFetchAdapter,
   DEFAULT_ADAPTER_MAX_REQUEST_BODY_BYTES,
@@ -161,6 +162,104 @@ describe('createSafeOutboundFetchAdapter', () => {
 
     await adapter('https://example.test/', { method: 'GET' });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a soft-truncated response instead of handing back a prefix', async () => {
+    // The client marks a body cut short at maxResponseBytes. Dropping that flag turned an
+    // enforced limit into a silent "here is half a JSON document".
+    const fetchMock = vi.fn(async () => ({ ...okClientResponse(), truncated: true }));
+    const client = { fetch: fetchMock } as unknown as SafeOutboundHttpClient;
+    const adapter = createSafeOutboundFetchAdapter(client, { timeoutMs: 5_000 });
+
+    await expect(adapter('https://example.test/', { method: 'GET' })).rejects.toMatchObject({
+      name: 'SafeOutboundTruncatedError',
+    });
+  });
+
+  describe('streaming mode', () => {
+    const openStream = (onCancel?: () => void) =>
+      new ReadableStream<Uint8Array>({
+        cancel: onCancel,
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: first\n\n'));
+          // Never closes — a buffering hop would hang here.
+        },
+      });
+
+    it('returns an un-buffered Response from streamFetch without touching the buffered hop', async () => {
+      const fetchMock = vi.fn(async () => okClientResponse());
+      const streamFetchMock = vi.fn(
+        async () =>
+          new Response(openStream(), { headers: { 'content-type': 'text/event-stream' } }),
+      );
+      const client = {
+        fetch: fetchMock,
+        streamFetch: streamFetchMock,
+      } as unknown as SafeOutboundHttpClient;
+      const adapter = createSafeOutboundFetchAdapter(client, { streaming: true, timeoutMs: 5_000 });
+
+      const response = await adapter('https://example.test/responses', { method: 'POST' });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(streamFetchMock).toHaveBeenCalledOnce();
+      expect(response.body).toBeTruthy();
+      const first = await response.body!.getReader().read();
+      expect(new TextDecoder().decode(first.value)).toBe('data: first\n\n');
+    });
+
+    it('keeps policy / redirect / byte-cap guards and the enterprise denial wrapper', async () => {
+      const streamFetchMock = vi.fn(async (_url: string, init?: SafeOutboundRequestInit) => {
+        // Guards run inside the client; the adapter must forward the bounds that arm them.
+        expect(init?.maxRedirects).toBe(1);
+        expect(init?.maxResponseBytes).toBe(2048);
+        expect(init?.secretBearing).toBe(true);
+        expect(init?.timeoutMs).toBeGreaterThan(0);
+        throw ssrfBlocked('secret_redirect', 'cross-origin redirect rejected');
+      });
+      const client = {
+        fetch: vi.fn(),
+        streamFetch: streamFetchMock,
+      } as unknown as SafeOutboundHttpClient;
+      const adapter = createSafeOutboundFetchAdapter(client, {
+        maxRedirects: 1,
+        maxResponseBytes: 2048,
+        secretBearing: true,
+        streaming: true,
+        timeoutMs: 5_000,
+      });
+
+      await expect(
+        adapter('https://example.test/responses', { method: 'POST' }),
+      ).rejects.toMatchObject({
+        message: 'Outbound request blocked by enterprise network policy',
+        name: 'SafeOutboundFetchError',
+      });
+    });
+
+    it('still forwards a caller abort after the streaming response was handed back', async () => {
+      // The response outlives the adapter call. Dropping the abort wiring on return left the
+      // socket running until the transport deadline even though the caller had hung up.
+      let clientSignal: AbortSignal | null | undefined;
+      const streamFetchMock = vi.fn(async (_url: string, init?: SafeOutboundRequestInit) => {
+        clientSignal = init?.signal;
+        return new Response(openStream());
+      });
+      const client = {
+        fetch: vi.fn(),
+        streamFetch: streamFetchMock,
+      } as unknown as SafeOutboundHttpClient;
+      const adapter = createSafeOutboundFetchAdapter(client, { streaming: true, timeoutMs: 5_000 });
+      const controller = new AbortController();
+
+      await adapter('https://example.test/responses', {
+        method: 'POST',
+        signal: controller.signal,
+      });
+
+      expect(clientSignal?.aborted).toBe(false);
+      controller.abort();
+      expect(clientSignal?.aborted).toBe(true);
+    });
   });
 
   it('removes each abort listener after a highly fragmented stream completes', async () => {

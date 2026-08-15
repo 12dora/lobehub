@@ -18,6 +18,7 @@ import {
 import type {
   DnsResolver,
   OutboundPolicySnapshot,
+  PinnedStreamingTransport,
   PinnedTransport,
   ResolvedAddress,
   SafeOutboundHttpClientOptions,
@@ -52,6 +53,7 @@ export class SafeOutboundHttpClient {
   private readonly policyProvider: () => { policy: OutboundPolicy; version: number | string };
   private readonly resolve: DnsResolver;
   private readonly transport: PinnedTransport;
+  private readonly streamingTransport: PinnedStreamingTransport;
   private readonly timeoutMs: number;
   private readonly maxRedirects: number;
   private readonly maxResponseBytes: number;
@@ -66,6 +68,7 @@ export class SafeOutboundHttpClient {
       options.policyProvider ?? (() => ({ policy: configuredPolicy, version: 'static' }));
     this.resolve = options.resolve ?? defaultDnsResolve;
     this.transport = options.transport ?? defaultPinnedTransport;
+    this.streamingTransport = options.streamingTransport ?? defaultPinnedStreamingTransport;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
     this.maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -172,7 +175,7 @@ export class SafeOutboundHttpClient {
       this.assertUrlPolicy(current, this.getPolicy());
       const addresses = await this.resolveHost(current.hostname, deadlineAt, init.signal);
       this.assertResolvedAddresses(current, addresses, this.getPolicy());
-      const response = await defaultPinnedStreamingTransport({
+      const response = await this.streamingTransport({
         body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
         family: addresses[0]!.family,
         headers,

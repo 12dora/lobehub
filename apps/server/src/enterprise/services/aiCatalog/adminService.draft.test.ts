@@ -366,6 +366,63 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     expect(json).not.toContain('failure-secret');
   });
 
+  it('records the refined category for the plain-object error the model runtime really throws', async () => {
+    // `AgentRuntimeError.chat` returns a plain object with the status NESTED. Classifying it as
+    // an `Error` collapsed a dead OAuth grant, a 429 and a timeout into one "provider rejected
+    // the request" audit + toast, which is what made the shared-account check undiagnosable.
+    const runtimeService = new AiCatalogAdminService(
+      db,
+      new PlatformSecretService({ keyProvider }),
+      {
+        connectionProbe: async () => {
+          throw {
+            endpoint: 'https://chatgpt.com/backend-api/codex',
+            error: { message: 'Your authentication token has expired', status: 401 },
+            errorType: 'OAuthAuthorizationExpired',
+            provider: 'chatgpt',
+          };
+        },
+      },
+    );
+    const created = await runtimeService.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Runtime shape',
+      enabled: true,
+      providerKey: 'runtime-shape',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'runtime-shape-secret' },
+      source: 'custom',
+    });
+    await runtimeService.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await runtimeService.getDetail(created.id)).draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'add check model',
+      type: 'chat',
+    });
+
+    await expect(
+      runtimeService.testProvider('admin', { id: created.id, reason: 'test runtime shape' }),
+    ).resolves.toMatchObject({
+      errorCategory: 'auth',
+      errorType: 'OAuthAuthorizationExpired',
+      sanitizedMessage: 'connection_failed_shared_account_expired',
+      status: 'failure',
+    });
+
+    const connectionTest = (await runtimeService.getDetail(created.id)).draft.connectionTest;
+    expect(connectionTest).toMatchObject({ errorCategory: 'auth', status: 'failure' });
+    // Provider prose never reaches storage, whatever the runtime put in the payload.
+    expect(JSON.stringify(connectionTest)).not.toContain('authentication token has expired');
+
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.aiProviders.test' && row.targetId === created.id,
+    );
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ result: 'failure' });
+  });
+
   it('reports distinct, actionable reasons for each check-model configuration gap', async () => {
     const probe = vi.fn(async () => {});
     const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
@@ -494,6 +551,141 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  it('reports a dead shared grant with the stable reconnect code, never English prose', async () => {
+    // The pre-probe refresh is the ONLY path that can prove the shared account is dead before
+    // a request is even attempted. It used to mint an English sentence that every locale
+    // rendered verbatim, and carried no runtime code for the UI to key reconnect guidance off.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: 'invalid_grant' }), {
+        headers: { 'content-type': 'application/json' },
+        status: 400,
+      })) as typeof fetch;
+    try {
+      const probe = vi.fn(async () => {});
+      const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
+        connectionProbe: probe,
+      });
+      const created = await service.createProviderDraft('admin', {
+        checkModel: 'grok-chat',
+        displayName: 'Dead shared grok',
+        enabled: true,
+        providerKey: 'supergrok',
+        reason: 'create',
+        secret: {
+          operation: 'replace',
+          value: {
+            oauthAccessToken: 'at-dead',
+            oauthRefreshToken: 'rt-dead',
+            // Inside the proactive refresh window, so the token endpoint is really called.
+            oauthTokenExpiresAt: String(Date.now() + 30_000),
+          },
+        },
+        source: 'builtin',
+      });
+      await service.createModel('admin', {
+        enabled: true,
+        expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+        modelKey: 'grok-chat',
+        providerId: created.id,
+        reason: 'add model',
+        type: 'chat',
+      });
+
+      await expect(
+        service.testProvider('admin', { id: created.id, reason: 'probe a dead grant' }),
+      ).resolves.toMatchObject({
+        errorCategory: 'auth',
+        errorType: 'OAuthAuthorizationExpired',
+        sanitizedMessage: 'connection_failed_shared_account_expired',
+        status: 'failure',
+      });
+      // Terminal: a dead grant is never handed to the probe as if it might work.
+      expect(probe).not.toHaveBeenCalled();
+
+      const connectionTest = (await service.getDetail(created.id)).draft.connectionTest;
+      expect(connectionTest).toMatchObject({
+        errorCategory: 'auth',
+        sanitizedMessage: 'connection_failed_shared_account_expired',
+        status: 'failure',
+      });
+      expect(JSON.stringify(connectionTest)).not.toContain('rt-dead');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('replays the shared-account reconnect code to a superseded concurrent attempt', async () => {
+    // Two admin tabs. `errorType` is deliberately NOT persisted, so the losing attempt can only
+    // replay the stored code — which is exactly why the dead grant has its own code instead of
+    // the generic `auth` one.
+    const createProbe = () => {
+      let entered!: () => void;
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const enteredPromise = new Promise<void>((done) => {
+        entered = done;
+      });
+      const promise = new Promise<void>((done, fail) => {
+        resolve = done;
+        reject = fail;
+      });
+      return { entered, enteredPromise, promise, reject, resolve };
+    };
+    const first = createProbe();
+    const second = createProbe();
+    const probes = [first, second];
+    let probeIndex = 0;
+    const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
+      connectionProbe: async () => {
+        const probe = probes[probeIndex++];
+        probe.entered();
+        await probe.promise;
+      },
+    });
+    const created = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Concurrent shared',
+      enabled: true,
+      providerKey: 'concurrent-shared',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'concurrent-shared-secret' },
+      source: 'custom',
+    });
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await service.getDetail(created.id)).draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'add check model',
+      type: 'chat',
+    });
+
+    const oldAttempt = service.testProvider('admin', { id: created.id, reason: 'old' });
+    await first.enteredPromise;
+    const newAttempt = service.testProvider('admin', { id: created.id, reason: 'new' });
+    await second.enteredPromise;
+    // The winner finds the shared grant dead.
+    second.reject({
+      error: { message: 'The shared provider connection has expired' },
+      errorType: 'OAuthAuthorizationExpired',
+    });
+    await expect(newAttempt).resolves.toMatchObject({
+      errorCategory: 'auth',
+      errorType: 'OAuthAuthorizationExpired',
+      sanitizedMessage: 'connection_failed_shared_account_expired',
+      status: 'failure',
+    });
+
+    first.resolve();
+    // The superseded attempt returns authoritative persisted state — still actionable.
+    await expect(oldAttempt).resolves.toMatchObject({
+      errorCategory: 'auth',
+      sanitizedMessage: 'connection_failed_shared_account_expired',
+      status: 'failure',
+    });
   });
 
   it('probes an operator-selected model override without persisting it as checkModel', async () => {

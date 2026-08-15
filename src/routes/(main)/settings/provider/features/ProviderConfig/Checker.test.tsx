@@ -115,7 +115,7 @@ describe('Checker — admin platform catalog', () => {
     mocks.test.mockResolvedValue({
       errorCategory: 'auth',
       latencyMs: 40,
-      sanitizedMessage: 'Connection failed: authentication rejected',
+      sanitizedMessage: 'connection_failed_auth',
       status: 'failure',
     });
 
@@ -124,10 +124,74 @@ describe('Checker — admin platform catalog', () => {
 
     await waitFor(() =>
       expect(screen.getByTestId('alert-title').textContent).toBe(
-        'Connection failed: authentication rejected',
+        'llm.checker.reason.connectionFailedAuth',
       ),
     );
     expect(screen.getByTestId('alert-title').textContent).not.toContain('ConnectionCheckFailed');
+  });
+
+  it.each([
+    ['connection_failed_auth', 'llm.checker.reason.connectionFailedAuth'],
+    ['connection_failed_network', 'llm.checker.reason.connectionFailedNetwork'],
+    ['connection_failed_provider', 'llm.checker.reason.connectionFailedProvider'],
+    ['connection_failed_rate_limit', 'llm.checker.reason.connectionFailedRateLimit'],
+    ['connection_failed_invalid_config', 'llm.checker.reason.connectionFailedInvalidConfig'],
+    // Its own code: only the persisted message survives a superseded concurrent attempt.
+    ['connection_failed_shared_account_expired', 'llm.checker.reason.sharedAccountExpired'],
+    // Backward compat: results persisted before the codes landed are replayed verbatim by
+    // testProvider when an attempt is superseded, so the old sentences must still translate.
+    ['Connection failed: authentication rejected', 'llm.checker.reason.connectionFailedAuth'],
+    [
+      'Connection failed: provider network unavailable',
+      'llm.checker.reason.connectionFailedNetwork',
+    ],
+    [
+      'Connection failed: provider rejected the request',
+      'llm.checker.reason.connectionFailedProvider',
+    ],
+    [
+      'Connection failed: provider rate limit reached',
+      'llm.checker.reason.connectionFailedRateLimit',
+    ],
+    [
+      'Connection failed: invalid provider configuration',
+      'llm.checker.reason.connectionFailedInvalidConfig',
+    ],
+    [
+      'Connection failed: the shared account connection expired — reconnect it',
+      'llm.checker.reason.sharedAccountExpired',
+    ],
+  ])('translates the probe verdict %s instead of printing server English', async (message, key) => {
+    mocks.test.mockResolvedValue({
+      errorCategory: 'provider',
+      latencyMs: 40,
+      sanitizedMessage: message,
+      status: 'failure',
+    });
+
+    renderChecker(true);
+    clickCheck();
+
+    await waitFor(() => expect(screen.getByTestId('alert-title').textContent).toBe(key));
+  });
+
+  it('prefers the runtime error code when it is more actionable than the category', async () => {
+    mocks.test.mockResolvedValue({
+      errorCategory: 'auth',
+      errorType: 'OAuthAuthorizationExpired',
+      latencyMs: 40,
+      sanitizedMessage: 'connection_failed_auth',
+      status: 'failure',
+    });
+
+    renderChecker(true);
+    clickCheck();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('alert-title').textContent).toBe(
+        'llm.checker.reason.sharedAccountExpired',
+      ),
+    );
   });
 
   it.each([
