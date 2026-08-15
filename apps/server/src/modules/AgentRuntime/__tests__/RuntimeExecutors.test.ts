@@ -134,13 +134,21 @@ vi.mock('@/envs/file', () => ({
   fileEnv: { NEXT_PUBLIC_S3_FILE_PATH: 'files' },
 }));
 
-// FileService is constructed by the runtime to persist model-generated images.
-// `mockUploadBase64` is the spy multimodal-image tests assert against.
-const { mockUploadBase64 } = vi.hoisted(() => ({ mockUploadBase64: vi.fn() }));
+// FileService is constructed by the runtime to persist model-generated images
+// and files. `mockUploadBase64` is the spy multimodal-image tests assert
+// against; `mockUploadFromBuffer` / `mockDeleteUserFileRecord` back the
+// generated-file (code-interpreter export) path.
+const { mockDeleteUserFileRecord, mockUploadBase64, mockUploadFromBuffer } = vi.hoisted(() => ({
+  mockDeleteUserFileRecord: vi.fn(),
+  mockUploadBase64: vi.fn(),
+  mockUploadFromBuffer: vi.fn(),
+}));
 vi.mock('@/server/services/file', () => ({
   FileService: vi.fn().mockImplementation(() => ({
+    deleteUserFileRecord: mockDeleteUserFileRecord,
     getFileAccessUrl: vi.fn().mockResolvedValue('https://files.example/access'),
     uploadBase64: mockUploadBase64,
+    uploadFromBuffer: mockUploadFromBuffer,
   })),
 }));
 
@@ -161,6 +169,14 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       success: true,
     });
     mockFinalizeCompression.mockResolvedValue({ success: true });
+    mockUploadFromBuffer.mockReset();
+    mockUploadFromBuffer.mockResolvedValue({
+      fileId: 'file-1',
+      key: 'files/generations/file-1',
+      url: 'https://files.example/f/file-1',
+    });
+    mockDeleteUserFileRecord.mockReset();
+    mockDeleteUserFileRecord.mockResolvedValue(undefined);
     vi.mocked(initModelRuntimeFromDB).mockResolvedValue({
       chat: vi.fn().mockImplementation(async (_payload: any, options: any) => {
         await options?.callback?.onText?.('done');
@@ -169,6 +185,7 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
     } as any);
 
     mockMessageModel = {
+      addFiles: vi.fn().mockResolvedValue({ success: true }),
       create: vi.fn().mockResolvedValue({ id: 'msg-123' }),
       deleteMessage: vi.fn().mockResolvedValue({ success: true }),
       // call_llm does a parent existence preflight; return a truthy row by
@@ -2961,6 +2978,149 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         ).rejects.toThrow();
 
         expect(mockMessageModel.update).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('generated files (code-interpreter exports)', () => {
+      const fileChunk = (name = 'report.pdf', content = 'pdf-bytes') => ({
+        file: {
+          data: `data:application/pdf;base64,${Buffer.from(content).toString('base64')}`,
+          mimeType: 'application/pdf',
+          name,
+          size: content.length,
+        },
+      });
+
+      const instruction = {
+        payload: {
+          messages: [{ content: 'export it', role: 'user' }],
+          model: 'gpt-4',
+          provider: 'openai',
+          tools: [],
+        },
+        type: 'call_llm' as const,
+      };
+
+      const fileChunkCalls = () =>
+        mockStreamManager.publishStreamChunk.mock.calls.filter(
+          ([, , chunk]: [string, number, { chunkType: string }]) => chunk.chunkType === 'file',
+        );
+
+      it('treats a file-only turn as actionable output, not an empty completion', async () => {
+        // No text, no reasoning, no tool calls — only a generated file. Before
+        // the fix this threw the terminal (non-retryable) ModelEmptyError even
+        // though the export was already uploaded and attached.
+        const mockChat = vi.fn().mockImplementation(async (_payload: any, options: any) => {
+          await options?.callback?.onFile?.(fileChunk());
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
+
+        const result = await createRuntimeExecutors(ctx).call_llm!(instruction, createMockState());
+
+        expect(result.events.some((event: any) => event.type === 'llm_result')).toBe(true);
+        expect(mockMessageModel.addFiles).toHaveBeenCalledWith('msg-123', ['file-1']);
+        expect(mockStreamManager.publishStreamChunk).toHaveBeenCalledWith('op-123', 0, {
+          chunkType: 'file',
+          file: expect.objectContaining({ id: 'file-1', name: 'report.pdf' }),
+        });
+        const streamEndCall = mockStreamManager.publishStreamEvent.mock.calls.findIndex(
+          ([, event]: [string, { type: string }]) => event.type === 'stream_end',
+        );
+        expect(streamEndCall).toBeGreaterThanOrEqual(0);
+        // the attach settles BEFORE finalization, so the terminal snapshot read
+        // back from the DB already carries the file in `fileList`
+        expect(mockMessageModel.addFiles.mock.invocationCallOrder[0]).toBeLessThan(
+          mockStreamManager.publishStreamEvent.mock.invocationCallOrder[streamEndCall],
+        );
+      });
+
+      it('attaches a re-generated identical file only once across retry attempts', async () => {
+        vi.useFakeTimers();
+        let markAttached: () => void = () => {};
+        const attached = new Promise<void>((resolve) => {
+          markAttached = resolve;
+        });
+        mockMessageModel.addFiles.mockImplementation(async () => {
+          markAttached();
+          return { success: true };
+        });
+
+        const mockChat = vi
+          .fn()
+          // Attempt 1 gets the export onto the message, then dies.
+          .mockImplementationOnce(async (_payload: any, options: any) => {
+            await options.callback.onFile(fileChunk());
+            await attached;
+            throw new Error('network timeout');
+          })
+          // Attempt 2 regenerates the very same export.
+          .mockImplementationOnce(async (_payload: any, options: any) => {
+            await options.callback.onFile(fileChunk());
+            await options.callback.onText('final');
+            return new Response('done');
+          });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
+
+        try {
+          const run = createRuntimeExecutors(ctx).call_llm!(instruction, createMockState());
+          await vi.runOnlyPendingTimersAsync();
+          await run;
+
+          expect(mockChat).toHaveBeenCalledTimes(2);
+          // The assistant message id is shared across attempts and every upload
+          // mints a fresh file UUID — without operation-scoped dedupe this would
+          // be two uploads and two `messages_files` rows for one export.
+          expect(mockUploadFromBuffer).toHaveBeenCalledTimes(1);
+          expect(mockMessageModel.addFiles).toHaveBeenCalledTimes(1);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('never attaches or publishes a file whose upload lands after an interrupt', async () => {
+        let releaseUpload: (value: unknown) => void = () => {};
+        let markUploadStarted: () => void = () => {};
+        const uploadStarted = new Promise<void>((resolve) => {
+          markUploadStarted = resolve;
+        });
+        mockUploadFromBuffer.mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              releaseUpload = resolve;
+              markUploadStarted();
+            }),
+        );
+
+        const mockChat = vi.fn().mockImplementation(async (_payload: any, options: any) => {
+          await options.callback.onFile(fileChunk());
+          throw new Error('network timeout');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
+
+        const interruptedCtx: RuntimeExecutorContext = {
+          ...ctx,
+          loadAgentState: vi.fn().mockResolvedValue({
+            metadata: { platformStartClassification: 'ordinary' },
+            status: 'interrupted',
+          }),
+        };
+
+        const run = createRuntimeExecutors(interruptedCtx).call_llm!(
+          instruction,
+          createMockState(),
+        );
+        await uploadStarted;
+        releaseUpload({ fileId: 'file-1', key: 'k', url: 'https://files.example/f/file-1' });
+
+        await expect(run).rejects.toThrow('network timeout');
+
+        // The turn already emitted its terminal event: nothing may be attached
+        // to it or published onto its channel afterwards.
+        expect(mockMessageModel.addFiles).not.toHaveBeenCalled();
+        expect(fileChunkCalls()).toHaveLength(0);
+        // and the file record that no message will ever reference is dropped
+        expect(mockDeleteUserFileRecord).toHaveBeenCalledWith('file-1');
       });
     });
   });

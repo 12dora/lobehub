@@ -1,4 +1,4 @@
-import { type AgentStreamEventType } from '@lobechat/agent-gateway-client';
+import { type AgentStreamEventType, type StreamChunkFile } from '@lobechat/agent-gateway-client';
 import { type ChatToolPayload } from '@lobechat/types';
 import debug from 'debug';
 import { type Redis } from 'ioredis';
@@ -125,6 +125,13 @@ export interface StreamChunkData {
   content?: string;
   /** Multimodal content parts (text + images) */
   contentParts?: Array<{ text: string; type: 'text' } | { image: string; type: 'image' }>;
+  /**
+   * Persisted metadata of a generated file (`file` chunks). Bytes are NEVER
+   * published — the server uploads them and attaches the `messages_files` row
+   * before publishing, so this is only what the client needs to render the
+   * attachment card live.
+   */
+  file?: StreamChunkFile;
   /** Grounding/search data */
   grounding?: any;
   /** Image list for base64_image chunks */

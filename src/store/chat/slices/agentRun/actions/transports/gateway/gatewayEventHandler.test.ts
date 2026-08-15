@@ -250,6 +250,55 @@ describe('createGatewayEventHandler', () => {
     );
   });
 
+  it('attaches generated files from `file` chunks to the assistant message fileList', async () => {
+    const store = createStore();
+    const handler = createGatewayEventHandler(() => store, {
+      assistantMessageId: 'seed-msg',
+      context,
+      operationId: 'op-1',
+    });
+
+    const report = {
+      fileType: 'application/pdf',
+      id: 'file-1',
+      name: 'report.pdf',
+      size: 1024,
+      url: 'https://app.example.com/f/file-1',
+    };
+    const sheet = {
+      fileType: 'text/csv',
+      id: 'file-2',
+      name: 'data.csv',
+      size: 12,
+      url: 'https://app.example.com/f/file-2',
+    };
+
+    handler(makeEvent('stream_chunk', { chunkType: 'file', file: report }));
+    handler(makeEvent('stream_chunk', { chunkType: 'file', file: sheet }));
+    // a replayed chunk (reconnect resume) must not duplicate the card
+    handler(makeEvent('stream_chunk', { chunkType: 'file', file: report }));
+    await flush();
+
+    expect(store.internal_dispatchMessage).toHaveBeenNthCalledWith(
+      1,
+      {
+        id: 'seed-msg',
+        type: 'updateMessage',
+        value: { fileList: [report] },
+      },
+      { operationId: 'op-1' },
+    );
+    expect(store.internal_dispatchMessage).toHaveBeenLastCalledWith(
+      {
+        id: 'seed-msg',
+        type: 'updateMessage',
+        value: { fileList: [report, sheet] },
+      },
+      { operationId: 'op-1' },
+    );
+    expect(store.internal_dispatchMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('does not insert a shell when the assistant row is already in the store', async () => {
     const store = createStore({
       key: [{ content: 'existing', id: 'step2-msg', role: 'assistant' } as UIChatMessage],

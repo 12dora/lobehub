@@ -5,6 +5,8 @@ export interface ModelEmptyCompletionDiagnostics {
   contentLength?: number;
   /** Calculated request cost in USD when pricing and usage are available. */
   cost?: number;
+  /** Generated non-image files attached to the assistant message. */
+  fileCount?: number;
   finishReason?: string;
   imageCount?: number;
   maxAttempts?: number;
@@ -17,7 +19,7 @@ export interface ModelEmptyCompletionDiagnostics {
 
 /**
  * Thrown when the provider completes a request without user-visible content,
- * reasoning, tool calls, images, or grounding. Provider-reported output usage
+ * reasoning, tool calls, images, files, or grounding. Provider-reported output usage
  * does not make an otherwise blank turn visible to the user.
  *
  * The `errorType` tags this as the terminal `ModelEmptyCompletion` provider
@@ -51,18 +53,25 @@ const EMPTY_COMPLETION_MAX_OUTPUT_TOKENS = 1;
  */
 export const isEmptyModelCompletion = (params: {
   content: string;
+  /**
+   * Generated non-image files (code-interpreter exports) that were persisted
+   * onto the assistant message. A file-only answer is visible output.
+   */
+  fileCount?: number;
   hasGrounding?: boolean;
   imageCount: number;
   outputTokens: number | undefined;
   reasoning: string;
   toolCallCount: number;
 }): boolean => {
-  const { content, reasoning, toolCallCount, imageCount, outputTokens, hasGrounding } = params;
+  const { content, reasoning, toolCallCount, imageCount, fileCount, outputTokens, hasGrounding } =
+    params;
 
   if (content.trim().length > 0) return false;
   if (reasoning.trim().length > 0) return false;
   if (toolCallCount > 0) return false;
   if (imageCount > 0) return false;
+  if ((fileCount ?? 0) > 0) return false;
 
   // Grounding/citation metadata is a known valid no-text result. In every other
   // case, provider-reported output tokens may represent internal reasoning or

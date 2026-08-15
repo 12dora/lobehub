@@ -77,10 +77,31 @@ export type StreamChunkType =
   | 'content_part'
   | 'reasoning_part';
 
+/**
+ * Payload of a `file` chunk: the ALREADY PERSISTED file record (a
+ * `messages_files` row is attached server-side before the chunk is published).
+ * Never carries bytes — the client only needs this to render the attachment
+ * card immediately; a later message reload rehydrates the same data from the DB.
+ * Field names mirror `ChatFileItem` so it can be spread into `fileList`.
+ */
+export interface StreamChunkFile {
+  /** MIME type, e.g. `application/pdf` */
+  fileType: string;
+  /** Persisted file id (`files.id`) */
+  id: string;
+  name: string;
+  /** Decoded byte length */
+  size: number;
+  /** Access URL (file proxy in production) */
+  url: string;
+}
+
 export interface StreamChunkData {
   chunkType: StreamChunkType;
   content?: string;
   contentParts?: Array<{ text: string; type: 'text' } | { image: string; type: 'image' }>;
+  /** Generated file metadata for `file` chunks */
+  file?: StreamChunkFile;
   grounding?: any;
   imageList?: any[];
   images?: any[];

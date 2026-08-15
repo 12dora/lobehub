@@ -10,6 +10,7 @@ import type {
 } from '@lobechat/agent-gateway-client';
 import type {
   BuiltinToolResult,
+  ChatFileItem,
   ChatMessageError,
   ConversationContext,
   UIChatMessage,
@@ -439,6 +440,13 @@ export const createGatewayEventHandler = (
   // Accumulated content from stream chunks (reset on each stream_start)
   let accumulatedContent = '';
   let accumulatedReasoning = '';
+  // Files the server generated, uploaded and attached to the CURRENT assistant
+  // message. The chunk carries persisted metadata only (no bytes) — the DB
+  // `messages_files` rows are the source of truth, this is just so the card
+  // shows up live. Scoped by message id (not reset on stream_start) so a step
+  // that keeps streaming into the same message keeps its earlier files.
+  let streamedFiles: ChatFileItem[] = [];
+  let streamedFilesMessageId: string | undefined;
 
   // Tracks whether any server-confirmed state has actually arrived
   // (server-assigned assistant id, streamed text/reasoning/tools, or a SoT
@@ -645,6 +653,39 @@ export const createGatewayEventHandler = (
               },
               dispatchContext,
             );
+          }
+
+          // A generated file (code-interpreter export). The server already
+          // uploaded it and inserted the `messages_files` row, so this only
+          // attaches the card to the in-memory message; a reload rehydrates the
+          // same `fileList` from the DB. Deduped by file id because replayed
+          // events (reconnect resume) redeliver the chunk.
+          if (data.chunkType === 'file' && data.file?.id) {
+            const file = data.file;
+            if (streamedFilesMessageId !== currentAssistantMessageId) {
+              streamedFiles = [];
+              streamedFilesMessageId = currentAssistantMessageId;
+            }
+            if (!streamedFiles.some((item) => item.id === file.id)) {
+              streamedFiles = [
+                ...streamedFiles,
+                {
+                  fileType: file.fileType,
+                  id: file.id,
+                  name: file.name,
+                  size: file.size,
+                  url: file.url,
+                },
+              ];
+              get().internal_dispatchMessage(
+                {
+                  id: currentAssistantMessageId,
+                  type: 'updateMessage',
+                  value: { fileList: streamedFiles },
+                },
+                dispatchContext,
+              );
+            }
           }
 
           if (data.chunkType === 'tools_calling' && data.toolsCalling) {

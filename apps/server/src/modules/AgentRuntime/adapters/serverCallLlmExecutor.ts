@@ -44,6 +44,10 @@ import { createConversationParentMissingError } from '../messagePersistErrors';
 import { VISIBLE_OUTPUT_END_PUBLISHED_STEP_INDEX_METADATA_KEY } from '../visibleOutputEnd';
 import { initOperationModelRuntime } from './operationModelRuntime';
 import { buildServerCallLlmContext } from './serverCallLlmContextBuilder';
+import {
+  createGeneratedFileDedupeStore,
+  createGeneratedFileUploader,
+} from './serverCallLlmGeneratedFile';
 import { createServerCallLlmStreamSink } from './serverCallLlmStreamSink';
 import { resolveServerCallLlmTooling, type ServerCallLlmTooling } from './serverCallLlmTooling';
 
@@ -245,12 +249,24 @@ export const callLlm =
       });
       const chatCtx = otelTrace.setSpan(otelContext.active(), chatSpan);
 
+      // Operation-scoped, NOT per-attempt: every attempt streams into the same
+      // assistant message, so a re-generated identical export must attach once.
+      const generatedFileDedupe = createGeneratedFileDedupeStore();
+
       try {
         return await otelContext.with(chatCtx, async () => {
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const streamSink = createServerCallLlmStreamSink({
               ctx,
               events,
+              operationLogId,
+            });
+            // Per-attempt uploader (so a failed attempt's in-flight work can be
+            // cancelled wholesale) over an operation-scoped dedupe store.
+            const generatedFiles = createGeneratedFileUploader({
+              assistantMessageId: assistantMessageItem.id,
+              ctx,
+              dedupe: generatedFileDedupe,
               operationLogId,
             });
             let toolsCalling: ChatToolPayload[] = [];
@@ -364,16 +380,17 @@ export const callLlm =
 
                     await streamSink.appendBase64Image(image);
                   },
-                  // TODO(chatgptweb): file chunks are not transported in gateway
-                  // mode yet. `onFile` (generated non-image files, e.g. the
-                  // ChatGPT Web code interpreter's pdf/docx exports) is
-                  // deliberately NOT registered here: the stream protocol calls
-                  // it optionally (`callbacks.onFile?.()`), so a `file` chunk is
-                  // ignored without throwing and the turn completes normally —
-                  // the file is simply dropped. Making it work needs its own
-                  // design (server-side upload + `messages_files` attach +
-                  // a gateway chunk payload the client can hydrate); until then
-                  // generated files only reach the user in client mode.
+                  // Generated non-image files (e.g. the ChatGPT Web code
+                  // interpreter's pdf/docx exports). The bytes never reach the
+                  // browser in gateway mode: we upload them to the run owner's
+                  // file storage, attach the `messages_files` row to THIS
+                  // assistant message and publish a metadata-only `file` chunk
+                  // so the client can show the card while the turn is still
+                  // streaming. Fire-and-forget — awaited before the turn
+                  // finalizes, and never able to fail the answer.
+                  onFile: async ({ file }) => {
+                    generatedFiles.handleFile(file);
+                  },
                   onReasoningPart: async (part) => {
                     if (firstChunkAt === undefined) {
                       firstChunkAt = Date.now() - llmStartTime;
@@ -450,12 +467,23 @@ export const callLlm =
               // persisted multimodal content references S3 URLs, not base64.
               await streamSink.waitForImageUploads();
 
+              // Settle generated-file uploads + `messages_files` attaches before
+              // finalizing, so the terminal message snapshot (uiMessages, read
+              // back from the DB) already carries their `fileList`. Never
+              // rejects — a failed export must not fail the answer.
+              await generatedFiles.waitForUploads();
+              // A turn whose only output is a generated file (e.g. the code
+              // interpreter answering with a spreadsheet) is real, actionable
+              // output — it must not be classified as an empty completion.
+              const generatedFileCount = generatedFiles.attachedFileCount();
+
               // Empty-completion guard: if the model produced
               // nothing actionable — no content, reasoning, tool calls, images,
-              // or output tokens — throw so the retry loop below re-attempts the
-              // turn instead of finalizing to `done` with a blank assistant
-              // message. Skipped when the user interrupted mid-stream, where an
-              // empty turn is expected and must not be retried.
+              // files, or output tokens — throw so the retry loop below
+              // re-attempts the turn instead of finalizing to `done` with a
+              // blank assistant message. Skipped when the user interrupted
+              // mid-stream, where an empty turn is expected and must not be
+              // retried.
               const reportedOutputTokens =
                 currentStepUsage && typeof currentStepUsage === 'object'
                   ? (currentStepUsage as { totalOutputTokens?: unknown }).totalOutputTokens
@@ -470,6 +498,7 @@ export const callLlm =
               if (
                 isEmptyModelCompletion({
                   content: streamSink.content,
+                  fileCount: generatedFileCount,
                   hasGrounding: !!grounding,
                   imageCount,
                   outputTokens:
@@ -486,6 +515,7 @@ export const callLlm =
                     currentStepUsage && typeof currentStepUsage === 'object'
                       ? (currentStepUsage as { cost?: number }).cost
                       : undefined,
+                  fileCount: generatedFileCount,
                   finishReason: currentStepFinishReason,
                   imageCount,
                   maxAttempts,
@@ -933,6 +963,14 @@ export const callLlm =
               }
 
               throw error;
+            } finally {
+              // Close this attempt's uploader no matter how it ends. On the
+              // success path every upload already settled above, so this is a
+              // no-op; on the retry / interrupt / error path it stops an upload
+              // that is still in flight from attaching a file to — or publishing
+              // a `file` chunk onto — a turn that has already produced its
+              // terminal event.
+              await generatedFiles.cancel();
             }
           }
 

@@ -68,6 +68,85 @@ describe('createGatewayMemberStreamHandler', () => {
     expect(store.completeOperation).not.toHaveBeenCalled();
   });
 
+  it('paints generated files into the member column, deduped by file id', () => {
+    const store = createStore({
+      [bucketKey]: [{ content: '', id: 'member-msg', role: 'assistant' }],
+    });
+    const handler = createGatewayMemberStreamHandler(() => store, {
+      context,
+      ensureGroupHydrated: vi.fn().mockResolvedValue(undefined),
+      memberOperationId: 'server-member-op',
+      parentOperationId: 'owner-op',
+    });
+
+    const report = {
+      fileType: 'application/pdf',
+      id: 'file-1',
+      name: 'report.pdf',
+      size: 1024,
+      url: 'https://app.example.com/f/file-1',
+    };
+    const sheet = {
+      fileType: 'text/csv',
+      id: 'file-2',
+      name: 'data.csv',
+      size: 12,
+      url: 'https://app.example.com/f/file-2',
+    };
+
+    handler(makeEvent('stream_start', { assistantMessage: { id: 'member-msg' } }));
+    handler(makeEvent('stream_chunk', { chunkType: 'file', file: report }));
+    handler(makeEvent('stream_chunk', { chunkType: 'file', file: sheet }));
+    // a replayed chunk (reconnect resume) must not duplicate the card
+    handler(makeEvent('stream_chunk', { chunkType: 'file', file: report }));
+
+    expect(store.internal_dispatchMessage).toHaveBeenCalledTimes(2);
+    expect(store.internal_dispatchMessage).toHaveBeenLastCalledWith(
+      { id: 'member-msg', type: 'updateMessage', value: { fileList: [report, sheet] } },
+      { operationId: 'local-member-op' },
+    );
+  });
+
+  it('repaints files accumulated before the group tree hydrated', async () => {
+    // The member row only lands in the store once `ensureGroupHydrated` resolves,
+    // so a file chunk arriving first must be repainted afterwards.
+    const dbMessagesMap: Record<string, any[]> = {};
+    const store = createStore(dbMessagesMap);
+    let finishHydration = () => {};
+    const hydrated = new Promise<void>((resolve) => {
+      finishHydration = () => {
+        dbMessagesMap[bucketKey] = [{ content: '', id: 'member-msg', role: 'assistant' }];
+        resolve();
+      };
+    });
+    const handler = createGatewayMemberStreamHandler(() => store, {
+      context,
+      ensureGroupHydrated: () => hydrated,
+      memberOperationId: 'server-member-op',
+      parentOperationId: 'owner-op',
+    });
+
+    const report = {
+      fileType: 'application/pdf',
+      id: 'file-1',
+      name: 'report.pdf',
+      size: 1024,
+      url: 'https://app.example.com/f/file-1',
+    };
+
+    handler(makeEvent('stream_start', { assistantMessage: { id: 'member-msg' } }));
+    handler(makeEvent('stream_chunk', { chunkType: 'file', file: report }));
+    // dropped: the row isn't in the store yet
+    expect(store.internal_dispatchMessage).not.toHaveBeenCalled();
+
+    finishHydration();
+    await vi.waitFor(() => expect(store.internal_dispatchMessage).toHaveBeenCalled());
+    expect(store.internal_dispatchMessage).toHaveBeenCalledWith(
+      { id: 'member-msg', type: 'updateMessage', value: { fileList: [report] } },
+      { operationId: 'local-member-op' },
+    );
+  });
+
   it('skips the visible loading hint while the member row is not yet in the store (LOBE-11501)', () => {
     // Group hydration is still in flight, so the member row hasn't landed. Clearing
     // loading here would show a "done" column with no text — the guard skips it and

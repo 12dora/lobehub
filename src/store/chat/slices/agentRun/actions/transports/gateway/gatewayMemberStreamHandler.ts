@@ -3,7 +3,7 @@ import type {
   StreamChunkData,
   StreamStartData,
 } from '@lobechat/agent-gateway-client';
-import type { ConversationContext, UIChatMessage } from '@lobechat/types';
+import type { ChatFileItem, ConversationContext, UIChatMessage } from '@lobechat/types';
 
 import type { ChatStore } from '@/store/chat/store';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
@@ -45,7 +45,7 @@ export interface GatewayMemberStreamHandlerParams {
  * multiplexing).
  *
  * Scope is deliberately narrow — it owns ONLY the member's live text/reasoning/
- * tool-call streaming into its council column. It does NOT drive any run
+ * tool-call/generated-file streaming into its council column. It does NOT drive any run
  * lifecycle (the supervisor op owns the K=N barrier, unread, queue drain and
  * notification).
  *
@@ -77,6 +77,10 @@ export const createGatewayMemberStreamHandler = (
   let currentAssistantMessageId: string | undefined;
   let accumulatedContent = '';
   let accumulatedReasoning = '';
+  // Generated files (code-interpreter exports) streamed into THIS member row.
+  // Message-scoped: reset whenever the handler moves to another assistant row.
+  let streamedFiles: ChatFileItem[] = [];
+  let streamedFilesMessageId: string | undefined;
   let ended = false;
 
   const isMessageInStore = (id: string): boolean =>
@@ -119,6 +123,12 @@ export const createGatewayMemberStreamHandler = (
         if (localOperationId) get().associateMessageWithOperation(id, localOperationId);
         accumulatedContent = '';
         accumulatedReasoning = '';
+        // Files are message-scoped, not step-scoped: a later step streaming into
+        // the same row must keep the cards the earlier step already painted.
+        if (streamedFilesMessageId !== id) {
+          streamedFiles = [];
+          streamedFilesMessageId = id;
+        }
         // Bring in the council structure (tool message + all member rows) so the
         // members render as parallel columns, then repaint anything already
         // accumulated.
@@ -126,6 +136,7 @@ export const createGatewayMemberStreamHandler = (
           if (ended) return;
           if (accumulatedContent) dispatch({ content: accumulatedContent });
           if (accumulatedReasoning) dispatch({ reasoning: { content: accumulatedReasoning } });
+          if (streamedFiles.length > 0) dispatch({ fileList: streamedFiles });
         });
         break;
       }
@@ -142,6 +153,32 @@ export const createGatewayMemberStreamHandler = (
           accumulatedReasoning += data.reasoning;
           dispatch({ reasoning: { content: accumulatedReasoning } });
         }
+        // A generated file (code-interpreter export) from the member's own turn.
+        // The server already uploaded it and inserted the `messages_files` row,
+        // so this only paints the card into the member's council column; a
+        // reload rehydrates the same `fileList` from the DB. Deduped by file id
+        // because replayed events (reconnect resume) redeliver the chunk.
+        if (data.chunkType === 'file' && data.file?.id) {
+          const file = data.file;
+          if (streamedFilesMessageId !== currentAssistantMessageId) {
+            streamedFiles = [];
+            streamedFilesMessageId = currentAssistantMessageId;
+          }
+          if (!streamedFiles.some((item) => item.id === file.id)) {
+            streamedFiles = [
+              ...streamedFiles,
+              {
+                fileType: file.fileType,
+                id: file.id,
+                name: file.name,
+                size: file.size,
+                url: file.url,
+              },
+            ];
+            dispatch({ fileList: streamedFiles });
+          }
+        }
+
         if (data.chunkType === 'tools_calling' && data.toolsCalling) {
           dispatch({ tools: data.toolsCalling });
         }

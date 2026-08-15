@@ -27,6 +27,11 @@ describe('isEmptyModelCompletion', () => {
     expect(isEmptyModelCompletion({ ...base, imageCount: 1 })).toBe(false);
   });
 
+  it('treats a file-only turn (code-interpreter export) as non-empty', () => {
+    expect(isEmptyModelCompletion({ ...base, fileCount: 1 })).toBe(false);
+    expect(isEmptyModelCompletion({ ...base, fileCount: 0 })).toBe(true);
+  });
+
   it('flags a truly blank turn (no content, ~0 output tokens) as empty', () => {
     expect(isEmptyModelCompletion({ ...base, outputTokens: 1 })).toBe(true);
   });

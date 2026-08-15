@@ -11,6 +11,7 @@ export type {
   HumanInterventionOutcomeData,
   StepCompleteData,
   StreamChunkData,
+  StreamChunkFile,
   StreamChunkType,
   StreamStartData,
   ToolEndData,

@@ -298,6 +298,27 @@ describe('StreamEventManager', () => {
     });
   });
 
+  describe('publishStreamChunk', () => {
+    it('serializes a generated-file chunk as metadata only', async () => {
+      mockRedis.xadd.mockResolvedValue('event-id-file');
+
+      const file = {
+        fileType: 'application/pdf',
+        id: 'file-1',
+        name: 'report.pdf',
+        size: 2048,
+        url: 'https://app.example.com/f/file-1',
+      };
+
+      await streamManager.publishStreamChunk('op-1', 3, { chunkType: 'file', file });
+
+      const args = mockRedis.xadd.mock.calls[0];
+      expect(args[6]).toBe('stream_chunk');
+      expect(args[8]).toBe('3');
+      expect(JSON.parse(args[12] as string)).toEqual({ chunkType: 'file', file });
+    });
+  });
+
   describe('readEventsOnce', () => {
     it("resolves '$' to the current tail and returns it (not '$') on timeout", async () => {
       // Stream has a tail entry; xread then times out (no newer events).
