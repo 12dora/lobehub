@@ -816,6 +816,17 @@ export class AiCatalogAdminService extends AiCatalogAdminServiceModelOps {
         if (input.mode === 'create') {
           const { mode: _mode, ...createInput } = input;
           providerId = (await scoped.createProviderDraft(actorUserId, createInput)).id;
+          // A builtin provider's card already renders its default-enabled models with the
+          // toggle ON, so the row-less state the create used to leave behind was a lie the
+          // connectivity check then exposed. Seed those models here — same transaction, so
+          // the provider and its catalog become live together or not at all.
+          if (createInput.source === 'builtin') {
+            await scoped.materializeBuiltinDefaultModels(actorUserId, {
+              providerId,
+              providerKey: createInput.providerKey,
+              reason: input.reason,
+            });
+          }
         } else {
           const { mode: _mode, ...updateInput } = input;
           await scoped.updateProviderDraft(actorUserId, updateInput);

@@ -1,5 +1,6 @@
 import { BRANDING_PROVIDER } from '@lobechat/business-const';
 import { buildProviderModelList } from '@lobechat/utils';
+import { findBuiltinModelCardPayload } from '@lobechat/utils/builtinModelDefaults';
 import type {
   AiModelSortMap,
   AiProviderModelListItem,
@@ -54,30 +55,29 @@ export class AdminAiModelService {
    * `modelKey: item.id` (that branch is gated on AI_MODEL_CREATE, enforced inside the server
    * transaction that decides create-vs-update).
    *
-   * The payload is the model-bank card, so the materialized row keeps the catalog's real
-   * metadata instead of an empty stub. A key that is in neither the platform rows nor
-   * model-bank cannot be described, so it still fails loudly rather than inventing a model.
+   * The payload is the model-bank card — shared with the server's provider-create seeding via
+   * `findBuiltinModelCardPayload`, so a row materialized here and one materialized there carry
+   * identical metadata. A key that is in neither the platform rows nor model-bank cannot be
+   * described, so it still fails loudly rather than inventing a model.
    */
   #buildMaterializationItem = (
     providerKey: string,
     modelKey: string,
     enabled: boolean,
   ): ModelBatchUpdateItem => {
-    const card = LOBE_DEFAULT_MODEL_LIST.find(
-      (model) => model.providerId === providerKey && model.id === modelKey,
-    );
-    if (!card) throw new Error(`Model not found: ${modelKey}`);
+    const payload = findBuiltinModelCardPayload(providerKey, modelKey);
+    if (!payload) throw new Error(`Model not found: ${modelKey}`);
     return {
-      abilities: card.abilities as Record<string, unknown> | undefined,
-      contextWindowTokens: normalizeContextWindowTokens(card.contextWindowTokens) ?? null,
-      description: card.description ?? null,
-      displayName: card.displayName ?? null,
+      abilities: payload.abilities as Record<string, unknown> | undefined,
+      contextWindowTokens: payload.contextWindowTokens,
+      description: payload.description,
+      displayName: payload.displayName,
       enabled,
       id: modelKey,
-      parameters: card.parameters as Record<string, unknown> | undefined,
-      pricing: card.pricing as Record<string, unknown> | null | undefined,
-      settings: card.settings as Record<string, unknown> | undefined,
-      type: (card.type ?? 'chat') as AiProviderModelListItem['type'],
+      parameters: payload.parameters as Record<string, unknown> | undefined,
+      pricing: payload.pricing as Record<string, unknown> | null | undefined,
+      settings: payload.settings as Record<string, unknown> | undefined,
+      type: payload.type as AiProviderModelListItem['type'],
     };
   };
 
