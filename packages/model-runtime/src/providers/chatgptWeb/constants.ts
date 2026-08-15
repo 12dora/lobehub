@@ -229,6 +229,10 @@ export const CLIENT_CONTEXTUAL_INFO = {
  * flow in the observed traffic (E6 §1.3 for search, E3 §1.4 for picture_v2, and
  * the editable/attachment flow for documents). They are transcribed verbatim
  * rather than collapsed into one block — this is a fingerprinted endpoint.
+ *
+ * `attachments` doubles as the DEFAULT composer fingerprint: a plain turn with
+ * no attachment at all sends exactly this block (verified live 2026-08-15), and
+ * every plain chat turn now takes the conduit path.
  */
 export const FLOW_CLIENT_CONTEXTUAL_INFO = {
   attachments: {

@@ -5,7 +5,9 @@ import type { LobeRuntimeAI } from '../../core/BaseAI';
 import type {
   ChatGPTWebDoneContext,
   ChatGPTWebDoneResult,
+  ChatGPTWebFilePointer,
   ChatGPTWebImagePointer,
+  ChatGPTWebRecoveredFile,
 } from '../../core/streams/chatgptWeb';
 import { ChatGPTWebStream } from '../../core/streams/chatgptWeb';
 import type {
@@ -13,6 +15,7 @@ import type {
   ChatStreamPayload,
   CreateImageMethodOptions,
   OpenAIChatMessage,
+  StreamFileData,
   UserMessageContentPart,
   UserMessageContentPartFile,
 } from '../../types';
@@ -54,6 +57,7 @@ import {
 } from './client';
 import { createChatGPTWebImage } from './createImage';
 import { readImageDimensions, readImageMimeType } from './imageDimensions';
+import { extractSandboxFiles, resolveFileMimeType, sandboxFileName } from './interpreterFiles';
 import { getCachedUpload, setCachedUpload, uploadCacheKey, uploadNamespace } from './uploadCache';
 
 const log = createDebug('lobe-chatgptweb:runtime');
@@ -297,6 +301,27 @@ const lastUserMessageId = (body: Record<string, any>): string | undefined => {
 const isAbortError = (error: unknown): boolean =>
   (error as { name?: unknown } | undefined)?.name === 'AbortError';
 
+/**
+ * Prepare failures the plain path may still be able to serve — an ALLOWLIST, so
+ * a kind nobody classified here never silently degrades a turn:
+ *
+ * - `network` / `timeout`: the conduit endpoint (or the hop to it) hiccuped;
+ * - `upstream`: an unusable 5xx / malformed prepare body (a blank conduit token
+ *   included) — the legacy endpoint does not need one at all;
+ * - `not_found`: this account does not have `/f/conversation/prepare`, which is
+ *   exactly what the legacy endpoint is for.
+ *
+ * Everything else stays fatal: `auth` / `permission` / `rate_limit` are about
+ * the account, `cloudflare` blocks every path equally, `model_cap` is refused by
+ * the plain path too, `transport_unavailable` has no transport to retry on, a
+ * caller abort is the user leaving, and an UNTYPED error is a bug of ours that
+ * must surface rather than hide behind a degraded turn.
+ */
+const RECOVERABLE_PREPARE_KINDS = new Set(['network', 'not_found', 'timeout', 'upstream']);
+
+const isRecoverablePrepareError = (error: unknown): boolean =>
+  !isAbortError(error) && isChatGPTWebError(error) && RECOVERABLE_PREPARE_KINDS.has(error.kind);
+
 /** A one-shot event stream that only ever throws — used to replay a caller abort. */
 // eslint-disable-next-line require-yield -- intentionally yields nothing: it exists to throw
 async function* throwingEvents(error: unknown): AsyncGenerator<ConversationEvent, void, undefined> {
@@ -323,6 +348,12 @@ const createDebugRedactor = (): TransformStream<Uint8Array, Uint8Array> => {
       const mime = /^"data:([^;]+);base64,/.exec(data)?.[1] ?? 'unknown';
       // the encoded length is a fine proxy; nothing is decoded to measure it
       return `${head}"<base64_image ${mime} ~${Math.floor((data.length * 3) / 4)} bytes>"`;
+    }
+
+    if (/^event: file$/m.test(frame)) {
+      const mime = /"mimeType":"([^"]+)"/.exec(data)?.[1] ?? 'unknown';
+      const size = /"size":(\d+)/.exec(data)?.[1] ?? '?';
+      return `${head}"<file ${mime} ${size} bytes>"`;
     }
 
     return head + data.replaceAll(/(https?:\/\/[^"\s\\]+?)\?[^"\s\\]*/g, '$1?<redacted>');
@@ -396,17 +427,27 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       const search = payload.enabledSearch === true;
       const hasAttachments = mimeTypes.length > 0;
       const thinkingEffort = resolveThinkingEffort(payload);
-      // The `/f/` conduit path is what the web app uses whenever a turn carries
-      // search, attachments or an explicit thinking effort — the plain
-      // `/backend-api/conversation` body rejects `thinking_effort` with
-      // 422 "Invalid conversation body" (verified live 2026-08-15).
-      const useFPath = search || hasAttachments || !!thinkingEffort;
+      /**
+       * The `/f/` conduit path is what the web client uses for EVERY turn, and
+       * it is the only one whose conversation the upstream keeps: the plain
+       * `/backend-api/conversation` body sends `history_and_training_disabled`,
+       * so its conversation cannot be read back afterwards (verified live
+       * 2026-08-15 — the document, the interpreter download and even the hide
+       * call all answer 404). Everything post-turn depends on that document:
+       * code-interpreter files, citation recovery, background-answer recovery.
+       *
+       * Search / attachments / an explicit effort additionally CANNOT be
+       * expressed by the plain body at all (`thinking_effort` is rejected with
+       * 422 "Invalid conversation body"), so those turns never fall back.
+       */
+      const mayFallBack = !search && !hasAttachments && !thinkingEffort;
       const model = payload.model;
 
       const requirements = await this.client.getChatRequirements({ signal });
 
+      let useFPath = true;
       let conduitToken: string | undefined;
-      if (useFPath) {
+      try {
         const prepare = buildPrepareBody({
           attachmentMimeTypes: hasAttachments ? mimeTypes : undefined,
           model,
@@ -418,6 +459,15 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
           requirements,
           signal,
         }));
+      } catch (error) {
+        // Only a failure the plain path can actually correct falls back: a
+        // credential / cap / bot-protection failure is about the account, and
+        // retrying it on the legacy endpoint only hides it behind a degraded
+        // turn (see {@link RECOVERABLE_PREPARE_KINDS}).
+        if (!mayFallBack || isCallerAbort(signal) || !isRecoverablePrepareError(error)) throw error;
+        log('conduit prepare failed (%s); falling back to the plain path', String(error));
+        useFPath = false;
+        conduitToken = undefined;
       }
 
       const body = useFPath
@@ -433,7 +483,9 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
                 ? 'f:search'
                 : hasAttachments
                   ? 'f:attachments'
-                  : 'f:effort'
+                  : thinkingEffort
+                    ? 'f:effort'
+                    : 'f:plain'
               : 'conversation',
             model,
             thinkingEffort,
@@ -474,6 +526,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
         onCleanup: ({ conversationId }) => this.hideTurn(turn, conversationId),
         onDone: (context) => this.finalizeTurn(context, turn, search, signal),
         provider: this.provider,
+        resolveFile: (pointer) => this.resolveFile(pointer, turn, signal),
         resolveImage: (pointer) => this.resolveImage(pointer, turn, signal),
         signal,
       });
@@ -803,6 +856,48 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
   };
 
   /**
+   * Download a code-interpreter output and describe it as a `file` chunk.
+   *
+   * Runs INSIDE the stream (before `done`), because the cleanup hook hides the
+   * conversation the sandbox path belongs to. Bounded by
+   * {@link MAX_DOWNLOAD_BYTES} like every other asset we pull.
+   */
+  private resolveFile = async (
+    pointer: ChatGPTWebFilePointer,
+    turn: TurnState,
+    signal?: AbortSignal,
+  ): Promise<StreamFileData | undefined> => {
+    const conversationId = pointer.conversationId ?? turn.conversationId;
+    if (!conversationId || !pointer.messageId) return undefined;
+
+    const { downloadUrl, name } = await this.client.resolveInterpreterFile({
+      conversationId,
+      messageId: pointer.messageId,
+      sandboxPath: pointer.sandboxPath,
+      signal,
+    });
+    if (!downloadUrl) return undefined;
+
+    const { bytes, mimeType } = await this.client.downloadBytes(downloadUrl, {
+      maxBytes: MAX_DOWNLOAD_BYTES,
+      signal,
+    });
+    if (bytes.length === 0) return undefined;
+
+    // the upstream name is advisory; the sanitizer owns what we hand downstream
+    const fileName = sandboxFileName(name || pointer.name || pointer.sandboxPath);
+    const resolvedMime = resolveFileMimeType(mimeType, fileName);
+
+    return {
+      data: `data:${resolvedMime};base64,${bytesToBase64(bytes)}`,
+      mimeType: resolvedMime,
+      name: fileName,
+      size: bytes.length,
+      sourcePath: pointer.sandboxPath,
+    };
+  };
+
+  /**
    * Post-turn recovery from the conversation document:
    * - citations are never streamed, they are only committed to the document;
    * - a handed-off turn is normally picked back up by the resume stream, but if
@@ -841,6 +936,38 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
       if (suffix) result.text = suffix;
       if (answer?.citations?.length)
         result.grounding = { citations: answer.citations.map(toGroundingCitation) };
+
+      // The recovered answer is the only place a handed-off turn's interpreter
+      // files are visible — the stream never carried its `sandbox:` links.
+      if (answer?.text && answer.messageId) {
+        const messageId = answer.messageId;
+        const files: ChatGPTWebRecoveredFile[] = [];
+        for (const reference of extractSandboxFiles(answer.text)) {
+          try {
+            const file = await this.resolveFile(
+              {
+                conversationId,
+                messageId,
+                name: reference.name,
+                sandboxPath: reference.path,
+              },
+              turn,
+              signal,
+            );
+            // the chunk is keyed by the assistant message, like a streamed file
+            if (file) files.push({ file, messageId });
+          } catch (error) {
+            const callerReason = callerAbortReason(signal);
+            if (callerReason !== undefined) throw callerReason;
+            // shape only — a download error can carry the signed URL
+            log(
+              'failed to resolve a recovered file: %s',
+              error instanceof Error ? error.name : typeof error,
+            );
+          }
+        }
+        if (files.length > 0) result.files = files;
+      }
     }
 
     if (!result.grounding && !citationsEmitted && (searchRequested || searchUsed)) {
@@ -891,7 +1018,7 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
     conversationId: string,
     turn: TurnState,
     signal?: AbortSignal,
-  ): Promise<{ citations: Citation[]; text: string } | undefined> {
+  ): Promise<{ citations: Citation[]; messageId?: string; text: string } | undefined> {
     const anchor = this.turnAnchor(turn);
     const budget = timeoutSignalHandle(ANSWER_POLL_BUDGET_MS);
     const composed = composeSignals([signal, budget.signal]);
@@ -926,7 +1053,13 @@ export class LobeChatGPTWebAI implements LobeRuntimeAI {
 
         if (!finished) continue;
         // finished without text ⇒ nothing to recover, stop polling
-        return text ? { citations: extractCitations(document, anchor), text } : undefined;
+        return text
+          ? {
+              citations: extractCitations(document, anchor),
+              messageId: typeof message.id === 'string' ? message.id : undefined,
+              text,
+            }
+          : undefined;
       }
     } finally {
       budget.cleanup();

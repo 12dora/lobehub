@@ -93,7 +93,10 @@ describe('FileUploadAction', () => {
       });
 
       expect(getImageDimensions).toHaveBeenCalledWith(base64Data);
-      expect(uploadService.uploadBase64ToS3).toHaveBeenCalledWith(base64Data);
+      expect(uploadService.uploadBase64ToS3).toHaveBeenCalledWith(base64Data, {
+        abortController: undefined,
+        filename: undefined,
+      });
       expect(fileService.createFile).toHaveBeenCalledWith({
         fileType: mockUploadResult.fileType,
         hash: mockUploadResult.hash,
@@ -139,12 +142,135 @@ describe('FileUploadAction', () => {
         return await result.current.uploadBase64FileWithProgress(base64Data);
       });
 
-      expect(getImageDimensions).toHaveBeenCalledWith(base64Data);
+      // non-image data URIs never carry dimensions — don't waste a decode on them
+      expect(getImageDimensions).not.toHaveBeenCalled();
       expect(uploadResult).toEqual({
         ...mockFileResponse,
         dimensions: undefined,
         filename: mockMetadata.filename,
       });
+    });
+
+    it('should forward the filename and keep it as the display name for generated files', async () => {
+      const { result } = renderHook(() => useStore());
+
+      const base64Data = 'data:application/pdf;base64,JVBERi0xLjQK';
+      const mockMetadata = {
+        date: '12345',
+        dirname: '/test',
+        filename: 'e6a3-uuid.pdf',
+        path: '/test/e6a3-uuid.pdf',
+      };
+      const mockUploadResult = {
+        fileType: 'application/pdf',
+        hash: 'mock-hash',
+        metadata: mockMetadata,
+        size: 2048,
+      };
+      const mockFileResponse = { id: 'file-id-789', url: 'https://example.com/report.pdf' };
+
+      vi.spyOn(uploadService, 'uploadBase64ToS3').mockResolvedValue(mockUploadResult);
+      vi.spyOn(fileService, 'createFile').mockResolvedValue(mockFileResponse);
+
+      const uploadResult = await act(async () => {
+        return await result.current.uploadBase64FileWithProgress(base64Data, {
+          filename: 'report.pdf',
+          mimeType: 'application/pdf',
+        });
+      });
+
+      expect(getImageDimensions).not.toHaveBeenCalled();
+      expect(uploadService.uploadBase64ToS3).toHaveBeenCalledWith(base64Data, {
+        abortController: undefined,
+        filename: 'report.pdf',
+      });
+      expect(fileService.createFile).toHaveBeenCalledWith({
+        fileType: 'application/pdf',
+        hash: 'mock-hash',
+        metadata: mockMetadata,
+        name: 'report.pdf',
+        size: 2048,
+        url: mockMetadata.path,
+      });
+      expect(uploadResult).toEqual({
+        ...mockFileResponse,
+        dimensions: undefined,
+        filename: 'report.pdf',
+      });
+    });
+
+    it('should still probe dimensions when an explicit image mime type is given', async () => {
+      const { result } = renderHook(() => useStore());
+
+      const base64Data = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA';
+      const mockDimensions = { height: 10, ratio: 1, width: 10 };
+
+      vi.mocked(getImageDimensions).mockResolvedValue(mockDimensions);
+      vi.spyOn(uploadService, 'uploadBase64ToS3').mockResolvedValue({
+        fileType: 'image/png',
+        hash: 'mock-hash',
+        metadata: { date: '1', dirname: '/t', filename: 'uuid.png', path: '/t/uuid.png' },
+        size: 1024,
+      });
+      vi.spyOn(fileService, 'createFile').mockResolvedValue({ id: 'i', url: 'https://x/y.png' });
+
+      await act(async () => {
+        return await result.current.uploadBase64FileWithProgress(base64Data, {
+          filename: 'chart.png',
+          mimeType: 'image/png',
+        });
+      });
+
+      expect(getImageDimensions).toHaveBeenCalledWith(base64Data);
+    });
+
+    it('should skip the upload entirely when the signal is already aborted', async () => {
+      const { result } = renderHook(() => useStore());
+      const controller = new AbortController();
+      controller.abort();
+
+      vi.spyOn(uploadService, 'uploadBase64ToS3');
+      vi.spyOn(fileService, 'createFile');
+
+      const uploadResult = await act(async () => {
+        return await result.current.uploadBase64FileWithProgress(
+          'data:application/pdf;base64,JVBERi0xLjQK',
+          { filename: 'report.pdf', mimeType: 'application/pdf', signal: controller.signal },
+        );
+      });
+
+      expect(uploadResult).toBeUndefined();
+      expect(uploadService.uploadBase64ToS3).not.toHaveBeenCalled();
+      expect(fileService.createFile).not.toHaveBeenCalled();
+    });
+
+    it('should bridge the caller signal into an abort controller for the upload', async () => {
+      const { result } = renderHook(() => useStore());
+      const controller = new AbortController();
+
+      vi.spyOn(uploadService, 'uploadBase64ToS3').mockResolvedValue({
+        fileType: 'application/pdf',
+        hash: 'mock-hash',
+        metadata: { date: '1', dirname: '/t', filename: 'uuid.pdf', path: '/t/uuid.pdf' },
+        size: 2048,
+      });
+      vi.spyOn(fileService, 'createFile').mockResolvedValue({ id: 'f', url: 'https://x/y.pdf' });
+
+      await act(async () => {
+        return await result.current.uploadBase64FileWithProgress(
+          'data:application/pdf;base64,JVBERi0xLjQK',
+          { filename: 'report.pdf', mimeType: 'application/pdf', signal: controller.signal },
+        );
+      });
+
+      const passedController = vi.mocked(uploadService.uploadBase64ToS3).mock.calls[0][1]!
+        .abortController;
+      expect(passedController).toBeInstanceOf(AbortController);
+      expect(passedController!.signal.aborted).toBe(false);
+
+      // aborting the operation cancels the in-flight S3 request
+      controller.abort();
+      expect(passedController!.signal.aborted).toBe(true);
     });
 
     it('should handle errors during base64 upload', async () => {

@@ -87,6 +87,23 @@ const normalizeExistingFileMetadata = (metadata: unknown): ExistingFileMetadata 
   return metadata as ExistingFileMetadata;
 };
 
+const parseMimeTypeFromDataUri = (dataUri: string): string | undefined =>
+  /^data:([^;,]+)/.exec(dataUri)?.[1];
+
+/**
+ * `uploadService` takes an AbortController (it calls `.abort()` on the xhr),
+ * while callers own an AbortSignal — bridge one into the other.
+ */
+const bridgeSignalToController = (signal?: AbortSignal): AbortController | undefined => {
+  if (!signal) return undefined;
+
+  const controller = new AbortController();
+  if (signal.aborted) controller.abort();
+  else signal.addEventListener('abort', () => controller.abort(), { once: true });
+
+  return controller;
+};
+
 type Setter = StoreSetter<FileStore>;
 
 export const createFileUploadSlice = (set: Setter, get: () => FileStore, _api?: unknown) =>
@@ -101,22 +118,38 @@ export class FileUploadActionImpl {
 
   uploadBase64FileWithProgress = async (
     base64: string,
+    options?: { filename?: string; mimeType?: string; signal?: AbortSignal },
   ): Promise<UploadWithProgressResult | undefined> => {
     try {
-      // Extract image dimensions from base64 data
-      const dimensions = await getImageDimensions(base64);
+      // Nothing was started yet — cheapest possible cancellation.
+      if (options?.signal?.aborted) return;
 
-      const { metadata, fileType, size, hash } = await uploadService.uploadBase64ToS3(base64);
+      const mimeType = options?.mimeType ?? parseMimeTypeFromDataUri(base64);
+      // Only images have dimensions — probing a pdf/docx data URI just wastes a
+      // decode and always resolves to undefined.
+      const isImage = !mimeType || mimeType.startsWith('image/');
+
+      // Extract image dimensions from base64 data
+      const dimensions = isImage ? await getImageDimensions(base64) : undefined;
+
+      const { metadata, fileType, size, hash } = await uploadService.uploadBase64ToS3(base64, {
+        // `uploadService` cancels the S3 PUT through an AbortController, so
+        // bridge the caller's signal (the chat operation's) into one.
+        abortController: bridgeSignalToController(options?.signal),
+        filename: options?.filename,
+      });
 
       const res = await fileService.createFile({
         fileType,
         hash,
         metadata: { ...metadata, ...dimensions },
-        name: metadata.filename,
+        // keep the human-readable name when the caller supplied one; the S3
+        // metadata filename is a uuid
+        name: options?.filename || metadata.filename,
         size,
         url: metadata.path,
       });
-      return { ...res, dimensions, filename: metadata.filename };
+      return { ...res, dimensions, filename: options?.filename || metadata.filename };
     } catch (error) {
       if (handleFileUploadError(error)) return;
 

@@ -2,10 +2,13 @@ import { type GeneralAgentCallLLMResultPayload } from '@lobechat/agent-runtime';
 import { LOADING_FLAT } from '@lobechat/const';
 import type { MessageToolCall } from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { message as antdMessage } from '@/components/AntdStaticMethods';
 import { chatService } from '@/services/chat';
+import { messageService } from '@/services/message';
 import { createAgentExecutors } from '@/store/chat/agents/createAgentExecutors';
+import { getFileStoreState } from '@/store/file/store';
 
 import {
   createAssistantMessage,
@@ -31,8 +34,14 @@ vi.mock('@/services/chat', () => ({
 
 vi.mock('@/services/message', () => ({
   messageService: {
+    addFilesToMessage: vi.fn(),
     updateMessage: vi.fn(),
   },
+}));
+
+vi.mock('@/components/AntdStaticMethods', () => ({
+  message: { error: vi.fn(), info: vi.fn() },
+  notification: { error: vi.fn() },
 }));
 
 vi.mock('@/store/chat/selectors', () => ({
@@ -1859,6 +1868,117 @@ describe('call_llm executor', () => {
       const errorCall = vi.mocked(mockStore.optimisticUpdateMessageError).mock.calls[0];
       const errorArg = errorCall[1] as any;
       expect(errorArg.body.traceId).toBe(localTraceId);
+    });
+  });
+
+  describe('Generated files', () => {
+    const uploadedFile = { fileType: 'application/pdf', id: 'file-1', name: 'report.pdf' };
+
+    beforeEach(() => {
+      vi.mocked(antdMessage.error).mockClear();
+      vi.mocked(messageService.addFilesToMessage).mockReset();
+    });
+
+    /** Streams one generated `file` chunk, then finishes. */
+    const mockFileStreamResponse = () => {
+      vi.mocked(getFileStoreState).mockReturnValue({
+        uploadBase64FileWithProgress: vi
+          .fn()
+          .mockResolvedValue({ id: 'file-1', url: 'https://s3/report.pdf' }),
+      } as any);
+
+      vi.mocked(chatService.createAssistantMessageStream).mockImplementation(
+        async (params: any) => {
+          await params.onMessageHandle?.({
+            file: {
+              data: 'data:application/pdf;base64,JVBERi0xLjQK',
+              id: 'tmp_file_1',
+              mimeType: 'application/pdf',
+              name: 'report.pdf',
+              size: 2048,
+            },
+            type: 'file',
+          });
+
+          await params.onFinish?.('done', { type: 'stop' });
+        },
+      );
+    };
+
+    const runCallLlm = async () => {
+      const mockStore = createMockStore();
+      const context = createTestContext();
+      const instruction = createCallLLMInstruction();
+      const state = createInitialState();
+      mockStore.dbMessagesMap[context.messageKey] = [];
+
+      mockFileStreamResponse();
+
+      await executeWithMockContext({
+        executor: 'call_llm',
+        instruction,
+        state,
+        mockStore,
+        context,
+      });
+
+      return mockStore;
+    };
+
+    /** fileList values pushed after the (last) content update — i.e. the restore */
+    const fileListDispatchesAfterContentUpdate = (mockStore: any) => {
+      const dispatches = vi.mocked(mockStore.internal_dispatchMessage).mock;
+      const contentUpdateOrder =
+        vi.mocked(mockStore.optimisticUpdateMessageContent).mock.invocationCallOrder[0] ?? 0;
+
+      return dispatches.calls
+        .filter(
+          (call: any, index: number) =>
+            (call[0] as any)?.value?.fileList &&
+            dispatches.invocationCallOrder[index] > contentUpdateOrder,
+        )
+        .map((call: any) => (call[0] as any).value.fileList);
+    };
+
+    it('should attach uploaded files to the message', async () => {
+      vi.mocked(messageService.addFilesToMessage).mockResolvedValue({ success: true } as any);
+
+      const mockStore = await runCallLlm();
+
+      expect(messageService.addFilesToMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        ['file-1'],
+        expect.objectContaining({ topicId: 'test-topic' }),
+      );
+      expect(antdMessage.error).not.toHaveBeenCalled();
+      // nothing to restore — the DB rows carry the fileList
+      expect(fileListDispatchesAfterContentUpdate(mockStore)).toHaveLength(0);
+    });
+
+    it('should surface a failure when addFilesToMessage resolves with success:false', async () => {
+      // the server answers `{ success: false }` on a DB error — it does not reject
+      vi.mocked(messageService.addFilesToMessage).mockResolvedValue({ success: false } as any);
+
+      const mockStore = await runCallLlm();
+
+      expect(antdMessage.error).toHaveBeenCalledTimes(1);
+      // the optimistic cards survive the message refresh
+      expect(fileListDispatchesAfterContentUpdate(mockStore)).toEqual([
+        [expect.objectContaining(uploadedFile)],
+      ]);
+    });
+
+    it('should surface a failure when addFilesToMessage throws', async () => {
+      vi.mocked(messageService.addFilesToMessage).mockRejectedValue(new Error('db down'));
+
+      const mockStore = await runCallLlm();
+
+      expect(antdMessage.error).toHaveBeenCalledTimes(1);
+      expect(fileListDispatchesAfterContentUpdate(mockStore)).toEqual([
+        [expect.objectContaining(uploadedFile)],
+      ]);
+      // the answer itself still completes
+      expect(mockStore.optimisticUpdateMessageContent).toHaveBeenCalled();
     });
   });
 });

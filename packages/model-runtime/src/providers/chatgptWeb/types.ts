@@ -63,6 +63,17 @@ export type ConversationEvent =
       pointerKind: AssetPointerKind;
       type: 'image.pointer';
     }
+  | {
+      /** The conversation the file was written in — needed to resolve it. */
+      conversationId?: string;
+      /** The assistant message whose text referenced the file. */
+      messageId: string;
+      /** Basename of {@link sandboxPath}, sanitized. */
+      name: string;
+      /** The interpreter path itself, WITHOUT the scheme: `/mnt/data/report.pdf`. */
+      sandboxPath: string;
+      type: 'file.pointer';
+    }
   | { blocked: boolean; type: 'moderation' }
   | { modelSlug?: string; toolInvoked?: boolean; turnUseCase?: string; type: 'metadata' }
   | { endTurn?: boolean; messageId: string; status?: string; type: 'message.status' }

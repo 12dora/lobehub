@@ -11,6 +11,15 @@ import { type FileUploadState, type FileUploadStatus } from '@/types/files/uploa
 export const UPLOAD_NETWORK_ERROR = 'NetWorkError';
 
 /**
+ * Upper bound for base64 (data URI) uploads. Bigger payloads must go through a
+ * File upload instead of being carried through a stream as a base64 string.
+ */
+const MAX_BASE64_UPLOAD_BYTES = 32 * 1024 * 1024;
+
+const hasFileExtension = (filename?: string): boolean =>
+  !!filename && /\.[\da-z]+$/i.test(filename);
+
+/**
  * Generate file storage path metadata for S3-compatible storage
  * @param originalFilename - Original filename
  * @param options - Path generation options
@@ -81,7 +90,17 @@ class UploadService {
     const { base64, mimeType, type } = parseDataUri(base64Data);
 
     if (!base64 || !mimeType || type !== 'base64') {
-      throw new Error('Invalid base64 data for image');
+      throw new Error('Invalid base64 data URI');
+    }
+
+    // Guard against decoding a huge payload into memory (base64 is ~1.37x the
+    // decoded size, and `atob` materialises the whole string).
+    const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+    const decodedSize = Math.floor((base64.length * 3) / 4) - padding;
+    if (decodedSize > MAX_BASE64_UPLOAD_BYTES) {
+      throw new Error(
+        `File is too large to upload: ${Math.round(decodedSize / 1024 / 1024)} MB exceeds the ${MAX_BASE64_UPLOAD_BYTES / 1024 / 1024} MB limit`,
+      );
     }
 
     // Convert base64 to Blob
@@ -103,9 +122,14 @@ class UploadService {
 
     const blob = new Blob(byteArrays, { type: mimeType });
 
-    // Determine file extension
+    // Determine the file name: use the caller's name verbatim when it already
+    // carries an extension (generated files like `report.pdf` must keep theirs —
+    // deriving one from the mime type yields garbage for e.g.
+    // `application/vnd.openxmlformats-officedocument.wordprocessingml.document`)
     const fileExtension = mimeType.split('/')[1] || 'png';
-    const fileName = `${options.filename || `image_${dayjs().format('YYYY-MM-DD-hh-mm-ss')}`}.${fileExtension}`;
+    const fileName = hasFileExtension(options.filename)
+      ? options.filename!
+      : `${options.filename || `image_${dayjs().format('YYYY-MM-DD-hh-mm-ss')}`}.${fileExtension}`;
 
     // Create file object
     const file = new File([blob], fileName, { type: mimeType });

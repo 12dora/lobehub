@@ -14,10 +14,11 @@ import FileChunks from '../../components/FileChunks';
 import ImageFileListViewer from '../../components/ImageFileListViewer';
 import Reasoning from '../../components/Reasoning';
 import SearchGrounding from '../../components/SearchGrounding';
+import FileListViewer from '../../User/components/FileListViewer';
 import { useMarkdown } from '../useMarkdown';
 
 const MessageContent = memo<UIChatMessage>(
-  ({ id, tools, content, chunksList, search, imageList, metadata, ...props }) => {
+  ({ id, tools, content, chunksList, search, imageList, fileList, metadata, ...props }) => {
     const { drawer, markdownProps } = useMarkdown(id);
     // Use ConversationStore instead of ChatStore
     const generating = useConversationStore(messageStateSelectors.isMessageGenerating(id));
@@ -33,6 +34,7 @@ const MessageContent = memo<UIChatMessage>(
 
     const showSearch = !!search && (!!search.citations?.length || !!search.imageResults?.length);
     const showImageItems = !!imageList && imageList.length > 0;
+    const showFileItems = !!fileList && fileList.length > 0;
 
     // remove \n to avoid empty content
     // refs: https://github.com/lobehub/lobe-chat/pull/6153
@@ -90,6 +92,7 @@ const MessageContent = memo<UIChatMessage>(
           tempDisplayContent={metadata?.tempDisplayContent}
         />
         {showImageItems && <ImageFileListViewer items={imageList} />}
+        {showFileItems && <FileListViewer items={fileList} />}
         {reactions.length > 0 && (
           <ReactionDisplay
             isActive={isActive}

@@ -605,6 +605,151 @@ describe('ConversationEventRouter', () => {
     });
   });
 
+  describe('code-interpreter files', () => {
+    // the exact wire shape of a PDF turn (scratchpad/file-probe.txt): the text
+    // arrives in three deltas, the last one closing the markdown link together
+    // with the final status
+    const pdfTurn = [
+      assistantAdd('answer-1'),
+      append('Done: [Download a'),
+      { v: 'ihub-test.pdf](sandbox:/mnt/data/ai' },
+      {
+        o: 'patch',
+        p: '',
+        v: [
+          { o: 'append', p: '/message/content/parts/0', v: 'hub-test.pdf)' },
+          { o: 'replace', p: '/message/status', v: 'finished_successfully' },
+          { o: 'replace', p: '/message/end_turn', v: true },
+        ],
+      },
+    ];
+
+    it('emits a file.pointer for the finished answer, before done', () => {
+      const { events } = feedAll([...pdfTurn, '[DONE]']);
+
+      expect(events.filter((event) => event.type === 'file.pointer')).toEqual([
+        {
+          conversationId: 'conv-1',
+          messageId: 'answer-1',
+          name: 'aihub-test.pdf',
+          sandboxPath: '/mnt/data/aihub-test.pdf',
+          type: 'file.pointer',
+        },
+      ]);
+
+      const pointerIndex = events.findIndex((event) => event.type === 'file.pointer');
+      const doneIndex = events.findIndex((event) => event.type === 'done');
+      expect(pointerIndex).toBeGreaterThan(-1);
+      expect(pointerIndex).toBeLessThan(doneIndex);
+    });
+
+    it('sweeps a bare mention at [DONE], even without a final status patch', () => {
+      // the shape a leg that never patched a final status leaves behind: no
+      // markdown link, just the path in prose
+      const { events } = feedAll([
+        assistantAdd('answer-1'),
+        append('saved to sandbox:/mnt/data/out.csv'),
+        '[DONE]',
+      ]);
+
+      expect(events.filter((event) => event.type === 'file.pointer')).toEqual([
+        {
+          conversationId: 'conv-1',
+          messageId: 'answer-1',
+          name: 'out.csv',
+          sandboxPath: '/mnt/data/out.csv',
+          type: 'file.pointer',
+        },
+      ]);
+      const pointerIndex = events.findIndex((event) => event.type === 'file.pointer');
+      expect(pointerIndex).toBeLessThan(events.findIndex((event) => event.type === 'done'));
+    });
+
+    it('never reports a half-written path while the answer is still streaming', () => {
+      // same turn, cut off mid-link — `[DONE]` sweeps the unfinished message and
+      // must not resolve `sandbox:/mnt/data/ai`
+      const { events } = feedAll([...pdfTurn.slice(0, 3), '[DONE]']);
+
+      expect(events.some((event) => event.type === 'file.pointer')).toBe(false);
+    });
+
+    it('reports the file exactly once when a resume leg replays the answer', () => {
+      const router = new ConversationEventRouter();
+      const events: ConversationEvent[] = [];
+      const feed = (payloads: unknown[]) => {
+        for (const payload of payloads)
+          events.push(
+            ...router.feed(typeof payload === 'string' ? payload : JSON.stringify(payload)),
+          );
+      };
+
+      feed([...pdfTurn, '[DONE]']);
+      // the resume leg replays the same message from offset 0
+      feed([
+        assistantAdd('answer-1', {
+          content: {
+            content_type: 'text',
+            parts: ['Done: [Download aihub-test.pdf](sandbox:/mnt/data/aihub-test.pdf)'],
+          },
+          end_turn: true,
+          status: 'finished_successfully',
+        }),
+        '[DONE]',
+      ]);
+
+      expect(events.filter((event) => event.type === 'file.pointer')).toHaveLength(1);
+    });
+
+    it('picks the link up from a resumed leg that carries it for the first time', () => {
+      const { events } = feedAll([
+        assistantAdd('answer-1'),
+        append('working on it'),
+        '[DONE]',
+        // resume leg: the same message id, now complete
+        assistantAdd('answer-1', {
+          content: {
+            content_type: 'text',
+            parts: ['working on it — [file](sandbox:/mnt/data/out.csv)'],
+          },
+          end_turn: true,
+          status: 'finished_successfully',
+        }),
+        '[DONE]',
+      ]);
+
+      expect(events.filter((event) => event.type === 'file.pointer')).toEqual([
+        {
+          conversationId: 'conv-1',
+          messageId: 'answer-1',
+          name: 'out.csv',
+          sandboxPath: '/mnt/data/out.csv',
+          type: 'file.pointer',
+        },
+      ]);
+    });
+
+    it('ignores a sandbox path in a tool / hidden message', () => {
+      const { events } = feedAll([
+        {
+          o: 'add',
+          p: '',
+          v: {
+            conversation_id: 'conv-1',
+            message: {
+              author: { name: 'python', role: 'tool' },
+              content: { content_type: 'execution_output', text: "'/mnt/data/aihub-test.pdf'" },
+              id: 'tool-1',
+              status: 'finished_successfully',
+            },
+          },
+        },
+        '[DONE]',
+      ]);
+
+      expect(events.some((event) => event.type === 'file.pointer')).toBe(false);
+    });
+  });
+
   it('surfaces system_error content as an error event', () => {
     const { events } = feedAll([
       {

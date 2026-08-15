@@ -364,6 +364,16 @@ export const callLlm =
 
                     await streamSink.appendBase64Image(image);
                   },
+                  // TODO(chatgptweb): file chunks are not transported in gateway
+                  // mode yet. `onFile` (generated non-image files, e.g. the
+                  // ChatGPT Web code interpreter's pdf/docx exports) is
+                  // deliberately NOT registered here: the stream protocol calls
+                  // it optionally (`callbacks.onFile?.()`), so a `file` chunk is
+                  // ignored without throwing and the turn completes normally —
+                  // the file is simply dropped. Making it work needs its own
+                  // design (server-side upload + `messages_files` attach +
+                  // a gateway chunk payload the client can hydrate); until then
+                  // generated files only reach the user in client mode.
                   onReasoningPart: async (part) => {
                     if (firstChunkAt === undefined) {
                       firstChunkAt = Date.now() - llmStartTime;

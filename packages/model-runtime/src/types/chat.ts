@@ -367,6 +367,22 @@ export interface Base64ImageData {
 }
 
 /**
+ * A file produced by the model (e.g. a code-interpreter export) delivered
+ * inline on the stream, mirroring {@link Base64ImageData} for non-image output.
+ */
+export interface StreamFileData {
+  /** `data:<mimeType>;base64,…` — the whole file, encoded */
+  data: string;
+  mimeType: string;
+  /** File name including its extension, already sanitized */
+  name: string;
+  /** Decoded byte length */
+  size: number;
+  /** Where the model wrote it (e.g. `sandbox:/mnt/data/report.pdf`), for tracing */
+  sourcePath?: string;
+}
+
+/**
  * Content part data for multimodal output
  */
 export interface ContentPartData {
@@ -399,6 +415,16 @@ export interface ChatStreamCallbacks {
   onContentPart?: (data: ContentPartData) => Promise<void> | void;
   /** `onError`: Called when a stream error event is received from the provider. */
   onError?: (error: any) => Promise<void> | void;
+  /**
+   * `onFile`: Called when the model delivers a generated file (e.g. a
+   * code-interpreter export). Non-image counterpart of {@link onBase64Image}.
+   */
+  onFile?: (data: {
+    /** The newly received file */
+    file: StreamFileData;
+    /** All files received so far */
+    files: StreamFileData[];
+  }) => Promise<void> | void;
   /**
    * `onFinal`: Called once when the stream is closed with the final completion message.
    **/

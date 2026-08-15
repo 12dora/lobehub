@@ -971,6 +971,51 @@ describe('createCallbacksTransformer', () => {
     expect(receivedCalls[1].images.map((img) => img.data)).toEqual([uri1, uri2]);
   });
 
+  // The `file` payload is a JSON object whose `data` field embeds a data-URI,
+  // so the legacy `split('data:')[1]` would truncate it. Only the leading SSE
+  // field marker may be stripped.
+  it('should handle file chunks with an embedded data URI and call onFile', async () => {
+    const received: Array<{ file: any; files: any[] }> = [];
+    const onFile = vi.fn((data) => {
+      received.push({ file: { ...data.file }, files: [...data.files] });
+    });
+    const transformer = createCallbacksTransformer({ onFile });
+
+    const pdf = {
+      data: 'data:application/pdf;base64,JVBERi0xLjQK',
+      mimeType: 'application/pdf',
+      name: 'aihub-test.pdf',
+      size: 12,
+      sourcePath: '/mnt/data/aihub-test.pdf',
+    };
+    const docx = {
+      data: 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,UEsDBA==',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      name: 'aihub-test.docx',
+      size: 6,
+    };
+
+    await processChunks(transformer, [
+      'event: file\n',
+      `data: ${JSON.stringify(pdf)}\n\n`,
+      'event: file\n',
+      `data: ${JSON.stringify(docx)}\n\n`,
+    ]);
+
+    expect(onFile).toHaveBeenCalledTimes(2);
+    expect(received[0]).toEqual({ file: pdf, files: [pdf] });
+    expect(received[1]).toEqual({ file: docx, files: [pdf, docx] });
+  });
+
+  it('should ignore a file chunk without payload data', async () => {
+    const onFile = vi.fn();
+    const transformer = createCallbacksTransformer({ onFile });
+
+    await processChunks(transformer, ['event: file\n', `data: ${JSON.stringify({})}\n\n`]);
+
+    expect(onFile).not.toHaveBeenCalled();
+  });
+
   it('should handle content_part chunks and call onContentPart callback', async () => {
     const onContentPart = vi.fn();
     const transformer = createCallbacksTransformer({ onContentPart });

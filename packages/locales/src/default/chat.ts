@@ -715,6 +715,9 @@ export default {
   'searchAgentPlaceholder': 'Search agents...',
   'searchAgents': 'Search agents...',
   'selectedAgents': 'Selected agents',
+  'fileAttachFailed':
+    'The generated files could not be attached to this message. You can still find them in your files.',
+  'generatedFileUploadFailed': 'Failed to save the generated file {{name}}. Please try again.',
   'floatingChatPanel.collapse': 'Collapse chat',
   'floatingChatPanel.expand': 'Expand chat',
   'globalApproval.collapse': 'Collapse',

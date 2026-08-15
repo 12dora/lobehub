@@ -1,4 +1,5 @@
 import {
+  type ChatFileItem,
   type ChatImageItem,
   type ChatToolPayload,
   type MessageContentPart,
@@ -21,6 +22,37 @@ import {
 } from './types/streaming';
 
 const log = debug('lobe-store:streaming-handler');
+
+/** Max number of generated-file uploads running at the same time. */
+const FILE_UPLOAD_CONCURRENCY = 3;
+
+/**
+ * Minimal `p-limit`: runs at most `concurrency` tasks at a time, queues the rest.
+ *
+ * Needed because generated files arrive one chunk at a time — `pMap` can only
+ * limit an array that's known upfront, so it would just await uploads that all
+ * started the moment their chunk landed.
+ */
+const createConcurrencyLimiter = (concurrency: number) => {
+  let active = 0;
+  const queue: (() => void)[] = [];
+
+  const next = () => {
+    active--;
+    queue.shift()?.();
+  };
+
+  return <T>(task: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const run = () => {
+        active++;
+        task().then(resolve, reject).finally(next);
+      };
+
+      if (active < concurrency) run();
+      else queue.push(run);
+    });
+};
 
 /**
  * Streaming message handler
@@ -60,6 +92,13 @@ export class StreamingHandler {
   // ========== Tool call state ==========
   private isFunctionCall = false;
   private tools?: ChatToolPayload[];
+
+  // ========== Generated file state ==========
+  private files: ChatFileItem[] = [];
+  private fileUploadTasks = new Map<string, Promise<ChatFileItem | undefined>>();
+  /** temp chunk id -> persisted file, filled as soon as an upload completes */
+  private uploadedFiles = new Map<string, ChatFileItem>();
+  private limitFileUpload = createConcurrencyLimiter(FILE_UPLOAD_CONCURRENCY);
 
   // ========== Image upload state ==========
   private uploadTasks = new Map<string, Promise<{ id?: string; url?: string }>>();
@@ -123,6 +162,10 @@ export class StreamingHandler {
         this.handleBase64ImageChunk(chunk);
         break;
       }
+      case 'file': {
+        this.handleFileChunk(chunk);
+        break;
+      }
       case 'stop': {
         this.handleStopChunk();
         break;
@@ -142,6 +185,9 @@ export class StreamingHandler {
     // Wait for all image uploads to complete
     const finalImages = await this.waitForImageUploads();
 
+    // Wait for all generated file uploads to complete
+    const finalFiles = await this.waitForFileUploads();
+
     // Wait for multimodal image uploads to complete
     await this.waitForMultimodalUploads();
 
@@ -149,7 +195,7 @@ export class StreamingHandler {
     this.processFinalToolCalls(finishData.toolCalls);
 
     // Build final result
-    return this.buildFinalResult(finishData, finalImages);
+    return this.buildFinalResult(finishData, finalImages, finalFiles);
   }
 
   /**
@@ -306,6 +352,109 @@ export class StreamingHandler {
     this.uploadTasks.set(chunk.image.id, task);
   }
 
+  /**
+   * Handle a generated (non-image) file produced by the model runtime.
+   *
+   * Mirrors `handleBase64ImageChunk`: show an optimistic entry immediately, then
+   * upload the bytes in the background and swap in the persisted file id / url.
+   */
+  private handleFileChunk(chunk: {
+    file: {
+      data: string;
+      id: string;
+      mimeType: string;
+      name: string;
+      size?: number;
+      sourcePath?: string;
+    };
+    type: 'file';
+  }): void {
+    const { file } = chunk;
+    if (!file?.data) return;
+
+    // Optimistic entry — the data URI is intentionally NOT used as `url` to
+    // avoid keeping a second copy of the bytes in the store.
+    const tempItem: ChatFileItem = {
+      fileType: file.mimeType,
+      id: file.id,
+      name: file.name,
+      size: file.size ?? 0,
+      url: '',
+    };
+
+    this.files = [...this.files, tempItem];
+    this.callbacks.onFilesUpdate?.(this.files);
+
+    const uploadBase64File = this.callbacks.uploadBase64File;
+    if (!uploadBase64File) return;
+
+    // The optimistic card is shown immediately, but the upload itself is queued:
+    // at most FILE_UPLOAD_CONCURRENCY uploads run at the same time.
+    const task = this.limitFileUpload(async () => {
+      // Queued-but-not-started uploads are skipped when the user stopped the answer.
+      if (this.context.abortSignal?.aborted) {
+        log(
+          '[file] upload skipped, operation aborted messageId=%s, name=%s',
+          this.context.messageId,
+          tempItem.name,
+        );
+        this.removeFile(tempItem.id);
+        return undefined;
+      }
+
+      const uploaded = await uploadBase64File(file.data, {
+        filename: file.name,
+        mimeType: file.mimeType,
+        signal: this.context.abortSignal,
+      });
+
+      if (!uploaded?.id || !uploaded?.url) throw new Error('Upload returned no file');
+
+      const finalItem: ChatFileItem = { ...tempItem, id: uploaded.id, url: uploaded.url };
+
+      this.files = this.files.map((item) => (item.id === tempItem.id ? finalItem : item));
+      this.uploadedFiles.set(tempItem.id, finalItem);
+      this.callbacks.onFilesUpdate?.(this.files);
+
+      return finalItem;
+    }).catch((error) => {
+      this.handleFileUploadFailure(tempItem, error);
+      return undefined;
+    });
+
+    this.fileUploadTasks.set(file.id, task);
+  }
+
+  /**
+   * An upload failed: drop the optimistic card (it can never resolve to a real
+   * file) and let the caller surface it — unless the user aborted, which is not
+   * an error worth a toast.
+   */
+  private handleFileUploadFailure(tempItem: ChatFileItem, error: unknown): void {
+    this.removeFile(tempItem.id);
+
+    if (this.context.abortSignal?.aborted) {
+      log('[file] upload cancelled messageId=%s, name=%s', this.context.messageId, tempItem.name);
+      return;
+    }
+
+    log(
+      '[file] upload failed messageId=%s, name=%s, error=%o',
+      this.context.messageId,
+      tempItem.name,
+      error,
+    );
+
+    this.callbacks.onFileUploadError?.({ error, name: tempItem.name });
+  }
+
+  private removeFile(id: string): void {
+    if (!this.files.some((item) => item.id === id)) return;
+
+    this.files = this.files.filter((item) => item.id !== id);
+    this.callbacks.onFilesUpdate?.(this.files);
+  }
+
   private handleStopChunk(): void {
     this.endReasoningIfNeeded();
   }
@@ -443,6 +592,48 @@ export class StreamingHandler {
     }
   }
 
+  /**
+   * Collect the generated files to attach to the message.
+   *
+   * On abort we do NOT wait: queued uploads were skipped and in-flight ones are
+   * cancelled through the signal. Uploads that already finished before the stop
+   * are still attached on purpose — the file rows exist, so hiding them would
+   * leave orphans the user can't reach.
+   */
+  private async waitForFileUploads(): Promise<ChatFileItem[]> {
+    if (this.fileUploadTasks.size === 0) return [];
+
+    if (this.context.abortSignal?.aborted) {
+      log(
+        '[file] aborted, attaching %d already-uploaded file(s) messageId=%s',
+        this.uploadedFiles.size,
+        this.context.messageId,
+      );
+      return this.collectUploadedFiles();
+    }
+
+    try {
+      // Each task already resolves (failures are swallowed into `undefined`),
+      // and concurrency is enforced at chunk time by `limitFileUpload`.
+      await Promise.all(Array.from(this.fileUploadTasks.values()));
+    } catch (error) {
+      log(
+        '[file] error waiting for file uploads messageId=%s, error=%o',
+        this.context.messageId,
+        error,
+      );
+    }
+
+    return this.collectUploadedFiles();
+  }
+
+  /** Uploaded files in chunk arrival order (the map is keyed by temp chunk id). */
+  private collectUploadedFiles(): ChatFileItem[] {
+    return Array.from(this.fileUploadTasks.keys())
+      .map((id) => this.uploadedFiles.get(id))
+      .filter((item): item is ChatFileItem => !!item?.url);
+  }
+
   private async waitForMultimodalUploads(): Promise<void> {
     await Promise.allSettled([
       ...Array.from(this.contentImageUploads.values()),
@@ -487,7 +678,11 @@ export class StreamingHandler {
     this.isFunctionCall = true;
   }
 
-  private buildFinalResult(finishData: FinishData, finalImages: ChatImageItem[]): StreamingResult {
+  private buildFinalResult(
+    finishData: FinishData,
+    finalImages: ChatImageItem[],
+    finalFiles: ChatFileItem[] = [],
+  ): StreamingResult {
     const hasContentImages = this.contentParts.some((p) => p.type === 'image');
     const hasReasoningImages = this.reasoningParts.some((p) => p.type === 'image');
 
@@ -540,6 +735,7 @@ export class StreamingHandler {
       finishType: finishData.type,
       isFunctionCall: this.isFunctionCall,
       metadata: {
+        fileList: finalFiles.length > 0 ? finalFiles : undefined,
         finishType: finishData.type,
         imageList: finalImages.length > 0 ? finalImages : undefined,
         isMultimodal: hasContentImages || undefined,

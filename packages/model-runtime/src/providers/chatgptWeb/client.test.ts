@@ -287,11 +287,26 @@ describe('ChatGPTWebClient.prepareConversation', () => {
   });
 
   it('falls back to the no-token conduit header', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}));
+    fetchMock.mockResolvedValue(jsonResponse({ conduit_token: 'conduit-1' }));
 
     await createClient().prepareConversation({ action: 'next' });
 
     expect(callAt(0).headers['X-Conduit-Token']).toBe('no-token');
+  });
+
+  it.each([
+    ['a missing token', {}],
+    ['a blank token', { conduit_token: '   ' }],
+    ['a non-string token', { conduit_token: 42 }],
+  ])('rejects a 200 prepare with %s as a recoverable upstream error', async (_label, body) => {
+    fetchMock.mockResolvedValue(jsonResponse(body));
+
+    // `upstream` is what lets the runtime take its plain fallback — see
+    // RECOVERABLE_PREPARE_KINDS
+    await expect(createClient().prepareConversation({ action: 'next' })).rejects.toMatchObject({
+      kind: 'upstream',
+      name: 'ChatGPTWebError',
+    });
   });
 });
 
@@ -629,6 +644,74 @@ describe('ChatGPTWebClient assets', () => {
     expect(callAt(1).url).toBe(
       'https://chatgpt.com/backend-api/conversation/conv-1/attachment/sed_1/download',
     );
+  });
+
+  it('resolves a code-interpreter sandbox path into a download url', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        download_url:
+          'https://chatgpt.com/backend-api/estuary/content?id=file_1&fn=aihub-test.pdf&cd=attachment',
+        metadata: { file_id: 'file_1', file_name: 'aihub-test.pdf' },
+        status: 'success',
+      }),
+    );
+
+    const resolved = await createClient().resolveInterpreterFile({
+      conversationId: 'conv-1',
+      messageId: 'msg-1',
+      // accepted with or without the scheme
+      sandboxPath: 'sandbox:/mnt/data/aihub-test.pdf',
+    });
+
+    expect(resolved).toEqual({
+      downloadUrl:
+        'https://chatgpt.com/backend-api/estuary/content?id=file_1&fn=aihub-test.pdf&cd=attachment',
+      fileId: 'file_1',
+      name: 'aihub-test.pdf',
+    });
+
+    const { headers, url } = callAt(0);
+    expect(url).toBe(
+      'https://chatgpt.com/backend-api/conversation/conv-1/interpreter/download?message_id=msg-1&sandbox_path=%2Fmnt%2Fdata%2Faihub-test.pdf',
+    );
+    expect(headers['X-OpenAI-Target-Path']).toBe(
+      '/backend-api/conversation/conv-1/interpreter/download',
+    );
+    expect(headers['Referer']).toBe('https://chatgpt.com/c/conv-1');
+    expect(headers['Authorization']).toBe('Bearer access-token');
+  });
+
+  it.each([
+    ['a space', '/mnt/data/my report.pdf', '%2Fmnt%2Fdata%2Fmy%20report.pdf'],
+    ['a fragment marker', '/mnt/data/a#b.csv', '%2Fmnt%2Fdata%2Fa%23b.csv'],
+    ['unicode', '/mnt/data/报告.docx', '%2Fmnt%2Fdata%2F%E6%8A%A5%E5%91%8A.docx'],
+    ['an ampersand', '/mnt/data/a&b.txt', '%2Fmnt%2Fdata%2Fa%26b.txt'],
+  ])('escapes %s in the sandbox_path query', async (_label, sandboxPath, encoded) => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ download_url: 'https://chatgpt.com/backend-api/estuary/content?id=file_1' }),
+    );
+
+    await createClient().resolveInterpreterFile({
+      conversationId: 'conv-1',
+      messageId: 'msg#1',
+      sandboxPath,
+    });
+
+    expect(callAt(0).url).toBe(
+      `https://chatgpt.com/backend-api/conversation/conv-1/interpreter/download?message_id=msg%231&sandbox_path=${encoded}`,
+    );
+  });
+
+  it('refuses an interpreter download url pointing off-allowlist', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ download_url: 'http://169.254.169.254/' }));
+
+    await expect(
+      createClient().resolveInterpreterFile({
+        conversationId: 'conv-1',
+        messageId: 'msg-1',
+        sandboxPath: '/mnt/data/x.pdf',
+      }),
+    ).rejects.toMatchObject({ kind: 'upstream' });
   });
 
   describe('host allowlist (defence in depth against SSRF)', () => {

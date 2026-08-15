@@ -155,8 +155,42 @@ describe('UploadService', () => {
       const invalidBase64 = 'not-a-base64-string';
 
       await expect(uploadService.uploadBase64ToS3(invalidBase64)).rejects.toThrow(
-        'Invalid base64 data for image',
+        'Invalid base64 data URI',
       );
+    });
+
+    it('should reject payloads larger than 32 MiB', async () => {
+      const { parseDataUri } = await import('@lobechat/model-runtime');
+      // 45M base64 chars ≈ 33.7 MiB decoded
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: 'A'.repeat(45 * 1000 * 1000),
+        mimeType: 'application/pdf',
+        type: 'base64',
+      });
+
+      await expect(uploadService.uploadBase64ToS3('data:application/pdf;base64,…')).rejects.toThrow(
+        /too large/,
+      );
+    });
+
+    it('should keep a filename that already has an extension verbatim', async () => {
+      const { parseDataUri } = await import('@lobechat/model-runtime');
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: 'dGVzdA==',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        type: 'base64',
+      });
+
+      const { sha256 } = await import('js-sha256');
+      vi.mocked(sha256).mockReturnValue('docx-hash');
+
+      const result = await uploadService.uploadBase64ToS3('data:application/vnd…;base64,dGVzdA==', {
+        filename: 'report.docx',
+      });
+
+      // extension comes from the caller's filename, not from the mime type
+      // (which would have produced `…document`)
+      expect(result.metadata.filename).toMatch(/^mock-uuid\.docx$/);
     });
 
     it('should use custom filename when provided', async () => {

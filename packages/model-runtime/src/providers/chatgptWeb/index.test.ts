@@ -41,6 +41,11 @@ const createFakeClient = (overrides: Record<string, any> = {}) => {
     hideConversation: vi.fn(async () => {}),
     listModels: vi.fn(async () => []),
     prepareConversation: vi.fn(async () => ({ conduitToken: 'conduit' })),
+    resolveInterpreterFile: vi.fn(async () => ({
+      downloadUrl: '',
+      fileId: undefined,
+      name: undefined,
+    })),
     streamConversation,
     uploadFile: vi.fn(async (bytes: Uint8Array, meta: any) => ({
       fileId: 'file-1',
@@ -146,7 +151,8 @@ describe('LobeChatGPTWebAI', () => {
         'assistant',
         'user',
       ]);
-      expect(optionsOf(client).useFPath).toBeFalsy();
+      // every turn goes through the conduit path — see the `/f/` default below
+      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
       // the assistant turn is registered so the upstream echo can be dropped
       expect(optionsOf(client).echoHistory).toEqual(['hello']);
 
@@ -176,9 +182,9 @@ describe('LobeChatGPTWebAI', () => {
       });
 
       expect(bodyOf(client).thinking_effort).toBe(expected);
-      // an explicit effort forces the conduit path — the plain conversation
-      // endpoint rejects `thinking_effort` outright
-      expect(optionsOf(client).useFPath).toBe(expected !== undefined);
+      // the conduit path is the default; an effort additionally MAKES it
+      // mandatory (the plain endpoint rejects `thinking_effort` outright)
+      expect(optionsOf(client).useFPath).toBe(true);
     });
 
     it('omits thinking_effort for a -thinking model without an effort', async () => {
@@ -190,6 +196,133 @@ describe('LobeChatGPTWebAI', () => {
       });
 
       expect(bodyOf(client).thinking_effort).toBeUndefined();
+    });
+
+    it('sends every plain turn through the /f/ conduit path', async () => {
+      const client = createFakeClient();
+      await createRuntime(client).chat({
+        messages: [{ content: 'Reply with exactly: pong', role: 'user' }],
+        model: 'gpt-5-6',
+        temperature: 1,
+      });
+
+      expect(client.prepareConversation).toHaveBeenCalledTimes(1);
+      const prepareBody = (client.prepareConversation.mock.calls[0] as any[])[0];
+      expect(prepareBody.system_hints).toEqual([]);
+      expect(prepareBody.attachment_mime_types).toBeUndefined();
+      expect(prepareBody.thinking_effort).toBeUndefined();
+
+      // the live-verified plain `/f/conversation` body (scratchpad file-probe)
+      const body = bodyOf(client);
+      expect(body).toMatchObject({
+        action: 'next',
+        client_prepare_state: 'sent',
+        enable_message_followups: true,
+        force_parallel_switch: 'auto',
+        paragen_cot_summary_display_override: 'allow',
+        parent_message_id: 'client-created-root',
+        supported_encodings: ['v1'],
+        supports_buffering: true,
+        system_hints: [],
+      });
+      expect(body.client_contextual_info).toMatchObject({ app_name: 'chatgpt.com' });
+      expect(body.force_use_search).toBeUndefined();
+      // the plain body's opt-out is NOT sent: it makes the conversation
+      // unreadable afterwards (no files, no citations, no recovery)
+      expect(body.history_and_training_disabled).toBeUndefined();
+      expect(optionsOf(client)).toMatchObject({ conduitToken: 'conduit', useFPath: true });
+    });
+
+    it('falls back to the plain path once when the conduit prepare fails', async () => {
+      const client = createFakeClient({
+        prepareConversation: vi.fn(async () => {
+          throw new ChatGPTWebError('upstream', 'prepare exploded', { status: 500 });
+        }),
+      });
+
+      const sse = await readSSE(
+        await createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'auto',
+          temperature: 1,
+        }),
+      );
+
+      expect(client.prepareConversation).toHaveBeenCalledTimes(1);
+      expect(optionsOf(client).useFPath).toBeFalsy();
+      expect(optionsOf(client).conduitToken).toBeUndefined();
+      expect(bodyOf(client).history_and_training_disabled).toBe(true);
+      expect(sse).toContain('event: text');
+    });
+
+    it.each([
+      ['a network hiccup', new ChatGPTWebError('network', 'econnreset')],
+      ['a timeout', new ChatGPTWebError('timeout', 'prepare aborted')],
+      ['a missing endpoint', new ChatGPTWebError('not_found', 'no such path', { status: 404 })],
+      [
+        'a prepare that carried no conduit token',
+        new ChatGPTWebError('upstream', 'no conduit token', { status: 200 }),
+      ],
+    ])('falls back to the plain path on %s', async (_label, raised) => {
+      const client = createFakeClient({
+        prepareConversation: vi.fn(async () => {
+          throw raised;
+        }),
+      });
+
+      await createRuntime(client).chat({
+        messages: [{ content: 'hi', role: 'user' }],
+        model: 'auto',
+        temperature: 1,
+      });
+
+      expect(optionsOf(client).useFPath).toBeFalsy();
+    });
+
+    it.each([
+      ['an auth failure', new ChatGPTWebError('auth', 'token expired', { status: 401 })],
+      ['a rate limit', new ChatGPTWebError('rate_limit', 'slow down', { status: 429 })],
+      // the plain path is challenged by the very same bot protection
+      ['a Cloudflare challenge', new ChatGPTWebError('cloudflare', 'blocked', { status: 403 })],
+      // the plain path refuses the model for this account too
+      ['a model cap', new ChatGPTWebError('model_cap', 'cap reached', { status: 403 })],
+      ['a permission failure', new ChatGPTWebError('permission', 'forbidden', { status: 403 })],
+      ['a missing transport', new ChatGPTWebError('transport_unavailable', 'no curl binary')],
+      // an untyped failure is a bug of ours, not something the plain path fixes
+      ['an unclassified error', new TypeError('cannot read properties of undefined')],
+    ])('does not fall back on %s', async (_label, raised) => {
+      const client = createFakeClient({
+        prepareConversation: vi.fn(async () => {
+          throw raised;
+        }),
+      });
+
+      await expect(
+        createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'auto',
+          temperature: 1,
+        }),
+      ).rejects.toBeDefined();
+      expect(client.streamConversation).not.toHaveBeenCalled();
+    });
+
+    it('never falls back for a turn the plain body cannot express', async () => {
+      const client = createFakeClient({
+        prepareConversation: vi.fn(async () => {
+          throw new ChatGPTWebError('upstream', 'prepare exploded', { status: 500 });
+        }),
+      });
+
+      await expect(
+        createRuntime(client).chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'gpt-5-6-thinking',
+          reasoning_effort: 'high' as any,
+          temperature: 1,
+        }),
+      ).rejects.toBeDefined();
+      expect(client.streamConversation).not.toHaveBeenCalled();
     });
 
     it('uses the /f/ conduit path with search switches when search is on', async () => {
@@ -807,6 +940,167 @@ describe('LobeChatGPTWebAI', () => {
       expect(client.getFileDownloadUrl).toHaveBeenCalledWith('img-1', undefined);
       expect(sse).toContain('event: base64_image');
       expect(sse).toContain('data:image/png;base64,');
+    });
+
+    describe('code-interpreter files', () => {
+      const PDF_BYTES = new TextEncoder().encode('%PDF-1.4 aihub');
+
+      const withFile = (overrides: Record<string, any> = {}) =>
+        createFakeClient({
+          downloadBytes: vi.fn(async () => ({ bytes: PDF_BYTES, mimeType: 'application/pdf' })),
+          resolveInterpreterFile: vi.fn(async () => ({
+            downloadUrl: 'https://chatgpt.com/backend-api/estuary/content?id=file_1&sig=SECRET',
+            fileId: 'file_1',
+            name: 'aihub-test.pdf',
+          })),
+          streamConversation: vi.fn(async function* () {
+            yield { conversationId: 'conv-9', type: 'conversation.start' } as ConversationEvent;
+            yield {
+              delta: 'Done: [aihub-test.pdf](sandbox:/mnt/data/aihub-test.pdf)',
+              text: 'Done: [aihub-test.pdf](sandbox:/mnt/data/aihub-test.pdf)',
+              type: 'text.delta',
+            } as ConversationEvent;
+            yield {
+              conversationId: 'conv-9',
+              messageId: 'answer-1',
+              name: 'aihub-test.pdf',
+              sandboxPath: '/mnt/data/aihub-test.pdf',
+              type: 'file.pointer',
+            } as ConversationEvent;
+            yield { conversationId: 'conv-9', type: 'done' } as ConversationEvent;
+          }),
+          ...overrides,
+        });
+
+      const runFileTurn = async (client: any) =>
+        readSSE(
+          await createRuntime(client).chat({
+            messages: [{ content: 'make me a pdf', role: 'user' }],
+            model: 'auto',
+            temperature: 1,
+          }),
+        );
+
+      it('downloads the interpreter output and emits a file chunk', async () => {
+        const client = withFile();
+        const sse = await runFileTurn(client);
+
+        expect(client.resolveInterpreterFile).toHaveBeenCalledWith({
+          conversationId: 'conv-9',
+          messageId: 'answer-1',
+          sandboxPath: '/mnt/data/aihub-test.pdf',
+          signal: undefined,
+        });
+        // the whole file is bounded like every other asset we pull
+        expect(client.downloadBytes).toHaveBeenCalledWith(
+          'https://chatgpt.com/backend-api/estuary/content?id=file_1&sig=SECRET',
+          { maxBytes: 32 * 1024 * 1024, signal: undefined },
+        );
+        expect(sse).toContain('event: file');
+
+        const line = sse.split('\n').find((item) => item.includes('"mimeType"'))!;
+        expect(JSON.parse(line.slice('data: '.length))).toEqual({
+          data: `data:application/pdf;base64,${bytesToBase64(PDF_BYTES)}`,
+          mimeType: 'application/pdf',
+          name: 'aihub-test.pdf',
+          size: PDF_BYTES.length,
+          sourcePath: '/mnt/data/aihub-test.pdf',
+        });
+        // the answer text is delivered untouched
+        expect(sse).toContain('sandbox:/mnt/data/aihub-test.pdf');
+      });
+
+      it('names the type from the extension when the host answers with a generic one', async () => {
+        const client = withFile({
+          downloadBytes: vi.fn(async () => ({
+            bytes: PDF_BYTES,
+            mimeType: 'binary/octet-stream',
+          })),
+          resolveInterpreterFile: vi.fn(async () => ({
+            downloadUrl: 'https://chatgpt.com/backend-api/estuary/content?id=file_2',
+            name: 'notes.docx',
+          })),
+        });
+
+        const sse = await runFileTurn(client);
+
+        expect(sse).toContain(
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        );
+      });
+
+      it('keeps the answer when the download is over the size cap', async () => {
+        const client = withFile({
+          downloadBytes: vi.fn(async () => {
+            throw new ChatGPTWebError('upstream', 'asset exceeds the 33554432 byte limit');
+          }),
+        });
+
+        const sse = await runFileTurn(client);
+
+        expect(sse).not.toContain('event: file\n');
+        expect(sse).toContain('event: stop');
+        expect(sse).toContain('Done: [aihub-test.pdf]');
+      });
+
+      it('resolves a recovered answer’s files before hiding the conversation, keyed by its message', async () => {
+        // a handed-off turn: the stream carried nothing, so the sandbox link
+        // only ever exists in the recovered document
+        const client: any = withFile({
+          getConversation: vi.fn(async () => ({
+            mapping: {
+              [userMessageIdOf(bodyOf(client))]: { message: { author: { role: 'user' } } },
+              answer: {
+                message: {
+                  author: { role: 'assistant' },
+                  content: {
+                    content_type: 'text',
+                    parts: ['Done: [aihub-test.pdf](sandbox:/mnt/data/aihub-test.pdf)'],
+                  },
+                  create_time: nowSec(),
+                  end_turn: true,
+                  id: 'answer-doc-1',
+                  metadata: {},
+                  status: 'finished_successfully',
+                },
+                parent: userMessageIdOf(bodyOf(client)),
+              },
+            },
+          })),
+          streamConversation: vi.fn(async function* () {
+            yield { conversationId: 'conv-9', type: 'conversation.start' } as ConversationEvent;
+            yield { conversationId: 'conv-9', endTurn: false, type: 'done' } as ConversationEvent;
+          }),
+        });
+
+        const sse = await runFileTurn(client);
+
+        expect(client.resolveInterpreterFile).toHaveBeenCalledWith({
+          conversationId: 'conv-9',
+          messageId: 'answer-doc-1',
+          sandboxPath: '/mnt/data/aihub-test.pdf',
+          signal: undefined,
+        });
+        // the chunk carries the upstream assistant message id, like a streamed one
+        expect(sse).toContain('id: answer-doc-1\nevent: file');
+        // …and the bytes were pulled while the conversation was still readable
+        expect(client.downloadBytes.mock.invocationCallOrder[0]).toBeLessThan(
+          client.hideConversation.mock.invocationCallOrder[0],
+        );
+      }, 20_000);
+
+      it('redacts the file payload from the debug tee', async () => {
+        const client = withFile();
+        process.env.DEBUG_CHATGPTWEB_CHAT_COMPLETION = '1';
+        try {
+          await runFileTurn(client);
+          const debugged = await collectStream(vi.mocked(debugStream).mock.calls.at(-1)![0] as any);
+          expect(debugged).toContain('<file application/pdf');
+          expect(debugged).not.toContain(bytesToBase64(PDF_BYTES));
+        } finally {
+          delete process.env.DEBUG_CHATGPTWEB_CHAT_COMPLETION;
+        }
+      });
     });
   });
 

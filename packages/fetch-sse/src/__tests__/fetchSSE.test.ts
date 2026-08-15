@@ -349,6 +349,131 @@ describe('fetchSSE', () => {
     });
   });
 
+  describe('file', () => {
+    it('should handle file event correctly', async () => {
+      const mockOnMessageHandle = vi.fn();
+
+      (fetchEventSource as any).mockImplementationOnce(
+        (url: string, options: FetchEventSourceInit) => {
+          options.onopen!({ clone: () => ({ ok: true, headers: new Headers() }) } as any);
+          options.onmessage!({
+            event: 'file',
+            data: JSON.stringify({
+              data: 'data:application/pdf;base64,JVBERi0xLjQK',
+              mimeType: 'application/pdf',
+              name: 'aihub-test.pdf',
+              size: 1024,
+              sourcePath: '/mnt/data/aihub-test.pdf',
+            }),
+          } as any);
+        },
+      );
+
+      await fetchSSE('/', { onMessageHandle: mockOnMessageHandle });
+
+      expect(mockOnMessageHandle).toHaveBeenCalledTimes(1);
+      const chunk = mockOnMessageHandle.mock.calls[0][0];
+      expect(chunk.type).toBe('file');
+      expect(chunk.file).toEqual({
+        data: 'data:application/pdf;base64,JVBERi0xLjQK',
+        id: expect.stringMatching(/^tmp_file_/),
+        mimeType: 'application/pdf',
+        name: 'aihub-test.pdf',
+        size: 1024,
+        sourcePath: '/mnt/data/aihub-test.pdf',
+      });
+    });
+
+    it('should ignore a file event without data or mimeType', async () => {
+      const mockOnMessageHandle = vi.fn();
+
+      (fetchEventSource as any).mockImplementationOnce(
+        (url: string, options: FetchEventSourceInit) => {
+          options.onopen!({ clone: () => ({ ok: true, headers: new Headers() }) } as any);
+          options.onmessage!({
+            event: 'file',
+            data: JSON.stringify({ name: 'broken.pdf' }),
+          } as any);
+        },
+      );
+
+      await fetchSSE('/', { onMessageHandle: mockOnMessageHandle });
+
+      expect(mockOnMessageHandle).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'missing name',
+        { data: 'data:application/pdf;base64,JVBERi0xLjQK', mimeType: 'application/pdf' },
+      ],
+      [
+        'empty name',
+        {
+          data: 'data:application/pdf;base64,JVBERi0xLjQK',
+          mimeType: 'application/pdf',
+          name: '   ',
+        },
+      ],
+      ['non-string data', { data: 123, mimeType: 'application/pdf', name: 'report.pdf' }],
+      [
+        'non-string mimeType',
+        { data: 'data:application/pdf;base64,JVBERi0xLjQK', mimeType: {}, name: 'report.pdf' },
+      ],
+      ['null payload', null],
+    ])('should drop a file event with %s', async (_label, payload) => {
+      const mockOnMessageHandle = vi.fn();
+
+      (fetchEventSource as any).mockImplementationOnce(
+        (url: string, options: FetchEventSourceInit) => {
+          options.onopen!({ clone: () => ({ ok: true, headers: new Headers() }) } as any);
+          options.onmessage!({ event: 'file', data: JSON.stringify(payload) } as any);
+        },
+      );
+
+      await fetchSSE('/', { onMessageHandle: mockOnMessageHandle });
+
+      expect(mockOnMessageHandle).not.toHaveBeenCalled();
+    });
+
+    it('should drop a non-numeric or negative size instead of forwarding it', async () => {
+      const mockOnMessageHandle = vi.fn();
+
+      (fetchEventSource as any).mockImplementationOnce(
+        (url: string, options: FetchEventSourceInit) => {
+          options.onopen!({ clone: () => ({ ok: true, headers: new Headers() }) } as any);
+          options.onmessage!({
+            event: 'file',
+            data: JSON.stringify({
+              data: 'data:application/pdf;base64,JVBERi0xLjQK',
+              mimeType: 'application/pdf',
+              name: 'report.pdf',
+              size: '1024',
+              sourcePath: '',
+            }),
+          } as any);
+          options.onmessage!({
+            event: 'file',
+            data: JSON.stringify({
+              data: 'data:application/pdf;base64,JVBERi0xLjQK',
+              mimeType: 'application/pdf',
+              name: 'report.pdf',
+              size: -5,
+            }),
+          } as any);
+        },
+      );
+
+      await fetchSSE('/', { onMessageHandle: mockOnMessageHandle });
+
+      expect(mockOnMessageHandle).toHaveBeenCalledTimes(2);
+      expect(mockOnMessageHandle.mock.calls[0][0].file.size).toBeUndefined();
+      // an empty sourcePath is not a usable path either
+      expect(mockOnMessageHandle.mock.calls[0][0].file.sourcePath).toBeUndefined();
+      expect(mockOnMessageHandle.mock.calls[1][0].file.size).toBeUndefined();
+    });
+  });
+
   it('should handle grounding event', async () => {
     const mockOnMessageHandle = vi.fn();
     const mockOnFinish = vi.fn();

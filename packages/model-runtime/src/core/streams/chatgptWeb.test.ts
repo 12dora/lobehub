@@ -145,6 +145,217 @@ describe('ChatGPTWebStream', () => {
     expect(raw).toContain('data:image/png;base64,AAAA');
   });
 
+  describe('generated files', () => {
+    const filePointer = {
+      conversationId: 'conv-1',
+      messageId: 'answer-1',
+      name: 'aihub-test.pdf',
+      sandboxPath: '/mnt/data/aihub-test.pdf',
+      type: 'file.pointer' as const,
+    };
+
+    const pdfFile = {
+      data: 'data:application/pdf;base64,JVBERi0xLjQ=',
+      mimeType: 'application/pdf',
+      name: 'aihub-test.pdf',
+      size: 9,
+      sourcePath: '/mnt/data/aihub-test.pdf',
+    };
+
+    it('resolves file pointers into file chunks keyed by the message id', async () => {
+      const resolveFile = vi.fn(async () => pdfFile);
+
+      const raw = await collect(
+        ChatGPTWebStream(
+          fromEvents([
+            { conversationId: 'conv-1', type: 'conversation.start' },
+            { delta: 'Done', text: 'Done', type: 'text.delta' },
+            filePointer,
+            { type: 'done' },
+          ]),
+          { resolveFile },
+        ),
+      );
+
+      expect(resolveFile).toHaveBeenCalledWith({
+        conversationId: 'conv-1',
+        messageId: 'answer-1',
+        name: 'aihub-test.pdf',
+        sandboxPath: '/mnt/data/aihub-test.pdf',
+      });
+      expect(eventTypes(raw)).toEqual(['text', 'file', 'usage', 'stop']);
+      expect(raw).toContain('id: answer-1\nevent: file');
+      const line = raw.split('\n').find((item) => item.includes('"mimeType"'))!;
+      expect(JSON.parse(line.slice('data: '.length))).toEqual(pdfFile);
+    });
+
+    it('falls back to the conversation id seen on the stream', async () => {
+      const resolveFile = vi.fn(async () => pdfFile);
+
+      await collect(
+        ChatGPTWebStream(
+          fromEvents([
+            { conversationId: 'conv-9', type: 'conversation.start' },
+            { ...filePointer, conversationId: undefined },
+            { type: 'done' },
+          ]),
+          { resolveFile },
+        ),
+      );
+
+      expect(resolveFile).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: 'conv-9' }),
+      );
+    });
+
+    it('resolves a repeated pointer only once', async () => {
+      const resolveFile = vi.fn(async () => pdfFile);
+
+      const raw = await collect(
+        ChatGPTWebStream(fromEvents([filePointer, filePointer, { type: 'done' }]), { resolveFile }),
+      );
+
+      expect(resolveFile).toHaveBeenCalledTimes(1);
+      expect(eventTypes(raw)).toEqual(['file', 'usage', 'stop']);
+    });
+
+    it('still delivers the answer when a file fails to resolve', async () => {
+      const resolveFile = vi.fn(async () => {
+        throw new Error('404 from the asset host');
+      });
+
+      const raw = await collect(
+        ChatGPTWebStream(
+          fromEvents([
+            filePointer,
+            { delta: 'here you go', text: 'here you go', type: 'text.delta' },
+            { type: 'done' },
+          ]),
+          { resolveFile },
+        ),
+      );
+
+      expect(eventTypes(raw)).toEqual(['text', 'usage', 'stop']);
+      expect(raw).toContain('here you go');
+    });
+
+    it('emits nothing when the file is over the size cap (resolver returns nothing)', async () => {
+      const resolveFile = vi.fn(async () => undefined);
+
+      const raw = await collect(
+        ChatGPTWebStream(fromEvents([filePointer, { type: 'done' }]), { resolveFile }),
+      );
+
+      expect(eventTypes(raw)).toEqual(['usage', 'stop']);
+    });
+
+    it('ends as an abort when the caller stops during file resolution', async () => {
+      const controller = new AbortController();
+      const onDone = vi.fn(async () => undefined);
+      const resolveFile = vi.fn(async () => {
+        controller.abort();
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      });
+
+      const raw = await collect(
+        ChatGPTWebStream(fromEvents([filePointer, { type: 'done' }]), {
+          onDone,
+          resolveFile,
+          signal: controller.signal,
+        }),
+      );
+
+      expect(raw).toContain('event: stop\ndata: "abort"');
+      expect(raw).not.toContain('event: usage');
+      expect(onDone).not.toHaveBeenCalled();
+    });
+
+    it('delivers the same path from two assistant messages of one turn', async () => {
+      // two code-interpreter steps, each writing its own /mnt/data/out.csv
+      const resolveFile = vi.fn(async (pointer: any) => ({
+        ...pdfFile,
+        name: `${pointer.messageId}.pdf`,
+      }));
+
+      const raw = await collect(
+        ChatGPTWebStream(
+          fromEvents([filePointer, { ...filePointer, messageId: 'answer-2' }, { type: 'done' }]),
+          { resolveFile },
+        ),
+      );
+
+      expect(resolveFile).toHaveBeenCalledTimes(2);
+      expect(eventTypes(raw)).toEqual(['file', 'file', 'usage', 'stop']);
+      expect(raw).toContain('id: answer-1\nevent: file');
+      expect(raw).toContain('id: answer-2\nevent: file');
+    });
+
+    it('emits files recovered from the conversation document at done, keyed by their message', async () => {
+      const onDone = vi.fn(async () => ({
+        files: [{ file: pdfFile, messageId: 'recovered-1' }],
+        text: 'recovered answer',
+      }));
+
+      const raw = await collect(
+        ChatGPTWebStream(fromEvents([{ type: 'done' }]), { onDone, resolveFile: vi.fn() }),
+      );
+
+      expect(eventTypes(raw)).toEqual(['text', 'file', 'usage', 'stop']);
+      expect(raw).toContain('id: recovered-1\nevent: file');
+      expect(raw).toContain('aihub-test.pdf');
+    });
+
+    it('does not deliver a recovered file the stream already carried', async () => {
+      const resolveFile = vi.fn(async () => pdfFile);
+      const onDone = vi.fn(async () => ({
+        files: [{ file: pdfFile, messageId: filePointer.messageId }],
+      }));
+
+      const raw = await collect(
+        ChatGPTWebStream(fromEvents([filePointer, { type: 'done' }]), { onDone, resolveFile }),
+      );
+
+      expect(eventTypes(raw)).toEqual(['file', 'usage', 'stop']);
+    });
+
+    it('recovers a file whose streamed resolution failed', async () => {
+      // the stream attempt threw, so the path was never DELIVERED — the
+      // recovered answer must be allowed to resolve it again
+      const resolveFile = vi.fn(async () => {
+        throw new Error('502 from the asset host');
+      });
+      const onDone = vi.fn(async () => ({
+        files: [{ file: pdfFile, messageId: filePointer.messageId }],
+      }));
+
+      const raw = await collect(
+        ChatGPTWebStream(fromEvents([filePointer, { type: 'done' }]), { onDone, resolveFile }),
+      );
+
+      expect(eventTypes(raw)).toEqual(['file', 'usage', 'stop']);
+      expect(raw).toContain(`id: ${filePointer.messageId}\nevent: file`);
+    });
+
+    it('delivers a recovered file for another message than the one the stream carried', async () => {
+      const resolveFile = vi.fn(async () => pdfFile);
+      const onDone = vi.fn(async () => ({
+        files: [{ file: pdfFile, messageId: 'answer-2' }],
+      }));
+
+      const raw = await collect(
+        ChatGPTWebStream(fromEvents([filePointer, { type: 'done' }]), { onDone, resolveFile }),
+      );
+
+      expect(eventTypes(raw)).toEqual(['file', 'file', 'usage', 'stop']);
+    });
+
+    it('ignores file pointers when no resolver is injected', async () => {
+      const raw = await collect(ChatGPTWebStream(fromEvents([filePointer, { type: 'done' }])));
+
+      expect(eventTypes(raw)).toEqual(['usage', 'stop']);
+    });
+  });
+
   it('maps moderation and upstream errors to error chunks', async () => {
     const raw = await collect(
       ChatGPTWebStream(

@@ -7,7 +7,12 @@ import type {
 import type { Pricing } from 'model-bank';
 
 import { parseToolCalls } from '../../helpers';
-import type { ChatStreamCallbacks, OnFinishData, UsageMissingDiagnostics } from '../../types';
+import type {
+  ChatStreamCallbacks,
+  OnFinishData,
+  StreamFileData,
+  UsageMissingDiagnostics,
+} from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { safeParseJSON } from '../../utils/safeParseJSON';
 import type { SignatureScope } from '../../utils/signatureScope';
@@ -111,6 +116,8 @@ export interface StreamProtocolChunk {
     | 'text'
     // base64 format image
     | 'base64_image'
+    // a generated file (code-interpreter export), payload = StreamFileData
+    | 'file'
     // Tools use
     | 'tool_calls'
     // Model Thinking
@@ -439,6 +446,16 @@ export const createSSEProtocolTransformer = (
   });
 };
 
+/**
+ * Event types whose serialized payload may itself contain a `data:` marker, so
+ * only the LEADING SSE field marker may be stripped from the frame.
+ */
+const DATA_URI_PAYLOAD_TYPES = new Set<StreamProtocolChunk['type']>([
+  'base64_image',
+  'file',
+  'reasoning_response_item',
+]);
+
 export function createCallbacksTransformer(
   cb: ChatStreamCallbacks | undefined,
   options?: { streamStack?: StreamContext },
@@ -456,6 +473,8 @@ export function createCallbacksTransformer(
   let finishReason: string | undefined;
   // Track base64 images for accumulation
   const base64Images: Array<{ data: string; id: string }> = [];
+  // Track generated files for accumulation
+  const files: StreamFileData[] = [];
 
   let currentType = '' as unknown as StreamProtocolChunk['type'];
   const callbacks = cb || {};
@@ -518,16 +537,16 @@ export function createCallbacksTransformer(
       }
       // if the message is a data chunk, handle the callback
       else if (chunk.startsWith('data:')) {
-        // `base64_image` payloads are raw data-URIs (`data:image/png;base64,...`)
-        // and `reasoning_response_item` payloads carry arbitrary model-authored
-        // summary text — both can contain `data:` themselves, which the legacy
+        // `base64_image` payloads are raw data-URIs (`data:image/png;base64,...`),
+        // `file` payloads embed one in their `data` field, and
+        // `reasoning_response_item` payloads carry arbitrary model-authored
+        // summary text — all can contain `data:` themselves, which the legacy
         // `split('data:')[1]` corrupts (it splits on the embedded marker too).
         // Strip only the leading field marker for those types; every other event
         // type keeps the original split path unchanged for compatibility.
-        const content =
-          currentType === 'base64_image' || currentType === 'reasoning_response_item'
-            ? chunk.slice('data:'.length).trim()
-            : chunk.split('data:')[1].trim();
+        const content = DATA_URI_PAYLOAD_TYPES.has(currentType)
+          ? chunk.slice('data:'.length).trim()
+          : chunk.split('data:')[1].trim();
 
         const data = safeParseJSON(content) as any;
 
@@ -575,6 +594,17 @@ export function createCallbacksTransformer(
               image,
               images: base64Images,
             });
+            break;
+          }
+
+          case 'file': {
+            // data format: StreamFileData — a whole generated file (name, mime,
+            // size and a `data:` URI). Consumers upload it and attach it to the
+            // message; there is nothing to aggregate into the text.
+            const file = data as StreamFileData;
+            if (!file?.data) break;
+            files.push(file);
+            await callbacks.onFile?.({ file, files });
             break;
           }
 

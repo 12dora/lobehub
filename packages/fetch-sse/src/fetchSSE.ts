@@ -61,6 +61,31 @@ export interface MessageBase64ImageChunk {
   type: 'base64_image';
 }
 
+/**
+ * A generated non-image file (pdf/docx/xlsx/…) produced by the model runtime,
+ * e.g. ChatGPT Web's code interpreter. Payload mirrors `base64_image`: the bytes
+ * travel as a data URI and the client uploads them to the file store.
+ */
+export interface ChatFileChunk {
+  /** data URI: `data:<mimeType>;base64,…` */
+  data: string;
+  /** temporary client-side id, replaced by the real file id after upload */
+  id: string;
+  mimeType: string;
+  name: string;
+  size?: number;
+  /** original sandbox path the file was produced at, e.g. `/mnt/data/report.pdf` */
+  sourcePath?: string;
+}
+
+export interface MessageFileChunk {
+  file: ChatFileChunk;
+  type: 'file';
+}
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
 export interface MessageReasoningChunk {
   signature?: string;
   text?: string;
@@ -116,6 +141,7 @@ export interface FetchSSEOptions {
       | MessageGroundingChunk
       | MessageUsageChunk
       | MessageBase64ImageChunk
+      | MessageFileChunk
       | MessageSpeedChunk
       | MessageStopChunk,
   ) => void;
@@ -383,6 +409,39 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
           images.push(item);
 
           options.onMessageHandle?.({ id, image: item, images, type: 'base64_image' });
+          break;
+        }
+
+        case 'file': {
+          // payload: { data: 'data:<mime>;base64,…', mimeType, name, size?, sourcePath? }
+          // `data`, `mimeType` and `name` are all required by the contract: a file
+          // without a name can neither be uploaded with a sane filename nor rendered,
+          // so an incomplete / wrongly typed payload is dropped rather than half-handled.
+          const payload = data as Partial<Omit<ChatFileChunk, 'id'>> | undefined;
+          if (
+            !isNonEmptyString(payload?.data) ||
+            !isNonEmptyString(payload?.mimeType) ||
+            !isNonEmptyString(payload?.name)
+          )
+            break;
+
+          options.onMessageHandle?.({
+            file: {
+              data: payload.data,
+              id: 'tmp_file_' + nanoid(),
+              mimeType: payload.mimeType,
+              name: payload.name,
+              // optional fields: keep them only when they're actually usable
+              size:
+                typeof payload.size === 'number' &&
+                Number.isFinite(payload.size) &&
+                payload.size >= 0
+                  ? payload.size
+                  : undefined,
+              sourcePath: isNonEmptyString(payload.sourcePath) ? payload.sourcePath : undefined,
+            },
+            type: 'file',
+          });
           break;
         }
 

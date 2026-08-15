@@ -1,4 +1,5 @@
 import type { GroundingSearch, ModelUsage } from '@lobechat/types';
+import createDebug from 'debug';
 
 import type { ConversationEvent } from '../../providers/chatgptWeb/client';
 import {
@@ -7,7 +8,7 @@ import {
   isChatGPTWebError,
   toAgentRuntimeErrorType,
 } from '../../providers/chatgptWeb/client';
-import type { ChatStreamCallbacks } from '../../types';
+import type { ChatStreamCallbacks, StreamFileData } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
 import { nanoid } from '../../utils/uuid';
 import type { StreamContext, StreamProtocolChunk } from './protocol';
@@ -18,10 +19,23 @@ import {
   createTokenSpeedCalculator,
 } from './protocol';
 
+const log = createDebug('lobe-chatgptweb:stream');
+
 export interface ChatGPTWebImagePointer {
   assetPointer: string;
   fileId: string;
   pointerKind: 'file-service' | 'sediment';
+}
+
+/** A code-interpreter output the answer text referenced as a `sandbox:` link. */
+export interface ChatGPTWebFilePointer {
+  conversationId?: string;
+  /** the assistant message that referenced the file */
+  messageId: string;
+  /** basename of {@link sandboxPath} */
+  name: string;
+  /** the interpreter path, e.g. `/mnt/data/report.pdf` */
+  sandboxPath: string;
 }
 
 export interface ChatGPTWebDoneContext {
@@ -51,7 +65,25 @@ export interface ChatGPTWebDoneContext {
   text: string;
 }
 
+/**
+ * A file recovered from the conversation document, together with the upstream
+ * assistant message that referenced it — the `file` chunk is keyed by that id,
+ * exactly like a file the stream itself carried, and it is what the per-message
+ * dedupe is keyed on.
+ */
+export interface ChatGPTWebRecoveredFile {
+  file: StreamFileData;
+  /** the upstream assistant message id that referenced the file */
+  messageId: string;
+}
+
 export interface ChatGPTWebDoneResult {
+  /**
+   * Files referenced by an answer that was recovered from the conversation
+   * document rather than streamed (a handed-off turn). The stream never saw
+   * those `sandbox:` links, so the resolver runs on the recovery side.
+   */
+  files?: ChatGPTWebRecoveredFile[];
   grounding?: GroundingSearch;
   /** Answer text recovered after the stream ended empty (async/background turn). */
   text?: string;
@@ -79,6 +111,12 @@ export interface ChatGPTWebStreamOptions {
    */
   onDone?: (context: ChatGPTWebDoneContext) => Promise<ChatGPTWebDoneResult | undefined | void>;
   provider?: string;
+  /**
+   * Download a code-interpreter output and describe it as a `file` chunk
+   * payload. Awaited inline — it MUST finish before `done`, because the cleanup
+   * hook hides the conversation the file hangs off.
+   */
+  resolveFile?: (pointer: ChatGPTWebFilePointer) => Promise<StreamFileData | undefined>;
   /**
    * Resolve an image pointer into a `data:` URI. Awaited inline, so generated
    * images keep their position relative to the surrounding text.
@@ -150,6 +188,16 @@ export async function* transformChatGPTWebEvents(
   let recoveryRequired = false;
   let aborted = false;
   let finished = false;
+  /**
+   * `messageId + sandboxPath` of every file already DELIVERED as a `file` chunk
+   * on this turn. Keyed per message, because two assistant messages of the same
+   * turn can each write their own `/mnt/data/out.csv`, and recorded only after
+   * the chunk was yielded, so a resolution that failed can still be retried by
+   * the recovery path.
+   */
+  const deliveredFiles = new Set<string>();
+  const fileKey = (messageId: string | undefined, sandboxPath: string | undefined) =>
+    `${messageId ?? ''}\u0000${sandboxPath ?? ''}`;
 
   const emitGrounding = (data: GroundingSearch): StreamProtocolChunk => {
     citationsEmitted = true;
@@ -226,6 +274,40 @@ export async function* transformChatGPTWebEvents(
               // "one image failed to resolve" and reported as a clean stop
               if (isCallerAbortError(error, options.signal)) throw error;
               // a missing inline image must not kill the answer
+            }
+            break;
+          }
+
+          case 'file.pointer': {
+            if (!options.resolveFile) break;
+            // The router already dedupes per turn; this guards the case where a
+            // resumed leg is read through a router of its own, and keeps the
+            // post-turn recovery from delivering the same file twice.
+            const key = fileKey(event.messageId, event.sandboxPath);
+            if (deliveredFiles.has(key)) break;
+            try {
+              const file = await options.resolveFile({
+                conversationId: event.conversationId ?? conversationId,
+                messageId: event.messageId,
+                name: event.name,
+                sandboxPath: event.sandboxPath,
+              });
+              if (file?.data) {
+                hadOutput = true;
+                yield { data: file, id: event.messageId || id, type: 'file' };
+                // only NOW: a resolution that threw (or came back empty) must
+                // stay retryable by the recovered-answer path
+                deliveredFiles.add(key);
+              }
+            } catch (error) {
+              // the user pressing stop ends the turn; a file that cannot be
+              // downloaded must not take the answer down with it
+              if (isCallerAbortError(error, options.signal)) throw error;
+              // the shape only — a download error can carry the signed URL
+              log(
+                'failed to resolve a generated file: %s',
+                error instanceof Error ? error.name : typeof error,
+              );
             }
             break;
           }
@@ -314,6 +396,18 @@ export async function* transformChatGPTWebEvents(
           outputText += result.text;
           hadOutput = true;
           yield { data: result.text, id, type: 'text' };
+        }
+
+        for (const recovered of result?.files ?? []) {
+          const file = recovered?.file;
+          if (!file?.data) continue;
+          const key = fileKey(recovered.messageId, file.sourcePath);
+          if (file.sourcePath && deliveredFiles.has(key)) continue;
+          hadOutput = true;
+          // same contract as a streamed file: the chunk is keyed by the upstream
+          // assistant message that referenced it
+          yield { data: file, id: recovered.messageId || id, type: 'file' };
+          if (file.sourcePath) deliveredFiles.add(key);
         }
 
         const grounding = result?.grounding;

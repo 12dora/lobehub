@@ -1,4 +1,5 @@
 import {
+  type ChatFileItem,
   type ChatImageItem,
   type ChatToolPayload,
   type GroundingSearch,
@@ -12,6 +13,12 @@ import {
  * Streaming context - immutable configuration
  */
 export interface StreamingContext {
+  /**
+   * Signal of the operation's AbortController. Used to cancel background asset
+   * uploads when the user stops the answer: not-yet-started uploads are skipped
+   * and `handleFinish` no longer waits for in-flight ones.
+   */
+  abortSignal?: AbortSignal;
   agentId: string;
   groupId?: string;
   messageId: string;
@@ -39,6 +46,13 @@ export interface StreamingCallbacks {
     reasoning?: ReasoningState,
     contentMetadata?: { isMultimodal: boolean; tempDisplayContent: string },
   ) => void;
+  /** Generated (non-image) file list update */
+  onFilesUpdate?: (files: ChatFileItem[]) => void;
+  /**
+   * A generated file failed to upload and was removed from the list.
+   * Implementations surface it to the user (toast); the handler only logs.
+   */
+  onFileUploadError?: (payload: { error: unknown; name: string }) => void;
   /** Search grounding update */
   onGroundingUpdate: (grounding: GroundingData) => void;
   /** Image list update */
@@ -55,6 +69,11 @@ export interface StreamingCallbacks {
   toggleToolCallingStreaming: (messageId: string, isAnimationActives?: boolean[]) => void;
   /** Transform tool calls */
   transformToolCalls: (toolCalls: MessageToolCall[]) => ChatToolPayload[];
+  /** Upload a generated non-image file delivered as a data URI */
+  uploadBase64File?: (
+    dataUri: string,
+    options: { filename: string; mimeType: string; signal?: AbortSignal },
+  ) => Promise<{ id: string; url: string } | undefined>;
   /** Upload base64 image */
   uploadBase64Image: (base64Data: string) => Promise<{ id?: string; url?: string }>;
 }
@@ -81,6 +100,7 @@ export interface StreamingResult {
   finishType?: string;
   isFunctionCall: boolean;
   metadata: {
+    fileList?: ChatFileItem[];
     finishType?: string;
     imageList?: ChatImageItem[];
     isMultimodal?: boolean;
@@ -113,5 +133,16 @@ export type StreamChunk =
       image: { data: string; id: string };
       images: { data: string; id: string }[];
       type: 'base64_image';
+    }
+  | {
+      file: {
+        data: string;
+        id: string;
+        mimeType: string;
+        name: string;
+        size?: number;
+        sourcePath?: string;
+      };
+      type: 'file';
     }
   | { type: 'stop' };

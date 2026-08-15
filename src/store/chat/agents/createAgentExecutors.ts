@@ -34,6 +34,7 @@ import debug from 'debug';
 import { t } from 'i18next';
 import pMap from 'p-map';
 
+import { message as antdMessage } from '@/components/AntdStaticMethods';
 import { LOADING_FLAT } from '@/const/message';
 import { aiAgentService } from '@/services/aiAgent';
 import { chatService } from '@/services/chat';
@@ -383,6 +384,7 @@ export const createAgentExecutors = (context: {
       // Create streaming handler with callbacks
       const handler = new StreamingHandler(
         {
+          abortSignal: abortController?.signal,
           messageId: assistantMessageId,
           operationId: context.operationId,
           agentId,
@@ -449,6 +451,16 @@ export const createAgentExecutors = (context: {
               { operationId: context.operationId },
             );
           },
+          onFilesUpdate: (files) => {
+            internal_dispatchMessage(
+              {
+                id: assistantMessageId,
+                type: 'updateMessage',
+                value: { fileList: files },
+              },
+              { operationId: context.operationId },
+            );
+          },
           onReasoningStart: () => {
             const { operationId: reasoningOpId } = context.get().startOperation({
               type: 'reasoning',
@@ -467,6 +479,13 @@ export const createAgentExecutors = (context: {
                 url: file?.url,
                 alt: file?.filename || file?.id,
               })),
+          uploadBase64File: (dataUri, { filename, mimeType, signal }) =>
+            getFileStoreState()
+              .uploadBase64FileWithProgress(dataUri, { filename, mimeType, signal })
+              .then((file) => (file?.id && file?.url ? { id: file.id, url: file.url } : undefined)),
+          onFileUploadError: ({ name }) => {
+            antdMessage.error(t('generatedFileUploadFailed', { name, ns: 'chat' }));
+          },
           transformToolCalls: (calls) =>
             context.get().internal_transformToolCalls(calls, offeredToolNames),
           toggleToolCallingStreaming: internal_toggleToolCallingStreaming,
@@ -538,6 +557,44 @@ export const createAgentExecutors = (context: {
           finalUsage = result.usage;
           finalToolCalls = result.toolCalls;
 
+          // Attach generated (non-image) files to the assistant message. This
+          // inserts the `messages_files` rows, so the subsequent updateMessage
+          // response comes back with a hydrated `fileList`. Never fail the
+          // answer because of it.
+          const generatedFiles = result.metadata.fileList ?? [];
+          // The server answers `{ success: false }` when the DB write fails —
+          // it does NOT reject — so a resolved promise is not proof of success.
+          let filesAttached = generatedFiles.length === 0;
+
+          if (generatedFiles.length > 0) {
+            try {
+              const attachResult = await messageService.addFilesToMessage(
+                assistantMessageId,
+                generatedFiles.map((file) => file.id),
+                { agentId, groupId, topicId },
+              );
+              filesAttached = !!attachResult?.success;
+
+              if (!filesAttached) {
+                log(
+                  '[file] addFilesToMessage returned success=false messageId=%s, files=%d',
+                  assistantMessageId,
+                  generatedFiles.length,
+                );
+              }
+            } catch (error) {
+              log(
+                '[file] failed to attach generated files messageId=%s, error=%o',
+                assistantMessageId,
+                error,
+              );
+            }
+
+            if (!filesAttached) {
+              antdMessage.error(t('fileAttachFailed', { ns: 'chat' }));
+            }
+          }
+
           await optimisticUpdateMessageContent(
             assistantMessageId,
             result.content,
@@ -557,6 +614,21 @@ export const createAgentExecutors = (context: {
             },
             { operationId: context.operationId },
           );
+
+          // `optimisticUpdateMessageContent` replaces the message with the DB
+          // rows, which have no `messages_files` link when the attach failed.
+          // The files themselves were uploaded fine, so keep the cards instead
+          // of letting them silently disappear.
+          if (!filesAttached) {
+            internal_dispatchMessage(
+              {
+                id: assistantMessageId,
+                type: 'updateMessage',
+                value: { fileList: generatedFiles },
+              },
+              { operationId: context.operationId },
+            );
+          }
         },
         onMessageHandle: async (chunk) => {
           handler.handleChunk(chunk as StreamChunk);

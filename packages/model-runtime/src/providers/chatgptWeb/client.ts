@@ -64,6 +64,7 @@ const OUTPUT_EVENT_TYPES = new Set<ConversationEvent['type']>([
   'reasoning.done',
   'citations',
   'image.pointer',
+  'file.pointer',
   'moderation',
   'error',
 ]);
@@ -424,7 +425,20 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       path: PATHS.fConversationPrepare,
       signal,
     });
-    return { conduitToken: raw?.conduit_token ?? '' };
+
+    // A 200 without a usable token is a FAILED prepare: the conduit path then
+    // streams without `X-Conduit-Token` and dies upstream, while the caller
+    // believes it prepared successfully and never takes its plain fallback.
+    // `upstream` keeps it recoverable — the legacy endpoint needs no token.
+    const conduitToken = typeof raw?.conduit_token === 'string' ? raw.conduit_token.trim() : '';
+    if (!conduitToken)
+      throw new ChatGPTWebError(
+        'upstream',
+        'conversation_prepare failed: the response carried no conduit token',
+        { status: 200 },
+      );
+
+    return { conduitToken };
   }
 
   /**
@@ -885,6 +899,56 @@ export class ChatGPTWebClient extends ChatGPTWebHttp {
       signal,
     });
     return checkedAssetUrl(raw?.download_url ?? raw?.url, 'attachment_download_url');
+  }
+
+  /**
+   * Resolve a code-interpreter output path (`/mnt/data/report.pdf`) into a
+   * download URL.
+   *
+   * The python tool writes its files into a sandbox the answer text can only
+   * reference as `sandbox:/mnt/data/…`; this endpoint is what the web client
+   * itself calls to turn such a reference into real bytes. The URL it returns is
+   * an `estuary/content` link that still needs the account bearer, which
+   * {@link downloadBytes} attaches for chatgpt.com only.
+   */
+  async resolveInterpreterFile({
+    conversationId,
+    messageId,
+    sandboxPath,
+    signal,
+  }: {
+    conversationId: string;
+    messageId: string;
+    sandboxPath: string;
+    signal?: AbortSignal;
+  }): Promise<{ downloadUrl: string; fileId?: string; name?: string }> {
+    // callers may pass the reference as it appeared in the text
+    const path = sandboxPath.startsWith('sandbox:')
+      ? sandboxPath.slice('sandbox:'.length)
+      : sandboxPath;
+
+    const raw = await this.requestJson<{
+      download_url?: string;
+      metadata?: { file_id?: string; file_name?: string; name?: string };
+      url?: string;
+    }>({
+      context: 'interpreter_download',
+      headers: { Referer: `${CHATGPT_BASE_URL}/c/${conversationId}` },
+      path: `${PATHS.conversation}/${conversationId}/interpreter/download`,
+      query: `?message_id=${encodeURIComponent(messageId)}&sandbox_path=${encodeURIComponent(path)}`,
+      signal,
+    });
+
+    const downloadUrl = checkedAssetUrl(raw?.download_url ?? raw?.url, 'interpreter_download');
+    const metadata = raw?.metadata;
+    return {
+      downloadUrl,
+      fileId: typeof metadata?.file_id === 'string' ? metadata.file_id : undefined,
+      name:
+        (typeof metadata?.file_name === 'string' && metadata.file_name) ||
+        (typeof metadata?.name === 'string' && metadata.name) ||
+        undefined,
+    };
   }
 
   /**

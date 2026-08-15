@@ -9,6 +9,9 @@ const createMockCallbacks = (): StreamingCallbacks => ({
   onToolCallsUpdate: vi.fn(),
   onGroundingUpdate: vi.fn(),
   onImagesUpdate: vi.fn(),
+  onFilesUpdate: vi.fn(),
+  onFileUploadError: vi.fn(),
+  uploadBase64File: vi.fn(async () => ({ id: 'file-id', url: 'https://s3/report.pdf' })),
   onReasoningStart: vi.fn(() => 'reasoning-op-id'),
   onReasoningComplete: vi.fn(),
   uploadBase64Image: vi.fn(async () => ({ id: 'img-id', url: 'https://s3/img.png' })),
@@ -362,6 +365,272 @@ describe('StreamingHandler', () => {
       });
 
       expect(callbacks.uploadBase64Image).toHaveBeenCalledWith('data:image/png;base64,abc');
+    });
+  });
+
+  describe('handleChunk - file', () => {
+    const fileChunk = {
+      type: 'file' as const,
+      file: {
+        data: 'data:application/pdf;base64,JVBERi0xLjQK',
+        id: 'tmp_file_1',
+        mimeType: 'application/pdf',
+        name: 'report.pdf',
+        size: 2048,
+        sourcePath: '/mnt/data/report.pdf',
+      },
+    };
+
+    it('should immediately display an optimistic file entry', () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk(fileChunk);
+
+      expect(callbacks.onFilesUpdate).toHaveBeenCalledWith([
+        { fileType: 'application/pdf', id: 'tmp_file_1', name: 'report.pdf', size: 2048, url: '' },
+      ]);
+    });
+
+    it('should start an upload task with filename and mime type', () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk(fileChunk);
+
+      expect(callbacks.uploadBase64File).toHaveBeenCalledWith(
+        'data:application/pdf;base64,JVBERi0xLjQK',
+        { filename: 'report.pdf', mimeType: 'application/pdf', signal: undefined },
+      );
+    });
+
+    it('should swap the temp entry for the uploaded file', async () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk(fileChunk);
+      await handler.handleFinish({ type: 'stop' });
+
+      expect(callbacks.onFilesUpdate).toHaveBeenLastCalledWith([
+        {
+          fileType: 'application/pdf',
+          id: 'file-id',
+          name: 'report.pdf',
+          size: 2048,
+          url: 'https://s3/report.pdf',
+        },
+      ]);
+    });
+
+    it('should ignore a file chunk without data', () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk({
+        type: 'file',
+        file: { data: '', id: 'tmp_file_2', mimeType: 'application/pdf', name: 'x.pdf' },
+      });
+
+      expect(callbacks.onFilesUpdate).not.toHaveBeenCalled();
+      expect(callbacks.uploadBase64File).not.toHaveBeenCalled();
+    });
+
+    it('should wait for file uploads and expose them in the finish metadata', async () => {
+      const callbacks = createMockCallbacks();
+      callbacks.uploadBase64File = vi.fn(
+        (): Promise<{ id: string; url: string } | undefined> =>
+          new Promise((r) =>
+            setTimeout(() => r({ id: 'file-id', url: 'https://s3/report.pdf' }), 50),
+          ),
+      );
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk(fileChunk);
+
+      const result = await handler.handleFinish({ type: 'stop' });
+
+      expect(result.metadata.fileList).toEqual([
+        {
+          fileType: 'application/pdf',
+          id: 'file-id',
+          name: 'report.pdf',
+          size: 2048,
+          url: 'https://s3/report.pdf',
+        },
+      ]);
+    });
+
+    it('should not fail the stream when the upload rejects', async () => {
+      const callbacks = createMockCallbacks();
+      callbacks.uploadBase64File = vi.fn(async () => {
+        throw new Error('boom');
+      });
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk(fileChunk);
+
+      const result = await handler.handleFinish({ type: 'stop' });
+
+      expect(result.metadata.fileList).toBeUndefined();
+    });
+
+    it('should remove the failed card and report the failure to the caller', async () => {
+      const callbacks = createMockCallbacks();
+      callbacks.uploadBase64File = vi.fn(async () => {
+        throw new Error('boom');
+      });
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk(fileChunk);
+      await handler.handleFinish({ type: 'stop' });
+
+      // the optimistic card is dropped — it can never resolve to a real file
+      expect(callbacks.onFilesUpdate).toHaveBeenLastCalledWith([]);
+      expect(callbacks.onFileUploadError).toHaveBeenCalledWith({
+        error: expect.any(Error),
+        name: 'report.pdf',
+      });
+    });
+
+    it('should treat an upload without id/url as a failure', async () => {
+      const callbacks = createMockCallbacks();
+      callbacks.uploadBase64File = vi.fn(async () => undefined);
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk(fileChunk);
+      const result = await handler.handleFinish({ type: 'stop' });
+
+      expect(result.metadata.fileList).toBeUndefined();
+      expect(callbacks.onFilesUpdate).toHaveBeenLastCalledWith([]);
+      expect(callbacks.onFileUploadError).toHaveBeenCalledTimes(1);
+    });
+
+    it('should run at most 3 uploads at the same time', async () => {
+      const callbacks = createMockCallbacks();
+      const releases: ((value: { id: string; url: string }) => void)[] = [];
+      callbacks.uploadBase64File = vi.fn(
+        (): Promise<{ id: string; url: string } | undefined> =>
+          new Promise((resolve) => releases.push(resolve)),
+      );
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      for (let i = 0; i < 5; i++) {
+        handler.handleChunk({
+          type: 'file',
+          file: { ...fileChunk.file, id: `tmp_file_${i}`, name: `report-${i}.pdf` },
+        });
+      }
+
+      // all 5 cards are displayed immediately…
+      expect(callbacks.onFilesUpdate).toHaveBeenCalledTimes(5);
+      // …but only 3 uploads have actually started
+      expect(callbacks.uploadBase64File).toHaveBeenCalledTimes(3);
+
+      releases[0]({ id: 'file-0', url: 'https://s3/0.pdf' });
+      await vi.waitFor(() => expect(callbacks.uploadBase64File).toHaveBeenCalledTimes(4));
+
+      releases[1]({ id: 'file-1', url: 'https://s3/1.pdf' });
+      await vi.waitFor(() => expect(callbacks.uploadBase64File).toHaveBeenCalledTimes(5));
+
+      for (const [index, release] of releases.entries())
+        release({ id: `file-${index}`, url: `https://s3/${index}.pdf` });
+
+      const result = await handler.handleFinish({ type: 'stop' });
+      expect(result.metadata.fileList).toHaveLength(5);
+    });
+
+    describe('abort', () => {
+      it('should skip uploads that have not started yet', async () => {
+        const controller = new AbortController();
+        const callbacks = createMockCallbacks();
+        const releases: ((value: { id: string; url: string }) => void)[] = [];
+        callbacks.uploadBase64File = vi.fn(
+          (): Promise<{ id: string; url: string } | undefined> =>
+            new Promise((resolve) => releases.push(resolve)),
+        );
+        const handler = new StreamingHandler(
+          { ...mockContext, abortSignal: controller.signal },
+          callbacks,
+        );
+
+        for (let i = 0; i < 5; i++) {
+          handler.handleChunk({
+            type: 'file',
+            file: { ...fileChunk.file, id: `tmp_file_${i}`, name: `report-${i}.pdf` },
+          });
+        }
+
+        expect(callbacks.uploadBase64File).toHaveBeenCalledTimes(3);
+
+        // first upload completes, then the user stops the answer
+        releases[0]({ id: 'file-0', url: 'https://s3/0.pdf' });
+        await vi.waitFor(() => expect(callbacks.uploadBase64File).toHaveBeenCalledTimes(4));
+        controller.abort();
+
+        // release the running ones so the queue drains; the queued 5th one is skipped
+        releases[1]({ id: 'file-1', url: 'https://s3/1.pdf' });
+        releases[2]({ id: 'file-2', url: 'https://s3/2.pdf' });
+        releases[3]({ id: 'file-3', url: 'https://s3/3.pdf' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        // the 5th upload never started
+        expect(callbacks.uploadBase64File).toHaveBeenCalledTimes(4);
+        expect(callbacks.onFileUploadError).not.toHaveBeenCalled();
+      });
+
+      it('should finish without waiting for pending uploads and keep completed ones', async () => {
+        const controller = new AbortController();
+        const callbacks = createMockCallbacks();
+        let resolveSecond: ((value: { id: string; url: string }) => void) | undefined;
+        callbacks.uploadBase64File = vi.fn(
+          (_data: string, options: { filename: string }) =>
+            new Promise<{ id: string; url: string } | undefined>((resolve) => {
+              if (options.filename === 'done.pdf')
+                resolve({ id: 'file-done', url: 'https://s3/d' });
+              else resolveSecond = resolve;
+            }),
+        );
+        const handler = new StreamingHandler(
+          { ...mockContext, abortSignal: controller.signal },
+          callbacks,
+        );
+
+        handler.handleChunk({
+          type: 'file',
+          file: { ...fileChunk.file, id: 'tmp_done', name: 'done.pdf' },
+        });
+        handler.handleChunk({
+          type: 'file',
+          file: { ...fileChunk.file, id: 'tmp_pending', name: 'pending.pdf' },
+        });
+
+        // let the resolved upload settle
+        await vi.waitFor(() =>
+          expect(callbacks.onFilesUpdate).toHaveBeenCalledWith(
+            expect.arrayContaining([expect.objectContaining({ id: 'file-done' })]),
+          ),
+        );
+
+        controller.abort();
+
+        // never resolves — handleFinish must not hang on it
+        const result = await handler.handleFinish({ type: 'abort' });
+
+        expect(result.metadata.fileList).toEqual([
+          expect.objectContaining({ id: 'file-done', name: 'done.pdf' }),
+        ]);
+        expect(resolveSecond).toBeDefined();
+      });
+    });
+
+    it('should leave fileList undefined when no file chunk arrived', async () => {
+      const callbacks = createMockCallbacks();
+      const handler = new StreamingHandler(mockContext, callbacks);
+
+      handler.handleChunk({ type: 'text', text: 'hi' });
+      const result = await handler.handleFinish({ type: 'stop' });
+
+      expect(result.metadata.fileList).toBeUndefined();
     });
   });
 

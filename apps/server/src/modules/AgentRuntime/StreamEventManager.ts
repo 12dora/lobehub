@@ -118,6 +118,8 @@ export interface StreamChunkData {
     | 'image'
     | 'grounding'
     | 'base64_image'
+    // a generated file (e.g. a code-interpreter export)
+    | 'file'
     | 'content_part'
     | 'reasoning_part';
   content?: string;

@@ -2,6 +2,7 @@ import createDebug from 'debug';
 
 import { citationsFromMessage, isAnswerMessage, isVisibleAssistantMessage } from '../citations';
 import { ASSET_POINTER_PREFIXES } from '../constants';
+import { extractSandboxFiles } from '../interpreterFiles';
 import type { AssetPointerKind, Citation, ConversationEvent, StreamHandoffOption } from '../types';
 import { sanitizeAnnotations } from './annotations';
 import { applyPatchEvent, createPatchState, type PatchState } from './patch';
@@ -12,11 +13,15 @@ interface MessageState {
   citationCount: number;
   /** a divergent (non prefix-compatible) replay was already reported once */
   divergenceLogged: boolean;
+  /** sandbox paths already reported as `file.pointer` for this message */
+  emittedFiles: Set<string>;
   emittedPointers: Set<string>;
   endTurn?: boolean;
   /** the current snapshot is NOTHING but the history we replayed — an echo */
   historyOnly: boolean;
   ignored: boolean;
+  /** the message is (or was) the user-visible answer of the turn */
+  isAnswer: boolean;
   /** HIGH-WATER mark of the reasoning already surfaced — never shrinks */
   reasoning: string;
   reasoningDone: boolean;
@@ -148,8 +153,15 @@ export class ConversationEventRouter {
 
   feed(payload: string): ConversationEvent[] {
     if (!payload) return [];
-    if (payload === '[DONE]')
-      return [{ conversationId: this.conversationId, endTurn: this.endTurn, type: 'done' }];
+    if (payload === '[DONE]') {
+      // Generated files must be reported BEFORE `done`: the consumer resolves
+      // them inside the stream, while the conversation is still readable.
+      const events: ConversationEvent[] = [];
+      for (const [messageId, state] of this.messages)
+        this.emitSandboxFiles(messageId, state, events);
+      events.push({ conversationId: this.conversationId, endTurn: this.endTurn, type: 'done' });
+      return events;
+    }
 
     let parsed: unknown;
     try {
@@ -243,9 +255,11 @@ export class ConversationEventRouter {
       state = {
         citationCount: 0,
         divergenceLogged: false,
+        emittedFiles: new Set<string>(),
         emittedPointers: new Set<string>(),
         historyOnly: false,
         ignored: false,
+        isAnswer: false,
         reasoning: '',
         reasoningDone: false,
         text: '',
@@ -315,6 +329,7 @@ export class ConversationEventRouter {
     }
 
     if (isVisibleAssistantMessage(message)) {
+      if (isAnswerMessage(message)) state.isAnswer = true;
       this.emitText(message, messageId, state, events);
       this.emitCitations(message, state, events);
     }
@@ -333,6 +348,40 @@ export class ConversationEventRouter {
       state.endTurn = endTurn;
       if (status || endTurn !== undefined)
         events.push({ endTurn, messageId, status, type: 'message.status' });
+    }
+
+    // A finished answer can be scanned for interpreter files: its text will not
+    // grow any further, so a `sandbox:` link in it is complete.
+    if (endTurn === true || (status !== undefined && status !== 'in_progress'))
+      this.emitSandboxFiles(messageId, state, events);
+  }
+
+  /**
+   * Report the code-interpreter files an answer links to as `sandbox:` paths.
+   *
+   * Deduplicated per (message, path) for the whole turn, so a resume leg that
+   * replays the same answer — or the `[DONE]` sweep after the message already
+   * finished — never reports the same file twice.
+   *
+   * Only ever called when the text cannot grow any further within this leg (the
+   * message reached a final status, or the leg hit `[DONE]`), so the supported
+   * BARE form counts too — a bare mention is how the model reports a file it
+   * did not link. The one shape a cut-off leg can fake, the tail of a markdown
+   * link whose `)` never arrived, is rejected by {@link extractSandboxFiles}.
+   */
+  private emitSandboxFiles(messageId: string, state: MessageState, events: ConversationEvent[]) {
+    if (!state.isAnswer || state.ignored || state.historyOnly || !state.text) return;
+
+    for (const file of extractSandboxFiles(state.text)) {
+      if (state.emittedFiles.has(file.path)) continue;
+      state.emittedFiles.add(file.path);
+      events.push({
+        conversationId: this.conversationId,
+        messageId,
+        name: file.name,
+        sandboxPath: file.path,
+        type: 'file.pointer',
+      });
     }
   }
 
