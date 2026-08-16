@@ -187,3 +187,30 @@ describe('resolveIdentityProviderCallbackOrigin', () => {
     ).toBe('https://fallback.example.test');
   });
 });
+
+describe('DingTalk authCode parameter', () => {
+  it("accepts DingTalk's `authCode` as the authorization code", async () => {
+    vi.stubEnv('ENABLE_DATABASE_OIDC', '1');
+    const callback = vi.fn().mockResolvedValue({ attemptId: 'attempt', valid: true });
+    const abandon = vi.fn();
+    vi.mocked(createAdminIdentityProviderRuntime).mockReturnValue({
+      admin: {} as never,
+      test: { abandon, callback } as never,
+    });
+    const response = await handleIdentityProviderTestCallback(
+      new NextRequest(
+        'https://app.example.test/oauth/identity-provider/test/callback?authCode=AC-1&state=state',
+      ),
+      unusedDb,
+    );
+    expect(await response.text()).toContain('Test complete');
+    // DingTalk's 统一登录 never sends `code`; without this the attempt would be abandoned.
+    expect(abandon).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({
+      code: 'AC-1',
+      effectiveOrigin: 'https://app.example.test',
+      iss: null,
+      state: 'state',
+    });
+  });
+});

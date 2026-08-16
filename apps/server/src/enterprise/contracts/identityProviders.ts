@@ -194,6 +194,18 @@ const reasonSchema = z
     'credential material is not allowed in audit reasons',
   );
 
+/**
+ * Reason is collected only where the platform treats the action as dangerous (publish, disable,
+ * rollback, delete — all reauth-gated). Routine draft work (save, safe-login test, DingTalk
+ * organisation capture) is fully reconstructable from the audit before/after diffs and the
+ * revision history, so demanding free text there bought no forensic value and cost every
+ * administrator an extra modal.
+ */
+export const optionalReasonSchema = reasonSchema.optional();
+
+/** Recorded in the audit trail when an operation does not collect a reason. */
+export const NO_REASON_AUDIT_PLACEHOLDER = '—';
+
 const editableIdentityProviderDraftSchema = z
   .object({
     autoProvision: z.boolean().default(true),
@@ -294,7 +306,7 @@ const rejectSecretMaterial = (value: unknown, context: z.RefinementCtx) => {
 
 export const adminIdentityProviderCreateInputSchema = editableIdentityProviderDraftSchema
   .extend({
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     secret: identityProviderSecretMutationSchema.refine(
       (value) => value.operation !== 'keep',
       'a new provider cannot keep an existing secret',
@@ -307,7 +319,7 @@ export const adminIdentityProviderUpdateInputSchema = editableIdentityProviderDr
   .extend({
     expectedRevision: z.number().int().nonnegative(),
     id: z.string().min(1).max(128),
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
     secret: identityProviderSecretMutationSchema,
   })
   .superRefine(rejectSecretMaterial)
@@ -391,7 +403,12 @@ export const adminIdentityProviderValidateNetworkOutputSchema = z
   .strict();
 
 export const adminIdentityProviderCallbackUrlsOutputSchema = z
-  .object({ production: z.string().url(), test: z.string().url() })
+  .object({
+    /** DingTalk redirect URL (shim that rewrites `authCode` → `code`). */
+    dingtalkProduction: z.string().url(),
+    production: z.string().url(),
+    test: z.string().url(),
+  })
   .strict();
 
 export const adminIdentityProviderRevisionHistoryOutputSchema = z.array(
@@ -407,7 +424,7 @@ export const adminIdentityProviderTestStartInputSchema = z
   .object({
     expectedRevision: z.number().int().nonnegative(),
     id: z.string().min(1).max(128),
-    reason: reasonSchema,
+    reason: optionalReasonSchema,
   })
   .strict();
 export const adminIdentityProviderTestStartOutputSchema = z

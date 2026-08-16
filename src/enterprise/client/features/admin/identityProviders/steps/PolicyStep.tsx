@@ -5,16 +5,19 @@ import { Checkbox } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import type { IdentityProviderCallbackUrls } from '../controller';
 import { identityProviderStyles as styles } from '../styles';
 import { DingTalkAllowedCorpsField } from './DingTalkAllowedCorpsField';
 import type { EditableDraft, PatchDraft } from './types';
 
 interface PolicyStepProps {
+  callbacks?: IdentityProviderCallbackUrls;
   captureBlockedReason?: string | null;
   captureError?: string | null;
   capturing?: boolean;
   draft: EditableDraft;
   onCaptureCorp?: () => void;
+  onCopyUrl?: (url: string) => void;
   patch: PatchDraft;
 }
 
@@ -24,19 +27,30 @@ interface PolicyStepProps {
  * a persisted `groupRoleMapping` from the API without editing it here.
  */
 export const PolicyStep = memo<PolicyStepProps>(
-  ({ capturing, captureBlockedReason, captureError, draft, onCaptureCorp, patch }) => {
+  ({
+    callbacks,
+    capturing,
+    captureBlockedReason,
+    captureError,
+    draft,
+    onCaptureCorp,
+    onCopyUrl,
+    patch,
+  }) => {
     const { t } = useTranslation('admin');
 
     return (
       <Flexbox gap={16}>
         {draft.type === 'dingtalk' ? (
           <DingTalkAllowedCorpsField
+            callbacks={callbacks}
             captureBlockedReason={captureBlockedReason ?? null}
             captureError={captureError}
             capturing={Boolean(capturing)}
             draft={draft}
             patch={patch}
             onCapture={() => onCaptureCorp?.()}
+            onCopyUrl={onCopyUrl}
           />
         ) : null}
         <label>

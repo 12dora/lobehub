@@ -101,6 +101,16 @@ export const cleanupExpiredIdentityProviderTestAttempts = async (
 };
 
 /** Durable, one-shot state store. State/nonce are persisted only as SHA-256 digests. */
+/**
+ * Persisted attempt error code: `CODE` or `CODE:<provider error code>`.
+ *
+ * The optional suffix carries the identity provider's own stable error token (e.g. DingTalk
+ * `invalidParameter.idOrSecret.notFound`) so the admin console can name the actual fix. Both
+ * halves are charset-bounded: nothing free-form, and no credential value, can be persisted here.
+ */
+export const sanitizeAttemptErrorCode = (errorCode: string): string =>
+  /^[A-Z0-9_]{1,64}(?::[A-Za-z][\w.-]{0,63})?$/.test(errorCode) ? errorCode : 'OIDC_TEST_FAILED';
+
 export class IdentityProviderTestAttemptStore {
   constructor(
     private readonly db: DatabaseExecutor,
@@ -271,7 +281,7 @@ export class IdentityProviderTestAttemptStore {
   };
 
   fail = async (attemptId: string, errorCode: string): Promise<boolean> => {
-    const safeCode = /^[A-Z0-9_]{1,128}$/.test(errorCode) ? errorCode : 'OIDC_TEST_FAILED';
+    const safeCode = sanitizeAttemptErrorCode(errorCode);
     const now = new Date();
     const failed = await this.db
       .update(platformIdentityProviderTestAttempts)

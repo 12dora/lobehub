@@ -224,6 +224,8 @@ describe('AdminIdentityProviderService', () => {
     );
     expect(validateNetwork).toHaveBeenCalledWith('https://login.example.test');
     expect(service.getCallbackUrls()).toEqual({
+      // DingTalk returns `authCode`, so its apps register the shim path instead.
+      dingtalkProduction: 'https://app.example.test/oauth/identity-provider/dingtalk/{providerKey}',
       production: 'https://app.example.test/api/auth/oauth2/callback/{providerKey}',
       test: 'https://app.example.test/oauth/identity-provider/test/callback',
     });

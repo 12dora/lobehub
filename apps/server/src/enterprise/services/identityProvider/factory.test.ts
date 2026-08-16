@@ -10,7 +10,10 @@ const unusedDb = null as unknown as LobeChatDatabase;
 
 describe('createIdentityProviderSecurityFoundation', () => {
   it('is a no-op when the database OIDC flag is off', () => {
-    expect(createIdentityProviderSecurityFoundation(unusedDb, {})).toBeNull();
+    // Database OIDC is on by default, so "off" has to be stated explicitly.
+    expect(
+      createIdentityProviderSecurityFoundation(unusedDb, { ENABLE_DATABASE_OIDC: '0' }),
+    ).toBeNull();
   });
 
   it('fails closed before constructing dependencies when the flag is on without a master key', () => {

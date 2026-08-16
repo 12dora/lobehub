@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
+import { buildDingTalkLoginCallbackUrl } from '@lobechat/types';
 import { getOAuthState } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 
@@ -66,7 +67,18 @@ export const buildPlatformDingTalkProvider = (
   outbound: SafeOutboundHttpClient,
   readOAuthState: typeof getOAuthState = getOAuthState,
 ): GenericOAuthConfig => {
-  const redirectURI = `${appUrl}/api/auth/oauth2/callback/${provider.providerKey}`;
+  /**
+   * Two different callback URLs, and they are NOT interchangeable:
+   *
+   * - `redirectURI` (below) is what Better Auth puts in DingTalk's authorization request and what
+   *   the administrator registers in the DingTalk console. It must be the shim, because DingTalk
+   *   answers with `authCode` and Better Auth's own callback only reads `code`.
+   * - `betterAuthCallbackURI` is Better Auth's internal callback, which the shim 302s to. Better
+   *   Auth always passes THIS value to `getToken` (`${baseURL}/oauth2/callback/${providerId}`,
+   *   never the configured `redirectURI`), so it is what the assertion below must compare against.
+   */
+  const betterAuthCallbackURI = `${appUrl}/api/auth/oauth2/callback/${provider.providerKey}`;
+  const dingtalkRedirectURI = buildDingTalkLoginCallbackUrl(appUrl, provider.providerKey);
   // Throws on a non-canonical issuer: a DingTalk provider whose stored identity does not match
   // the protocol must not be materialized at all.
   assertDingTalkIssuer(provider.issuer);
@@ -110,7 +122,7 @@ export const buildPlatformDingTalkProvider = (
       if (isAccountLink) await suppressPlatformOidcLoginObservation();
       else await markPlatformOidcLoginStage('token_exchange');
       try {
-        if (callbackRedirectURI !== undefined && callbackRedirectURI !== redirectURI) {
+        if (callbackRedirectURI !== undefined && callbackRedirectURI !== betterAuthCallbackURI) {
           throw new Error('PLATFORM_DINGTALK_TOKEN_RESPONSE_INVALID');
         }
         const token = await exchangeDingTalkAuthorizationCode({
@@ -200,7 +212,8 @@ export const buildPlatformDingTalkProvider = (
     // never echoes would leave Better Auth holding a verifier the token call cannot use.
     pkce: false,
     providerId: provider.providerKey,
-    redirectURI,
+    // The shim, not Better Auth's callback — see the note above.
+    redirectURI: dingtalkRedirectURI,
     // DingTalk does not implement RFC 9207, so no `iss` is expected on the callback.
     requireIssuerValidation: false,
     scopes: provider.scopes,

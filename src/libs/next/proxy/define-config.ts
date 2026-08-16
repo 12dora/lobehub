@@ -217,6 +217,13 @@ export function defineConfig() {
     // Custom connector OAuth callback — hit via a cross-site redirect from the
     // provider, carries its own code+state, so it must not be session-gated.
     '/oauth/connector/callback',
+    // DingTalk login callback shim — a cross-site redirect that arrives BEFORE the user has a
+    // session (it is the sign-in itself), so session-gating it would redirect the callback to
+    // /signin and the login could never complete. It only rewrites `authCode` → `code` and
+    // 302s to the Better Auth callback, where the signed, one-time state remains the CSRF
+    // control. Scoped to this exact sub-tree: the admin test callback under
+    // /oauth/identity-provider/test stays session-gated.
+    '/oauth/identity-provider/dingtalk/(.*)',
     '/oidc/handoff',
     '/oidc/device/auth',
     '/oidc/token',

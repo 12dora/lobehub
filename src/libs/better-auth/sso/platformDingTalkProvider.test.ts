@@ -116,7 +116,11 @@ describe('DingTalk platform identity provider adapter', () => {
     expect(config.requireIssuerValidation).toBeFalsy();
     expect(config.authorizationUrl).toBe('https://login.dingtalk.com/oauth2/auth');
     expect(config.tokenUrl).toBe('https://api.dingtalk.com/v1.0/oauth2/userAccessToken');
-    expect(config.redirectURI).toBe('https://app.example.test/api/auth/oauth2/callback/dingtalk');
+    // The shim, not Better Auth's callback: this is what goes into DingTalk's authorization
+    // request and what the administrator registers in the DingTalk console.
+    expect(config.redirectURI).toBe(
+      'https://app.example.test/oauth/identity-provider/dingtalk/dingtalk',
+    );
     expect(config.scopes).toEqual(['openid', 'corpid']);
   });
 

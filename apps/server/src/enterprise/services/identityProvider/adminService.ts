@@ -1,4 +1,8 @@
-import type { PlatformIdentityProviderDraft, PlatformIdentityProviderType } from '@lobechat/types';
+import {
+  buildDingTalkLoginCallbackUrl,
+  type PlatformIdentityProviderDraft,
+  type PlatformIdentityProviderType,
+} from '@lobechat/types';
 import { and, eq, inArray } from 'drizzle-orm';
 
 import {
@@ -28,6 +32,13 @@ import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import { resolveStaticIdentityProviderMetadata } from './kinds';
 import { IdentityProviderPublicationService } from './publicationService';
 import { IdentityProviderSecretStore } from './secretStore';
+
+/**
+ * Create/update accept an optional reason at the API boundary; the router resolves it (either
+ * the sanitized administrator text or the em-dash placeholder) before reaching the service, so
+ * everything below can rely on a concrete audit reason.
+ */
+type ResolvedReason = { reason: string };
 
 const editableValues = (
   input: AdminIdentityProviderCreateInput | AdminIdentityProviderUpdateInput,
@@ -181,7 +192,7 @@ export class AdminIdentityProviderService {
     }
   };
 
-  create = async (actorUserId: string, input: AdminIdentityProviderCreateInput) =>
+  create = async (actorUserId: string, input: AdminIdentityProviderCreateInput & ResolvedReason) =>
     this.mutation({
       action: 'admin.identityProviders.create',
       actorUserId,
@@ -225,7 +236,7 @@ export class AdminIdentityProviderService {
       targetId: input.providerKey,
     });
 
-  update = async (actorUserId: string, input: AdminIdentityProviderUpdateInput) =>
+  update = async (actorUserId: string, input: AdminIdentityProviderUpdateInput & ResolvedReason) =>
     this.mutation({
       action: 'admin.identityProviders.update',
       actorUserId,
@@ -440,6 +451,9 @@ export class AdminIdentityProviderService {
       throw new Error('PLATFORM_APP_URL_INVALID');
     }
     return {
+      // DingTalk returns `authCode` instead of the OAuth 2.0 `code`, so its apps register the
+      // shim path, which rewrites the parameter and forwards to the Better Auth callback.
+      dingtalkProduction: buildDingTalkLoginCallbackUrl(base.origin, '{providerKey}'),
       production: `${base.origin}/api/auth/oauth2/callback/{providerKey}`,
       test: new URL('/oauth/identity-provider/test/callback', base).toString(),
     };

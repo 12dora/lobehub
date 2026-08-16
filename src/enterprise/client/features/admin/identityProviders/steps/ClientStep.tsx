@@ -5,11 +5,15 @@ import { Button, Checkbox } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  type IdentityProviderCallbackUrls,
+  resolveIdentityProviderCallbackUrls,
+} from '../controller';
 import { identityProviderStyles as styles } from '../styles';
 import type { EditableDraft, PatchDraft } from './types';
 
 interface ClientStepProps {
-  callbacks?: { production: string; test: string };
+  callbacks?: IdentityProviderCallbackUrls;
   clearSecret: boolean;
   draft: EditableDraft;
   onCopyUrl: (url: string) => void;
@@ -36,6 +40,7 @@ export const ClientStep = memo<ClientStepProps>(
   }) => {
     const { t } = useTranslation('admin');
     const isDingTalk = draft.type === 'dingtalk';
+    const callbackUrls = resolveIdentityProviderCallbackUrls(callbacks, draft);
 
     return (
       <Flexbox gap={12}>
@@ -90,19 +95,22 @@ export const ClientStep = memo<ClientStepProps>(
           {t('identityProviders.secret.clear')}
         </label>
         <Text>{t('identityProviders.callback.production')}</Text>
+        {isDingTalk ? (
+          <Text type="secondary">{t('identityProviders.dingtalk.callbackNotice')}</Text>
+        ) : null}
         <div className={styles.callback}>
-          <span className={styles.callbackUrl}>{callbacks?.production ?? '—'}</span>
-          {callbacks?.production ? (
-            <Button size="small" onClick={() => void onCopyUrl(callbacks.production)}>
+          <span className={styles.callbackUrl}>{callbackUrls.production ?? '—'}</span>
+          {callbackUrls.production ? (
+            <Button size="small" onClick={() => void onCopyUrl(callbackUrls.production!)}>
               {t('identityProviders.callback.copy')}
             </Button>
           ) : null}
         </div>
         <Text>{t('identityProviders.callback.test')}</Text>
         <div className={styles.callback}>
-          <span className={styles.callbackUrl}>{callbacks?.test ?? '—'}</span>
-          {callbacks?.test ? (
-            <Button size="small" onClick={() => void onCopyUrl(callbacks.test)}>
+          <span className={styles.callbackUrl}>{callbackUrls.test ?? '—'}</span>
+          {callbackUrls.test ? (
+            <Button size="small" onClick={() => void onCopyUrl(callbackUrls.test!)}>
               {t('identityProviders.callback.copy')}
             </Button>
           ) : null}

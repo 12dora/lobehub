@@ -11,13 +11,15 @@
  * - a non-allowed organisation is rejected before any user or account row is written;
  * - a DingTalk identity never links onto a pre-existing local account with the same email.
  */
-import { DINGTALK_IDENTITY_PROVIDER_ISSUER } from '@lobechat/types';
+import { buildDingTalkLoginCallbackUrl, DINGTALK_IDENTITY_PROVIDER_ISSUER } from '@lobechat/types';
 import { betterAuth } from 'better-auth';
 import type { MemoryDB } from 'better-auth/adapters/memory';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { genericOAuth } from 'better-auth/plugins';
+import { NextRequest } from 'next/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import { handleDingTalkLoginCallback } from '@/enterprise/server/dingtalkLoginCallback';
 import {
   type PinnedTransport,
   type PinnedTransportResponse,
@@ -32,6 +34,26 @@ import {
 import { platformIdentityProviderState } from './platformIdentityProviderState';
 
 const baseURL = 'https://app.example.test/api/auth';
+const appOrigin = 'https://app.example.test';
+
+// The shim runs as a Next route handler, so its own dependencies are stubbed here; everything
+// downstream of the 302 is the real Better Auth handler.
+vi.mock('@/envs/app', () => ({ appEnv: { APP_URL: 'https://app.example.test' } }));
+vi.mock('@/server/enterprise/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  parseEnterpriseFeatureFlags: () => ({ ENABLE_DATABASE_OIDC: true }),
+}));
+vi.mock(
+  '@/server/enterprise/services/identityProvider/startupArtifact',
+  async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    getIdentityProviderRuntimeArtifact: () => ({
+      databaseProviders: [{ providerKey: 'dingtalk', type: 'dingtalk' }],
+      phase: 'ready',
+      providerIds: ['dingtalk'],
+    }),
+  }),
+);
 const publicAddress = '93.184.216.34';
 const allowlist = [{ addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42' }];
 
@@ -175,11 +197,80 @@ const createHarness = (options?: {
     return response;
   };
 
-  return { auth, callback, database, signUpLocal, start, transport };
+  /**
+   * The real production path: DingTalk redirects to the shim with `authCode`, the shim 302s to
+   * Better Auth's callback with `code`, and the browser replays the same cookies (same origin).
+   */
+  const callbackThroughShim = async (flow: { authorizationUrl: URL; cookie: string }) => {
+    const redirectUri = flow.authorizationUrl.searchParams.get('redirect_uri')!;
+    const shimUrl = new URL(redirectUri);
+    shimUrl.searchParams.set('authCode', 'authorization-code');
+    shimUrl.searchParams.set('state', flow.authorizationUrl.searchParams.get('state')!);
+
+    const shimResponse = await handleDingTalkLoginCallback(
+      new NextRequest(new Request(shimUrl, { headers: { Cookie: flow.cookie } })),
+      { params: Promise.resolve({ providerKey: 'dingtalk' }) },
+    );
+    expect(shimResponse.status).toBe(302);
+
+    const forwarded = new URL(shimResponse.headers.get('location')!);
+    return {
+      forwarded,
+      response: await auth.handler(new Request(forwarded, { headers: { Cookie: flow.cookie } })),
+    };
+  };
+
+  return { auth, callback, callbackThroughShim, database, signUpLocal, start, transport };
 };
 
 const isSuccessfulLogin = (response: Response) =>
   response.headers.getSetCookie().some((cookie) => cookie.includes('session_token='));
+
+describe('DingTalk production login: authorize → shim → Better Auth callback', () => {
+  it('asks DingTalk to redirect to the shim, not to the Better Auth callback', async () => {
+    const harness = createHarness();
+    const flow = await harness.start();
+
+    // This is the URL the administrator registers in the DingTalk console. If Better Auth kept
+    // advertising its own callback here, DingTalk would either reject the request or deliver
+    // `authCode` to a callback that only reads `code`.
+    expect(flow.authorizationUrl.searchParams.get('redirect_uri')).toBe(
+      buildDingTalkLoginCallbackUrl(appOrigin, 'dingtalk'),
+    );
+  });
+
+  it('completes a sign-in end to end through the shim with the signed state cookie', async () => {
+    const harness = createHarness();
+    const flow = await harness.start();
+    const { forwarded, response } = await harness.callbackThroughShim(flow);
+
+    // The shim renamed the parameter and kept the state intact.
+    expect(forwarded.pathname).toBe('/api/auth/oauth2/callback/dingtalk');
+    expect(forwarded.searchParams.get('code')).toBe('authorization-code');
+    expect(forwarded.searchParams.get('state')).toBe(
+      flow.authorizationUrl.searchParams.get('state'),
+    );
+
+    expect(isSuccessfulLogin(response)).toBe(true);
+    expect(harness.database.user).toHaveLength(1);
+    expect(harness.database.account[0]!.accountId).toBe('union-1');
+    expect(harness.database.account[0]!.providerId).toBe('dingtalk');
+  });
+
+  it('still rejects a tampered state when the callback arrives through the shim', async () => {
+    const harness = createHarness();
+    const flow = await harness.start();
+    const tampered = {
+      ...flow,
+      authorizationUrl: new URL(flow.authorizationUrl),
+    };
+    tampered.authorizationUrl.searchParams.set('state', 'forged-state-value');
+
+    const { response } = await harness.callbackThroughShim(tampered);
+    expect(isSuccessfulLogin(response)).toBe(false);
+    expect(harness.database.user).toHaveLength(0);
+  });
+});
 
 describe('DingTalk login through the Better Auth genericOAuth handler', () => {
   it('signs in and provisions its own account for an allowed organisation', async () => {

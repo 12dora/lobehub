@@ -167,7 +167,10 @@ export const handleIdentityProviderTestCallback = async (
   } catch {
     return renderTerminalPage(false, locale);
   }
-  const code = request.nextUrl.searchParams.get('code');
+  // DingTalk's 统一登录 returns the authorization code as `authCode`, not the OAuth 2.0
+  // standard `code`. Accept both so one callback route serves every kind.
+  const code =
+    request.nextUrl.searchParams.get('code') ?? request.nextUrl.searchParams.get('authCode');
   const state = request.nextUrl.searchParams.get('state');
   // RFC 9207: preserve the authorization-response `iss` for exact-match validation.
   const iss = request.nextUrl.searchParams.get('iss');

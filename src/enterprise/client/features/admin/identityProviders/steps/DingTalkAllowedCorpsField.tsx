@@ -7,10 +7,16 @@ import { Plus, Trash2 } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  type IdentityProviderCallbackUrls,
+  resolveIdentityProviderCallbackUrls,
+} from '../controller';
 import { identityProviderStyles as styles } from '../styles';
 import type { EditableDraft, PatchDraft } from './types';
 
 interface DingTalkAllowedCorpsFieldProps {
+  /** Redirect URLs that must be registered in the DingTalk Open Platform. */
+  callbacks?: IdentityProviderCallbackUrls;
   /** Empty when the capture flow can run; otherwise the reason it cannot. */
   captureBlockedReason: string | null;
   /** Admin-facing explanation when the last capture attempt failed. */
@@ -19,6 +25,7 @@ interface DingTalkAllowedCorpsFieldProps {
   capturing: boolean;
   draft: EditableDraft;
   onCapture: () => void;
+  onCopyUrl?: (url: string) => void;
   patch: PatchDraft;
 }
 
@@ -30,9 +37,19 @@ interface DingTalkAllowedCorpsFieldProps {
  * Only the human-readable label is editable here.
  */
 export const DingTalkAllowedCorpsField = memo<DingTalkAllowedCorpsFieldProps>(
-  ({ capturing, captureBlockedReason, captureError, draft, onCapture, patch }) => {
+  ({
+    callbacks,
+    capturing,
+    captureBlockedReason,
+    captureError,
+    draft,
+    onCapture,
+    onCopyUrl,
+    patch,
+  }) => {
     const { t } = useTranslation('admin');
     const entries = draft.dingtalkAllowedCorps;
+    const callbackUrls = resolveIdentityProviderCallbackUrls(callbacks, draft);
 
     // Held raw while typing (a trailing space before the next word must survive); normalised
     // by `serializeIdentityProviderAllowedCorps` on the way to the API.
@@ -114,6 +131,28 @@ export const DingTalkAllowedCorpsField = memo<DingTalkAllowedCorpsFieldProps>(
           {captureError ? (
             <Alert showIcon description={captureError} role="alert" type="error" />
           ) : null}
+          {/* Every capture failure points at these two URLs, so they are readable right here
+              instead of one step away. */}
+          {(
+            [
+              ['production', callbackUrls.production],
+              ['test', callbackUrls.test],
+            ] as const
+          ).map(([key, url]) => (
+            <Flexbox gap={2} key={key}>
+              <Text fontSize={12} type="secondary">
+                {t(`identityProviders.callback.${key}` as never)}
+              </Text>
+              <div className={styles.callback}>
+                <span className={styles.callbackUrl}>{url ?? '—'}</span>
+                {url ? (
+                  <Button size="small" onClick={() => onCopyUrl?.(url)}>
+                    {t('identityProviders.callback.copy')}
+                  </Button>
+                ) : null}
+              </div>
+            </Flexbox>
+          ))}
         </Flexbox>
       </Flexbox>
     );

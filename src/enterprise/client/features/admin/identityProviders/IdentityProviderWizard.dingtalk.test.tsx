@@ -14,7 +14,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import IdentityProviderWizard from './IdentityProviderWizard';
 
-const serviceMocks = vi.hoisted(() => ({ testStart: vi.fn() }));
+const serviceMocks = vi.hoisted(() => ({
+  openReasonModal: vi.fn(),
+  testStart: vi.fn(),
+  update: vi.fn(),
+}));
 const testResultMocks = vi.hoisted(() => ({
   data: null as null | {
     errorCode?: string | null;
@@ -87,7 +91,7 @@ vi.mock('@/enterprise/client/services/adminIdentityProviders', () => ({
     discover: vi.fn(),
     publish: vi.fn(),
     testStart: (...args: unknown[]) => serviceMocks.testStart(...args),
-    update: vi.fn(),
+    update: (...args: unknown[]) => serviceMocks.update(...args),
   },
 }));
 
@@ -96,6 +100,7 @@ vi.mock('../users/modals/openReasonModal', () => ({
     buildPayload: (reason: string) => unknown;
     onSubmit: (payload: unknown) => Promise<unknown>;
   }) => {
+    serviceMocks.openReasonModal();
     void props.onSubmit(props.buildPayload('audit-reason'));
   },
 }));
@@ -133,10 +138,12 @@ vi.mock('./steps', async (importOriginal) => {
     ClaimsStep: stub('claims'),
     ClientStep: stub('client'),
     DiscoveryStep: stub('discovery'),
-    // The policy step stays REAL for the allowlist cases; step-shape cases never open it.
+    // Policy and publish stay REAL when steps are un-mocked, so the failure panels they render
+    // are exercised through the actual UI; step-shape cases keep the stubs.
     PolicyStep: (props: Parameters<typeof actual.PolicyStep>[0]) =>
       stepMocks.mockSteps ? <div data-testid="step-policy" /> : <actual.PolicyStep {...props} />,
-    PublishStep: stub('publish'),
+    PublishStep: (props: Parameters<typeof actual.PublishStep>[0]) =>
+      stepMocks.mockSteps ? <div data-testid="step-publish" /> : <actual.PublishStep {...props} />,
   };
 });
 
@@ -448,5 +455,155 @@ describe('IdentityProviderWizard DingTalk capture guards and notes', () => {
       screen.getByLabelText('identityProviders.dingtalk.allowedCorps.label'),
     );
     expect((note as HTMLInputElement).value.length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe('IdentityProviderWizard DingTalk operator friction', () => {
+  beforeEach(() => {
+    stepMocks.mockSteps = false;
+    testResultMocks.data = null;
+    vi.clearAllMocks();
+    serviceMocks.testStart.mockResolvedValue({
+      attemptId: 'attempt-capture',
+      authorizationUrl: 'https://login.dingtalk.com/oauth2/auth',
+    });
+    serviceMocks.update.mockImplementation(async (input: { expectedRevision: number }) => ({
+      ...baseProvider,
+      revision: input.expectedRevision + 1,
+    }));
+  });
+
+  it('adds an organisation without asking for a written reason', async () => {
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+    expect(serviceMocks.openReasonModal).not.toHaveBeenCalled();
+    expect(serviceMocks.testStart).toHaveBeenCalledWith({
+      expectedRevision: 1,
+      id: 'idp-dingtalk',
+    });
+    // No `reason` is sent at all — the server records an em dash.
+    expect(serviceMocks.testStart.mock.calls[0]![0]).not.toHaveProperty('reason');
+  });
+
+  it('saves a draft without asking for a written reason', async () => {
+    renderWizard({
+      ...baseProvider,
+      dingtalkAllowedCorps: [{ addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42' }],
+    });
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'identityProviders.actions.save' }));
+    });
+    expect(serviceMocks.openReasonModal).not.toHaveBeenCalled();
+    expect(serviceMocks.update).toHaveBeenCalledTimes(1);
+    expect(serviceMocks.update.mock.calls[0]![0]).not.toHaveProperty('reason');
+  });
+
+  it('shows both redirect URLs, with the DingTalk shim as the production one', async () => {
+    renderWizard(baseProvider, {
+      callbacks: {
+        dingtalkProduction:
+          'https://app.example.test/oauth/identity-provider/dingtalk/{providerKey}',
+        production: 'https://app.example.test/api/auth/oauth2/callback/{providerKey}',
+        test: 'https://app.example.test/oauth/identity-provider/test/callback',
+      },
+    });
+    await openPolicyStep();
+    // `{providerKey}` is substituted so the value can be copied straight into DingTalk.
+    expect(
+      screen.getByText('https://app.example.test/oauth/identity-provider/dingtalk/dingtalk'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('https://app.example.test/oauth/identity-provider/test/callback'),
+    ).toBeTruthy();
+    // The Better Auth callback is NOT what DingTalk should be given.
+    expect(
+      screen.queryByText('https://app.example.test/api/auth/oauth2/callback/dingtalk'),
+    ).toBeNull();
+  });
+
+  it('names the DingTalk error code when the exchange is rejected', async () => {
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+
+    testResultMocks.data = {
+      errorCode: 'OIDC_TEST_DINGTALK_TOKEN_REJECTED:invalidParameter.idOrSecret.notFound',
+      status: 'failed',
+    };
+    await act(async () => {
+      fireEvent.click(screen.getByText(/identityProviders\.steps\.client/));
+    });
+    await openPolicyStep();
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /identityProviders\.test\.errors\.dingtalkTokenRejected identityProviders\.test\.remedies\.dingtalkCredentials identityProviders\.test\.errors\.providerCode/,
+        ),
+      ).toBeTruthy();
+    });
+  });
+
+  it('names the missing contact permission for a profile-stage rejection', async () => {
+    renderWizard(baseProvider);
+    await openPolicyStep();
+    await act(async () => {
+      fireEvent.click(captureButton());
+    });
+
+    testResultMocks.data = {
+      errorCode: 'OIDC_TEST_DINGTALK_PROFILE_FORBIDDEN:Forbidden.AccessDenied.X',
+      status: 'failed',
+    };
+    await act(async () => {
+      fireEvent.click(screen.getByText(/identityProviders\.steps\.client/));
+    });
+    await openPolicyStep();
+    await waitFor(() => {
+      // Cause + the exact permission to switch on + DingTalk's own code, in the capture panel.
+      expect(
+        screen.getByText(
+          /identityProviders\.test\.errors\.dingtalkProfileForbidden identityProviders\.test\.remedies\.dingtalkContactPermission/,
+        ),
+      ).toBeTruthy();
+    });
+  });
+
+  it('names the exact permission in the publish step test-result panel too', async () => {
+    renderWizard(baseProvider);
+    testResultMocks.data = {
+      errorCode: 'OIDC_TEST_DINGTALK_PROFILE_FORBIDDEN:Forbidden.AccessDenied.X',
+      status: 'failed',
+    };
+    await act(async () => {
+      fireEvent.click(screen.getByText(/identityProviders\.steps\.publish/));
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /identityProviders\.test\.errors\.dingtalkProfileForbidden identityProviders\.test\.remedies\.dingtalkContactPermission/,
+        ),
+      ).toBeTruthy();
+    });
+  });
+
+  it('names the missing corpid scope rather than a generic failure', async () => {
+    renderWizard(baseProvider);
+    testResultMocks.data = { errorCode: 'OIDC_TEST_CORP_ID_MISSING', status: 'failed' };
+    await act(async () => {
+      fireEvent.click(screen.getByText(/identityProviders\.steps\.publish/));
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /identityProviders\.test\.errors\.corpIdMissing identityProviders\.test\.remedies\.dingtalkCorpIdScope/,
+        ),
+      ).toBeTruthy();
+    });
   });
 });

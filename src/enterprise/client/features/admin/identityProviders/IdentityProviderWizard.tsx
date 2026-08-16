@@ -19,8 +19,10 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
   boundIdentityProviderCorpLabel,
+  buildIdentityProviderTestFailureMessage,
   classifyIdentityProviderWorkflowError,
   extractIdentityProviderTestErrorCode,
+  type IdentityProviderCallbackUrls,
   type IdentityProviderCreateDraftSeed,
   identityProviderTestErrorKey,
   IdentityProviderTestPopupBlockedError,
@@ -89,7 +91,7 @@ const fromProvider = (provider: PlatformIdentityProviderDraft): EditableDraft =>
 
 interface IdentityProviderWizardProps {
   authMethod: AdminReauthAuthMethod;
-  callbacks?: { production: string; test: string };
+  callbacks?: IdentityProviderCallbackUrls;
   canCreate: boolean;
   canPublish: boolean;
   canTest: boolean;
@@ -341,10 +343,16 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       return t('identityProviders.errors.generic');
     };
 
-    /** Admin-facing explanation of a terminal safe-login / capture failure. */
+    /**
+     * Admin-facing explanation of a terminal safe-login / capture failure: our own instruction
+     * plus the identity provider's stable error code when it reported one.
+     */
     const testFailureMessage =
       testResult.data?.status === 'failed'
-        ? t(identityProviderTestErrorKey(testResult.data.errorCode) as never)
+        ? buildIdentityProviderTestFailureMessage(
+            { errorCode: testResult.data.errorCode, type: provider?.type ?? draft.type },
+            (key, options) => String(t(key as never, options as never)),
+          )
         : null;
     /** True while THIS wizard's organisation capture is still waiting on DingTalk. */
     const capturePending =
@@ -404,56 +412,47 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         toast.error(providerKeyError);
         return;
       }
-      openReasonModal({
-        buildPayload: (reason) => ({ reason }),
-        description: t('identityProviders.save.description'),
-        onSubmit: async (payload) => {
-          const { reason } = payload as { reason: string };
-          await run('save', async () => {
-            const secretMutation = clearSecret
-              ? ({ operation: 'clear' } as const)
-              : secret
-                ? ({ operation: 'replace', value: secret } as const)
-                : ({ operation: 'keep' } as const);
-            // Preserve persisted groupRoleMapping on edit; new drafts start empty.
-            // Organisation notes are kept raw while typing and normalised here.
-            const policyDraft = {
-              ...draft,
-              dingtalkAllowedCorps: serializeIdentityProviderAllowedCorps(
-                draft.dingtalkAllowedCorps,
-              ),
-            };
-            if (provider) {
-              const updated = await adminIdentityProvidersService.update({
-                ...policyDraft,
-                expectedRevision: provider.revision,
-                id: provider.id,
-                reason,
-                secret: secretMutation,
-              });
-              setSecret('');
-              setClearSecret(false);
-              setConflict(false);
-              await onSaved(updated);
-            } else {
-              const created = await adminIdentityProvidersService.create({
-                ...policyDraft,
-                reason,
-                secret:
-                  secretMutation.operation === 'keep' ? { operation: 'clear' } : secretMutation,
-              });
-              setSecret('');
-              setClearSecret(false);
-              setConflict(false);
-              await onSaved(created);
-            }
-            toast.success(t('identityProviders.save.success'));
-          });
+      // Saving a draft changes nothing live and is fully reconstructable from the audit
+      // before/after diff, so it no longer asks for a written reason.
+      void run(
+        'save',
+        async () => {
+          const secretMutation = clearSecret
+            ? ({ operation: 'clear' } as const)
+            : secret
+              ? ({ operation: 'replace', value: secret } as const)
+              : ({ operation: 'keep' } as const);
+          // Preserve persisted groupRoleMapping on edit; new drafts start empty.
+          // Organisation notes are kept raw while typing and normalised here.
+          const policyDraft = {
+            ...draft,
+            dingtalkAllowedCorps: serializeIdentityProviderAllowedCorps(draft.dingtalkAllowedCorps),
+          };
+          if (provider) {
+            const updated = await adminIdentityProvidersService.update({
+              ...policyDraft,
+              expectedRevision: provider.revision,
+              id: provider.id,
+              secret: secretMutation,
+            });
+            setSecret('');
+            setClearSecret(false);
+            setConflict(false);
+            await onSaved(updated);
+          } else {
+            const created = await adminIdentityProvidersService.create({
+              ...policyDraft,
+              secret: secretMutation.operation === 'keep' ? { operation: 'clear' } : secretMutation,
+            });
+            setSecret('');
+            setClearSecret(false);
+            setConflict(false);
+            await onSaved(created);
+          }
+          toast.success(t('identityProviders.save.success'));
         },
-        submitLabel: t('identityProviders.actions.save'),
-        targetLabel: draft.displayName || draft.providerKey || t('identityProviders.newProvider'),
-        title: t('identityProviders.save.title'),
-      });
+        false,
+      );
     };
 
     // Discover alone validates network + endpoints; do not also call validateNetwork
@@ -490,36 +489,27 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         toast.error(captureBlockedReason);
         return;
       }
-      openReasonModal({
-        authMethod,
-        buildPayload: (reason) => ({ reason }),
-        onSubmit: async (payload) =>
-          run(intent === 'capture' ? 'capture' : 'test', async () => {
-            const result = await openIdentityProviderTestPopup(() =>
-              adminIdentityProvidersService.testStart({
-                expectedRevision: provider.revision,
-                id: provider.id,
-                reason: (payload as { reason: string }).reason,
-              }),
-            );
-            setAttempt({
-              id: result.attemptId,
-              revision: provider.revision,
-              startedAt: Date.now(),
-            });
-            setCaptureAttemptId(intent === 'capture' ? result.attemptId : null);
-            setTestPolling(true);
-          }),
-        submitLabel:
-          intent === 'capture'
-            ? t('identityProviders.dingtalk.allowedCorps.add')
-            : t('identityProviders.actions.startTest'),
-        targetLabel: provider.displayName,
-        title:
-          intent === 'capture'
-            ? t('identityProviders.dingtalk.allowedCorps.captureTitle')
-            : t('identityProviders.test.title'),
-      });
+      // No reason prompt: this writes no configuration — it opens an isolated login window and
+      // records a claim preview. The audit still captures who started it and the outcome.
+      void run(
+        intent === 'capture' ? 'capture' : 'test',
+        async () => {
+          const result = await openIdentityProviderTestPopup(() =>
+            adminIdentityProvidersService.testStart({
+              expectedRevision: provider.revision,
+              id: provider.id,
+            }),
+          );
+          setAttempt({
+            id: result.attemptId,
+            revision: provider.revision,
+            startedAt: Date.now(),
+          });
+          setCaptureAttemptId(intent === 'capture' ? result.attemptId : null);
+          setTestPolling(true);
+        },
+        false,
+      );
     };
 
     /** Why the capture button is unavailable, or `null` when it can run. */
@@ -692,12 +682,14 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         case 'policy': {
           return (
             <PolicyStep
+              callbacks={callbacks}
               captureBlockedReason={captureBlockedReason}
               captureError={captureFailureMessage}
               capturing={capturePending}
               draft={draft}
               patch={patch}
               onCaptureCorp={() => startTest('capture')}
+              onCopyUrl={copyUrl}
             />
           );
         }

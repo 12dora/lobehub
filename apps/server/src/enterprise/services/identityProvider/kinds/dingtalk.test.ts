@@ -22,6 +22,7 @@ import {
   buildDingTalkDiscoveryMetadata,
   DINGTALK_TOKEN_ENDPOINT,
   DINGTALK_USERINFO_ENDPOINT,
+  DingTalkApiError,
   exchangeDingTalkAuthorizationCode,
   fetchDingTalkUserProfile,
   toDingTalkClaims,
@@ -198,27 +199,53 @@ describe('DingTalk token exchange', () => {
     );
   });
 
-  it('fails closed with the caller error code on an error status or a missing token', async () => {
-    const failing = setup(async () => response({ code: 'invalidParameter' }, { status: 400 }));
-    await expect(
-      exchangeDingTalkAuthorizationCode({
-        clientId: 'app-key',
-        clientSecret: 'app-secret',
-        code: 'bad',
-        errorCode: 'OIDC_TEST_REMOTE_INVALID',
-        outbound: failing,
-      }),
-    ).rejects.toThrow('OIDC_TEST_REMOTE_INVALID');
+  it("carries DingTalk's own error code out of a rejected exchange", async () => {
+    // The real 400 body an operator sees when the AppSecret is wrong.
+    const failing = setup(async () =>
+      response(
+        { code: 'invalidParameter.idOrSecret.notFound', message: 'invalid', requestid: 'r-1' },
+        { status: 400 },
+      ),
+    );
+    const error = await exchangeDingTalkAuthorizationCode({
+      clientId: 'app-key',
+      clientSecret: 'wrong',
+      code: 'bad',
+      errorCode: 'OIDC_TEST_DINGTALK_TOKEN_REJECTED',
+      outbound: failing,
+    }).catch((cause: unknown) => cause);
 
+    expect(error).toBeInstanceOf(DingTalkApiError);
+    expect((error as DingTalkApiError).message).toBe('OIDC_TEST_DINGTALK_TOKEN_REJECTED');
+    expect((error as DingTalkApiError).detail).toMatchObject({
+      dingtalkCode: 'invalidParameter.idOrSecret.notFound',
+      stage: 'token',
+      status: 400,
+    });
+  });
+
+  it('still fails closed when the error body carries no usable code', async () => {
+    const opaque = setup(async () => response({ message: 'nope' }, { status: 500 }));
+    const error = await exchangeDingTalkAuthorizationCode({
+      clientId: 'app-key',
+      clientSecret: 'app-secret',
+      code: 'bad',
+      outbound: opaque,
+    }).catch((cause: unknown) => cause);
+    expect((error as DingTalkApiError).detail).toEqual({ stage: 'token', status: 500 });
+
+    // HTTP 200 with a body that is not a token response.
     const tokenless = setup(async () => response({ corpId: 'ding42' }));
-    await expect(
-      exchangeDingTalkAuthorizationCode({
-        clientId: 'app-key',
-        clientSecret: 'app-secret',
-        code: 'bad',
-        outbound: tokenless,
-      }),
-    ).rejects.toThrow('PLATFORM_DINGTALK_TOKEN_RESPONSE_INVALID');
+    const shapeError = await exchangeDingTalkAuthorizationCode({
+      clientId: 'app-key',
+      clientSecret: 'app-secret',
+      code: 'bad',
+      outbound: tokenless,
+    }).catch((cause: unknown) => cause);
+    expect((shapeError as DingTalkApiError).message).toBe(
+      'PLATFORM_DINGTALK_TOKEN_RESPONSE_INVALID',
+    );
+    expect((shapeError as DingTalkApiError).detail.stage).toBe('token');
   });
 });
 

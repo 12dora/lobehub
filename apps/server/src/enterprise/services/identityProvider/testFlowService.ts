@@ -26,6 +26,7 @@ import {
 import { verifyPlatformOidcIdToken } from './idTokenVerifier';
 import {
   assertDingTalkIssuer,
+  DingTalkApiError,
   exchangeDingTalkAuthorizationCode,
   fetchDingTalkUserProfile,
   resolveStaticIdentityProviderMetadata,
@@ -92,6 +93,11 @@ const failureCategory = (error: unknown): string => {
   if (error.message.includes('CALLBACK_ORIGIN')) return 'callback_origin_invalid';
   if (error.message.includes('PROVIDER_CHANGED')) return 'provider_changed';
   if (error.message.includes('CLAIM')) return 'claim_validation_failed';
+  if (error instanceof DingTalkApiError) {
+    return error.detail.stage === 'profile'
+      ? 'dingtalk_profile_rejected'
+      : 'dingtalk_token_rejected';
+  }
   if (error.message.includes('CORP')) return 'corp_mismatch';
   // Order matters: OIDC_TEST_RESPONSE_ISSUER_INVALID also contains "ISSUER_INVALID".
   if (error.message.includes('RESPONSE_ISSUER')) return 'response_issuer_invalid';
@@ -104,6 +110,35 @@ const failureCategory = (error: unknown): string => {
     return 'remote_validation_failed';
   }
   return 'oidc_test_failed';
+};
+
+/**
+ * Terminal error code persisted on a failed attempt, and shown to the administrator.
+ *
+ * DingTalk rejections additionally carry the provider's own error code as a `:suffix`
+ * (`OIDC_TEST_DINGTALK_TOKEN_REJECTED:invalidParameter.idOrSecret.notFound`). That code is a
+ * stable machine token — never the client secret, the authorization code or a token — and it is
+ * the single most useful thing an administrator can see when a first real login fails.
+ */
+export const terminalAttemptErrorCode = (error: unknown): string => {
+  if (error instanceof DingTalkApiError) {
+    const base =
+      error.detail.stage === 'profile'
+        ? error.detail.status === 403
+          ? 'OIDC_TEST_DINGTALK_PROFILE_FORBIDDEN'
+          : 'OIDC_TEST_DINGTALK_PROFILE_REJECTED'
+        : 'OIDC_TEST_DINGTALK_TOKEN_REJECTED';
+    // Sanitized one-liner so a live smoke failure is not invisible in server logs either.
+    console.error('[identityProviderTest] DingTalk rejected the request', {
+      dingtalkCode: error.detail.dingtalkCode ?? 'unknown',
+      stage: error.detail.stage,
+      status: error.detail.status ?? 0,
+    });
+    return error.detail.dingtalkCode ? `${base}:${error.detail.dingtalkCode}` : base;
+  }
+  return error instanceof Error && /^[A-Z0-9_]{1,128}$/.test(error.message)
+    ? error.message
+    : 'OIDC_TEST_FAILED';
 };
 
 export const assertIdentityProviderAttemptCallbackOrigin = (
@@ -427,10 +462,7 @@ export class IdentityProviderTestFlowService {
       });
       return { attemptId: attempt.id, valid: preview.valid };
     } catch (error) {
-      const code =
-        error instanceof Error && /^[A-Z0-9_]{1,128}$/.test(error.message)
-          ? error.message
-          : 'OIDC_TEST_FAILED';
+      const code = terminalAttemptErrorCode(error);
       await this.attempts.fail(attempt.id, code);
       await this.appendFailureAudit({
         action: 'admin.identityProviders.testTerminal',
@@ -576,7 +608,7 @@ export class IdentityProviderTestFlowService {
       clientId: input.clientId,
       clientSecret: input.clientSecret,
       code: input.code,
-      errorCode: 'OIDC_TEST_REMOTE_INVALID',
+      errorCode: 'OIDC_TEST_DINGTALK_TOKEN_REJECTED',
       outbound: this.outbound,
     });
     // Without the `corpid` scope there is nothing to capture and nothing the runtime could
@@ -584,7 +616,7 @@ export class IdentityProviderTestFlowService {
     if (!isValidDingTalkCorpId(token.corpId)) throw new Error('OIDC_TEST_CORP_ID_MISSING');
     const profile = await fetchDingTalkUserProfile({
       accessToken: token.accessToken,
-      errorCode: 'OIDC_TEST_REMOTE_INVALID',
+      errorCode: 'OIDC_TEST_DINGTALK_PROFILE_REJECTED',
       outbound: this.outbound,
     });
     const claims = toDingTalkClaims(profile, {

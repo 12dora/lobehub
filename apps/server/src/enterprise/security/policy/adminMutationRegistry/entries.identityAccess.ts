@@ -4,6 +4,7 @@ import {
   enforced,
   identityLkg,
   noReason,
+  optionalReason,
   recentReauth,
   regularMutation,
   remoteProbeNoLkg,
@@ -23,7 +24,7 @@ export const ADMIN_MUTATION_ENTRIES_IDENTITY_ACCESS = {
     'admin.identityProviders.create',
     'medium',
     'Create an identity provider draft.',
-    { reauth: conditionalReauth },
+    { reason: optionalReason, reauth: conditionalReauth },
   ),
   'admin.identityProviders.delete': dangerousMutation(
     'admin.identityProviders.delete',
@@ -57,14 +58,14 @@ export const ADMIN_MUTATION_ENTRIES_IDENTITY_ACCESS = {
   'admin.identityProviders.testStart': regularMutation(
     'admin.identityProviders.testStart',
     'medium',
-    'Start an isolated identity provider login test.',
-    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
+    'Start an isolated identity provider login test (also the DingTalk organisation capture).',
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound, reason: optionalReason },
   ),
   'admin.identityProviders.update': regularMutation(
     'admin.identityProviders.update',
     'medium',
     'Change an identity provider draft.',
-    { reauth: conditionalReauth },
+    { reason: optionalReason, reauth: conditionalReauth },
   ),
   'admin.identityProviders.validateNetwork': validationMutation(
     'admin.identityProviders.validateNetwork',

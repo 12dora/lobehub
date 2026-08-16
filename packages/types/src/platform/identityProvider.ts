@@ -279,6 +279,20 @@ export const parseDingTalkAllowedCorps = (
 };
 
 /**
+ * DingTalk → Better Auth callback shim path.
+ *
+ * DingTalk's 统一登录 returns the authorization code as `authCode`, while Better Auth's
+ * generic-OAuth callback reads the OAuth 2.0 `code`. A DingTalk app therefore registers THIS
+ * path as its redirect URL, and it is also what the platform puts in the authorization request;
+ * the route rewrites the parameter and forwards to `/api/auth/oauth2/callback/<providerKey>`.
+ */
+export const DINGTALK_LOGIN_CALLBACK_PATH_PREFIX = '/oauth/identity-provider/dingtalk';
+
+/** Redirect URL a DingTalk app must register for `providerKey`. */
+export const buildDingTalkLoginCallbackUrl = (origin: string, providerKey: string): string =>
+  `${origin.replace(/\/$/, '')}${DINGTALK_LOGIN_CALLBACK_PATH_PREFIX}/${providerKey}`;
+
+/**
  * Reserved, non-resolvable email namespace for identities the platform synthesizes because the
  * identity provider exposes no address. Self-service sign-up is blocked on this namespace
  * (`registrationGuard`) so a local account can never pre-claim a synthetic identity, and each

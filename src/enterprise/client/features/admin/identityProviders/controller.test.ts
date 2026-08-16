@@ -7,12 +7,14 @@ import {
   acceptIdentityProviderRestart,
   AUTHENTIK_ISSUER_PLACEHOLDER,
   boundIdentityProviderCorpLabel,
+  buildIdentityProviderTestFailureMessage,
   classifyIdentityProviderWorkflowError,
   createIdentityProviderDraftFromTemplate,
   extractIdentityProviderTestErrorCode,
   IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
   identityProviderTestErrorKey,
   IdentityProviderTestPopupBlockedError,
+  identityProviderTestRemedyKey,
   isFixedProtocolIdentityProviderType,
   isIdentityProviderDeletable,
   isIdentityProviderDisableable,
@@ -511,5 +513,91 @@ describe('safe-login failure messages', () => {
     ).toBe('OIDC_TEST_CONFIG_INCOMPLETE');
     expect(extractIdentityProviderTestErrorCode('PLATFORM_REVISION_CONFLICT')).toBeNull();
     expect(extractIdentityProviderTestErrorCode(undefined)).toBeNull();
+  });
+});
+
+describe('DingTalk permission remedies', () => {
+  const remedy = (errorCode: string | null) =>
+    identityProviderTestRemedyKey({ errorCode, type: 'dingtalk' });
+
+  it('names the contact permission for every permission-shaped profile failure', () => {
+    for (const errorCode of [
+      'OIDC_TEST_DINGTALK_PROFILE_FORBIDDEN',
+      'OIDC_TEST_DINGTALK_PROFILE_FORBIDDEN:Forbidden.AccessDenied.AccessTokenPermissionDenied',
+      'OIDC_TEST_DINGTALK_PROFILE_REJECTED:Forbidden.AccessDenied.Something',
+      'OIDC_TEST_DINGTALK_PROFILE_REJECTED:someCode.PermissionDenied',
+    ]) {
+      expect(remedy(errorCode), errorCode).toBe(
+        'identityProviders.test.remedies.dingtalkContactPermission',
+      );
+    }
+  });
+
+  it('names the scope or credential to fix for the other known causes', () => {
+    expect(remedy('OIDC_TEST_CORP_ID_MISSING')).toBe(
+      'identityProviders.test.remedies.dingtalkCorpIdScope',
+    );
+    expect(remedy('OIDC_TEST_CLAIM_VALIDATION_FAILED')).toBe(
+      'identityProviders.test.remedies.dingtalkProfileFields',
+    );
+    expect(remedy('OIDC_TEST_DINGTALK_TOKEN_REJECTED:invalidParameter.idOrSecret.notFound')).toBe(
+      'identityProviders.test.remedies.dingtalkCredentials',
+    );
+  });
+
+  it('offers no remedy when the cause is unknown or the kind is not DingTalk', () => {
+    // A token rejection that is not a credential problem (e.g. redirect mismatch) keeps the
+    // generic instruction rather than blaming the AppSecret.
+    expect(remedy('OIDC_TEST_DINGTALK_TOKEN_REJECTED')).toBeNull();
+    expect(remedy('OIDC_TEST_DINGTALK_TOKEN_REJECTED:some.other.code')).toBeNull();
+    expect(remedy('OIDC_TEST_DINGTALK_PROFILE_REJECTED:invalidParameter.x')).toBeNull();
+    expect(remedy('OIDC_TEST_FAILED')).toBeNull();
+    expect(remedy(null)).toBeNull();
+    // The same codes on an OIDC kind must not suggest DingTalk console steps.
+    expect(
+      identityProviderTestRemedyKey({
+        errorCode: 'OIDC_TEST_CLAIM_VALIDATION_FAILED',
+        type: 'generic_oidc',
+      }),
+    ).toBeNull();
+  });
+
+  it('composes cause + exact remedy + provider code into one message', () => {
+    const translate = (key: string, options?: Record<string, unknown>) =>
+      options?.code ? `${key}(${String(options.code)})` : key;
+
+    expect(
+      buildIdentityProviderTestFailureMessage(
+        {
+          errorCode:
+            'OIDC_TEST_DINGTALK_PROFILE_FORBIDDEN:Forbidden.AccessDenied.AccessTokenPermissionDenied',
+          type: 'dingtalk',
+        },
+        translate,
+      ),
+    ).toBe(
+      'identityProviders.test.errors.dingtalkProfileForbidden ' +
+        'identityProviders.test.remedies.dingtalkContactPermission ' +
+        'identityProviders.test.errors.providerCode(Forbidden.AccessDenied.AccessTokenPermissionDenied)',
+    );
+
+    // Unknown code: generic message + the raw code, no invented remedy.
+    expect(
+      buildIdentityProviderTestFailureMessage(
+        { errorCode: 'OIDC_TEST_WHAT_IS_THIS:weird.code', type: 'dingtalk' },
+        translate,
+      ),
+    ).toBe(
+      'identityProviders.test.errors.generic identityProviders.test.errors.providerCode(weird.code)',
+    );
+
+    expect(
+      buildIdentityProviderTestFailureMessage(
+        { errorCode: 'OIDC_TEST_CORP_ID_MISSING', type: 'dingtalk' },
+        translate,
+      ),
+    ).toBe(
+      'identityProviders.test.errors.corpIdMissing identityProviders.test.remedies.dingtalkCorpIdScope',
+    );
   });
 });

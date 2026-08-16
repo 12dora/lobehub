@@ -1950,6 +1950,8 @@ export default {
     'Add at least one allowed organization before publishing.',
   'identityProviders.dingtalk.allowedCorps.remove': 'Remove',
   'identityProviders.dingtalk.allowedCorps.title': 'Allowed organizations',
+  'identityProviders.dingtalk.callbackNotice':
+    'DingTalk returns the authorization code as `authCode`, so its apps must register the address below (it forwards to the standard sign-in callback). Register the test address too — the organization capture uses it.',
   'identityProviders.dingtalk.appKey': 'Client ID (AppKey)',
   'identityProviders.dingtalk.appSecret': 'Client Secret (AppSecret)',
   'identityProviders.dingtalk.domainsWarning':
@@ -2092,10 +2094,16 @@ export default {
     'The callback arrived on a different address than this console. Check APP_URL and the redirect URL registered with the provider.',
   'identityProviders.test.errors.claimValidationFailed':
     "The account was authenticated, but the returned profile is missing something we require (identifier, name or a usable email). Check the app's permissions and the email domain allowlist.",
-  'identityProviders.test.errors.configIncomplete':
-    'This login method is not complete yet. Save the client id and client secret first.',
   'identityProviders.test.errors.corpIdMissing':
     'DingTalk did not report an organization. Grant the app the `corpid` permission in the DingTalk Open Platform, then try again.',
+  'identityProviders.test.errors.configIncomplete':
+    'This login method is not complete yet. Save the client id and client secret first.',
+  'identityProviders.test.errors.dingtalkProfileForbidden':
+    'DingTalk refused to return the profile. Grant the app the 通讯录个人信息读权限 (Contact.User.Read) permission in the DingTalk Open Platform, wait for it to take effect, then try again.',
+  'identityProviders.test.errors.dingtalkProfileRejected':
+    "The account signed in, but DingTalk did not return a usable profile. Check the app's contact permissions in the DingTalk Open Platform.",
+  'identityProviders.test.errors.dingtalkTokenRejected':
+    "DingTalk rejected the credential exchange. Check the AppSecret, and that the redirect address shown below is registered on the app's 登录与分享 page exactly as displayed.",
   'identityProviders.test.errors.discoveryInvalid':
     "The provider's discovery document could not be used for this test.",
   'identityProviders.test.errors.generic':
@@ -2104,6 +2112,7 @@ export default {
     "The provider's ID token failed verification (signature, audience or nonce).",
   'identityProviders.test.errors.issuerInvalid':
     "This login method's issuer is not valid for its type. Recreate it from the provider template.",
+  'identityProviders.test.errors.providerCode': 'DingTalk reported: {{code}}',
   'identityProviders.test.errors.providerChanged':
     'The login method changed while the test was running. Reload and try again.',
   'identityProviders.test.errors.remoteInvalid':
@@ -2113,10 +2122,18 @@ export default {
     "The provider's response came from an unexpected issuer.",
   'identityProviders.test.errors.secretUnavailable':
     'The stored client secret could not be read. Enter it again and save.',
-  'identityProviders.test.errors.subjectMismatch':
-    'The provider returned two different account identifiers for one sign-in.',
   'identityProviders.test.errors.userinfoRequired':
     'The provider exposes no profile endpoint, which this platform requires.',
+  'identityProviders.test.errors.subjectMismatch':
+    'The provider returned two different account identifiers for one sign-in.',
+  'identityProviders.test.remedies.dingtalkContactPermission':
+    'Missing permission: 通讯录个人信息读权限 (Contact.User.Read). Open DingTalk Open Platform → your app → 权限管理 (Permissions), search for it, grant it, then retry.',
+  'identityProviders.test.remedies.dingtalkCorpIdScope':
+    'Missing scope: `corpid`. Open DingTalk Open Platform → your app → 登录与分享 (Login & Share) → 授权范围/scopes, add `corpid`, then retry.',
+  'identityProviders.test.remedies.dingtalkCredentials':
+    'The AppKey or AppSecret is wrong. Copy both again from DingTalk Open Platform → your app → 凭证与基础信息 (Credentials).',
+  'identityProviders.test.remedies.dingtalkProfileFields':
+    'DingTalk returned a profile without the fields we require (unionId above all). Check that the `openid` scope is in 登录与分享 → 授权范围/scopes and that 通讯录个人信息读权限 (Contact.User.Read) is granted under 权限管理.',
   'identityProviders.test.description':
     'The isolated test callback reports claim presence without exposing claim values or changing production login.',
   'identityProviders.test.claimPresent': '{{claim}} present ({{type}})',

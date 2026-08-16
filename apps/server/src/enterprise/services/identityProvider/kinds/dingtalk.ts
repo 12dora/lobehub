@@ -90,6 +90,54 @@ const isJsonResponse = (
   return contentType === 'application/json' || contentType?.endsWith('+json') === true;
 };
 
+/** Which DingTalk call failed. The two stages have completely different remedies. */
+export type DingTalkApiStage = 'profile' | 'token';
+
+/**
+ * A DingTalk API rejection, carrying enough detail for an administrator to act.
+ *
+ * DingTalk answers errors with `{ code, message, requestid }`. Only `code` is propagated: it is a
+ * stable machine token (`invalidParameter.idOrSecret.notFound`, `Forbidden.AccessDenied.…`) that
+ * maps to a concrete fix, whereas `message` is untrusted third-party free text. Nothing here ever
+ * carries the client secret, the authorization code, or an access token.
+ */
+export class DingTalkApiError extends Error {
+  constructor(
+    message: string,
+    readonly detail: {
+      /** Sanitized DingTalk error code, when the body carried a usable one. */
+      dingtalkCode?: string;
+      stage: DingTalkApiStage;
+      status?: number;
+    },
+    cause?: unknown,
+  ) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'DingTalkApiError';
+  }
+}
+
+/** DingTalk error codes are dotted identifiers; anything else is discarded. */
+const DINGTALK_ERROR_CODE_PATTERN = /^[A-Z][\w.-]{0,63}$/i;
+
+const parseDingTalkErrorCode = (body: unknown): string | undefined => {
+  if (!body || typeof body !== 'object') return undefined;
+  const code = (body as { code?: unknown }).code;
+  return typeof code === 'string' && DINGTALK_ERROR_CODE_PATTERN.test(code) ? code : undefined;
+};
+
+/** Best-effort error-body read; a failure here must never mask the original rejection. */
+const readDingTalkErrorCode = async (
+  response: Awaited<ReturnType<SafeOutboundHttpClient['fetch']>>,
+): Promise<string | undefined> => {
+  if (!isJsonResponse(response) || response.truncated) return undefined;
+  try {
+    return parseDingTalkErrorCode(await response.json());
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * Static stand-in for the discovery document DingTalk does not publish.
  * `issuer` echoes the stored issuer so the snapshot invariant
@@ -169,7 +217,17 @@ export const exchangeDingTalkAuthorizationCode = async (input: {
       secretBearing: true,
       timeoutMs: REQUEST_TIMEOUT_MS,
     });
-    if (!response.ok || response.truncated || !isJsonResponse(response)) throw failure(errorCode);
+    if (!response.ok || response.truncated || !isJsonResponse(response)) {
+      // DingTalk answers a rejected exchange with HTTP 4xx + `{code, message}`; carrying that
+      // code out is the difference between "wrong AppSecret" and "redirect URL not registered".
+      throw new DingTalkApiError(errorCode, {
+        ...(await readDingTalkErrorCode(response).then((code) =>
+          code ? { dingtalkCode: code } : {},
+        )),
+        stage: 'token',
+        status: response.status,
+      });
+    }
     const parsed = tokenResponseSchema.parse(await response.json());
     return {
       accessToken: parsed.accessToken,
@@ -178,8 +236,10 @@ export const exchangeDingTalkAuthorizationCode = async (input: {
       ...(parsed.refreshToken ? { refreshToken: parsed.refreshToken } : {}),
     };
   } catch (error) {
+    if (error instanceof DingTalkApiError) throw error;
     if (error instanceof Error && error.message === errorCode) throw error;
-    throw failure(errorCode, error);
+    // A 200 body that is not a usable token response (missing accessToken, wrong shape).
+    throw new DingTalkApiError(errorCode, { stage: 'token' }, error);
   }
 };
 
@@ -202,11 +262,23 @@ export const fetchDingTalkUserProfile = async (input: {
       secretBearing: true,
       timeoutMs: REQUEST_TIMEOUT_MS,
     });
-    if (!response.ok || response.truncated || !isJsonResponse(response)) throw failure(errorCode);
+    if (!response.ok || response.truncated || !isJsonResponse(response)) {
+      // 403 here is almost always the missing 通讯录个人信息读权限 (`Contact.User.Read`) scope —
+      // a completely different fix from a credential problem, so it must not collapse into one
+      // "remote invalid" bucket.
+      throw new DingTalkApiError(errorCode, {
+        ...(await readDingTalkErrorCode(response).then((code) =>
+          code ? { dingtalkCode: code } : {},
+        )),
+        stage: 'profile',
+        status: response.status,
+      });
+    }
     return userProfileSchema.parse(await response.json());
   } catch (error) {
+    if (error instanceof DingTalkApiError) throw error;
     if (error instanceof Error && error.message === errorCode) throw error;
-    throw failure(errorCode, error);
+    throw new DingTalkApiError(errorCode, { stage: 'profile' }, error);
   }
 };
 

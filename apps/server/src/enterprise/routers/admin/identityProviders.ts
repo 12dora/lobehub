@@ -31,6 +31,7 @@ import {
   adminIdentityProviderTestStartOutputSchema,
   adminIdentityProviderUpdateInputSchema,
   adminIdentityProviderValidateNetworkOutputSchema,
+  NO_REASON_AUDIT_PLACEHOLDER,
 } from '../../contracts/identityProviders';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
@@ -292,18 +293,22 @@ export const adminIdentityProvidersRouter = router({
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
           currentSecretTargetId: null,
-          reason: input.reason,
+          reason: input.reason ?? NO_REASON_AUDIT_PLACEHOLDER,
           replacementSecrets,
           serverDB: ctx.serverDB,
           targetId: input.providerKey,
         });
       }
-      const reason = await requireSanitizedIdentityReason({
-        currentSecretTargetId: null,
-        reason: input.reason,
-        replacementSecrets,
-        serverDB: ctx.serverDB,
-      });
+      // Saving a draft does not collect a reason (see optionalReasonSchema); only a supplied
+      // one needs sanitizing against the secret being written.
+      const reason = input.reason
+        ? await requireSanitizedIdentityReason({
+            currentSecretTargetId: null,
+            reason: input.reason,
+            replacementSecrets,
+            serverDB: ctx.serverDB,
+          })
+        : NO_REASON_AUDIT_PLACEHOLDER;
       return execute(() =>
         ctx.getIdentityProviderRuntime().admin.create(ctx.userId!, { ...input, reason }),
       );
@@ -483,6 +488,7 @@ export const adminIdentityProvidersRouter = router({
       return execute(() =>
         runtime.test.start({
           ...input,
+          reason: input.reason ?? NO_REASON_AUDIT_PLACEHOLDER,
           redirectUri: runtime.admin.getCallbackUrls().test,
           sessionId: ctx.sessionId!,
           userId: ctx.userId!,
@@ -503,17 +509,19 @@ export const adminIdentityProvidersRouter = router({
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
           providerId: input.id,
-          reason: input.reason,
+          reason: input.reason ?? NO_REASON_AUDIT_PLACEHOLDER,
           replacementSecrets,
           serverDB: ctx.serverDB,
         });
       }
-      const reason = await requireSanitizedExistingIdentityReason({
-        providerId: input.id,
-        reason: input.reason,
-        replacementSecrets,
-        serverDB: ctx.serverDB,
-      });
+      const reason = input.reason
+        ? await requireSanitizedExistingIdentityReason({
+            providerId: input.id,
+            reason: input.reason,
+            replacementSecrets,
+            serverDB: ctx.serverDB,
+          })
+        : NO_REASON_AUDIT_PLACEHOLDER;
       return execute(() =>
         ctx.getIdentityProviderRuntime().admin.update(ctx.userId!, { ...input, reason }),
       );

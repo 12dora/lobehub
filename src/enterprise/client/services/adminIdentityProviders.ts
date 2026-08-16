@@ -34,7 +34,7 @@ class AdminIdentityProvidersService {
   }) => lambdaClient.admin.identityProviders.rollback.mutate(input);
   testResult = (attemptId: string) =>
     lambdaClient.admin.identityProviders.testResult.query({ attemptId });
-  testStart = (input: { expectedRevision: number; id: string; reason: string }) =>
+  testStart = (input: { expectedRevision: number; id: string; reason?: string }) =>
     lambdaClient.admin.identityProviders.testStart.mutate(input);
   update = (input: AdminIdentityProviderUpdateInput) =>
     lambdaClient.admin.identityProviders.update.mutate(input);
