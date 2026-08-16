@@ -9,6 +9,7 @@ import { MESSAGE_ACTION_BAR_PORTAL_ATTRIBUTES } from '@/const/messageActionPorta
 import { ChatItem } from '@/features/Conversation/ChatItem';
 import ErrorMessageExtra, { useErrorContent } from '@/features/Conversation/Error';
 import { AssistantMessageExtra } from '@/features/Conversation/Messages/Assistant/Extra';
+import ModerationNotice from '@/features/Conversation/Messages/Assistant/Extra/ModerationNotice';
 import { normalizeThinkTags, processWithArtifact } from '@/features/Conversation/utils/markdown';
 import { type UIChatMessage } from '@/types/index';
 
@@ -66,7 +67,8 @@ const CouncilMember = memo<CouncilMemberProps>(({ item, index }) => {
   return (
     <ChatItem
       showTitle
-      aboveMessage={null}
+      // 内容审计 downgrade notice belongs ABOVE the reply — the extra slot renders below it.
+      aboveMessage={<ModerationNotice moderation={metadata?.moderation} />}
       actions={actionBarHolder}
       avatar={avatar}
       customErrorRender={(error) => <ErrorMessageExtra data={item} error={error} />}

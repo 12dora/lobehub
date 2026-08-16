@@ -531,6 +531,7 @@
   "minimap.previousMessage": "Previous message",
   "minimap.senderAssistant": "Agent",
   "minimap.senderUser": "You",
+  "moderation.downgraded": "Content moderation switched this reply to {{model}}",
   "newAgent": "Create Agent",
   "newClaudeCodeAgent": "Add Claude Code",
   "newCodexAgent": "Add Codex",

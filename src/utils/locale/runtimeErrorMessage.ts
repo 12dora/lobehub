@@ -24,6 +24,7 @@ type LooseT = (key: string, vars?: Record<string, unknown>) => string;
 export const PLATFORM_LOCALIZED_ERROR_TYPES = new Set<string>([
   PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED,
   PLATFORM_ERROR_CODES.PLATFORM_AI_PROVIDER_DISABLED,
+  PLATFORM_ERROR_CODES.PLATFORM_CONTENT_MODERATION_BLOCKED,
 ]);
 
 /** True when `getRuntimeErrorMessage` resolves dedicated chat copy for a platform error code. */

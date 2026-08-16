@@ -17,6 +17,7 @@ import ErrorMessageExtra, { useErrorContent } from '../../Error';
 import { useAgentMeta, useDoubleClickEdit } from '../../hooks';
 import { dataSelectors, messageStateSelectors, useConversationStore } from '../../store';
 import { normalizeThinkTags, processWithArtifact } from '../../utils/markdown';
+import ModerationNotice from '../Assistant/Extra/ModerationNotice';
 import { AssistantActionsBar } from './Actions';
 import ClientTaskDetail from './ClientTaskDetail';
 import TaskDetailPanel from './TaskDetailPanel';
@@ -68,7 +69,8 @@ const TaskMessage = memo<TaskMessageProps>(({ id, index, disableEditing }) => {
   return (
     <ChatItem
       showTitle
-      aboveMessage={null}
+      // 内容审计 downgrade notice belongs ABOVE the reply — the extra slot renders below it.
+      aboveMessage={<ModerationNotice moderation={metadata?.moderation} />}
       actions={<AssistantActionsBar actionsConfig={actionsConfig} data={item} id={id} />}
       avatar={{ ...avatar, title }}
       customAvatarRender={(_, node) => <TaskAvatar>{node}</TaskAvatar>}

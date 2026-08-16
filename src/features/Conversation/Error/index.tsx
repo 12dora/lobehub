@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import useBusinessErrorAlertConfig from '@/business/client/hooks/useBusinessErrorAlertConfig';
 import useBusinessErrorContent from '@/business/client/hooks/useBusinessErrorContent';
 import useRenderBusinessChatErrorMessageExtra from '@/business/client/hooks/useRenderBusinessChatErrorMessageExtra';
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import ErrorContent from '@/features/Conversation/ChatItem/components/ErrorContent';
 import { dataSelectors, useConversationStore } from '@/features/Conversation/store';
 import HeterogeneousAgentStatusGuide from '@/features/Electron/HeterogeneousAgent/StatusGuide';
@@ -29,6 +30,7 @@ import {
 
 import ChatInvalidAPIKey from './ChatInvalidApiKey';
 import { isHeterogeneousAgentStatusGuideError } from './heterogeneous';
+import ModerationBlockedError from './ModerationBlockedError';
 import OAuthExpiredError, { readErrorProviderId } from './OAuthExpiredError';
 import { useHeterogeneousAutoRetry } from './useHeterogeneousAutoRetry';
 
@@ -177,6 +179,16 @@ const isGoogleBlockedProviderError = (error?: ChatMessageError | null): boolean 
     typeof body.context?.finishReason === 'string'
   );
 };
+
+/**
+ * 内容审计 block: the moderation decision owns the whole card (admin copy + hit category), so it
+ * short-circuits the generic error rendering — including the trace-id report block, which would
+ * frame a deliberate policy decision as a platform fault.
+ */
+const isContentModerationBlockedError = (error?: ChatMessageError | null): boolean =>
+  // `type` is typed as the upstream error unions, so compare as a string like the other platform
+  // codes do (see `hasLocalizedErrorMessage`).
+  !!error?.type && String(error.type) === PLATFORM_ERROR_CODES.PLATFORM_CONTENT_MODERATION_BLOCKED;
 
 const shouldShowTraceIdError = (
   error?: ChatMessageError | null,
@@ -379,6 +391,17 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(
           error={sessionErrorBody}
           onOpenSystemTools={() => navigate('/settings/system-tools')}
           onRetry={handleManualRetry}
+        />
+      );
+    }
+
+    if (isContentModerationBlockedError(error)) {
+      const body = isRecord(sessionErrorBody) ? sessionErrorBody : undefined;
+
+      return (
+        <ModerationBlockedError
+          category={body?.category}
+          message={typeof body?.message === 'string' ? body.message : undefined}
         />
       );
     }

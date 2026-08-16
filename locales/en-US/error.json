@@ -84,6 +84,7 @@
   "response.NoOpenAIAPIKey": "OpenAI API Key is empty, please add a custom OpenAI API Key",
   "response.PLATFORM_AI_MODEL_NOT_PUBLISHED": "This model is no longer published by your administrator. Switch to another model and try again.",
   "response.PLATFORM_AI_PROVIDER_DISABLED": "This provider has been removed or disabled by your administrator. Switch to another model and try again.",
+  "response.PLATFORM_CONTENT_MODERATION_BLOCKED": "This message was blocked by content moderation — please revise it and try again",
   "response.PlatformAgentDependencyUnavailable": "This Agent cannot start because a required resource is unavailable. Ask an administrator to review its setup.",
   "response.PlatformAgentStartFailed": "This Agent could not start. Try again. If the problem continues, contact your administrator.",
   "response.PlatformAgentUnavailable": "This Agent is no longer available. Return to the Agent list and choose another.",

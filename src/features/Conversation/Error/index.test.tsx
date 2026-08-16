@@ -489,4 +489,63 @@ describe('ErrorMessageExtra', () => {
       screen.getByText(/"message": "The model declined to answer this request\."/),
     ).toBeInTheDocument();
   });
+  describe('内容审计 blocked card', () => {
+    const blockedData = (body: Record<string, unknown>) => ({
+      error: {
+        body,
+        message: 'response.PLATFORM_CONTENT_MODERATION_BLOCKED',
+        type: 'PLATFORM_CONTENT_MODERATION_BLOCKED',
+      } as any,
+      id: 'msg-moderation-blocked',
+    });
+
+    it('renders the admin copy and the hit category instead of the generic card', () => {
+      serverConfigMock.enableBusinessFeatures = true;
+
+      render(
+        <ErrorMessageWithContent
+          data={blockedData({
+            category: 'jailbreak',
+            message: 'Your request violates the company usage policy.',
+            recordId: 'record-1',
+            traceId: 'trace-abc',
+          })}
+        />,
+      );
+
+      expect(screen.getByText('response.PLATFORM_CONTENT_MODERATION_BLOCKED')).toBeInTheDocument();
+      expect(
+        screen.getByText('Your request violates the company usage policy.'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('moderation.categoryLabel')).toBeInTheDocument();
+      // A policy decision must not be framed as a platform fault: no trace-id report block and
+      // no raw JSON dump of the error body.
+      expect(screen.queryByText('dynamic')).not.toBeInTheDocument();
+      expect(screen.queryByText(/trace-abc/)).not.toBeInTheDocument();
+    });
+
+    it('renders the localized title alone when the error carries no body at all', () => {
+      render(
+        <ErrorMessageWithContent
+          data={{
+            error: {
+              message: 'response.PLATFORM_CONTENT_MODERATION_BLOCKED',
+              type: 'PLATFORM_CONTENT_MODERATION_BLOCKED',
+            } as any,
+            id: 'msg-moderation-blocked-no-body',
+          }}
+        />,
+      );
+
+      expect(screen.getByText('response.PLATFORM_CONTENT_MODERATION_BLOCKED')).toBeInTheDocument();
+      expect(screen.queryByText('moderation.categoryLabel')).not.toBeInTheDocument();
+    });
+
+    it('hides the category line for an unknown category and renders without admin copy', () => {
+      render(<ErrorMessageWithContent data={blockedData({ category: 'not_a_category' })} />);
+
+      expect(screen.getByText('response.PLATFORM_CONTENT_MODERATION_BLOCKED')).toBeInTheDocument();
+      expect(screen.queryByText('moderation.categoryLabel')).not.toBeInTheDocument();
+    });
+  });
 });

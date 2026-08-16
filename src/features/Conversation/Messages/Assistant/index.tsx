@@ -22,6 +22,7 @@ import {
 import InterruptedHint from './components/InterruptedHint';
 import MessageContent from './components/MessageContent';
 import { AssistantMessageExtra } from './Extra';
+import ModerationNotice from './Extra/ModerationNotice';
 
 const actionBarHolder = (
   <div {...{ [MESSAGE_ACTION_BAR_PORTAL_ATTRIBUTES.assistant]: '' }} style={{ height: '28px' }} />
@@ -93,7 +94,8 @@ const AssistantMessage = memo<AssistantMessageProps>(
     return (
       <ChatItem
         showTitle
-        aboveMessage={null}
+        // 内容审计 downgrade notice belongs ABOVE the reply — the extra slot renders below it.
+        aboveMessage={<ModerationNotice moderation={metadata?.moderation} />}
         avatar={avatar}
         belowMessage={hasEmptyErrorMessage ? footerRender : undefined}
         customErrorRender={(error) => <ErrorMessageExtra data={item} error={error} />}

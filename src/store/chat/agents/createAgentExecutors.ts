@@ -531,7 +531,17 @@ export const createAgentExecutors = (context: {
         },
         onFinish: async (
           _content,
-          { traceId, observationId, toolCalls, reasoning, grounding, usage, speed, type },
+          {
+            traceId,
+            observationId,
+            toolCalls,
+            reasoning,
+            grounding,
+            moderation,
+            usage,
+            speed,
+            type,
+          },
         ) => {
           void _content;
 
@@ -610,7 +620,12 @@ export const createAgentExecutors = (context: {
                 usage: result.metadata.usage,
                 finishType: result.metadata.finishType,
                 ...(result.metadata.isMultimodal && { isMultimodal: true }),
+                // 内容审计 downgrade: persist the notice with the message so it survives a reload.
+                ...(moderation && { moderation }),
               },
+              // The reply came from the fallback model, so the message must report that model /
+              // provider — not the one the user picked (design §3.6).
+              ...(moderation && { model: moderation.model, provider: moderation.provider }),
             },
             { operationId: context.operationId },
           );

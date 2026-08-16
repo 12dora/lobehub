@@ -4,6 +4,7 @@ import type {
   ChatImageChunk,
   ChatMessageError,
   GroundingSearch,
+  MessageModerationMetadata,
   MessageToolCall,
   ModelPerformance,
   ModelReasoning,
@@ -16,6 +17,11 @@ import { ChatErrorType } from '@lobechat/types';
 import { fetchEventSource } from '@lobechat/utils/client/fetchEventSource/index';
 import { nanoid } from '@lobechat/utils/uuid';
 
+import {
+  MODERATION_HEADER_ACTION_DOWNGRADE,
+  MODERATION_HEADERS,
+} from '@/const/platform/contentModeration';
+
 import { getMessageError } from './parseError';
 
 type SSEFinishType = 'done' | 'error' | 'abort' | string;
@@ -25,6 +31,8 @@ export type OnFinishHandler = (
   context: {
     grounding?: GroundingSearch;
     images?: ChatImageChunk[];
+    /** 内容审计 downgrade notice, decoded from the `x-lobe-moderation-*` response headers. */
+    moderation?: MessageModerationMetadata;
     observationId?: string | null;
     reasoning?: ModelReasoning;
     speed?: ModelPerformance;
@@ -125,6 +133,59 @@ export interface FetchSSERequestContext {
   model?: string;
   provider?: string;
 }
+
+const readHeader = (headers: Headers, name: string): string | undefined =>
+  headers.get(name)?.trim() || undefined;
+
+/**
+ * The admin-configured downgrade copy travels `encodeURIComponent`-encoded because HTTP headers are
+ * ASCII-only. A malformed percent-escape must never break the reply — decoding failures degrade to
+ * the locale default notice.
+ */
+const readEncodedHeader = (headers: Headers, name: string): string | undefined => {
+  const raw = readHeader(headers, name);
+  if (!raw) return undefined;
+
+  try {
+    return decodeURIComponent(raw) || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Decode the 内容审计 downgrade headers (`MODERATION_HEADERS`) the runtime sets when a request was
+ * answered by a fallback model. The metadata is attached to the assistant message so the notice
+ * survives a reload — see docs/enterprise/content-moderation.md §3.6.
+ *
+ * Returns `undefined` for anything but a well-formed downgrade (no header, another action, or a
+ * missing effective model): the reply itself is still valid, only the notice is dropped.
+ */
+export const parseModerationHeaders = (
+  headers: Headers,
+  requestContext?: FetchSSERequestContext,
+): MessageModerationMetadata | undefined => {
+  if (readHeader(headers, MODERATION_HEADERS.ACTION) !== MODERATION_HEADER_ACTION_DOWNGRADE)
+    return undefined;
+
+  const model = readHeader(headers, MODERATION_HEADERS.MODEL);
+  if (!model) return undefined;
+
+  // The runtime may omit the provider header when the downgrade stays inside the same provider.
+  const provider = readHeader(headers, MODERATION_HEADERS.PROVIDER) ?? requestContext?.provider;
+  if (!provider) return undefined;
+
+  return {
+    action: 'downgrade',
+    category: readHeader(headers, MODERATION_HEADERS.CATEGORY),
+    message: readEncodedHeader(headers, MODERATION_HEADERS.MESSAGE),
+    model,
+    originalModel: requestContext?.model ?? model,
+    originalProvider: requestContext?.provider ?? provider,
+    provider,
+    recordId: readHeader(headers, MODERATION_HEADERS.RECORD),
+  };
+};
 
 export interface FetchSSEOptions {
   fetcher?: typeof fetch;
@@ -608,6 +669,7 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
 
       const traceId = response.headers.get(LOBE_CHAT_TRACE_ID);
       const observationId = response.headers.get(LOBE_CHAT_OBSERVATION_ID);
+      const moderation = parseModerationHeaders(response.headers, options.requestContext);
 
       textController.flushQueue();
       thinkingController.flushQueue();
@@ -615,6 +677,7 @@ export const fetchSSE = async (url: string, options: RequestInit & FetchSSEOptio
       await options?.onFinish?.(output, {
         grounding,
         images: images.length > 0 ? images : undefined,
+        moderation,
         observationId,
         reasoning: (() => {
           /**

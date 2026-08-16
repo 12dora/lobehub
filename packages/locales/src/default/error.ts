@@ -119,6 +119,8 @@ export default {
     'This model is no longer published by your administrator. Switch to another model and try again.',
   'response.PLATFORM_AI_PROVIDER_DISABLED':
     'This provider has been removed or disabled by your administrator. Switch to another model and try again.',
+  'response.PLATFORM_CONTENT_MODERATION_BLOCKED':
+    'This message was blocked by content moderation — please revise it and try again',
   'response.InsufficientBudgetForModel':
     'Your remaining credits are insufficient for this model. Please top up credits, upgrade your plan, or try a less expensive model.',
   'response.GoogleAIBlockReason.BLOCKLIST':

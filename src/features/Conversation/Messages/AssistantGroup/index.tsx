@@ -1,6 +1,11 @@
 'use client';
 
-import type { AssistantContentBlock, EmojiReaction, UISignalCallbacksBlock } from '@lobechat/types';
+import type {
+  AssistantContentBlock,
+  EmojiReaction,
+  MessageModerationMetadata,
+  UISignalCallbacksBlock,
+} from '@lobechat/types';
 import { Flexbox, Tag } from '@lobehub/ui';
 import isEqual from 'fast-deep-equal';
 import type { MouseEventHandler, ReactNode } from 'react';
@@ -33,6 +38,7 @@ import {
   useConversationStore,
 } from '../../store';
 import InterruptedHint from '../Assistant/components/InterruptedHint';
+import ModerationNotice from '../Assistant/Extra/ModerationNotice';
 import Usage from '../components/Extras/Usage';
 import MessageBranch from '../components/MessageBranch';
 import {
@@ -101,6 +107,20 @@ const GroupMessage = memo<GroupMessageProps>(
       if (!children || children.length === 0) return [];
       return children.flatMap((child: AssistantContentBlock) => child.fileList || []);
     }, [children]);
+
+    // 内容审计 downgrade notice: this one line sits above the WHOLE grouped turn, so it may only
+    // describe the reply the reader is actually looking at — the final assistant block. A
+    // downgrade on an earlier tool-calling step says nothing about what produced the visible
+    // answer, so earlier blocks are deliberately ignored rather than promoted to the group (that
+    // would label a clean final answer with a model that never wrote it). Root metadata is used
+    // only when the turn has no blocks at all, i.e. the root IS the reply.
+    const moderation = useMemo<MessageModerationMetadata | undefined>(() => {
+      if (!children?.length) return metadata?.moderation;
+
+      const finalBlock = children.at(-1) as AssistantContentBlock | undefined;
+
+      return finalBlock?.metadata?.moderation as MessageModerationMetadata | undefined;
+    }, [children, metadata]);
 
     const isInbox = useAgentStore(builtinAgentSelectors.isInboxAgent);
     const [toggleSystemRole] = useGlobalStore((s) => [s.toggleSystemRole]);
@@ -181,6 +201,8 @@ const GroupMessage = memo<GroupMessageProps>(
     return (
       <ChatItem
         showTitle
+        // 内容审计 downgrade notice belongs ABOVE the reply — the extra slot renders below it.
+        aboveMessage={<ModerationNotice moderation={moderation} />}
         avatar={isSupervisor ? { ...avatar, title: groupMeta.title } : avatar}
         id={id}
         placement={'left'}
