@@ -8,26 +8,14 @@ import { ExternalLinkIcon } from 'lucide-react';
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import SharedOAuthSessionFields from './SharedOAuthSessionFields';
+import SharedOAuthSessionSteps from './SharedOAuthSessionSteps';
 import type { SharedOAuthPasteError, SharedOAuthPasteSource } from './useAdminSharedOAuthFlow';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   error: css`
     font-size: 12px;
     color: ${cssVar.colorError};
-  `,
-  hint: css`
-    font-size: 12px;
-    color: ${cssVar.colorTextDescription};
-  `,
-  /** Inline external link: the connect steps used to name pages with nothing to click. */
-  link: css`
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-
-    font-size: 12px;
-    color: ${cssVar.colorLink};
-    white-space: nowrap;
   `,
   label: css`
     font-size: 12px;
@@ -72,15 +60,6 @@ interface SharedOAuthPasteFormProps {
    */
   webSessionOnly?: boolean;
 }
-
-/** Where the operator signs in; step 1 named it without offering anything to click. */
-const CHATGPT_HOME_URL = 'https://chatgpt.com';
-/**
- * The one-click fallback. It answers with the account's ACCESS TOKEN and no session cookie
- * (next-auth never echoes an HttpOnly cookie in a body), so a paste from here cannot renew
- * itself — the copy says so, and the live detection repeats it before anything is submitted.
- */
-const CHATGPT_SESSION_URL = 'https://chatgpt.com/api/auth/session';
 
 /** Submit errors that belong to the pasted-credential box rather than the callback box. */
 const TOKEN_SOURCE_ERRORS = new Set<SharedOAuthPasteError>([
@@ -176,94 +155,18 @@ const SharedOAuthPasteForm = memo<SharedOAuthPasteFormProps>(
       else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
     }, [onSubmitAccessToken, onSubmitSessionToken, parsed.accessToken, parsed.sessionToken]);
 
-    /**
-     * What to do BEFORE there is anything to paste, as three steps with the pages they name
-     * one click away. The cURL route leads because it is a single right-click; the cookie
-     * route rides along in the same line for operators who prefer it.
-     */
-    const sessionSteps = (
-      <Flexbox gap={4}>
-        <Flexbox horizontal align={'center'} gap={8}>
-          <Text className={styles.hint}>
-            {t('aiProviderSettings.sharedOAuth.paste.sessionStep1')}
-          </Text>
-          <a
-            className={styles.link}
-            href={CHATGPT_HOME_URL}
-            rel={'noopener noreferrer'}
-            target={'_blank'}
-          >
-            {t('aiProviderSettings.sharedOAuth.paste.openChatGPT')}
-            <Icon icon={ExternalLinkIcon} size={12} />
-          </a>
-        </Flexbox>
-        <Text className={styles.hint}>
-          {t('aiProviderSettings.sharedOAuth.paste.sessionStep2')}
-        </Text>
-        <Text className={styles.hint}>
-          {t('aiProviderSettings.sharedOAuth.paste.sessionStep3')}
-        </Text>
-        {/* Secondary on purpose: it trades the whole point of this flow (renewing itself)
-            for one click, so it is stated as the compromise it is — never as an equal path. */}
-        <Flexbox horizontal align={'center'} gap={8} style={{ flexWrap: 'wrap' }}>
-          <Text className={styles.hint} type={'secondary'}>
-            {t('aiProviderSettings.sharedOAuth.paste.sessionQuickTry')}
-          </Text>
-          <a
-            className={styles.link}
-            href={CHATGPT_SESSION_URL}
-            rel={'noopener noreferrer'}
-            target={'_blank'}
-          >
-            {t('aiProviderSettings.sharedOAuth.paste.openSessionPage')}
-            <Icon icon={ExternalLinkIcon} size={12} />
-          </a>
-        </Flexbox>
-      </Flexbox>
-    );
-
-    /** The pasted-credential input itself: same field, label and live detection either way. */
+    const sessionSteps = <SharedOAuthSessionSteps />;
     const sessionFields = (
-      <>
-        <label className={styles.label} htmlFor={tokenFieldId}>
-          {t('aiProviderSettings.sharedOAuth.paste.sessionLabel')}
-        </label>
-        <TextArea
-          aria-invalid={tokenError ? true : undefined}
-          autoCapitalize={'none'}
-          // A raw session cookie: no autofill, no autocorrect mangling it, and no
-          // spellchecker — which on several platforms means uploading it.
-          autoComplete={'off'}
-          autoCorrect={'off'}
-          autoSize={{ maxRows: 6, minRows: 3 }}
-          id={tokenFieldId}
-          placeholder={t('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder')}
-          spellCheck={false}
-          value={pasted}
-          aria-describedby={
-            [tokenError ? tokenErrorId : undefined, detection ? detectionId : undefined]
-              .filter(Boolean)
-              .join(' ') || undefined
-          }
-          onChange={(e) => setPasted(e.target.value)}
-        />
-        {detection && (
-          <Text
-            className={styles.hint}
-            id={detectionId}
-            // Live, because it changes while the operator types into the box above.
-            role={'status'}
-            type={detection === 'session' ? 'secondary' : 'warning'}
-          >
-            {t(`aiProviderSettings.sharedOAuth.paste.detected.${detection}` as any)}
-          </Text>
-        )}
-        {tokenErrorKey && (
-          <Text className={styles.error} id={tokenErrorId} role={'alert'}>
-            {t(tokenErrorKey as any)}
-          </Text>
-        )}
-      </>
+      <SharedOAuthSessionFields
+        detection={detection}
+        detectionId={detectionId}
+        tokenError={tokenError}
+        tokenErrorId={tokenErrorId}
+        tokenErrorKey={tokenErrorKey || undefined}
+        tokenFieldId={tokenFieldId}
+        value={pasted}
+        onChange={setPasted}
+      />
     );
 
     /**

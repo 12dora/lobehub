@@ -1,15 +1,8 @@
 'use client';
 
-import { Alert, CopyButton, Flexbox, Icon, Skeleton, Tag, Text, Tooltip } from '@lobehub/ui';
+import { Alert, Flexbox, Skeleton, Text } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
-import {
-  CheckCircle2Icon,
-  ExternalLinkIcon,
-  Loader2Icon,
-  TriangleAlertIcon,
-  UnplugIcon,
-} from 'lucide-react';
+import { createStaticStyles } from 'antd-style';
 import { isProviderWebSessionOnly } from 'model-bank/modelProviders';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -23,8 +16,18 @@ import { useClientDataSWR } from '@/libs/swr';
 import { lambdaClient } from '@/libs/trpc/client';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
+import SharedOAuthBadge from './SharedOAuthBadge';
+import SharedOAuthConnectedCard from './SharedOAuthConnectedCard';
+import SharedOAuthFlowStates from './SharedOAuthFlowStates';
+import { buildAdminSharedOAuthStatusKey, formatExpiry } from './sharedOAuthFormat';
 import SharedOAuthPasteForm from './SharedOAuthPasteForm';
 import { useAdminSharedOAuthFlow } from './useAdminSharedOAuthFlow';
+
+export {
+  ADMIN_SHARED_OAUTH_STATUS_KEY,
+  buildAdminSharedOAuthStatusKey,
+  formatExpiry,
+} from './sharedOAuthFormat';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   card: css`
@@ -32,29 +35,11 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: 8px;
   `,
-  code: css`
-    padding-block: 12px;
-    padding-inline: 20px;
-    border-radius: 8px;
-
-    font-family: ${cssVar.fontFamilyCode};
-    font-size: 24px;
-    font-weight: 600;
-    letter-spacing: 4px;
-
-    background: ${cssVar.colorFillTertiary};
-  `,
   hint: css`
     font-size: 12px;
     color: ${cssVar.colorTextDescription};
   `,
-  meta: css`
-    font-size: 12px;
-    color: ${cssVar.colorTextSecondary};
-  `,
 }));
-
-export const ADMIN_SHARED_OAUTH_STATUS_KEY = 'admin.aiProviderOAuth.getConnectionStatus' as const;
 
 /** Audit reason recorded for the reauth-gated withdrawal of the shared account. */
 const DISCONNECT_REASON = 'admin shared provider account disconnect';
@@ -64,17 +49,6 @@ const DISCONNECT_REASON = 'admin shared provider account disconnect';
  * catalog is handed to members ("Platform managed").
  */
 const MANAGED_RESOURCES_PATH = '/admin/unified?tab=managed';
-
-export const buildAdminSharedOAuthStatusKey = (providerId: string) =>
-  [ADMIN_SHARED_OAUTH_STATUS_KEY, providerId] as const;
-
-/** Vault stores epoch millis as a string; anything unparsable is treated as unknown. */
-const formatExpiry = (expiresAt: string | null): string | undefined => {
-  if (!expiresAt) return undefined;
-  const millis = Number(expiresAt);
-  if (!Number.isFinite(millis) || millis <= 0) return undefined;
-  return new Date(millis).toLocaleString();
-};
 
 interface SharedOAuthConnectProps {
   providerId: string;
@@ -325,41 +299,6 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   };
 
   const renderBody = () => {
-    if (state === 'requesting') {
-      // Always offer a way out: the provider can stall for minutes on this call, and the
-      // flow's staleness guards make a cancelled request safe to discard when it lands.
-      return (
-        <Flexbox gap={12}>
-          <Flexbox horizontal align={'center'} gap={8}>
-            <Icon spin icon={Loader2Icon} />
-            <Text type={'secondary'}>{t('aiProviderSettings.sharedOAuth.requesting')}</Text>
-          </Flexbox>
-          <Flexbox horizontal>
-            <Button onClick={reset}>{t('aiProviderSettings.sharedOAuth.cancel')}</Button>
-          </Flexbox>
-        </Flexbox>
-      );
-    }
-
-    if (state === 'error') {
-      return (
-        <Flexbox gap={12}>
-          <Flexbox horizontal align={'center'} gap={8}>
-            <Icon color={cssVar.colorError} icon={UnplugIcon} />
-            <Text type={'danger'}>
-              {t(`aiProviderSettings.sharedOAuth.error.${error ?? 'authError'}` as any)}
-            </Text>
-          </Flexbox>
-          <Flexbox horizontal gap={8}>
-            <Button type={'primary'} onClick={handleConnect}>
-              {t('aiProviderSettings.sharedOAuth.retry')}
-            </Button>
-            <Button onClick={reset}>{t('aiProviderSettings.sharedOAuth.cancel')}</Button>
-          </Flexbox>
-        </Flexbox>
-      );
-    }
-
     if (state === 'awaiting' && deviceCode?.flow === 'authorization_code_paste') {
       return (
         <SharedOAuthPasteForm
@@ -380,32 +319,17 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
       );
     }
 
-    if (state === 'awaiting' && deviceCode) {
+    if (state === 'requesting' || state === 'error' || (state === 'awaiting' && deviceCode)) {
       return (
-        <Flexbox gap={12}>
-          <Text className={styles.meta}>
-            {t('aiProviderSettings.sharedOAuth.enterCode', { name })}
-          </Text>
-          <Flexbox horizontal align={'center'} gap={12}>
-            <div className={styles.code}>{deviceCode.userCode}</div>
-            <CopyButton content={deviceCode.userCode} />
-          </Flexbox>
-          <Flexbox horizontal align={'center'} gap={8}>
-            <Button
-              icon={<Icon icon={ExternalLinkIcon} />}
-              type={'primary'}
-              onClick={handleOpenVerification}
-            >
-              {t('aiProviderSettings.sharedOAuth.openPage')}
-            </Button>
-            <Button onClick={reset}>{t('aiProviderSettings.sharedOAuth.cancel')}</Button>
-          </Flexbox>
-          <Flexbox horizontal align={'center'} gap={8}>
-            <Icon spin icon={Loader2Icon} />
-            <Text className={styles.hint}>{t('aiProviderSettings.sharedOAuth.polling')}</Text>
-          </Flexbox>
-          <Text className={styles.hint}>{deviceCode.verificationUri}</Text>
-        </Flexbox>
+        <SharedOAuthFlowStates
+          deviceCode={deviceCode}
+          error={error}
+          name={name}
+          state={state}
+          onConnect={handleConnect}
+          onOpenVerification={handleOpenVerification}
+          onReset={reset}
+        />
       );
     }
 
@@ -436,213 +360,19 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
       );
     }
 
-    const expiry = formatExpiry(status?.expiresAt ?? null);
-    /**
-     * Prefer the full sign-in email: it is the only human-readable identity of the shared
-     * account, and an operator needs to recognise WHICH account is connected. `accountIdMasked`
-     * is a 4-char prefix of the Codex workspace UUID — it identifies nothing to a human, so it
-     * is only the fallback for connections stored before the email was captured.
-     */
-    const account = status?.accountEmail ?? status?.accountIdMasked ?? null;
-    /** Whether a pasted credential is a route at all — a device-code provider has no box. */
-    const pasteFlow = status?.flow === 'authorization_code_paste';
-    /**
-     * K3 addition: an access token pasted by hand has no renewal credential, so nothing
-     * renews it. Scoped to the paste flow, so the device-code providers that shipped before
-     * it keep their previous connected copy verbatim — and only a POSITIVE `false` warns,
-     * because silence must never be read as "this credential will die".
-     */
-    const cannotAutoRenew = pasteFlow && status?.canRefresh === false;
-    /**
-     * The good outcome, and only on a POSITIVE reading: the connection holds a renewal
-     * credential (an OAuth refresh token, or a web session that mints tokens the way the web
-     * app does), so it rolls over on its own and its `expiresAt` is a routine rollover date
-     * rather than a deadline. Saying only "expires {{time}}" there reads as a warning it is not.
-     */
-    const autoRenews = status?.flow === 'authorization_code_paste' && status?.canRefresh === true;
-    const lastRefresh = formatExpiry(status?.lastRefreshAt ?? null);
-    /** Which credential does the renewing — the operator's cue for what they connected with. */
-    const renewalKindLabel =
-      status?.renewalKind === 'web_session'
-        ? t('aiProviderSettings.sharedOAuth.renewalKind.webSession')
-        : status?.renewalKind === 'oauth'
-          ? t('aiProviderSettings.sharedOAuth.renewalKind.oauth')
-          : undefined;
-
-    /**
-     * A dead grant still HAS an account (the vault keeps it as the evidence), so the identity
-     * block stays on screen while the card asks for a reconnect — replacing it with the
-     * "nothing is connected yet" line would hide which account has to be re-authorized.
-     */
-    const showAccount = Boolean(status?.connected) || needsReauth;
-
     return (
-      <Flexbox gap={12}>
-        {showAccount ? (
-          <Flexbox gap={4}>
-            <Text className={styles.meta}>
-              {account
-                ? t('aiProviderSettings.sharedOAuth.account', { account })
-                : t('aiProviderSettings.sharedOAuth.accountUnknown')}
-            </Text>
-            {needsReauth ? (
-              /**
-               * The one actionable state on this card, so it carries the ONE primary action and
-               * the footer drops its duplicate. Which remedy that is depends on how the provider
-               * connects: pasting a web session is the cheap fix where that route exists (and
-               * the only one for a web-session-only provider), while a device-code provider has
-               * no paste box at all and must be sent to its own authorization flow.
-               */
-              <Alert
-                showIcon
-                message={t('aiProviderSettings.sharedOAuth.reauth.message', { name })}
-                type={'warning'}
-                action={
-                  <Flexbox horizontal gap={8}>
-                    {pasteFlow ? (
-                      <>
-                        <Button size={'small'} type={'primary'} onClick={handleConnectWithSession}>
-                          {t('aiProviderSettings.sharedOAuth.paste.pasteSession')}
-                        </Button>
-                        {!webSessionOnly && (
-                          <Button size={'small'} onClick={handleConnect}>
-                            {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
-                          </Button>
-                        )}
-                      </>
-                    ) : (
-                      <Button size={'small'} type={'primary'} onClick={handleConnect}>
-                        {t('aiProviderSettings.sharedOAuth.reconnect')}
-                      </Button>
-                    )}
-                  </Flexbox>
-                }
-              />
-            ) : cannotAutoRenew ? (
-              /**
-               * A dead end stated as a fact is not actionable: there are now TWO ways out and
-               * both are one click away, so the warning carries them in the order of effort.
-               * Pasting a web session is the cheaper fix (one paste, no browser round trip)
-               * and it is what makes the connection behave like the web app — sign in once.
-               */
-              <Alert
-                showIcon
-                type={'warning'}
-                action={
-                  <Flexbox horizontal gap={8}>
-                    <Button size={'small'} type={'primary'} onClick={handleConnectWithSession}>
-                      {t('aiProviderSettings.sharedOAuth.paste.pasteSession')}
-                    </Button>
-                    {/* Only where that route exists: a web-session-only provider would be
-                        offering the one page its own server refuses to complete. */}
-                    {!webSessionOnly && (
-                      <Button size={'small'} onClick={handleConnect}>
-                        {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
-                      </Button>
-                    )}
-                  </Flexbox>
-                }
-                message={
-                  /* Two ways out, or one — the copy has to name the remedies that are
-                     actually on screen, so a web-session-only provider drops the sentence
-                     about the authorization page along with the button. */
-                  expiry
-                    ? t(
-                        webSessionOnly
-                          ? 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBeforeSessionOnly'
-                          : 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore',
-                        { time: expiry },
-                      )
-                    : t(
-                        webSessionOnly
-                          ? 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewSessionOnly'
-                          : 'aiProviderSettings.sharedOAuth.paste.cannotAutoRenew',
-                      )
-                }
-              />
-            ) : (
-              <Text className={styles.hint}>
-                {autoRenews
-                  ? renewalKindLabel
-                    ? t('aiProviderSettings.sharedOAuth.autoRenewKind', { kind: renewalKindLabel })
-                    : t('aiProviderSettings.sharedOAuth.autoRefresh')
-                  : expiry
-                    ? t('aiProviderSettings.sharedOAuth.expiresAt', { time: expiry })
-                    : t('aiProviderSettings.sharedOAuth.autoRefresh')}
-              </Text>
-            )}
-            {needsReauth && <Text className={styles.hint}>{reauthDetail}</Text>}
-            {autoRenews && expiry && (
-              // The rollover date, stated as what it is — the current token's end, not the
-              // connection's.
-              <Text className={styles.hint}>
-                {t('aiProviderSettings.sharedOAuth.currentTokenUntil', { time: expiry })}
-              </Text>
-            )}
-            {autoRenews && lastRefresh && (
-              // Proof the rollover is actually happening, not just promised.
-              <Text className={styles.hint}>
-                {t('aiProviderSettings.sharedOAuth.lastRefreshAt', { time: lastRefresh })}
-              </Text>
-            )}
-            {renderEnforcementHint()}
-          </Flexbox>
-        ) : (
-          <Text className={styles.meta}>
-            {t('aiProviderSettings.sharedOAuth.disconnectedHint', { name })}
-          </Text>
-        )}
-        <Flexbox horizontal gap={8}>
-          {/* While the account needs re-authorizing the ONE primary action lives in the alert
-              above; repeating it here would offer the same remedy twice, in two shapes. */}
-          {!needsReauth && (
-            <Button type={showAccount ? 'default' : 'primary'} onClick={handleConnect}>
-              {t(
-                showAccount
-                  ? 'aiProviderSettings.sharedOAuth.reconnect'
-                  : 'aiProviderSettings.sharedOAuth.connect',
-              )}
-            </Button>
-          )}
-          {/* Withdrawing must stay available for a dead credential too — it is still stored. */}
-          {showAccount && (
-            <Button danger loading={disconnecting} onClick={handleDisconnect}>
-              {t('aiProviderSettings.sharedOAuth.disconnect')}
-            </Button>
-          )}
-        </Flexbox>
-      </Flexbox>
-    );
-  };
-
-  // Never claim a state we have not read yet: no badge until the status resolves.
-  const renderBadge = () => {
-    if (isLoading || statusError || !status) return null;
-    /**
-     * Three states, not two: "never connected" and "connected but no longer accepted" used to
-     * collapse into one grey 未连接 tag (or, worse, into a green 已连接 one), which is exactly
-     * how an operator ended up looking at a healthy card while members were told to reconnect.
-     * The reason and the time it was observed ride in the tooltip so the tag stays one word.
-     */
-    if (needsReauth)
-      return (
-        <Tooltip title={reauthDetail}>
-          <Tag color={'warning'}>
-            <Flexbox horizontal align={'center'} gap={4}>
-              <Icon icon={TriangleAlertIcon} size={12} />
-              {t('aiProviderSettings.sharedOAuth.needsReauth')}
-            </Flexbox>
-          </Tag>
-        </Tooltip>
-      );
-    if (!status.connected) return <Tag>{t('aiProviderSettings.sharedOAuth.notConnected')}</Tag>;
-    return (
-      <Tag color={'success'}>
-        <Flexbox horizontal align={'center'} gap={4}>
-          <Icon icon={CheckCircle2Icon} size={12} />
-          {t('aiProviderSettings.sharedOAuth.connected')}
-        </Flexbox>
-      </Tag>
+      <SharedOAuthConnectedCard
+        disconnecting={disconnecting}
+        enforcementHint={renderEnforcementHint()}
+        name={name}
+        needsReauth={needsReauth}
+        reauthDetail={reauthDetail}
+        status={status}
+        webSessionOnly={webSessionOnly}
+        onConnect={handleConnect}
+        onConnectWithSession={handleConnectWithSession}
+        onDisconnect={handleDisconnect}
+      />
     );
   };
 
@@ -655,7 +385,12 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
             {t('aiProviderSettings.sharedOAuth.description', { name })}
           </Text>
         </Flexbox>
-        {renderBadge()}
+        <SharedOAuthBadge
+          connected={Boolean(status?.connected)}
+          needsReauth={needsReauth}
+          reauthDetail={reauthDetail}
+          visible={!isLoading && !statusError && Boolean(status)}
+        />
       </Flexbox>
       {renderBody()}
     </Flexbox>
