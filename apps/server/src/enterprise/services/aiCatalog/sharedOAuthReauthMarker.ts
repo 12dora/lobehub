@@ -7,6 +7,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { digestPlatformAiCredential } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
 import type { AiCatalogSecretManager, PlatformProviderKeyVaults } from './secretManager';
+import { asPlatformVaultString } from './shared';
 
 const log = debug('lobe-server:ai-catalog-shared-oauth-reauth');
 
@@ -51,14 +52,11 @@ export const parseSharedOAuthInvalidReason = (value: unknown): SharedOAuthInvali
  */
 export const SHARED_OAUTH_REAUTH_DEBOUNCE_MS = 10 * 60 * 1000;
 
-const asString = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.length > 0 ? value : undefined;
-
 /** Projection of the marker for readers (admin status, tests). */
 export const readSharedOAuthReauthMarker = (
   keyVaults: PlatformProviderKeyVaults,
 ): { invalidAt: string | null; invalidReason: SharedOAuthInvalidReason | null } => {
-  const invalidAt = asString(keyVaults[OAUTH_GRANT_INVALID_AT_KEY]);
+  const invalidAt = asPlatformVaultString(keyVaults[OAUTH_GRANT_INVALID_AT_KEY]);
   return {
     invalidAt: invalidAt ?? null,
     // A reason without a timestamp is not a marker: the pair is written and cleared as a unit.
@@ -75,7 +73,7 @@ export const clearSharedOAuthReauthMarker = (vault: PlatformProviderKeyVaults): 
 };
 
 const isMarkerFresh = (vault: PlatformProviderKeyVaults, now: number): boolean => {
-  const stamped = Number(asString(vault[OAUTH_GRANT_INVALID_AT_KEY]));
+  const stamped = Number(asPlatformVaultString(vault[OAUTH_GRANT_INVALID_AT_KEY]));
   if (!Number.isFinite(stamped) || stamped <= 0) return false;
   return now - stamped < SHARED_OAUTH_REAUTH_DEBOUNCE_MS;
 };
@@ -131,7 +129,7 @@ export const markSharedOAuthGrantInvalid = async (
     const repository = new PlatformAiCatalogRepository(params.db);
     let ciphertext = params.ciphertext;
     let vault = params.keyVaults;
-    const observedAccessToken = asString(vault.oauthAccessToken);
+    const observedAccessToken = asPlatformVaultString(vault.oauthAccessToken);
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (isMarkerFresh(vault, now)) return false;
@@ -160,7 +158,7 @@ export const markSharedOAuthGrantInvalid = async (
       if (!version) return false;
       ciphertext = version.ciphertext;
       vault = await params.secrets.decrypt(version.ciphertext);
-      if (asString(vault.oauthAccessToken) !== observedAccessToken) return false;
+      if (asPlatformVaultString(vault.oauthAccessToken) !== observedAccessToken) return false;
     }
     return false;
   } catch (error) {
@@ -198,11 +196,12 @@ export const markSharedOAuthGrantInvalidForProvider = async (params: {
     const keyVaults = await params.secrets.decrypt(provider.encryptedKeyVaults);
     // No stored OAuth credential ⇒ the failure came from somewhere else (BYOK fallback,
     // a provider whose vault was just cleared); there is nothing to report on.
-    if (!asString(keyVaults.oauthAccessToken)) return false;
+    if (!asPlatformVaultString(keyVaults.oauthAccessToken)) return false;
     // The stored credential is no longer the one that failed: the observation is stale and
     // saying anything about the current one would be a guess.
     if (
-      digestPlatformAiCredential(asString(keyVaults.oauthAccessToken)) !== params.credentialDigest
+      digestPlatformAiCredential(asPlatformVaultString(keyVaults.oauthAccessToken)) !==
+      params.credentialDigest
     )
       return false;
     return await markSharedOAuthGrantInvalid({

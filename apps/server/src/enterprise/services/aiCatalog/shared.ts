@@ -13,6 +13,10 @@ import { AiCatalogNotFoundError } from './errors';
 
 export const aiCatalogDraftToken = platformAiCatalogDraftToken;
 
+/** Platform vaults hold string leaves; header maps and absent leaves are not projectable. */
+export const asPlatformVaultString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value : undefined;
+
 export const getLockedAiCatalogDraft = async (params: {
   afterLock?: () => Promise<void>;
   expectedDraftToken: string;

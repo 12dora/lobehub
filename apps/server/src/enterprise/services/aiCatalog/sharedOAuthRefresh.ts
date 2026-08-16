@@ -17,6 +17,7 @@ import {
 } from '@/server/services/oauthDeviceFlow/refresh';
 
 import type { AiCatalogSecretManager, PlatformProviderKeyVaults } from './secretManager';
+import { asPlatformVaultString } from './shared';
 import {
   clearSharedOAuthReauthMarker,
   markSharedOAuthGrantInvalid,
@@ -50,30 +51,27 @@ const WAITER_MAX_POLLS = 24;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-const asString = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.length > 0 ? value : undefined;
-
 const toOAuthVault = (vault: PlatformProviderKeyVaults): OAuthTokenKeyVaults => ({
-  oauthAccessToken: asString(vault.oauthAccessToken),
-  oauthAccountId: asString(vault.oauthAccountId),
+  oauthAccessToken: asPlatformVaultString(vault.oauthAccessToken),
+  oauthAccountId: asPlatformVaultString(vault.oauthAccountId),
   /**
    * The stable device the connection was made with. Carried for the same reason as the kind
    * below: the refresh PRESENTS it (ChatGPT Web sends it as `oai-did`), and the re-read under
    * the cross-instance lease is the snapshot the refresh actually runs on — dropping it here
    * would make every shared renewal look like a new device even though connect named one.
    */
-  oauthDeviceId: asString(vault.oauthDeviceId),
-  oauthLastRefreshAt: asString(vault.oauthLastRefreshAt),
-  oauthLastRefreshErrorAt: asString(vault.oauthLastRefreshErrorAt),
-  oauthRefreshToken: asString(vault.oauthRefreshToken),
+  oauthDeviceId: asPlatformVaultString(vault.oauthDeviceId),
+  oauthLastRefreshAt: asPlatformVaultString(vault.oauthLastRefreshAt),
+  oauthLastRefreshErrorAt: asPlatformVaultString(vault.oauthLastRefreshErrorAt),
+  oauthRefreshToken: asPlatformVaultString(vault.oauthRefreshToken),
   /**
    * Carried through because the refresh path DISPATCHES on it (ChatGPT Web renews either
    * with an OAuth refresh token or with the web session cookie). Dropping it here would
    * silently fall back to identifying the credential by shape — including on the re-read
    * that happens under the cross-instance lease, which is the call that actually runs.
    */
-  oauthRenewalKind: asString(vault.oauthRenewalKind),
-  oauthTokenExpiresAt: asString(vault.oauthTokenExpiresAt),
+  oauthRenewalKind: asPlatformVaultString(vault.oauthRenewalKind),
+  oauthTokenExpiresAt: asPlatformVaultString(vault.oauthTokenExpiresAt),
 });
 
 /**
@@ -253,7 +251,7 @@ export const refreshSharedOAuthVault = async (
       // rotation escapes to the policy fallback.
       for (let attempt = 0; ; attempt += 1) {
         if (foreignRotationDetected) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
-        const previousRefreshToken = asString(latestFullVault.oauthRefreshToken);
+        const previousRefreshToken = asPlatformVaultString(latestFullVault.oauthRefreshToken);
         // The only write that PROVES the grant recovered, so the only one allowed to drop the
         // reauth marker (a lifecycle-stamp-only persist carries no access token and keeps it).
         const merged = mergeTokens(latestFullVault, next, { clearReauthMarker: true });

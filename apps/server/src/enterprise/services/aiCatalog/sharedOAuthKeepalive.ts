@@ -13,6 +13,7 @@ import {
 import type { OAuthDeviceFlowConfig } from '@/types/aiProvider';
 
 import type { AiCatalogSecretManager } from './secretManager';
+import { asPlatformVaultString } from './shared';
 import { isOAuthAuthorizationExpiredError, refreshSharedOAuthVault } from './sharedOAuthRefresh';
 
 const log = debug('lobe-server:ai-catalog-shared-oauth-keepalive');
@@ -59,9 +60,6 @@ const rotatingRefreshProviderConfigs = (): Map<string, OAuthDeviceFlowConfig> =>
   }
   return configs;
 };
-
-const asString = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.length > 0 ? value : undefined;
 
 /**
  * Stable, provider-prose-free identity for a thrown error.
@@ -251,11 +249,11 @@ export const runSharedOAuthKeepaliveSweep = async (
       }
 
       const tokens: OAuthTokenKeyVaults = {
-        oauthAccessToken: asString(keyVaults.oauthAccessToken),
-        oauthLastRefreshAt: asString(keyVaults.oauthLastRefreshAt),
-        oauthLastRefreshErrorAt: asString(keyVaults.oauthLastRefreshErrorAt),
-        oauthRefreshToken: asString(keyVaults.oauthRefreshToken),
-        oauthTokenExpiresAt: asString(keyVaults.oauthTokenExpiresAt),
+        oauthAccessToken: asPlatformVaultString(keyVaults.oauthAccessToken),
+        oauthLastRefreshAt: asPlatformVaultString(keyVaults.oauthLastRefreshAt),
+        oauthLastRefreshErrorAt: asPlatformVaultString(keyVaults.oauthLastRefreshErrorAt),
+        oauthRefreshToken: asPlatformVaultString(keyVaults.oauthRefreshToken),
+        oauthTokenExpiresAt: asPlatformVaultString(keyVaults.oauthTokenExpiresAt),
       };
       // A pasted access token has no grant to keep alive.
       if (!tokens.oauthAccessToken || !tokens.oauthRefreshToken) continue;
