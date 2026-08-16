@@ -9,6 +9,7 @@ import {
   recentReauth,
   regularMutation,
   remoteProbeNoLkg,
+  safeOutbound,
   secretRotationAudit,
   secretRotationExternalGate,
   vaultKeyProviderBoundary,
@@ -16,6 +17,40 @@ import {
 import type { AdminMutationDefinition } from './types';
 
 export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
+  'admin.contentModeration.clearDecisionCache': regularMutation(
+    'admin.contentModeration.clearDecisionCache',
+    'medium',
+    'Delete every cached content-moderation decision so later prompts re-run the classifier.',
+    { reason: noReason },
+  ),
+  'admin.contentModeration.deleteRecords': regularMutation(
+    'admin.contentModeration.deleteRecords',
+    'medium',
+    'Permanently delete a bounded batch of content-moderation records.',
+    { reason: noReason },
+  ),
+  'admin.contentModeration.revealRecordPrompt': regularMutation(
+    'admin.contentModeration.revealRecordPrompt',
+    'medium',
+    'Reveal the stored full prompt of a content-moderation record and mark it as viewed.',
+    { reason: noReason },
+  ),
+  'admin.contentModeration.testClassifier': regularMutation(
+    'admin.contentModeration.testClassifier',
+    'low',
+    'Dry-run the keyword matcher and classifier against operator-supplied text without persisting.',
+    {
+      lastKnownGood: remoteProbeNoLkg,
+      outbound: safeOutbound,
+      reason: noReason,
+    },
+  ),
+  'admin.contentModeration.updateSettings': regularMutation(
+    'admin.contentModeration.updateSettings',
+    'medium',
+    'Replace the platform content-moderation configuration with CAS and a sanitized audit row.',
+    { reason: noReason },
+  ),
   'admin.managedResources.save': dangerousMutation(
     'admin.managedResources.save',
     'critical',

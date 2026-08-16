@@ -8,6 +8,7 @@ import {
   AUDIT_ACTIONS,
   AUDIT_TARGET_TYPES,
 } from '../../../../../../../apps/server/src/enterprise/services/audit/auditActionCatalog';
+import { AUDIT_LOG_TARGET_TYPES } from '../operationLogs/targetTypes';
 
 const loadAdminLocale = (locale: 'en-US' | 'zh-CN'): Record<string, string> => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -42,5 +43,11 @@ describe('audit log locale catalog (server-emitted)', () => {
     }
 
     expect(missing, `missing audit labels:\n${missing.join('\n')}`).toEqual([]);
+  });
+
+  it('mirrors every server AUDIT_TARGET_TYPES entry in the operation-log filter', () => {
+    const client = new Set<string>(AUDIT_LOG_TARGET_TYPES);
+    const missing = AUDIT_TARGET_TYPES.filter((target) => !client.has(target));
+    expect(missing, `client filter missing targets:\n${missing.join('\n')}`).toEqual([]);
   });
 });

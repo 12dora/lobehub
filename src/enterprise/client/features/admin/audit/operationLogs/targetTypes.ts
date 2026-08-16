@@ -11,6 +11,8 @@ export const AUDIT_LOG_TARGET_TYPES = [
   'connector',
   'connector_binding',
   'connector_governance',
+  'content_moderation_record',
+  'content_moderation_settings',
   'email_delivery',
   'identity_provider',
   'identity_provider_test',

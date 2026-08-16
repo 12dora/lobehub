@@ -2,7 +2,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import type { AdminProcedureAuthorization } from './types';
 
-/** Authorization declarations for admin.branding/managedResources/security/settings/sidebarLayout/stats/system procedures. */
+/** Authorization declarations for admin.branding/contentModeration/managedResources/security/settings/sidebarLayout/stats/system procedures. */
 export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   {
     kind: 'query',
@@ -22,6 +22,56 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
     kind: 'mutation',
     path: 'admin.branding.uploadAsset',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.BRANDING_UPDATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.contentModeration.clearDecisionCache',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.contentModeration.deleteRecords',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_MANAGE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.contentModeration.getOverview',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.contentModeration.getRecord',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.contentModeration.getSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.contentModeration.getStats',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.contentModeration.listRecords',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.contentModeration.revealRecordPrompt',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.contentModeration.testClassifier',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_MANAGE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.contentModeration.updateSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.MODERATION_MANAGE] },
   },
   {
     kind: 'query',

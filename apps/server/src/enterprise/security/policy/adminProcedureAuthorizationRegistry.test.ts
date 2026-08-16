@@ -81,14 +81,17 @@ describe('admin procedure authorization registry', () => {
     // setEnabled,delete,importRecommendations}), reusing the platform-agent permission codes.
     // +1 mutation since: admin.taskTemplates.reorder (drag-and-drop display order replaced the
     // numeric sort field in the editor).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(187);
+    // +5 queries / +5 mutations since: content moderation (admin.contentModeration.{getSettings,
+    // getOverview, getStats, listRecords, getRecord, updateSettings, testClassifier,
+    // revealRecordPrompt, deleteRecords, clearDecisionCache}).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(197);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(90);
+    ).toHaveLength(95);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(97);
-    expect(mutationPaths).toHaveLength(97);
+    ).toHaveLength(102);
+    expect(mutationPaths).toHaveLength(102);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
