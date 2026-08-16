@@ -3,6 +3,7 @@ export * from './authSettings';
 export * from './branding';
 export * from './capabilities';
 export * from './connectorGovernance';
+export * from './contentModeration';
 export * from './errors';
 export * from './featureFlags';
 export * from './identityProvider';

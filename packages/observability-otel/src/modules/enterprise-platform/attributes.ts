@@ -11,7 +11,7 @@ export const ENTERPRISE_CONFIG_DOMAINS = [
   'skill_catalog',
   'unknown',
 ] as const;
-export const ENTERPRISE_CACHE_DOMAINS = ['branding', 'skill_catalog'] as const;
+export const ENTERPRISE_CACHE_DOMAINS = ['branding', 'moderation', 'skill_catalog'] as const;
 export const ENTERPRISE_GUARD_RESOURCES = [
   'agents',
   'aiModels',

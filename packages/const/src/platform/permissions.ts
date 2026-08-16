@@ -85,6 +85,11 @@ export const PLATFORM_PERMISSIONS = {
   SYSTEM_READ: 'platform_system:read:all',
   SYSTEM_OPERATE: 'platform_system:operate:all',
 
+  /** 内容审计: read overview / statistics / violation records / settings. */
+  MODERATION_READ: 'platform_moderation:read:all',
+  /** 内容审计: update settings, test classifier, reveal full prompt, delete records, clear cache. */
+  MODERATION_MANAGE: 'platform_moderation:manage:all',
+
   OIDC_PUBLISH: 'platform_oidc:publish:all',
 
   /** Global platform data statistics (admin stats dashboard). */

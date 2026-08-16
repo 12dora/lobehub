@@ -15,6 +15,7 @@ export * from './catalogAuthority';
 export * from './common';
 export * from './connectorGovernance';
 export * from './connectors';
+export * from './contentModeration';
 export * from './credentials';
 export * from './identity';
 export * from './instances';

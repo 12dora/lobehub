@@ -1,3 +1,4 @@
+export * from './contentModeration';
 export * from './errorCodes';
 export * from './featureFlags';
 export * from './managedResources';

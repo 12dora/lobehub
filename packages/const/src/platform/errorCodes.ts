@@ -46,6 +46,11 @@ export const PLATFORM_ERROR_CODES = {
   PLATFORM_INVALID_INPUT: 'PLATFORM_INVALID_INPUT',
   PLATFORM_ASSET_STORAGE_UNAVAILABLE: 'PLATFORM_ASSET_STORAGE_UNAVAILABLE',
   PLATFORM_IDEMPOTENCY_CONFLICT: 'PLATFORM_IDEMPOTENCY_CONFLICT',
+  /**
+   * 内容审计 blocked the request before it reached the model (policy action = block).
+   * Error body carries `{ message, category, recordId }` for the conversation error card.
+   */
+  PLATFORM_CONTENT_MODERATION_BLOCKED: 'PLATFORM_CONTENT_MODERATION_BLOCKED',
 } as const;
 
 export type PlatformErrorCode = (typeof PLATFORM_ERROR_CODES)[keyof typeof PLATFORM_ERROR_CODES];

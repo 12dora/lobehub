@@ -6,6 +6,7 @@ import { sql } from 'drizzle-orm';
 
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { AdminUserModel } from '@/database/models/adminUser';
+import { PlatformContentModerationRecordModel } from '@/database/models/platform/contentModerationRecords';
 import { LastSuperAdminProtectionError, RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase } from '@/database/type';
 import { getGlobalRoleIdsByName } from '@/database/utils/seedPlatformRoles';
@@ -18,6 +19,7 @@ import type {
   AdminUsersDeleteInput,
   AdminUsersUnbanInput,
 } from '../../contracts/adminUsers';
+import { CONTENT_MODERATION_AUDIT_ACTIONS } from '../contentModeration/constants';
 import { LastSuperAdminError } from '../platformRbac';
 import {
   AdminUserEmailConflictError,
@@ -120,6 +122,90 @@ export class AdminUserLifecycleService extends AdminUserSupport {
         await this.appendAuditBestEffort({
           action: 'admin.users.ban',
           actorUserId,
+          afterDiff: { error: 'last_super_admin' },
+          reason: input.reason,
+          result: 'denied',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+        throw error instanceof LastSuperAdminError ? error : new LastSuperAdminError();
+      }
+      throw error;
+    }
+  };
+
+  /**
+   * System-actor ban used by content-moderation auto-ban.
+   *
+   * Same transactional shape as {@link ban}: role lock, refuse any `super_admin`,
+   * setBanned + session revoke + mark the triggering record + audit. OIDC
+   * artefacts are revoked after commit. An audit-append failure rolls the ban back.
+   */
+  systemBan = async (params: { input: AdminUsersBanInput; recordId: string }) => {
+    const { input, recordId } = params;
+    const actorUserId = 'system:content-moderation';
+
+    const pre = await this.users.findBanState(input.userId);
+    if (!pre) throw new AdminUserNotFoundError();
+
+    try {
+      const result = await this.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT id FROM rbac_roles WHERE name = ${PLATFORM_SYSTEM_ROLES.SUPER_ADMIN} AND workspace_id IS NULL FOR UPDATE`,
+        );
+
+        const model = new AdminUserModel(tx);
+        const rbac = new RbacModel(tx as LobeChatDatabase, actorUserId);
+        if (await rbac.isGlobalSuperAdmin(input.userId)) {
+          throw new LastSuperAdminError();
+        }
+
+        const updated = await model.setBanned({
+          banExpires: input.expiresAt ?? null,
+          banReason: input.reason,
+          banned: true,
+          invalidateAuth: true,
+          userId: input.userId,
+        });
+        if (!updated) throw new AdminUserNotFoundError();
+
+        await model.revokeSessionsForUser({ userId: input.userId });
+        await new PlatformContentModerationRecordModel(tx).markAutoBanned(recordId);
+
+        await this.appendAuditInDb(tx, {
+          action: CONTENT_MODERATION_AUDIT_ACTIONS.USER_AUTO_BAN,
+          actorUserId: null,
+          afterDiff: {
+            banExpires: updated.banExpires?.toISOString() ?? null,
+            banned: true,
+          },
+          reason: input.reason,
+          result: 'success',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+
+        return updated;
+      });
+
+      try {
+        await revokeOIDCArtifactsByUserId(this.db, input.userId);
+      } catch {
+        // ban+audit committed; OIDC JWT still rejected via authInvalidatedAt
+      }
+
+      await this.publishUserSecurityInvalidation(input.userId);
+
+      return {
+        banExpires: result.banExpires ?? null,
+        banned: true as const,
+        userId: input.userId,
+      };
+    } catch (error) {
+      if (error instanceof LastSuperAdminError || error instanceof LastSuperAdminProtectionError) {
+        await this.appendAuditBestEffort({
+          action: CONTENT_MODERATION_AUDIT_ACTIONS.USER_AUTO_BAN,
+          actorUserId: null,
           afterDiff: { error: 'last_super_admin' },
           reason: input.reason,
           result: 'denied',

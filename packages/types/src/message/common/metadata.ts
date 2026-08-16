@@ -180,6 +180,26 @@ export const MessageTaskCallbackSchema = z.object({
   topicId: z.string().optional(),
 });
 
+/**
+ * 内容审计 downgrade notice attached to an assistant message (design:
+ * docs/enterprise/content-moderation.md §3.6). Written by the chat client from the runtime's
+ * `x-lobe-moderation-*` response headers, or by the server on the AgentRuntime path.
+ */
+export const MessageModerationMetadataSchema = z.object({
+  action: z.literal('downgrade'),
+  category: z.string().optional(),
+  /** Admin-configured notice text override (may contain `{{model}}`); locale default when absent. */
+  message: z.string().optional(),
+  /** Model actually used for the reply. */
+  model: z.string(),
+  originalModel: z.string(),
+  originalProvider: z.string(),
+  provider: z.string(),
+  recordId: z.string().optional(),
+});
+
+export type MessageModerationMetadata = z.infer<typeof MessageModerationMetadataSchema>;
+
 export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
   collapsed: z.boolean().optional(),
   contextSelections: z.array(ContextSelectionSchema).optional(),
@@ -192,6 +212,7 @@ export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSche
   isMultimodal: z.boolean().optional(),
   isSupervisor: z.boolean().optional(),
   localSystemToolSnapshots: z.array(LocalSystemToolSnapshotSchema).optional(),
+  moderation: MessageModerationMetadataSchema.optional(),
   orchestrationRole: z.enum(['supervisor', 'member']).optional(),
   pageSelections: z.array(PageSelectionSchema).optional(),
   // Canonical nested shape — flat fields above are deprecated. Must be listed
@@ -341,6 +362,8 @@ export interface MessageMetadata {
    * Local-system tool snapshots materialized when the user sent @file mentions.
    */
   localSystemToolSnapshots?: LocalSystemToolSnapshot[];
+  /** 内容审计 downgrade notice (assistant messages only). */
+  moderation?: MessageModerationMetadata;
 
   /**
    * Orchestration role of the message author within a group conversation.
