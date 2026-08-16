@@ -5,6 +5,23 @@ export async function register() {
   }
 
   if (process.env.NEXT_RUNTIME === 'nodejs') {
+    // Seeds platform RBAC (new permission codes on existing DBs) and, when the
+    // BOOTSTRAP_SUPER_ADMIN_* env vars are set, provisions the first super admin
+    // so a Docker-only deployment never needs a repo checkout.
+    //
+    // Guarded here as well as inside the module: Next waits for register() before
+    // serving traffic, so a module-evaluation or env-validation failure in the
+    // import itself would take the whole server down. Log and keep booting.
+    try {
+      const { bootstrapPlatformAdminRuntime } =
+        await import('@/server/enterprise/bootstrap/startupBootstrap');
+      await bootstrapPlatformAdminRuntime();
+    } catch (error) {
+      console.error('[Instrumentation] platform admin bootstrap unavailable (non-blocking)', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
+
     const { bootstrapIdentityProviderRuntime } =
       await import('@/server/enterprise/services/identityProvider/bootstrap');
     await bootstrapIdentityProviderRuntime();
