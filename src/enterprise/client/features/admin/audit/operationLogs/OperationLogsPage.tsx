@@ -93,10 +93,10 @@ const styles = createStaticStyles(({ css }) => ({
       outline-offset: 2px;
     }
 
+    /* Soft filled selected state — hue-independent, no outline ring. */
     &[data-active='true'] {
-      border-color: ${cssVar.colorPrimaryBorder};
-      color: ${cssVar.colorPrimary};
-      background: ${cssVar.colorPrimaryBg};
+      border-color: transparent;
+      background: ${cssVar.colorFillTertiary};
     }
   `,
   statValue: css`
@@ -616,24 +616,15 @@ const OperationLogsPage = memo(() => {
               >
                 <Text
                   data-testid={`stat-${card.key}-label`}
+                  style={{ margin: 0, fontWeight: card.active ? 600 : undefined }}
                   type={card.active ? undefined : 'secondary'}
-                  style={{
-                    margin: 0,
-                    ...(card.active ? { color: cssVar.colorPrimary } : undefined),
-                  }}
                 >
                   {card.label}
                 </Text>
                 <p
                   className={styles.statValue}
                   data-testid={`stat-${card.key}-value`}
-                  style={
-                    card.active
-                      ? { color: cssVar.colorPrimary }
-                      : card.color
-                        ? { color: card.color }
-                        : undefined
-                  }
+                  style={card.color ? { color: card.color } : undefined}
                 >
                   {card.value}
                 </p>

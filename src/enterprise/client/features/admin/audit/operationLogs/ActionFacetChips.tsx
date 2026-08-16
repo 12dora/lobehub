@@ -54,10 +54,12 @@ const styles = createStaticStyles(({ css }) => ({
       outline-offset: 2px;
     }
 
+    /* Soft filled selected state — hue-independent, no outline ring. */
     &[data-selected='true'] {
-      border-color: ${cssVar.colorPrimaryBorder};
-      color: ${cssVar.colorPrimary};
-      background: ${cssVar.colorPrimaryBg};
+      border-color: transparent;
+      font-weight: 600;
+      color: ${cssVar.colorText};
+      background: ${cssVar.colorFillSecondary};
     }
   `,
   overflow: css`

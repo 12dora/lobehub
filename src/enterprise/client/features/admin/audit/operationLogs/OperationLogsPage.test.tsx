@@ -404,8 +404,10 @@ describe('OperationLogsPage', () => {
       expect(screen.getByTestId('col-result').dataset.filtered).toBe(JSON.stringify(['failure']));
       expect(lastListKey()?.[8]).toBe('failure');
     });
-    expect(screen.getByTestId('stat-failure-label').style.color).toContain('primary');
-    expect(screen.getByTestId('stat-failure-value').style.color).toContain('primary');
+    // Selected card = soft filled state (data-active drives the fill); label turns bold,
+    // semantic value colours are kept so 失败 stays red even when selected.
+    expect(screen.getByTestId('stat-failure-label').style.fontWeight).toBe('600');
+    expect(screen.getByTestId('stat-failure-value').style.color).toContain('error');
     expect(screen.getByTestId('stat-success-value').style.color).toContain('success');
 
     act(() => {

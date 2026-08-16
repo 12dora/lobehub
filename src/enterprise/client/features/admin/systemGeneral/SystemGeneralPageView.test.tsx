@@ -25,6 +25,7 @@ vi.mock('@lobehub/ui', () => ({
   ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Icon: () => <span />,
+  Tag: ({ children }: { children?: ReactNode }) => <span data-testid="status-tag">{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
@@ -47,10 +48,6 @@ vi.mock('@/enterprise/client/features/admin/primitives/AdminPageTemplate', () =>
       {children}
     </div>
   ),
-}));
-
-vi.mock('@/enterprise/client/features/admin/system/components/OperationalStatus', () => ({
-  OperationalStatus: ({ status }: { status: string }) => <span>{status}</span>,
 }));
 
 const settings = (): AdminSystemInfraSettings => ({

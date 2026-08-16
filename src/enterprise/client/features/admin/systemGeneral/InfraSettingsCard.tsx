@@ -1,12 +1,12 @@
 'use client';
 
-import { Flexbox, Icon, Text } from '@lobehub/ui';
+import { Flexbox, Icon, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import type { LucideIcon } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CircleDashed, XCircle } from 'lucide-react';
 import { memo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { OperationalStatus } from '@/enterprise/client/features/admin/system/components/OperationalStatus';
 import type { AdminSystemTestDependencyResult } from '@/enterprise/client/services/adminSystem';
 
 import { infraSettingsStyles as styles } from './styles';
@@ -30,6 +30,32 @@ export interface InfraSettingsCardProps {
 
 const display = (value: ReactNode): ReactNode => value ?? '—';
 
+/**
+ * Settings-card reading of the shared dependency status: a passive-only check ("unknown" on the
+ * health page) simply means the dependency is configured but not yet verified — say so instead
+ * of "未知", and offer 测试连接 for the verification.
+ */
+const STATUS_PRESENTATION: Record<
+  string,
+  { icon: LucideIcon; key: string; tone: 'default' | 'error' | 'success' | 'warning' }
+> = {
+  degraded: { icon: AlertTriangle, key: 'incomplete', tone: 'warning' },
+  disabled: { icon: CircleDashed, key: 'notConfigured', tone: 'default' },
+  healthy: { icon: CheckCircle2, key: 'healthy', tone: 'success' },
+  unavailable: { icon: XCircle, key: 'unavailable', tone: 'error' },
+  unknown: { icon: CheckCircle2, key: 'configured', tone: 'default' },
+};
+
+const InfraStatusTag = memo<{ status: string }>(({ status }) => {
+  const { t } = useTranslation('admin');
+  const p = STATUS_PRESENTATION[status] ?? STATUS_PRESENTATION.unknown!;
+  return (
+    <Tag color={p.tone} icon={<Icon icon={p.icon} size={12} />} size="small">
+      {t(`systemGeneral.status.${p.key}` as never)}
+    </Tag>
+  );
+});
+
 export const InfraSettingsCard = memo<InfraSettingsCardProps>(
   ({ canTest, envVars, fields, icon, onTest, probe, probing, status, title }) => {
     const { t } = useTranslation('admin');
@@ -41,7 +67,7 @@ export const InfraSettingsCard = memo<InfraSettingsCardProps>(
             <Icon icon={icon} size={16} />
             <Text strong>{title}</Text>
           </div>
-          <OperationalStatus status={status} />
+          <InfraStatusTag status={status} />
         </div>
 
         <div className={styles.cardBody}>
