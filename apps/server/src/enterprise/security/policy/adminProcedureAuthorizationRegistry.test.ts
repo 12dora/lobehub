@@ -81,14 +81,14 @@ describe('admin procedure authorization registry', () => {
     // setEnabled,delete,importRecommendations}), reusing the platform-agent permission codes.
     // +1 mutation since: admin.taskTemplates.reorder (drag-and-drop display order replaced the
     // numeric sort field in the editor).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(185);
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(187);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(89);
+    ).toHaveLength(90);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(96);
-    expect(mutationPaths).toHaveLength(96);
+    ).toHaveLength(97);
+    expect(mutationPaths).toHaveLength(97);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -216,7 +216,7 @@ describe('admin procedure authorization registry', () => {
     const systemEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ path }) =>
       path.startsWith('admin.system.'),
     );
-    expect(systemEntries).toHaveLength(8);
+    expect(systemEntries).toHaveLength(10);
     expect(
       systemEntries.map((entry) =>
         'permission' in entry ? [entry.path, entry.permission.permissions[0]] : [entry.path, null],
@@ -224,12 +224,14 @@ describe('admin procedure authorization registry', () => {
     ).toEqual([
       ['admin.system.cancelJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
       ['admin.system.getAuthSnapshotStatus', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
+      ['admin.system.getInfraSettings', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getInstanceRevisions', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getJobs', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.getStatus', PLATFORM_PERMISSIONS.SYSTEM_READ],
       ['admin.system.prepareRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
       ['admin.system.requestRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
       ['admin.system.retryJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
+      ['admin.system.testDependency', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
     ]);
     // A3: exactly five admin.audit.exports.* procedures, all gated by AUDIT_EXPORT.
     const auditExportEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(

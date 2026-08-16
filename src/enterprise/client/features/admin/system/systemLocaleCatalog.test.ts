@@ -70,4 +70,36 @@ describe('admin system value locale catalog (server-emitted)', () => {
       expect(locale['system.instances.lagging']).toBeUndefined();
     }
   });
+
+  it('keeps the SSO summary copy in sync across both shipped locales', () => {
+    const en = loadAdminLocale('en-US');
+    const zh = loadAdminLocale('zh-CN');
+    const keys = [
+      'system.oidc.attention',
+      'system.oidc.attentionHint',
+      'system.oidc.enabled',
+      'system.oidc.enabledHint',
+      'system.oidc.notConfigured',
+      'system.oidc.notConfiguredHint',
+      'system.oidc.pendingRestart',
+      'system.oidc.pendingRestartHint',
+      'system.oidc.source',
+      'system.oidc.title',
+      'system.values.oidcSource.break_glass',
+      'system.values.oidcSource.database',
+      'system.values.oidcSource.environment',
+      'system.values.oidcSource.lkg',
+    ];
+
+    for (const key of keys) {
+      expect(en[key]?.trim(), `missing en:${key}`).toBeTruthy();
+      expect(zh[key]?.trim(), `missing zh:${key}`).toBeTruthy();
+    }
+    expect(en['system.oidc.source']).toContain('{{source}}');
+    expect(zh['system.oidc.source']).toContain('{{source}}');
+    // Replaced "Active at startup" / 「启动时已激活」 — do not bring it back.
+    for (const locale of [en, zh]) {
+      expect(locale['system.oidc.active']).toBeUndefined();
+    }
+  });
 });

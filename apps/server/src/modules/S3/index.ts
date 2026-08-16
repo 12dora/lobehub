@@ -13,6 +13,8 @@ import { z } from 'zod';
 import { fileEnv } from '@/envs/file';
 import { YEAR } from '@/utils/units';
 
+import { DEFAULT_S3_REGION, resolveFileS3Config } from './resolveFileS3Config';
+
 export const fileSchema = z.object({
   Key: z.string(),
   LastModified: z.date(),
@@ -23,7 +25,6 @@ export const listFileSchema = z.array(fileSchema);
 
 export type FileType = z.infer<typeof fileSchema>;
 
-const DEFAULT_S3_REGION = 'us-east-1';
 const PUBLIC_READ_ACL_HEADER = 'public-read';
 
 export interface PreSignedUpload {
@@ -221,11 +222,18 @@ export class S3 {
 
 export class FileS3 extends S3 {
   constructor() {
-    super(fileEnv.S3_ACCESS_KEY_ID, fileEnv.S3_SECRET_ACCESS_KEY, fileEnv.S3_ENDPOINT, {
-      bucket: fileEnv.S3_BUCKET,
-      forcePathStyle: fileEnv.S3_ENABLE_PATH_STYLE,
-      region: fileEnv.S3_REGION,
-      setAcl: fileEnv.S3_SET_ACL,
+    const config = resolveFileS3Config(fileEnv);
+    if (config.kind !== 'complete') {
+      if (!fileEnv.S3_ACCESS_KEY_ID || !fileEnv.S3_SECRET_ACCESS_KEY || !fileEnv.S3_ENDPOINT) {
+        throw new Error('S3 environment variables are not set completely, please check your env');
+      }
+      throw new Error('S3 bucket is not set, please check your env');
+    }
+    super(config.accessKeyId, config.secretAccessKey, config.endpoint, {
+      bucket: config.bucket,
+      forcePathStyle: config.forcePathStyle,
+      region: config.region,
+      setAcl: config.setAcl,
     });
   }
 }

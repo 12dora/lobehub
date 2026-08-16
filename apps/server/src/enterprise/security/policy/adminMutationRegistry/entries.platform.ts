@@ -1,11 +1,14 @@
 import {
+  conditional,
   dangerousMutation,
   identityLkg,
   noReason,
+  notApplicable,
   optionalReasonInput,
   prepareRestartAudit,
   recentReauth,
   regularMutation,
+  remoteProbeNoLkg,
   secretRotationAudit,
   secretRotationExternalGate,
   vaultKeyProviderBoundary,
@@ -97,5 +100,21 @@ export const ADMIN_MUTATION_ENTRIES_PLATFORM = {
     'high',
     'Retry an eligible terminal platform job with atomic compare-and-set.',
     { reason: optionalReasonInput, reauth: recentReauth },
+  ),
+  'admin.system.testDependency': regularMutation(
+    'admin.system.testDependency',
+    'low',
+    'Probe an environment-configured infrastructure dependency without persisting any change.',
+    {
+      audit: notApplicable(
+        'The bounded live probe does not persist configuration or write an audit row.',
+      ),
+      lastKnownGood: remoteProbeNoLkg,
+      outbound: conditional(
+        'Resend probes use the enterprise outbound policy client with a bounded timeout. S3 and SMTP probes use native SDK clients.',
+        'S3 and SMTP destinations come only from the process environment, not operator input, and are not routed through the outbound policy client.',
+      ),
+      reason: noReason,
+    },
   ),
 } as const satisfies Record<`admin.${string}`, AdminMutationDefinition>;

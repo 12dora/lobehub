@@ -1,0 +1,109 @@
+import { createStaticStyles, cssVar } from 'antd-style';
+
+export const infraSettingsStyles = createStaticStyles(({ css }) => ({
+  card: css`
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+
+    min-width: 0;
+    height: 100%;
+    padding: 16px;
+    border: 1px solid ${cssVar.colorBorderSecondary};
+    border-radius: ${cssVar.borderRadiusLG};
+
+    background: ${cssVar.colorBgContainer};
+  `,
+  cardBody: css`
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 16px;
+
+    min-height: 0;
+  `,
+  code: css`
+    font-family: ${cssVar.fontFamilyCode};
+    font-size: ${cssVar.fontSizeSM};
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  `,
+  envList: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  `,
+  envChip: css`
+    padding-block: 2px;
+    padding-inline: 6px;
+    border-radius: ${cssVar.borderRadiusXS};
+
+    font-family: ${cssVar.fontFamilyCode};
+    font-size: ${cssVar.fontSizeSM};
+    line-height: 1.4;
+    color: ${cssVar.colorTextSecondary};
+
+    background: ${cssVar.colorFillTertiary};
+  `,
+  fieldLabel: css`
+    flex: 0 0 36%;
+    min-width: 0;
+    color: ${cssVar.colorTextSecondary};
+  `,
+  fieldRow: css`
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    justify-content: space-between;
+
+    min-width: 0;
+  `,
+  fieldValue: css`
+    min-width: 0;
+    text-align: end;
+    overflow-wrap: anywhere;
+  `,
+  fields: css`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  `,
+  footer: css`
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-block-start: auto;
+  `,
+  grid: css`
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+    align-items: stretch;
+
+    @media (width >= 1024px) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  `,
+  header: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+  `,
+  hint: css`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    padding-block-start: 12px;
+    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+  `,
+  title: css`
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+  `,
+}));

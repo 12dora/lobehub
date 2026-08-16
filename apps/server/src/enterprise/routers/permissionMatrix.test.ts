@@ -50,13 +50,16 @@ const fixture = createAdminAuthorizationFixture({ namespace: 'permission-matrix'
 
 const o04SystemProcedurePaths = [
   'admin.system.cancelJob',
+  'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
   'admin.system.getStatus',
   'admin.system.retryJob',
+  'admin.system.testDependency',
 ] as const;
 const o04SystemProcedurePathSet = new Set<string>(o04SystemProcedurePaths);
 const o04SystemReadProcedurePaths = [
+  'admin.system.getInfraSettings',
   'admin.system.getInstanceRevisions',
   'admin.system.getJobs',
   'admin.system.getStatus',

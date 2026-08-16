@@ -5,7 +5,10 @@ import useSWRInfinite from 'swr/infinite';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import type { AdminSystemJobAction } from '@/enterprise/client/features/admin/system/controller';
+import type {
+  AdminSystemJobAction,
+  SsoAuthSnapshot,
+} from '@/enterprise/client/features/admin/system/controller';
 import {
   adminSystemJobsChanged,
   canRunAdminSystemJobAction,
@@ -29,6 +32,7 @@ import type {
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
+  buildAdminSystemAuthSnapshotKey,
   buildAdminSystemInstancesKey,
   buildAdminSystemJobsKey,
   buildAdminSystemJobsPollKey,
@@ -42,6 +46,16 @@ export const useAdminSystemStatus = (enabled: boolean, service: AdminSystemServi
   useClientDataSWR(buildAdminSystemStatusKey(enabled), () => service.getStatus(), {
     keepPreviousData: true,
     revalidateOnFocus: false,
+  });
+
+export const useAdminSystemAuthSnapshotStatus = (
+  enabled: boolean,
+  fetchStatus: () => Promise<SsoAuthSnapshot>,
+) =>
+  useClientDataSWR(buildAdminSystemAuthSnapshotKey(enabled), fetchStatus, {
+    keepPreviousData: true,
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
   });
 
 export interface AdminSystemInstancesState {

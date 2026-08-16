@@ -7,6 +7,10 @@ import type { ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  deriveSsoPresentation,
+  type SsoAuthSnapshot,
+} from '@/enterprise/client/features/admin/system/controller';
 import type { AdminSystemStatus } from '@/enterprise/client/services/adminSystem';
 
 import { OperationalStatus } from './OperationalStatus';
@@ -133,8 +137,17 @@ export const DependencyGrid = memo<{ status: AdminSystemStatus }>(({ status }) =
 
 DependencyGrid.displayName = 'AdminSystemDependencyGrid';
 
-export const OidcSummary = memo<{ status: AdminSystemStatus }>(({ status }) => {
+export const OidcSummary = memo<{
+  snapshot?: SsoAuthSnapshot | null;
+  status: AdminSystemStatus;
+}>(({ snapshot, status }) => {
   const { t } = useTranslation('admin');
+  const presentation = deriveSsoPresentation({ oidc: status.oidc, snapshot });
+  const description =
+    presentation.kind === 'attention' && presentation.degradedCategory
+      ? t(`identityProviders.values.degraded.${presentation.degradedCategory}` as never)
+      : t(presentation.descriptionKey);
+
   return (
     <Flexbox gap={8}>
       <Flexbox horizontal align="center" gap={8}>
@@ -143,12 +156,17 @@ export const OidcSummary = memo<{ status: AdminSystemStatus }>(({ status }) => {
       </Flexbox>
       <Block padding={16} variant="outlined">
         <Flexbox gap={8}>
-          <Flexbox horizontal align="center" gap={8} wrap="wrap">
-            <OperationalStatus status={status.oidc.status} />
-            <Tag color={status.oidc.pendingRestart ? 'warning' : 'default'} size="small">
-              {t(status.oidc.pendingRestart ? 'system.oidc.pendingRestart' : 'system.oidc.active')}
-            </Tag>
-          </Flexbox>
+          <Tag color={presentation.tone} size="small">
+            {t(presentation.labelKey)}
+          </Tag>
+          <Text type="secondary">{description}</Text>
+          {presentation.showSource ? (
+            <Text type="secondary">
+              {t('system.oidc.source', {
+                source: t(`system.values.oidcSource.${status.oidc.source}` as never),
+              })}
+            </Text>
+          ) : null}
         </Flexbox>
       </Block>
     </Flexbox>

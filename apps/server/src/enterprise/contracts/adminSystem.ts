@@ -440,6 +440,72 @@ export const adminSystemRequestRestartOutputSchema = z
   })
   .strict();
 
+export const adminSystemInfraDependencySchema = z.enum(['keyManagement', 'mail', 'objectStorage']);
+
+export const adminSystemTestDependencyReasonSchema = z.enum([
+  'configured_unverified',
+  'configuration_incomplete',
+  'not_configured',
+  'timeout',
+  'unauthorized',
+  'unreachable',
+]);
+
+export const adminSystemTestDependencyInputSchema = z
+  .object({
+    dependency: adminSystemInfraDependencySchema,
+  })
+  .strict();
+
+export const adminSystemTestDependencyOutputSchema = z
+  .object({
+    checkedAt: z.date(),
+    latencyMs: z.number().int().nonnegative().max(30_000),
+    message: adminSystemTestDependencyReasonSchema.optional(),
+    ok: z.boolean(),
+  })
+  .strict();
+
+export const adminSystemGetInfraSettingsOutputSchema = z
+  .object({
+    keyManagement: z
+      .object({
+        errorCategory: adminSystemDependencyErrorCategorySchema.nullable(),
+        keyId: z.string().trim().max(256).nullable(),
+        masterKeyConfigured: z.boolean(),
+        provider: z.enum(['env', 'unconfigured', 'vault']),
+        status: adminSystemDependencyStatusSchema,
+        vaultAddress: z.string().trim().max(2048).nullable(),
+      })
+      .strict(),
+    mail: z
+      .object({
+        errorCategory: adminSystemDependencyErrorCategorySchema.nullable(),
+        fromAddress: z.string().trim().max(320).nullable(),
+        host: z.string().trim().max(255).nullable(),
+        port: z.number().int().min(1).max(65_535).nullable(),
+        provider: z.enum(['resend', 'smtp', 'unconfigured']),
+        secure: z.boolean().nullable(),
+        senderName: z.string().trim().max(256).nullable(),
+        status: adminSystemDependencyStatusSchema,
+      })
+      .strict(),
+    objectStorage: z
+      .object({
+        accessId: z.string().trim().max(64).nullable(),
+        bucket: z.string().trim().max(255).nullable(),
+        endpoint: z.string().trim().max(2048).nullable(),
+        errorCategory: adminSystemDependencyErrorCategorySchema.nullable(),
+        pathStyle: z.boolean(),
+        publicDomain: z.string().trim().max(2048).nullable(),
+        region: z.string().trim().max(64).nullable(),
+        status: adminSystemDependencyStatusSchema,
+      })
+      .strict(),
+    snapshotAt: z.date(),
+  })
+  .strict();
+
 export type AdminSystemPrepareRestartInput = z.infer<typeof adminSystemPrepareRestartInputSchema>;
 export type AdminSystemRequestRestartInput = z.infer<typeof adminSystemRequestRestartInputSchema>;
 export type AdminSystemCancelJobInput = z.input<typeof adminSystemCancelJobInputSchema>;
@@ -450,3 +516,7 @@ export type AdminSystemGetJobsInput = z.input<typeof adminSystemGetJobsInputSche
 export type AdminSystemInstanceState = z.infer<typeof adminSystemInstanceStateSchema>;
 export type AdminSystemJob = z.infer<typeof adminSystemJobSchema>;
 export type AdminSystemRetryJobInput = z.input<typeof adminSystemRetryJobInputSchema>;
+export type AdminSystemInfraDependency = z.infer<typeof adminSystemInfraDependencySchema>;
+export type AdminSystemTestDependencyInput = z.input<typeof adminSystemTestDependencyInputSchema>;
+export type AdminSystemTestDependencyReason = z.infer<typeof adminSystemTestDependencyReasonSchema>;
+export type AdminSystemGetInfraSettings = z.infer<typeof adminSystemGetInfraSettingsOutputSchema>;

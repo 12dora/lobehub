@@ -10,10 +10,12 @@ import {
   classifyAdminSystemJobsError,
   collectAdminSystemJobs,
   deriveAdminSystemPermissions,
+  deriveSsoPresentation,
   didAdminSystemJobRefreshConfirm,
   isAdminSystemInvalidInputError,
   resetAdminSystemJobPages,
   shouldPollAdminSystemJobs,
+  type SsoOidcStatus,
 } from './controller';
 
 const job = (overrides: Partial<AdminSystemJob> = {}): AdminSystemJob => ({
@@ -148,6 +150,84 @@ describe('Admin System job collection', () => {
         committed,
       ),
     ).toBe(true);
+  });
+});
+
+const oidc = (overrides: Partial<SsoOidcStatus> = {}): SsoOidcStatus => ({
+  activeRevision: 'a'.repeat(64),
+  configured: true,
+  pendingRestart: false,
+  source: 'database',
+  status: 'healthy',
+  ...overrides,
+});
+
+describe('deriveSsoPresentation', () => {
+  it('treats disabled flag, disabled source, and missing config as not configured', () => {
+    expect(
+      deriveSsoPresentation({ oidc: oidc({ source: 'disabled', status: 'disabled' }) }).kind,
+    ).toBe('not_configured');
+    expect(deriveSsoPresentation({ oidc: oidc({ configured: false }) }).kind).toBe(
+      'not_configured',
+    );
+    expect(
+      deriveSsoPresentation({
+        oidc: oidc({
+          activeRevision: null,
+          configured: true,
+          pendingRestart: false,
+          source: 'unknown',
+          status: 'unavailable',
+        }),
+      }).kind,
+    ).toBe('not_configured');
+  });
+
+  it('prefers restart pending over unknown source when a publish is waiting', () => {
+    const presentation = deriveSsoPresentation({
+      oidc: oidc({
+        activeRevision: null,
+        pendingRestart: true,
+        source: 'unknown',
+        status: 'unavailable',
+      }),
+    });
+    expect(presentation.kind).toBe('restart_pending');
+    expect(presentation.labelKey).toBe('system.oidc.pendingRestart');
+    expect(presentation.showSource).toBe(false);
+  });
+
+  it('prefers restart pending over degraded artifact health', () => {
+    expect(
+      deriveSsoPresentation({
+        oidc: oidc({ pendingRestart: true, status: 'degraded' }),
+      }).kind,
+    ).toBe('restart_pending');
+  });
+
+  it('reports enabled only when healthy, configured, and not waiting on restart', () => {
+    const presentation = deriveSsoPresentation({ oidc: oidc() });
+    expect(presentation).toMatchObject({
+      kind: 'enabled',
+      labelKey: 'system.oidc.enabled',
+      showSource: true,
+      tone: 'success',
+    });
+  });
+
+  it('reports attention for degraded or unavailable SSO and surfaces the category', () => {
+    const presentation = deriveSsoPresentation({
+      oidc: oidc({ status: 'degraded' }),
+      snapshot: { artifact: { degradedCategory: 'secret_unavailable' } },
+    });
+    expect(presentation).toMatchObject({
+      degradedCategory: 'secret_unavailable',
+      descriptionKey: 'system.oidc.attentionHint',
+      kind: 'attention',
+      labelKey: 'system.oidc.attention',
+      tone: 'warning',
+    });
+    expect(deriveSsoPresentation({ oidc: oidc({ status: 'unavailable' }) }).tone).toBe('error');
   });
 });
 

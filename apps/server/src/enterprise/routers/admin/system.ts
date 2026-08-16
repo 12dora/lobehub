@@ -10,6 +10,7 @@ import {
   adminSystemAuthSnapshotStatusOutputSchema,
   adminSystemCancelJobInputSchema,
   adminSystemCancelJobOutputSchema,
+  adminSystemGetInfraSettingsOutputSchema,
   adminSystemGetInstanceRevisionsInputSchema,
   adminSystemGetInstanceRevisionsOutputSchema,
   adminSystemGetJobsInputSchema,
@@ -21,6 +22,8 @@ import {
   adminSystemRequestRestartOutputSchema,
   adminSystemRetryJobInputSchema,
   adminSystemRetryJobOutputSchema,
+  adminSystemTestDependencyInputSchema,
+  adminSystemTestDependencyOutputSchema,
 } from '../../contracts/adminSystem';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
@@ -39,6 +42,7 @@ import {
   PlatformSystemJobInvalidError,
   PlatformSystemJobNotFoundError,
 } from '../../services/platformSystem/errors';
+import { InfraSettingsService } from '../../services/platformSystem/infraSettingsService';
 import { isIdentityProviderFeatureEnabled } from './identityProvidersSupport';
 
 const createSystemService = (db: ConstructorParameters<typeof IdentityProviderSystemService>[0]) =>
@@ -209,6 +213,11 @@ export const adminSystemRouter = router({
     .output(adminSystemAuthSnapshotStatusOutputSchema)
     .query(({ ctx }) => execute(() => createSystemService(ctx.serverDB).getAuthSnapshotStatus())),
 
+  getInfraSettings: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
+    .output(adminSystemGetInfraSettingsOutputSchema)
+    .query(() => executePlatformSystem(async () => new InfraSettingsService().getInfraSettings())),
+
   getInstanceRevisions: platformSystemBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_READ))
     .input(adminSystemGetInstanceRevisionsInputSchema)
@@ -287,4 +296,12 @@ export const adminSystemRouter = router({
         new PlatformSystemAdminService(ctx.serverDB).retryJob(ctx.userId!, input),
       );
     }),
+
+  testDependency: platformSystemBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SYSTEM_OPERATE))
+    .input(adminSystemTestDependencyInputSchema)
+    .output(adminSystemTestDependencyOutputSchema)
+    .mutation(({ input }) =>
+      executePlatformSystem(() => new InfraSettingsService().testDependency(input)),
+    ),
 });

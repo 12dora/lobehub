@@ -196,6 +196,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'query',
+    path: 'admin.system.getInfraSettings',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'query',
     path: 'admin.system.getInstanceRevisions',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
   },
@@ -222,6 +227,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   {
     kind: 'mutation',
     path: 'admin.system.retryJob',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.system.testDependency',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
 ] as const satisfies readonly AdminProcedureAuthorization[];

@@ -18,6 +18,95 @@ export const deriveAdminSystemPermissions = (
   };
 };
 
+export type SsoPresentationKind = 'attention' | 'enabled' | 'not_configured' | 'restart_pending';
+
+export interface SsoOidcStatus {
+  activeRevision: string | null;
+  configured: boolean;
+  pendingRestart: boolean;
+  source: string;
+  status: string;
+}
+
+export interface SsoAuthSnapshot {
+  artifact?: { degradedCategory?: string | null } | null;
+}
+
+export interface SsoPresentation {
+  degradedCategory: string | null;
+  descriptionKey:
+    | 'system.oidc.attentionHint'
+    | 'system.oidc.enabledHint'
+    | 'system.oidc.notConfiguredHint'
+    | 'system.oidc.pendingRestartHint';
+  kind: SsoPresentationKind;
+  labelKey:
+    | 'system.oidc.attention'
+    | 'system.oidc.enabled'
+    | 'system.oidc.notConfigured'
+    | 'system.oidc.pendingRestart';
+  showSource: boolean;
+  tone: 'default' | 'error' | 'success' | 'warning';
+}
+
+const USEFUL_SSO_SOURCES = new Set(['break_glass', 'database', 'environment', 'lkg']);
+
+const SSO_LABEL_KEY = {
+  attention: 'system.oidc.attention',
+  enabled: 'system.oidc.enabled',
+  not_configured: 'system.oidc.notConfigured',
+  restart_pending: 'system.oidc.pendingRestart',
+} as const;
+
+const SSO_DESCRIPTION_KEY = {
+  attention: 'system.oidc.attentionHint',
+  enabled: 'system.oidc.enabledHint',
+  not_configured: 'system.oidc.notConfiguredHint',
+  restart_pending: 'system.oidc.pendingRestartHint',
+} as const;
+
+const resolveSsoPresentationKind = (oidc: SsoOidcStatus): SsoPresentationKind => {
+  if (
+    oidc.status === 'disabled' ||
+    oidc.source === 'disabled' ||
+    !oidc.configured ||
+    (oidc.source === 'unknown' && oidc.activeRevision === null && !oidc.pendingRestart)
+  ) {
+    return 'not_configured';
+  }
+  if (oidc.pendingRestart) return 'restart_pending';
+  if (oidc.status === 'healthy' && oidc.configured) return 'enabled';
+  return 'attention';
+};
+
+/**
+ * One operator-facing SSO state for the health page.
+ * `pendingRestart` wins over degraded health; `configured: false` is "not configured".
+ */
+export const deriveSsoPresentation = (input: {
+  oidc: SsoOidcStatus;
+  snapshot?: SsoAuthSnapshot | null;
+}): SsoPresentation => {
+  const kind = resolveSsoPresentationKind(input.oidc);
+  const degradedCategory =
+    kind === 'attention' ? (input.snapshot?.artifact?.degradedCategory ?? null) : null;
+  return {
+    degradedCategory: degradedCategory || null,
+    descriptionKey: SSO_DESCRIPTION_KEY[kind],
+    kind,
+    labelKey: SSO_LABEL_KEY[kind],
+    showSource: kind !== 'not_configured' && USEFUL_SSO_SOURCES.has(input.oidc.source),
+    tone:
+      kind === 'attention' && input.oidc.status === 'unavailable'
+        ? 'error'
+        : kind === 'enabled'
+          ? 'success'
+          : kind === 'not_configured'
+            ? 'default'
+            : 'warning',
+  };
+};
+
 const ACTIVE_JOB_STATUSES = new Set<AdminSystemJob['status']>(['pending', 'reserved', 'running']);
 const CANCELLABLE_JOB_STATUSES = new Set<AdminSystemJob['status']>(['pending', 'running']);
 const RETRYABLE_JOB_STATUSES = new Set<AdminSystemJob['status']>(['cancelled', 'dead', 'failed']);

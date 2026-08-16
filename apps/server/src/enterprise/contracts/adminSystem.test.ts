@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adminSystemCancelJobInputSchema,
+  adminSystemGetInfraSettingsOutputSchema,
   adminSystemGetInstanceRevisionsInputSchema,
   adminSystemGetJobsOutputSchema,
   adminSystemGetStatusOutputSchema,
   adminSystemJobKindSchema,
   adminSystemRequestRestartOutputSchema,
+  adminSystemTestDependencyInputSchema,
+  adminSystemTestDependencyOutputSchema,
 } from './adminSystem';
 
 describe('admin system restart acceptance output', () => {
@@ -190,6 +193,87 @@ describe('admin system operational contracts', () => {
     ).toBe(false);
     expect(
       adminSystemCancelJobInputSchema.safeParse({ ...input, expectedStatus: 'succeeded' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('admin system infrastructure settings contracts', () => {
+  const settings = {
+    keyManagement: {
+      errorCategory: 'passive_check_only',
+      keyId: 'env:default',
+      masterKeyConfigured: true,
+      provider: 'env',
+      status: 'unknown',
+      vaultAddress: null,
+    },
+    mail: {
+      errorCategory: null,
+      fromAddress: 'noreply@example.com',
+      host: 'smtp.example.com',
+      port: 587,
+      provider: 'smtp',
+      secure: true,
+      senderName: 'Platform',
+      status: 'disabled',
+    },
+    objectStorage: {
+      accessId: 'AKIA****MPLE',
+      bucket: 'files',
+      endpoint: 'https://s3.example.com',
+      errorCategory: 'passive_check_only',
+      pathStyle: true,
+      publicDomain: 'https://cdn.example.com',
+      region: 'us-east-1',
+      status: 'unknown',
+    },
+    snapshotAt: new Date('2026-08-17T00:00:00.000Z'),
+  };
+
+  it('accepts the masked overview and rejects extra secret-bearing fields', () => {
+    expect(adminSystemGetInfraSettingsOutputSchema.parse(settings)).toEqual(settings);
+    expect(
+      adminSystemGetInfraSettingsOutputSchema.safeParse({
+        ...settings,
+        objectStorage: {
+          ...settings.objectStorage,
+          secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSystemGetInfraSettingsOutputSchema.safeParse({
+        ...settings,
+        mail: { ...settings.mail, password: 'smtp-pass' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a reason-free test probe and a bounded result', () => {
+    expect(adminSystemTestDependencyInputSchema.parse({ dependency: 'objectStorage' })).toEqual({
+      dependency: 'objectStorage',
+    });
+    expect(
+      adminSystemTestDependencyInputSchema.safeParse({
+        dependency: 'objectStorage',
+        reason: 'probe storage',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSystemTestDependencyOutputSchema.parse({
+        checkedAt: new Date('2026-08-17T00:00:01.000Z'),
+        latencyMs: 42,
+        message: 'timeout',
+        ok: false,
+      }),
+    ).toMatchObject({ message: 'timeout', ok: false });
+    expect(
+      adminSystemTestDependencyOutputSchema.safeParse({
+        checkedAt: new Date(),
+        latencyMs: 1,
+        message: 'stack trace at secret',
+        ok: false,
+      }).success,
     ).toBe(false);
   });
 });

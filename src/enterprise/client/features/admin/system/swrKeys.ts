@@ -4,12 +4,16 @@ import type {
 } from '@/enterprise/client/services/adminSystem';
 
 export const ADMIN_SYSTEM_STATUS_KEY = 'admin.system.getStatus';
+export const ADMIN_SYSTEM_AUTH_SNAPSHOT_KEY = 'admin.system.getAuthSnapshotStatus';
 export const ADMIN_SYSTEM_INSTANCES_KEY = 'admin.system.getInstanceRevisions';
 export const ADMIN_SYSTEM_JOBS_KEY = 'admin.system.getJobs';
 export const ADMIN_SYSTEM_JOBS_POLL_KEY = 'admin.system.getJobs.poll';
 
 export const buildAdminSystemStatusKey = (enabled: boolean) =>
   enabled ? ([ADMIN_SYSTEM_STATUS_KEY] as const) : null;
+
+export const buildAdminSystemAuthSnapshotKey = (enabled: boolean) =>
+  enabled ? ([ADMIN_SYSTEM_AUTH_SNAPSHOT_KEY] as const) : null;
 
 export const buildAdminSystemInstancesKey = (
   input: AdminSystemGetInstanceRevisionsInput,

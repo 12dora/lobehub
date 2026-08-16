@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import { AdminLoadingSurface } from '@/enterprise/client/features/admin/pages/AdminStateSurfaces';
 import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/AdminPageTemplate';
+import type { SsoAuthSnapshot } from '@/enterprise/client/features/admin/system/controller';
 import type {
   AdminSystemInstancesState,
   AdminSystemJobMutations,
@@ -49,6 +50,7 @@ interface AsyncSnapshot<T> {
 }
 
 export interface SystemPageViewProps {
+  authSnapshot?: SsoAuthSnapshot | null;
   canOperate: boolean;
   instances: AdminSystemInstancesState;
   isRefreshing: boolean;
@@ -68,6 +70,7 @@ const SectionTitle = ({ children }: { children: ReactNode }) => (
 
 export const SystemPageView = memo<SystemPageViewProps>(
   ({
+    authSnapshot,
     canOperate,
     instances,
     isRefreshing,
@@ -121,7 +124,7 @@ export const SystemPageView = memo<SystemPageViewProps>(
           <Flexbox gap={20}>
             <BuildSummary status={status.data} />
             <DependencyGrid status={status.data} />
-            <OidcSummary status={status.data} />
+            <OidcSummary snapshot={authSnapshot} status={status.data} />
             <JobsSummary status={status.data} />
             <PublishFailures status={status.data} />
           </Flexbox>

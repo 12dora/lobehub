@@ -25,7 +25,6 @@ import type {
 import type { PlatformConvergenceDomain } from '@/server/enterprise/contracts/platformInstanceStatus';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
-import { PlatformSecretService } from '../../security/secret';
 import {
   PlatformAgentInvalidInputError,
   PlatformAgentRevisionConflictError,
@@ -44,7 +43,10 @@ import { OAUTH_REFRESH_JOB_TYPE } from '../connectorCatalog/connectorOAuthRefres
 import { CONNECTOR_RUNTIME_JOB_TYPE } from '../connectorCatalog/runtimeExecutionJournal';
 import { CONNECTOR_SECRET_CLEANUP_JOB_TYPE } from '../connectorCatalog/secretCleanup';
 import { getIdentityProviderStartupArtifactHealth } from '../identityProvider/startupArtifact';
-import { IdentityProviderSystemService } from '../identityProvider/systemService';
+import {
+  IdentityProviderSystemService,
+  loadPublishedIdentityTarget,
+} from '../identityProvider/systemService';
 import { PlatformAuditService } from '../platformAudit';
 import {
   PlatformInstanceStatusService,
@@ -64,6 +66,7 @@ import {
   PlatformSystemJobInvalidError,
   PlatformSystemJobNotFoundError,
 } from './errors';
+import { keyManagementHealth, mailHealth, objectStorageHealth } from './infraDependencyConfig';
 
 const DEFAULT_PAGE_SIZE = 50;
 const DEFAULT_INSTANCE_STATE: AdminSystemInstanceState = 'live';
@@ -108,14 +111,6 @@ const defaultRedisHealthDependencies: RedisHealthDependencies = {
 };
 
 const disabledHealth = (): DependencyHealth => ({ errorCategory: null, status: 'disabled' });
-const passiveHealth = (): DependencyHealth => ({
-  errorCategory: 'passive_check_only',
-  status: 'unknown',
-});
-const incompleteHealth = (): DependencyHealth => ({
-  errorCategory: 'configuration_incomplete',
-  status: 'degraded',
-});
 
 const probeRedis = async (dependencies: RedisHealthDependencies): Promise<DependencyHealth> => {
   const config = dependencies.getRedisConfig();
@@ -135,50 +130,6 @@ const probeRedis = async (dependencies: RedisHealthDependencies): Promise<Depend
     };
   } finally {
     if (client) await client.disconnect();
-  }
-};
-
-const objectStorageHealth = (env: Record<string, string | undefined>): DependencyHealth => {
-  const values = [env.S3_BUCKET, env.S3_ACCESS_KEY_ID, env.S3_SECRET_ACCESS_KEY, env.S3_ENDPOINT];
-  if (values.every((value) => !value?.trim())) return disabledHealth();
-  if (
-    !env.S3_BUCKET?.trim() ||
-    !env.S3_ACCESS_KEY_ID?.trim() ||
-    !env.S3_SECRET_ACCESS_KEY?.trim() ||
-    (!env.S3_ENDPOINT?.trim() && !env.S3_REGION?.trim())
-  ) {
-    return incompleteHealth();
-  }
-  return passiveHealth();
-};
-
-const mailHealth = (env: Record<string, string | undefined>): DependencyHealth => {
-  const provider = env.EMAIL_SERVICE_PROVIDER?.trim().toLowerCase();
-  const configured = [
-    provider,
-    env.RESEND_API_KEY,
-    env.RESEND_FROM,
-    env.SMTP_FROM,
-    env.SMTP_HOST,
-  ].some((value) => value?.trim());
-  if (!configured) return disabledHealth();
-  if (provider === 'resend') {
-    return env.RESEND_API_KEY?.trim() && env.RESEND_FROM?.trim()
-      ? passiveHealth()
-      : incompleteHealth();
-  }
-  if (provider === 'nodemailer') {
-    return env.SMTP_HOST?.trim() && env.SMTP_FROM?.trim() ? passiveHealth() : incompleteHealth();
-  }
-  return incompleteHealth();
-};
-
-const keyManagementHealth = (env: Record<string, string | undefined>): DependencyHealth => {
-  try {
-    const service = PlatformSecretService.tryFromEnv(env);
-    return service ? passiveHealth() : disabledHealth();
-  } catch {
-    return incompleteHealth();
   }
 };
 
@@ -661,6 +612,16 @@ export class PlatformSystemAdminService {
     const pendingRestart = authSnapshot
       ? authSnapshot.pendingRestart
       : Boolean(flags.ENABLE_DATABASE_OIDC && artifact);
+    // Same published-selection as getAuthSnapshotStatus (live, enabled, not env-shadowed).
+    let oidcConfiguredWithoutArtifact = false;
+    if (flags.ENABLE_DATABASE_OIDC && !artifact) {
+      try {
+        const target = await loadPublishedIdentityTarget(this.db, this.env);
+        oidcConfiguredWithoutArtifact = target.providers.length > 0;
+      } catch {
+        oidcConfiguredWithoutArtifact = false;
+      }
+    }
     return {
       build: { gitSha, version: CURRENT_VERSION },
       dependencies: {
@@ -721,7 +682,7 @@ export class PlatformSystemAdminService {
             } as const)
           : ({
               activeRevision: null,
-              configured: true,
+              configured: oidcConfiguredWithoutArtifact,
               pendingRestart: true,
               source: 'unknown',
               status: 'unavailable',

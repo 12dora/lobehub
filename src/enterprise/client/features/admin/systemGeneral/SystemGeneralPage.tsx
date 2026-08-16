@@ -1,29 +1,32 @@
 'use client';
 
-import { Empty } from '@lobehub/ui';
 import { memo } from 'react';
-import { useTranslation } from 'react-i18next';
 
-import AdminPageTemplate from '../primitives/AdminPageTemplate';
+import { deriveAdminSystemPermissions } from '@/enterprise/client/features/admin/system/controller';
+import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import { adminSystemService } from '@/enterprise/client/services/adminSystem';
 
-/**
- * Platform-level "General settings" surface (系统 → 通用设置).
- *
- * Intentionally empty for now: the page is registered so the 系统 group has a stable
- * first entry, and it states plainly that settings land in a later release instead of
- * pretending to be a broken form. Distinct from `securityAuth` 通用设置 (registration /
- * login policy) and from 审计 通用设置 (retention).
- */
+import { useAdminInfraSettings, useInfraDependencyProbe } from './hooks';
+import { SystemGeneralPageView } from './SystemGeneralPageView';
+
 const SystemGeneralPage = memo(() => {
-  const { t } = useTranslation('admin');
+  const { permissions, status: accessStatus } = useAdminAccess();
+  const { canOperate, canRead } = deriveAdminSystemPermissions(permissions);
+  const enabled = accessStatus === 'allowed' && canRead;
+  const settings = useAdminInfraSettings(enabled, adminSystemService);
+  const probe = useInfraDependencyProbe(adminSystemService);
 
   return (
-    <AdminPageTemplate
-      description={t('systemGeneral.description')}
-      title={t('systemGeneral.title')}
-    >
-      <Empty description={t('systemGeneral.empty')} style={{ paddingBlock: 64 }} />
-    </AdminPageTemplate>
+    <SystemGeneralPageView
+      canOperate={canOperate}
+      data={settings.data}
+      error={settings.error}
+      isLoading={settings.isLoading}
+      probeBusy={probe.busy}
+      probeResults={probe.results}
+      onRetry={() => void settings.mutate()}
+      onTest={(dependency) => void probe.run(dependency)}
+    />
   );
 });
 

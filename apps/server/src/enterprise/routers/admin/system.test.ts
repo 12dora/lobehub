@@ -156,6 +156,38 @@ describe('admin.system operations gate', () => {
     });
   });
 
+  it('lets a system reader load masked infra settings and denies a live probe', async () => {
+    const operator = await callerFor(ids.operator);
+    await expect(operator.getInfraSettings()).resolves.toMatchObject({
+      keyManagement: { provider: expect.any(String) },
+      mail: { provider: expect.any(String) },
+      objectStorage: { pathStyle: expect.any(Boolean) },
+    });
+
+    const reader = await callerFor(ids.reader);
+    await expect(reader.getInfraSettings()).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+    await expect(reader.testDependency({ dependency: 'mail' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+  });
+
+  it('runs a non-persisting probe without a reason or reauth session', async () => {
+    const operator = await callerFor(ids.operator, new Date(Date.now() - 60 * 60 * 1000));
+    const result = await operator.testDependency({ dependency: 'keyManagement' });
+    expect(result).toEqual(
+      expect.objectContaining({
+        checkedAt: expect.any(Date),
+        latencyMs: expect.any(Number),
+        ok: expect.any(Boolean),
+      }),
+    );
+    expect(await db.select().from(platformAuditLogs)).toHaveLength(0);
+  });
+
   it('denies job mutation before touching state when system operate permission is absent', async () => {
     await db.insert(platformJobs).values({
       id: 'pjob_0000000000000099',

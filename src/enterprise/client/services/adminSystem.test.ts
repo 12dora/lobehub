@@ -4,10 +4,12 @@ import { adminSystemService } from './adminSystem';
 
 const mocks = vi.hoisted(() => ({
   cancelJob: vi.fn(),
+  getInfraSettings: vi.fn(),
   getInstanceRevisions: vi.fn(),
   getJobs: vi.fn(),
   getStatus: vi.fn(),
   retryJob: vi.fn(),
+  testDependency: vi.fn(),
 }));
 
 vi.mock('@/libs/trpc/client', () => ({
@@ -15,10 +17,12 @@ vi.mock('@/libs/trpc/client', () => ({
     admin: {
       system: {
         cancelJob: { mutate: mocks.cancelJob },
+        getInfraSettings: { query: mocks.getInfraSettings },
         getInstanceRevisions: { query: mocks.getInstanceRevisions },
         getJobs: { query: mocks.getJobs },
         getStatus: { query: mocks.getStatus },
         retryJob: { mutate: mocks.retryJob },
+        testDependency: { mutate: mocks.testDependency },
       },
     },
   },
@@ -65,5 +69,17 @@ describe('Admin System service adapter', () => {
     ).resolves.toBe(retried);
     expect(mocks.cancelJob).toHaveBeenCalledWith({ ...shared, expectedStatus: 'running' });
     expect(mocks.retryJob).toHaveBeenCalledWith({ ...shared, expectedStatus: 'failed' });
+  });
+
+  it('forwards infrastructure overview and live-probe calls', async () => {
+    const settings = { snapshotAt: new Date('2026-08-17T00:00:00.000Z') };
+    const probe = { checkedAt: new Date('2026-08-17T00:00:01.000Z'), latencyMs: 12, ok: true };
+    mocks.getInfraSettings.mockResolvedValue(settings);
+    mocks.testDependency.mockResolvedValue(probe);
+
+    await expect(adminSystemService.getInfraSettings()).resolves.toBe(settings);
+    await expect(adminSystemService.testDependency({ dependency: 'mail' })).resolves.toBe(probe);
+    expect(mocks.getInfraSettings).toHaveBeenCalledWith();
+    expect(mocks.testDependency).toHaveBeenCalledWith({ dependency: 'mail' });
   });
 });

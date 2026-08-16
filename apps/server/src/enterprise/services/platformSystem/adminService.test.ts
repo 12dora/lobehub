@@ -851,4 +851,84 @@ describe('PlatformSystemAdminService status', () => {
     expect(status.oidc.pendingRestart).toBe(false);
     expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('active');
   });
+
+  it('reports oidc as not configured when the flag is on but no published provider exists', async () => {
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.oidc).toMatchObject({
+      activeRevision: null,
+      configured: false,
+      pendingRestart: true,
+      source: 'unknown',
+      status: 'unavailable',
+    });
+  });
+
+  it('reports oidc configured when published providers exist without a process artifact', async () => {
+    const now = new Date();
+    const payload = {
+      autoProvision: true,
+      buttonLabel: 'Work account',
+      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      clientId: 'client-id',
+      displayName: 'Work',
+      domainAllowlist: [],
+      enabled: true,
+      groupRoleMapping: {},
+      icon: null,
+      issuer: 'https://login.example.test',
+      providerKey: 'work',
+      scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+      secretFingerprint: 'b'.repeat(64),
+      secretUpdatedAt: now.toISOString(),
+      type: 'generic_oidc' as const,
+      usePkce: true as const,
+    };
+    await db.insert(platformIdentityProviders).values({
+      activationRevision: 1,
+      buttonLabel: 'Work account',
+      displayName: 'Work',
+      enabled: true,
+      id: 'provider-work',
+      providerKey: 'work',
+      revision: 1,
+      status: 'pending_restart',
+    });
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(payload),
+      id: 'revision-work-1',
+      payload,
+      publishedAt: now,
+      resourceId: 'provider-work',
+      resourceType: 'oidc',
+      revision: 1,
+      secretFingerprint: 'b'.repeat(64),
+      status: 'published',
+    });
+
+    const status = await new PlatformSystemAdminService(db, {
+      env: {
+        ENABLE_DATABASE_OIDC: '1',
+        ENABLE_PLATFORM_ADMIN: '1',
+      },
+      now: () => now,
+      redisProbe: async () => ({ errorCategory: null, status: 'disabled' }),
+    }).getStatus();
+
+    expect(() => adminSystemGetStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status.oidc).toMatchObject({
+      activeRevision: null,
+      configured: true,
+      pendingRestart: true,
+      source: 'unknown',
+      status: 'unavailable',
+    });
+  });
 });
