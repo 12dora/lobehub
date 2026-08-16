@@ -2,8 +2,6 @@
 
 import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
-import type { TableColumnsType } from 'antd';
-import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,10 +11,8 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import type { AdminAuditConversationListItem } from '@/enterprise/client/services/adminAudit';
-import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
-import { dateRangeColumnFilter, searchColumnFilter } from '../../primitives/columnFilters';
 import DataTable, { type AdminTableChangeMeta } from '../../primitives/DataTable';
 import {
   useFetchAuditConversationsList,
@@ -26,39 +22,11 @@ import {
 import { displayAuditUserLabel, formatAdminDateTime, hasPermission } from '../shared/format';
 import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
 import ContentAccessDisabledState from './ContentAccessDisabledState';
+import { endOfDay, firstFilterValue, parseIsoDay, sameCalendarDay, startOfDay } from './dayFilters';
+import { useConversationColumns } from './useConversationColumns';
 
 const DEFAULT_LIST_LIMIT = 50;
 const TIMELINE_PAGE_SIZE = 30;
-
-const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (raw == null || raw === '') return undefined;
-  return String(raw);
-};
-
-const parseIsoDay = (value: unknown): Date | null => {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? ''));
-  if (!match) return null;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-
-const startOfDay = (value: Date) => {
-  const next = new Date(value);
-  next.setHours(0, 0, 0, 0);
-  return next;
-};
-
-const endOfDay = (value: Date) => {
-  const next = new Date(value);
-  next.setHours(23, 59, 59, 999);
-  return next;
-};
-
-const sameCalendarDay = (left: Date, right: Date) =>
-  left.getFullYear() === right.getFullYear() &&
-  left.getMonth() === right.getMonth() &&
-  left.getDate() === right.getDate();
 
 const styles = createStaticStyles(({ css }) => ({
   summary: css`
@@ -112,7 +80,6 @@ const isForbiddenError = (err: unknown) => {
 
 const ConversationUserPage = memo(() => {
   const { t } = useTranslation('admin');
-  const providerLabel = useProviderLabel();
   const navigate = useNavigate();
   const { userId = '' } = useParams<{ userId: string }>();
   const { permissions } = useAdminAccess();
@@ -220,49 +187,13 @@ const ConversationUserPage = memo(() => {
     }
   }, [summaryFailed, t]);
 
-  const columns: TableColumnsType<AdminAuditConversationListItem> = useMemo(
-    () => [
-      {
-        dataIndex: 'title',
-        key: 'title',
-        title: t('audit.conversations.columns.title'),
-        ...searchColumnFilter({
-          placeholder: t('audit.conversations.user.searchTitle'),
-          value: q,
-          onSearch: applyTitleQuery,
-        }),
-        render: (v: string | null) => v || t('audit.conversations.untitled'),
-      },
-      {
-        key: 'model',
-        title: t('audit.conversations.columns.model'),
-        render: (_, row) =>
-          [providerLabel(row.provider), getModelDisplayName(row.model, row.provider)]
-            .filter(Boolean)
-            .join(' / ') || '—',
-      },
-      {
-        dataIndex: 'status',
-        key: 'status',
-        title: t('audit.conversations.columns.status'),
-        width: 100,
-        render: (v: string | null) =>
-          v ? t(`audit.conversations.status.${v}` as never, { defaultValue: v }) : '—',
-      },
-      {
-        dataIndex: 'updatedAt',
-        key: 'updatedAt',
-        title: t('audit.conversations.columns.updatedAt'),
-        width: 170,
-        ...dateRangeColumnFilter({
-          value: [from, to],
-          onChange: applyDateRange,
-        }),
-        render: (v: Date) => formatAdminDateTime(v),
-      },
-    ],
-    [applyDateRange, applyTitleQuery, from, providerLabel, q, t, to],
-  );
+  const columns = useConversationColumns({
+    applyDateRange,
+    applyTitleQuery,
+    from,
+    q,
+    to,
+  });
 
   const goNext = useCallback(() => {
     const next = list.data?.nextCursor;

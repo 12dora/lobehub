@@ -1,12 +1,10 @@
 'use client';
 
 import { Alert, Flexbox, Text } from '@lobehub/ui';
-import { Button, Input, Select, toast } from '@lobehub/ui/base-ui';
-import { DatePicker, type TableColumnsType } from 'antd';
-import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface';
+import { Button, toast } from '@lobehub/ui/base-ui';
+import { DatePicker } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
-import { UserIcon } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -15,7 +13,6 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import type { AdminAuditEventListItem } from '@/enterprise/client/services/adminAudit';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
-import { enumColumnFilter, searchColumnFilter } from '../../primitives/columnFilters';
 import type { AdminTableChangeMeta } from '../../primitives/DataTable';
 import DataTable from '../../primitives/DataTable';
 import {
@@ -23,46 +20,23 @@ import {
   useFetchAuditEventsList,
   useFetchAuditEventStats,
 } from '../hooks/useAdminAudit';
-import AuditStatusTag from '../shared/AuditStatusTag';
-import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
-import {
-  auditActionLabel,
-  auditTargetTypeLabel,
-  formatAdminDateTime,
-  hasPermission,
-  truncateText,
-} from '../shared/format';
-import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
+import { auditActionLabel, hasPermission } from '../shared/format';
 import { AUDIT_DEFAULT_LIST_LIMIT, useCursorPagination } from '../shared/useCursorPagination';
 import ActionFacetChips from './ActionFacetChips';
 import EventDetailDrawer from './EventDetailDrawer';
-import { AUDIT_LOG_TARGET_TYPES } from './targetTypes';
-
-const RESULT_VALUES = ['success', 'failure', 'denied'] as const;
-type AuditResult = (typeof RESULT_VALUES)[number];
+import {
+  type AuditResult,
+  emptyFilters,
+  firstNonEmpty,
+  type ListFilters,
+  listFiltersEqual,
+  RESULT_VALUES,
+  toResultList,
+  toStringList,
+} from './listFilters';
+import { useOperationLogColumns } from './useOperationLogColumns';
 
 const styles = createStaticStyles(({ css }) => ({
-  dropdown: css`
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-
-    min-width: 240px;
-    padding: 8px;
-  `,
-  filterActions: css`
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-  `,
-  filterIcon: css`
-    display: inline-flex;
-    color: ${cssVar.colorTextTertiary};
-  `,
-  filterIconActive: css`
-    display: inline-flex;
-    color: ${cssVar.colorPrimary};
-  `,
   statCard: css`
     cursor: pointer;
 
@@ -127,150 +101,6 @@ const styles = createStaticStyles(({ css }) => ({
     }
   `,
 }));
-
-interface ListFilters {
-  actions: string[];
-  actorUserId?: string;
-  from: Date;
-  requestId?: string;
-  results: AuditResult[];
-  targetId?: string;
-  targetType?: string;
-  to: Date;
-}
-
-const emptyFilters = (): ListFilters => {
-  const window = getDefaultAuditTimeWindow();
-  return {
-    actions: [],
-    from: window.from,
-    results: [],
-    to: window.to,
-  };
-};
-
-const toStringList = (value: FilterValue | null | undefined): string[] => {
-  if (!value) return [];
-  return value.map(String).filter((item) => item !== '');
-};
-
-const firstNonEmpty = (value: FilterValue | null | undefined): string | undefined => {
-  const [first] = toStringList(value);
-  return first;
-};
-
-const toResultList = (value: FilterValue | null | undefined): AuditResult[] =>
-  toStringList(value).filter((item): item is AuditResult =>
-    RESULT_VALUES.includes(item as AuditResult),
-  );
-
-const sameStringList = (left: readonly string[], right: readonly string[]): boolean =>
-  left.length === right.length && left.every((item, index) => item === right[index]);
-
-const listFiltersEqual = (left: ListFilters, right: ListFilters): boolean =>
-  sameStringList(left.actions, right.actions) &&
-  sameStringList(left.results, right.results) &&
-  left.actorUserId === right.actorUserId &&
-  left.requestId === right.requestId &&
-  left.targetId === right.targetId &&
-  left.targetType === right.targetType &&
-  left.from.getTime() === right.from.getTime() &&
-  left.to.getTime() === right.to.getTime();
-
-const ActorFilterDropdown = ({
-  confirm,
-  enabled,
-  onChange,
-  value,
-}: FilterDropdownProps & {
-  enabled: boolean;
-  onChange: (userId: string | undefined) => void;
-  value?: string;
-}) => {
-  const { t } = useTranslation('admin');
-
-  return (
-    <div className={styles.dropdown}>
-      <AuditUserSearchSelect
-        enabled={enabled}
-        placeholder={t('audit.logs.filters.actor')}
-        style={{ minWidth: 0, width: '100%' }}
-        value={value}
-        onChange={(userId) => {
-          onChange(userId);
-          confirm({ closeDropdown: true });
-        }}
-      />
-    </div>
-  );
-};
-
-const TargetFilterDropdown = ({
-  clearFilters,
-  confirm,
-  onApply,
-  targetId,
-  targetType,
-}: FilterDropdownProps & {
-  onApply: (next: { targetId?: string; targetType?: string }) => void;
-  targetId?: string;
-  targetType?: string;
-}) => {
-  const { t } = useTranslation('admin');
-  const [typeDraft, setTypeDraft] = useState(targetType ?? '');
-  const [idDraft, setIdDraft] = useState(targetId ?? '');
-
-  const apply = () => {
-    onApply({
-      targetId: idDraft.trim() || undefined,
-      targetType: typeDraft.trim() || undefined,
-    });
-    confirm({ closeDropdown: true });
-  };
-
-  const reset = () => {
-    setTypeDraft('');
-    setIdDraft('');
-    clearFilters?.();
-    onApply({ targetId: undefined, targetType: undefined });
-    confirm({ closeDropdown: true });
-  };
-
-  return (
-    <div className={styles.dropdown}>
-      <Select
-        allowClear
-        placeholder={t('audit.logs.filters.targetType')}
-        style={{ width: '100%' }}
-        value={typeDraft || undefined}
-        options={AUDIT_LOG_TARGET_TYPES.map((item) => ({
-          label: auditTargetTypeLabel(t, item),
-          value: item,
-        }))}
-        onChange={(value) => setTypeDraft(typeof value === 'string' ? value : '')}
-      />
-      <Input
-        placeholder={t('audit.logs.filters.targetId')}
-        value={idDraft}
-        onChange={(event) => setIdDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key !== 'Enter') return;
-          event.preventDefault();
-          event.stopPropagation();
-          apply();
-        }}
-      />
-      <div className={styles.filterActions}>
-        <Button size="small" type="default" onClick={reset}>
-          {t('primitives.columnFilter.reset')}
-        </Button>
-        <Button size="small" type="primary" onClick={apply}>
-          {t('primitives.columnFilter.apply')}
-        </Button>
-      </div>
-    </div>
-  );
-};
 
 const OperationLogsPage = memo(() => {
   const { t } = useTranslation('admin');
@@ -414,122 +244,13 @@ const OperationLogsPage = memo(() => {
     }));
   }, [facets?.results, t]);
 
-  const columns: TableColumnsType<AdminAuditEventListItem> = useMemo(
-    () => [
-      {
-        dataIndex: 'createdAt',
-        key: 'createdAt',
-        title: t('audit.logs.columns.time'),
-        width: 170,
-        render: (value: Date) => formatAdminDateTime(value),
-      },
-      {
-        dataIndex: 'action',
-        key: 'action',
-        ellipsis: true,
-        title: t('audit.logs.columns.action'),
-        ...enumColumnFilter({
-          multiple: true,
-          options: actionOptions,
-          value: filters.actions,
-        }),
-        render: (value: string) => auditActionLabel(t, value),
-      },
-      {
-        dataIndex: 'actorUserId',
-        key: 'actorUserId',
-        title: t('audit.logs.columns.actor'),
-        width: 140,
-        filterDropdown: (dropdownProps) => (
-          <ActorFilterDropdown
-            {...dropdownProps}
-            enabled={canRead}
-            value={filters.actorUserId}
-            onChange={(userId) => applyFilters({ actorUserId: userId })}
-          />
-        ),
-        filterIcon: (filtered) => (
-          <span
-            className={
-              filtered || filters.actorUserId ? styles.filterIconActive : styles.filterIcon
-            }
-          >
-            <UserIcon size={14} />
-          </span>
-        ),
-        filterOnClose: false,
-        filteredValue: filters.actorUserId ? [filters.actorUserId] : null,
-        render: (value: string | null) => value ?? '—',
-      },
-      {
-        dataIndex: 'result',
-        key: 'result',
-        title: t('audit.logs.columns.result'),
-        width: 110,
-        ...enumColumnFilter({
-          multiple: true,
-          options: resultOptions,
-          value: filters.results,
-        }),
-        render: (value: string) => <AuditStatusTag kind="result" value={value} />,
-      },
-      {
-        key: 'target',
-        title: t('audit.logs.columns.target'),
-        width: 200,
-        filterDropdown: (dropdownProps) => (
-          <TargetFilterDropdown
-            {...dropdownProps}
-            targetId={filters.targetId}
-            targetType={filters.targetType}
-            onApply={(next) => applyFilters(next)}
-          />
-        ),
-        filterOnClose: false,
-        filteredValue:
-          filters.targetType || filters.targetId
-            ? [filters.targetType ?? '', filters.targetId ?? '']
-            : null,
-        render: (_, row) => (
-          <Text ellipsis style={{ margin: 0 }} type="secondary">
-            {[auditTargetTypeLabel(t, row.targetType), row.targetId].filter(Boolean).join(' · ')}
-          </Text>
-        ),
-      },
-      {
-        dataIndex: 'requestId',
-        key: 'requestId',
-        title: t('audit.logs.columns.requestId'),
-        width: 160,
-        ellipsis: true,
-        ...searchColumnFilter({
-          placeholder: t('audit.logs.filters.requestId'),
-          value: filters.requestId,
-          onSearch: (value) => applyFilters({ requestId: value || undefined }),
-        }),
-        render: (value: string | null) => truncateText(value, 24),
-      },
-      {
-        dataIndex: 'reason',
-        key: 'reason',
-        title: t('audit.logs.columns.reason'),
-        render: (value: string | null) => truncateText(value, 48),
-      },
-    ],
-    [
-      actionOptions,
-      applyFilters,
-      canRead,
-      filters.actions,
-      filters.actorUserId,
-      filters.requestId,
-      filters.results,
-      filters.targetId,
-      filters.targetType,
-      resultOptions,
-      t,
-    ],
-  );
+  const columns = useOperationLogColumns({
+    actionOptions,
+    applyFilters,
+    canRead,
+    filters,
+    resultOptions,
+  });
 
   const activeResult = filters.results.length === 1 ? filters.results[0] : null;
   const hasActiveFilters =
