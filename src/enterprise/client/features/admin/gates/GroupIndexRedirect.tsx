@@ -5,7 +5,11 @@ import { memo, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
-import { ADMIN_NAV_ITEMS, hasAllPermissions } from '@/enterprise/client/nav/adminNavMeta';
+import {
+  ADMIN_NAV_ITEMS,
+  type AdminNavItem,
+  hasAllPermissions,
+} from '@/enterprise/client/nav/adminNavMeta';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 /**
@@ -21,9 +25,15 @@ const GroupIndexRedirect = memo<{ groupId: string }>(({ groupId }) => {
   const firstChild = useMemo(() => {
     const group = ADMIN_NAV_ITEMS.find((item) => item.id === groupId);
     const children = group?.children ?? [];
-    return children.find(
-      (child) => !child.hideFromNav && hasAllPermissions(permissions, child.requiredPermissions),
-    );
+    const reachable = (child: AdminNavItem) =>
+      !child.hideFromNav && hasAllPermissions(permissions, child.requiredPermissions);
+    // A group may pin its index destination (legacy deep link) instead of the menu's first
+    // entry; if that child is hidden or not permitted, fall back to the first reachable one.
+    const pinned = group?.indexRedirectTo
+      ? children.find((child) => child.id === group.indexRedirectTo)
+      : undefined;
+    if (pinned && reachable(pinned)) return pinned;
+    return children.find(reachable);
   }, [groupId, permissions]);
 
   useEffect(() => {

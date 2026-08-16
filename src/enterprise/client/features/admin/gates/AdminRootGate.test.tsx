@@ -84,6 +84,8 @@ vi.mock('@lobehub/ui', async () => {
     Empty: ({ description }: any) => React.createElement('div', null, description),
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
     FluentEmoji: () => null,
+    // Nav group headers (e.g. the `system` group) render an Icon.
+    Icon: () => null,
     Text: ({ children }: any) => React.createElement('span', null, children),
   };
 });

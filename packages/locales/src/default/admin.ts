@@ -705,6 +705,8 @@ export default {
   'timeRange.preset.7d': 'Last 7 days',
   'timeRange.preset.90d': 'Last 90 days',
   'timeRange.preset.custom': 'Custom',
+  'nav.systemGeneral': 'General settings',
+  'nav.systemStatus': 'Status monitoring',
   'timeRange.preset.today': 'Today',
   'timeRange.to': 'End date',
   'creds.page.title': 'Credentials',
@@ -2209,7 +2211,7 @@ export default {
     'Dependency health and aggregate counts are unavailable. Retry to load a new snapshot.',
   'system.status.refreshFailed':
     'Could not refresh system status. The previous snapshot is still displayed.',
-  'system.title': 'System',
+  'system.title': 'Status monitoring',
   'system.values.availabilityError.operation_unavailable':
     'The operation is temporarily unavailable.',
   'system.values.dependencyError.configuration_incomplete': 'Configuration is incomplete.',
@@ -2366,6 +2368,9 @@ export default {
   'audit.logs.action.admin.aiProviders.updateDraft': 'Update provider draft',
   'audit.logs.action.admin.branding.publish': 'Publish Branding',
   'audit.logs.action.admin.branding.rollback': 'Roll back Branding',
+  'systemGeneral.title': 'General settings',
+  'systemGeneral.description': 'Platform-wide system preferences.',
+  'systemGeneral.empty': 'General settings will appear here in an upcoming release.',
   'audit.logs.action.admin.branding.save': 'Save branding',
   'audit.logs.action.admin.branding.saveDraft': 'Save Branding draft',
   'audit.logs.action.admin.branding.uploadAsset': 'Upload branding asset',

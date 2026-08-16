@@ -71,6 +71,8 @@ describe('AdminSideNav (canonical NavItem)', () => {
     expect(screen.getByText('nav.overview')).toBeTruthy();
     expect(screen.getByText('nav.users')).toBeTruthy();
     expect(screen.getByText('nav.aiProviders')).toBeTruthy();
+    // `users` / `unified-management` now render inside the `system` group header.
+    expect(screen.getByText('nav.system')).toBeTruthy();
     // Managed resources is hidden from the nav (merged into the unified-management surface).
     expect(screen.getByText('nav.unifiedManagement')).toBeTruthy();
     expect(screen.queryByText('nav.managedResources')).toBeNull();

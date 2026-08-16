@@ -45,10 +45,45 @@ describe('adminNavMeta', () => {
     expect(findAdminNavItemByPath('/admin/agents/a1')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.AGENT_READ,
     ]);
-    expect(findAdminNavItemByPath('/admin/system')?.requiredPermissions).toEqual([
+    // `/admin/system` is now the group index (shell-only); the status page moved one level down.
+    expect(findAdminNavItemByPath('/admin/system')?.id).toBe('system');
+    expect(findAdminNavItemByPath('/admin/system')?.requiredPermissions).toEqual([]);
+    expect(findAdminNavItemByPath('/admin/system/status')?.id).toBe('system-status');
+    expect(findAdminNavItemByPath('/admin/system/status')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.SYSTEM_READ,
     ]);
-    expect(findAdminNavItemByPath('/admin/system')?.id).toBe('system');
+    expect(findAdminNavItemByPath('/admin/system/general')?.id).toBe('system-general');
+    expect(findAdminNavItemByPath('/admin/system/general')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.SYSTEM_READ,
+    ]);
+  });
+
+  it('nests the system group children while keeping their historical paths', () => {
+    const system = ADMIN_NAV_ITEMS.find((item) => item.id === 'system');
+    expect(system?.requiredPermissions).toEqual([]);
+    // `/admin/system` was the status page before the group existed — keep that bookmark working.
+    expect(system?.indexRedirectTo).toBe('system-status');
+    expect(system?.children?.some((c) => c.id === system.indexRedirectTo)).toBe(true);
+    expect(system?.children?.filter((c) => !c.hideFromNav).map((c) => c.id)).toEqual([
+      'system-general',
+      'system-status',
+      'identity-providers',
+      'branding',
+      'users',
+      'unified-management',
+    ]);
+    // Paths are unchanged so existing deep links / bookmarks keep working.
+    expect(findAdminNavItemByPath('/admin/users')?.id).toBe('users');
+    expect(findAdminNavItemByPath('/admin/branding')?.id).toBe('branding');
+    expect(findAdminNavItemByPath('/admin/identity-providers')?.id).toBe('identity-providers');
+    expect(findAdminNavItemByPath('/admin/unified')?.id).toBe('unified-management');
+
+    // The group is visible as soon as a single child is allowed.
+    const nav = filterAdminNavByPermissions(ADMIN_NAV_ITEMS, [PLATFORM_PERMISSIONS.BRANDING_READ]);
+    expect(nav.find((item) => item.id === 'system')?.children?.map((c) => c.id)).toEqual([
+      'branding',
+      'unified-management',
+    ]);
   });
 
   it('lets Provider auditors inspect detail without granting write actions', () => {
@@ -72,13 +107,15 @@ describe('adminNavMeta', () => {
     // is the merged `unified-management` tab (shell-only gate, each in-page tab self-gates).
     expect(canAccessAdminPath('/admin/unified', [])).toBe(true);
     const nav = filterAdminNavByPermissions(ADMIN_NAV_ITEMS, [PLATFORM_PERMISSIONS.POLICY_READ]);
-    const ids = nav.map((item) => item.id);
+    // `unified-management` now lives inside the `system` group (paths unchanged).
+    const ids = nav.flatMap((item) => [item.id, ...(item.children?.map((c) => c.id) ?? [])]);
     expect(ids).toContain('unified-management');
     expect(ids).not.toContain('managed-resources');
     expect(ids).not.toContain('settings');
   });
 
   it('unknown nested path has no catalog entry (admin 404)', () => {
+    expect(nav.map((item) => item.id)).not.toContain('unified-management');
     expect(findAdminNavItemByPath('/admin/does-not-exist')).toBeUndefined();
     expect(canAccessAdminPath('/admin/does-not-exist', [PLATFORM_PERMISSIONS.ADMIN_ACCESS])).toBe(
       false,
@@ -129,6 +166,31 @@ describe('adminNavMeta', () => {
     expect(hasAllPermissions(['a'], ['a', 'b'])).toBe(false);
     expect(ADMIN_NAV_FLAT.some((i) => i.path.includes(':id'))).toBe(true);
   });
+  it('includes the nav group crumb even when a child keeps a path outside the group prefix', () => {
+    expect(getAdminBreadcrumbs('/admin/users').map((c) => c.id)).toEqual([
+      'overview',
+      'system',
+      'users',
+    ]);
+    expect(getAdminBreadcrumbs('/admin/users/u1').map((c) => c.id)).toEqual([
+      'overview',
+      'system',
+      'users',
+      'users-detail',
+    ]);
+    expect(getAdminBreadcrumbs('/admin/system/status').map((c) => c.id)).toEqual([
+      'overview',
+      'system',
+      'system-status',
+    ]);
+    // Existing groups whose children do nest under the group path are unchanged.
+    expect(getAdminBreadcrumbs('/admin/audit/logs').map((c) => c.id)).toEqual([
+      'overview',
+      'audit',
+      'audit-logs',
+    ]);
+  });
+
 
   it('registers audit group children with distinct permissions', () => {
     expect(findAdminNavItemByPath('/admin/audit/logs')?.id).toBe('audit-logs');

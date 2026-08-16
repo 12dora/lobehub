@@ -54,6 +54,13 @@ export interface AdminNavItem {
   /** i18n key under the `admin` namespace. */
   labelKey: AdminNavLabelKey;
   /**
+  /**
+   * Group only: child `id` the group index route should prefer, instead of the first visible
+   * child. Used when the group path is a legacy deep link whose historical destination is not
+   * first in the menu (e.g. `/admin/system` used to be the status page). Falls back to the
+   * first visible + authorized child when that child is hidden or not permitted.
+   */
+  indexRedirectTo?: string;
    * Absolute path pattern under `/admin` (e.g. `/admin/users` or `/admin/users/:id`).
    * Use React Router path patterns; matching uses `matchPath` (most specific wins).
    */
@@ -81,54 +88,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [PLATFORM_PERMISSIONS.STATS_READ],
   },
   {
-    id: 'users',
-    labelKey: 'nav.users',
-    path: '/admin/users',
-    // M04: real list page
-    requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
-  },
-  {
-    hideFromNav: true,
-    id: 'users-detail',
-    labelKey: 'nav.userDetail',
-    path: '/admin/users/:id',
-    // M04: real detail page
-    requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
-  },
-  {
     hideFromNav: true,
     id: 'reauth-complete',
     labelKey: 'nav.reauthComplete',
     path: '/admin/reauth-complete',
     // Popup landing after Better Auth reauth — no extra permission
     requiredPermissions: [],
-  },
-  {
-    // Merged surface hosting both the settings-policy and managed-resources tabs.
-    // Shell-only gate here; each in-page tab self-gates on SETTINGS_READ / POLICY_READ.
-    id: 'unified-management',
-    labelKey: 'nav.unifiedManagement',
-    path: '/admin/unified',
-    requiredPermissions: [],
-  },
-  {
-    // Kept registered (hidden) for deep-link back-compat; the visible surface is `unified-management`.
-    hideFromNav: true,
-    id: 'settings',
-    labelKey: 'nav.settings',
-    // M05: production settings policy page
-    path: '/admin/settings',
-    requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
-  },
-  {
-    // Kept registered (hidden) for deep-link back-compat; the visible surface is `unified-management`.
-    // Shell requires POLICY_READ for this deep link; connector-only admins use the unified tab
-    // (which OR-gates POLICY_READ | CONNECTOR_READ and self-gates the page body).
-    hideFromNav: true,
-    id: 'managed-resources',
-    labelKey: 'nav.managedResources',
-    path: '/admin/managed-resources',
-    requiredPermissions: [PLATFORM_PERMISSIONS.POLICY_READ],
   },
   {
     children: [
@@ -232,20 +197,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
   },
   {
-    // "安全与认证" surface: hosts the identity-provider ("登录方式") tab and the
-    // registration/login policy ("通用设置") tab. Path kept for deep-link back-compat.
-    id: 'identity-providers',
-    labelKey: 'nav.securityAuth',
-    path: '/admin/identity-providers',
-    requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],
-  },
-  {
-    id: 'branding',
-    labelKey: 'nav.branding',
-    path: '/admin/branding',
-    requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
-  },
-  {
     children: [
       {
         id: 'audit-logs',
@@ -308,7 +259,8 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'system',
     labelKey: 'nav.system',
     path: '/admin/system',
-    requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
+    // Group shell: visible when any child is allowed (same as `ai` / `audit`).
+    requiredPermissions: [],
   },
 ] as const;
 
@@ -316,8 +268,85 @@ const flattenNav = (items: readonly AdminNavItem[]): AdminNavItem[] => {
   const out: AdminNavItem[] = [];
   for (const item of items) {
     out.push(item);
+    children: [
+      {
+        id: 'system-general',
+        labelKey: 'nav.systemGeneral',
+        path: '/admin/system/general',
+        requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
+      },
+      {
+        // Former `/admin/system` leaf. `/admin/system` is now the group index redirect,
+        // so old deep links still land on a real page.
+        id: 'system-status',
+        labelKey: 'nav.systemStatus',
+        path: '/admin/system/status',
+        requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
+      },
+      {
+        // "安全与认证" surface: hosts the identity-provider ("登录方式") tab and the
+        // registration/login policy ("通用设置") tab. Path kept for deep-link back-compat.
+        id: 'identity-providers',
+        labelKey: 'nav.securityAuth',
+        path: '/admin/identity-providers',
+        requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],
+      },
+      {
+        id: 'branding',
+        labelKey: 'nav.branding',
+        path: '/admin/branding',
+        requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
+      },
+      {
+        id: 'users',
+        labelKey: 'nav.users',
+        path: '/admin/users',
+        // M04: real list page
+        requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'users-detail',
+        labelKey: 'nav.userDetail',
+        path: '/admin/users/:id',
+        // M04: real detail page
+        requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
+      },
+      {
+        // Merged surface hosting both the settings-policy and managed-resources tabs.
+        // Shell-only gate here; each in-page tab self-gates on SETTINGS_READ / POLICY_READ.
+        id: 'unified-management',
+        labelKey: 'nav.unifiedManagement',
+        path: '/admin/unified',
+        requiredPermissions: [],
+      },
+      {
+        // Kept registered (hidden) for deep-link back-compat; the visible surface is `unified-management`.
+        hideFromNav: true,
+        id: 'settings',
+        labelKey: 'nav.settings',
+        // M05: production settings policy page
+        path: '/admin/settings',
+        requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
+      },
+      {
+        // Kept registered (hidden) for deep-link back-compat; the visible surface is `unified-management`.
+        // Shell requires POLICY_READ for this deep link; connector-only admins use the unified tab
+        // (which OR-gates POLICY_READ | CONNECTOR_READ and self-gates the page body).
+        hideFromNav: true,
+        id: 'managed-resources',
+        labelKey: 'nav.managedResources',
+        path: '/admin/managed-resources',
+        requiredPermissions: [PLATFORM_PERMISSIONS.POLICY_READ],
+      },
+    ],
     if (item.children?.length) out.push(...flattenNav(item.children));
+    // `/admin/system` was the status page before the group existed, so keep old bookmarks
+    // landing there rather than on the (first-in-menu) empty general-settings placeholder.
+    indexRedirectTo: 'system-status',
   }
+    // Group children keep their historical absolute paths (`/admin/users`, `/admin/branding`, …):
+    // routing derives every leaf from its own `path`, so no redirect churn is needed.
   return out;
 };
 
@@ -335,6 +364,25 @@ const pathSpecificity = (pattern: string): number => {
 };
 
 /**
+/**
+ * Group ancestry by id. Group children are not required to live under the group path
+ * (e.g. `users` sits at `/admin/users` inside the `system` group), so breadcrumbs read
+ * ancestry from the tree instead of relying on path prefixes alone.
+ */
+const buildNavParentById = (): ReadonlyMap<string, AdminNavItem> => {
+  const map = new Map<string, AdminNavItem>();
+  const walk = (items: readonly AdminNavItem[], parent?: AdminNavItem) => {
+    for (const item of items) {
+      if (parent) map.set(item.id, parent);
+      if (item.children?.length) walk(item.children, item);
+    }
+  };
+  walk(ADMIN_NAV_ITEMS);
+  return map;
+};
+
+const ADMIN_NAV_PARENT_BY_ID = buildNavParentById();
+
  * Resolve the catalog entry for a pathname using React Router `matchPath`.
  * Most-specific pattern wins (static beats param; longer beats shorter).
  * Never uses unsafe string-prefix matching alone.
@@ -426,9 +474,15 @@ export const getAdminBreadcrumbs = (pathname: string): AdminNavItem[] => {
     return Boolean(matchPath({ end: false, path: item.path }, normalized));
   }).sort((a, b) => pathSpecificity(a.path) - pathSpecificity(b.path));
 
-  for (const match of ancestors) {
-    if (!crumbs.some((c) => c.id === match.id)) crumbs.push(match);
-  }
+  // Push tree ancestors (nav groups) before the item itself so a group crumb appears even
+  // when the child keeps a path outside the group prefix (e.g. `system` → `/admin/users`).
+  const pushWithAncestors = (item: AdminNavItem) => {
+    const parent = ADMIN_NAV_PARENT_BY_ID.get(item.id);
+    if (parent) pushWithAncestors(parent);
+    if (!crumbs.some((c) => c.id === item.id)) crumbs.push(item);
+  };
+
+  for (const match of ancestors) pushWithAncestors(match);
 
   return crumbs;
 };

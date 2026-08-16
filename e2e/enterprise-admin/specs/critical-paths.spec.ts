@@ -259,7 +259,7 @@ test('auditor is read-only: dangerous job ops absent and operate API denied', as
     assertExactPermissionDenied(cancel);
 
     const page = await context.newPage();
-    await page.goto('/admin/system');
+    await page.goto('/admin/system/status');
     await captureEvidence(page, 'auditor-system-readonly', {
       heading: ADMIN_COPY.systemTitle,
       requiredTexts: [ADMIN_COPY.systemJobsReadOnly, ADMIN_COPY.systemTitle],
@@ -470,7 +470,7 @@ test('evidence matrix: light/dark × desktop/mobile with stable waits', async ({
       browser,
       cookies,
       prepare: async (page, _theme, device) => {
-        await page.goto('/admin/system');
+        await page.goto('/admin/system/status');
         await page.waitForLoadState('domcontentloaded');
         if (device === 'mobile') {
           await assertStableAdminSurface(page, {

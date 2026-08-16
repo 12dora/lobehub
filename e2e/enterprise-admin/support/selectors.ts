@@ -9,8 +9,9 @@ export const ADMIN_COPY = {
   managedResourcesTitle: 'Managed resources',
   mobileUnsupportedTitle: 'Desktop required',
   systemJobsReadOnly: 'You can inspect jobs, but only system operators can retry or cancel.',
-  systemNav: 'System',
-  systemTitle: 'System',
+  // 「系统」is the nav group header; the status page is its own child entry.
+  systemNav: 'Status monitoring',
+  systemTitle: 'Status monitoring',
 } as const;
 
 export const VIEWPORTS = {

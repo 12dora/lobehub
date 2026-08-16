@@ -60,6 +60,12 @@ const SecurityAuthPage = lazy(
   () => import('@/enterprise/client/features/admin/securityAuth/SecurityAuthPage'),
 );
 const SystemPage = lazy(() => import('@/enterprise/client/features/admin/system'));
+const SystemGeneralPage = lazy(
+  () => import('@/enterprise/client/features/admin/systemGeneral/SystemGeneralPage'),
+);
+const TaskTemplateListPage = lazy(
+  () => import('@/enterprise/client/features/admin/taskTemplates/TaskTemplateListPage'),
+);
 const GlobalStatsPage = lazy(
   () => import('@/enterprise/client/features/admin/stats/GlobalStatsPage'),
 );
@@ -172,7 +178,19 @@ export const ADMIN_PAGE_BY_ID: Readonly<
     componentId: 'SecurityAuthPage',
     element: withLazy(<SecurityAuthPage />),
   },
-  'system': { componentId: 'SystemPage', element: withLazy(<SystemPage />) },
+  'system': {
+    componentId: 'SystemIndexRedirect',
+    element: withLazy(<GroupIndexRedirect groupId="system" />),
+  },
+  'system-general': {
+    componentId: 'SystemGeneralPage',
+    element: withLazy(<SystemGeneralPage />),
+  },
+  'system-status': { componentId: 'SystemPage', element: withLazy(<SystemPage />) },
+  'task-templates': {
+    componentId: 'TaskTemplateListPage',
+    element: withLazy(<TaskTemplateListPage />),
+  },
   'stats': { componentId: 'GlobalStatsPage', element: withLazy(<GlobalStatsPage />) },
   'ai': { componentId: 'AiIndexRedirect', element: withLazy(<GroupIndexRedirect groupId="ai" />) },
   'audit': {

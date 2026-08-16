@@ -54,8 +54,8 @@
 - **独立路由树**：由 `createAdminRouteTree`（`src/enterprise/client/routes/admin/createAdminRouteTree.tsx`）构建，挂在主布局之外，不嵌套用户端 layout。路径全部由 `ADMIN_NAV_FLAT` 派生（`/admin/foo` → 相对 `foo`），页面 element 由 `resolveAdminPage(id)` 单一注册表解析，禁止并行的 switch / 默认 placeholder。
 - **web /electron 双配置同步**：路由经 `EnterpriseDesktopRoutesWithoutMainLayout` 注入 `desktopRouter.config.tsx` 与 `desktopRouter.config.desktop.tsx`，两份必须一致，否则某条构建路径出现白屏。
 - **特性开关 fail-closed**：boot `enterprise.platformAdmin` 未开时返回 `[]`，既不挂 shell 也不挂扩展模块路由，且零 `admin.*` 请求。
-- **门禁顺序**（`AdminRootGate`）：配置未就绪 → Loading；特性关闭 → 不可用态；移动端 → 明确不支持态；会话未加载 → Loading；**匿名 → 触发登录并跳登录态**；已登录 → `AdminAccessProvider`（`getMyAccess`）判定 loading /forbidden/error /allowed。
+- **门禁顺序**（`AdminRootGate`）：配置未就绪 → Loading；特性关闭 → 不可用态；移动端 → 明确不支持态；会话未加载 → Loading；**匿名 → 触发登录并跳登录态**；已登录 → `AdminAccessProvider`（`getMyAccess`）判定 loading /forbidden/error/allowed。
 - **逐页权限**（`AdminPermissionOutlet`）：命中目录项则按 `canAccessAdminPath` 判定，**无权限 → 页面 403**；命中扩展模块路由时对所有匹配 `handle.admin.requiredPermissions` 取并集（子级 `[]` 不能覆盖带权父级）；**目录外未知路径 → 作用域 404**（`*` 通配落到 `NotFoundPage`）。
 - **移动端不支持**：`isMobile` 直接渲染不支持态，不进入管理页。
-- **页面须具备的状态**：loading /empty/error /forbidden/revision-conflict（版本冲突 / CAS 重载）/read-only（无写权限只读）/pending-restart（改动待重启生效）。壳层通用态见 `AdminStateSurfaces.tsx`。
+- **页面须具备的状态**：loading /empty/error/forbidden/revision-conflict（版本冲突 / CAS 重载）/read-only（无写权限只读）/pending-restart（改动待重启生效）。壳层通用态见 `AdminStateSurfaces.tsx`。
 - **菜单可见性 ≠ 安全边界**：`filterAdminNavByPermissions` 与前端路由守卫仅用于 UI 收敛与体验，真正的授权边界是服务端 procedure（`withPlatformPermission` 等）。任何前端可见性判断都不得作为访问控制依据。

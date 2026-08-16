@@ -51,6 +51,8 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/branding');
     expect(paths).toContain('/admin/identity-providers');
     expect(paths).toContain('/admin/system');
+    expect(paths).toContain('/admin/system/general');
+    expect(paths).toContain('/admin/system/status');
     expect(paths).toContain('/admin/reauth-complete');
   });
 
@@ -68,6 +70,8 @@ describe('createAdminRouteTree', () => {
     expect(matchRoutes(routes, '/admin/agents/a-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/identity-providers')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/system')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/system/status')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/system/general')).toBeTruthy();
     const reauthComplete = matchRoutes(routes, '/admin/reauth-complete');
     expect(reauthComplete).toHaveLength(1);
     expect(reauthComplete?.[0].route.path).toBe('/admin/reauth-complete');
@@ -96,12 +100,13 @@ describe('createAdminRouteTree', () => {
     expect(componentIdOf('branding')).toBe('BrandingPage');
     expect(componentIdOf('system')).toBe('SystemPage');
 
-    // Group parents (/admin/ai, /admin/audit) are index redirects to the first accessible child —
-    // never a "coming soon" placeholder surface.
+    // Group parents (/admin/ai, /admin/audit, /admin/system) are index redirects to the first
+    // accessible child — never a "coming soon" placeholder surface.
     expect(componentIdOf('ai')).toBe('AiIndexRedirect');
     expect(componentIdOf('audit')).toBe('AuditIndexRedirect');
 
     // The /admin index route is the Overview dashboard.
+    expect(componentIdOf('system')).toBe('SystemIndexRedirect');
     const index = children.find((c) => c.index);
     expect((index?.handle as { admin?: { componentId?: string } })?.admin?.componentId).toBe(
       'OverviewPage',
