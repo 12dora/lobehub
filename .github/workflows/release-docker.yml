@@ -1,22 +1,95 @@
-name: Publish Docker Image
+name: Release Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to rebuild, e.g. v1.0.0. Leave empty to use the tag this run was launched from.'
+        required: false
+        type: string
+
 permissions:
   contents: read
 
-on:
-  workflow_dispatch: {}
-  release:
-    types: [published]
-
 concurrency:
-  group: ${{ github.ref }}-${{ github.workflow }}
+  # Both entry points normalise to the bare tag name (`v1.0.0`), so a push and a
+  # manual rebuild of the same release never run concurrently.
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
-env:
-  REGISTRY_IMAGE: lobehub/lobehub
-
 jobs:
+  resolve:
+    name: Resolve and validate tag
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      floating: ${{ steps.tag.outputs.floating }}
+      image: ${{ steps.tag.outputs.image }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      # Runs before any checkout or build: a manual dispatch from a branch, or a
+      # tag that is not strict SemVer, must never reach the build or release jobs.
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            tag="$INPUT_TAG"
+            if [[ -z "$tag" ]]; then
+              if [[ "$REF_TYPE" != 'tag' ]]; then
+                echo "::error::Manual runs need a 'tag' input, or must be launched from a tag ref (got ref_type=${REF_TYPE}, ref_name=${REF_NAME})."
+                exit 1
+              fi
+              tag="$REF_NAME"
+            fi
+            # Rebuilds are immutable: they never move :latest or :major.minor,
+            # so re-running an older release cannot roll the floating tags back.
+            floating=false
+          else
+            tag="$REF_NAME"
+            floating=true
+          fi
+
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'${tag}' is not a release tag (expected vMAJOR.MINOR.PATCH[-prerelease])."
+            exit 1
+          fi
+
+          if [[ "$tag" == *-* ]]; then prerelease=true; else prerelease=false; fi
+
+          # GHCR only accepts lowercase repository names.
+          image="ghcr.io/$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+
+          {
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+            echo "image=${image}"
+            echo "prerelease=${prerelease}"
+            echo "floating=${floating}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing ${image}:${tag#v} (prerelease=${prerelease}, floating tags=${floating})"
+
   build:
+    name: Build ${{ matrix.platform }}
+    needs: resolve
+    permissions:
+      contents: read
+      packages: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
@@ -24,76 +97,83 @@ jobs:
           - platform: linux/arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
-    name: Build ${{ matrix.platform }} Image
     steps:
-      - name: Prepare
-        run: |
-          platform=${{ matrix.platform }}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
-
-      - name: Checkout base
+      - name: Checkout ${{ needs.resolve.outputs.tag }}
         uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
+
+      - name: Prepare
+        id: prep
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          {
+            echo "platform_pair=${PLATFORM//\//-}"
+            echo "revision=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_IMAGE }}
+          images: ${{ needs.resolve.outputs.image }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
-            type=raw,value=canary,enable=${{ contains(github.event.release.tag_name, '-canary.') }}
-            type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event.release.prerelease }}
+            type=semver,pattern={{version}},value=${{ needs.resolve.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.tag }},enable=${{ needs.resolve.outputs.floating == 'true' }}
+            type=raw,value=latest,enable=${{ needs.resolve.outputs.floating == 'true' && needs.resolve.outputs.prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.prep.outputs.revision }}
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
 
-      - name: Docker login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
-
-      - name: Get commit SHA
-        if: github.ref == 'refs/heads/main'
-        id: vars
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Build and export
+      - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
-          platforms: ${{ matrix.platform }}
           context: .
           file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            SHA=${{ steps.vars.outputs.sha_short }}
-          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          outputs: type=image,name=${{ needs.resolve.outputs.image }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
+          set -euo pipefail
           rm -rf /tmp/digests
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
-      - name: Upload artifact
+      - name: Upload digest
         uses: actions/upload-artifact@v6
         with:
-          name: digest-${{ env.PLATFORM_PAIR }}
+          name: digest-${{ steps.prep.outputs.platform_pair }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
-    name: Merge
-    needs: build
+    name: Merge multi-arch manifest
+    needs: [resolve, build]
+    permissions:
+      packages: write
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout base
-        uses: actions/checkout@v6
-
       - name: Download digests
         uses: actions/download-artifact@v7
         with:
@@ -104,31 +184,71 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_IMAGE }}
+          images: ${{ needs.resolve.outputs.image }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
-            type=raw,value=canary,enable=${{ contains(github.event.release.tag_name, '-canary.') }}
-            type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event.release.prerelease }}
-
-      - name: Docker login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+            type=semver,pattern={{version}},value=${{ needs.resolve.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.tag }},enable=${{ needs.resolve.outputs.floating == 'true' }}
+            type=raw,value=latest,enable=${{ needs.resolve.outputs.floating == 'true' && needs.resolve.outputs.prerelease == 'false' }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
         run: |
-          # 过滤掉带 v 前缀的 tag（如 lobehub/lobehub:v2.1.29），只保留无 v 前缀的版本号和 latest
-          TAGS=$(jq -cr '.tags | map(select(test(":v\\d") | not)) | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-          docker buildx imagetools create $TAGS \
-            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+          set -euo pipefail
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
 
       - name: Inspect image
+        run: docker buildx imagetools inspect "${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}"
+
+  release:
+    name: Publish GitHub Release
+    needs: [resolve, merge]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compose release body
+        id: body
+        env:
+          FLOATING: ${{ needs.resolve.outputs.floating }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
+          set -euo pipefail
+          {
+            echo 'body<<RELEASE_BODY_EOF'
+            echo '### Docker images'
+            echo
+            echo '```bash'
+            echo "docker pull ${IMAGE}:${VERSION}"
+            if [[ "$FLOATING" == 'true' && "$PRERELEASE" == 'false' ]]; then
+              echo "docker pull ${IMAGE}:latest"
+            fi
+            echo '```'
+            echo
+            echo 'Platforms: `linux/amd64`, `linux/arm64` (Apple Silicon Macs use `linux/arm64` via Docker Desktop)'
+            echo 'RELEASE_BODY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          prerelease: ${{ needs.resolve.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          body: ${{ steps.body.outputs.body }}
