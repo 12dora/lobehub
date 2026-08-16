@@ -1,317 +1,154 @@
 // @vitest-environment node
-import type { TaskTemplate } from '@lobechat/const';
-import { TASK_TEMPLATE_RECOMMEND_MAX_COUNT } from '@lobechat/const';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  INTEREST_AREA_KEYS,
+  isSupportedTaskTemplateCronPattern,
+  TASK_TEMPLATE_CATEGORIES,
+  TASK_TEMPLATE_PERSONAL_ONLY_CATEGORIES,
+  TASK_TEMPLATE_RECOMMEND_COUNT,
+  TASK_TEMPLATE_RECOMMEND_MAX_COUNT,
+} from '@lobechat/const';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createTaskTemplateRecommendationSeedKey,
-  TaskTemplateMarketTimeoutError,
+  listTaskTemplateLibrary,
+  resolveTaskTemplateLibraryLocale,
+  TASK_TEMPLATE_LIBRARY,
   TaskTemplateService,
 } from './index';
 
-const { mockAppEnv, mockGetTaskTemplateRecommendations, mockMarket } = vi.hoisted(() => {
-  const market: {
-    taskTemplates: {
-      getTaskTemplateRecommendations: ReturnType<typeof vi.fn>;
-    };
-  } = {
-    taskTemplates: {
-      getTaskTemplateRecommendations: vi.fn(),
-    },
-  };
+const { mockAppEnv } = vi.hoisted(() => ({
+  mockAppEnv: { APP_URL: 'https://self-hosted.example' },
+}));
 
-  return {
-    mockAppEnv: {
-      APP_URL: 'https://self-hosted.example',
-      MARKET_TRUSTED_CLIENT_ID: 'client-id' as string | undefined,
-      MARKET_TRUSTED_CLIENT_SECRET: 'secret' as string | undefined,
-    },
-    mockGetTaskTemplateRecommendations: vi.fn(),
-    mockMarket: market,
-  };
+vi.mock('@/envs/app', () => ({ appEnv: mockAppEnv }));
+
+const fixedNow = () => new Date('2026-08-17T08:00:00.000Z');
+
+describe('bundled task-template library', () => {
+  it('only ships work templates — no personal-only categories, no connectors required', () => {
+    expect(TASK_TEMPLATE_LIBRARY.length).toBeGreaterThanOrEqual(24);
+    for (const item of TASK_TEMPLATE_LIBRARY) {
+      expect(TASK_TEMPLATE_PERSONAL_ONLY_CATEGORIES).not.toContain(item.category);
+      expect(TASK_TEMPLATE_CATEGORIES).toContain(item.category);
+      expect(item.connectors).toEqual([]);
+      expect(isSupportedTaskTemplateCronPattern(item.cronPattern)).toBe(true);
+      expect(item.interests.length).toBeGreaterThan(0);
+      for (const interest of item.interests) expect(INTEREST_AREA_KEYS).toContain(interest);
+      expect(item.identifier).toMatch(/^[a-z0-9-]+$/);
+      for (const locale of ['zh-CN', 'en-US'] as const) {
+        expect(item.text[locale].title.trim()).not.toBe('');
+        expect(item.text[locale].description.trim()).not.toBe('');
+        expect(item.text[locale].instruction.trim()).not.toBe('');
+      }
+    }
+  });
+
+  it('has unique identifiers and ids', () => {
+    expect(new Set(TASK_TEMPLATE_LIBRARY.map((item) => item.identifier)).size).toBe(
+      TASK_TEMPLATE_LIBRARY.length,
+    );
+    expect(new Set(TASK_TEMPLATE_LIBRARY.map((item) => item.id)).size).toBe(
+      TASK_TEMPLATE_LIBRARY.length,
+    );
+  });
+
+  it('covers the core enterprise functions', () => {
+    const categories = new Set(TASK_TEMPLATE_LIBRARY.map((item) => item.category));
+    for (const category of [
+      'engineering',
+      'operations',
+      'sales-customer',
+      'business',
+      'marketing',
+      'product',
+      'hr',
+      'finance-legal',
+    ]) {
+      expect(categories.has(category as never)).toBe(true);
+    }
+  });
+
+  it('resolves zh locales to zh-CN and everything else to en-US', () => {
+    expect(resolveTaskTemplateLibraryLocale('zh-CN')).toBe('zh-CN');
+    expect(resolveTaskTemplateLibraryLocale('zh')).toBe('zh-CN');
+    expect(resolveTaskTemplateLibraryLocale('zh-TW')).toBe('zh-CN');
+    expect(resolveTaskTemplateLibraryLocale('en-US')).toBe('en-US');
+    expect(resolveTaskTemplateLibraryLocale('ja-JP')).toBe('en-US');
+    expect(resolveTaskTemplateLibraryLocale(undefined)).toBe('en-US');
+
+    const zh = listTaskTemplateLibrary('zh-CN');
+    const en = listTaskTemplateLibrary('en-US');
+    expect(zh[0]!.title).not.toBe(en[0]!.title);
+    expect(zh[0]!.identifier).toBe(en[0]!.identifier);
+  });
 });
 
-vi.mock('@/server/services/market', () => ({
-  MarketService: vi.fn(() => ({ market: mockMarket })),
-}));
-
-vi.mock('@/envs/app', () => ({
-  appEnv: mockAppEnv,
-}));
-
-const template = {
-  category: 'engineering',
-  connectors: [],
-  cronPattern: '0 9 * * *',
-  description: 'Description',
-  id: 101,
-  identifier: 'daily-engineering',
-  instruction: 'Instruction',
-  interests: ['coding'],
-  title: 'Title',
-} satisfies TaskTemplate;
-
 describe('TaskTemplateService.listDailyRecommend', () => {
-  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
-
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockAppEnv.MARKET_TRUSTED_CLIENT_ID = 'client-id';
-    mockAppEnv.MARKET_TRUSTED_CLIENT_SECRET = 'secret';
-    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    mockMarket.taskTemplates = {
-      getTaskTemplateRecommendations: mockGetTaskTemplateRecommendations,
-    };
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: [template] });
+    mockAppEnv.APP_URL = 'https://self-hosted.example';
   });
 
-  afterEach(() => {
-    consoleErrorSpy.mockRestore();
+  it('returns the default count of localized library templates', async () => {
+    const service = new TaskTemplateService('user-1', fixedNow);
+    const result = await service.listDailyRecommend(['coding'], { locale: 'zh-CN' });
+
+    expect(result).toHaveLength(TASK_TEMPLATE_RECOMMEND_COUNT);
+    for (const item of result) {
+      expect(TASK_TEMPLATE_LIBRARY.some((lib) => lib.identifier === item.identifier)).toBe(true);
+      expect(item.connectors).toEqual([]);
+    }
   });
 
-  it('returns Market recommendation items', async () => {
-    const service = new TaskTemplateService('user-1');
+  it('prefers templates matching the interests, then fills from the rest', async () => {
+    const service = new TaskTemplateService('user-1', fixedNow);
+    const hrCount = TASK_TEMPLATE_LIBRARY.filter((item) => item.interests.includes('hr')).length;
+    const result = await service.listDailyRecommend(['hr'], { count: hrCount + 2 });
 
-    const result = await service.listDailyRecommend(['coding']);
-
-    expect(result).toEqual([template]);
+    expect(result.slice(0, hrCount).every((item) => item.interests.includes('hr'))).toBe(true);
+    expect(result.slice(hrCount).every((item) => !item.interests.includes('hr'))).toBe(true);
   });
 
-  it('returns an empty list when Market returns no recommendation items', async () => {
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: [] });
-    const service = new TaskTemplateService('user-1');
+  it('is deterministic per user/day and changes with the refresh seed', async () => {
+    const service = new TaskTemplateService('user-1', fixedNow);
+    const a = await service.listDailyRecommend([], { count: 5 });
+    const b = await service.listDailyRecommend([], { count: 5 });
+    const c = await service.listDailyRecommend([], { count: 5, refreshSeed: 'again' });
 
-    const result = await service.listDailyRecommend(['coding']);
-
-    expect(result).toEqual([]);
+    expect(a.map((item) => item.identifier)).toEqual(b.map((item) => item.identifier));
+    expect(c.map((item) => item.identifier)).not.toEqual(a.map((item) => item.identifier));
   });
 
-  it('passes recommendation inputs to Market', async () => {
-    const service = new TaskTemplateService('user-1');
+  it('honours excludeIds and clamps oversized counts', async () => {
+    const service = new TaskTemplateService('user-1', fixedNow);
+    const first = await service.listDailyRecommend([], { count: 1 });
+    const excludedId = Number(first[0]!.id);
 
-    await service.listDailyRecommend(['coding'], {
-      count: 10,
-      excludeIds: [101],
-      locale: 'zh-CN',
-      refreshSeed: 'refresh-1',
-    });
-
-    expect(mockGetTaskTemplateRecommendations).toHaveBeenCalledWith({
-      count: 10,
-      excludeIds: [101],
-      interestKeys: ['coding'],
-      locale: 'zh-CN',
-      refreshSeed: 'refresh-1',
-    });
-  });
-
-  it('does not pass seedKey when trusted client auth is enabled', async () => {
-    const service = new TaskTemplateService('local-user-raw-id');
-
-    await service.listDailyRecommend(['coding']);
-
-    expect(mockGetTaskTemplateRecommendations.mock.calls[0][0]).not.toHaveProperty('seedKey');
-  });
-
-  it('uses an opaque stable seedKey without exposing the local user id when anonymous', async () => {
-    mockAppEnv.MARKET_TRUSTED_CLIENT_ID = undefined;
-    mockAppEnv.MARKET_TRUSTED_CLIENT_SECRET = undefined;
-    const service = new TaskTemplateService('local-user-raw-id');
-
-    await service.listDailyRecommend(['coding']);
-    await service.listDailyRecommend(['coding']);
-
-    const firstSeedKey = mockGetTaskTemplateRecommendations.mock.calls[0][0].seedKey;
-    const secondSeedKey = mockGetTaskTemplateRecommendations.mock.calls[1][0].seedKey;
-    expect(firstSeedKey).toBe(secondSeedKey);
-    expect(firstSeedKey).not.toContain('local-user-raw-id');
-    expect(firstSeedKey).toBe(createTaskTemplateRecommendationSeedKey('local-user-raw-id'));
-  });
-
-  it('clamps oversized recommendation counts before calling Market', async () => {
-    const service = new TaskTemplateService('user-1');
-
-    await service.listDailyRecommend(['coding'], { count: 25 });
-
-    expect(mockGetTaskTemplateRecommendations).toHaveBeenCalledWith(
-      expect.objectContaining({ count: TASK_TEMPLATE_RECOMMEND_MAX_COUNT }),
-    );
-  });
-
-  it('throws when Market recommendations fail', async () => {
-    mockGetTaskTemplateRecommendations.mockRejectedValue(new Error('market down'));
-    const service = new TaskTemplateService('user-1');
-
-    await expect(service.listDailyRecommend(['coding'])).rejects.toThrow('market down');
-  });
-
-  it('throws when Market returns a malformed response', async () => {
-    mockGetTaskTemplateRecommendations.mockResolvedValue({});
-    const service = new TaskTemplateService('user-1');
-
-    await expect(service.listDailyRecommend(['coding'])).rejects.toThrow(
-      'Market recommendations returned no items array',
-    );
-  });
-
-  it('returns official connector fields from Market recommendation items', async () => {
-    const templateWithConnectors = {
-      ...template,
-      connectors: [
-        { identifier: 'github', required: true, source: 'lobehub' },
-        { identifier: 'gmail', required: false, source: 'composio' },
-      ],
-      id: 102,
-    } satisfies TaskTemplate;
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: [templateWithConnectors] });
-    const service = new TaskTemplateService('user-1');
-
-    const result = await service.listDailyRecommend(['coding']);
-
-    expect(result).toEqual([templateWithConnectors]);
-  });
-
-  it('throws when Market recommendation items are malformed', async () => {
-    mockGetTaskTemplateRecommendations.mockResolvedValue({
-      items: [
-        template,
-        null,
-        [],
-        { ...template, category: 'unknown-category' },
-        { ...template, connectors: 'invalid-connectors' },
-        { ...template, description: undefined },
-        { ...template, icon: 'unknown-icon' },
-        { ...template, id: 101.5 },
-        { ...template, id: '101' },
-        { ...template, identifier: 101 },
-        { ...template, instruction: 101 },
-        { ...template, interests: 'coding' },
-        { ...template, interests: ['unknown-interest'] },
-        { ...template, title: 101 },
-        { ...template, cronPattern: 0 },
-        { ...template, cronPattern: '0 9 * *' },
-        { ...template, cronPattern: '*/0 * * * *' },
-        { ...template, cronPattern: '0 */0 * * *' },
-        { ...template, cronPattern: '60 9 * * *' },
-        { ...template, cronPattern: '0 24 * * *' },
-        { ...template, cronPattern: '0 9 1 * *' },
-        { ...template, cronPattern: '0 9 * 1 *' },
-        { ...template, cronPattern: '0 9 * * 7' },
-        { ...template, cronPattern: '0 9 * * 1,7' },
-        { ...template, connectors: [{ identifier: 101, required: true, source: 'lobehub' }] },
-        { ...template, connectors: [{ identifier: 'github', source: 'lobehub' }] },
-        { ...template, connectors: [{ identifier: 'github', required: true, source: 'unknown' }] },
-      ],
-    });
-    const service = new TaskTemplateService('user-1');
-
-    await expect(service.listDailyRecommend(['coding'])).rejects.toThrow(
-      'Market recommendations returned malformed items',
-    );
-  });
-
-  it('accepts scheduler-supported cron patterns from Market recommendation items', async () => {
-    const templates = [
-      { ...template, cronPattern: '0 * * * *', id: 102 },
-      { ...template, cronPattern: '30 */6 * * *', id: 103 },
-      { ...template, cronPattern: '*/30 * * * *', id: 104 },
-      { ...template, cronPattern: '0 9 * * 1,3', id: 105 },
-      { ...template, cronPattern: '0 9 * * 0,1,2,3,4,5,6', id: 106 },
-    ] satisfies TaskTemplate[];
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: templates });
-    const service = new TaskTemplateService('user-1');
-
-    const result = await service.listDailyRecommend(['coding']);
-
-    expect(result).toEqual(templates);
-  });
-
-  it('keeps valid optional template icons from Market recommendation items', async () => {
-    const templateWithIcon = { ...template, icon: 'github', id: 102 } satisfies TaskTemplate;
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: [templateWithIcon] });
-    const service = new TaskTemplateService('user-1');
-
-    const result = await service.listDailyRecommend(['coding']);
-
-    expect(result).toEqual([templateWithIcon]);
-  });
-
-  it('throws when Market recommendation items omit connectors', async () => {
-    const marketTemplate = { ...template, connectors: undefined, id: 102 };
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: [marketTemplate] });
-    const service = new TaskTemplateService('user-1');
-
-    await expect(service.listDailyRecommend(['coding'])).rejects.toThrow(
-      'Market recommendations returned malformed items',
-    );
-  });
-
-  it('throws when Market recommendation items include unknown connector identifiers', async () => {
-    const validWithConnectors = {
-      ...template,
-      connectors: [
-        { identifier: 'github', required: true, source: 'lobehub' },
-        { identifier: 'gmail', required: false, source: 'composio' },
-      ],
-      id: 102,
-    } satisfies TaskTemplate;
-    mockGetTaskTemplateRecommendations.mockResolvedValue({
-      items: [
-        validWithConnectors,
-        {
-          ...template,
-          connectors: [{ identifier: 'unknown-required', required: true, source: 'lobehub' }],
-          id: 103,
-        },
-        {
-          ...template,
-          connectors: [{ identifier: 'unknown-optional', required: false, source: 'composio' }],
-          id: 104,
-        },
-      ],
-    });
-    const service = new TaskTemplateService('user-1');
-
-    await expect(service.listDailyRecommend(['coding'])).rejects.toThrow(
-      'Market recommendations returned malformed items',
-    );
+    const rest = await service.listDailyRecommend([], { count: 999, excludeIds: [excludedId] });
+    expect(rest).toHaveLength(TASK_TEMPLATE_RECOMMEND_MAX_COUNT);
+    expect(rest.some((item) => Number(item.id) === excludedId)).toBe(false);
   });
 });
 
 describe('TaskTemplateService.listDailyRecommendRaw', () => {
-  it('returns items untouched so callers can validate row by row', async () => {
-    const bad = { ...template, cronPattern: '0 9 1 * *', id: 202 };
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: [template, bad] });
-    const service = new TaskTemplateService('user-1');
-
-    // The whole-array parser would reject this response; the raw read must not.
-    await expect(service.listDailyRecommend(['coding'])).rejects.toThrow(
-      'Market recommendations returned malformed items',
-    );
-    await expect(service.listDailyRecommendRaw(['coding'])).resolves.toEqual([template, bad]);
-  });
-
-  it('still requires an items envelope', async () => {
-    mockGetTaskTemplateRecommendations.mockResolvedValue({ nope: true });
-    const service = new TaskTemplateService('user-1');
-
-    await expect(service.listDailyRecommendRaw(['coding'])).rejects.toThrow(
-      'Market recommendations returned no items array',
-    );
-  });
-
-  it('forwards a bounded abort signal and maps its abort to a timeout error', async () => {
-    const controller = new AbortController();
-    mockGetTaskTemplateRecommendations.mockRejectedValue(
-      Object.assign(new Error('aborted'), { name: 'TimeoutError' }),
-    );
-    const service = new TaskTemplateService('user-1');
-
-    await expect(
-      service.listDailyRecommendRaw(['coding'], { signal: controller.signal }),
-    ).rejects.toBeInstanceOf(TaskTemplateMarketTimeoutError);
-    expect(mockGetTaskTemplateRecommendations).toHaveBeenCalledWith(expect.any(Object), {
-      signal: controller.signal,
+  it('returns the whole localized library for the admin import', async () => {
+    const service = new TaskTemplateService('user-1', fixedNow);
+    const items = await service.listDailyRecommendRaw([...INTEREST_AREA_KEYS], {
+      locale: 'en-US',
     });
+    expect(items).toHaveLength(TASK_TEMPLATE_LIBRARY.length);
+    expect((items[0] as { title: string }).title).toBe(
+      TASK_TEMPLATE_LIBRARY[0]!.text['en-US'].title,
+    );
+  });
+});
+
+describe('createTaskTemplateRecommendationSeedKey', () => {
+  it('is stable for the same user and instance and does not expose the user id', () => {
+    const key = createTaskTemplateRecommendationSeedKey('user-1');
+    expect(key).toBe(createTaskTemplateRecommendationSeedKey('user-1'));
+    expect(key).not.toContain('user-1');
+    expect(key).not.toBe(createTaskTemplateRecommendationSeedKey('user-2'));
+    expect(key).not.toBe(createTaskTemplateRecommendationSeedKey('user-1', 'other-instance'));
   });
 });

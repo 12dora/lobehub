@@ -12,7 +12,6 @@ import { PlatformRevisionConflictError } from '@/database/models/platform/errors
 import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import { TaskTemplateMarketTimeoutError } from '@/server/services/taskTemplate';
 
 import {
   adminTaskTemplateCreateInputSchema,
@@ -38,7 +37,7 @@ import {
 import { PlatformAuditService } from '../../services/platformAudit';
 import {
   deriveTaskTemplateIdentifier,
-  fetchMarketTaskTemplatesForImport,
+  fetchLibraryTaskTemplatesForImport,
   toAdminTaskTemplateItem,
   toTaskTemplateAuditDiff,
 } from './taskTemplatesSupport';
@@ -101,12 +100,10 @@ const writeFailed = (): never =>
     httpCode: 'INTERNAL_SERVER_ERROR',
   });
 
-const marketUnavailable = (
-  reason: 'market_recommendations_timeout' | 'market_recommendations_unavailable',
-): never =>
+const libraryUnavailable = (): never =>
   throwEnterpriseError({
     code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
-    details: { issueCount: 1, reason },
+    details: { issueCount: 1, reason: 'task_template_library_unavailable' },
     httpCode: 'BAD_GATEWAY',
   });
 
@@ -193,7 +190,7 @@ export const adminTaskTemplatesRouter = router({
     }),
 
   /**
-   * 从推荐库导入 — pull the current market recommendations and upsert them by `identifier`.
+   * 从推荐库导入 — pull the bundled task-template library and upsert it by `identifier`.
    * Idempotent: content columns are refreshed while an existing row keeps the operator's own
    * `enabled` / `sortOrder` choices. Imported rows are created enabled.
    */
@@ -201,20 +198,16 @@ export const adminTaskTemplatesRouter = router({
     .input(adminTaskTemplateImportInputSchema)
     .output(adminTaskTemplateImportOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      // Outbound market call stays outside the transaction (bounded by its own deadline) so a
-      // slow remote can neither hold row locks nor hang the mutation.
-      let fetched: Awaited<ReturnType<typeof fetchMarketTaskTemplatesForImport>>;
+      // Library resolution stays outside the transaction so a failure can neither hold row locks
+      // nor leave a partial catalog behind.
+      let fetched: Awaited<ReturnType<typeof fetchLibraryTaskTemplatesForImport>>;
       try {
-        fetched = await fetchMarketTaskTemplatesForImport({
+        fetched = await fetchLibraryTaskTemplatesForImport({
           locale: input.locale,
           userId: ctx.userId!,
         });
-      } catch (error) {
-        return marketUnavailable(
-          error instanceof TaskTemplateMarketTimeoutError
-            ? 'market_recommendations_timeout'
-            : 'market_recommendations_unavailable',
-        );
+      } catch {
+        return libraryUnavailable();
       }
 
       try {
@@ -251,7 +244,7 @@ export const adminTaskTemplatesRouter = router({
                 })),
             },
             result: 'success',
-            targetId: 'market',
+            targetId: 'library',
             targetType: 'task_template',
           });
 

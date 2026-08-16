@@ -1,10 +1,5 @@
 import type { TaskTemplateCategory, TaskTemplateIcon } from '@lobechat/const';
-import {
-  INTEREST_AREA_KEYS,
-  TASK_TEMPLATE_CATEGORIES,
-  TASK_TEMPLATE_ICONS,
-  TASK_TEMPLATE_RECOMMEND_MAX_COUNT,
-} from '@lobechat/const';
+import { INTEREST_AREA_KEYS, TASK_TEMPLATE_CATEGORIES, TASK_TEMPLATE_ICONS } from '@lobechat/const';
 
 import type {
   PlatformTaskTemplateImportRow,
@@ -164,38 +159,30 @@ export const deriveTaskTemplateIdentifier = (title: string, suffix = randomSuffi
   return slug ? `${slug}-${suffix}` : `custom-${suffix}`;
 };
 
-/** Bounded deadline for the admin import's outbound market call. */
-export const TASK_TEMPLATE_IMPORT_TIMEOUT_MS = 15_000;
+/** Upper bound on one import batch — the bundled library is far below it; a guard, not a cap. */
+export const TASK_TEMPLATE_IMPORT_MAX_ROWS = 200;
 
 /**
- * Pull the current market recommendations for 从推荐库导入.
+ * Pull the bundled task-template library for 从推荐库导入.
  *
- * Rows are validated **individually** against the local import contract: an upstream row with an
- * oversized title, an unsupported cron, an unknown connector or a non-slug identifier is counted
- * as `skipped` instead of failing the whole import (and, crucially, can never be persisted in a
- * shape the admin list's own output schema would later reject).
- *
- * The batch is also capped locally at {@link TASK_TEMPLATE_RECOMMEND_MAX_COUNT}: `count` is only
- * a request parameter, so a malformed or hostile upstream could otherwise hand back an unbounded
- * array and turn one import into an unbounded transaction and audit record.
+ * Rows are validated **individually** against the local import contract: a row with an oversized
+ * title, an unsupported cron, an unknown connector or a non-slug identifier is counted as
+ * `skipped` instead of failing the whole import (and can never be persisted in a shape the admin
+ * list's own output schema would later reject).
  */
-export const fetchMarketTaskTemplatesForImport = async (params: {
+export const fetchLibraryTaskTemplatesForImport = async (params: {
   locale?: string;
-  signal?: AbortSignal;
   userId: string;
 }): Promise<{ rows: PlatformTaskTemplateImportRow[]; skipped: number }> => {
   const service = new TaskTemplateService(params.userId);
   const items = await service.listDailyRecommendRaw([...INTEREST_AREA_KEYS], {
-    // Import wants the whole recommendable set, not a daily slice.
-    count: TASK_TEMPLATE_RECOMMEND_MAX_COUNT,
     locale: params.locale,
-    signal: params.signal ?? AbortSignal.timeout(TASK_TEMPLATE_IMPORT_TIMEOUT_MS),
   });
 
   const rows: PlatformTaskTemplateImportRow[] = [];
   const seen = new Set<string>();
-  // Anything the upstream returned beyond our own cap is reported, never silently dropped.
-  const considered = items.slice(0, TASK_TEMPLATE_RECOMMEND_MAX_COUNT);
+  // Anything beyond the guard is reported, never silently dropped.
+  const considered = items.slice(0, TASK_TEMPLATE_IMPORT_MAX_ROWS);
   let skipped = items.length - considered.length;
 
   for (const item of considered) {

@@ -24,11 +24,11 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 import type * as TaskTemplateModuleTypes from '@/server/services/taskTemplate';
-import { TaskTemplateMarketTimeoutError } from '@/server/services/taskTemplate';
 
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { adminRouter } from '../admin';
 import { platformRouter } from '../platform';
+import { TASK_TEMPLATE_IMPORT_MAX_ROWS } from './taskTemplatesSupport';
 
 type TaskTemplateModule = typeof TaskTemplateModuleTypes;
 
@@ -52,7 +52,6 @@ vi.mock('../../services/platformAudit', () => ({
 }));
 
 vi.mock('@/server/services/taskTemplate', async (importOriginal) => {
-  // Keep the real TaskTemplateMarketTimeoutError so the timeout branch stays assertable.
   const actual = await importOriginal<TaskTemplateModule>();
   return {
     ...actual,
@@ -428,7 +427,7 @@ describe('admin.taskTemplates.importRecommendations', () => {
     expect(rows.map((row) => row.identifier)).toEqual(['good-row']);
   });
 
-  it('surfaces an unavailable market instead of writing a partial catalog', async () => {
+  it('surfaces an unavailable library instead of writing a partial catalog', async () => {
     const caller = await adminCaller();
     listDailyRecommendSpy.mockRejectedValue(new Error('market down'));
 
@@ -436,43 +435,29 @@ describe('admin.taskTemplates.importRecommendations', () => {
       cause: {
         data: {
           code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
-          details: { reason: 'market_recommendations_unavailable' },
+          details: { reason: 'task_template_library_unavailable' },
         },
       },
     });
     expect(await db.select().from(platformTaskTemplates)).toHaveLength(0);
   });
 
-  it('distinguishes a stalled market (bounded deadline) from a plain failure', async () => {
+  it('caps an oversized library batch and reports the excess as skipped', async () => {
     const caller = await adminCaller();
-    listDailyRecommendSpy.mockRejectedValue(new TaskTemplateMarketTimeoutError());
-
-    await expect(caller.importRecommendations({})).rejects.toMatchObject({
-      cause: {
-        data: {
-          code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
-          details: { reason: 'market_recommendations_timeout' },
-        },
-      },
-    });
-  });
-
-  it('caps an oversized upstream response and reports the excess as skipped', async () => {
-    const caller = await adminCaller();
-    // A malformed or hostile upstream can ignore `count`; the batch must still be bounded.
+    // The batch must stay bounded even if the source hands back an unbounded array.
     listDailyRecommendSpy.mockResolvedValue(
-      Array.from({ length: TASK_TEMPLATE_RECOMMEND_MAX_COUNT + 5 }, (_, index) =>
+      Array.from({ length: TASK_TEMPLATE_IMPORT_MAX_ROWS + 5 }, (_, index) =>
         marketTemplate({ id: index + 1, identifier: `market-row-${index}` }),
       ),
     );
 
     expect(await caller.importRecommendations({})).toEqual({
-      created: TASK_TEMPLATE_RECOMMEND_MAX_COUNT,
+      created: TASK_TEMPLATE_IMPORT_MAX_ROWS,
       skipped: 5,
       updated: 0,
     });
     expect(await db.select().from(platformTaskTemplates)).toHaveLength(
-      TASK_TEMPLATE_RECOMMEND_MAX_COUNT,
+      TASK_TEMPLATE_IMPORT_MAX_ROWS,
     );
   });
 
