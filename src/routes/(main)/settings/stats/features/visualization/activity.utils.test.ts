@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activityBucketDay,
+  activitySeriesDays,
   activitySpansDays,
   currentDayInZone,
   formatActivityBucketLabel,
   isTerminalDayCurrent,
   resolveActivityView,
+  resolveCalendarBlockMetrics,
   summarizeActivitySeries,
+  toActivityHourRows,
   toHeatmapActivities,
 } from './activity.utils';
 
@@ -16,13 +19,10 @@ describe('resolveActivityView', () => {
     ['today (a few hours)', '2026-08-16T00:00:00.000Z', '2026-08-16T09:30:00.000Z', 'hour'],
     ['24 hours', '2026-08-15T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'hour'],
     ['just under 48 hours', '2026-08-14T10:00:00.000Z', '2026-08-16T09:00:00.000Z', 'hour'],
-    ['exactly 48 hours', '2026-08-14T09:00:00.000Z', '2026-08-16T09:00:00.000Z', 'day'],
-    ['7 days', '2026-08-10T00:00:00.000Z', '2026-08-16T09:30:00.000Z', 'day'],
-    ['14 days', '2026-08-02T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'day'],
-    ['30 days', '2026-07-17T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'day'],
-    ['90 days', '2026-05-18T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'day'],
-    ['exactly 92 days', '2026-05-16T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'day'],
-    ['93 days', '2026-05-15T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'calendar'],
+    ['exactly 48 hours', '2026-08-14T09:00:00.000Z', '2026-08-16T09:00:00.000Z', 'calendar'],
+    ['7 days', '2026-08-10T00:00:00.000Z', '2026-08-16T09:30:00.000Z', 'calendar'],
+    ['30 days', '2026-07-17T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'calendar'],
+    ['90 days', '2026-05-18T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'calendar'],
     ['a year', '2025-08-16T09:30:00.000Z', '2026-08-16T09:30:00.000Z', 'calendar'],
   ])('picks the %s rendering from the window span', (_label, startAt, endAt, expected) => {
     expect(resolveActivityView(startAt, endAt)).toBe(expected);
@@ -38,18 +38,124 @@ describe('resolveActivityView', () => {
   });
 });
 
+/** The zero-filled day series the ranged endpoint returns for a window. */
+const daySeries = (startDay: string, days: number) =>
+  Array.from({ length: days }, (_, index) => {
+    const day = new Date(`${startDay}T00:00:00.000Z`);
+    day.setUTCDate(day.getUTCDate() + index);
+    return { bucket: day.toISOString().slice(0, 10), count: 0, level: 0 };
+  });
+
+describe('activitySeriesDays', () => {
+  it('counts the calendar days the series covers', () => {
+    expect(activitySeriesDays(daySeries('2026-08-10', 7))).toBe(7);
+    expect(activitySeriesDays(daySeries('2026-07-18', 30))).toBe(30);
+  });
+
+  it('is undefined when there is no series to measure', () => {
+    expect(activitySeriesDays()).toBeUndefined();
+    expect(activitySeriesDays([])).toBeUndefined();
+  });
+
+  it('collapses an hourly series onto the days it straddles', () => {
+    expect(
+      activitySeriesDays([
+        { bucket: '2026-08-15T22:00' },
+        { bucket: '2026-08-15T23:00' },
+        { bucket: '2026-08-16T00:00' },
+      ]),
+    ).toBe(2);
+  });
+
+  it('holds the 14-day step over a fall-back fortnight that lasts 337 hours', () => {
+    // The regression this guards: dividing the elapsed span by 24h rounds the extra
+    // hour up to a 15th day, dropping the blocks to 24px and reserving a month-label
+    // row the grid is far too narrow to print.
+    const elapsedHours =
+      (Date.parse('2026-11-02T00:00:00-08:00') - Date.parse('2026-10-19T00:00:00-07:00')) /
+      3_600_000;
+    expect(elapsedHours).toBe(337);
+
+    const metrics = resolveCalendarBlockMetrics(activitySeriesDays(daySeries('2026-10-19', 14)));
+    expect(metrics.blockSize).toBe(28);
+    expect(metrics.hideMonthLabels).toBe(true);
+  });
+
+  it.each([
+    // America/Los_Angeles falls back on 2026-11-01 and springs forward on 2026-03-08:
+    // each of these windows straddles one of the two switches.
+    ['fall-back', '2026-10-19', 14, 28],
+    ['fall-back', '2026-10-05', 35, 24],
+    ['fall-back', '2026-08-01', 98, 18],
+    ['spring-forward', '2026-02-23', 14, 28],
+    ['spring-forward', '2026-02-09', 35, 24],
+    ['spring-forward', '2025-12-15', 98, 18],
+  ])(
+    'holds the step boundary for a %s window from %s of %i days',
+    (_label, startDay, days, blockSize) => {
+      const metrics = resolveCalendarBlockMetrics(activitySeriesDays(daySeries(startDay, days)));
+      expect(metrics.blockSize).toBe(blockSize);
+    },
+  );
+});
+
+describe('resolveCalendarBlockMetrics', () => {
+  it.each([
+    [7, 28],
+    [14, 28],
+    [30, 24],
+    [35, 24],
+    [90, 18],
+    [98, 18],
+    [366, 14],
+  ])('grows the block so a %s-day window is not a stamp', (days, blockSize) => {
+    expect(resolveCalendarBlockMetrics(days).blockSize).toBe(blockSize);
+  });
+
+  it('keeps the year-view metrics when there is no window to scale to', () => {
+    // The unfiltered card and the in-flight skeleton both draw a full year.
+    expect(resolveCalendarBlockMetrics()).toEqual({
+      blockMargin: 4,
+      blockRadius: 2,
+      blockSize: 14,
+      hideMonthLabels: false,
+    });
+    expect(resolveCalendarBlockMetrics(undefined, true)).toEqual({
+      blockMargin: 3,
+      blockRadius: 2,
+      blockSize: 6,
+      hideMonthLabels: false,
+    });
+  });
+
+  it('scales down on mobile, where the card is a phone wide', () => {
+    expect(resolveCalendarBlockMetrics(7, true).blockSize).toBeLessThan(
+      resolveCalendarBlockMetrics(7).blockSize,
+    );
+    expect(resolveCalendarBlockMetrics(30, true).blockSize).toBe(10);
+  });
+
+  it('hides the month labels only where the calendar is too narrow to print one', () => {
+    // Under three week columns the chart drops every month label anyway; keeping the
+    // row would reserve empty space above the grid and show nothing in it.
+    expect(resolveCalendarBlockMetrics(7).hideMonthLabels).toBe(true);
+    expect(resolveCalendarBlockMetrics(14).hideMonthLabels).toBe(true);
+    expect(resolveCalendarBlockMetrics(15).hideMonthLabels).toBe(false);
+    expect(resolveCalendarBlockMetrics(30).hideMonthLabels).toBe(false);
+  });
+});
+
 describe('formatActivityBucketLabel', () => {
   it('labels an hour bucket with its wall-clock hour', () => {
     expect(formatActivityBucketLabel('2026-08-16T09:00', 'hour')).toBe('09:00');
   });
 
   it('labels a day bucket as M/D without zero padding', () => {
-    expect(formatActivityBucketLabel('2026-08-06', 'day')).toBe('8/6');
     expect(formatActivityBucketLabel('2026-08-06', 'calendar')).toBe('8/6');
   });
 
   it('returns the raw bucket when it is not a shape it knows', () => {
-    expect(formatActivityBucketLabel('whenever', 'day')).toBe('whenever');
+    expect(formatActivityBucketLabel('whenever', 'calendar')).toBe('whenever');
   });
 
   it('prefixes the calendar day when an hourly window straddles midnight', () => {
@@ -71,6 +177,45 @@ describe('activitySpansDays', () => {
     expect(
       activitySpansDays([{ bucket: '2026-08-15T23:00' }, { bucket: '2026-08-16T00:00' }]),
     ).toBe(true);
+  });
+});
+
+describe('toActivityHourRows', () => {
+  it('lays a partial day out over the full 24 slots', () => {
+    // "Today" ends at the current hour: the blocks must stay under the hour axis
+    // instead of sliding left as the day fills up.
+    const rows = toActivityHourRows([
+      { bucket: '2026-08-16T00:00', count: 0, level: 0 },
+      { bucket: '2026-08-16T09:00', count: 12, level: 3 },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].day).toBe('2026-08-16');
+    expect(rows[0].dayLabel).toBeUndefined();
+    expect(rows[0].hours).toHaveLength(24);
+    expect(rows[0].hours[9]).toEqual({ count: 12, label: '09:00', level: 3 });
+    expect(rows[0].hours[10]).toBeUndefined();
+  });
+
+  it('splits a window that straddles midnight into a labelled row per day', () => {
+    const rows = toActivityHourRows([
+      { bucket: '2026-08-16T00:00', count: 1, level: 1 },
+      { bucket: '2026-08-15T23:00', count: 4, level: 2 },
+    ]);
+
+    expect(rows.map((row) => row.day)).toEqual(['2026-08-15', '2026-08-16']);
+    expect(rows.map((row) => row.dayLabel)).toEqual(['8/15', '8/16']);
+    // The same hour on two days is ambiguous without the date.
+    expect(rows[0].hours[23]?.label).toBe('8/15 23:00');
+    expect(rows[1].hours[0]?.label).toBe('8/16 00:00');
+  });
+
+  it('ignores buckets that are not hourly', () => {
+    expect(toActivityHourRows()).toEqual([]);
+    expect(toActivityHourRows([])).toEqual([]);
+    // A day bucket has no hour to place, and must not silently land on midnight.
+    expect(toActivityHourRows([{ bucket: '2026-08-16', count: 5, level: 2 }])).toEqual([]);
+    expect(toActivityHourRows([{ bucket: '2026-08-16T99:00', count: 5, level: 2 }])).toEqual([]);
   });
 });
 

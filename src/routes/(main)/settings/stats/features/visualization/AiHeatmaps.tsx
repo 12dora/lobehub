@@ -20,8 +20,14 @@ import { formatIntergerNumber, formatShortenNumber } from '@/utils/format';
 
 import { HeatmapType } from '../../types';
 import StatsFormGroup from '../components/StatsFormGroup';
-import { resolveActivityView, resolveDisplayTimeZone, toHeatmapActivities } from './activity.utils';
-import ActivityBarChart from './ActivityBarChart';
+import {
+  activitySeriesDays,
+  resolveActivityView,
+  resolveCalendarBlockMetrics,
+  resolveDisplayTimeZone,
+  toHeatmapActivities,
+} from './activity.utils';
+import ActivityHourGrid from './ActivityHourGrid';
 import HeatmapStats from './HeatmapStats';
 
 const AiHeatmaps = memo<
@@ -69,29 +75,49 @@ const AiHeatmaps = memo<
   const days = activities.filter((item) => item.level > 0).length || '--';
   const hotDays = activities.filter((item) => item.level >= 3).length || '--';
 
+  const formatCount = (count: number) =>
+    isTokens ? formatShortenNumber(count) : formatIntergerNumber(count);
+
+  const calendarTooltip = (count: number, date: string) =>
+    t(isTokens ? 'heatmaps.tooltipTokens' : 'heatmaps.tooltip', {
+      count: formatCount(count),
+      date,
+    });
+
+  // The calendar's copy says "on that day", which an hour bucket is not — so the hour
+  // strip states the hour and the figure instead, in the same words the tabs use.
+  const hourTooltip = (count: number, hour: string) =>
+    [hour, '·', formatCount(count), t(isTokens ? 'stats.tokens' : 'stats.messages')].join(' ');
+
+  const legendLabels = {
+    less: t('heatmaps.legend.less'),
+    more: t('heatmaps.legend.more'),
+  };
+
+  // A ranged calendar is only a few columns wide, so its blocks grow to fill the card.
+  // Sized off the settled series' own calendar days — the grid's actual columns — and
+  // never off the elapsed span, which counts a DST fortnight as fifteen days. While the
+  // request is in flight the chart draws a year-shaped skeleton, which only reads right
+  // at the year-view size, so the day count is withheld until it settles.
+  const blocks = resolveCalendarBlockMetrics(
+    isLoading || !ranged ? undefined : activitySeriesDays(series.data),
+    mobile,
+  );
+
   const chart =
     view === 'calendar' ? (
       <Heatmaps
-        blockMargin={mobile ? 3 : undefined}
-        blockRadius={mobile ? 2 : undefined}
-        blockSize={mobile ? 6 : 14}
+        blockMargin={blocks.blockMargin}
+        blockRadius={blocks.blockRadius}
+        blockSize={blocks.blockSize}
+        customTooltip={(activity) => calendarTooltip(activity.count, activity.date)}
         data={activities}
+        hideMonthLabels={blocks.hideMonthLabels}
         hideTotalCount={isTokens || ranged}
         loading={isLoading}
         maxLevel={4}
-        customTooltip={(activity) =>
-          t(isTokens ? 'heatmaps.tooltipTokens' : 'heatmaps.tooltip', {
-            count: isTokens
-              ? formatShortenNumber(activity.count)
-              : formatIntergerNumber(activity.count),
-            date: activity.date,
-          })
-        }
         labels={{
-          legend: {
-            less: t('heatmaps.legend.less'),
-            more: t('heatmaps.legend.more'),
-          },
+          legend: legendLabels,
           months: [
             t('heatmaps.months.jan'),
             t('heatmaps.months.feb'),
@@ -115,12 +141,12 @@ const AiHeatmaps = memo<
         {...rest}
       />
     ) : (
-      <ActivityBarChart
+      <ActivityHourGrid
+        customTooltip={(cell) => hourTooltip(cell.count, cell.label)}
         data={series.data}
+        labels={legendLabels}
         loading={isLoading}
-        seriesName={isTokens ? t('stats.tokens') : t('stats.messages')}
-        showTokens={isTokens}
-        view={view}
+        mobile={mobile}
       />
     );
 

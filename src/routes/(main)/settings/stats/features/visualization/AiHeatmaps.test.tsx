@@ -30,11 +30,37 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@lobehub/charts', () => ({
-  BarChart: ({ data }: { data: Array<Record<string, unknown>> }) => (
-    <div data-labels={data.map((row) => row.bucket).join(',')} data-testid="bar-chart" />
+  Heatmaps: ({
+    blockSize,
+    data,
+    hideMonthLabels,
+  }: {
+    blockSize?: number;
+    data: Array<{ date: string }>;
+    hideMonthLabels?: boolean;
+  }) => (
+    <div
+      data-block-size={blockSize}
+      data-dates={data.map((row) => row.date).join(',')}
+      data-hide-month-labels={String(Boolean(hideMonthLabels))}
+      data-testid="heatmaps"
+    />
   ),
-  Heatmaps: ({ data }: { data: Array<{ date: string }> }) => (
-    <div data-dates={data.map((row) => row.date).join(',')} data-testid="heatmaps" />
+}));
+
+vi.mock('./ActivityHourGrid', () => ({
+  default: ({
+    customTooltip,
+    data,
+  }: {
+    customTooltip: (cell: { count: number; label: string; level: number }) => ReactNode;
+    data?: Array<{ bucket: string; count: number; level: number }>;
+  }) => (
+    <div
+      data-buckets={(data ?? []).map((row) => row.bucket).join(',')}
+      data-testid="hour-grid"
+      data-tooltip={String(customTooltip({ count: 1200, label: '09:00', level: 3 }))}
+    />
   ),
 }));
 
@@ -97,6 +123,17 @@ const RANGED_SOURCE: StatsDataSource = {
   scopeKey: 'admin-global',
 };
 
+/**
+ * The zero-filled day series the ranged endpoint returns — one bucket per calendar day
+ * of the window, which is what the calendar sizes its blocks by.
+ */
+const daySeries = (startDay: string, days: number) =>
+  Array.from({ length: days }, (_, index) => {
+    const day = new Date(`${startDay}T00:00:00.000Z`);
+    day.setUTCDate(day.getUTCDate() + index);
+    return { bucket: day.toISOString().slice(0, 10), count: index, level: index % 5 };
+  });
+
 const renderCard = (
   filter?: StatsFilter,
   dataSource: StatsDataSource = RANGED_SOURCE,
@@ -124,7 +161,9 @@ describe('AiHeatmaps', () => {
     mocks.swrData = [{ count: 3, date: '2026-08-15', level: 1 }];
     renderCard();
 
-    expect(screen.getByTestId('heatmaps')).toBeTruthy();
+    const heatmaps = screen.getByTestId('heatmaps');
+    expect(heatmaps.dataset.blockSize).toBe('14');
+    expect(heatmaps.dataset.hideMonthLabels).toBe('false');
     expect(screen.getByTestId('card-title').textContent).toBe('stats.lastYearActivity');
     expect(mocks.getTokenHeatmaps).toHaveBeenCalled();
     expect(mocks.activitySeries).not.toHaveBeenCalled();
@@ -145,7 +184,7 @@ describe('AiHeatmaps', () => {
     expect(screen.getByTestId('card-title').textContent).toBe('stats.lastYearActivity');
   });
 
-  it('drawsHourlyBarsAndHidesTheDayTagsForAWindowUnder48Hours', () => {
+  it('drawsAnHourStripAndHidesTheDayTagsForAWindowUnder48Hours', () => {
     mocks.swrData = [
       { bucket: '2026-08-16T08:00', count: 4, level: 2 },
       { bucket: '2026-08-16T09:00', count: 9, level: 4 },
@@ -156,7 +195,10 @@ describe('AiHeatmaps', () => {
       startAt: '2026-08-16T00:00:00.000Z',
     });
 
-    expect(screen.getByTestId('bar-chart').dataset.labels).toBe('08:00,09:00');
+    const grid = screen.getByTestId('hour-grid');
+    expect(grid.dataset.buckets).toBe('2026-08-16T08:00,2026-08-16T09:00');
+    // The calendar copy claims a whole day; an hour block states the hour and figure.
+    expect(grid.dataset.tooltip).toBe('09:00 · 1,200 stats.tokens');
     expect(screen.queryByTestId('heatmaps')).toBeNull();
     // "N days" over a sub-48h window would be counting hours and calling them days.
     expect(screen.queryAllByTestId('day-tag')).toHaveLength(0);
@@ -169,52 +211,80 @@ describe('AiHeatmaps', () => {
     );
   });
 
-  it('drawsDailyBarsForAWindowOfAtMostAQuarter', () => {
-    mocks.swrData = [
-      { bucket: '2026-08-10', count: 4, level: 2 },
-      { bucket: '2026-08-11', count: 0, level: 0 },
-    ];
+  it('keepsTheCalendarForAWeekAndGrowsItsBlocksSoItIsNotAStamp', () => {
+    mocks.swrData = daySeries('2026-08-10', 7);
     renderCard({
       endAt: '2026-08-16T09:30:00.000Z',
       rangeLabel: 'Last 7 days',
       startAt: '2026-08-10T00:00:00.000Z',
     });
 
-    expect(screen.getByTestId('bar-chart').dataset.labels).toBe('8/10,8/11');
-    expect(screen.queryByTestId('heatmaps')).toBeNull();
+    const heatmaps = screen.getByTestId('heatmaps');
+    expect(heatmaps.dataset.dates?.split(',')).toHaveLength(7);
+    expect(heatmaps.dataset.dates?.startsWith('2026-08-10,')).toBe(true);
+    expect(heatmaps.dataset.blockSize).toBe('28');
+    // Two week columns can never print a month label — do not reserve the row.
+    expect(heatmaps.dataset.hideMonthLabels).toBe('true');
+    expect(screen.queryByTestId('hour-grid')).toBeNull();
     expect(screen.queryAllByTestId('day-tag')).toHaveLength(2);
   });
 
-  it('keepsDailyBarsForA30DayWindowRatherThanAStampSizedCalendar', () => {
-    // 30 days is ~5 heatmap columns: a tiny block adrift in a full-width card.
-    mocks.swrData = [
-      { bucket: '2026-07-18', count: 4, level: 2 },
-      { bucket: '2026-07-19', count: 0, level: 0 },
-    ];
+  it('trimsTheCalendarToA30DayWindowAtAReadableBlockSize', () => {
+    // The regression this guards: 30 days at the year-view block size drew a stamp
+    // adrift in a full-width card.
+    mocks.swrData = daySeries('2026-07-18', 30);
     renderCard({
       endAt: '2026-08-16T09:30:00.000Z',
       rangeLabel: 'Last 30 days',
       startAt: '2026-07-18T00:00:00.000Z',
     });
 
-    expect(screen.getByTestId('bar-chart').dataset.labels).toBe('7/18,7/19');
-    expect(screen.queryByTestId('heatmaps')).toBeNull();
-    expect(screen.queryAllByTestId('day-tag')).toHaveLength(2);
+    const heatmaps = screen.getByTestId('heatmaps');
+    expect(heatmaps.dataset.dates?.split(',')).toHaveLength(30);
+    expect(heatmaps.dataset.blockSize).toBe('24');
+    expect(heatmaps.dataset.hideMonthLabels).toBe('false');
+    expect(screen.queryByTestId('hour-grid')).toBeNull();
   });
 
-  it('trimsTheCalendarToTheSelectedWindowForRangesBeyondAQuarter', () => {
-    mocks.swrData = [
-      { bucket: '2026-01-18', count: 4, level: 2 },
-      { bucket: '2026-01-19', count: 0, level: 0 },
-    ];
+  it('sizesTheCalendarByItsOwnDaysSoADstWindowDoesNotGainAPhantomDay', () => {
+    // 2026-10-19 → 2026-11-02 in America/Los_Angeles is fourteen calendar days but 337
+    // elapsed hours: measured by span it would round up to fifteen and drop a step.
+    mocks.swrData = daySeries('2026-10-19', 14);
+    renderCard({
+      endAt: '2026-11-02T00:00:00-08:00',
+      rangeLabel: 'Custom',
+      startAt: '2026-10-19T00:00:00-07:00',
+    });
+
+    const heatmaps = screen.getByTestId('heatmaps');
+    expect(heatmaps.dataset.blockSize).toBe('28');
+    expect(heatmaps.dataset.hideMonthLabels).toBe('true');
+  });
+
+  it('keepsTheYearViewBlockSizeForALongWindow', () => {
+    mocks.swrData = daySeries('2025-08-16', 366);
     renderCard({
       endAt: '2026-08-16T09:30:00.000Z',
       rangeLabel: 'Last 12 months',
       startAt: '2025-08-16T00:00:00.000Z',
     });
 
-    expect(screen.getByTestId('heatmaps').dataset.dates).toBe('2026-01-18,2026-01-19');
-    expect(screen.queryByTestId('bar-chart')).toBeNull();
+    const heatmaps = screen.getByTestId('heatmaps');
+    expect(heatmaps.dataset.dates?.split(',')).toHaveLength(366);
+    expect(heatmaps.dataset.blockSize).toBe('14');
+  });
+
+  it('holdsTheYearViewBlockSizeWhileTheRangedRequestIsStillInFlight', () => {
+    // The in-flight skeleton is a year of columns whatever the window is; drawing it
+    // at a short window's block size would blow it far past the card.
+    mocks.swrData = undefined;
+    renderCard({
+      endAt: '2026-08-16T09:30:00.000Z',
+      rangeLabel: 'Last 7 days',
+      startAt: '2026-08-10T00:00:00.000Z',
+    });
+
+    expect(screen.getByTestId('heatmaps').dataset.blockSize).toBe('14');
   });
 
   it('namesTheSelectedWindowInTheCardTitle', () => {
@@ -248,7 +318,7 @@ describe('AiHeatmaps', () => {
     );
 
     expect(screen.getByTestId('heatmaps').dataset.dates).toBe('2026-08-15');
-    expect(screen.queryByTestId('bar-chart')).toBeNull();
+    expect(screen.queryByTestId('hour-grid')).toBeNull();
     expect(mocks.getHeatmaps).toHaveBeenCalled();
     expect(mocks.activitySeries).not.toHaveBeenCalled();
   });
@@ -262,7 +332,7 @@ describe('AiHeatmaps', () => {
       startAt: '2026-08-16T00:00:00.000Z',
     });
 
-    expect(screen.queryByTestId('bar-chart')).toBeNull();
+    expect(screen.queryByTestId('hour-grid')).toBeNull();
     expect(screen.queryByTestId('heatmaps')).toBeNull();
 
     fireEvent.click(screen.getByTestId('retry'));

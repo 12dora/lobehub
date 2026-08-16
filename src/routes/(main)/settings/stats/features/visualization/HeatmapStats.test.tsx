@@ -196,9 +196,9 @@ describe('HeatmapStats', () => {
     expect(screen.queryByText('stats.heatmapStats.longestStreak')).toBeNull();
   });
 
-  it('keepsTheStreakTilesOnADayBarWindowSuchAsTheLast30Days', () => {
-    // 30 days now draws as daily bars, and streaks are exactly the day-over-day story
-    // that window is asking about — they must not disappear with the calendar.
+  it('keepsTheStreakTilesOnADayGranularityWindowSuchAsTheLast30Days', () => {
+    // Streaks are exactly the day-over-day story a multi-day window is asking about;
+    // only the sub-48h window, which has at most two days in it, drops them.
     mocks.results['stats:activitySeries'] = {
       data: [
         { bucket: '2026-08-14', count: 5, level: 2 },

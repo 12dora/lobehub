@@ -5,24 +5,28 @@ import type { StatsActivityBucket } from '@/features/SettingsStats';
 /**
  * How an activity series is drawn. Derived from the *span* of the selected window
  * rather than the preset key, so a custom range behaves like the preset of the same
- * length. The calendar grid is week-per-column, so it only earns a full-width card
- * from a quarter or so up — a month draws as a ~5-column stamp marooned in white
- * space, where bars fill the card and still answer "when was it busy".
+ * length.
+ *
+ * Every window keeps the same square blocks: a day-granularity window is the calendar
+ * grid, scaled up so a short range does not draw as a stamp, and a sub-48h window has
+ * no calendar days to fill so the very same squares are laid out as an hour strip.
  */
-export type ActivityView = 'hour' | 'day' | 'calendar';
+export type ActivityView = 'hour' | 'calendar';
 
 const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
 
-/** Windows shorter than this are drawn as hourly bars. */
+/** Windows shorter than this are cut by hour, so they get the hour strip. */
 const HOURLY_SPAN_MS = 48 * HOUR_MS;
 
-/**
- * Windows up to this length are drawn as daily bars — a quarter, so every preset
- * through 90 days gets bars. Beyond it the bars would out-number their labels and
- * the calendar finally has enough columns to read as a calendar.
- */
-const DAILY_SPAN_MS = 92 * DAY_MS;
+/** Length of a half-open `[startAt, endAt)` window, or `undefined` when unusable. */
+const activityWindowSpan = (startAt?: string, endAt?: string): number | undefined => {
+  const start = startAt ? Date.parse(startAt) : Number.NaN;
+  const end = endAt ? Date.parse(endAt) : Number.NaN;
+  if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
+
+  const span = end - start;
+  return span > 0 ? span : undefined;
+};
 
 /**
  * Pick the rendering for a half-open `[startAt, endAt)` window.
@@ -30,19 +34,96 @@ const DAILY_SPAN_MS = 92 * DAY_MS;
  * unfiltered page has always shown.
  */
 export const resolveActivityView = (startAt?: string, endAt?: string): ActivityView => {
-  const start = startAt ? Date.parse(startAt) : Number.NaN;
-  const end = endAt ? Date.parse(endAt) : Number.NaN;
-  if (Number.isNaN(start) || Number.isNaN(end)) return 'calendar';
+  const span = activityWindowSpan(startAt, endAt);
+  if (span === undefined) return 'calendar';
+  return span < HOURLY_SPAN_MS ? 'hour' : 'calendar';
+};
 
-  const span = end - start;
-  if (span <= 0) return 'calendar';
-  if (span < HOURLY_SPAN_MS) return 'hour';
-  if (span <= DAILY_SPAN_MS) return 'day';
-  return 'calendar';
+export interface CalendarBlockMetrics {
+  blockMargin: number;
+  blockRadius: number;
+  blockSize: number;
+  /**
+   * The calendar only prints a month label once three week columns follow it, so a
+   * window of a fortnight or less can never draw one and would merely reserve an
+   * empty label strip above the grid.
+   */
+  hideMonthLabels: boolean;
+}
+
+interface CalendarBlockStep extends Omit<CalendarBlockMetrics, 'hideMonthLabels'> {
+  /** Longest window, in calendar days, this step applies to. */
+  maxDays: number;
+}
+
+/**
+ * Block sizes by window length. The calendar is week-per-column, so a short window is
+ * only a handful of columns wide — at the year-view block size a month draws as a
+ * stamp marooned in the card. Growing the block keeps the grid legible; the cap stops
+ * a week from turning into a wall of tiles.
+ */
+const DESKTOP_BLOCK_STEPS: CalendarBlockStep[] = [
+  { blockMargin: 6, blockRadius: 5, blockSize: 28, maxDays: 14 },
+  { blockMargin: 6, blockRadius: 4, blockSize: 24, maxDays: 35 },
+  { blockMargin: 5, blockRadius: 3, blockSize: 18, maxDays: 98 },
+];
+
+const MOBILE_BLOCK_STEPS: CalendarBlockStep[] = [
+  { blockMargin: 3, blockRadius: 3, blockSize: 12, maxDays: 14 },
+  { blockMargin: 3, blockRadius: 2, blockSize: 10, maxDays: 35 },
+  { blockMargin: 3, blockRadius: 2, blockSize: 8, maxDays: 98 },
+];
+
+/** What a full year of columns has always used — also the fallback for no window. */
+const DESKTOP_YEAR_BLOCK = { blockMargin: 4, blockRadius: 2, blockSize: 14 };
+const MOBILE_YEAR_BLOCK = { blockMargin: 3, blockRadius: 2, blockSize: 6 };
+
+/** Shortest window that can print a month label at all. */
+const MONTH_LABEL_MIN_DAYS = 15;
+
+/**
+ * Scale the calendar blocks to the selected window, given the *calendar days* it covers
+ * (see {@link activitySeriesDays}). Called without a day count — the unfiltered year
+ * view, or while the request is still in flight — it returns exactly the year-view
+ * metrics, so nothing about that path moves.
+ */
+export const resolveCalendarBlockMetrics = (
+  days?: number,
+  mobile = false,
+): CalendarBlockMetrics => {
+  const dayCount = days !== undefined && days > 0 ? days : undefined;
+  const steps = mobile ? MOBILE_BLOCK_STEPS : DESKTOP_BLOCK_STEPS;
+  const step = dayCount === undefined ? undefined : steps.find((item) => dayCount <= item.maxDays);
+  const { blockMargin, blockRadius, blockSize } =
+    step ?? (mobile ? MOBILE_YEAR_BLOCK : DESKTOP_YEAR_BLOCK);
+
+  return {
+    blockMargin,
+    blockRadius,
+    blockSize,
+    hideMonthLabels: dayCount !== undefined && dayCount < MONTH_LABEL_MIN_DAYS,
+  };
 };
 
 /** The `YYYY-MM-DD` day a bucket belongs to. */
 export const activityBucketDay = (bucket: string): string => bucket.slice(0, 10);
+
+/**
+ * Calendar days a settled series covers, counted from the buckets themselves.
+ *
+ * The series is zero-filled per bucket on the display zone's calendar, so its distinct
+ * days *are* the grid's columns. Dividing the window span by 24h would instead count
+ * elapsed periods: a fortnight straddling a fall-back switch lasts 337 hours and would
+ * round up to 15 days, dropping the blocks a size and reserving an empty month-label
+ * row. `undefined` for an empty or missing series — there is nothing to scale to.
+ */
+export const activitySeriesDays = (rows?: Array<{ bucket: string }>): number | undefined => {
+  if (!rows?.length) return undefined;
+
+  const days = new Set<string>();
+  for (const row of rows) days.add(activityBucketDay(row.bucket));
+  return days.size;
+};
 
 /** `M/D` for a `YYYY-MM-DD…` bucket, or `undefined` when it is not that shape. */
 const formatMonthDay = (bucket: string): string | undefined => {
@@ -82,6 +163,72 @@ export const activitySpansDays = (rows?: Array<{ bucket: string }>): boolean => 
   if (!rows?.length) return false;
   const first = activityBucketDay(rows[0].bucket);
   return rows.some((row) => activityBucketDay(row.bucket) !== first);
+};
+
+/** Hours in a day — the width of one hour-strip row. */
+export const HOURS_PER_DAY = 24;
+
+export interface ActivityHourCell {
+  count: number;
+  /** `HH:00`, prefixed with `M/D` when the window straddles midnight. */
+  label: string;
+  level: number;
+}
+
+export interface ActivityHourRow {
+  /** The `YYYY-MM-DD` this row draws — stable enough to key it by. */
+  day: string;
+  /** `M/D` for the row, only set when the window covers more than one day. */
+  dayLabel?: string;
+  /** 24 slots; `undefined` where the window does not cover that hour. */
+  hours: Array<ActivityHourCell | undefined>;
+}
+
+/** The `0`–`23` slot a bucket occupies, or `undefined` when it is not an hour bucket. */
+const activityBucketHour = (bucket: string): number | undefined => {
+  const raw = bucket.slice(11, 13);
+  if (raw.length !== 2) return undefined;
+
+  const hour = Number(raw);
+  if (!Number.isInteger(hour) || hour < 0 || hour >= HOURS_PER_DAY) return undefined;
+  return hour;
+};
+
+/**
+ * Lay an hourly series out as one 24-slot row per calendar day.
+ *
+ * The row is always the full day even when the window is not — "today" ends at the
+ * current hour — so the blocks stay under the hour axis printed beneath them instead
+ * of sliding left as the day fills up.
+ */
+export const toActivityHourRows = (rows?: StatsActivityBucket[]): ActivityHourRow[] => {
+  if (!rows?.length) return [];
+
+  const withDate = activitySpansDays(rows);
+  const byDay = new Map<string, ActivityHourRow>();
+
+  for (const row of rows) {
+    const hour = activityBucketHour(row.bucket);
+    if (hour === undefined) continue;
+
+    const day = activityBucketDay(row.bucket);
+    let entry = byDay.get(day);
+    if (!entry) {
+      entry = {
+        day,
+        dayLabel: withDate ? formatActivityBucketLabel(day, 'calendar') : undefined,
+        hours: Array.from({ length: HOURS_PER_DAY }),
+      };
+      byDay.set(day, entry);
+    }
+    entry.hours[hour] = {
+      count: row.count,
+      label: formatActivityBucketLabel(row.bucket, 'hour', withDate),
+      level: row.level,
+    };
+  }
+
+  return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
 };
 
 /** Map the ranged series onto the calendar heatmap's `Activity` shape. */
