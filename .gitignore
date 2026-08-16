@@ -63,6 +63,8 @@ public/_spa-auth/
 public/spa/
 es/
 lib/
+# Source directories that happen to be named `lib` are not build outputs
+!packages/business/**/src/lib/
 .next/
 logs/
 test-output/
