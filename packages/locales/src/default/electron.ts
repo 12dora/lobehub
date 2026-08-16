@@ -11,7 +11,7 @@ export default {
   'navigation.home': 'Home',
   'navigation.image': 'Image',
   'navigation.knowledgeBase': 'Knowledge Base',
-  'navigation.lobehub': 'LobeHub',
+  'navigation.lobehub': '{{appName}}',
   'navigation.memory': 'Memory',
   'navigation.memoryContexts': 'Memory - Contexts',
   'navigation.memoryExperiences': 'Memory - Experiences',
@@ -113,7 +113,8 @@ export default {
   'gateway.title': 'Device Gateway',
   'remoteServer.authError': 'Authorization failed: {{error}}',
   'remoteServer.authPending': 'Please complete the authorization in your browser',
-  'remoteServer.configDesc': 'Connect to the remote LobeHub server to enable data synchronization',
+  'remoteServer.configDesc':
+    'Connect to the remote {{appName}} server to enable data synchronization',
   'remoteServer.configError': 'Configuration error',
   'remoteServer.configTitle': 'Configure Cloud Sync',
   'remoteServer.connect': 'Connect and authorize',

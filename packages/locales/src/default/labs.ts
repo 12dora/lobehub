@@ -15,7 +15,7 @@ export default {
     'Collapse the process (reasoning and tool calls) of finished agent turns under a "Processed" header once the final answer is visible. Click to expand the process.',
   'features.foldFinishedTurn.title': 'Fold Finished Turns',
   'features.imessage.desc':
-    'Connect agents to iMessage through the local LobeHub Desktop BlueBubbles bridge.',
+    'Connect agents to iMessage through the local {{appName}} Desktop BlueBubbles bridge.',
   'features.imessage.title': 'iMessage Channel',
   'features.groupChat.desc': 'Enable multi-agent group chat coordination.',
   'features.groupChat.title': 'Group Chat (Multi-Agent)',

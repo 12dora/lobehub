@@ -2,7 +2,7 @@ export default {
   'authResult.failed.desc': 'Please try again or switch to a different sign-in method',
   'authResult.failed.title': 'Authorization Failed',
   'authResult.success.desc':
-    'Please click the Start button below to continue using LobeHub Desktop',
+    'Please click the Start button below to continue using {{appName}} Desktop',
   'authResult.success.title': 'Authorization Successful',
 
   'back': 'Back',
@@ -64,11 +64,11 @@ export default {
   'screen4.privacy.items.3': 'All processing stays local',
   'screen4.privacy.title': 'Privacy Mode',
   'screen4.share.description':
-    'Share anonymized usage data to help us improve LobeHub. This helps us understand how Agents are used and make them better.',
+    'Share anonymized usage data to help us improve {{appName}}. This helps us understand how Agents are used and make them better.',
   'screen4.share.items.1': 'Performance metrics',
   'screen4.share.items.2': 'Model usage patterns',
   'screen4.share.items.3': 'Feature interactions',
-  'screen4.share.title': 'Help Improve LobeHub',
+  'screen4.share.title': 'Help Improve {{appName}}',
   'screen4.title': 'How would you like to share data?',
   'screen4.title2': 'Your choice helps us improve',
   'screen4.title3': 'You can change this anytime in settings',
@@ -95,7 +95,7 @@ export default {
   'screen5.methods.cloud.description':
     'Sign in with your LobeHub Cloud account to sync everything seamlessly',
   'screen5.methods.cloud.name': 'LobeHub Cloud',
-  'screen5.methods.selfhost.description': 'Connect to your own LobeHub server instance',
+  'screen5.methods.selfhost.description': 'Connect to your own {{appName}} server instance',
   'screen5.methods.selfhost.name': 'Self-hosted Instance',
   'screen5.navigation.next': 'Get Started',
   'screen5.selfhost.endpointPlaceholder': 'Enter your server URL (e.g., https://your-server.com)',

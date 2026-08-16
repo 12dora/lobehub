@@ -9,7 +9,6 @@ describe('BrandingPage locale contract', () => {
       conflict: [enUS['branding.conflict.title'], zhCN['branding.conflict.title']],
       empty: [enUS['branding.empty'], zhCN['branding.empty']],
       generic: [enUS['branding.errors.generic'], zhCN['branding.errors.generic']],
-      immediate: [enUS['branding.fields.immediate'], zhCN['branding.fields.immediate']],
       loading: [enUS['branding.loading'], zhCN['branding.loading']],
       preview: [enUS['branding.preview.frameTitle'], zhCN['branding.preview.frameTitle']],
       readOnly: [enUS['branding.readOnly'], zhCN['branding.readOnly']],
@@ -24,7 +23,6 @@ describe('BrandingPage locale contract', () => {
         'The branding change could not be completed. Check the fields and try again.',
         '品牌配置操作失败，请检查字段后重试。',
       ],
-      immediate: ['Takes effect immediately after saving.', '保存后立即生效。'],
       loading: ['Loading branding…', '正在加载品牌配置…'],
       preview: ['Branding preview', '品牌配置预览'],
       readOnly: [
@@ -32,8 +30,8 @@ describe('BrandingPage locale contract', () => {
         '你可以查看品牌配置，但没有编辑权限。',
       ],
       save: [
-        'These values replace the live branding for everyone as soon as you save.',
-        '保存后，这些值将立即替换所有人看到的品牌配置。',
+        'After saving, everyone will see the branding configured here.',
+        '保存后，所有人看到的品牌配置将更新为当前设置。',
       ],
       saved: ['Saved and live.', '已保存并生效'],
       storage: [

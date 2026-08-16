@@ -1,7 +1,7 @@
 'use client';
 
-import { Alert, Text } from '@lobehub/ui';
-import { createStaticStyles, cssVar } from 'antd-style';
+import { Alert } from '@lobehub/ui';
+import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -23,11 +23,6 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     flex-direction: column;
     gap: 8px;
-  `,
-  note: css`
-    margin-block-end: 8px;
-    font-size: 12px;
-    color: ${cssVar.colorTextSecondary};
   `,
 }));
 
@@ -74,7 +69,6 @@ const ServiceModelSettingsBody = memo(() => {
 
   return (
     <div className={styles.sections}>
-      <Text className={styles.note}>{t('aiServiceModel.autoPublishNote')}</Text>
       {dirtyDraftBlocked && <DirtyDraftAlert onDismiss={clearDirtyDraftBlocked} />}
       {mappedError && (
         <Alert

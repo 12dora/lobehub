@@ -1,8 +1,7 @@
 'use client';
 
-import { Alert, Flexbox, Text } from '@lobehub/ui';
+import { Alert, Flexbox } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,14 +12,6 @@ import { useSaveState } from '@/hooks/useSaveState';
 
 import DirtyDraftAlert from './DirtyDraftAlert';
 import { usePlatformSettingsDefaults } from './usePlatformSettingsDefaults';
-
-const styles = createStaticStyles(({ css }) => ({
-  note: css`
-    margin-block-end: 8px;
-    font-size: 12px;
-    color: ${cssVar.colorTextSecondary};
-  `,
-}));
 
 /**
  * Admin platform-default memory settings page (parity with user settings/memory).
@@ -69,7 +60,6 @@ const MemorySettingsPage = memo(() => {
       maxWidth={MAX_WIDTH}
       title={t('aiMemory.page.title')}
     >
-      <Text className={styles.note}>{t('aiMemory.autoPublishNote')}</Text>
       {dirtyDraftBlocked && <DirtyDraftAlert onDismiss={clearDirtyDraftBlocked} />}
       {fetchFailed ? (
         <Alert
