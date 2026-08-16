@@ -1,553 +1,231 @@
-<div align="center"><a name="readme-top"></a>
-
-[![][image-banner]][vercel-link]
-
-# LobeHub
-
-LobeHub organizes your agents into 7×24 operation.
-
-It hires, schedules, reports on your entire AI team.
-
-You stay in charge — without staying online.
-
-**English** · [简体中文](./README.zh-CN.md) · [Official Site][official-site] · [Changelog][changelog] · [Documents][docs] · [Blog][blog] · [Feedback][github-issues-link]
-
-<!-- SHIELD GROUP -->
-
-[![][github-release-shield]][github-release-link]
-[![][docker-release-shield]][docker-release-link]
-[![][vercel-shield]][vercel-link]
-[![][discord-shield]][discord-link]<br/>
-[![][codecov-shield]][codecov-link]
-[![][github-action-test-shield]][github-action-test-link]
-[![][github-action-release-shield]][github-action-release-link]
-[![][github-releasedate-shield]][github-releasedate-link]<br/>
-[![][github-contributors-shield]][github-contributors-link]
-[![][github-forks-shield]][github-forks-link]
-[![][github-stars-shield]][github-stars-link]
-[![][github-issues-shield]][github-issues-link]
-[![][github-license-shield]][github-license-link]<br>
-
-**Share LobeHub Repository**
-
-[![][share-x-shield]][share-x-link]
-[![][share-telegram-shield]][share-telegram-link]
-[![][share-whatsapp-shield]][share-whatsapp-link]
-[![][share-reddit-shield]][share-reddit-link]
-[![][share-weibo-shield]][share-weibo-link]
-[![][share-mastodon-shield]][share-mastodon-link]
-[![][share-linkedin-shield]][share-linkedin-link]
-
-<sup>Your Chief Agent Operator</sup>
-
-<a href="https://www.producthunt.com/products/lobehub?embed=true&amp;utm_source=badge-top-post-badge&amp;utm_medium=badge&amp;utm_campaign=badge-lobehub-2" target="_blank" rel="noopener noreferrer"><img alt="LobeHub - Your Chief Agent Operator for multi-agent work | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1147569&amp;theme=light&amp;period=daily&amp;t=1779247564355"></a> <a href="https://trendshift.io/repositories/19224" target="_blank"><img src="https://trendshift.io/api/badge/repositories/19224" alt="lobehub%2Flobehub | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
-[![](https://vercel.com/oss/program-badge.svg)](https://vercel.com/oss)
-
-</div>
-
-<details>
-<summary><kbd>Table of contents</kbd></summary>
-
-#### TOC
-
-- [👋🏻 Getting Started & Join Our Community](#-getting-started--join-our-community)
-- [✨ Features](#-features)
-  - [Operator: Agents as the Unit of Work](#operator-agents-as-the-unit-of-work)
-  - [Create: Agents as the Unit of Work](#create-agents-as-the-unit-of-work)
-  - [Collaborate: Scale New Forms of Collaboration Networks](#collaborate-scale-new-forms-of-collaboration-networks)
-  - [Evolve: Co-evolution of Humans and Agents](#evolve-co-evolution-of-humans-and-agents)
-- [🛳 Self Hosting](#-self-hosting)
-  - [`A` Deploying with Vercel, Zeabur , Sealos or Alibaba Cloud](#a-deploying-with-vercel-zeabur--sealos-or-alibaba-cloud)
-  - [`B` Deploying with Docker](#b-deploying-with-docker)
-  - [Environment Variable](#environment-variable)
-- [📦 Ecosystem](#-ecosystem)
-- [🧩 Plugins](#-plugins)
-- [⌨️ Local Development](#️-local-development)
-- [🤝 Contributing](#-contributing)
-- [❤️ Sponsor](#️-sponsor)
-- [🔗 More Products](#-more-products)
-
-####
-
-<br/>
-
-</details>
-
-<br/>
-
-<https://github.com/user-attachments/assets/0a33365f-b786-48b5-9ed6-f8af7927bccb>
-
-## 👋🏻 Getting Started & Join Our Community
-
-We are a group of e/acc design-engineers, hoping to provide modern design components and tools for AIGC.
-By adopting the Bootstrapping approach, we aim to provide developers and users with a more open, transparent, and user-friendly product ecosystem.
-
-Whether for users or professional developers, LobeHub will be your AI Agent playground. Please be aware that LobeHub is currently under active development, and feedback is welcome for any [issues][issues-link] encountered.
-
-| [![](https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1065874&theme=light&t=1769347414733)](https://www.producthunt.com/products/lobehub?launch=lobehub-2&embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-lobehub) | We are live on Product Hunt! We are thrilled to bring LobeHub to the world. If you believe in a future where humans and agents co-evolve, please support our journey. |
-| :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [![][discord-shield-badge]][discord-link]                                                                                                                                                                                                                          | Join our Discord community! This is where you can connect with developers and other enthusiastic users of LobeHub.                                                    |
-
-> \[!IMPORTANT]
->
-> **Star Us**, You will receive all release notifications from GitHub without any delay \~ ⭐️
-
-[![][image-star]][github-stars-link]
-
-<details>
-  <summary><kbd>Star History</kbd></summary>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=lobehub%2Flobehub&theme=dark&type=Date">
-    <img width="100%" src="https://api.star-history.com/svg?repos=lobehub%2Flobehub&type=Date">
-  </picture>
-</details>
-
-## ✨ Features
-
-Today’s agents are one-off, task-driven tools. They lack context, live in isolation, and require manual hand-offs between different windows and models. While some maintain memory, it is often global, shallow, and impersonal. In this mode, users are forced to toggle between fragmented conversations, making it difficult to form structured productivity.
-
-**LobeHub changes everything.**
-
-LobeHub is a work-and-lifestyle space to find, build, and collaborate with agent teammates that grow with you. In LobeHub, we treat **Agents as the unit of work**, providing an infrastructure where humans and agents co-evolve.
-
-![](https://github.com/user-attachments/assets/89d1c402-a62b-4794-82ea-17e5ee1a6165)
-
-### Operator: Agents as the Unit of Work
-
-Hires, schedules, and reports on your entire AI team.
-
-- **More productivity. Fewer tools**: Bring all your agents under one roof.
-- **IM Gateway**: Agents where you already chat.
-
-![](https://github.com/user-attachments/assets/7b08d6d9-9dff-4b06-a919-324630554509)
-
-[![][back-to-top]](#readme-top)
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-![](https://github.com/user-attachments/assets/81e89324-fc66-4024-99a3-aa8e16ec8184)
-
-### Create: Agents as the Unit of Work
-
-Building a personalized AI team starts with the **Agent Builder**. You can describe what you need once, and the agent setup starts right away, applying auto-configurations so you can use it instantly.
-
-- **Unified Intelligence**: Seamlessly access any model and any modality—all under your control.
-- **10,000+ Skills**: Connect your agents to the skills you use every day with a library of over 10,000 tools and MCP-compatible plugins.
-
-![](https://github.com/user-attachments/assets/949b8166-486d-4750-ad7a-cfe7bfcb84e3)
-
-[![][back-to-top]](#readme-top)
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-![](https://hub-apac-1.lobeobjects.space/blog/assets/771ff3d30b9ef93e65e55021cc43d356.webp)
-
-### Collaborate: Scale New Forms of Collaboration Networks
-
-LobeHub introduces **Agent Groups**, allowing you to work with agents like real teammates. The system assembles the right agents for the task, enabling parallel collaboration and iterative improvement.
-
-- **Pages**: Write and refine content with multiple agents in one place with a shared context.
-- **Schedule**: Schedule runs and let agents do the work at the right time, even while you are away.
-- **Project**: Organize work by project to keep everything structured and easy to track.
-- **Workspace**: A shared space for teams to collaborate with agents, ensuring clear ownership and visibility across the organization.
-
-![](https://github.com/user-attachments/assets/e51526c6-e09c-4a5a-9cec-dcd3fd68a3a8)
-
-[![][back-to-top]](#readme-top)
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-![](https://hub-apac-1.lobeobjects.space/blog/assets/fe98eae9fcb6acc47c8e1fb69bdb4b50.webp)
-
-### Evolve: Co-evolution of Humans and Agents
-
-The best AI is one that understands you deeply. LobeHub features **Personal Memory** that builds a clear understanding of your needs.
-
-- **Continual Learning**: Your agents learn from how you work, adapting their behavior to act at the right moment.
-- **White-Box Memory**: We believe in transparency. Your agents use structured, editable memory, giving you full control over what they remember.
-
-![](https://github.com/user-attachments/assets/5c6e16f0-7f47-4baf-9aeb-3a00deb8ff5b)
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-> ✨ more features will be added when LobeHub evolve.
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-## 🛳 Self Hosting
-
-LobeHub provides Self-Hosted Version with Vercel, Alibaba Cloud, and [Docker Image][docker-release-link]. This allows you to deploy your own chatbot within a few minutes without any prior knowledge.
-
-> \[!TIP]
->
-> Learn more about [📘 Build your own LobeHub][docs-self-hosting] by checking it out.
-
-### `A` Deploying with Vercel, Zeabur , Sealos or Alibaba Cloud
-
-"If you want to deploy this service yourself on Vercel, Zeabur or Alibaba Cloud, you can follow these steps:
-
-- Prepare your [OpenAI API Key](https://platform.openai.com/account/api-keys).
-- Click the button below to start deployment: Log in directly with your GitHub account, and remember to fill in the `OPENAI_API_KEY`(required) on the environment variable section.
-- After deployment, you can start using it.
-- Bind a custom domain (optional): The DNS of the domain assigned by Vercel is polluted in some areas; binding a custom domain can connect directly.
-
 <div align="center">
 
-|           Deploy with Vercel            |                     Deploy with Zeabur                      |                     Deploy with Sealos                      |                       Deploy with RepoCloud                       |                         Deploy with Alibaba Cloud                         |
-| :-------------------------------------: | :---------------------------------------------------------: | :---------------------------------------------------------: | :---------------------------------------------------------------: | :-----------------------------------------------------------------------: |
-| [![][deploy-button-image]][deploy-link] | [![][deploy-on-zeabur-button-image]][deploy-on-zeabur-link] | [![][deploy-on-sealos-button-image]][deploy-on-sealos-link] | [![][deploy-on-repocloud-button-image]][deploy-on-repocloud-link] | [![][deploy-on-alibaba-cloud-button-image]][deploy-on-alibaba-cloud-link] |
+**English** · [简体中文](./README.zh-CN.md)
 
 </div>
 
-#### After Fork
-
-After fork, disable GitHub Actions in your repository. This repository does not ship an automatic upstream sync workflow: upstream updates must be reviewed and applied explicitly by a repository maintainer.
-
-#### Keep Updated
-
-If you have deployed your own project following the one-click deployment steps in the README, you might encounter constant prompts indicating "updates available." This is because Vercel defaults to creating a new project instead of forking this one, resulting in an inability to detect updates accurately.
-
-> \[!TIP]
->
-> Upstream updates are applied manually after review, see [📘 Manual Upstream Updates][docs-upstream-sync]
-
-<br/>
-
-### `B` Deploying with Docker
-
-[![][docker-release-shield]][docker-release-link]
-[![][docker-size-shield]][docker-size-link]
-[![][docker-pulls-shield]][docker-pulls-link]
-
-We provide a Docker image for deploying the LobeHub service on your own private device. Use the following command to start the LobeHub service:
-
-1. create a folder to for storage files
-
-```fish
-$ mkdir lobehub-db && cd lobehub-db
-```
-
-2. init the LobeHub infrastructure
-
-```fish
-bash <(curl -fsSL https://lobe.li/setup.sh)
-```
-
-3. Start the LobeHub service
-
-```fish
-docker compose up -d
-```
-
-> \[!NOTE]
->
-> For detailed instructions on deploying with Docker, please refer to the [📘 Docker Deployment Guide][docs-docker]
-
-<br/>
-
-### Environment Variable
-
-This project provides some additional configuration items set with environment variables:
-
-| Environment Variable | Required | Description                                                                                                                                                               | Example                                                                                                              |
-| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `OPENAI_API_KEY`     | Yes      | This is the API key you apply on the OpenAI account page                                                                                                                  | `sk-xxxxxx...xxxxxx`                                                                                                 |
-| `OPENAI_PROXY_URL`   | No       | If you manually configure the OpenAI interface proxy, you can use this configuration item to override the default OpenAI API request base URL                             | `https://api.chatanywhere.cn` or `https://aihubmix.com/v1` <br/>The default value is<br/>`https://api.openai.com/v1` |
-| `OPENAI_MODEL_LIST`  | No       | Used to control the model list. Use `+` to add a model, `-` to hide a model, and `model_name=display_name` to customize the display name of a model, separated by commas. | `qwen-7b-chat,+glm-6b,-gpt-3.5-turbo`                                                                                |
-
-> \[!NOTE]
->
-> The complete list of environment variables can be found in the [📘 Environment Variables][docs-env-var]
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-## 📦 Ecosystem
-
-| NPM                               | Repository                              | Description                                                                                           | Version                                   |
-| --------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| [@lobehub/ui][lobe-ui-link]       | [lobehub/lobe-ui][lobe-ui-github]       | Open-source UI component library dedicated to building AIGC web applications.                         | [![][lobe-ui-shield]][lobe-ui-link]       |
-| [@lobehub/icons][lobe-icons-link] | [lobehub/lobe-icons][lobe-icons-github] | Popular AI / LLM Model Brand SVG Logo and Icon Collection.                                            | [![][lobe-icons-shield]][lobe-icons-link] |
-| [@lobehub/tts][lobe-tts-link]     | [lobehub/lobe-tts][lobe-tts-github]     | High-quality & reliable TTS/STT React Hooks library                                                   | [![][lobe-tts-shield]][lobe-tts-link]     |
-| [@lobehub/lint][lobe-lint-link]   | [lobehub/lobe-lint][lobe-lint-github]   | Configurations for ESlint, Stylelint, Commitlint, Prettier, Remark, and Semantic Release for LobeHub. | [![][lobe-lint-shield]][lobe-lint-link]   |
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-## 🧩 Plugins
-
-Plugins provide a means to extend the [Function Calling][docs-function-call] capabilities of LobeHub. They can be used to introduce new function calls and even new ways to render message results. If you are interested in plugin development, please refer to our [📘 Plugin Development Guide][docs-plugin-dev] in the Wiki.
-
-- [lobe-chat-plugins][lobe-chat-plugins]: This is the plugin index for LobeHub. It accesses index.json from this repository to display a list of available plugins for LobeHub to the user.
-- [chat-plugin-template][chat-plugin-template]: This is the plugin template for LobeHub plugin development.
-- [@lobehub/chat-plugin-sdk][chat-plugin-sdk]: The LobeHub Plugin SDK assists you in creating exceptional chat plugins for LobeHub.
-- [@lobehub/chat-plugins-gateway][chat-plugins-gateway]: The LobeHub Plugins Gateway is a backend service that provides a gateway for LobeHub plugins. We deploy this service using Vercel. The primary API POST /api/v1/runner is deployed as an Edge Function.
-
-> \[!NOTE]
->
-> The plugin system is currently undergoing major development. You can learn more in the following issues:
->
-> - [x] [**Plugin Phase 1**](https://github.com/lobehub/lobehub/issues/73): Implement separation of the plugin from the main body, split the plugin into an independent repository for maintenance, and realize dynamic loading of the plugin.
-> - [x] [**Plugin Phase 2**](https://github.com/lobehub/lobehub/issues/97): The security and stability of the plugin's use, more accurately presenting abnormal states, the maintainability of the plugin architecture, and developer-friendly.
-> - [x] [**Plugin Phase 3**](https://github.com/lobehub/lobehub/issues/149): Higher-level and more comprehensive customization capabilities, support for plugin authentication, and examples.
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-## ⌨️ Local Development
-
-You can use GitHub Codespaces for online development:
-
-[![][codespaces-shield]][codespaces-link]
-
-Or clone it for local development:
-
-```fish
-$ git clone https://github.com/lobehub/lobehub.git
-$ cd lobehub
-$ pnpm install
-$ pnpm dev          # Full-stack (Next.js + Vite SPA)
-$ bun run dev:spa   # SPA frontend only (port 9876)
-```
-
-> **Debug Proxy**: After running `dev:spa`, the terminal prints a proxy URL like
-> `https://app.lobehub.com/_dangerous_local_dev_proxy?debug-host=http%3A%2F%2Flocalhost%3A9876`.
-> Open it to develop locally against the production backend with HMR.
-
-If you would like to learn more details, please feel free to look at our [📘 Development Guide][docs-dev-guide].
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-## 🤝 Contributing
-
-Contributions of all types are more than welcome; if you are interested in contributing code, feel free to check out our GitHub [Issues][github-issues-link] and [Projects][github-project-link] to get stuck in to show us what you're made of.
-
-> \[!TIP]
->
-> We are creating a technology-driven forum, fostering knowledge interaction and the exchange of ideas that may culminate in mutual inspiration and collaborative innovation.
->
-> Help us make LobeHub better. Welcome to provide product design feedback, user experience discussions directly to us.
->
-> **Principal Maintainers:** [@arvinxx](https://github.com/arvinxx) [@canisminor1990](https://github.com/canisminor1990)
-
-[![][pr-welcome-shield]][pr-welcome-link]
-[![][submit-agents-shield]][submit-agents-link]
-[![][submit-plugin-shield]][submit-plugin-link]
-
-<a href="https://github.com/lobehub/lobehub/graphs/contributors" target="_blank">
-  <table>
-    <tr>
-      <th colspan="2">
-        <br><img src="https://contrib.rocks/image?repo=lobehub/lobehub"><br><br>
-      </th>
-    </tr>
-    <tr>
-      <td>
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="https://next.ossinsight.io/widgets/official/compose-org-active-contributors/thumbnail.png?activity=active&period=past_28_days&owner_id=131470832&repo_ids=643445235&image_size=2x3&color_scheme=dark">
-          <img src="https://next.ossinsight.io/widgets/official/compose-org-active-contributors/thumbnail.png?activity=active&period=past_28_days&owner_id=131470832&repo_ids=643445235&image_size=2x3&color_scheme=light">
-        </picture>
-      </td>
-      <td rowspan="2">
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="https://next.ossinsight.io/widgets/official/compose-org-participants-growth/thumbnail.png?activity=active&period=past_28_days&owner_id=131470832&repo_ids=643445235&image_size=4x7&color_scheme=dark">
-          <img src="https://next.ossinsight.io/widgets/official/compose-org-participants-growth/thumbnail.png?activity=active&period=past_28_days&owner_id=131470832&repo_ids=643445235&image_size=4x7&color_scheme=light">
-        </picture>
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="https://next.ossinsight.io/widgets/official/compose-org-active-contributors/thumbnail.png?activity=new&period=past_28_days&owner_id=131470832&repo_ids=643445235&image_size=2x3&color_scheme=dark">
-          <img src="https://next.ossinsight.io/widgets/official/compose-org-active-contributors/thumbnail.png?activity=new&period=past_28_days&owner_id=131470832&repo_ids=643445235&image_size=2x3&color_scheme=light">
-        </picture>
-      </td>
-    </tr>
-  </table>
-</a>
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-## ❤️ Sponsor
-
-Every bit counts and your one-time donation sparkles in our galaxy of support! You're a shooting star, making a swift and bright impact on our journey. Thank you for believing in us – your generosity guides us toward our mission, one brilliant flash at a time.
-
-<a href="https://opencollective.com/lobehub" target="_blank">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/lobehub/.github/blob/main/static/sponsor-dark.png?raw=true">
-    <img  src="https://github.com/lobehub/.github/blob/main/static/sponsor-light.png?raw=true">
-  </picture>
-</a>
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
-
-## 🔗 More Products
-
-- **[🅰️ Lobe SD Theme][lobe-theme]:** Modern theme for Stable Diffusion WebUI, exquisite interface design, highly customizable UI, and efficiency-boosting features.
-- **[⛵️ Lobe Midjourney WebUI][lobe-midjourney-webui]:** WebUI for Midjourney, leverages AI to quickly generate a wide array of rich and diverse images from text prompts, sparking creativity and enhancing conversations.
-- **[🌏 Lobe i18n][lobe-i18n] :** Lobe i18n is an automation tool for the i18n (internationalization) translation process, powered by ChatGPT. It supports features such as automatic splitting of large files, incremental updates, and customization options for the OpenAI model, API proxy, and temperature.
-- **[💌 Lobe Commit][lobe-commit]:** Lobe Commit is a CLI tool that leverages Langchain/ChatGPT to generate Gitmoji-based commit messages.
-
-<div align="right">
-
-[![][back-to-top]](#readme-top)
-
-</div>
+# LobeHub Enhanced
+
+An enterprise admin console, audit trail and platform-governance layer built on top of LobeHub.
+
+> **Unofficial community fork.** LobeHub Enhanced is **not affiliated with, endorsed by, or supported by LobeHub LLC**.
+> It is a derivative work of [`lobehub/lobehub`](https://github.com/lobehub/lobehub), distributed under the **LobeHub Community License** (see [`LICENSE`](./LICENSE)).
+> "LobeHub" is a trademark of LobeHub LLC, used here only to identify the upstream project.
+
+|                 |                                              |
+| --------------- | -------------------------------------------- |
+| Repository      | `https://github.com/12dora/lobehub-enhanced` |
+| Container image | `ghcr.io/12dora/lobehub-enhanced`            |
+| First release   | `v1.0.0`                                     |
+| Upstream base   | `lobehub/lobehub` v2.2.10                    |
 
 ---
 
-<details><summary><h4>📝 License</h4></summary>
+## What is added
 
-[![][fossa-license-shield]][fossa-license-link]
+Everything below is additive: the upstream chat product is unchanged for end users unless an
+administrator turns a governance feature on. All enterprise features are behind env flags that
+default to **off**.
 
-</details>
+| Area             | Feature                       | Notes                                                                                                                                                                                                                                                                                                     |
+| ---------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Admin console    | Overview & statistics         | `/admin` and `/admin/stats`: totals, per-user totals, agent/model/topic rankings, 52-week activity heatmap, hourly strip, token/cost views; time-range and per-user filters.                                                                                                                              |
+| Admin console    | Users management              | List + detail, role assignment, source labels, session revoke, and hard delete with cascade (self-delete refused).                                                                                                                                                                                        |
+| Admin console    | Managed resources             | `/admin/unified`: platform takes over AI / skills / connectors / assistants; per-resource enable, override and visibility.                                                                                                                                                                                |
+| Admin console    | Settings policies             | Resolution order `builtin default → platform default → user override → platform lock`, with `mode` (user / default / locked) independent of visibility.                                                                                                                                                   |
+| Admin console    | AI providers & models         | Platform-owned provider and model catalog, connection test, secret `keep\|replace\|clear`, hard delete. A **takeover gate** means platform AI only replaces user AI when the managed AI catalog is actually published.                                                                                    |
+| Admin console    | Platform assistants           | Global assistants with versions, assignments, staged rollouts (start / retry / rollback / cancel), forced non-hideable assistants, default inbox.                                                                                                                                                         |
+| Admin console    | Skills & connectors           | Platform catalogs with the same lifecycle, a builtin-tool permission matrix, and **platform-hosted shared OAuth** accounts with per-user bindings and bulk revoke.                                                                                                                                        |
+| Admin console    | Sidebar layout                | Platform-controlled sidebar ordering and visibility; the per-user layout menu disappears while managed.                                                                                                                                                                                                   |
+| Admin console    | Task templates                | Admin CRUD plus enable / disable for the recommended task templates shown on the home page; one-click import of the current recommendations. Once any template exists, the platform list replaces the market feed.                                                                                        |
+| Admin console    | Branding                      | Name, logos, favicon, OG image, legal name, email sender, page-title template and **primary colour** — saved once and live site-wide, seeded synchronously so there is no first-paint flash.                                                                                                              |
+| Security & auth  | Login methods                 | Authentik, generic OIDC and DingTalk (钉钉) configured in the database through a wizard: live discovery, network validation, safe-login test, enable or disable, rollback. Several login methods can coexist. DingTalk adds an organisation allowlist whose corp ids are captured by scanning, not typed. |
+| Security & auth  | Activation control            | `PLATFORM_OIDC_RESTART_MODE=supervisor` enables the "restart to activate" button; a last-known-good snapshot on disk keeps sign-in working if a new config fails to load. Break-glass local admin retained.                                                                                               |
+| Security & auth  | Registration policy           | Open registration toggle gated on an email-domain allowlist, enforced inside the sign-up path.                                                                                                                                                                                                            |
+| Audit            | Operation logs & live view    | Append-only admin action log with searchable, translated action and target names; a live view of in-flight conversations.                                                                                                                                                                                 |
+| Audit            | Session evidence              | Browse and search conversation evidence per user and per topic, behind dedicated permissions (topic titles are treated as evidence).                                                                                                                                                                      |
+| Audit            | Export, legal hold, retention | Asynchronous evidence exports, legal holds, and retention runs — an active hold blocks retention deletion.                                                                                                                                                                                                |
+| Providers        | ChatGPT Web (`chatgptweb`)    | A web-session provider: browser-fingerprinted transport via a bundled `curl-impersonate` binary, paste-your-web-session connection, automatic session-cookie renewal, shared managed account, and a status panel that reports when the connection expired and an operator must reconnect.                 |
+| Platform secrets | Envelope encryption           | AES-256-GCM envelope encryption for every platform-stored secret, keyed by `PLATFORM_MASTER_KEY` or a HashiCorp Vault KEK, with a versioned key id and an async rewrap job for rotation.                                                                                                                  |
+| Runtime & ops    | Jobs, instances, status       | A lease-based job queue that survives across HTTP workers, a service-instance registry with a reaper, and `/admin/system/status` for live instance and job monitoring.                                                                                                                                    |
 
-Copyright © 2026 [LobeHub][profile-link]. <br />
-This project is [LobeHub Community License](./LICENSE) licensed.
+Server-side authorization is a single gate: every admin procedure declares its permission, and a
+registry test asserts the declared count so a new endpoint cannot ship ungated.
 
-<!-- LINK GROUP -->
+## Screenshots
 
-[back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
-[blog]: https://lobehub.com/blog
-[changelog]: https://lobehub.com/changelog
-[chat-plugin-sdk]: https://github.com/lobehub/chat-plugin-sdk
-[chat-plugin-template]: https://github.com/lobehub/chat-plugin-template
-[chat-plugins-gateway]: https://github.com/lobehub/chat-plugins-gateway
-[codecov-link]: https://codecov.io/gh/lobehub/lobehub
-[codecov-shield]: https://img.shields.io/codecov/c/github/lobehub/lobehub?labelColor=black&style=flat-square&logo=codecov&logoColor=white
-[codespaces-link]: https://codespaces.new/lobehub/lobehub
-[codespaces-shield]: https://github.com/codespaces/badge.svg
-[deploy-button-image]: https://vercel.com/button
-[deploy-link]: https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Flobehub%2Flobehub&env=OPENAI_API_KEY&envDescription=Find%20your%20OpenAI%20API%20Key%20by%20click%20the%20right%20Learn%20More%20button.&envLink=https%3A%2F%2Fplatform.openai.com%2Faccount%2Fapi-keys&project-name=lobehub&repository-name=lobehub
-[deploy-on-alibaba-cloud-button-image]: https://service-info-public.oss-cn-hangzhou.aliyuncs.com/computenest-en.svg
-[deploy-on-alibaba-cloud-link]: https://computenest.console.aliyun.com/service/instance/create/default?type=user&ServiceName=LobeHub%E7%A4%BE%E5%8C%BA%E7%89%88
-[deploy-on-repocloud-button-image]: https://d16t0pc4846x52.cloudfront.net/deploylobe.svg
-[deploy-on-repocloud-link]: https://repocloud.io/details/?app_id=248
-[deploy-on-sealos-button-image]: https://raw.githubusercontent.com/labring-actions/templates/main/Deploy-on-Sealos.svg
-[deploy-on-sealos-link]: https://template.usw.sealos.io/deploy?templateName=lobehub-db
-[deploy-on-zeabur-button-image]: https://zeabur.com/button.svg
-[deploy-on-zeabur-link]: https://zeabur.com/templates/VZGGTI
-[discord-link]: https://discord.gg/AYFPHvv2jT
-[discord-shield]: https://img.shields.io/discord/1127171173982154893?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=flat-square
-[discord-shield-badge]: https://img.shields.io/discord/1127171173982154893?color=5865F2&label=discord&labelColor=black&logo=discord&logoColor=white&style=for-the-badge
-[docker-pulls-link]: https://hub.docker.com/r/lobehub/lobehub
-[docker-pulls-shield]: https://img.shields.io/docker/pulls/lobehub/lobehub?color=45cc11&labelColor=black&style=flat-square&sort=semver
-[docker-release-link]: https://hub.docker.com/r/lobehub/lobehub
-[docker-release-shield]: https://img.shields.io/docker/v/lobehub/lobehub?color=369eff&label=docker&labelColor=black&logo=docker&logoColor=white&style=flat-square&sort=semver
-[docker-size-link]: https://hub.docker.com/r/lobehub/lobehub
-[docker-size-shield]: https://img.shields.io/docker/image-size/lobehub/lobehub?color=369eff&labelColor=black&style=flat-square&sort=semver
-[docs]: https://lobehub.com/docs/usage/start
-[docs-dev-guide]: https://lobehub.com/docs/development/start
-[docs-docker]: https://lobehub.com/docs/self-hosting/server-database/docker-compose
-[docs-env-var]: https://lobehub.com/docs/self-hosting/environment-variables
-[docs-function-call]: https://lobehub.com/blog/openai-function-call
-[docs-plugin-dev]: https://lobehub.com/docs/usage/plugins/development
-[docs-self-hosting]: https://lobehub.com/docs/self-hosting/start
-[docs-upstream-sync]: https://lobehub.com/docs/self-hosting/advanced/upstream-sync
-[fossa-license-link]: https://app.fossa.com/projects/git%2Bgithub.com%2Flobehub%2Flobehub
-[fossa-license-shield]: https://app.fossa.com/api/projects/git%2Bgithub.com%2Flobehub%2Flobehub.svg?type=large
-[github-action-release-link]: https://github.com/actions/workflows/lobehub/lobehub/release.yml
-[github-action-release-shield]: https://img.shields.io/github/actions/workflow/status/lobehub/lobehub/release.yml?label=release&labelColor=black&logo=githubactions&logoColor=white&style=flat-square
-[github-action-test-link]: https://github.com/actions/workflows/lobehub/lobehub/test.yml
-[github-action-test-shield]: https://img.shields.io/github/actions/workflow/status/lobehub/lobehub/test.yml?label=test&labelColor=black&logo=githubactions&logoColor=white&style=flat-square
-[github-contributors-link]: https://github.com/lobehub/lobehub/graphs/contributors
-[github-contributors-shield]: https://img.shields.io/github/contributors/lobehub/lobehub?color=c4f042&labelColor=black&style=flat-square
-[github-forks-link]: https://github.com/lobehub/lobehub/network/members
-[github-forks-shield]: https://img.shields.io/github/forks/lobehub/lobehub?color=8ae8ff&labelColor=black&style=flat-square
-[github-issues-link]: https://github.com/lobehub/lobehub/issues
-[github-issues-shield]: https://img.shields.io/github/issues/lobehub/lobehub?color=ff80eb&labelColor=black&style=flat-square
-[github-license-link]: https://github.com/lobehub/lobehub/blob/main/LICENSE
-[github-license-shield]: https://img.shields.io/badge/license-apache%202.0-white?labelColor=black&style=flat-square
-[github-project-link]: https://github.com/lobehub/lobehub/projects
-[github-release-link]: https://github.com/lobehub/lobehub/releases
-[github-release-shield]: https://img.shields.io/github/v/release/lobehub/lobehub?color=369eff&labelColor=black&logo=github&style=flat-square
-[github-releasedate-link]: https://github.com/lobehub/lobehub/releases
-[github-releasedate-shield]: https://img.shields.io/github/release-date/lobehub/lobehub?labelColor=black&style=flat-square
-[github-stars-link]: https://github.com/lobehub/lobehub/stargazers
-[github-stars-shield]: https://img.shields.io/github/stars/lobehub/lobehub?color=ffcb47&labelColor=black&style=flat-square
-[image-banner]: https://github.com/user-attachments/assets/5f78ae58-ed4f-4d38-8037-96109fbba58c
-[image-star]: https://github.com/user-attachments/assets/3216e25b-186f-4a54-9cb4-2f124aec0471
-[issues-link]: https://img.shields.io/github/issues/lobehub/lobehub.svg?style=flat
-[lobe-chat-plugins]: https://github.com/lobehub/lobe-chat-plugins
-[lobe-commit]: https://github.com/lobehub/lobe-commit/tree/master/packages/lobe-commit
-[lobe-i18n]: https://github.com/lobehub/lobe-commit/tree/master/packages/lobe-i18n
-[lobe-icons-github]: https://github.com/lobehub/lobe-icons
-[lobe-icons-link]: https://www.npmjs.com/package/@lobehub/icons
-[lobe-icons-shield]: https://img.shields.io/npm/v/@lobehub/icons?color=369eff&labelColor=black&logo=npm&logoColor=white&style=flat-square
-[lobe-lint-github]: https://github.com/lobehub/lobe-lint
-[lobe-lint-link]: https://www.npmjs.com/package/@lobehub/lint
-[lobe-lint-shield]: https://img.shields.io/npm/v/@lobehub/lint?color=369eff&labelColor=black&logo=npm&logoColor=white&style=flat-square
-[lobe-midjourney-webui]: https://github.com/lobehub/lobe-midjourney-webui
-[lobe-theme]: https://github.com/lobehub/sd-webui-lobe-theme
-[lobe-tts-github]: https://github.com/lobehub/lobe-tts
-[lobe-tts-link]: https://www.npmjs.com/package/@lobehub/tts
-[lobe-tts-shield]: https://img.shields.io/npm/v/@lobehub/tts?color=369eff&labelColor=black&logo=npm&logoColor=white&style=flat-square
-[lobe-ui-github]: https://github.com/lobehub/lobe-ui
-[lobe-ui-link]: https://www.npmjs.com/package/@lobehub/ui
-[lobe-ui-shield]: https://img.shields.io/npm/v/@lobehub/ui?color=369eff&labelColor=black&logo=npm&logoColor=white&style=flat-square
-[official-site]: https://lobehub.com
-[pr-welcome-link]: https://github.com/lobehub/lobehub/pulls
-[pr-welcome-shield]: https://img.shields.io/badge/🤯_pr_welcome-%E2%86%92-ffcb47?labelColor=black&style=for-the-badge
-[profile-link]: https://github.com/lobehub
-[share-linkedin-link]: https://linkedin.com/feed
-[share-linkedin-shield]: https://img.shields.io/badge/-share%20on%20linkedin-black?labelColor=black&logo=linkedin&logoColor=white&style=flat-square
-[share-mastodon-link]: https://mastodon.social/share?text=Check%20this%20GitHub%20repository%20out%20%F0%9F%A4%AF%20LobeHub%20-%20An%20open-source,%20extensible%20%28Function%20Calling%29,%20high-performance%20chatbot%20framework.%20It%20supports%20one-click%20free%20deployment%20of%20your%20private%20ChatGPT%2FLLM%20web%20application.%20https://github.com/lobehub/lobehub%20#chatbot%20#chatGPT%20#openAI
-[share-mastodon-shield]: https://img.shields.io/badge/-share%20on%20mastodon-black?labelColor=black&logo=mastodon&logoColor=white&style=flat-square
-[share-reddit-link]: https://www.reddit.com/submit?title=Check%20this%20GitHub%20repository%20out%20%F0%9F%A4%AF%20LobeHub%20-%20An%20open-source%2C%20extensible%20%28Function%20Calling%29%2C%20high-performance%20chatbot%20framework.%20It%20supports%20one-click%20free%20deployment%20of%20your%20private%20ChatGPT%2FLLM%20web%20application.%20%23chatbot%20%23chatGPT%20%23openAI&url=https%3A%2F%2Fgithub.com%2Flobehub%2Flobehub
-[share-reddit-shield]: https://img.shields.io/badge/-share%20on%20reddit-black?labelColor=black&logo=reddit&logoColor=white&style=flat-square
-[share-telegram-link]: https://t.me/share/url"?text=Check%20this%20GitHub%20repository%20out%20%F0%9F%A4%AF%20LobeHub%20-%20An%20open-source%2C%20extensible%20%28Function%20Calling%29%2C%20high-performance%20chatbot%20framework.%20It%20supports%20one-click%20free%20deployment%20of%20your%20private%20ChatGPT%2FLLM%20web%20application.%20%23chatbot%20%23chatGPT%20%23openAI&url=https%3A%2F%2Fgithub.com%2Flobehub%2Flobehub
-[share-telegram-shield]: https://img.shields.io/badge/-share%20on%20telegram-black?labelColor=black&logo=telegram&logoColor=white&style=flat-square
-[share-weibo-link]: http://service.weibo.com/share/share.php?sharesource=weibo&title=Check%20this%20GitHub%20repository%20out%20%F0%9F%A4%AF%20LobeHub%20-%20An%20open-source%2C%20extensible%20%28Function%20Calling%29%2C%20high-performance%20chatbot%20framework.%20It%20supports%20one-click%20free%20deployment%20of%20your%20private%20ChatGPT%2FLLM%20web%20application.%20%23chatbot%20%23chatGPT%20%23openAI&url=https%3A%2F%2Fgithub.com%2Flobehub%2Flobehub
-[share-weibo-shield]: https://img.shields.io/badge/-share%20on%20weibo-black?labelColor=black&logo=sinaweibo&logoColor=white&style=flat-square
-[share-whatsapp-link]: https://api.whatsapp.com/send?text=Check%20this%20GitHub%20repository%20out%20%F0%9F%A4%AF%20LobeHub%20-%20An%20open-source%2C%20extensible%20%28Function%20Calling%29%2C%20high-performance%20chatbot%20framework.%20It%20supports%20one-click%20free%20deployment%20of%20your%20private%20ChatGPT%2FLLM%20web%20application.%20https%3A%2F%2Fgithub.com%2Flobehub%2Flobehub%20%23chatbot%20%23chatGPT%20%23openAI
-[share-whatsapp-shield]: https://img.shields.io/badge/-share%20on%20whatsapp-black?labelColor=black&logo=whatsapp&logoColor=white&style=flat-square
-[share-x-link]: https://x.com/intent/tweet?hashtags=chatbot%2CchatGPT%2CopenAI&text=Check%20this%20GitHub%20repository%20out%20%F0%9F%A4%AF%20LobeHub%20-%20An%20open-source%2C%20extensible%20%28Function%20Calling%29%2C%20high-performance%20chatbot%20framework.%20It%20supports%20one-click%20free%20deployment%20of%20your%20private%20ChatGPT%2FLLM%20web%20application.&url=https%3A%2F%2Fgithub.com%2Flobehub%2Flobehub
-[share-x-shield]: https://img.shields.io/badge/-share%20on%20x-black?labelColor=black&logo=x&logoColor=white&style=flat-square
-[submit-agents-link]: https://github.com/lobehub/lobe-chat-agents
-[submit-agents-shield]: https://img.shields.io/badge/🤖/🏪_submit_agent-%E2%86%92-c4f042?labelColor=black&style=for-the-badge
-[submit-plugin-link]: https://github.com/lobehub/lobe-chat-plugins
-[submit-plugin-shield]: https://img.shields.io/badge/🧩/🏪_submit_plugin-%E2%86%92-95f3d9?labelColor=black&style=for-the-badge
-[vercel-link]: https://app.lobehub.com
-[vercel-shield]: https://img.shields.io/badge/vercel-online-55b467?labelColor=black&logo=vercel&style=flat-square
+<table>
+<tr>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-overview.png" alt="Admin overview"><br><sub><b>Admin overview</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-task-templates.png" alt="Task templates"><br><sub><b>Task templates</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-login-methods.png" alt="Login methods"><br><sub><b>Login methods</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-audit-logs.png" alt="Audit logs"><br><sub><b>Audit logs</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-chatgpt-web.png" alt="ChatGPT Web shared account"><br><sub><b>ChatGPT Web shared account</b></sub></td>
+<td width="50%"><img width="100%" src="docs/enhanced/screenshots/admin-branding.png" alt="Branding"><br><sub><b>Branding</b></sub></td>
+</tr>
+</table>
+
+## Changes vs upstream
+
+| Change                         | Detail                                                                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Telemetry disabled             | Chat telemetry is driven off the Langfuse setting only; PostHog / Umami / Sentry remain unset build args.                          |
+| EasyAuth removed               | The EasyAuth IAM integration was removed in favour of database-configured identity providers.                                      |
+| Provider draft/publish removed | The AI provider draft → publish flow was dismantled: a change made in the admin console is live immediately.                       |
+| Migration chain squashed       | Fresh databases start from `0000_squash_baseline`; an existing upstream 2.2.10 database is upgraded by `0001_upgrade_from_2_2_10`. |
+| Release pipeline reduced       | Desktop and upstream release workflows are removed. The only published artifact is the multi-arch Docker image.                    |
+| Docs rewritten                 | READMEs rewritten; fork documentation lives in [`docs/enterprise/`](./docs/enterprise/).                                           |
+| Upstream sync is manual        | There is no automatic upstream sync. Upstream changes are reviewed and cherry-picked deliberately.                                 |
+
+Changes are recorded in git history and in this file, satisfying the Apache-2.0 §4 change notice.
+
+## Deploy with Docker
+
+### Requirements
+
+| Component      | Requirement                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Runtime        | Docker Engine + Docker Compose                                                                                                                                                                   |
+| Database       | **`paradedb/paradedb:latest-pg17`** — ParadeDB bundles `pgvector` and BM25 search; a plain `postgres` image will not satisfy the migrations.                                                     |
+| Object storage | S3-compatible storage (the bundled compose runs `rustfs`). The public S3 endpoint must be reachable **from the browser**, not just from the container — presigned URLs are handed to the client. |
+| Cache          | Redis is optional but recommended.                                                                                                                                                               |
+
+### Quick start
+
+1. Clone the repository, or download just the [`docker-compose/enhanced/`](./docker-compose/enhanced/) directory.
+
+   ```bash
+   git clone https://github.com/12dora/lobehub-enhanced.git
+   cd lobehub-enhanced/docker-compose/enhanced
+   ```
+
+2. Create your env file.
+
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Generate three independent secrets and put them in `.env`.
+
+   ```bash
+   openssl rand -base64 32 # AUTH_SECRET
+   openssl rand -base64 32 # KEY_VAULTS_SECRET
+   openssl rand -base64 32 # PLATFORM_MASTER_KEY
+   ```
+
+4. Set `APP_URL` to the public origin, and set `BOOTSTRAP_SUPER_ADMIN_EMAIL` (plus
+   `BOOTSTRAP_ALLOW_CREATE=1` if that account does not exist yet). The one-time admin password is
+   printed **once** in the application log on the first boot:
+
+   ```bash
+   docker compose up -d
+   docker compose logs app | grep -i bootstrap
+   ```
+
+5. Open `<APP_URL>/admin` and sign in with that account. Change the password immediately.
+
+### Environment variables
+
+Required:
+
+| Variable                | Meaning                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| `APP_URL`               | Public origin, e.g. `https://chat.example.com`. Used for OAuth callbacks and presigned URLs. |
+| `DATABASE_URL`          | `postgresql://user:pass@host:5432/dbname`. Migrations run automatically at container start.  |
+| `AUTH_SECRET`           | Session signing secret. `openssl rand -base64 32`.                                           |
+| `KEY_VAULTS_SECRET`     | Encrypts user-level API keys. `openssl rand -base64 32`.                                     |
+| `PLATFORM_MASTER_KEY`   | Base64 of exactly 32 bytes — the KEK for every platform-stored secret.                       |
+| `ENABLE_PLATFORM_ADMIN` | `1` mounts `/admin`, the `admin.*` API surface and the admin entry in the user menu.         |
+
+> **Back up `PLATFORM_MASTER_KEY`.** Losing or changing it without running the rewrap job makes every
+> stored platform secret — provider keys, connector credentials, identity-provider client secrets —
+> permanently unreadable.
+
+Feature flags (all default to off; accepted truthy values are `1`, `true`, `yes`, `on`):
+
+| Variable                             | Meaning                                                            |
+| ------------------------------------ | ------------------------------------------------------------------ |
+| `ENABLE_PLATFORM_MANAGED_AI`         | Platform takes over AI providers and models.                       |
+| `ENABLE_PLATFORM_MANAGED_SKILLS`     | Platform-managed skill catalog replaces user-owned skills.         |
+| `ENABLE_PLATFORM_MANAGED_CONNECTORS` | Platform-managed connectors and shared OAuth accounts.             |
+| `ENABLE_PLATFORM_MANAGED_AGENTS`     | Platform assistants are pushed to users.                           |
+| `ENABLE_PLATFORM_SETTINGS_POLICY`    | Settings default / lock policy resolution.                         |
+| `ENABLE_RUNTIME_BRANDING`            | Database-driven branding overrides the compile-time name and logo. |
+| `ENABLE_DATABASE_OIDC`               | Database-configured login methods (otherwise only env-based SSO).  |
+
+`ENABLE_ENTERPRISE_ADMIN` is accepted as an alias of `ENABLE_PLATFORM_ADMIN`.
+
+Other settings:
+
+| Variable                                                                                                                                      | Meaning                                                                                                                                           |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PLATFORM_OIDC_RESTART_MODE`                                                                                                                  | `supervisor` enables the "restart to activate" button for login methods; any other value marks restart unsupported.                               |
+| `PLATFORM_OIDC_LKG_PATH`                                                                                                                      | File path for the last-known-good login-method snapshot. Point it at a persistent volume.                                                         |
+| `AUTH_COOKIE_PREFIX`                                                                                                                          | Namespaces session cookies. **Set a distinct value per instance** if several instances share a host or domain, otherwise they log each other out. |
+| `AUTH_SSO_PROVIDERS`                                                                                                                          | Leave **blank** when using database-configured login methods, so env providers do not shadow them.                                                |
+| `S3_ENDPOINT`, `S3_PUBLIC_DOMAIN`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_ENABLE_PATH_STYLE`, `S3_SET_ACL` | S3-compatible storage. `S3_PUBLIC_DOMAIN` is the host baked into presigned URLs and must resolve from the browser.                                |
+| `REDIS_URL`                                                                                                                                   | Optional cache / rate-limit backend.                                                                                                              |
+| `PLATFORM_KEY_PROVIDER`, `VAULT_*`                                                                                                            | Set `PLATFORM_KEY_PROVIDER=vault` to source the KEK from HashiCorp Vault instead of `PLATFORM_MASTER_KEY`.                                        |
+| `SSRF_ALLOW_PRIVATE_IP_ADDRESS`                                                                                                               | `1` permits private / loopback outbound targets, needed on single-box installs. Cloud metadata `169.254.169.254` stays blocked regardless.        |
+
+### Upgrade
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Migrations run automatically when the container starts; no separate migrate step is needed.
+
+### Image
+
+`ghcr.io/12dora/lobehub-enhanced` — tags `latest`, `<major>.<minor>` and `<semver>` (e.g. `1.0.0`; the git tag is `v1.0.0`), built for
+`linux/amd64` and `linux/arm64`. Apple Silicon Macs pull the `arm64` image through Docker Desktop.
+
+Reference compose files live in [`docker-compose/enhanced/`](./docker-compose/enhanced/); operational
+documentation, references and runbooks live in [`docs/enterprise/`](./docs/enterprise/).
+
+## Login methods
+
+- **Authentik** — configure in 系统 → 安全与认证 → 登录方式. The wizard performs live discovery against the issuer's `.well-known/openid-configuration`. See [`docs/enterprise/authentik-setup.md`](./docs/enterprise/authentik-setup.md).
+- **Generic OIDC** — any standards-compliant OpenID Connect provider; discovery URL, client id/secret, scopes and claim mapping are configured in the same wizard.
+- **DingTalk (钉钉)** — its own login-method kind (AppKey / AppSecret from the DingTalk Open Platform), `unionId` as the stable subject. Sign-in is restricted to an organisation allowlist: the admin clicks "Add organisation via DingTalk login", scans, and the corp id is captured automatically. See [`docs/enterprise/dingtalk-login.md`](./docs/enterprise/dingtalk-login.md).
+
+All database-configured login methods use the same callback URL pattern — register it verbatim on
+the identity-provider side:
+
+```text
+<APP_URL>/api/auth/oauth2/callback/<providerId>
+```
+
+## Development
+
+```bash
+pnpm install  # install dependencies
+bun run dev   # Next.js + Vite SPA
+bun run check # lint + related tests in one pass
+```
+
+Conventions, project structure and the quality checklist are in [`AGENTS.md`](./AGENTS.md);
+architecture and operations notes for the fork are in [`docs/enterprise/`](./docs/enterprise/).
+
+## License
+
+This repository is distributed under the **LobeHub Community License** — see [`LICENSE`](./LICENSE),
+which is retained unmodified. That license is Apache-2.0 **plus additional conditions**.
+
+- **Commercial licensing.** Per clause 1(b) of the LobeHub Community License, a commercial license
+  must be obtained from LobeHub LLC in order to develop and distribute a derivative work based on
+  the upstream project. LobeHub Enhanced **is** such a derivative work. Contact
+  `hello@lobehub.com`. Anyone deploying, modifying or redistributing this repository is responsible
+  for their own compliance.
+- **Change notice.** Per Apache-2.0 §4, the changes made relative to `lobehub/lobehub` v2.2.10 are
+  stated in the "Changes vs upstream" section above and recorded in full in the git history.
+- **Copyright.** Copyright of the upstream code remains with LobeHub LLC. All upstream copyright,
+  license and attribution notices are retained.
+- **Trademark.** No trademark rights are granted by the license. "LobeHub" is a trademark of
+  LobeHub LLC and is used in this repository only to describe the upstream project this fork is
+  derived from.
