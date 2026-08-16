@@ -31,7 +31,14 @@ const styles = createStaticStyles(({ css }) => ({
     justify-content: center;
     padding-block: 8px;
   `,
+  /** The caption is the switch's label, so it must look and behave like one. */
+  toggleLabel: css`
+    cursor: pointer;
+    user-select: none;
+  `,
 }));
+
+const SHOW_OFFLINE_ID = 'admin-system-instances-show-offline';
 
 export interface InstancesTableProps {
   onShowOfflineChange: (showOffline: boolean) => void;
@@ -113,10 +120,13 @@ export const InstancesTable = memo<InstancesTableProps>(
               : null}
           </Text>
           <Flexbox horizontal align="center" gap={8}>
-            <Text type="secondary">{t('system.instances.filter.showOffline')}</Text>
+            <label className={styles.toggleLabel} htmlFor={SHOW_OFFLINE_ID}>
+              <Text type="secondary">{t('system.instances.filter.showOffline')}</Text>
+            </label>
             <Switch
               aria-label={t('system.instances.filter.showOffline')}
               checked={showOffline}
+              id={SHOW_OFFLINE_ID}
               onChange={(value) => {
                 setPage(1);
                 onShowOfflineChange(Boolean(value));

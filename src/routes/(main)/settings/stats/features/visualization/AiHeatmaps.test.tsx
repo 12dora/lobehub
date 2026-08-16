@@ -169,7 +169,7 @@ describe('AiHeatmaps', () => {
     );
   });
 
-  it('drawsDailyBarsForAWindowOfAtMostTwoWeeks', () => {
+  it('drawsDailyBarsForAWindowOfAtMostAQuarter', () => {
     mocks.swrData = [
       { bucket: '2026-08-10', count: 4, level: 2 },
       { bucket: '2026-08-11', count: 0, level: 0 },
@@ -185,7 +185,8 @@ describe('AiHeatmaps', () => {
     expect(screen.queryAllByTestId('day-tag')).toHaveLength(2);
   });
 
-  it('trimsTheCalendarToTheSelectedWindowForLongerRanges', () => {
+  it('keepsDailyBarsForA30DayWindowRatherThanAStampSizedCalendar', () => {
+    // 30 days is ~5 heatmap columns: a tiny block adrift in a full-width card.
     mocks.swrData = [
       { bucket: '2026-07-18', count: 4, level: 2 },
       { bucket: '2026-07-19', count: 0, level: 0 },
@@ -196,7 +197,23 @@ describe('AiHeatmaps', () => {
       startAt: '2026-07-18T00:00:00.000Z',
     });
 
-    expect(screen.getByTestId('heatmaps').dataset.dates).toBe('2026-07-18,2026-07-19');
+    expect(screen.getByTestId('bar-chart').dataset.labels).toBe('7/18,7/19');
+    expect(screen.queryByTestId('heatmaps')).toBeNull();
+    expect(screen.queryAllByTestId('day-tag')).toHaveLength(2);
+  });
+
+  it('trimsTheCalendarToTheSelectedWindowForRangesBeyondAQuarter', () => {
+    mocks.swrData = [
+      { bucket: '2026-01-18', count: 4, level: 2 },
+      { bucket: '2026-01-19', count: 0, level: 0 },
+    ];
+    renderCard({
+      endAt: '2026-08-16T09:30:00.000Z',
+      rangeLabel: 'Last 12 months',
+      startAt: '2025-08-16T00:00:00.000Z',
+    });
+
+    expect(screen.getByTestId('heatmaps').dataset.dates).toBe('2026-01-18,2026-01-19');
     expect(screen.queryByTestId('bar-chart')).toBeNull();
   });
 

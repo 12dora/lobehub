@@ -5,8 +5,9 @@ import type { StatsActivityBucket } from '@/features/SettingsStats';
 /**
  * How an activity series is drawn. Derived from the *span* of the selected window
  * rather than the preset key, so a custom range behaves like the preset of the same
- * length: a calendar grid is only legible from roughly three columns (~21 days) up,
- * below that bars answer "when was it busy" without looking broken.
+ * length. The calendar grid is week-per-column, so it only earns a full-width card
+ * from a quarter or so up — a month draws as a ~5-column stamp marooned in white
+ * space, where bars fill the card and still answer "when was it busy".
  */
 export type ActivityView = 'hour' | 'day' | 'calendar';
 
@@ -16,8 +17,12 @@ const DAY_MS = 24 * HOUR_MS;
 /** Windows shorter than this are drawn as hourly bars. */
 const HOURLY_SPAN_MS = 48 * HOUR_MS;
 
-/** Windows up to this length are drawn as daily bars. */
-const DAILY_SPAN_MS = 14 * DAY_MS;
+/**
+ * Windows up to this length are drawn as daily bars — a quarter, so every preset
+ * through 90 days gets bars. Beyond it the bars would out-number their labels and
+ * the calendar finally has enough columns to read as a calendar.
+ */
+const DAILY_SPAN_MS = 92 * DAY_MS;
 
 /**
  * Pick the rendering for a half-open `[startAt, endAt)` window.

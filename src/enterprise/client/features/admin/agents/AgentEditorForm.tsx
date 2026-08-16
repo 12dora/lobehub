@@ -103,6 +103,18 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 16px;
     align-items: center;
   `,
+  /**
+   * The identifier row spans the grid so its caption stays on one line; the box itself
+   * keeps the width of a half-grid field, because an identifier is a short string and a
+   * full-width input would promise room it does not need.
+   */
+  keyControl: css`
+    max-width: calc(50% - 8px);
+
+    @media (width <= 640px) {
+      max-width: none;
+    }
+  `,
   paramsGrid: css`
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -252,20 +264,22 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
           />
         </div>
 
-        <div className={styles.field}>
+        <div className={cx(styles.field, styles.fieldFull)}>
           <FieldLabel htmlFor={KEY_ID} required={form.isCreate}>
             {t('agentCatalog.editor.key')}
           </FieldLabel>
-          <Input
-            aria-label={t('agentCatalog.editor.key')}
-            disabled={!form.isCreate}
-            id={KEY_ID}
-            maxLength={AGENT_KEY_MAX_LENGTH}
-            placeholder={'research-assistant'}
-            required={form.isCreate}
-            value={form.agentKey}
-            onChange={(event) => form.changeAgentKey(event.target.value)}
-          />
+          <div className={styles.keyControl}>
+            <Input
+              aria-label={t('agentCatalog.editor.key')}
+              disabled={!form.isCreate}
+              id={KEY_ID}
+              maxLength={AGENT_KEY_MAX_LENGTH}
+              placeholder={'research-assistant'}
+              required={form.isCreate}
+              value={form.agentKey}
+              onChange={(event) => form.changeAgentKey(event.target.value)}
+            />
+          </div>
           {keyInvalid || keyMissing ? (
             <span className={styles.error} role={'alert'}>
               {keyMissing

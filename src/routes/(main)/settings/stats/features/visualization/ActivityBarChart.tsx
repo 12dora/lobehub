@@ -17,7 +17,17 @@ interface ActivityBarChartProps {
 }
 
 /**
- * Short-window activity as bars.
+ * A window this long can no longer print a label per bar; recharts thins them to
+ * whatever fits, and a wider minimum gap keeps a quarter of `M/D` labels from
+ * collapsing into one unreadable ribbon.
+ */
+const DENSE_BUCKET_COUNT = 24;
+
+/** Minimum px between two x-axis labels once the series is dense. */
+const DENSE_TICK_GAP = 24;
+
+/**
+ * Short-window activity as bars — hourly under 48h, daily up to a quarter.
  *
  * Bars plot the raw `count`, never the heatmap `level`: `level` is scaled against the
  * busiest bucket in the window, so on a 24-hour window the loudest hour would always
@@ -46,6 +56,7 @@ const ActivityBarChart = memo<ActivityBarChartProps>(
         index={'bucket'}
         loading={loading}
         showLegend={false}
+        tickGap={chartData.length > DENSE_BUCKET_COUNT ? DENSE_TICK_GAP : undefined}
         yAxisWidth={48}
         valueFormatter={(value) =>
           String(showTokens ? formatShortenNumber(value) : formatIntergerNumber(value))

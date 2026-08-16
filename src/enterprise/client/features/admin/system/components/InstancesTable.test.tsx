@@ -137,6 +137,24 @@ describe('InstancesTable', () => {
     expect(onShowOfflineChange).toHaveBeenCalledWith(true);
   });
 
+  it('toggles the offline filter when its caption is clicked', () => {
+    const onShowOfflineChange = vi.fn();
+    render(
+      <InstancesTable
+        showOffline={false}
+        state={buildState([instance({ instanceId: `oidci_${'0'.repeat(48)}` })])}
+        onShowOfflineChange={onShowOfflineChange}
+      />,
+    );
+
+    // The caption is a real <label> for the switch, so the whole phrase is the hit area.
+    const caption = screen.getByText('system.instances.filter.showOffline').closest('label');
+    expect(caption?.getAttribute('for')).toBe(screen.getByRole('checkbox').getAttribute('id'));
+
+    fireEvent.click(caption!);
+    expect(onShowOfflineChange).toHaveBeenCalledWith(true);
+  });
+
   it('paginates loaded rows and keeps short lists unpaginated', () => {
     const many = Array.from({ length: 12 }, (_, index) =>
       instance({ instanceId: `pinst_${index.toString(16).padStart(48, '0')}` }),

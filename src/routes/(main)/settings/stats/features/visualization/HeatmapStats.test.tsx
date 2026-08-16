@@ -196,6 +196,26 @@ describe('HeatmapStats', () => {
     expect(screen.queryByText('stats.heatmapStats.longestStreak')).toBeNull();
   });
 
+  it('keepsTheStreakTilesOnADayBarWindowSuchAsTheLast30Days', () => {
+    // 30 days now draws as daily bars, and streaks are exactly the day-over-day story
+    // that window is asking about — they must not disappear with the calendar.
+    mocks.results['stats:activitySeries'] = {
+      data: [
+        { bucket: '2026-08-14', count: 5, level: 2 },
+        { bucket: '2026-08-15', count: 9, level: 4 },
+      ],
+    };
+    renderStats({
+      endAt: '2026-08-16T09:30:00.000Z',
+      rangeLabel: 'Last 30 days',
+      startAt: '2026-07-17T09:30:00.000Z',
+    });
+
+    expect(screen.getByText('stats.heatmapStats.peakTokens')).toBeTruthy();
+    expect(screen.getByText('stats.heatmapStats.currentStreak')).toBeTruthy();
+    expect(screen.getByText('stats.heatmapStats.longestStreak')).toBeTruthy();
+  });
+
   it('showsARetryableFailureOnTheSeriesTilesInsteadOfAPermanentSkeleton', () => {
     mocks.results['stats:activitySeries'] = { error: new Error('boom') };
     mocks.results['stats:maxTaskDuration'] = { data: 30 };
