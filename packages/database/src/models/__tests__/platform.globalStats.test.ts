@@ -15,6 +15,7 @@ import {
   PlatformGlobalStatsModel,
   resolveStatsRange,
   StatsRangeError,
+  StatsTimeZoneError,
 } from '../platform/globalStats';
 import { TopicModel } from '../topic';
 
@@ -169,6 +170,411 @@ describe('PlatformGlobalStatsModel', () => {
       expect(tokenRow?.count).toBe(aDay + bDay);
 
       vi.useRealTimers();
+    });
+  });
+
+  describe('findActivitySeries', () => {
+    const at = (iso: string) => new Date(iso);
+
+    it('buckets by calendar day in the requested zone, not in UTC', async () => {
+      await serverDB.insert(messages).values([
+        {
+          // 2026-08-10 23:30 +08 — same day in Shanghai and in UTC.
+          content: 'evening',
+          createdAt: at('2026-08-10T15:30:00.000Z'),
+          id: 'act-shanghai-1',
+          role: 'user',
+          userId: USER_A,
+        },
+        {
+          // 2026-08-11 04:00 +08 — still 2026-08-10 in UTC.
+          content: 'past midnight',
+          createdAt: at('2026-08-10T20:00:00.000Z'),
+          id: 'act-shanghai-2',
+          role: 'user',
+          userId: USER_A,
+        },
+      ]);
+
+      const shanghai = await globalStats.findActivitySeries({
+        endAt: at('2026-08-12T16:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-08-09T16:00:00.000Z'),
+        timeZone: 'Asia/Shanghai',
+      });
+      expect(shanghai.map((point) => point.bucket)).toEqual([
+        '2026-08-10',
+        '2026-08-11',
+        '2026-08-12',
+      ]);
+      expect(shanghai.map((point) => point.count)).toEqual([1, 1, 0]);
+
+      const utc = await globalStats.findActivitySeries({
+        endAt: at('2026-08-12T16:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-08-09T16:00:00.000Z'),
+      });
+      expect(utc.find((point) => point.bucket === '2026-08-10')?.count).toBe(2);
+    });
+
+    it('zero-fills every bucket and counts messages of any role', async () => {
+      await serverDB.insert(messages).values([
+        ...Array.from({ length: 12 }, (_, index) => ({
+          content: `busy-${index}`,
+          createdAt: at('2026-08-10T09:00:00.000Z'),
+          id: `act-busy-${index}`,
+          role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+          userId: USER_A,
+        })),
+        {
+          content: 'quiet',
+          createdAt: at('2026-08-12T09:00:00.000Z'),
+          id: 'act-quiet',
+          role: 'user',
+          userId: USER_A,
+        },
+      ]);
+
+      const series = await globalStats.findActivitySeries({
+        endAt: at('2026-08-13T00:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-08-09T00:00:00.000Z'),
+      });
+
+      expect(series).toEqual([
+        { bucket: '2026-08-09', count: 0, level: 0 },
+        // min(4, ceil(12 / 5)) = 3
+        { bucket: '2026-08-10', count: 12, level: 3 },
+        { bucket: '2026-08-11', count: 0, level: 0 },
+        { bucket: '2026-08-12', count: 1, level: 1 },
+      ]);
+    });
+
+    it('scales token levels against the busiest bucket and gates the sum on assistant rows', async () => {
+      await serverDB.insert(messages).values([
+        {
+          content: 'loud',
+          createdAt: at('2026-08-10T09:00:00.000Z'),
+          id: 'act-token-loud',
+          role: 'assistant',
+          usage: { totalInputTokens: 60, totalOutputTokens: 40 },
+          userId: USER_A,
+        },
+        {
+          content: 'quiet',
+          createdAt: at('2026-08-11T09:00:00.000Z'),
+          id: 'act-token-quiet',
+          role: 'assistant',
+          usage: { totalInputTokens: 20, totalOutputTokens: 5 },
+          userId: USER_B,
+        },
+        {
+          content: 'stray usage on a prompt',
+          createdAt: at('2026-08-11T10:00:00.000Z'),
+          id: 'act-token-stray',
+          role: 'user',
+          usage: { totalInputTokens: 9990, totalOutputTokens: 9990 },
+          userId: USER_B,
+        },
+      ]);
+
+      const series = await globalStats.findActivitySeries({
+        endAt: at('2026-08-12T00:00:00.000Z'),
+        startAt: at('2026-08-10T00:00:00.000Z'),
+      });
+      expect(series).toEqual([
+        { bucket: '2026-08-10', count: 100, level: 4 },
+        // ceil(25 / 100 * 4) = 1
+        { bucket: '2026-08-11', count: 25, level: 1 },
+      ]);
+
+      const aliceOnly = await globalStats.findActivitySeries({
+        endAt: at('2026-08-12T00:00:00.000Z'),
+        startAt: at('2026-08-10T00:00:00.000Z'),
+        userId: USER_A,
+      });
+      expect(aliceOnly.map((point) => point.count)).toEqual([100, 0]);
+    });
+
+    it('counts recorded totalTokens like the token heatmap, current and legacy alike', async () => {
+      await serverDB.insert(messages).values([
+        {
+          content: 'current total only',
+          createdAt: at('2026-08-10T09:00:00.000Z'),
+          id: 'act-total-current',
+          role: 'assistant',
+          usage: { totalTokens: 100 },
+          userId: USER_A,
+        },
+        {
+          content: 'legacy nested total',
+          createdAt: at('2026-08-11T09:00:00.000Z'),
+          id: 'act-total-legacy-nested',
+          metadata: { usage: { totalTokens: 50 } },
+          role: 'assistant',
+          userId: USER_A,
+        },
+        {
+          content: 'legacy flat total',
+          createdAt: at('2026-08-12T09:00:00.000Z'),
+          id: 'act-total-legacy-flat',
+          metadata: { totalTokens: 25 },
+          role: 'assistant',
+          userId: USER_A,
+        },
+        {
+          // No total recorded anywhere — input + output is the fallback, not the default.
+          content: 'input and output only',
+          createdAt: at('2026-08-13T09:00:00.000Z'),
+          id: 'act-total-parts',
+          role: 'assistant',
+          usage: { totalInputTokens: 3, totalOutputTokens: 2 },
+          userId: USER_A,
+        },
+      ]);
+
+      const series = await globalStats.findActivitySeries({
+        endAt: at('2026-08-14T00:00:00.000Z'),
+        startAt: at('2026-08-10T00:00:00.000Z'),
+      });
+      expect(series).toEqual([
+        { bucket: '2026-08-10', count: 100, level: 4 },
+        { bucket: '2026-08-11', count: 50, level: 2 },
+        { bucket: '2026-08-12', count: 25, level: 1 },
+        { bucket: '2026-08-13', count: 5, level: 1 },
+      ]);
+    });
+
+    it('derives hour buckets for a window shorter than 48 hours', async () => {
+      await serverDB.insert(messages).values({
+        content: 'hourly',
+        createdAt: at('2026-08-10T01:30:00.000Z'),
+        id: 'act-hour-1',
+        role: 'user',
+        userId: USER_A,
+      });
+
+      const series = await globalStats.findActivitySeries({
+        endAt: at('2026-08-10T03:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-08-10T00:00:00.000Z'),
+      });
+      expect(series).toEqual([
+        { bucket: '2026-08-10T00:00', count: 0, level: 0 },
+        { bucket: '2026-08-10T01:00', count: 1, level: 1 },
+        { bucket: '2026-08-10T02:00', count: 0, level: 0 },
+      ]);
+
+      const shanghai = await globalStats.findActivitySeries({
+        endAt: at('2026-08-10T03:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-08-10T00:00:00.000Z'),
+        timeZone: 'Asia/Shanghai',
+      });
+      expect(shanghai.map((point) => point.bucket)).toEqual([
+        '2026-08-10T08:00',
+        '2026-08-10T09:00',
+        '2026-08-10T10:00',
+      ]);
+      expect(shanghai[1]?.count).toBe(1);
+    });
+
+    it('derives day buckets for a multi-day window and honours an explicit week granularity', async () => {
+      await serverDB.insert(messages).values({
+        content: 'weekly',
+        createdAt: at('2026-08-13T09:00:00.000Z'),
+        id: 'act-week-1',
+        role: 'user',
+        userId: USER_A,
+      });
+
+      const daily = await globalStats.findActivitySeries({
+        endAt: at('2026-08-14T00:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-08-11T00:00:00.000Z'),
+      });
+      expect(daily.map((point) => point.bucket)).toEqual([
+        '2026-08-11',
+        '2026-08-12',
+        '2026-08-13',
+      ]);
+
+      // Derived granularity never reaches `week`: a window wide enough to warrant weeks is
+      // already past the 366-day cap, so wide-but-legal windows stay daily.
+      const wide = await globalStats.findActivitySeries({
+        endAt: at('2026-08-14T00:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-01-01T00:00:00.000Z'),
+      });
+      expect(wide).toHaveLength(225);
+      expect(wide.at(-1)?.bucket).toBe('2026-08-13');
+      await expect(
+        globalStats.findActivitySeries({
+          endAt: at('2028-01-01T00:00:00.000Z'),
+          startAt: at('2026-01-01T00:00:00.000Z'),
+        }),
+      ).rejects.toThrow(StatsRangeError);
+
+      // 2026-08-03 / 08-10 / 08-17 are Mondays — date_trunc('week') parity.
+      const weekly = await globalStats.findActivitySeries({
+        endAt: at('2026-08-20T00:00:00.000Z'),
+        granularity: 'week',
+        metric: 'messages',
+        startAt: at('2026-08-05T00:00:00.000Z'),
+      });
+      expect(weekly).toEqual([
+        { bucket: '2026-08-03', count: 0, level: 0 },
+        { bucket: '2026-08-10', count: 1, level: 1 },
+        { bucket: '2026-08-17', count: 0, level: 0 },
+      ]);
+    });
+
+    it('skips the hour a spring-forward never had (America/New_York)', async () => {
+      await serverDB.insert(messages).values({
+        // 2026-03-08 03:30 EDT — the first wall-clock hour after the jump.
+        content: 'after the jump',
+        createdAt: at('2026-03-08T07:30:00.000Z'),
+        id: 'act-dst-spring',
+        role: 'user',
+        userId: USER_A,
+      });
+
+      // 00:00 EST → 05:00 EDT, four real hours across the 02:00 → 03:00 jump.
+      const series = await globalStats.findActivitySeries({
+        endAt: at('2026-03-08T09:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-03-08T05:00:00.000Z'),
+        timeZone: 'America/New_York',
+      });
+      expect(series).toEqual([
+        { bucket: '2026-03-08T00:00', count: 0, level: 0 },
+        { bucket: '2026-03-08T01:00', count: 0, level: 0 },
+        // No 02:00 — that wall-clock hour does not exist on this date.
+        { bucket: '2026-03-08T03:00', count: 1, level: 1 },
+        { bucket: '2026-03-08T04:00', count: 0, level: 0 },
+      ]);
+    });
+
+    it('folds both passes of a fall-back hour into one bucket (America/New_York)', async () => {
+      await serverDB.insert(messages).values([
+        {
+          // 2026-11-01 01:30 EDT — the first pass through 01:00.
+          content: 'first pass',
+          createdAt: at('2026-11-01T05:30:00.000Z'),
+          id: 'act-dst-fall-1',
+          role: 'user',
+          userId: USER_A,
+        },
+        {
+          // 2026-11-01 01:30 EST — the repeat, one real hour later.
+          content: 'second pass',
+          createdAt: at('2026-11-01T06:30:00.000Z'),
+          id: 'act-dst-fall-2',
+          role: 'user',
+          userId: USER_A,
+        },
+      ]);
+
+      // 00:00 EDT → 03:00 EST, four real hours yielding three wall-clock hours.
+      const series = await globalStats.findActivitySeries({
+        endAt: at('2026-11-01T08:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-11-01T04:00:00.000Z'),
+        timeZone: 'America/New_York',
+      });
+      expect(series).toEqual([
+        { bucket: '2026-11-01T00:00', count: 0, level: 0 },
+        // Both passes group under the single 01:00 label PostgreSQL produces.
+        { bucket: '2026-11-01T01:00', count: 2, level: 1 },
+        { bucket: '2026-11-01T02:00', count: 0, level: 0 },
+      ]);
+    });
+
+    it('keeps 23 and 25 hour days as exactly one day bucket each', async () => {
+      await serverDB.insert(messages).values([
+        {
+          // 2026-11-01 01:30 EST — inside the repeated hour of the 25 hour day.
+          content: 'inside the long day',
+          createdAt: at('2026-11-01T06:30:00.000Z'),
+          id: 'act-dst-day-long',
+          role: 'user',
+          userId: USER_A,
+        },
+        {
+          // 2026-03-08 03:30 EDT — inside the short day.
+          content: 'inside the short day',
+          createdAt: at('2026-03-08T07:30:00.000Z'),
+          id: 'act-dst-day-short',
+          role: 'user',
+          userId: USER_A,
+        },
+      ]);
+
+      const short = await globalStats.findActivitySeries({
+        endAt: at('2026-03-10T04:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-03-07T05:00:00.000Z'),
+        timeZone: 'America/New_York',
+      });
+      expect(short.map((point) => point.bucket)).toEqual([
+        '2026-03-07',
+        '2026-03-08',
+        '2026-03-09',
+      ]);
+      expect(short.map((point) => point.count)).toEqual([0, 1, 0]);
+
+      const long = await globalStats.findActivitySeries({
+        endAt: at('2026-11-03T05:00:00.000Z'),
+        metric: 'messages',
+        startAt: at('2026-10-31T04:00:00.000Z'),
+        timeZone: 'America/New_York',
+      });
+      expect(long.map((point) => point.bucket)).toEqual(['2026-10-31', '2026-11-01', '2026-11-02']);
+      expect(long.map((point) => point.count)).toEqual([0, 1, 0]);
+    });
+
+    it('falls back to the last 30 days when no window is given', async () => {
+      await serverDB.insert(messages).values([
+        {
+          content: 'old',
+          createdAt: at('2020-01-01T00:00:00.000Z'),
+          id: 'act-default-old',
+          role: 'user',
+          userId: USER_A,
+        },
+        {
+          content: 'recent',
+          createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+          id: 'act-default-recent',
+          role: 'user',
+          userId: USER_A,
+        },
+      ]);
+
+      const series = await globalStats.findActivitySeries({ metric: 'messages' });
+      expect(series.length).toBeGreaterThanOrEqual(30);
+      expect(series.reduce((sum, point) => sum + point.count, 0)).toBe(1);
+    });
+
+    it('rejects unknown time zones and windows with too many buckets', async () => {
+      await expect(globalStats.findActivitySeries({ timeZone: 'Mars/Olympus' })).rejects.toThrow(
+        StatsTimeZoneError,
+      );
+      // Case-sensitive: only canonical IANA identifiers are accepted.
+      await expect(globalStats.findActivitySeries({ timeZone: 'asia/shanghai' })).rejects.toThrow(
+        StatsTimeZoneError,
+      );
+      await expect(globalStats.findActivitySeries({ timeZone: 'UTC' })).resolves.toEqual(
+        expect.any(Array),
+      );
+
+      await expect(
+        globalStats.findActivitySeries({
+          endAt: at('2026-08-10T00:00:00.000Z'),
+          granularity: 'hour',
+          startAt: at('2026-01-01T00:00:00.000Z'),
+        }),
+      ).rejects.toThrow(StatsRangeError);
     });
   });
 
@@ -498,6 +904,46 @@ describe('PlatformGlobalStatsModel', () => {
       expect(seconds).toBe(600);
 
       vi.useRealTimers();
+    });
+
+    it('narrows to an explicit window and to a single user', async () => {
+      const inWindow = new Date('2026-01-10T00:00:00.000Z');
+      const outOfWindow = new Date('2026-02-10T00:00:00.000Z');
+
+      await serverDB.insert(agentOperations).values([
+        {
+          completedAt: new Date('2026-01-10T00:01:00.000Z'),
+          createdAt: inWindow,
+          id: 'op-window-short',
+          startedAt: inWindow,
+          status: 'done',
+          userId: USER_A,
+        },
+        {
+          completedAt: new Date('2026-01-10T00:05:00.000Z'),
+          createdAt: inWindow,
+          id: 'op-window-long',
+          startedAt: inWindow,
+          status: 'done',
+          userId: USER_B,
+        },
+        {
+          completedAt: new Date('2026-02-10T01:00:00.000Z'),
+          createdAt: outOfWindow,
+          id: 'op-outside',
+          startedAt: outOfWindow,
+          status: 'done',
+          userId: USER_A,
+        },
+      ]);
+
+      const WINDOW = {
+        endAt: '2026-01-11T00:00:00.000Z',
+        startAt: '2026-01-09T00:00:00.000Z',
+      };
+      expect(await globalStats.getMaxTaskDuration(WINDOW)).toBe(300);
+      expect(await globalStats.getMaxTaskDuration({ ...WINDOW, userId: USER_A })).toBe(60);
+      expect(await globalStats.getMaxTaskDuration({ ...WINDOW, userId: 'nobody' })).toBe(0);
     });
   });
 

@@ -1,0 +1,41 @@
+import { memo } from 'react';
+import { useTranslation } from 'react-i18next';
+
+import AsyncBoundary from '@/components/AsyncBoundary';
+import StatisticCard from '@/components/StatisticCard';
+import {
+  statsFilterParams,
+  useStatsDataSource,
+  useStatsFilter,
+  useStatsSwrKey,
+} from '@/features/SettingsStats';
+import { useClientDataSWR } from '@/libs/swr';
+import { statsKeys } from '@/libs/swr/keys';
+
+/**
+ * Platform user population — admin-only, rendered only when the data source can
+ * answer it. There is no comparable previous-period baseline for a population
+ * figure, so the month-over-month delta the sibling cards show is omitted.
+ */
+const TotalUsers = memo(() => {
+  const { t } = useTranslation('auth');
+  const { userTotals } = useStatsDataSource();
+  const params = statsFilterParams(useStatsFilter());
+  const swrKey = useStatsSwrKey(statsKeys.userTotals());
+
+  const { data, isLoading, error, mutate } = useClientDataSWR(userTotals ? swrKey : null, () =>
+    userTotals!(params),
+  );
+
+  return (
+    <AsyncBoundary data={data} error={error} errorVariant={'metric'} onRetry={() => mutate()}>
+      <StatisticCard
+        loading={isLoading || !data}
+        statistic={{ precision: 0, value: data?.usersTotal ?? '--' }}
+        title={t('stats.usersTotal')}
+      />
+    </AsyncBoundary>
+  );
+});
+
+export default TotalUsers;

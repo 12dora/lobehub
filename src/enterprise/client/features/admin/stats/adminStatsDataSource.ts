@@ -74,6 +74,7 @@ export const getAdminStatsCurrentUserDisplaySize = () => currentUserDisplayMap.s
 
 /** Platform-global stats data source for admin.stats (scoped SWR keys). */
 export const adminGlobalStatsDataSource: StatsDataSource = {
+  activitySeries: (params) => adminStatsService.activitySeries(params),
   countAgents: (params) => adminStatsService.countAgents(params),
   countMessages: (params) => adminStatsService.countMessages(params),
   countTopics: (params) => adminStatsService.countTopics(params),
@@ -89,7 +90,7 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
     return rows as UsageRecordItem[];
   },
   getHeatmaps: () => adminStatsService.getHeatmaps(),
-  getMaxTaskDuration: () => adminStatsService.getMaxTaskDuration(),
+  getMaxTaskDuration: (params) => adminStatsService.getMaxTaskDuration(params),
   getTokenHeatmaps: () => adminStatsService.getTokenHeatmaps(),
   rankAgents: (limit, params) => adminStatsService.rankAgents(limit, params),
   // Server default limit (10); no limit param on StatsDataSource.rankModels.
@@ -98,6 +99,7 @@ export const adminGlobalStatsDataSource: StatsDataSource = {
   rankUsers: (limit, params) => adminStatsService.rankUsers(limit, params),
   scopeKey: ADMIN_GLOBAL_STATS_SCOPE,
   usageDailyTokenTotals: (params) => adminStatsService.usageDailyTokenTotals(params),
+  userTotals: (params) => adminStatsService.userTotals(params?.activeDays, params),
 };
 
 /**

@@ -16,7 +16,6 @@ import {
   resetAdminStatsUserDisplayCache,
   resolveAdminStatsUser,
 } from './adminStatsDataSource';
-import { GlobalStatsBanner } from './GlobalStatsBanner';
 import StatsUserFilterSelect from './StatsUserFilterSelect';
 import { useStatsUserFilter } from './useStatsUserFilter';
 
@@ -51,26 +50,26 @@ const GlobalStatsPage = memo(() => {
       description={t('stats.page.desc')}
       title={t('stats.page.title')}
       actions={
-        <TimeRangeFilter
-          customFrom={customFrom}
-          customTo={customTo}
-          rangeKey={rangeKey}
-          setCustomRange={setCustomRange}
-          setRangeKey={setRangeKey}
-        />
+        <>
+          <StatsUserFilterSelect value={userId} valueLabel={userName} onChange={setUser} />
+          <TimeRangeFilter
+            customFrom={customFrom}
+            customTo={customTo}
+            rangeKey={rangeKey}
+            setCustomRange={setCustomRange}
+            setRangeKey={setRangeKey}
+          />
+        </>
       }
     >
       <StatsSetting
         enableUserDimension
         dataSource={adminGlobalStatsDataSource}
-        headerNode={<GlobalStatsBanner range={range} userId={userId} userName={userName} />}
+        headerNode={t('stats.section.title')}
         range={statsRange}
         resolveUser={resolveUser}
         showSettingHeader={false}
         userId={userId}
-        headerExtra={
-          <StatsUserFilterSelect value={userId} valueLabel={userName} onChange={setUser} />
-        }
       />
     </AdminPageTemplate>
   );

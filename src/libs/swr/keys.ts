@@ -617,6 +617,16 @@ export const chatToolKeys = {
 
 // ---- stats (settings/stats + user header counts) ------------------------
 export const statsKeys = {
+  /**
+   * Bucketed activity series for the selected window (admin stats filter).
+   * `timeZone` is part of the key because it shapes the response: the server cuts the
+   * hour / day buckets in it, so the same window in another zone is different data.
+   */
+  activitySeries: def('stats:activitySeries', (metric: string, timeZone?: string) => [
+    'stats:activitySeries',
+    metric,
+    timeZone ?? null,
+  ]),
   agentUsageStat: def(
     'stats:agentUsageStat',
     (agentId: string, startAt: string, endAt: string, granularity: string) => [
@@ -646,6 +656,8 @@ export const statsKeys = {
   topics: def('stats:topics', () => ['stats:topics']),
   usageLogs: def('stats:usageLogs', () => ['stats:usageLogs']),
   usageStat: def('stats:usageStat', () => ['stats:usageStat']),
+  /** Platform user population for the window — admin stats only. */
+  userTotals: def('stats:userTotals', () => ['stats:userTotals']),
   welcome: def('stats:welcome', () => ['stats:welcome']),
 };
 

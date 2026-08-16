@@ -1,10 +1,15 @@
 export type {
+  StatsActivityBucket,
+  StatsActivityGranularity,
+  StatsActivityMetric,
+  StatsActivitySeriesParams,
   StatsCountDateParams,
   StatsDailyTokenTotal,
   StatsDataSource,
   StatsRangeParams,
   StatsUsageParams,
   StatsUserRankItem,
+  StatsUserTotals,
 } from './StatsDataSource';
 export {
   ADMIN_GLOBAL_STATS_SCOPE,

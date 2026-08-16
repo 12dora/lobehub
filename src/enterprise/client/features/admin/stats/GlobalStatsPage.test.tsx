@@ -37,17 +37,20 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/enterprise/client/features/admin/primitives/AdminPageTemplate', () => ({
-  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  default: ({ actions, children }: { actions?: React.ReactNode; children?: React.ReactNode }) => (
+    <div>
+      <div data-testid="page-actions">{actions}</div>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('@/routes/(main)/settings/stats', () => ({
   default: ({
-    headerExtra,
     headerNode,
     range,
     userId,
   }: {
-    headerExtra?: React.ReactNode;
     headerNode?: React.ReactNode;
     range?: { endAt: string; label: string; startAt: string };
     userId?: string;
@@ -60,7 +63,6 @@ vi.mock('@/routes/(main)/settings/stats', () => ({
       data-userid={userId ?? ''}
     >
       {headerNode}
-      {headerExtra}
     </div>
   ),
 }));
@@ -86,12 +88,6 @@ vi.mock('./StatsUserFilterSelect', () => ({
   ),
   displayStatsUserLabel: (user: { fullName?: string | null; id: string }) =>
     user.fullName || user.id,
-}));
-
-vi.mock('./GlobalStatsBanner', () => ({
-  GlobalStatsBanner: ({ userId, userName }: { userId?: string; userName?: string }) => (
-    <div data-testid="banner" data-userid={userId ?? ''} data-username={userName ?? ''} />
-  ),
 }));
 
 vi.mock('@/enterprise/client/services/adminUsers', () => ({
@@ -169,14 +165,23 @@ describe('GlobalStatsPage cache reset', () => {
     expect(page.dataset.userid).toBe('u-42');
   });
 
-  it('resolvesABookmarkedUserIdIntoANameForThePickerAndTheBanner', () => {
+  it('rendersTheUserFilterInThePageActionRow', () => {
+    renderPage();
+
+    // The picker moved out of the section header into the page actions, where it sits
+    // to the left of the time-range filter.
+    expect(screen.getByTestId('page-actions').contains(screen.getByTestId('user-filter'))).toBe(
+      true,
+    );
+  });
+
+  it('resolvesABookmarkedUserIdIntoANameForThePicker', () => {
     hoisted.lookupLabel = 'Ada Lovelace';
     renderPage('?user=u-42');
 
     expect(hoisted.get).toHaveBeenCalledWith({ userId: 'u-42' });
     expect(screen.getByTestId('user-filter').dataset.label).toBe('Ada Lovelace');
-    expect(screen.getByTestId('banner').dataset.username).toBe('Ada Lovelace');
-    expect(screen.getByTestId('banner').dataset.userid).toBe('u-42');
+    expect(screen.getByTestId('stats-setting').dataset.userid).toBe('u-42');
   });
 
   it('labelsAnUnknownOrDeniedUserWithItsIdRatherThanClaimingAllUsers', () => {
@@ -185,7 +190,6 @@ describe('GlobalStatsPage cache reset', () => {
 
     expect(screen.getByTestId('stats-setting').dataset.userid).toBe('u-ghost');
     expect(screen.getByTestId('user-filter').dataset.label).toBe('u-ghost');
-    expect(screen.getByTestId('banner').dataset.username).toBe('u-ghost');
   });
 
   it.each([
@@ -213,6 +217,6 @@ describe('GlobalStatsPage cache reset', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'clear' }));
     expect(screen.getByTestId('search').textContent).toBe('');
-    expect(screen.getByTestId('banner').dataset.username).toBe('');
+    expect(screen.getByTestId('stats-setting').dataset.userid).toBe('');
   });
 });

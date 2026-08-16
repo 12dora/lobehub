@@ -108,6 +108,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   },
   {
     kind: 'query',
+    path: 'admin.stats.activitySeries',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
     path: 'admin.stats.countAgents',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
   },

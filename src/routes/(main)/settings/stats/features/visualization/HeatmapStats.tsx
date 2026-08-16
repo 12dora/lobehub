@@ -4,12 +4,26 @@ import { cssVar } from 'antd-style';
 import { Fragment, memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { scopeStatsKey, useStatsDataSource } from '@/features/SettingsStats';
+import AsyncBoundary from '@/components/AsyncBoundary';
+import {
+  isStatsFilterActive,
+  statsFilterParams,
+  useStatsDataSource,
+  useStatsFilter,
+  useStatsSwrKey,
+} from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatShortenNumber } from '@/utils/format';
 
 import { HeatmapType } from '../../types';
+import {
+  activityBucketDay,
+  isTerminalDayCurrent,
+  resolveActivityView,
+  resolveDisplayTimeZone,
+  summarizeActivitySeries,
+} from './activity.utils';
 
 /**
  * Render a wall-clock duration in seconds as a compact "1h 15m" / "15m 20s" /
@@ -26,66 +40,101 @@ const formatDuration = (seconds?: number) => {
 };
 
 /**
- * Token-dimension summary row for the activity heatmap. The peak / streak figures
- * are derived from the daily token-heatmap series (same SWR key as the heatmap,
- * so the request is deduped); the longest-task duration comes from the agent
- * operations' wall-clock time. The cumulative token total lives in the overview
- * cards above, so it is intentionally not repeated here.
+ * Token-dimension summary row for the activity card. The peak / streak figures are
+ * derived from the very series the chart above draws (same SWR key, so the request
+ * is deduped) — unfiltered that is the calendar-year token heatmap, filtered it is
+ * the ranged activity series, so the two can never contradict each other.
+ * The cumulative token total lives in the overview cards above, so it is
+ * intentionally not repeated here.
  */
 const HeatmapStats = memo(() => {
   const { t } = useTranslation('auth');
-  const { getMaxTaskDuration, getTokenHeatmaps, scopeKey } = useStatsDataSource();
+  const { activitySeries, getMaxTaskDuration, getTokenHeatmaps } = useStatsDataSource();
+  const filter = useStatsFilter();
 
-  const { data, isLoading } = useClientDataSWR(
-    scopeStatsKey(statsKeys.heatmaps(HeatmapType.Tokens), scopeKey),
-    () => getTokenHeatmaps(),
-  );
-  const loading = isLoading || !data;
+  const ranged = Boolean(activitySeries) && isStatsFilterActive(filter);
+  const view = ranged ? resolveActivityView(filter.startAt, filter.endAt) : 'calendar';
 
-  const { data: maxTaskDuration } = useClientDataSWR(
-    scopeStatsKey(statsKeys.maxTaskDuration(), scopeKey),
-    () => getMaxTaskDuration(),
+  const timeZone = resolveDisplayTimeZone();
+  const yearKey = useStatsSwrKey(statsKeys.heatmaps(HeatmapType.Tokens));
+  const seriesKey = useStatsSwrKey(statsKeys.activitySeries(HeatmapType.Tokens, timeZone));
+  const durationKey = useStatsSwrKey(statsKeys.maxTaskDuration());
+
+  const year = useClientDataSWR(ranged ? null : yearKey, () => getTokenHeatmaps());
+  const series = useClientDataSWR(ranged ? seriesKey : null, () =>
+    activitySeries!({
+      endAt: filter.endAt,
+      metric: 'tokens',
+      startAt: filter.startAt,
+      timeZone,
+      userId: filter.userId,
+    }),
   );
+
+  const active = ranged ? series : year;
+  // A terminal failure is neither loading nor settled — treating "no data" as loading
+  // is what leaves the tiles on a skeleton forever.
+  const loading = active.isLoading || (active.data === undefined && !active.error);
+
+  const duration = useClientDataSWR(durationKey, () =>
+    getMaxTaskDuration(statsFilterParams(filter)),
+  );
+  const durationLoading = duration.isLoading || (duration.data === undefined && !duration.error);
 
   const stats = useMemo(() => {
-    if (!data?.length) return { current: 0, longest: 0, peak: 0 };
-
-    let peak = 0;
-    let longest = 0;
-    let run = 0;
-    for (const item of data) {
-      if (item.count > peak) peak = item.count;
-      if (item.count > 0) {
-        run += 1;
-        if (run > longest) longest = run;
-      } else {
-        run = 0;
-      }
-    }
-
-    // Current streak: trailing consecutive active days. The last bucket (today)
-    // may legitimately be 0 because the day isn't over, so it doesn't break it.
-    let current = 0;
-    for (let i = data.length - 1; i >= 0; i -= 1) {
-      if (data[i].count > 0) current += 1;
-      else if (i === data.length - 1) continue;
-      else break;
-    }
-
-    return { current, longest, peak };
-  }, [data]);
+    const rows = ranged
+      ? series.data?.map((row) => ({ count: row.count, day: activityBucketDay(row.bucket) }))
+      : year.data?.map((row) => ({ count: row.count, day: row.date }));
+    // A zero-valued last day only means "not over yet" when it really is today; a
+    // closed historical window ending on an inactive day has no current streak.
+    return summarizeActivitySeries(rows, {
+      isTerminalDayCurrent: isTerminalDayCurrent(rows, timeZone),
+    });
+  }, [ranged, series.data, timeZone, year.data]);
 
   const days = (n: number) => [n, t('stats.days')].join(' ');
 
+  // Streaks are a day-over-day story; on an hourly window there are at most two days
+  // to count, so the tiles would print noise instead of an insight.
+  const showStreaks = view !== 'hour';
+
+  const seriesTile = {
+    data: active.data,
+    error: active.error,
+    loading,
+    onRetry: () => active.mutate(),
+  };
+
   const items = [
-    { label: t('stats.heatmapStats.peakTokens'), value: formatShortenNumber(stats.peak) },
     {
-      label: t('stats.heatmapStats.longestTask'),
-      loading: maxTaskDuration === undefined,
-      value: formatDuration(maxTaskDuration),
+      ...seriesTile,
+      label: t(
+        view === 'hour' ? 'stats.heatmapStats.peakHourlyTokens' : 'stats.heatmapStats.peakTokens',
+      ),
+      value: formatShortenNumber(stats.peak),
     },
-    { label: t('stats.heatmapStats.currentStreak'), value: days(stats.current) },
-    { label: t('stats.heatmapStats.longestStreak'), value: days(stats.longest) },
+    {
+      data: duration.data,
+      error: duration.error,
+      label: t('stats.heatmapStats.longestTask'),
+      loading: durationLoading,
+      onRetry: () => duration.mutate(),
+      value: formatDuration(duration.data),
+    },
+    ...(showStreaks
+      ? [
+          {
+            ...seriesTile,
+            label: t('stats.heatmapStats.currentStreak'),
+            value: days(stats.current),
+          },
+          {
+            ...seriesTile,
+            label: t('stats.heatmapStats.longestStreak'),
+            value: days(stats.longest),
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -96,11 +145,16 @@ const HeatmapStats = memo(() => {
             {index > 0 && <Divider style={{ height: 32, margin: 0 }} type={'vertical'} />}
             <Flexbox align={'center'} flex={1} gap={4}>
               <div style={{ fontSize: 20, fontWeight: 'bold' }}>
-                {loading || item.loading ? (
-                  <Skeleton.Button active size={'small'} style={{ width: 56 }} />
-                ) : (
-                  item.value
-                )}
+                <AsyncBoundary
+                  data={item.data}
+                  error={item.error}
+                  errorVariant={'metric'}
+                  isLoading={item.loading}
+                  loading={<Skeleton.Button active size={'small'} style={{ width: 56 }} />}
+                  onRetry={item.onRetry}
+                >
+                  {item.value}
+                </AsyncBoundary>
               </div>
               <div style={{ color: cssVar.colorTextDescription, fontSize: 12 }}>{item.label}</div>
             </Flexbox>

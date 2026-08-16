@@ -26,11 +26,13 @@ import { statsKeys } from '@/libs/swr/keys';
 import SettingHeader from '@/routes/(main)/settings/features/SettingHeader';
 
 import {
+  ActiveUsers,
   ShareButton,
   TotalAssistants,
   TotalMessages,
   TotalTokens,
   TotalTopics,
+  TotalUsers,
   Welcome,
 } from './features/overview';
 import { AssistantsRank, ModelsRank, TopicsRank, UsersRank } from './features/rankings';
@@ -59,11 +61,6 @@ interface StatsSettingProps {
    */
   enableUserDimension?: boolean;
   /**
-   * Actions rendered at the right of the header section. Only used together with
-   * `headerNode` — the personal header owns that slot with its ShareButton.
-   */
-  headerExtra?: ReactNode;
-  /**
    * Replace the personal Welcome banner (uses user nickname / registration
    * date) with a custom node. Pass `false` to drop the banner entirely.
    * When set (non-undefined), the personal ShareButton is also hidden because
@@ -89,18 +86,10 @@ type StatsSettingBodyProps = Omit<StatsSettingProps, 'dataSource' | 'range' | 'u
 };
 
 const StatsSettingBody = memo<StatsSettingBodyProps>(
-  ({
-    mobile,
-    headerNode,
-    headerExtra,
-    enableUserDimension,
-    ranged,
-    resolveUser,
-    showSettingHeader = true,
-  }) => {
+  ({ mobile, headerNode, enableUserDimension, ranged, resolveUser, showSettingHeader = true }) => {
     const { t, i18n } = useTranslation('auth');
     dayjs.locale(i18n.language);
-    const { findAndGroupByDay, rankUsers } = useStatsDataSource();
+    const { findAndGroupByDay, rankUsers, userTotals } = useStatsDataSource();
     const filter = useStatsFilter();
 
     const [groupBy, setGroupBy] = useState<GroupBy>(GroupBy.Model);
@@ -134,13 +123,17 @@ const StatsSettingBody = memo<StatsSettingBodyProps>(
     // the same filter, so it shows that user's row instead of vanishing under the filter.
     const showUsersRank = Boolean(rankUsers);
 
+    // Platform-population figures. They are not properties of one person, so pinning the
+    // page to a user drops them rather than printing a platform number among per-user cards.
+    const showUserTotals = Boolean(userTotals) && !filter.userId;
+
     return (
       <>
         {showSettingHeader ? <SettingHeader title={t('tab.stats')} /> : null}
         {/* ========== Header Section ========== */}
         <FormGroup
           collapsible={false}
-          extra={headerNode === undefined ? <ShareButton /> : headerExtra}
+          extra={headerNode === undefined ? <ShareButton /> : undefined}
           gap={16}
           variant={'filled'}
           title={
@@ -151,7 +144,13 @@ const StatsSettingBody = memo<StatsSettingBodyProps>(
             )
           }
         >
-          <Grid gap={8} maxItemWidth={150} rows={4}>
+          <Grid gap={8} maxItemWidth={150} rows={showUserTotals ? 6 : 4}>
+            {showUserTotals ? (
+              <>
+                <TotalUsers />
+                <ActiveUsers />
+              </>
+            ) : null}
             <TotalAssistants mobile={mobile} />
             <TotalTopics mobile={mobile} />
             <TotalMessages mobile={mobile} />

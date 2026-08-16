@@ -24,8 +24,37 @@ export type AdminStatsUserRankOrderBy = 'cost' | 'messages' | 'totalTokens';
 
 type UserRankParams = AdminStatsRangeParams & { orderBy?: AdminStatsUserRankOrderBy };
 
+/** Bucket width of an activity series; omitted lets the server derive it from the span. */
+export type AdminStatsActivityGranularity = 'day' | 'hour' | 'week';
+/** What a bucket counts: every message, or the assistant-gated token sum (default). */
+export type AdminStatsActivityMetric = 'messages' | 'tokens';
+
+export interface AdminStatsActivitySeriesParams extends AdminStatsRangeParams {
+  granularity?: AdminStatsActivityGranularity;
+  metric?: AdminStatsActivityMetric;
+  /** IANA zone the buckets are expressed in. Defaults to `UTC` on the server. */
+  timeZone?: string;
+}
+
+/** One zero-filled bucket of `admin.stats.activitySeries` (mirrors the server contract). */
+export interface AdminStatsActivityPoint {
+  /** `YYYY-MM-DDTHH:00` for hour buckets, `YYYY-MM-DD` for day / week (Monday) buckets. */
+  bucket: string;
+  count: number;
+  /** 0..4 heatmap intensity. */
+  level: number;
+}
+
 /** Typed client boundary for platform-wide admin data statistics. */
 class AdminStatsService {
+  /**
+   * Zero-filled activity buckets for the selected window. The server derives the bucket
+   * width from the span unless `granularity` pins one, and defaults to the last 30 days.
+   */
+  activitySeries = async (
+    params?: AdminStatsActivitySeriesParams,
+  ): Promise<AdminStatsActivityPoint[]> => lambdaClient.admin.stats.activitySeries.query(params);
+
   countAgents = async (params?: CountDateParams) =>
     lambdaClient.admin.stats.countAgents.query(params);
 
@@ -37,7 +66,9 @@ class AdminStatsService {
 
   getHeatmaps = async () => lambdaClient.admin.stats.getHeatmaps.query();
 
-  getMaxTaskDuration = async () => lambdaClient.admin.stats.getMaxTaskDuration.query();
+  /** Longest completed task; an explicit window narrows it, omitted it keeps the trailing year. */
+  getMaxTaskDuration = async (params?: AdminStatsRangeParams) =>
+    lambdaClient.admin.stats.getMaxTaskDuration.query(params);
 
   getTokenHeatmaps = async () => lambdaClient.admin.stats.getTokenHeatmaps.query();
 

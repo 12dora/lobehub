@@ -56,6 +56,37 @@ export interface StatsDailyTokenTotal {
   totalTokens: number | string;
 }
 
+/** Dimension plotted by the activity series. */
+export type StatsActivityMetric = 'messages' | 'tokens';
+
+/** Bucket width of the activity series. Derived server-side from the window span. */
+export type StatsActivityGranularity = 'hour' | 'day' | 'week';
+
+export interface StatsActivitySeriesParams extends StatsRangeParams {
+  /** Omit to let the server pick from the window span. */
+  granularity?: StatsActivityGranularity;
+  metric?: StatsActivityMetric;
+  /** IANA zone the hour/day buckets are cut in. Defaults to UTC server-side. */
+  timeZone?: string;
+}
+
+/**
+ * One zero-filled bucket of the activity series.
+ * `bucket` is `YYYY-MM-DDTHH:00` for hour granularity and `YYYY-MM-DD` otherwise
+ * (for week granularity: the Monday of the week).
+ */
+export interface StatsActivityBucket {
+  bucket: string;
+  count: number;
+  level: number;
+}
+
+/** Platform-wide user counts for a window. Admin-only. */
+export interface StatsUserTotals {
+  usersActive: number;
+  usersTotal: number;
+}
+
 /**
  * Pluggable data source for the stats settings UI.
  * Personal mode uses existing user services; admin injects platform-wide APIs.
@@ -65,13 +96,19 @@ export interface StatsDailyTokenTotal {
  * (their services have no such window) — see `personalStatsDataSource`.
  */
 export interface StatsDataSource {
+  /**
+   * Admin-only. Activity buckets for an arbitrary window, so the activity card can
+   * follow the page filter instead of the fixed trailing calendar year. Absent for
+   * personal / share scopes, which keep the `getHeatmaps` year series.
+   */
+  activitySeries?: (params?: StatsActivitySeriesParams) => Promise<StatsActivityBucket[]>;
   countAgents: (params?: StatsCountDateParams) => Promise<number>;
   countMessages: (params?: StatsCountDateParams) => Promise<number>;
   countTopics: (params?: StatsCountDateParams) => Promise<number>;
   findAndGroupByDay: (params?: StatsUsageParams) => Promise<UsageLog[]>;
   findByMonth: (params?: StatsUsageParams) => Promise<UsageRecordItem[]>;
   getHeatmaps: () => Promise<HeatmapsProps['data']>;
-  getMaxTaskDuration: () => Promise<number>;
+  getMaxTaskDuration: (params?: StatsRangeParams) => Promise<number>;
   getTokenHeatmaps: () => Promise<HeatmapsProps['data']>;
   rankAgents: (limit?: number, params?: StatsRangeParams) => Promise<AgentRankItem[]>;
   /** No limit param — matches personal `messageService.rankModels()` (server default top 10). */
@@ -93,6 +130,11 @@ export interface StatsDataSource {
    * window instead of summing the fixed calendar-year heatmap.
    */
   usageDailyTokenTotals?: (params?: StatsUsageParams) => Promise<StatsDailyTokenTotal[]>;
+  /**
+   * Admin-only. Platform user population for the window. Absent for personal scopes,
+   * where "how many users exist" is not a question the page can ask.
+   */
+  userTotals?: (params?: StatsRangeParams & { activeDays?: number }) => Promise<StatsUserTotals>;
 }
 
 export const personalStatsDataSource: StatsDataSource = {

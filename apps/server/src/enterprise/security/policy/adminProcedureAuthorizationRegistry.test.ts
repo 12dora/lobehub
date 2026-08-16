@@ -73,10 +73,11 @@ describe('admin procedure authorization registry', () => {
     // −3/+1 mutations since: 平台助理 de-draft replaced
     // admin.agents.{updateDraft,appendVersion,publish} with admin.agents.save.
     // +1 query since: admin.stats.rankUsers (用户排行 on the admin overview / statistics pages).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(179);
+    // +1 query since: admin.stats.activitySeries (range-aware 活跃度 chart).
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(180);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(87);
+    ).toHaveLength(88);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
     ).toHaveLength(92);

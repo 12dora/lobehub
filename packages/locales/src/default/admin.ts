@@ -694,14 +694,7 @@ export default {
   'nav.unifiedManagement': 'Unified management',
   'stats.page.title': 'Data statistics',
   'stats.page.desc': 'Platform-wide usage across all users.',
-  'stats.banner.error': 'Could not load user totals',
-  'stats.banner.refreshFailed':
-    'Could not refresh user totals. Previously loaded values are still shown.',
-  'stats.banner.retry': 'Retry',
-  'stats.banner.usersTotal': 'Total users',
-  'stats.banner.usersActive': 'Active users (30d)',
-  'stats.banner.usersActiveInRange': 'Active users · {{scope}}',
-  'stats.banner.userScopeNote': 'These metrics cover only {{name}}.',
+  'stats.section.title': 'Statistics',
   'stats.user.unknown': 'Unknown user {{index}}',
   'stats.userFilter.allUsers': 'All users',
   'stats.userFilter.searchFailed':
@@ -735,8 +728,6 @@ export default {
   'overview.error.refreshFailedDescription':
     'A background refresh failed. Stale metrics remain visible — retry when ready.',
   'overview.error.retry': 'Retry',
-  'overview.heatmap.unfilteredNote':
-    'The heatmap always covers the past 12 months and ignores the time range above.',
   'overview.kpi.agents': 'Agents ({{scope}})',
   'overview.kpi.messages': 'Messages ({{scope}})',
   'overview.kpi.topics': 'Topics ({{scope}})',

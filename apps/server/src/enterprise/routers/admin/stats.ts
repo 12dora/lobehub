@@ -17,6 +17,7 @@ import {
   PlatformGlobalStatsModel,
   type StatsFilterArg,
   StatsRangeError,
+  StatsTimeZoneError,
 } from '@/database/models/platform/globalStats';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -135,6 +136,38 @@ const rankUsersInput = statsRangeInput
       'true top-N for that metric — never re-sort a page client-side.',
   );
 
+/**
+ * Range-aware activity series (admin 活跃度 card). Everything is optional: without a
+ * window the server falls back to the last 30 days, without a `granularity` it derives one
+ * from the span (`< 48h` → hour, otherwise day — never week, since an explicit window may not
+ * span more than `MAX_RANGE_DAYS`), and without a `metric` it sums tokens. `week` buckets
+ * therefore only exist when the caller asks for them. `timeZone` is an IANA zone (default
+ * `UTC`) validated against `Intl.supportedValuesOf('timeZone')`; an unknown zone reaches the
+ * model and fails with HTTP 400 / `stats_timezone_invalid`, as does an hourly window past the
+ * bucket ceiling. A reversed or oversized window is rejected one layer earlier, by the zod
+ * refinement below, so it yields a plain `BAD_REQUEST` without the enterprise
+ * `stats_range_invalid` payload — the same shape every other admin.stats procedure returns.
+ */
+const activitySeriesInput = statsRangeInput
+  .extend({
+    granularity: z.enum(['day', 'hour', 'week']).optional(),
+    metric: z.enum(['messages', 'tokens']).optional(),
+    timeZone: z.string().min(1).max(64).optional(),
+  })
+  .optional()
+  .superRefine(refineRange);
+
+const activitySeriesOutput = z.array(
+  z
+    .object({
+      /** `YYYY-MM-DDTHH:00` for hour buckets, `YYYY-MM-DD` for day / week (Monday). */
+      bucket: z.string(),
+      count: z.number(),
+      level: z.number().int().min(0).max(4),
+    })
+    .strict(),
+);
+
 const countDateInput = statsRangeInput
   .extend({
     endDate: isoDateString.optional(),
@@ -176,7 +209,11 @@ const userRankOutput = z.array(
     .strict(),
 );
 
-/** Map an invalid / oversized window from the model layer to HTTP 400. */
+/**
+ * Map an invalid / oversized window from the model layer to HTTP 400. An unknown IANA
+ * zone on `activitySeries` takes the same path with the sibling reason
+ * `stats_timezone_invalid`, so a client can tell the two apart.
+ */
 const withRangeErrors = async <T>(run: () => Promise<T>): Promise<T> => {
   try {
     return await run();
@@ -184,7 +221,10 @@ const withRangeErrors = async <T>(run: () => Promise<T>): Promise<T> => {
     if (error instanceof StatsRangeError) {
       return throwEnterpriseError({
         code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-        details: { reason: 'stats_range_invalid' },
+        details: {
+          reason:
+            error instanceof StatsTimeZoneError ? 'stats_timezone_invalid' : 'stats_range_invalid',
+        },
         httpCode: 'BAD_REQUEST',
         message: error.message,
       });
@@ -324,6 +364,18 @@ const attachSafeRecordsByDay = (
 };
 
 export const adminStatsRouter = router({
+  /**
+   * Zero-filled activity buckets for the selected window, in the requested time zone.
+   * Response is only `{ bucket, count, level }[]` — never per-message records.
+   */
+  activitySeries: statsProcedure
+    .input(activitySeriesInput)
+    .output(activitySeriesOutput)
+    .query(async ({ ctx, input }) => {
+      const model = new PlatformGlobalStatsModel(ctx.serverDB);
+      return withRangeErrors(() => model.findActivitySeries(input));
+    }),
+
   countAgents: statsProcedure.input(countDateInput).query(async ({ ctx, input }) => {
     const model = new PlatformGlobalStatsModel(ctx.serverDB);
     return withRangeErrors(() => model.countAgents(input));
@@ -344,10 +396,13 @@ export const adminStatsRouter = router({
     return model.getHeatmaps();
   }),
 
-  getMaxTaskDuration: statsProcedure.query(async ({ ctx }) => {
-    const model = new PlatformGlobalStatsModel(ctx.serverDB);
-    return model.getMaxTaskDuration();
-  }),
+  /** Longest completed task. An explicit window narrows it; omitted, it keeps the trailing year. */
+  getMaxTaskDuration: statsProcedure
+    .input(statsRangeInput.optional().superRefine(refineRange))
+    .query(async ({ ctx, input }) => {
+      const model = new PlatformGlobalStatsModel(ctx.serverDB);
+      return withRangeErrors(() => model.getMaxTaskDuration(input));
+    }),
 
   getTokenHeatmaps: statsProcedure.query(async ({ ctx }) => {
     const model = new PlatformGlobalStatsModel(ctx.serverDB);

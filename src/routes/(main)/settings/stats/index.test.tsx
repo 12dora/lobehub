@@ -14,6 +14,7 @@ import StatsSetting from './index';
 const mocks = vi.hoisted(() => ({
   findAndGroupByDay: vi.fn(),
   rankUsers: vi.fn(),
+  userTotals: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -55,11 +56,13 @@ vi.mock('@/components/AsyncBoundary', () => ({
 vi.mock('@/routes/(main)/settings/features/SettingHeader', () => ({ default: () => null }));
 
 vi.mock('./features/overview', () => ({
+  ActiveUsers: () => <div data-testid="active-users" />,
   ShareButton: () => <div data-testid="share-button" />,
   TotalAssistants: () => null,
   TotalMessages: () => null,
   TotalTokens: () => null,
   TotalTopics: () => null,
+  TotalUsers: () => <div data-testid="total-users" />,
   Welcome: () => <div data-testid="welcome" />,
 }));
 
@@ -96,12 +99,14 @@ const adminSource: StatsDataSource = {
   findAndGroupByDay: mocks.findAndGroupByDay,
   rankUsers: mocks.rankUsers,
   scopeKey: ADMIN_GLOBAL_STATS_SCOPE,
+  userTotals: mocks.userTotals,
 };
 
 describe('StatsSetting', () => {
   beforeEach(() => {
     mocks.findAndGroupByDay.mockReset().mockResolvedValue([]);
     mocks.rankUsers.mockReset().mockResolvedValue([]);
+    mocks.userTotals.mockReset().mockResolvedValue({ usersActive: 1, usersTotal: 2 });
   });
 
   it('keepsThePersonalPageOnItsMonthPickerAndShareButton', () => {
@@ -111,23 +116,20 @@ describe('StatsSetting', () => {
     expect(screen.getByTestId('share-button')).toBeTruthy();
     expect(screen.getByTestId('welcome')).toBeTruthy();
     expect(screen.queryByTestId('users-rank')).toBeNull();
+    // Platform population is not a question the personal data source can answer.
+    expect(screen.queryByTestId('total-users')).toBeNull();
+    expect(screen.queryByTestId('active-users')).toBeNull();
   });
 
   it('replacesTheMonthPickerWithTheCallersFilterBarAndQueriesTheWindow', () => {
-    render(
-      <StatsSetting
-        dataSource={adminSource}
-        headerExtra={<div data-testid="user-filter" />}
-        headerNode={<div data-testid="banner" />}
-        range={RANGE}
-      />,
-    );
+    render(<StatsSetting dataSource={adminSource} headerNode={'Statistics'} range={RANGE} />);
 
     expect(screen.queryByTestId('date-picker-month')).toBeNull();
     // The group-by tabs stay — only the window control moved to the page header.
     expect(screen.getByTestId('group-by')).toBeTruthy();
-    expect(screen.getByTestId('user-filter')).toBeTruthy();
     expect(screen.queryByTestId('share-button')).toBeNull();
+    expect(screen.getByTestId('total-users')).toBeTruthy();
+    expect(screen.getByTestId('active-users')).toBeTruthy();
     expect(screen.getByTestId('users-rank')).toBeTruthy();
     expect(mocks.findAndGroupByDay).toHaveBeenCalledWith({
       endAt: RANGE.endAt,
@@ -140,7 +142,7 @@ describe('StatsSetting', () => {
     render(
       <StatsSetting
         dataSource={adminSource}
-        headerNode={<div data-testid="banner" />}
+        headerNode={'Statistics'}
         range={RANGE}
         userId={'u1'}
       />,
@@ -154,5 +156,21 @@ describe('StatsSetting', () => {
       startAt: RANGE.startAt,
       userId: 'u1',
     });
+  });
+
+  it('dropsThePlatformPopulationCardsWhenThePageIsPinnedToOneUser', () => {
+    render(
+      <StatsSetting
+        dataSource={adminSource}
+        headerNode={'Statistics'}
+        range={RANGE}
+        userId={'u1'}
+      />,
+    );
+
+    // "How many users exist" is not a property of one user — printing it among
+    // per-user cards would read as that user's number.
+    expect(screen.queryByTestId('total-users')).toBeNull();
+    expect(screen.queryByTestId('active-users')).toBeNull();
   });
 });

@@ -47,6 +47,7 @@ const utcDayAfter = (ymd: string): Date | null => {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
 /** Longest window an explicit `[startAt, endAt)` filter may span (admin stats DoS bound). */
 export const MAX_STATS_RANGE_DAYS = 366;
@@ -58,6 +59,18 @@ export class StatsRangeError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'StatsRangeError';
+  }
+}
+
+/**
+ * Unknown IANA time zone on an activity series request. Subclasses
+ * {@link StatsRangeError} so the routers' single 400 mapping keeps covering it,
+ * while still allowing a precise `stats_timezone_invalid` reason.
+ */
+export class StatsTimeZoneError extends StatsRangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StatsTimeZoneError';
   }
 }
 
@@ -154,6 +167,174 @@ const eachUtcDayKey = ({ endAt, startAt }: ResolvedStatsRange): string[] => {
   }
   return keys;
 };
+
+/** Bucket width of an activity series. Mirrors the `date_trunc` unit used in SQL. */
+export type ActivityGranularity = 'day' | 'hour' | 'week';
+/** What an activity bucket counts: every message, or the assistant-gated token sum. */
+export type ActivityMetric = 'messages' | 'tokens';
+
+export interface ActivitySeriesParams extends StatsFilterParams {
+  granularity?: ActivityGranularity;
+  metric?: ActivityMetric;
+  /** IANA zone the buckets are expressed in. Defaults to UTC. */
+  timeZone?: string;
+}
+
+export interface ActivityPoint {
+  /** `YYYY-MM-DDTHH:00` for hour buckets, `YYYY-MM-DD` for day / week (Monday) buckets. */
+  bucket: string;
+  count: number;
+  /** 0..4 heatmap intensity. */
+  level: number;
+}
+
+/** Below this span an activity series buckets by hour (today / last 24 hours). */
+const HOURLY_ACTIVITY_SPAN_MS = 48 * 60 * 60 * 1000;
+/**
+ * Hard ceiling on the buckets one activity series may return. Derived granularity can
+ * never reach it (366 daily buckets at most); an explicit `granularity: 'hour'` over a
+ * long window can, and is rejected rather than silently coarsened.
+ */
+const MAX_ACTIVITY_BUCKETS = 2000;
+
+/**
+ * Canonical IANA zones plus `UTC`, which `Intl.supportedValuesOf` omits even though it
+ * is the default here and a valid PostgreSQL zone. Matching is case-sensitive so the
+ * value handed to `AT TIME ZONE` is always a zone both PostgreSQL and `Intl` agree on.
+ */
+let supportedTimeZones: Set<string> | undefined;
+const resolveActivityTimeZone = (timeZone?: string): string => {
+  if (!timeZone) return 'UTC';
+  supportedTimeZones ??= new Set([...Intl.supportedValuesOf('timeZone'), 'UTC']);
+  if (!supportedTimeZones.has(timeZone)) throw new StatsTimeZoneError('Unknown IANA time zone');
+  return timeZone;
+};
+
+const zonedHourFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * Wall-clock hour of `at` in `timeZone`, carried as a UTC dayjs so bucket arithmetic
+ * stays on the local calendar (a DST jump never shifts a day key).
+ */
+const zonedHour = (at: Date, timeZone: string) => {
+  let formatter = zonedHourFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      day: '2-digit',
+      hour: '2-digit',
+      hourCycle: 'h23',
+      month: '2-digit',
+      timeZone,
+      year: 'numeric',
+    });
+    zonedHourFormatters.set(timeZone, formatter);
+  }
+  const parts: Record<string, string> = {};
+  for (const part of formatter.formatToParts(at)) parts[part.type] = part.value;
+  return dayjs.utc(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:00:00.000Z`);
+};
+
+/** Truncate a wall-clock hour to the bucket start; weeks start on Monday (date_trunc parity). */
+const truncateToBucket = (at: dayjs.Dayjs, granularity: 'day' | 'week') => {
+  const day = at.startOf('day');
+  return granularity === 'day' ? day : day.subtract((day.day() + 6) % 7, 'day');
+};
+
+const formatBucketKey = (at: dayjs.Dayjs, granularity: ActivityGranularity) =>
+  at.format(granularity === 'hour' ? 'YYYY-MM-DD[T]HH:00' : 'YYYY-MM-DD');
+
+const tooManyBuckets = () =>
+  new StatsRangeError(
+    `Range yields more than ${MAX_ACTIVITY_BUCKETS} buckets; use a coarser granularity`,
+  );
+
+/**
+ * Hour buckets by walking real instants, not wall-clock arithmetic: only hours that
+ * actually exist in `timeZone` are emitted, so a spring-forward gap never yields a phantom
+ * bucket and the two passes of a fall-back hour collapse into the single label PostgreSQL
+ * groups them under. Sampled twice per hour because a few zones shift by 30 minutes
+ * (Australia/Lord_Howe), which leaves a half-existing hour a whole-hour walk would skip.
+ */
+const eachHourKey = ({ endAt, startAt }: ResolvedStatsRange, timeZone: string): string[] => {
+  const keys = new Set<string>();
+  const add = (at: Date) => {
+    keys.add(formatBucketKey(zonedHour(at, timeZone), 'hour'));
+    if (keys.size > MAX_ACTIVITY_BUCKETS) throw tooManyBuckets();
+  };
+
+  const end = endAt.getTime();
+  // Start on the UTC hour at or before `startAt`: in zones offset by :30 / :45 that instant
+  // still belongs to the bucket holding `startAt`, never to an earlier one.
+  for (let at = Math.floor(startAt.getTime() / HOUR_MS) * HOUR_MS; at < end; at += HOUR_MS / 2)
+    add(new Date(at));
+  // The final bucket may open after the last sampled UTC hour (again the :30 / :45 zones).
+  add(new Date(end - 1));
+
+  return [...keys];
+};
+
+/**
+ * Day / week buckets. Calendar arithmetic on the zone's wall clock is DST-safe by
+ * construction — a 23 or 25 hour day is still exactly one calendar date — as long as both
+ * endpoints are derived from real instants, which they are.
+ */
+const eachCalendarKey = (
+  { endAt, startAt }: ResolvedStatsRange,
+  granularity: 'day' | 'week',
+  timeZone: string,
+): string[] => {
+  const first = truncateToBucket(zonedHour(startAt, timeZone), granularity);
+  const last = truncateToBucket(zonedHour(new Date(endAt.getTime() - 1), timeZone), granularity);
+  const keys: string[] = [];
+  for (let cursor = first; !cursor.isAfter(last); cursor = cursor.add(1, granularity)) {
+    keys.push(formatBucketKey(cursor, granularity));
+    if (keys.length > MAX_ACTIVITY_BUCKETS) throw tooManyBuckets();
+  }
+  return keys;
+};
+
+/** Every bucket a half-open window touches, expressed in `timeZone` (upper bound exclusive). */
+const eachBucketKey = (
+  range: ResolvedStatsRange,
+  granularity: ActivityGranularity,
+  timeZone: string,
+): string[] =>
+  granularity === 'hour'
+    ? eachHourKey(range, timeZone)
+    : eachCalendarKey(range, granularity, timeZone);
+
+/**
+ * Bucket width when the caller did not pin one — derived from the window span. Only `hour`
+ * and `day` are ever derived: an explicit window may not span more than
+ * {@link MAX_STATS_RANGE_DAYS} days, so a span wide enough to warrant weeks cannot reach
+ * here. `week` stays reachable through an explicit `granularity: 'week'`.
+ */
+const deriveGranularity = ({ endAt, startAt }: ResolvedStatsRange): ActivityGranularity =>
+  endAt.getTime() - startAt.getTime() < HOURLY_ACTIVITY_SPAN_MS ? 'hour' : 'day';
+
+/**
+ * Token usage of a single message row, in the shape every token aggregate should agree on:
+ * the recorded `totalTokens` wins (current `usage`, legacy `metadata.usage`, flat
+ * `metadata`), and input + output are summed only when no total was recorded at all.
+ * Shared by {@link PlatformGlobalStatsModel.getTokenHeatmaps} and findActivitySeries so the
+ * admin activity card and the heatmap can never disagree about the same rows.
+ */
+export const messageTotalTokensSql = () => sql<number>`COALESCE(
+  (${messages.usage}->>'totalTokens')::double precision,
+  (${messages.metadata}->'usage'->>'totalTokens')::double precision,
+  (${messages.metadata}->>'totalTokens')::double precision,
+  COALESCE(
+    (${messages.usage}->>'totalInputTokens')::double precision,
+    (${messages.metadata}->'usage'->>'totalInputTokens')::double precision,
+    (${messages.metadata}->>'totalInputTokens')::double precision,
+    0
+  ) + COALESCE(
+    (${messages.usage}->>'totalOutputTokens')::double precision,
+    (${messages.metadata}->'usage'->>'totalOutputTokens')::double precision,
+    (${messages.metadata}->>'totalOutputTokens')::double precision,
+    0
+  )
+)`;
 
 /**
  * Non-virtual agents including legacy `virtual IS NULL` rows (DB-009).
@@ -257,6 +438,16 @@ export type GlobalStatsTotals = {
 // Both clamp to MAX_HEATMAP_LEVEL — the two formulas are intentionally different.
 const MAX_HEATMAP_LEVEL = 4;
 const HEATMAP_MESSAGES_PER_LEVEL = 5;
+
+/** The two heatmap formulas above, applied to one activity bucket. */
+const activityLevel = (metric: ActivityMetric, value: number, maxValue: number): number => {
+  if (value <= 0) return 0;
+  if (metric === 'messages')
+    return Math.min(MAX_HEATMAP_LEVEL, Math.ceil(value / HEATMAP_MESSAGES_PER_LEVEL));
+  return maxValue > 0
+    ? Math.min(MAX_HEATMAP_LEVEL, Math.max(1, Math.ceil((value / maxValue) * MAX_HEATMAP_LEVEL)))
+    : 0;
+};
 
 const userDisplaySql = sql<string>`COALESCE(NULLIF(TRIM(${users.fullName}), ''), NULLIF(TRIM(${users.username}), ''), NULLIF(TRIM(${users.email}), ''), ${users.id})`;
 
@@ -563,6 +754,66 @@ export class PlatformGlobalStatsModel {
     return eachUtcDayKey(range).map((day) => ({ day, totalTokens: byDay.get(day) ?? 0 }));
   };
 
+  /**
+   * Range-aware activity series behind the admin 活跃度 card.
+   *
+   * One `GROUP BY date_trunc(<granularity>, created_at AT TIME ZONE <tz>)` pass, zero-filled
+   * across the whole half-open window so the chart never shows a hole. Without an explicit
+   * bound the last 30 days ending now are used — never a full-table scan. `metric: 'messages'`
+   * counts every message (no role gate, same population as {@link getHeatmaps});
+   * `metric: 'tokens'` sums the assistant-gated {@link messageTotalTokensSql}, the same
+   * expression {@link getTokenHeatmaps} uses. `level` keeps the two heatmap formulas: absolute
+   * for messages, relative to the busiest bucket of the returned set for tokens.
+   *
+   * A derived granularity is only ever `hour` (span < 48h) or `day`, because an explicit window
+   * may not span more than {@link MAX_STATS_RANGE_DAYS} days; `week` requires asking for it.
+   */
+  findActivitySeries = async (params?: ActivitySeriesParams): Promise<ActivityPoint[]> => {
+    const timeZone = resolveActivityTimeZone(params?.timeZone);
+    const metric = params?.metric ?? 'tokens';
+    // Always bounded: a missing endAt resolves to now and a missing startAt to endAt − 30d.
+    const range = resolveStatsRange({
+      endAt: params?.endAt ?? new Date(),
+      startAt: params?.startAt,
+    });
+    const granularity = params?.granularity ?? deriveGranularity(range);
+    const buckets = eachBucketKey(range, granularity, timeZone);
+
+    // Zone and unit travel as bind parameters — never string-concatenated into SQL.
+    const bucketExpr = sql<string>`to_char(
+      date_trunc(${granularity}, ${messages.createdAt} AT TIME ZONE ${timeZone}),
+      ${granularity === 'hour' ? 'YYYY-MM-DD"T"HH24":00"' : 'YYYY-MM-DD'}
+    )`;
+    const countExpr =
+      metric === 'messages'
+        ? sql<number>`COUNT(${messages.id})`
+        : sql<number>`COALESCE(SUM(${messageTotalTokensSql()}), 0)`;
+
+    const rows = await this.db
+      .select({ bucket: bucketExpr.as('bucket'), count: countExpr.mapWith(Number) })
+      .from(messages)
+      .where(
+        genWhere([
+          // Usage only ever lives on assistant replies; message counts cover every role.
+          metric === 'tokens' ? eq(messages.role, 'assistant') : undefined,
+          genInstantRangeWhere(range, messages.createdAt),
+          params?.userId ? eq(messages.userId, params.userId) : undefined,
+        ]),
+      )
+      // Group by the projected column: repeating the expression would re-bind the zone /
+      // unit parameters, and PostgreSQL never matches two distinct placeholders.
+      .groupBy(sql`1`)
+      .orderBy(sql`1`);
+
+    const byBucket = new Map(rows.map((row) => [row.bucket, row.count]));
+    const maxCount = rows.reduce((max, row) => Math.max(max, row.count), 0);
+
+    return buckets.map((bucket) => {
+      const value = byBucket.get(bucket) ?? 0;
+      return { bucket, count: value, level: activityLevel(metric, value, maxCount) };
+    });
+  };
+
   /** Ranks the messages themselves — window and user filter apply to `messages`. */
   rankModels = async (
     limit: number = 10,
@@ -803,10 +1054,7 @@ export class PlatformGlobalStatsModel {
     const result = await this.db
       .select({
         date: sql`DATE(${messages.createdAt})`.as('heatmaps_date'),
-        tokens:
-          sql<number>`COALESCE(SUM((COALESCE(${messages.usage}, ${messages.metadata}->'usage')->>'totalTokens')::numeric), 0)`.mapWith(
-            Number,
-          ),
+        tokens: sql<number>`COALESCE(SUM(${messageTotalTokensSql()}), 0)`.mapWith(Number),
       })
       .from(messages)
       .where(
@@ -860,7 +1108,13 @@ export class PlatformGlobalStatsModel {
     return heatmapData;
   };
 
-  getMaxTaskDuration = async (): Promise<number> => {
+  /**
+   * Longest completed agent task, in seconds. An explicit `[startAt, endAt)` window (and
+   * optional `userId`) narrows it to the admin filter; without one the trailing year is
+   * kept, so the personal / unfiltered call sites are unchanged.
+   */
+  getMaxTaskDuration = async (params?: StatsFilterParams): Promise<number> => {
+    const explicit = explicitRangeWhere(params, agentOperations.createdAt);
     const startDate = today().subtract(1, 'year').startOf('day').toDate();
 
     const [row] = await this.db
@@ -872,11 +1126,12 @@ export class PlatformGlobalStatsModel {
       })
       .from(agentOperations)
       .where(
-        and(
+        genWhere([
           isNotNull(agentOperations.startedAt),
           isNotNull(agentOperations.completedAt),
-          gte(agentOperations.createdAt, startDate),
-        ),
+          params?.userId ? eq(agentOperations.userId, params.userId) : undefined,
+          explicit ?? gte(agentOperations.createdAt, startDate),
+        ]),
       );
 
     return row?.seconds ?? 0;

@@ -4,14 +4,15 @@ import { Flexbox, Icon, Tag } from '@lobehub/ui';
 import { Tabs } from '@lobehub/ui/base-ui';
 import { cssVar } from 'antd-style';
 import { CoinsIcon, FlameIcon, MessageSquareIcon } from 'lucide-react';
-import { memo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import AsyncBoundary from '@/components/AsyncBoundary';
 import {
   isStatsFilterActive,
-  scopeStatsKey,
   useStatsDataSource,
   useStatsFilter,
+  useStatsSwrKey,
 } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
@@ -19,73 +20,122 @@ import { formatIntergerNumber, formatShortenNumber } from '@/utils/format';
 
 import { HeatmapType } from '../../types';
 import StatsFormGroup from '../components/StatsFormGroup';
+import { resolveActivityView, resolveDisplayTimeZone, toHeatmapActivities } from './activity.utils';
+import ActivityBarChart from './ActivityBarChart';
 import HeatmapStats from './HeatmapStats';
 
 const AiHeatmaps = memo<
   Omit<HeatmapsProps, 'data' | 'ref'> & { inShare?: boolean; mobile?: boolean }
 >(({ inShare, mobile, ...rest }) => {
   const { t } = useTranslation('auth');
-  const { getHeatmaps, getTokenHeatmaps, scopeKey } = useStatsDataSource();
-  // The heatmap is always the trailing calendar year — it deliberately ignores the
-  // page filter, so say so rather than letting it read as stale next to filtered cards.
-  const unfiltered = isStatsFilterActive(useStatsFilter());
+  const { activitySeries, getHeatmaps, getTokenHeatmaps } = useStatsDataSource();
+  const filter = useStatsFilter();
   const [type, setType] = useState<HeatmapType>(
     inShare ? HeatmapType.Messages : HeatmapType.Tokens,
   );
   const isTokens = type === HeatmapType.Tokens;
 
-  const { data, isLoading } = useClientDataSWR(
-    scopeStatsKey(statsKeys.heatmaps(type), scopeKey),
-    async () => (isTokens ? getTokenHeatmaps() : getHeatmaps()),
+  // The ranged path needs a data source that can answer for an arbitrary window.
+  // The personal page and the share card have none, so they keep the year series.
+  const ranged = Boolean(activitySeries) && !inShare && isStatsFilterActive(filter);
+  const view = ranged ? resolveActivityView(filter.startAt, filter.endAt) : 'calendar';
+
+  const timeZone = resolveDisplayTimeZone();
+  const yearKey = useStatsSwrKey(statsKeys.heatmaps(type));
+  const seriesKey = useStatsSwrKey(statsKeys.activitySeries(type, timeZone));
+
+  const year = useClientDataSWR(ranged ? null : yearKey, async () =>
+    isTokens ? getTokenHeatmaps() : getHeatmaps(),
+  );
+  const series = useClientDataSWR(ranged ? seriesKey : null, async () =>
+    activitySeries!({
+      endAt: filter.endAt,
+      metric: isTokens ? 'tokens' : 'messages',
+      startAt: filter.startAt,
+      timeZone,
+      userId: filter.userId,
+    }),
   );
 
-  const days = data?.filter((item) => item.level > 0).length || '--';
-  const hotDays = data?.filter((item) => item.level >= 3).length || '--';
+  const active = ranged ? series : year;
+  // Not `!data` alone: after a terminal failure there is no data and no request in
+  // flight, and calling that "loading" is what freezes the card on a skeleton.
+  const isLoading = active.isLoading || (active.data === undefined && !active.error);
+  const activities = useMemo(
+    () => (ranged ? toHeatmapActivities(series.data) : (year.data ?? [])),
+    [ranged, series.data, year.data],
+  );
 
+  const days = activities.filter((item) => item.level > 0).length || '--';
+  const hotDays = activities.filter((item) => item.level >= 3).length || '--';
+
+  const chart =
+    view === 'calendar' ? (
+      <Heatmaps
+        blockMargin={mobile ? 3 : undefined}
+        blockRadius={mobile ? 2 : undefined}
+        blockSize={mobile ? 6 : 14}
+        data={activities}
+        hideTotalCount={isTokens || ranged}
+        loading={isLoading}
+        maxLevel={4}
+        customTooltip={(activity) =>
+          t(isTokens ? 'heatmaps.tooltipTokens' : 'heatmaps.tooltip', {
+            count: isTokens
+              ? formatShortenNumber(activity.count)
+              : formatIntergerNumber(activity.count),
+            date: activity.date,
+          })
+        }
+        labels={{
+          legend: {
+            less: t('heatmaps.legend.less'),
+            more: t('heatmaps.legend.more'),
+          },
+          months: [
+            t('heatmaps.months.jan'),
+            t('heatmaps.months.feb'),
+            t('heatmaps.months.mar'),
+            t('heatmaps.months.apr'),
+            t('heatmaps.months.may'),
+            t('heatmaps.months.jun'),
+            t('heatmaps.months.jul'),
+            t('heatmaps.months.aug'),
+            t('heatmaps.months.sep'),
+            t('heatmaps.months.oct'),
+            t('heatmaps.months.nov'),
+            t('heatmaps.months.dec'),
+          ],
+          tooltip: isTokens ? t('heatmaps.tooltipTokens') : t('heatmaps.tooltip'),
+          totalCount: isTokens ? t('heatmaps.totalCountTokens') : t('heatmaps.totalCount'),
+        }}
+        style={{
+          alignSelf: 'center',
+        }}
+        {...rest}
+      />
+    ) : (
+      <ActivityBarChart
+        data={series.data}
+        loading={isLoading}
+        seriesName={isTokens ? t('stats.tokens') : t('stats.messages')}
+        showTokens={isTokens}
+        view={view}
+      />
+    );
+
+  // The chart draws its own skeleton, so loading keeps rendering it; only a failed
+  // first load swaps in the retryable error block.
   const content = (
-    <Heatmaps
-      blockMargin={mobile ? 3 : undefined}
-      blockRadius={mobile ? 2 : undefined}
-      blockSize={mobile ? 6 : 14}
-      data={data || []}
-      hideTotalCount={isTokens}
-      loading={isLoading || !data}
-      maxLevel={4}
-      customTooltip={(activity) =>
-        t(isTokens ? 'heatmaps.tooltipTokens' : 'heatmaps.tooltip', {
-          count: isTokens
-            ? formatShortenNumber(activity.count)
-            : formatIntergerNumber(activity.count),
-          date: activity.date,
-        })
-      }
-      labels={{
-        legend: {
-          less: t('heatmaps.legend.less'),
-          more: t('heatmaps.legend.more'),
-        },
-        months: [
-          t('heatmaps.months.jan'),
-          t('heatmaps.months.feb'),
-          t('heatmaps.months.mar'),
-          t('heatmaps.months.apr'),
-          t('heatmaps.months.may'),
-          t('heatmaps.months.jun'),
-          t('heatmaps.months.jul'),
-          t('heatmaps.months.aug'),
-          t('heatmaps.months.sep'),
-          t('heatmaps.months.oct'),
-          t('heatmaps.months.nov'),
-          t('heatmaps.months.dec'),
-        ],
-        tooltip: isTokens ? t('heatmaps.tooltipTokens') : t('heatmaps.tooltip'),
-        totalCount: isTokens ? t('heatmaps.totalCountTokens') : t('heatmaps.totalCount'),
-      }}
-      style={{
-        alignSelf: 'center',
-      }}
-      {...rest}
-    />
+    <AsyncBoundary
+      data={active.data}
+      error={active.error}
+      isLoading={isLoading}
+      loading={chart}
+      onRetry={() => active.mutate()}
+    >
+      {chart}
+    </AsyncBoundary>
   );
 
   const typeSwitch = (
@@ -109,14 +159,17 @@ const AiHeatmaps = memo<
     />
   );
 
-  const dayTags = (
-    <Flexbox horizontal gap={8}>
-      <Tag variant={'filled'}>{[days, t('stats.days')].join(' ')}</Tag>
-      <Tag color={'success'} icon={<Icon icon={FlameIcon} />} variant={'filled'}>
-        {[hotDays, t('stats.days')].join(' ')}
-      </Tag>
-    </Flexbox>
-  );
+  // Day counts describe a multi-day window; on an hourly window they would count
+  // hours and label them "days", so they are dropped there instead.
+  const dayTags =
+    view === 'hour' ? null : (
+      <Flexbox horizontal gap={8}>
+        <Tag variant={'filled'}>{[days, t('stats.days')].join(' ')}</Tag>
+        <Tag color={'success'} icon={<Icon icon={FlameIcon} />} variant={'filled'}>
+          {[hotDays, t('stats.days')].join(' ')}
+        </Tag>
+      </Flexbox>
+    );
 
   if (inShare) {
     return (
@@ -137,13 +190,14 @@ const AiHeatmaps = memo<
     );
   }
 
+  const title = ranged
+    ? filter.rangeLabel
+      ? t('stats.activityInRange', { scope: filter.rangeLabel })
+      : t('stats.activity')
+    : t('stats.lastYearActivity');
+
   return (
-    <StatsFormGroup
-      afterTitle={typeSwitch}
-      extra={dayTags}
-      fontSize={16}
-      title={unfiltered ? t('stats.lastYearActivityUnfiltered') : t('stats.lastYearActivity')}
-    >
+    <StatsFormGroup afterTitle={typeSwitch} extra={dayTags} fontSize={16} title={title}>
       <HeatmapStats />
       {content}
     </StatsFormGroup>

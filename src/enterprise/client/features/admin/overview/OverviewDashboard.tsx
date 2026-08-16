@@ -12,7 +12,7 @@ import { overviewStyles as styles } from './styles';
 import UsageTrendCard from './UsageTrendCard';
 
 interface OverviewDashboardProps {
-  /** Active time-range filter; every card except the calendar-year heatmap follows it. */
+  /** Active time-range filter; every card follows it. */
   range?: AdminTimeRange;
 }
 
@@ -24,10 +24,10 @@ const OverviewDashboard = memo<OverviewDashboardProps>(({ range }) => {
   return (
     <Flexbox className={styles.stack} gap={16}>
       <KpiRow range={range} />
-      <div className={styles.mainGrid}>
-        <UsageTrendCard range={range} />
-        <HeatmapCard />
-      </div>
+      {/* Both charts get a full-width row: a calendar strip clipped by a half-width
+          column had no scrollbar, so the later months were simply unreachable. */}
+      <UsageTrendCard range={range} />
+      <HeatmapCard range={range} />
       <RankCards range={range} />
       <QuickLinks />
     </Flexbox>

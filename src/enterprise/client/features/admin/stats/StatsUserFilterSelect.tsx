@@ -173,8 +173,10 @@ const StatsUserFilterSelect = memo<StatsUserFilterSelectProps>(
     // filter matches on option.value (the user id), which would hide every match.
     const showDropdown = open && inputValue.trim().length > 0 && options.length > 0;
 
+    // Capped width: the picker now sits in the page action row, where an unbounded
+    // error hint would stretch the row instead of wrapping under the input.
     return (
-      <Flexbox gap={4} style={{ minWidth: 220 }}>
+      <Flexbox gap={4} style={{ maxWidth: 280, minWidth: 220 }}>
         <AutoComplete
           allowClear
           filter={null}

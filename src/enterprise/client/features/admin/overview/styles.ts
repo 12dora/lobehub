@@ -114,15 +114,6 @@ export const overviewStyles = createStaticStyles(({ css }) => ({
     font-weight: 600;
     color: ${cssVar.colorText};
   `,
-  mainGrid: css`
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-
-    @media (width <= 960px) {
-      grid-template-columns: 1fr;
-    }
-  `,
   rankMeta: css`
     margin-inline-start: 8px;
     font-size: 12px;

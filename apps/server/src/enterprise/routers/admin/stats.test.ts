@@ -414,6 +414,152 @@ describe('admin.stats time-range filter', () => {
   });
 });
 
+describe('admin.stats.activitySeries', () => {
+  it('denies callers without platform stats read', async () => {
+    const caller = await callerFor(ids.noAccess);
+    await expect(caller.activitySeries()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('zero-fills day buckets, defaults to tokens, and honours the user filter', async () => {
+    // Seeded rows live on 2026-03-10 (index 0) and 2026-03-12 (index 2).
+    await seedSensitiveUsageMessage(ids.reader, 0);
+    await seedSensitiveUsageMessage(ids.reader, 2);
+    const caller = await callerFor(ids.reader);
+    const window = { endAt: '2026-03-13T00:00:00.000Z', startAt: '2026-03-10T00:00:00.000Z' };
+
+    await expect(caller.activitySeries(window)).resolves.toEqual([
+      { bucket: '2026-03-10', count: 30, level: 4 },
+      { bucket: '2026-03-11', count: 0, level: 0 },
+      { bucket: '2026-03-12', count: 30, level: 4 },
+    ]);
+
+    const scoped = await caller.activitySeries({ ...window, userId: ids.superAdmin });
+    expect(scoped.map((point) => point.count)).toEqual([0, 0, 0]);
+
+    const byMessages = await caller.activitySeries({ ...window, metric: 'messages' });
+    expect(byMessages.map((point) => point.count)).toEqual([1, 0, 1]);
+    expect(byMessages.map((point) => point.level)).toEqual([1, 0, 1]);
+  });
+
+  it('derives hour buckets for a sub-48h window and expresses them in the requested zone', async () => {
+    await seedSensitiveUsageMessage(ids.reader, 0);
+    const caller = await callerFor(ids.reader);
+    const window = { endAt: '2026-03-10T14:00:00.000Z', startAt: '2026-03-10T11:00:00.000Z' };
+
+    await expect(caller.activitySeries({ ...window, metric: 'messages' })).resolves.toEqual([
+      { bucket: '2026-03-10T11:00', count: 0, level: 0 },
+      { bucket: '2026-03-10T12:00', count: 1, level: 1 },
+      { bucket: '2026-03-10T13:00', count: 0, level: 0 },
+    ]);
+
+    const shanghai = await caller.activitySeries({
+      ...window,
+      metric: 'messages',
+      timeZone: 'Asia/Shanghai',
+    });
+    expect(shanghai.map((point) => point.bucket)).toEqual([
+      '2026-03-10T19:00',
+      '2026-03-10T20:00',
+      '2026-03-10T21:00',
+    ]);
+    expect(shanghai.map((point) => point.count)).toEqual([0, 1, 0]);
+  });
+
+  it('buckets by ISO week only when the caller asks for it', async () => {
+    await seedSensitiveUsageMessage(ids.reader, 0);
+    const caller = await callerFor(ids.reader);
+
+    const weekly = await caller.activitySeries({
+      endAt: '2026-03-16T00:00:00.000Z',
+      granularity: 'week',
+      metric: 'messages',
+      startAt: '2026-03-02T00:00:00.000Z',
+    });
+    // 2026-03-02 / 03-09 are Mondays.
+    expect(weekly).toEqual([
+      { bucket: '2026-03-02', count: 0, level: 0 },
+      { bucket: '2026-03-09', count: 1, level: 1 },
+    ]);
+
+    // The same window without a pinned granularity derives days, never weeks — a span wide
+    // enough to warrant weekly buckets is already past the 366-day cap asserted below.
+    const derived = await caller.activitySeries({
+      endAt: '2026-03-16T00:00:00.000Z',
+      metric: 'messages',
+      startAt: '2026-03-02T00:00:00.000Z',
+    });
+    expect(derived).toHaveLength(14);
+    expect(derived[0]?.bucket).toBe('2026-03-02');
+  });
+
+  it('rejects reversed, oversized windows and unknown time zones', async () => {
+    const caller = await callerFor(ids.reader);
+
+    await expect(
+      caller.activitySeries({
+        endAt: '2026-03-01T00:00:00.000Z',
+        startAt: '2026-03-10T00:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    // Over the 366-day cap: rejected by the zod refinement (plain BAD_REQUEST, like every
+    // other admin.stats window) rather than silently coarsened to weekly buckets.
+    await expect(
+      caller.activitySeries({
+        endAt: '2028-01-01T00:00:00.000Z',
+        startAt: '2026-01-01T00:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    // Only canonical IANA identifiers, matched case-sensitively. These reach the model, so
+    // they carry the enterprise reason a client can branch on.
+    await expect(caller.activitySeries({ timeZone: 'Mars/Olympus' })).rejects.toMatchObject({
+      cause: {
+        data: {
+          code: 'PLATFORM_INVALID_INPUT',
+          details: { reason: 'stats_timezone_invalid' },
+        },
+      },
+      code: 'BAD_REQUEST',
+    });
+    await expect(caller.activitySeries({ timeZone: 'asia/shanghai' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+    // An hourly series over a year would blow the bucket ceiling.
+    await expect(
+      caller.activitySeries({
+        endAt: '2026-06-01T00:00:00.000Z',
+        granularity: 'hour',
+        startAt: '2026-01-01T00:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({
+      cause: {
+        data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'stats_range_invalid' } },
+      },
+      code: 'BAD_REQUEST',
+    });
+  });
+});
+
+describe('admin.stats.getMaxTaskDuration', () => {
+  it('accepts an explicit window and rejects a reversed one', async () => {
+    const caller = await callerFor(ids.reader);
+
+    await expect(
+      caller.getMaxTaskDuration({
+        endAt: '2026-03-13T00:00:00.000Z',
+        startAt: '2026-03-10T00:00:00.000Z',
+        userId: ids.reader,
+      }),
+    ).resolves.toBe(0);
+    await expect(caller.getMaxTaskDuration()).resolves.toEqual(expect.any(Number));
+    await expect(
+      caller.getMaxTaskDuration({
+        endAt: '2026-03-01T00:00:00.000Z',
+        startAt: '2026-03-10T00:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+});
+
 describe('admin.stats.rankUsers', () => {
   it('denies callers without platform stats read', async () => {
     const caller = await callerFor(ids.noAccess);
