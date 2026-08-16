@@ -706,7 +706,8 @@ describe('initModelRuntimeFromDB managed model guard', () => {
 
   it('preserves the exact upstream no-allowlist path while managed AI is disabled', async () => {
     const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
-    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    // Managed AI is on by default now, so "disabled" must be stated explicitly.
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '0';
     const providerRow = {
       enabled: true,
       fetchOnClient: false,

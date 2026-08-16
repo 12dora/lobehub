@@ -26,7 +26,7 @@ import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identit
 import { ensurePlatformInstanceRegistryCleanupStarted } from '../jobs/platformInstanceRegistryCleanup';
 import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
 import { ensureSharedOAuthKeepaliveWorkerStarted } from '../jobs/sharedOAuthKeepalive';
-import { assertPlatformMasterKeyIfEnterprise } from '../security/secret';
+import { warnIfPlatformMasterKeyMissing } from '../security/secret';
 import {
   AiCatalogReadService,
   getEmptyPublishedAiCatalog,
@@ -49,9 +49,10 @@ import { platformSkillsRouter } from './platformSkills';
 
 ensureSkillCatalogReadinessRegistered();
 
-// Fail before any worker/router path can accept enterprise traffic with an
-// unusable key-provider configuration.
-assertPlatformMasterKeyIfEnterprise(process.env, parseEnterpriseFeatureFlags(process.env));
+// Enterprise features are on by default, so a deployment that has not configured a key
+// provider yet must still boot: warn loudly here instead of throwing at module load.
+// Storing or reading a platform secret still fails hard in the key provider.
+warnIfPlatformMasterKeyMissing(process.env, parseEnterpriseFeatureFlags(process.env));
 
 ensureConnectorRuntimeAuditWorkerStarted();
 

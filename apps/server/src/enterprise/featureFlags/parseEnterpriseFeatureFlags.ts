@@ -1,7 +1,8 @@
 import {
   DEFAULT_ENTERPRISE_FEATURE_FLAGS,
   type EnterpriseFeatureFlags,
-  isEnterpriseFlagTruthy,
+  isEnterpriseFlagEnabled,
+  isPlatformAdminFlagEnabled,
 } from '@/const/platform/featureFlags';
 
 /**
@@ -15,28 +16,25 @@ export type EnterpriseFeatureFlagEnv = Record<string, string | undefined>;
 
 /**
  * Parse enterprise feature flags from environment (or injected map).
- * All flags default OFF. `ENABLE_ENTERPRISE_ADMIN` is an alias of `ENABLE_PLATFORM_ADMIN`.
+ *
+ * Every flag defaults **ON**: an unset (or unrecognised) value keeps the feature
+ * enabled, and only an explicit `0` / `false` / `no` / `off` disables it.
+ * `ENABLE_ENTERPRISE_ADMIN` is an alias of `ENABLE_PLATFORM_ADMIN`.
  */
 export const parseEnterpriseFeatureFlags = (
   env: EnterpriseFeatureFlagEnv = process.env,
-): EnterpriseFeatureFlags => {
-  const platformAdmin =
-    isEnterpriseFlagTruthy(env.ENABLE_PLATFORM_ADMIN) ||
-    isEnterpriseFlagTruthy(env.ENABLE_ENTERPRISE_ADMIN);
-
-  return {
-    ENABLE_DATABASE_OIDC: isEnterpriseFlagTruthy(env.ENABLE_DATABASE_OIDC),
-    ENABLE_PLATFORM_ADMIN: platformAdmin,
-    ENABLE_PLATFORM_MANAGED_AGENTS: isEnterpriseFlagTruthy(env.ENABLE_PLATFORM_MANAGED_AGENTS),
-    ENABLE_PLATFORM_MANAGED_AI: isEnterpriseFlagTruthy(env.ENABLE_PLATFORM_MANAGED_AI),
-    ENABLE_PLATFORM_MANAGED_CONNECTORS: isEnterpriseFlagTruthy(
-      env.ENABLE_PLATFORM_MANAGED_CONNECTORS,
-    ),
-    ENABLE_PLATFORM_MANAGED_SKILLS: isEnterpriseFlagTruthy(env.ENABLE_PLATFORM_MANAGED_SKILLS),
-    ENABLE_PLATFORM_SETTINGS_POLICY: isEnterpriseFlagTruthy(env.ENABLE_PLATFORM_SETTINGS_POLICY),
-    ENABLE_RUNTIME_BRANDING: isEnterpriseFlagTruthy(env.ENABLE_RUNTIME_BRANDING),
-  };
-};
+): EnterpriseFeatureFlags => ({
+  ENABLE_DATABASE_OIDC: isEnterpriseFlagEnabled(env.ENABLE_DATABASE_OIDC),
+  ENABLE_PLATFORM_ADMIN: isPlatformAdminFlagEnabled(env),
+  ENABLE_PLATFORM_MANAGED_AGENTS: isEnterpriseFlagEnabled(env.ENABLE_PLATFORM_MANAGED_AGENTS),
+  ENABLE_PLATFORM_MANAGED_AI: isEnterpriseFlagEnabled(env.ENABLE_PLATFORM_MANAGED_AI),
+  ENABLE_PLATFORM_MANAGED_CONNECTORS: isEnterpriseFlagEnabled(
+    env.ENABLE_PLATFORM_MANAGED_CONNECTORS,
+  ),
+  ENABLE_PLATFORM_MANAGED_SKILLS: isEnterpriseFlagEnabled(env.ENABLE_PLATFORM_MANAGED_SKILLS),
+  ENABLE_PLATFORM_SETTINGS_POLICY: isEnterpriseFlagEnabled(env.ENABLE_PLATFORM_SETTINGS_POLICY),
+  ENABLE_RUNTIME_BRANDING: isEnterpriseFlagEnabled(env.ENABLE_RUNTIME_BRANDING),
+});
 
 export const getEnterpriseFeatureFlags = (): EnterpriseFeatureFlags =>
   parseEnterpriseFeatureFlags(process.env);
@@ -50,7 +48,7 @@ export const isAnyEnterpriseFeatureEnabled = (
   flags: EnterpriseFeatureFlags = getEnterpriseFeatureFlags(),
 ): boolean => Object.values(flags).some(Boolean);
 
-/** Snapshot of defaults for regression tests (flags closed). */
+/** Snapshot of the shipped defaults (every enterprise feature open). */
 export const getDefaultEnterpriseFeatureFlags = (): EnterpriseFeatureFlags => ({
   ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
 });

@@ -21,11 +21,26 @@ import {
 const db = {} as LobeChatDatabase;
 const productionEnv = (identity = false): Record<string, string | undefined> => ({
   DATABASE_URL: 'postgresql://database.invalid/lobehub',
-  ENABLE_DATABASE_OIDC: identity ? '1' : undefined,
+  // Enterprise flags are on by default, so the identity collector has to be turned
+  // OFF explicitly to exercise the "optional collector disabled" path.
+  ENABLE_DATABASE_OIDC: identity ? '1' : '0',
   ENABLE_PLATFORM_ADMIN: '1',
   ENABLE_TELEMETRY: '1',
   NEXT_RUNTIME: 'nodejs',
   NODE_ENV: 'production',
+});
+
+/** "No enterprise feature is live" now requires every flag to be explicitly disabled. */
+const allEnterpriseFlagsOff = (): Record<string, string> => ({
+  ENABLE_DATABASE_OIDC: '0',
+  ENABLE_ENTERPRISE_ADMIN: '0',
+  ENABLE_PLATFORM_ADMIN: '0',
+  ENABLE_PLATFORM_MANAGED_AGENTS: '0',
+  ENABLE_PLATFORM_MANAGED_AI: '0',
+  ENABLE_PLATFORM_MANAGED_CONNECTORS: '0',
+  ENABLE_PLATFORM_MANAGED_SKILLS: '0',
+  ENABLE_PLATFORM_SETTINGS_POLICY: '0',
+  ENABLE_RUNTIME_BRANDING: '0',
 });
 const backlogSnapshot = (collectedAtMs = 10_000) => ({
   entries: [
@@ -74,7 +89,7 @@ describe('operational metrics runtime', () => {
       { NODE_ENV: 'development' },
       { NEXT_RUNTIME: 'edge' },
       { DATABASE_URL: undefined },
-      { ENABLE_PLATFORM_ADMIN: '0' },
+      allEnterpriseFlagsOff(),
       { ENABLE_TELEMETRY: '0' },
       { NEXT_PHASE: 'phase-production-build' },
       { npm_lifecycle_event: 'build' },

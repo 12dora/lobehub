@@ -63,9 +63,11 @@ describe('enterprise persistent workers default-off + serverless guards', () => 
     __resetPlatformAuditRetentionWorkerForTests();
   });
 
-  it('audit workers stay off when ENABLE_PLATFORM_ADMIN is unset', () => {
-    expect(isPlatformAuditExportWorkerRuntime(productionDb)).toBe(false);
-    expect(isPlatformAuditRetentionWorkerRuntime(productionDb)).toBe(false);
+  it('audit workers stay off when ENABLE_PLATFORM_ADMIN is disabled', () => {
+    // Platform admin is on by default now, so "off" is an explicit falsy value.
+    const adminOff = { ...productionDb, ENABLE_PLATFORM_ADMIN: '0' };
+    expect(isPlatformAuditExportWorkerRuntime(adminOff)).toBe(false);
+    expect(isPlatformAuditRetentionWorkerRuntime(adminOff)).toBe(false);
     expect(
       isPlatformAuditExportWorkerRuntime({
         ...productionDb,

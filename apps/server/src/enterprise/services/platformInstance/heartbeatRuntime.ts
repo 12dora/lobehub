@@ -3,15 +3,12 @@ import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
 import {
-  ENTERPRISE_FEATURE_FLAG_KEYS,
-  isEnterpriseFlagTruthy,
-} from '@/const/platform/featureFlags';
-import {
   PLATFORM_INSTANCE_HEARTBEAT_INTERVAL_MS,
   PlatformInstanceRepository,
 } from '@/database/repositories/platformInstance';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { isAnyEnterpriseFeatureEnabled, parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 
 const log = debug('lobe-server:platform-instance-heartbeat');
@@ -73,7 +70,7 @@ export const shouldStartPlatformInstanceHeartbeat = (
   Boolean(env.DATABASE_URL) &&
   !isBuildRuntime(env) &&
   !isEphemeralRuntime(env) &&
-  ENTERPRISE_FEATURE_FLAG_KEYS.some((key) => isEnterpriseFlagTruthy(env[key]));
+  isAnyEnterpriseFeatureEnabled(parseEnterpriseFeatureFlags(env));
 
 const defaultGetDatabase = async (): Promise<LobeChatDatabase> => {
   const { getServerDB } = await import('@/database/core/db-adaptor');

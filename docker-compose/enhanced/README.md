@@ -19,6 +19,12 @@ docker compose up -d
 
 Database migrations run automatically when the app container starts.
 
+**Every enhancement is on by default** — the admin console, managed AI / skills / connectors /
+assistants, settings policy, runtime branding and database-driven identity providers. You only
+need an `ENABLE_*` variable to turn something **off** (`0` / `false` / `no` / `off`). A flag
+controls whether a feature is mounted; it never grants permissions, and nobody has admin access
+until the bootstrap below provisions a super admin.
+
 **First sign-in.** With `BOOTSTRAP_SUPER_ADMIN_EMAIL` set the server promotes that account to
 `super_admin` on every boot. If the account does not exist yet and `BOOTSTRAP_ALLOW_CREATE=1`, it
 is created and a one-time password is printed **once**:
@@ -43,7 +49,8 @@ Notes worth reading before you go to production:
 - **The bucket name is fixed at `lobe`**, because `bucket.config.json` grants public reads on
   `arn:aws:s3:::lobe/*`. Change both together if you really need a different name.
 - **`PLATFORM_MASTER_KEY` is not recoverable.** Back it up. Every stored platform secret is
-  encrypted with it.
+  encrypted with it. The server still boots without it — it logs a one-line warning and only
+  fails when a platform secret is actually saved or read.
 - **`AUTH_COOKIE_PREFIX` must be unique per instance** when several instances share a domain.
 - The OIDC last-known-good snapshot lives on the `platform-oidc-lkg` volume; keep it. The
   `platform-oidc-lkg-init` service hands that volume to UID 1001 with mode `0700` before the app

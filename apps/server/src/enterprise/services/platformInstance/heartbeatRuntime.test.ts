@@ -24,6 +24,22 @@ const productionEnv = (): Record<string, string | undefined> => ({
   NODE_ENV: 'production',
 });
 
+/**
+ * Enterprise flags are on by default, so "no enterprise feature is live" now means
+ * every flag is explicitly disabled — turning one off is no longer enough.
+ */
+const allEnterpriseFlagsOff = (): Record<string, string> => ({
+  ENABLE_DATABASE_OIDC: '0',
+  ENABLE_ENTERPRISE_ADMIN: '0',
+  ENABLE_PLATFORM_ADMIN: '0',
+  ENABLE_PLATFORM_MANAGED_AGENTS: '0',
+  ENABLE_PLATFORM_MANAGED_AI: '0',
+  ENABLE_PLATFORM_MANAGED_CONNECTORS: '0',
+  ENABLE_PLATFORM_MANAGED_SKILLS: '0',
+  ENABLE_PLATFORM_SETTINGS_POLICY: '0',
+  ENABLE_RUNTIME_BRANDING: '0',
+});
+
 const repository = () => ({
   registerInstance: vi.fn<PlatformInstanceRepository['registerInstance']>().mockResolvedValue({
     instanceId: getPlatformInstanceId(),
@@ -72,7 +88,7 @@ describe('platform instance heartbeat runtime', () => {
       { AWS_LAMBDA_FUNCTION_NAME: 'handler' },
       { AWS_EXECUTION_ENV: 'AWS_Lambda_nodejs22.x' },
       { DATABASE_URL: undefined },
-      { ENABLE_PLATFORM_ADMIN: '0' },
+      allEnterpriseFlagsOff(),
     ]) {
       expect(shouldStartPlatformInstanceHeartbeat({ ...productionEnv(), ...unsupported })).toBe(
         false,
@@ -86,7 +102,7 @@ describe('platform instance heartbeat runtime', () => {
 
     await expect(
       ensurePlatformInstanceHeartbeatStarted({
-        env: { ...productionEnv(), ENABLE_PLATFORM_ADMIN: '0' },
+        env: { ...productionEnv(), ...allEnterpriseFlagsOff() },
         getDatabase,
         schedule,
       }),

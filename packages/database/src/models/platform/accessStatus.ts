@@ -5,7 +5,7 @@
  * Any authenticated user is admitted. Identity
  * allowlisting is owned by Authentik (DingTalk allowlist, fail-closed).
  */
-import { isEnterpriseFlagTruthy } from '@/const/platform/featureFlags';
+import { isPlatformAdminFlagEnabled } from '@/const/platform/featureFlags';
 
 import type { LobeChatDatabase } from '../../type';
 import { RbacModel } from '../rbac';
@@ -29,9 +29,10 @@ export interface PlatformAccessStatus {
   reason: 'granted' | 'super_admin' | 'feature_disabled';
 }
 
+// Default-on, shared with the tRPC context and the server flag parser so the three
+// can never disagree about whether the platform surface is live.
 const isPlatformAdminEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
-  isEnterpriseFlagTruthy(env.ENABLE_PLATFORM_ADMIN) ||
-  isEnterpriseFlagTruthy(env.ENABLE_ENTERPRISE_ADMIN);
+  isPlatformAdminFlagEnabled(env);
 
 export const resolvePlatformAccessStatus = async (params: {
   db: LobeChatDatabase;

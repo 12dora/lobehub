@@ -4,6 +4,7 @@ import type { ModelRuntimeHooks } from '@lobechat/model-runtime';
 import type { AiProviderRuntimeState } from '@lobechat/types';
 import type { EnabledAiModel, ModelSearchImplementType } from 'model-bank';
 
+import { isEnterpriseFlagEnabled } from '@/const/platform/featureFlags';
 import type { LobeChatDatabase } from '@/database/type';
 
 /**
@@ -119,10 +120,10 @@ export interface PlatformAiRuntimeImplementation {
 
 let implementation: PlatformAiRuntimeImplementation | null = null;
 
+// Default-on, matching the shared enterprise flag semantics: only an explicit
+// `0` / `false` / `no` / `off` disables platform-managed AI.
 const envFlagEnabled = (): boolean =>
-  ['1', 'true', 'yes', 'on'].includes(
-    (process.env.ENABLE_PLATFORM_MANAGED_AI ?? '').trim().toLowerCase(),
-  );
+  isEnterpriseFlagEnabled(process.env.ENABLE_PLATFORM_MANAGED_AI);
 
 const requireImplementation = (): PlatformAiRuntimeImplementation => {
   if (!implementation) throw new Error('PLATFORM_AI_RUNTIME_NOT_REGISTERED');

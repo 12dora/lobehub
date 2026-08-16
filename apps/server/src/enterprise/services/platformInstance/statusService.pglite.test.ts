@@ -102,8 +102,20 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
       },
     ]);
 
+    // Only the settings domain is under test; the other enterprise flags default on now, so
+    // disable them explicitly or their domains join the diagnostics projection.
     const snapshot = await new PlatformInstanceStatusService(db, {
-      env: { ENABLE_PLATFORM_SETTINGS_POLICY: '1' },
+      env: {
+        ENABLE_DATABASE_OIDC: '0',
+        ENABLE_ENTERPRISE_ADMIN: '0',
+        ENABLE_PLATFORM_ADMIN: '0',
+        ENABLE_PLATFORM_MANAGED_AGENTS: '0',
+        ENABLE_PLATFORM_MANAGED_AI: '0',
+        ENABLE_PLATFORM_MANAGED_CONNECTORS: '0',
+        ENABLE_PLATFORM_MANAGED_SKILLS: '0',
+        ENABLE_PLATFORM_SETTINGS_POLICY: '1',
+        ENABLE_RUNTIME_BRANDING: '0',
+      },
     }).getStatus();
     const settings = snapshot.domains.find(({ domain }) => domain === 'settings');
 

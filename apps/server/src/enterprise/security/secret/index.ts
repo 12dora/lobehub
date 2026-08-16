@@ -48,4 +48,5 @@ export {
   assertPlatformMasterKeyIfEnterprise,
   PlatformSecretService,
   type PlatformSecretServiceOptions,
+  warnIfPlatformMasterKeyMissing,
 } from './platformSecretService';

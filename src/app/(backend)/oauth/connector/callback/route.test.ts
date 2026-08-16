@@ -62,7 +62,11 @@ vi.mock('@/server/enterprise/services/connectorCatalog/userOAuthService', () => 
 }));
 
 const makeReq = (query = 'code=abc&state=xyz') =>
-  ({ nextUrl: { searchParams: new URLSearchParams(query) } }) as any;
+  ({
+    // The managed callback resolves its result-page locale from Accept-Language.
+    headers: new Headers(),
+    nextUrl: { searchParams: new URLSearchParams(query) },
+  }) as any;
 
 beforeEach(() => {
   vi.clearAllMocks();

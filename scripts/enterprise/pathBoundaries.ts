@@ -32,7 +32,9 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/app/(backend)/api/auth/[...all]/route.ts',
   // M09: exact thin mount into the enterprise-owned OAuth callback adapter
   'src/app/(backend)/oauth/connector/callback/route.ts',
-  // M11: identity-provider admin test OAuth callback
+  // M11: identity-provider admin test OAuth callback, and the DingTalk shim that rewrites
+  // `authCode` → `code` before the Better Auth generic-OAuth callback
+  'src/app/(backend)/oauth/identity-provider/dingtalk/[providerKey]/route.ts',
   'src/app/(backend)/oauth/identity-provider/test/callback/route.ts',
   // M11: test-attempt cleanup cron entry
   'src/app/(backend)/api/cron/identity-provider-test-attempt-cleanup/route.ts',
@@ -751,6 +753,25 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/platformObservability/operationalMetricsRuntime',
     owner: 'M11',
     reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformDingTalkProvider.route.test.ts',
+    importSpecifier: '@/enterprise/server/dingtalkLoginCallback',
+    owner: 'M11',
+    reason:
+      'End-to-end DingTalk login regression drives the real callback shim before the Better Auth handler',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformDingTalkProvider.route.test.ts',
+    importSpecifier: '@/server/enterprise/featureFlags',
+    owner: 'M11',
+    reason: 'DingTalk end-to-end regression stubs the database-OIDC flag the shim reads',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformDingTalkProvider.route.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/startupArtifact',
+    owner: 'M11',
+    reason: 'DingTalk end-to-end regression stubs the active-provider artifact the shim validates',
   },
   {
     file: 'src/libs/better-auth/sso/platformDingTalkProvider.route.test.ts',

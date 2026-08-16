@@ -53,7 +53,20 @@ describe('platform instance runtime reporter', () => {
       { domain: 'settings', health: 'healthy', revision: 1, source: 'database' },
       {
         createRepository,
-        env: { ...productionEnv(), ENABLE_PLATFORM_SETTINGS_POLICY: '0' },
+        // The reporter runs whenever ANY enterprise feature is live, and they are all on by
+        // default — so the unsupported case has to disable every flag, not just this one.
+        env: {
+          ...productionEnv(),
+          ENABLE_DATABASE_OIDC: '0',
+          ENABLE_ENTERPRISE_ADMIN: '0',
+          ENABLE_PLATFORM_ADMIN: '0',
+          ENABLE_PLATFORM_MANAGED_AGENTS: '0',
+          ENABLE_PLATFORM_MANAGED_AI: '0',
+          ENABLE_PLATFORM_MANAGED_CONNECTORS: '0',
+          ENABLE_PLATFORM_MANAGED_SKILLS: '0',
+          ENABLE_PLATFORM_SETTINGS_POLICY: '0',
+          ENABLE_RUNTIME_BRANDING: '0',
+        },
         getInstanceId,
       },
     );

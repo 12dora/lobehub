@@ -160,7 +160,10 @@ describe('runStartupPlatformBootstrap', () => {
 
 describe('bootstrapPlatformAdminRuntime', () => {
   it('does nothing when the platform admin flag is off', async () => {
-    const outcome = await bootstrapPlatformAdminRuntime({ DATABASE_URL: 'postgresql://x' });
+    const outcome = await bootstrapPlatformAdminRuntime({
+      DATABASE_URL: 'postgresql://x',
+      ENABLE_PLATFORM_ADMIN: '0',
+    });
 
     expect(outcome).toEqual({ reason: 'platform-admin-disabled', status: 'skipped' });
     expect(mocks.ensurePlatformRbacSeeded).not.toHaveBeenCalled();
@@ -184,7 +187,10 @@ describe('bootstrapPlatformAdminRuntime', () => {
   });
 
   it('runs at most once per process', async () => {
-    const first = await bootstrapPlatformAdminRuntime({ DATABASE_URL: 'postgresql://x' });
+    const first = await bootstrapPlatformAdminRuntime({
+      DATABASE_URL: 'postgresql://x',
+      ENABLE_PLATFORM_ADMIN: '0',
+    });
     const second = await bootstrapPlatformAdminRuntime({ ...baseEnv });
 
     expect(second).toBe(first);

@@ -5,7 +5,7 @@ import debug from 'debug';
 import { type NextRequest } from 'next/server';
 
 import { auth } from '@/auth';
-import { isEnterpriseFlagTruthy } from '@/const/platform/featureFlags';
+import { isPlatformAdminFlagEnabled } from '@/const/platform/featureFlags';
 import { getServerDB } from '@/database/core/db-adaptor';
 import { ApiKeyModel } from '@/database/models/apiKey';
 import { authEnv, LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
@@ -24,10 +24,12 @@ const LOBE_CHAT_API_KEY_HEADER = 'X-API-Key';
  */
 export type AuthMethod = 'better-auth' | 'oidc' | 'api-key' | 'dev-mock';
 
-/** Flag-gated platform security checks (ban + authInvalidatedAt). Flag-off = upstream parity. */
-const isPlatformAdminSecurityOn = (): boolean =>
-  isEnterpriseFlagTruthy(process.env.ENABLE_PLATFORM_ADMIN) ||
-  isEnterpriseFlagTruthy(process.env.ENABLE_ENTERPRISE_ADMIN);
+/**
+ * Flag-gated platform security checks (ban + authInvalidatedAt). Default-on, so an
+ * unconfigured deployment enforces them; explicitly disabling the flag falls back to
+ * upstream parity.
+ */
+const isPlatformAdminSecurityOn = (): boolean => isPlatformAdminFlagEnabled(process.env);
 
 const extractClientIp = (request: NextRequest): string | undefined => {
   const forwardedFor = request.headers.get('x-forwarded-for');

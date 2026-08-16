@@ -54,8 +54,19 @@ describe('PlatformDomainTargetResolver', () => {
     const db = { select } as unknown as LobeChatDatabase;
     const loadIdentityTarget = identityLoader();
 
+    // Enterprise flags default on, so "every feature disabled" must be stated explicitly.
     const targets = await new PlatformDomainTargetResolver(db, {
-      env: {},
+      env: {
+        ENABLE_DATABASE_OIDC: '0',
+        ENABLE_ENTERPRISE_ADMIN: '0',
+        ENABLE_PLATFORM_ADMIN: '0',
+        ENABLE_PLATFORM_MANAGED_AGENTS: '0',
+        ENABLE_PLATFORM_MANAGED_AI: '0',
+        ENABLE_PLATFORM_MANAGED_CONNECTORS: '0',
+        ENABLE_PLATFORM_MANAGED_SKILLS: '0',
+        ENABLE_PLATFORM_SETTINGS_POLICY: '0',
+        ENABLE_RUNTIME_BRANDING: '0',
+      },
       loadIdentityTarget,
     }).resolveAll();
 

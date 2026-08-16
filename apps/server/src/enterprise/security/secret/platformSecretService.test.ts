@@ -1,10 +1,13 @@
 // @vitest-environment node
 import { randomBytes } from 'node:crypto';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
+import {
+  DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+  DISABLED_ENTERPRISE_FEATURE_FLAGS,
+} from '@/const/platform/featureFlags';
 
 import { CIPHERTEXT_PREFIX, ENVELOPE_VERSION } from './config';
 import { parseEnvelopeString } from './envelope';
@@ -13,6 +16,7 @@ import { EnvKeyProvider } from './keyProviders';
 import {
   assertPlatformMasterKeyIfEnterprise,
   PlatformSecretService,
+  warnIfPlatformMasterKeyMissing,
 } from './platformSecretService';
 
 /** Explicit fake master key for tests only — never a real secret. */
@@ -244,14 +248,14 @@ describe('PlatformSecretService', () => {
       expect(() =>
         PlatformSecretService.fromEnvOrThrowIfEnterprise(
           {},
-          { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_ADMIN: true },
+          { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_ADMIN: true },
         ),
       ).toThrow(PlatformSecretError);
 
       try {
         PlatformSecretService.fromEnvOrThrowIfEnterprise(
           {},
-          { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_ADMIN: true },
+          { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_ADMIN: true },
         );
       } catch (e) {
         expect(e).toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED });
@@ -261,14 +265,14 @@ describe('PlatformSecretService', () => {
     it('fromEnvOrThrowIfEnterprise returns null when enterprise off and key missing', () => {
       const svc = PlatformSecretService.fromEnvOrThrowIfEnterprise(
         {},
-        { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+        { ...DISABLED_ENTERPRISE_FEATURE_FLAGS },
       );
       expect(svc).toBeNull();
     });
 
     it('assertPlatformMasterKeyIfEnterprise no-ops when flags off', () => {
       expect(() =>
-        assertPlatformMasterKeyIfEnterprise({}, { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS }),
+        assertPlatformMasterKeyIfEnterprise({}, { ...DISABLED_ENTERPRISE_FEATURE_FLAGS }),
       ).not.toThrow();
     });
 
@@ -276,9 +280,46 @@ describe('PlatformSecretService', () => {
       expect(() =>
         assertPlatformMasterKeyIfEnterprise(
           {},
-          { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+          { ...DISABLED_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
         ),
       ).toThrow(/PLATFORM_MASTER_KEY|master key/i);
+    });
+
+    it('warnIfPlatformMasterKeyMissing lets the server boot with flags on and no key', () => {
+      // Enterprise features are on by default, so an unconfigured deployment must still
+      // start: the boot gate warns instead of throwing at module load.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const ok = warnIfPlatformMasterKeyMissing({}, { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS });
+
+      expect(ok).toBe(false);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]![0])).toContain('PLATFORM_MASTER_KEY');
+      warnSpy.mockRestore();
+    });
+
+    it('warnIfPlatformMasterKeyMissing stays silent when the key is configured', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const ok = warnIfPlatformMasterKeyMissing(
+        { PLATFORM_MASTER_KEY: Buffer.alloc(32, 7).toString('base64') },
+        { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+      );
+
+      expect(ok).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('still fails hard when a secret is actually used without a key', () => {
+      // The boot warning must not weaken the real guarantee: nothing is ever stored
+      // unencrypted just because the key is missing.
+      expect(() =>
+        PlatformSecretService.fromEnvOrThrowIfEnterprise(
+          {},
+          { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
+        ),
+      ).toThrow(PlatformSecretError);
     });
 
     it('EnvKeyProvider rejects wrong key length', () => {

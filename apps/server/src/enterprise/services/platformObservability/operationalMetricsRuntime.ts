@@ -11,15 +11,12 @@ import {
 } from '@lobechat/observability-otel/modules/enterprise-platform';
 import debug from 'debug';
 
-import {
-  ENTERPRISE_FEATURE_FLAG_KEYS,
-  isEnterpriseFlagTruthy,
-} from '@/const/platform/featureFlags';
+import { isEnterpriseFlagTruthy } from '@/const/platform/featureFlags';
 import { PlatformJobModel } from '@/database/models/platform/job';
 import { PlatformInstanceRepository } from '@/database/repositories/platformInstance';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { parseEnterpriseFeatureFlags } from '../../featureFlags';
+import { isAnyEnterpriseFeatureEnabled, parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 
@@ -146,10 +143,11 @@ export const shouldStartOperationalMetricsRuntime = (
   env.NODE_ENV === 'production' &&
   env.NEXT_RUNTIME === 'nodejs' &&
   Boolean(env.DATABASE_URL) &&
+  // ENABLE_TELEMETRY is opt-in (not an enterprise flag), so it stays explicit-truthy.
   isEnterpriseFlagTruthy(env.ENABLE_TELEMETRY) &&
   !isBuildRuntime(env) &&
   !isEphemeralRuntime(env) &&
-  ENTERPRISE_FEATURE_FLAG_KEYS.some((key) => isEnterpriseFlagTruthy(env[key]));
+  isAnyEnterpriseFeatureEnabled(parseEnterpriseFeatureFlags(env));
 
 const defaultGetDatabase = async (): Promise<LobeChatDatabase> => {
   const { getServerDB } = await import('@/database/core/db-adaptor');

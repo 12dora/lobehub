@@ -61,6 +61,30 @@ const installTestStorage = () => {
   }
 };
 
+/**
+ * Enterprise features ship ON by default (see `packages/const/src/platform/featureFlags.ts`).
+ * The default test baseline is the opposite: upstream suites mock only the upstream data
+ * access, so letting the platform settings/managed-resource resolvers run against those
+ * partial doubles produces `db.select is not a function` noise rather than real signal.
+ *
+ * Any suite that exercises an enterprise path opts in explicitly (`vi.stubEnv`,
+ * `process.env.ENABLE_… = '1'`, or by passing an env map straight to the parser), which is
+ * how every enterprise test is already written.
+ */
+for (const key of [
+  'ENABLE_DATABASE_OIDC',
+  'ENABLE_ENTERPRISE_ADMIN',
+  'ENABLE_PLATFORM_ADMIN',
+  'ENABLE_PLATFORM_MANAGED_AGENTS',
+  'ENABLE_PLATFORM_MANAGED_AI',
+  'ENABLE_PLATFORM_MANAGED_CONNECTORS',
+  'ENABLE_PLATFORM_MANAGED_SKILLS',
+  'ENABLE_PLATFORM_SETTINGS_POLICY',
+  'ENABLE_RUNTIME_BRANDING',
+]) {
+  process.env[key] ??= '0';
+}
+
 // Enable Immer MapSet plugin so store code using Map/Set in produce() works in tests
 enablePatches();
 enableMapSet();

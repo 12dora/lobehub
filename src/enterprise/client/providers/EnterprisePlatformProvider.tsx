@@ -4,6 +4,8 @@ import { createContext, type ReactNode, use, useEffect, useMemo } from 'react';
 
 import { useServerConfigStore } from '@/store/serverConfig';
 import { useToolStore } from '@/store/tool';
+import { useUserStore } from '@/store/user';
+import { authSelectors } from '@/store/user/selectors';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
   type PlatformCapabilities,
@@ -60,6 +62,7 @@ export default function EnterprisePlatformProvider({
   const enterpriseEnabled = useServerConfigStore(
     (s) => s.serverConfig.enterprise?.enabled === true,
   );
+  const isSignedIn = Boolean(useUserStore(authSelectors.isLogin));
 
   const { capabilities, error, loading, publicSnapshot, refresh } = useEnterprisePlatformData({
     disableFetch,
@@ -67,6 +70,7 @@ export default function EnterprisePlatformProvider({
     fetchCapabilities,
     fetchPublicSnapshot,
     initialPublicSnapshot,
+    isSignedIn,
     serverConfigInit,
   });
 

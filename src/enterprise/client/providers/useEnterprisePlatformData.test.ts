@@ -98,6 +98,39 @@ describe('useEnterprisePlatformData', () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it('never polls the authenticated capabilities endpoint for an anonymous visitor', () => {
+    // Enterprise features are on by default, so the sign-in page mounts this provider.
+    // `platform.getCapabilities` is authenticated — polling it anonymously would 401 on a
+    // loop. The public snapshot (branding / login options) must still load.
+    renderHook(() =>
+      useEnterprisePlatformData({
+        disableFetch: false,
+        enterpriseEnabled: true,
+        isSignedIn: false,
+        serverConfigInit: true,
+      }),
+    );
+
+    const [capabilitiesKey, publicSnapshotKey] = vi
+      .mocked(useClientDataSWR)
+      .mock.calls.map(([key]) => key);
+    expect(capabilitiesKey).toBeNull();
+    expect(publicSnapshotKey).not.toBeNull();
+  });
+
+  it('polls capabilities once a session exists', () => {
+    renderHook(() =>
+      useEnterprisePlatformData({
+        disableFetch: false,
+        enterpriseEnabled: true,
+        isSignedIn: true,
+        serverConfigInit: true,
+      }),
+    );
+
+    expect(vi.mocked(useClientDataSWR).mock.calls[0]![0]).toBe(PLATFORM_CAPABILITIES_SWR_KEY);
+  });
+
   it('configures bounded snapshot polling and a fallback for loading/error continuity', () => {
     renderHook(() =>
       useEnterprisePlatformData({

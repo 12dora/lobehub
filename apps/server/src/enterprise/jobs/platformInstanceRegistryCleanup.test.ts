@@ -80,7 +80,13 @@ describe('platform instance registry cleanup worker runtime', () => {
   } satisfies Partial<NodeJS.ProcessEnv>;
 
   it('runs only in a persistent Node runtime with database OIDC enabled', () => {
-    expect(isPlatformInstanceRegistryCleanupWorkerRuntime(production)).toBe(false);
+    // Database OIDC is on by default, so "disabled" has to be stated explicitly.
+    expect(
+      isPlatformInstanceRegistryCleanupWorkerRuntime({
+        ...production,
+        ENABLE_DATABASE_OIDC: '0',
+      }),
+    ).toBe(false);
     expect(
       isPlatformInstanceRegistryCleanupWorkerRuntime({
         ...production,

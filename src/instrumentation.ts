@@ -22,13 +22,28 @@ export async function register() {
       });
     }
 
-    const { bootstrapIdentityProviderRuntime } =
-      await import('@/server/enterprise/services/identityProvider/bootstrap');
-    await bootstrapIdentityProviderRuntime();
+    // Identity providers are on by default, so the last-known-good snapshot is now read
+    // on far more deployments. A missing / unreadable / wrongly-permissioned snapshot must
+    // degrade to "no database identity providers", never to a server that will not start.
+    try {
+      const { bootstrapIdentityProviderRuntime } =
+        await import('@/server/enterprise/services/identityProvider/bootstrap');
+      await bootstrapIdentityProviderRuntime();
+    } catch (error) {
+      console.error('[Instrumentation] identity provider bootstrap failed (non-blocking)', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
 
-    const { ensurePlatformInstanceHeartbeatStarted } =
-      await import('@/server/enterprise/services/platformInstance/heartbeatRuntime');
-    await ensurePlatformInstanceHeartbeatStarted();
+    try {
+      const { ensurePlatformInstanceHeartbeatStarted } =
+        await import('@/server/enterprise/services/platformInstance/heartbeatRuntime');
+      await ensurePlatformInstanceHeartbeatStarted();
+    } catch (error) {
+      console.error('[Instrumentation] platform instance heartbeat failed (non-blocking)', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
   }
 
   // Auto-start GatewayManager on server start for non-Vercel environments (Docker, local).

@@ -237,3 +237,30 @@ export const assertPlatformMasterKeyIfEnterprise = (
     throw secretInvalidInput(String(error));
   }
 };
+
+/**
+ * Boot-time variant of {@link assertPlatformMasterKeyIfEnterprise}: reports a missing or
+ * malformed key-provider configuration without throwing.
+ *
+ * Enterprise features ship enabled by default, so a deployment that has not configured
+ * `PLATFORM_MASTER_KEY` yet must still boot and serve — it simply cannot store or read a
+ * platform secret. The hard failure stays where the secret is actually used (the key
+ * provider throws on encrypt/decrypt), so nothing is silently written unencrypted.
+ *
+ * @returns true when the configuration is usable.
+ */
+export const warnIfPlatformMasterKeyMissing = (
+  env: PlatformSecretEnv = process.env,
+  flags?: EnterpriseFeatureFlags,
+): boolean => {
+  try {
+    assertPlatformMasterKeyIfEnterprise(env, flags);
+    return true;
+  } catch (error) {
+    console.warn(
+      '[platformSecret] PLATFORM_MASTER_KEY is not configured — platform provider keys, connector OAuth credentials and identity-provider secrets cannot be saved or read until it is set (openssl rand -base64 32). Everything else works.',
+      { errorClass: error instanceof Error ? error.name : 'UnknownError' },
+    );
+    return false;
+  }
+};

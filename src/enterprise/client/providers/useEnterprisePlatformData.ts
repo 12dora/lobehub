@@ -65,6 +65,13 @@ export interface UseEnterprisePlatformDataOptions {
   fetchCapabilities?: typeof fetchPlatformCapabilities;
   fetchPublicSnapshot?: typeof fetchPlatformPublicSnapshot;
   initialPublicSnapshot?: PlatformPublicSnapshot;
+  /**
+   * Whether a user session exists. `platform.getCapabilities` is an authenticated
+   * procedure, so an anonymous visitor must not poll it — enterprise features are on
+   * by default now, so without this the sign-in page would 401 on a 60s loop.
+   * The public snapshot (branding / login options) is unauthenticated and still loads.
+   */
+  isSignedIn?: boolean;
   serverConfigInit: boolean;
 }
 
@@ -88,9 +95,12 @@ export const useEnterprisePlatformData = ({
   fetchCapabilities = fetchPlatformCapabilities,
   fetchPublicSnapshot = fetchPlatformPublicSnapshot,
   initialPublicSnapshot = DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+  isSignedIn = true,
   serverConfigInit,
 }: UseEnterprisePlatformDataOptions): EnterprisePlatformData => {
   const enabled = !disableFetch && serverConfigInit && enterpriseEnabled;
+  // Capabilities need a session; the public snapshot does not.
+  const capabilitiesEnabled = enabled && isSignedIn;
   const safeInitialPublicSnapshot = resolveSafePlatformPublicSnapshot(initialPublicSnapshot);
   const publicSnapshotKey = enabled
     ? ([
@@ -102,7 +112,7 @@ export const useEnterprisePlatformData = ({
   const capabilitiesFetcher = useCallback(() => fetchCapabilities(), [fetchCapabilities]);
   const publicSnapshotFetcher = useCallback(() => fetchPublicSnapshot(), [fetchPublicSnapshot]);
   const capabilitiesSWR = useClientDataSWR<PlatformCapabilities>(
-    enabled ? PLATFORM_CAPABILITIES_SWR_KEY : null,
+    capabilitiesEnabled ? PLATFORM_CAPABILITIES_SWR_KEY : null,
     capabilitiesFetcher,
     {
       fallbackData: DISABLED_PLATFORM_CAPABILITIES,

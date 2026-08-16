@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  assertPlatformMasterKeyIfEnterprise: vi.fn(),
+  warnIfPlatformMasterKeyMissing: vi.fn(),
   ensureBrandingAssetCleanupWorkerStarted: vi.fn(),
   ensurePlatformAuditExportWorkerStarted: vi.fn(),
   ensurePlatformAuditRetentionWorkerStarted: vi.fn(),
@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../security/secret', () => ({
-  assertPlatformMasterKeyIfEnterprise: mocks.assertPlatformMasterKeyIfEnterprise,
+  warnIfPlatformMasterKeyMissing: mocks.warnIfPlatformMasterKeyMissing,
 }));
 
 vi.mock('../jobs/brandingAssetCleanup', () => ({
@@ -38,8 +38,10 @@ describe('platform persistent worker bootstrap', () => {
     expect(mocks.ensurePlatformSecretRewrapWorkerStarted).toHaveBeenCalledOnce();
   });
 
-  it('validates the enterprise key provider before production bootstrap completes', () => {
-    expect(mocks.assertPlatformMasterKeyIfEnterprise).toHaveBeenCalledOnce();
+  it('reports the enterprise key provider status before production bootstrap completes', () => {
+    // Warns instead of throwing: enterprise features are on by default, so a deployment
+    // without PLATFORM_MASTER_KEY must still boot.
+    expect(mocks.warnIfPlatformMasterKeyMissing).toHaveBeenCalledOnce();
   });
 
   it('registers the branding asset cleanup worker from the production platform bootstrap module', () => {
