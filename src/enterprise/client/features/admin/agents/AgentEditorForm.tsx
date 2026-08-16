@@ -1,9 +1,8 @@
 'use client';
 
-import type { FormGroupItemType, FormItemProps } from '@lobehub/ui';
-import { Alert, Flexbox, Form, Input, InputNumber, Text, TextArea } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
+import { Alert, Text } from '@lobehub/ui';
+import { Button, FormGroup, Input, InputNumber, Select, TextArea } from '@lobehub/ui/base-ui';
+import { createStaticStyles, cssVar, cx } from 'antd-style';
 import type { ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +13,7 @@ import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/r
 import BackgroundSwatches from '@/features/AgentSetting/AgentMeta/BackgroundSwatches';
 
 import { DependencyEditor } from './DependencyEditor';
+import { FieldLabel } from './dependencyEditorShared';
 import type { AdminAgentDetailOutput, AdminPlatformAgentSaveOutput } from './types';
 import { AGENT_KEY_MAX_LENGTH, useAgentEditorForm } from './useAgentEditorForm';
 
@@ -24,8 +24,31 @@ const styles = createStaticStyles(({ css }) => ({
     flex: 1 1 auto;
 
     min-height: 0;
-    padding-block: 12px;
+    padding-block: 16px;
     padding-inline: 16px;
+  `,
+  caption: css`
+    font-size: ${cssVar.fontSizeSM};
+    color: ${cssVar.colorTextTertiary};
+  `,
+  captions: css`
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  `,
+  error: css`
+    font-size: ${cssVar.fontSizeSM};
+    color: ${cssVar.colorError};
+  `,
+  /** Label above control — the house pattern for admin modals. */
+  field: css`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  `,
+  fieldFull: css`
+    grid-column: 1 / -1;
   `,
   footer: css`
     display: flex;
@@ -36,6 +59,11 @@ const styles = createStaticStyles(({ css }) => ({
     padding-block: 12px;
     padding-inline: 16px;
   `,
+  footerActions: css`
+    display: flex;
+    flex-shrink: 0;
+    gap: 8px;
+  `,
   /** Pinned below the scroll region: status first, then the actions. Never scrolls out of reach. */
   footerRegion: css`
     display: flex;
@@ -43,18 +71,42 @@ const styles = createStaticStyles(({ css }) => ({
     flex-shrink: 0;
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
   `,
-  footerActions: css`
-    display: flex;
-    flex-shrink: 0;
-    gap: 8px;
+  grid: css`
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+
+    @media (width <= 640px) {
+      grid-template-columns: 1fr;
+    }
   `,
   hint: css`
     font-size: ${cssVar.fontSizeSM};
     color: ${cssVar.colorTextTertiary};
   `,
-  keyError: css`
-    font-size: ${cssVar.fontSizeSM};
-    color: ${cssVar.colorError};
+  /** Avatar, name and the background swatches read as one identity, not three fields. */
+  identity: css`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  `,
+  identityName: css`
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 8px;
+
+    min-width: 0;
+  `,
+  identityRow: css`
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  `,
+  paramsGrid: css`
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
   `,
   root: css`
     overflow: hidden;
@@ -63,6 +115,16 @@ const styles = createStaticStyles(({ css }) => ({
     flex-direction: column;
 
     min-height: 0;
+  `,
+  sections: css`
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  `,
+  stack: css`
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
   `,
   status: css`
     display: flex;
@@ -74,7 +136,16 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const FULL_WIDTH = { style: { maxWidth: '100%', width: '100%' } };
+const NAME_ID = 'admin-agent-editor-name';
+const DESCRIPTION_ID = 'admin-agent-editor-description';
+const KEY_ID = 'admin-agent-editor-key';
+const SYSTEM_ROLE_ID = 'admin-agent-editor-system-role';
+const OPENING_MESSAGE_ID = 'admin-agent-editor-opening-message';
+const OPENING_QUESTIONS_ID = 'admin-agent-editor-opening-questions';
+const TAGS_ID = 'admin-agent-editor-tags';
+
+/** Already named by the "still needed" line beside Save — never say the same thing twice. */
+const MODEL_BLOCKER = 'agentCatalog.editor.blocked.model';
 
 /** Model parameters are optional: an empty box means "follow the model default". */
 interface ParamRow {
@@ -119,18 +190,28 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
     });
     const { config } = form.value;
     const background = config.backgroundColor ?? undefined;
-    const blockers = form.depValidity.blockers;
     // Saving republishes an archived assistant, so say so instead of letting it happen silently.
     const archived = agent?.identity.status === 'archived';
 
     const keyInvalid = form.isCreate && form.agentKey.length > 0 && !form.keyValid;
+    // An empty identifier is only worth raising once the admin has named the assistant — before
+    // that the whole form is empty and there is nothing to correct yet.
+    const keyMissing =
+      form.isCreate && form.agentKey.length === 0 && config.displayName.trim().length > 0;
+    // Requirements are guidance until the admin starts, then the honest reason Save stays closed.
+    const showMissing = form.dirty && form.missingRequirements.length > 0;
+    const blockers = form.depValidity.blockers.filter(
+      (blocker) => blocker.message !== MODEL_BLOCKER,
+    );
 
-    const basicItems: FormItemProps[] = [
-      {
-        // One identity row, like `AgentSetting/AgentMeta`: the swatch strip reads as the avatar's
-        // background instead of an unrelated second field.
-        children: (
-          <Flexbox horizontal align={'center'} gap={16} wrap={'wrap'}>
+    const basics = (model: ReactNode): ReactNode => (
+      <div className={styles.grid}>
+        <div
+          aria-label={t('agentCatalog.editor.avatarBackground')}
+          className={cx(styles.identity, styles.fieldFull)}
+          role={'group'}
+        >
+          <div className={styles.identityRow}>
             <EmojiPicker
               background={background}
               size={48}
@@ -139,70 +220,132 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
               value={config.avatar ?? DEFAULT_AVATAR}
               onChange={(next: string) => form.patchConfig('avatar', next || null)}
             />
-            <BackgroundSwatches
-              value={background}
-              onChange={(next) => form.patchConfig('backgroundColor', next || null)}
-            />
-          </Flexbox>
-        ),
-        label: t('agentCatalog.editor.avatarBackground'),
-        layout: 'horizontal',
-        minWidth: undefined,
-      },
-      {
-        children: (
-          <Input
-            aria-label={t('agentCatalog.editor.name')}
-            placeholder={t('agentCatalog.editor.namePlaceholder')}
-            value={config.displayName}
-            onChange={(event) => form.setDisplayName(event.target.value)}
+            <div className={styles.identityName}>
+              <FieldLabel required htmlFor={NAME_ID}>
+                {t('agentCatalog.editor.name')}
+              </FieldLabel>
+              <Input
+                required
+                aria-label={t('agentCatalog.editor.name')}
+                id={NAME_ID}
+                placeholder={t('agentCatalog.editor.namePlaceholder')}
+                value={config.displayName}
+                onChange={(event) => form.setDisplayName(event.target.value)}
+              />
+            </div>
+          </div>
+          <BackgroundSwatches
+            value={background}
+            onChange={(next) => form.patchConfig('backgroundColor', next || null)}
           />
-        ),
-        label: t('agentCatalog.editor.name'),
-      },
-      {
-        children: (
+        </div>
+
+        <div className={cx(styles.field, styles.fieldFull)}>
+          <FieldLabel htmlFor={DESCRIPTION_ID}>{t('agentCatalog.editor.description')}</FieldLabel>
           <TextArea
             aria-label={t('agentCatalog.editor.description')}
+            autoSize={{ maxRows: 3, minRows: 1 }}
+            id={DESCRIPTION_ID}
             placeholder={t('agentCatalog.editor.descriptionPlaceholder')}
-            rows={2}
             value={config.description ?? ''}
             onChange={(event) => form.patchConfig('description', event.target.value || null)}
           />
-        ),
-        label: t('agentCatalog.editor.description'),
-      },
-      {
-        children: (
-          <Flexbox gap={4}>
-            <Input
-              aria-label={t('agentCatalog.editor.key')}
-              disabled={!form.isCreate}
-              maxLength={AGENT_KEY_MAX_LENGTH}
-              placeholder={'research-assistant'}
-              value={form.agentKey}
-              onChange={(event) => form.changeAgentKey(event.target.value)}
-            />
-            {keyInvalid ? (
-              <span className={styles.keyError} role={'alert'}>
-                {t('agentCatalog.editor.keyInvalid', { max: AGENT_KEY_MAX_LENGTH })}
-              </span>
-            ) : null}
-          </Flexbox>
-        ),
-        desc: form.isCreate
-          ? t('agentCatalog.editor.keyDesc')
-          : t('agentCatalog.editor.keyLockedDesc'),
-        label: t('agentCatalog.editor.key'),
-      },
-    ];
+        </div>
 
-    const moreItems = (skills: ReactNode, connectors: ReactNode): FormItemProps[] => [
-      {
-        children: (
+        <div className={styles.field}>
+          <FieldLabel htmlFor={KEY_ID} required={form.isCreate}>
+            {t('agentCatalog.editor.key')}
+          </FieldLabel>
+          <Input
+            aria-label={t('agentCatalog.editor.key')}
+            disabled={!form.isCreate}
+            id={KEY_ID}
+            maxLength={AGENT_KEY_MAX_LENGTH}
+            placeholder={'research-assistant'}
+            required={form.isCreate}
+            value={form.agentKey}
+            onChange={(event) => form.changeAgentKey(event.target.value)}
+          />
+          {keyInvalid || keyMissing ? (
+            <span className={styles.error} role={'alert'}>
+              {keyMissing
+                ? t('agentCatalog.editor.keyRequired')
+                : t('agentCatalog.editor.keyInvalid', { max: AGENT_KEY_MAX_LENGTH })}
+            </span>
+          ) : null}
+          {/* Below the input, where a caption belongs — never inside the label column. */}
+          <div className={styles.captions}>
+            <span className={styles.caption}>
+              {form.isCreate
+                ? t('agentCatalog.editor.keyDesc')
+                : t('agentCatalog.editor.keyLockedDesc')}
+            </span>
+            {form.isCreate ? (
+              <span className={styles.caption}>{t('agentCatalog.editor.keyAutoNote')}</span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* The model is required, so it stays above the fold with the other basics. */}
+        <div className={styles.fieldFull}>{model}</div>
+      </div>
+    );
+
+    const prompt: ReactNode = (
+      <div className={styles.field}>
+        <FieldLabel required htmlFor={SYSTEM_ROLE_ID}>
+          {t('agentCatalog.editor.systemRole')}
+        </FieldLabel>
+        <span className={styles.caption}>{t('agentCatalog.editor.systemRoleDesc')}</span>
+        <TextArea
+          required
+          aria-label={t('agentCatalog.editor.systemRole')}
+          autoSize={{ maxRows: 18, minRows: 6 }}
+          id={SYSTEM_ROLE_ID}
+          placeholder={t('agentCatalog.editor.systemRolePlaceholder')}
+          value={config.systemRole}
+          onChange={(event) => form.patchConfig('systemRole', event.target.value)}
+        />
+      </div>
+    );
+
+    const params: ReactNode = (
+      <div className={styles.stack}>
+        <span className={styles.caption}>{t('agentCatalog.editor.section.paramsDesc')}</span>
+        <div className={styles.paramsGrid}>
+          {PARAM_ROWS.map(({ key, max, min, step }) => (
+            <div className={styles.field} key={key}>
+              <FieldLabel htmlFor={`admin-agent-editor-param-${key}`}>
+                {t(`agentCatalog.editor.param.${key}` as never)}
+              </FieldLabel>
+              <InputNumber
+                id={`admin-agent-editor-param-${key}`}
+                max={max}
+                min={min}
+                placeholder={t('agentCatalog.editor.paramDefault')}
+                step={step}
+                value={config.modelParameters[key] ?? null}
+                onChange={(next) =>
+                  form.patchConfig('modelParameters', {
+                    ...config.modelParameters,
+                    [key]: typeof next === 'number' ? next : undefined,
+                  })
+                }
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+
+    const more = (skills: ReactNode, connectors: ReactNode): ReactNode => (
+      <div className={styles.stack}>
+        <div className={styles.field}>
+          <FieldLabel htmlFor={TAGS_ID}>{t('agentCatalog.editor.tags')}</FieldLabel>
           <Select
             allowClear
             aria-label={t('agentCatalog.editor.tags')}
+            id={TAGS_ID}
             mode={'tags'}
             options={config.tags.map((tag) => ({ label: tag, value: tag }))}
             placeholder={t('agentCatalog.editor.tagsPlaceholder')}
@@ -212,66 +355,40 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
               form.patchConfig('tags', Array.isArray(next) ? next : next ? [next] : [])
             }
           />
-        ),
-        label: t('agentCatalog.editor.tags'),
-        layout: 'vertical',
-        wrapperCol: FULL_WIDTH,
-      },
-      {
-        children: (
+        </div>
+        <div className={styles.field}>
+          <FieldLabel htmlFor={OPENING_MESSAGE_ID}>
+            {t('agentCatalog.editor.openingMessage')}
+          </FieldLabel>
           <TextArea
             aria-label={t('agentCatalog.editor.openingMessage')}
+            autoSize={{ maxRows: 6, minRows: 2 }}
+            id={OPENING_MESSAGE_ID}
             placeholder={t('agentCatalog.editor.openingMessagePlaceholder')}
-            rows={2}
             value={config.openingMessage ?? ''}
             onChange={(event) => form.patchConfig('openingMessage', event.target.value || null)}
           />
-        ),
-        label: t('agentCatalog.editor.openingMessage'),
-        layout: 'vertical',
-        wrapperCol: FULL_WIDTH,
-      },
-      {
-        children: (
+        </div>
+        <div className={styles.field}>
+          <FieldLabel htmlFor={OPENING_QUESTIONS_ID}>
+            {t('agentCatalog.editor.openingQuestions')}
+          </FieldLabel>
           <TextArea
             aria-label={t('agentCatalog.editor.openingQuestions')}
+            autoSize={{ maxRows: 8, minRows: 3 }}
+            id={OPENING_QUESTIONS_ID}
             placeholder={t('agentCatalog.editor.openingQuestionsPlaceholder')}
-            rows={3}
             value={config.openingQuestions.join('\n')}
             onChange={(event) =>
               form.patchConfig('openingQuestions', event.target.value.split('\n'))
             }
           />
-        ),
-        desc: t('agentCatalog.editor.openingQuestionsDesc'),
-        label: t('agentCatalog.editor.openingQuestions'),
-        layout: 'vertical',
-        wrapperCol: FULL_WIDTH,
-      },
-      { children: skills, layout: 'vertical', wrapperCol: FULL_WIDTH },
-      { children: connectors, layout: 'vertical', wrapperCol: FULL_WIDTH },
-    ];
-
-    const paramItems: FormItemProps[] = PARAM_ROWS.map(({ key, max, min, step }) => ({
-      children: (
-        <InputNumber
-          aria-label={t(`agentCatalog.editor.param.${key}` as never)}
-          max={max}
-          min={min}
-          placeholder={t('agentCatalog.editor.paramDefault')}
-          step={step}
-          style={{ width: 160 }}
-          value={config.modelParameters[key]}
-          onChange={(next) =>
-            form.patchConfig('modelParameters', {
-              ...config.modelParameters,
-              [key]: typeof next === 'number' ? next : undefined,
-            })
-          }
-        />
-      ),
-      label: t(`agentCatalog.editor.param.${key}` as never),
-    }));
+          <span className={styles.caption}>{t('agentCatalog.editor.openingQuestionsDesc')}</span>
+        </div>
+        {skills}
+        {connectors}
+      </div>
+    );
 
     return (
       <div className={styles.root}>
@@ -285,65 +402,50 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
             onValidityChange={form.setDepValidity}
           >
             {(slots) => (
-              <Form
-                gap={16}
-                itemsType={'group'}
-                variant={'borderless'}
-                items={
-                  [
-                    { children: basicItems, title: t('agentCatalog.editor.section.basic') },
-                    {
-                      children: (
-                        <TextArea
-                          aria-label={t('agentCatalog.editor.systemRole')}
-                          autoSize={{ maxRows: 24, minRows: 10 }}
-                          placeholder={t('agentCatalog.editor.systemRolePlaceholder')}
-                          value={config.systemRole}
-                          onChange={(event) => form.patchConfig('systemRole', event.target.value)}
-                        />
-                      ),
-                      desc: t('agentCatalog.editor.systemRoleDesc'),
-                      title: t('agentCatalog.editor.section.prompt'),
-                    },
-                    {
-                      children: (
-                        <Flexbox gap={12}>
-                          {slots.model}
-                          {form.depValidity.issues.length > 0 ? (
-                            <Alert
-                              showIcon
-                              type={'warning'}
-                              message={form.depValidity.issues
-                                .map((issue) => t(issue as never))
-                                .join(' · ')}
-                            />
-                          ) : null}
-                        </Flexbox>
-                      ),
-                      title: t('agentCatalog.editor.section.model'),
-                    },
-                    {
-                      children: paramItems,
-                      collapsible: true,
-                      defaultActive: false,
-                      desc: t('agentCatalog.editor.section.paramsDesc'),
-                      title: t('agentCatalog.editor.section.params'),
-                    },
-                    {
-                      children: moreItems(slots.skills, slots.connectors),
-                      collapsible: true,
-                      defaultActive: false,
-                      title: t('agentCatalog.editor.section.more'),
-                    },
-                  ] as FormGroupItemType[]
-                }
-              />
+              <div className={styles.sections}>
+                <FormGroup title={t('agentCatalog.editor.section.basic')} variant={'borderless'}>
+                  <div className={styles.stack}>
+                    {basics(slots.model)}
+                    {form.depValidity.issues.length > 0 ? (
+                      <Alert
+                        showIcon
+                        type={'warning'}
+                        message={form.depValidity.issues
+                          .map((issue) => t(issue as never))
+                          .join(' · ')}
+                      />
+                    ) : null}
+                  </div>
+                </FormGroup>
+
+                <FormGroup title={t('agentCatalog.editor.section.prompt')} variant={'borderless'}>
+                  {prompt}
+                </FormGroup>
+
+                <FormGroup
+                  collapsible
+                  defaultActive={false}
+                  title={t('agentCatalog.editor.section.params')}
+                  variant={'borderless'}
+                >
+                  {params}
+                </FormGroup>
+
+                <FormGroup
+                  collapsible
+                  defaultActive={false}
+                  title={t('agentCatalog.editor.section.more')}
+                  variant={'borderless'}
+                >
+                  {more(slots.skills, slots.connectors)}
+                </FormGroup>
+              </div>
             )}
           </DependencyEditor>
         </div>
 
         <div className={styles.footerRegion}>
-          {form.conflict || form.error || blockers.length > 0 ? (
+          {form.conflict || form.error || showMissing || blockers.length > 0 ? (
             <div className={styles.status}>
               {form.conflict ? (
                 <Alert
@@ -356,6 +458,14 @@ export const AgentEditorForm = memo<AgentEditorFormProps>(
               {form.error ? (
                 <Text role={'alert'} type={'danger'}>
                   {form.error}
+                </Text>
+              ) : null}
+              {/* One honest line for what Save is still waiting on, right where Save is. */}
+              {showMissing ? (
+                <Text type={'secondary'}>
+                  {t('agentCatalog.editor.missing.title', {
+                    fields: form.missingRequirements.map((key) => t(key as never)).join(' · '),
+                  })}
                 </Text>
               ) : null}
               {/* Why Save is unavailable, next to Save — the catalog that is blocking it may live

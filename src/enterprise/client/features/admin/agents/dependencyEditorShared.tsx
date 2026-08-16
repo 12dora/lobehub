@@ -9,13 +9,37 @@ import { useTranslation } from 'react-i18next';
 
 export const styles = createStaticStyles(({ css }) => ({
   label: css`
-    font-size: ${cssVar.fontSizeSM};
-    color: ${cssVar.colorTextSecondary};
+    font-size: ${cssVar.fontSize};
+    font-weight: 500;
+    color: ${cssVar.colorText};
+  `,
+  required: css`
+    margin-inline-start: 4px;
+    color: ${cssVar.colorError};
   `,
 }));
 
-export const FieldLabel = ({ children }: { children: string }) => (
-  <Text className={styles.label}>{children}</Text>
+/**
+ * The one field label used across the assistant editor: a real `<label>` so pointer and assistive
+ * technology reach the control, with an explicit marker for the fields the contract requires.
+ */
+export const FieldLabel = ({
+  children,
+  htmlFor,
+  required,
+}: {
+  children: ReactNode;
+  htmlFor?: string;
+  required?: boolean;
+}) => (
+  <label className={styles.label} htmlFor={htmlFor}>
+    {children}
+    {required ? (
+      <span aria-hidden className={styles.required}>
+        *
+      </span>
+    ) : null}
+  </label>
 );
 
 /**

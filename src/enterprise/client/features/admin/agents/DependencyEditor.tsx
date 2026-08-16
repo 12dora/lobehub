@@ -102,6 +102,8 @@ export const DependencyEditor = ({
   // re-key once with the providerKey so the exact option resolves via server search.
   const [providerHydrateQuery, setProviderHydrateQuery] = useState('');
 
+  // The picker's own filter only sees the loaded page, so the typed query must reach the server —
+  // a provider beyond the first page would otherwise be unreachable.
   const providers = useAdminPublishedProviders(
     enabled,
     providerHydrateQuery || debouncedProviderQuery,
@@ -208,9 +210,10 @@ export const DependencyEditor = ({
   }, [displayModelStale, staleConnectors.length, staleSkills.length]);
 
   /**
-   * Save-blocking catalog states the caller cannot see: Skills and Connectors are authored inside a
-   * collapsed group, so an errored or still-loading catalog would otherwise disable Save silently.
-   * Each entry carries the catalog's own retry when it has one.
+   * Everything that is blocking Save, stated in full: the model that has not been chosen yet, plus
+   * the catalog states the caller cannot see (Skills and Connectors are authored inside a collapsed
+   * group, so an errored or still-loading catalog would otherwise disable Save silently). Each
+   * entry carries the catalog's own retry when it has one.
    */
   const blockers = useMemo<DependencyBlocker[]>(() => {
     const list: DependencyBlocker[] = [];
@@ -218,6 +221,12 @@ export const DependencyEditor = ({
       if (list.some((blocker) => blocker.message === message)) return;
       list.push(retry ? { message, retry } : { message });
     };
+
+    if (providers.error) add('agentCatalog.dependency.model.loadError', providers.mutate);
+    else if (!providersUsable) add('agentCatalog.editor.blocked.providerCatalog');
+    // The model is a required member of the dependency snapshot, so an unset one blocks Save just
+    // as hard as an unhealthy catalog — and used to do it without a word anywhere in the modal.
+    if (!model) add('agentCatalog.editor.blocked.model');
 
     if (skills.error) add('agentCatalog.dependency.skill.loadError', skills.mutate);
     else if (!skillsSettled) add('agentCatalog.editor.blocked.skillCatalog');
@@ -249,6 +258,10 @@ export const DependencyEditor = ({
     connectorsListUsable,
     connectorsSettled,
     dependencies.connectors.length,
+    model,
+    providers.error,
+    providers.mutate,
+    providersUsable,
     skills.error,
     skills.mutate,
     skillsSettled,

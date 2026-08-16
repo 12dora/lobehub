@@ -67,6 +67,14 @@ export const suggestAgentKey = (displayName: string): string =>
     .replace(/^[^\da-z]+/, '')
     .slice(0, AGENT_KEY_MAX_LENGTH);
 
+/**
+ * A readable, contract-legal identifier for names the charset cannot carry (an all-CJK name derives
+ * to an empty, illegal key). Generated once per editor so the prefilled value never shifts under
+ * the admin — the identifier is permanent after create.
+ */
+export const createFallbackAgentKey = (): string =>
+  `assistant-${Math.random().toString(36).slice(2, 8).padEnd(6, '0')}`;
+
 const EMPTY_CONFIG: PlatformAgentVersionConfig = {
   avatar: null,
   backgroundColor: null,
@@ -174,6 +182,7 @@ export const useAgentEditorForm = ({
   const baseline = useMemo(() => seedAgentEditorValue(agent), [agent]);
   const [value, setValue] = useState<AdminAgentEditorValue>(() => structuredClone(baseline));
   const [agentKey, setAgentKey] = useState(agent?.identity.agentKey ?? '');
+  const [fallbackAgentKey] = useState(createFallbackAgentKey);
   const keyTouchedRef = useRef(false);
   const [depValidity, setDepValidity] = useState<DependencyValidity>({
     blockers: [],
@@ -227,9 +236,14 @@ export const useAgentEditorForm = ({
     (next: string) => {
       patchConfig('displayName', next);
       // Create only: keep the identifier in step with the name until the admin edits it by hand.
-      if (isCreate && !keyTouchedRef.current) setAgentKey(suggestAgentKey(next));
+      if (!isCreate || keyTouchedRef.current) return;
+      // NEVER let the suggestion write an illegal identifier: a name the charset cannot carry
+      // (an all-CJK one) derives to '', which silently blocks Save with nothing on screen to fix.
+      const suggested = suggestAgentKey(next);
+      if (isAgentKeyValid(suggested)) setAgentKey(suggested);
+      else setAgentKey(next.trim().length > 0 ? fallbackAgentKey : '');
     },
-    [isCreate, patchConfig],
+    [fallbackAgentKey, isCreate, patchConfig],
   );
 
   const changeAgentKey = useCallback(
@@ -245,6 +259,22 @@ export const useAgentEditorForm = ({
   const keyValid = !isCreate || isAgentKeyValid(agentKey);
   const canSubmit =
     !saving && Boolean(config) && keyValid && depValidity.ready && (isCreate || dirty);
+
+  /**
+   * The required fields that are still empty, as i18n keys. Save is disabled by four independent
+   * conditions and three of them used to be invisible — this is the list the footer names so a
+   * blocked Save always says what to do next.
+   */
+  const missingRequirements = useMemo(() => {
+    const list: string[] = [];
+    if (value.config.displayName.trim().length === 0) list.push('agentCatalog.editor.missing.name');
+    if (value.config.systemRole.trim().length === 0) {
+      list.push('agentCatalog.editor.missing.systemRole');
+    }
+    if (isCreate && !isAgentKeyValid(agentKey)) list.push('agentCatalog.editor.missing.key');
+    if (!value.dependencies.model) list.push('agentCatalog.editor.missing.model');
+    return list;
+  }, [agentKey, isCreate, value]);
 
   const submit = useCallback(async () => {
     if (saving) return;
@@ -345,6 +375,7 @@ export const useAgentEditorForm = ({
     error,
     isCreate,
     keyValid,
+    missingRequirements,
     patchConfig,
     saving,
     setDependencies,

@@ -86,7 +86,7 @@ export const openAgentEditorModal = ({
     title: agent
       ? i18next.t('agentCatalog.editor.title.edit', { ns: 'admin' })
       : i18next.t('agentCatalog.editor.title.create', { ns: 'admin' }),
-    width: 'min(94vw, 780px)',
+    width: 'min(94vw, 720px)',
     // Only user-initiated closes fire this; a programmatic close() (save / discard) does not.
     onOpenChange: (open) => {
       if (open) return;

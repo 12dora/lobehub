@@ -10,6 +10,7 @@ const hooks = vi.hoisted(() => ({
   connectorDetail: {} as Record<string, unknown>,
   connectorRefDetails: {} as Record<string, unknown>,
   connectors: {} as Record<string, unknown>,
+  providerQueries: [] as (string | undefined)[],
   providers: {} as Record<string, unknown>,
   skills: {} as Record<string, unknown>,
   source: {} as Record<string, unknown>,
@@ -17,7 +18,7 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('antd-style', () => ({
-  createStaticStyles: () => ({ label: '', mono: '' }),
+  createStaticStyles: () => new Proxy({}, { get: (_t, key) => String(key) }),
   cssVar: new Proxy({}, { get: () => '' }),
 }));
 vi.mock('./useDependencyCatalog', () => ({
@@ -25,7 +26,12 @@ vi.mock('./useDependencyCatalog', () => ({
   useAdminConnectorDetails: () => hooks.connectorRefDetails,
   useAdminProviderModelSource: () => hooks.source,
   useAdminPublishedConnectors: () => hooks.connectors,
-  useAdminPublishedProviders: () => hooks.providers,
+  // The query is the SWR key: recording it proves the typed search reaches the server, not just
+  // the Select's local filter over the page already loaded.
+  useAdminPublishedProviders: (_enabled: boolean, query?: string) => {
+    hooks.providerQueries.push(query);
+    return hooks.providers;
+  },
   useAdminPublishedSkills: () => hooks.skills,
 }));
 vi.mock('@lobehub/ui', () => ({
@@ -51,11 +57,28 @@ vi.mock('@lobehub/ui', () => ({
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
-  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  Select: ({ 'aria-label': label, disabled, options, onChange }: any) => (
+  Button: ({ children, href, ...props }: any) =>
+    href ? (
+      <a href={href} {...props}>
+        {children}
+      </a>
+    ) : (
+      <button {...props}>{children}</button>
+    ),
+  Input: ({ 'aria-label': label, value, onChange, ...props }: any) => (
+    <input
+      aria-label={label}
+      value={value ?? ''}
+      onChange={(event) => onChange?.(event)}
+      {...props}
+    />
+  ),
+  Select: ({ 'aria-label': label, disabled, id, options, required, onChange }: any) => (
     <select
       aria-label={label}
       disabled={disabled}
+      id={id}
+      required={required}
       onChange={(event) => onChange?.(event.target.value)}
     >
       <option value="">--</option>
@@ -73,6 +96,7 @@ const idle = { data: undefined, error: undefined, isLoading: false, mutate: vi.f
 const page = <T,>(items: T[], truncated = false) => ({ items, truncated });
 
 beforeEach(() => {
+  hooks.providerQueries = [];
   hooks.providers = { ...idle };
   hooks.skills = { ...idle, data: [] };
   hooks.connectors = { ...idle, data: page([]) };
@@ -428,6 +452,62 @@ describe('DependencyEditor exact authoring', () => {
       expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: true })),
     );
     expect(onValidity.mock.calls.at(-1)![0].blockers).toEqual([]);
+  });
+
+  it('names the unchosen model as a save blocker instead of failing silently', async () => {
+    hooks.providers = {
+      ...idle,
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
+    };
+    const onValidity = vi.fn();
+    renderEditor(emptyDeps(), vi.fn(), onValidity);
+
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+    const { blockers } = onValidity.mock.calls.at(-1)![0] as { blockers: { message: string }[] };
+    expect(blockers).toContainEqual({ message: 'agentCatalog.editor.blocked.model' });
+  });
+
+  it('reports the revalidating provider catalog as a save blocker', async () => {
+    const model = currentModel();
+    hooks.providers = { ...hooks.providers, isValidating: true }; // retained list + revalidation
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model, skills: [] }, vi.fn(), onValidity);
+
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+    const { blockers } = onValidity.mock.calls.at(-1)![0] as { blockers: { message: string }[] };
+    expect(blockers).toContainEqual({ message: 'agentCatalog.editor.blocked.providerCatalog' });
+  });
+
+  it('reports a failed provider catalog as a save blocker carrying its retry', async () => {
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    const model = currentModel();
+    hooks.providers = { ...hooks.providers, error: new Error('offline'), mutate };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model, skills: [] }, vi.fn(), onValidity);
+
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+    const { blockers } = onValidity.mock.calls.at(-1)![0] as {
+      blockers: { message: string; retry?: () => Promise<unknown> }[];
+    };
+    const blocker = blockers.find(
+      (entry) => entry.message === 'agentCatalog.dependency.model.loadError',
+    );
+    void blocker!.retry?.();
+    expect(mutate).toHaveBeenCalledOnce();
+  });
+
+  it('sends the admin to the provider catalog when nothing is published yet', () => {
+    hooks.providers = { ...idle, data: page([]) };
+    renderEditor(emptyDeps());
+    expect(screen.getByText('agentCatalog.dependency.model.emptyAction').getAttribute('href')).toBe(
+      '/admin/ai/providers',
+    );
   });
 
   it('resets the provider selection when the Agent context changes', () => {
@@ -867,5 +947,44 @@ describe('DependencyEditor: a SELECTED connector requires a settled current deta
       'agentCatalog.dependency.connector.add',
     ) as HTMLSelectElement;
     expect(picker.disabled).toBe(true);
+  });
+});
+
+describe('DependencyEditor provider search reaches the server', () => {
+  const searchLabel = 'agentCatalog.dependency.model.providerSearch';
+
+  it('sends the typed query to the catalog hook once the loaded page is truncated', async () => {
+    // A truncated page means matching providers exist beyond it — a local filter would never
+    // reach them, so the query has to become part of the catalog SWR key.
+    hooks.providers = {
+      ...idle,
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }], true),
+    };
+    renderEditor(emptyDeps());
+
+    fireEvent.change(screen.getByLabelText(searchLabel), { target: { value: 'anthropic' } });
+    await waitFor(() => expect(hooks.providerQueries).toContain('anthropic'));
+  });
+
+  it('keeps the box out of the way while the whole published catalog fits on one page', () => {
+    hooks.providers = {
+      ...idle,
+      data: page([{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }]),
+    };
+    renderEditor(emptyDeps());
+    expect(screen.queryByLabelText(searchLabel)).toBeNull();
+  });
+
+  it('binds the provider and model labels to their controls and marks both required', () => {
+    currentModel();
+    renderEditor(emptyDeps());
+    for (const field of ['provider', 'model'] as const) {
+      const label = [...document.querySelectorAll('label')].find(
+        (node) => node.textContent === `agentCatalog.dependency.model.${field}*`,
+      );
+      const control = screen.getByLabelText(`agentCatalog.dependency.model.${field}`);
+      expect(label!.getAttribute('for')).toBe(control.id);
+      expect(control).toBeRequired();
+    }
   });
 });

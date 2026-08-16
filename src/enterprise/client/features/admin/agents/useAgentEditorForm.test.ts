@@ -89,7 +89,11 @@ describe('suggestAgentKey', () => {
   it.each([
     ['Research Assistant', 'research-assistant'],
     ['  产品 Copilot  ', 'copilot'],
+    ['助理 Copilot', 'copilot'],
     ['A///B', 'a-b'],
+    // Nothing in the contract charset survives an all-CJK name — the suggestion has no answer.
+    ['测试助理', ''],
+    ['助理', ''],
   ])('derives a contract-legal identifier from %s', (name, expected) => {
     expect(suggestAgentKey(name)).toBe(expected);
     if (expected) expect(expected).toMatch(/^[a-z0-9][a-z0-9._-]*$/);
@@ -141,6 +145,52 @@ describe('useAgentEditorForm create', () => {
     act(() => result.current.changeAgentKey('support-desk'));
     act(() => result.current.setDisplayName('Support Agent v2'));
     expect(result.current.agentKey).toBe('support-desk');
+  });
+
+  it('prefills a LEGAL identifier for a name the charset cannot carry, instead of an empty one', () => {
+    const { result } = renderHook(() => useAgentEditorForm({}));
+    act(() => result.current.setDisplayName('测试助理'));
+
+    // The derived suggestion is empty and illegal — Save would have been dead with nothing to fix.
+    expect(suggestAgentKey('测试助理')).toBe('');
+    expect(result.current.agentKey).toMatch(/^assistant-[\da-z]{6}$/);
+    expect(result.current.keyValid).toBe(true);
+
+    // Stable while the admin keeps typing: the identifier is permanent after create.
+    const prefilled = result.current.agentKey;
+    act(() => result.current.setDisplayName('测试助理二号'));
+    expect(result.current.agentKey).toBe(prefilled);
+
+    // Clearing the name clears the identifier again rather than stranding a generated one.
+    act(() => result.current.setDisplayName(''));
+    expect(result.current.agentKey).toBe('');
+  });
+
+  it('names every required field that is still missing, and stops once they are filled', () => {
+    const { result } = renderHook(() => useAgentEditorForm({}));
+    expect(result.current.missingRequirements).toEqual([
+      'agentCatalog.editor.missing.name',
+      'agentCatalog.editor.missing.systemRole',
+      'agentCatalog.editor.missing.key',
+      'agentCatalog.editor.missing.model',
+    ]);
+
+    act(() => result.current.setDisplayName('Support Agent'));
+    expect(result.current.missingRequirements).toEqual([
+      'agentCatalog.editor.missing.systemRole',
+      'agentCatalog.editor.missing.model',
+    ]);
+
+    act(() => result.current.patchConfig('systemRole', 'Help members with support.'));
+    act(() => result.current.setDependencies({ connectors: [], model, skills: [] }));
+    expect(result.current.missingRequirements).toEqual([]);
+  });
+
+  it('counts an identifier the admin cleared by hand as missing', () => {
+    const { result } = renderHook(() => useAgentEditorForm({}));
+    act(() => result.current.setDisplayName('Support Agent'));
+    act(() => result.current.changeAgentKey(''));
+    expect(result.current.missingRequirements).toContain('agentCatalog.editor.missing.key');
   });
 
   it('creates and publishes in one call once the required fields and model are set', async () => {

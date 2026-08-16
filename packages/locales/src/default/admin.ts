@@ -64,7 +64,7 @@ export default {
   'agentCatalog.dependency.catalogTruncated':
     'More published catalog entries match this search. Refine the query to find a specific item.',
   'agentCatalog.dependency.model.providerSearch': 'Search providers',
-  'agentCatalog.dependency.model.providerSearchPlaceholder': 'Search published providers',
+  'agentCatalog.dependency.model.providerSearchPlaceholder': 'Search more providers…',
   'agentCatalog.dependency.connector.search': 'Search connectors',
   'agentCatalog.dependency.connector.searchPlaceholder': 'Search published connectors',
   'agentCatalog.conflict.description':
@@ -105,6 +105,7 @@ export default {
     'A referenced Skill version is no longer published — remove or update it before saving.',
   'agentCatalog.dependency.loading': 'Loading catalog…',
   'agentCatalog.dependency.model.empty': 'No published providers are available yet.',
+  'agentCatalog.dependency.model.emptyAction': 'Publish a provider',
   'agentCatalog.dependency.model.loadError': 'Could not load the published catalog.',
   'agentCatalog.dependency.model.model': 'Model',
   'agentCatalog.dependency.model.modelPlaceholder': 'Select a published model',
@@ -128,6 +129,9 @@ export default {
   'agentCatalog.editor.avatarBackground': 'Avatar & background',
   'agentCatalog.editor.blocked.connectorCatalog':
     'Checking the published Connector catalog. Saving is unavailable until it settles.',
+  'agentCatalog.editor.blocked.model': 'Pick a published provider and model before saving.',
+  'agentCatalog.editor.blocked.providerCatalog':
+    'Checking the published provider catalog. Saving is unavailable until it settles.',
   'agentCatalog.editor.blocked.skillCatalog':
     'Checking the published Skill catalog. Saving is unavailable until it settles.',
   'agentCatalog.editor.cancel': 'Cancel',
@@ -139,11 +143,18 @@ export default {
   'agentCatalog.editor.effectHintArchived':
     'Saving republishes this archived assistant and takes effect immediately for assigned members.',
   'agentCatalog.editor.key': 'Identifier',
+  'agentCatalog.editor.keyAutoNote': 'Generated from the name; edit it if you prefer another.',
   'agentCatalog.editor.keyDesc':
     'Permanent identifier used in the API and audit log. Lowercase letters, digits, and . _ - only.',
   'agentCatalog.editor.keyInvalid':
     'Use lowercase letters, digits and . _ - only, starting with a letter or digit, up to {{max}} characters.',
   'agentCatalog.editor.keyLockedDesc': 'The identifier is permanent and cannot be changed.',
+  'agentCatalog.editor.keyRequired': 'An identifier is required.',
+  'agentCatalog.editor.missing.key': 'Identifier',
+  'agentCatalog.editor.missing.model': 'Model',
+  'agentCatalog.editor.missing.name': 'Name',
+  'agentCatalog.editor.missing.systemRole': 'Role',
+  'agentCatalog.editor.missing.title': 'Still needed: {{fields}}',
   'agentCatalog.editor.name': 'Name',
   'agentCatalog.editor.namePlaceholder': 'Research assistant',
   'agentCatalog.editor.openingMessage': 'Opening message',
@@ -160,7 +171,6 @@ export default {
   'agentCatalog.editor.save': 'Save',
   'agentCatalog.editor.saving': 'Saving…',
   'agentCatalog.editor.section.basic': 'Basics',
-  'agentCatalog.editor.section.model': 'Model',
   'agentCatalog.editor.section.more': 'More',
   'agentCatalog.editor.section.params': 'Parameters',
   'agentCatalog.editor.section.paramsDesc': 'Leave a field empty to follow the model default.',

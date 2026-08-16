@@ -9,23 +9,18 @@ const formMock = vi.hoisted(() => ({
   value: {} as Record<string, unknown>,
 }));
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    // Keys pass through; interpolated values are appended so the composed line stays assertable.
+    t: (key: string, options?: Record<string, unknown>) =>
+      options && 'fields' in options ? `${key}|${options.fields}` : key,
+  }),
+}));
 vi.mock('antd-style', () => ({
   createStaticStyles: () => new Proxy({}, { get: (_t, key) => String(key) }),
   cssVar: new Proxy({}, { get: (_t, key) => `var(--${String(key)})` }),
+  cx: (...names: unknown[]) => names.filter(Boolean).join(' '),
 }));
-
-interface GroupItem {
-  children: ReactNode;
-  label?: ReactNode;
-  layout?: string;
-}
-interface Group {
-  children: GroupItem[] | ReactNode;
-  collapsible?: boolean;
-  defaultActive?: boolean;
-  title: string;
-}
 
 vi.mock('@lobehub/ui', () => ({
   Alert: ({ action, message, ...rest }: any) => (
@@ -37,36 +32,35 @@ vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children, horizontal }: { children?: ReactNode; horizontal?: boolean }) => (
     <div data-horizontal={String(Boolean(horizontal))}>{children}</div>
   ),
-  Form: ({ items }: { items: Group[] }) => (
-    <div>
-      {items.map((group) => (
-        <section
-          data-collapsed={String(group.collapsible === true && group.defaultActive === false)}
-          data-group={group.title}
-          key={group.title}
-        >
-          {Array.isArray(group.children)
-            ? (group.children as GroupItem[]).map((item, index) => (
-                <div data-layout={item.layout} key={index}>
-                  {item.label}
-                  {item.children}
-                </div>
-              ))
-            : (group.children as ReactNode)}
-        </section>
-      ))}
-    </div>
-  ),
-  Input: (props: any) => (
-    <input aria-label={props['aria-label']} disabled={props.disabled} maxLength={props.maxLength} />
-  ),
-  InputNumber: (props: any) => <input aria-label={props['aria-label']} type="number" />,
+  NeuralNetworkLoading: () => null,
   Text: ({ children, ...rest }: any) => <span {...rest}>{children}</span>,
-  TextArea: (props: any) => <textarea aria-label={props['aria-label']} />,
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  Select: (props: any) => <select aria-label={props['aria-label']} />,
+  FormGroup: ({ children, collapsible, defaultActive, title }: any) => (
+    <section
+      data-collapsed={String(collapsible === true && defaultActive === false)}
+      data-group={title}
+    >
+      {children}
+    </section>
+  ),
+  Input: (props: any) => (
+    <input
+      aria-label={props['aria-label']}
+      disabled={props.disabled}
+      id={props.id}
+      maxLength={props.maxLength}
+      required={props.required}
+    />
+  ),
+  InputNumber: (props: any) => <input id={props.id} type="number" />,
+  Select: (props: any) => (
+    <select aria-label={props['aria-label']} id={props.id} required={props.required} />
+  ),
+  TextArea: (props: any) => (
+    <textarea aria-label={props['aria-label']} id={props.id} required={props.required} />
+  ),
 }));
 vi.mock('@/components/EmojiPicker', () => ({ default: () => <div>emoji-picker</div> }));
 vi.mock('@/features/AgentSetting/AgentMeta/BackgroundSwatches', () => ({
@@ -99,6 +93,7 @@ const baseForm = () => ({
   error: null as string | null,
   isCreate: true,
   keyValid: true,
+  missingRequirements: [] as string[],
   patchConfig: vi.fn(),
   saving: false,
   setDependencies: vi.fn(),
@@ -121,6 +116,11 @@ const baseForm = () => ({
   },
 });
 
+const named = (displayName: string) => {
+  const form = baseForm();
+  return { ...form, value: { ...form.value, config: { ...form.value.config, displayName } } };
+};
+
 const groupOf = (node: HTMLElement | null) => node?.closest('section')?.dataset.group;
 
 beforeEach(() => {
@@ -128,46 +128,85 @@ beforeEach(() => {
 });
 
 describe('AgentEditorForm layout', () => {
-  it('lays the editor out as basics → role → model → parameters → more', () => {
+  it('lays the editor out as basics → role → parameters → more', () => {
     render(<AgentEditorForm />);
     const groups = [...document.querySelectorAll('section')].map((node) => node.dataset.group);
     expect(groups).toEqual([
       'agentCatalog.editor.section.basic',
       'agentCatalog.editor.section.prompt',
-      'agentCatalog.editor.section.model',
       'agentCatalog.editor.section.params',
       'agentCatalog.editor.section.more',
     ]);
     // Only the advanced sections start folded; the everyday fields are always visible.
     expect([...document.querySelectorAll('section')].map((node) => node.dataset.collapsed)).toEqual(
-      ['false', 'false', 'false', 'true', 'true'],
+      ['false', 'false', 'true', 'true'],
     );
   });
 
-  it('puts the role prompt front and centre and the dependency fields where the copy promises', () => {
+  it('keeps the mandatory model picker with the basics, above the fold', () => {
     render(<AgentEditorForm />);
+    expect(groupOf(screen.getByText('model-field'))).toBe('agentCatalog.editor.section.basic');
     expect(groupOf(screen.getByLabelText('agentCatalog.editor.systemRole'))).toBe(
       'agentCatalog.editor.section.prompt',
     );
-    expect(groupOf(screen.getByText('model-field'))).toBe('agentCatalog.editor.section.model');
     expect(groupOf(screen.getByText('skills-field'))).toBe('agentCatalog.editor.section.more');
     expect(groupOf(screen.getByText('connectors-field'))).toBe('agentCatalog.editor.section.more');
   });
 
-  it('puts the avatar and its background swatches on one horizontal row', () => {
+  it('reads the avatar, name and background swatches as one identity block', () => {
     render(<AgentEditorForm />);
-    const avatar = screen.getByText('emoji-picker');
-    const swatches = screen.getByText('background-swatches');
-    // Same Flexbox parent, laid out horizontally — one identity row, not two labelled fields.
-    expect(avatar.parentElement).toBe(swatches.parentElement);
-    expect(avatar.parentElement?.dataset.horizontal).toBe('true');
-    expect(avatar.parentElement?.parentElement?.dataset.layout).toBe('horizontal');
-    expect(document.body.textContent).toContain('agentCatalog.editor.avatarBackground');
+    const identity = screen.getByRole('group', { name: 'agentCatalog.editor.avatarBackground' });
+    expect(identity).toContainElement(screen.getByText('emoji-picker'));
+    expect(identity).toContainElement(screen.getByText('background-swatches'));
+    expect(identity).toContainElement(screen.getByLabelText('agentCatalog.editor.name'));
   });
 
-  it('offers the identifier only while creating', () => {
+  it('labels every field the contract requires as required', () => {
+    render(<AgentEditorForm />);
+    const requiredLabels = [...document.querySelectorAll('label')]
+      .filter((label) => label.querySelector('span[aria-hidden]'))
+      .map((label) => label.textContent);
+    expect(requiredLabels).toEqual([
+      'agentCatalog.editor.name*',
+      'agentCatalog.editor.key*',
+      'agentCatalog.editor.systemRole*',
+    ]);
+  });
+
+  it('binds every required label to its control and marks the control required', () => {
+    render(<AgentEditorForm />);
+    for (const field of ['name', 'key', 'systemRole'] as const) {
+      const label = [...document.querySelectorAll('label')].find(
+        (node) => node.textContent === `agentCatalog.editor.${field}*`,
+      )!;
+      const control = screen.getByLabelText(`agentCatalog.editor.${field}`);
+      // A real association: clicking the label reaches the control, and AT reads the required state.
+      expect(label.getAttribute('for')).toBe(control.id);
+      expect(control).toBeRequired();
+    }
+  });
+
+  it('renders the guidance that used to be dropped by the group chrome', () => {
+    render(<AgentEditorForm />);
+    expect(screen.getByText('agentCatalog.editor.systemRoleDesc')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.editor.section.paramsDesc')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.editor.openingQuestionsDesc')).toBeTruthy();
+  });
+
+  it('lays the model parameters out as compact labelled boxes', () => {
+    render(<AgentEditorForm />);
+    for (const key of ['temperature', 'topP', 'presencePenalty', 'frequencyPenalty', 'maxTokens']) {
+      const input = screen.getByLabelText(`agentCatalog.editor.param.${key}`);
+      expect(input.getAttribute('type')).toBe('number');
+      expect(groupOf(input)).toBe('agentCatalog.editor.section.params');
+    }
+  });
+
+  it('offers the identifier only while creating, and captions it below the input', () => {
     render(<AgentEditorForm />);
     expect(screen.getByLabelText('agentCatalog.editor.key')).not.toBeDisabled();
+    expect(screen.getByText('agentCatalog.editor.keyDesc')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.editor.keyAutoNote')).toBeTruthy();
   });
 
   it('caps the identifier at the contract length and explains an illegal one inline', () => {
@@ -177,9 +216,17 @@ describe('AgentEditorForm layout', () => {
     expect(screen.getByRole('alert').textContent).toBe('agentCatalog.editor.keyInvalid');
   });
 
+  it('explains an EMPTY identifier once the assistant has been named', () => {
+    // Regression: an all-CJK name used to blank the identifier and disable Save with no message.
+    formMock.value = { ...named('测试助理'), agentKey: '', keyValid: false };
+    render(<AgentEditorForm />);
+    expect(screen.getByRole('alert').textContent).toBe('agentCatalog.editor.keyRequired');
+  });
+
   it('says nothing about the identifier before anything has been typed', () => {
     formMock.value = { ...baseForm(), agentKey: '', keyValid: false };
     render(<AgentEditorForm />);
+    expect(screen.queryByText('agentCatalog.editor.keyRequired')).toBeNull();
     expect(screen.queryByText('agentCatalog.editor.keyInvalid')).toBeNull();
   });
 
@@ -187,6 +234,7 @@ describe('AgentEditorForm layout', () => {
     formMock.value = { ...baseForm(), isCreate: false };
     render(<AgentEditorForm />);
     expect(screen.getByLabelText('agentCatalog.editor.key')).toBeDisabled();
+    expect(screen.getByText('agentCatalog.editor.keyLockedDesc')).toBeTruthy();
   });
 
   it('states the immediate effect and keeps Save closed until the form can commit', () => {
@@ -232,6 +280,52 @@ describe('AgentEditorForm layout', () => {
     render(<AgentEditorForm />);
     expect(screen.getByRole('alert').textContent).toBe('agentCatalog.errors.generic');
   });
+});
+
+describe('AgentEditorForm: why Save is unavailable', () => {
+  it('lists every field Save is still waiting on, next to Save', () => {
+    formMock.value = {
+      ...named('测试助理'),
+      dirty: true,
+      missingRequirements: [
+        'agentCatalog.editor.missing.systemRole',
+        'agentCatalog.editor.missing.model',
+      ],
+    };
+    render(<AgentEditorForm />);
+    const line = screen.getByText(
+      'agentCatalog.editor.missing.title|agentCatalog.editor.missing.systemRole · agentCatalog.editor.missing.model',
+    );
+    // Rendered outside every form group, i.e. in the pinned footer region beside Save.
+    expect(line.closest('section')).toBeNull();
+  });
+
+  it('stays quiet about missing fields until the admin has started', () => {
+    formMock.value = {
+      ...baseForm(),
+      missingRequirements: ['agentCatalog.editor.missing.name'],
+    };
+    render(<AgentEditorForm />);
+    expect(screen.queryByText(/agentCatalog\.editor\.missing\.title/)).toBeNull();
+  });
+
+  it('does not repeat the unchosen model as a separate catalog alert', () => {
+    formMock.value = {
+      ...named('测试助理'),
+      depValidity: {
+        blockers: [{ message: 'agentCatalog.editor.blocked.model' }],
+        issues: [],
+        ready: false,
+      },
+      dirty: true,
+      missingRequirements: ['agentCatalog.editor.missing.model'],
+    };
+    render(<AgentEditorForm />);
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(
+      screen.getByText('agentCatalog.editor.missing.title|agentCatalog.editor.missing.model'),
+    ).toBeTruthy();
+  });
 
   it('explains a Save blocked by a HIDDEN catalog next to the button, with its retry', () => {
     const retry = vi.fn().mockResolvedValue(undefined);
@@ -248,7 +342,6 @@ describe('AgentEditorForm layout', () => {
 
     const blocker = screen.getByRole('status');
     expect(blocker.textContent).toContain('agentCatalog.dependency.skill.loadError');
-    // Rendered outside every form group, i.e. in the pinned footer region beside Save.
     expect(blocker.closest('section')).toBeNull();
 
     fireEvent.click(screen.getByText('agentCatalog.dependency.retry'));
@@ -259,14 +352,14 @@ describe('AgentEditorForm layout', () => {
     formMock.value = {
       ...baseForm(),
       depValidity: {
-        blockers: [{ message: 'agentCatalog.editor.blocked.connectorCatalog' }],
+        blockers: [{ message: 'agentCatalog.editor.blocked.providerCatalog' }],
         issues: [],
         ready: false,
       },
     };
     render(<AgentEditorForm />);
     expect(screen.getByRole('status').textContent).toBe(
-      'agentCatalog.editor.blocked.connectorCatalog',
+      'agentCatalog.editor.blocked.providerCatalog',
     );
     expect(screen.queryByText('agentCatalog.dependency.retry')).toBeNull();
   });
@@ -278,7 +371,7 @@ describe('AgentEditorForm layout', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('warns about stale dependencies inside the model section', () => {
+  it('warns about stale dependencies beside the model picker', () => {
     formMock.value = {
       ...baseForm(),
       depValidity: {
@@ -289,7 +382,7 @@ describe('AgentEditorForm layout', () => {
     };
     render(<AgentEditorForm />);
     expect(groupOf(screen.getByText('agentCatalog.dependency.issues.modelStale'))).toBe(
-      'agentCatalog.editor.section.model',
+      'agentCatalog.editor.section.basic',
     );
   });
 });
