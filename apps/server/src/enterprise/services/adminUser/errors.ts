@@ -32,6 +32,15 @@ export class AdminUserSelfDeleteError extends Error {
   }
 }
 
+export class AdminUserSelfRoleChangeError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+
+  constructor(message = 'Cannot change your own roles') {
+    super(message);
+    this.name = 'AdminUserSelfRoleChangeError';
+  }
+}
+
 /**
  * Duplicate email (or username) on admin credential-user create.
  * Maps to public PLATFORM_INVALID_INPUT with a machine-readable reason.

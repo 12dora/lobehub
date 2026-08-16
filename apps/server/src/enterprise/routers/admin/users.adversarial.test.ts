@@ -479,17 +479,18 @@ describe('admin.users ban / sessions / roles', () => {
     ).toBe(true);
   });
 
-  it('last super cannot be demoted', async () => {
+  it('cannot replace roles on self (covers last-super self-demotion)', async () => {
     await db.delete(userRoles).where(eq(userRoles.userId, IDS.superAdmin2));
     const caller = createAdminCaller(await withDbCtx(IDS.superAdmin));
-    await expectEnterpriseCode(
+    await expect(
       caller.users.replaceGlobalRoles({
         reason: 'demote self last',
         roleNames: [PLATFORM_SYSTEM_ROLES.USER_ADMIN],
         userId: IDS.superAdmin,
       }),
-      PLATFORM_ERROR_CODES.PLATFORM_LAST_SUPER_ADMIN,
-    );
+    ).rejects.toMatchObject({
+      cause: { data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'self_role_change' } } },
+    });
   });
 
   it('list does not log full query and returns safe projections', async () => {

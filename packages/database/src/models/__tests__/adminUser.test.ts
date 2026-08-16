@@ -184,6 +184,18 @@ describe('AdminUserModel.list', () => {
     expect(under.items.some((i) => i.id === 'admin-user-under')).toBe(true);
   });
 
+  it('prefix search matches fullName case-insensitively', async () => {
+    // Distinct from email/username prefixes so this cannot pass via those columns.
+    await serverDB.update(users).set({ fullName: 'Zelda Winters' }).where(eq(users.id, IDS.c));
+
+    const byName = await model.list({ query: 'zelda' });
+    expect(byName.items.map((i) => i.id)).toEqual([IDS.c]);
+    expect(byName.total).toBe(1);
+
+    const mixed = await model.list({ query: 'ZELDA' });
+    expect(mixed.items.map((i) => i.id)).toEqual([IDS.c]);
+  });
+
   it('filters by created date range', async () => {
     const a = (await serverDB.query.users.findFirst({ where: eq(users.id, IDS.a) }))!;
     const result = await model.list({
@@ -196,6 +208,54 @@ describe('AdminUserModel.list', () => {
   it('caps limit at 100', async () => {
     const result = await model.list({ limit: 500 });
     expect(result.items.length).toBeLessThanOrEqual(100);
+  });
+
+  it('returns a matching total and pages by offset', async () => {
+    const first = await model.list({ limit: 2, offset: 0 });
+    expect(first.total).toBe(3);
+    expect(first.items).toHaveLength(2);
+    expect(first.nextCursor).toBeTruthy();
+
+    const second = await model.list({ limit: 2, offset: 2 });
+    expect(second.total).toBe(3);
+    expect(second.items).toHaveLength(1);
+    expect(second.items[0]!.id).toBe(IDS.c);
+
+    const ids = [...first.items, ...second.items].map((item) => item.id);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it('counts only rows matching filters', async () => {
+    const banned = await model.list({ status: 'banned' });
+    expect(banned.total).toBe(1);
+    expect(banned.items).toHaveLength(1);
+  });
+
+  it('filters by local / sso source via account.providerId', async () => {
+    await serverDB.insert(account).values([
+      {
+        accountId: IDS.a,
+        id: 'acc-local-a',
+        providerId: 'credential',
+        updatedAt: new Date(),
+        userId: IDS.a,
+      },
+      {
+        accountId: 'carol-oidc',
+        id: 'acc-sso-c',
+        providerId: 'corp-oidc',
+        updatedAt: new Date(),
+        userId: IDS.c,
+      },
+    ]);
+
+    const local = await model.list({ source: 'local' });
+    expect(local.items.map((item) => item.id)).toEqual([IDS.a]);
+    expect(local.total).toBe(1);
+
+    const sso = await model.list({ source: 'sso' });
+    expect(sso.items.map((item) => item.id)).toEqual([IDS.c]);
+    expect(sso.total).toBe(1);
   });
 });
 

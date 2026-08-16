@@ -31,6 +31,7 @@ const log = debug('lobe-client:admin:users');
 
 export type AdminUsersListFilters = AdminUsersListInput & {
   cursor?: string | null;
+  offset?: number;
 };
 
 export const useFetchAdminUsersList = (filters: AdminUsersListFilters, enabled = true) => {
@@ -41,8 +42,10 @@ export const useFetchAdminUsersList = (filters: AdminUsersListFilters, enabled =
       createdTo: filters.createdTo,
       cursor: filters.cursor ?? undefined,
       limit: filters.limit,
+      offset: filters.offset,
       query: filters.query,
       role: filters.role,
+      source: filters.source,
       status: filters.status,
     }),
   );

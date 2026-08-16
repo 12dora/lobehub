@@ -8,7 +8,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminUsersReplaceGlobalRolesInput } from '../../contracts/adminUsers';
 import { LastSuperAdminError, PlatformRbacService } from '../platformRbac';
-import { AdminUserNotFoundError } from './errors';
+import { AdminUserNotFoundError, AdminUserSelfRoleChangeError } from './errors';
 import { AdminUserSupport } from './support';
 
 export class AdminUserRoleService extends AdminUserSupport {
@@ -17,6 +17,19 @@ export class AdminUserRoleService extends AdminUserSupport {
     input: AdminUsersReplaceGlobalRolesInput;
   }) => {
     const { actorUserId, input } = params;
+
+    if (input.userId === actorUserId) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.replaceGlobalRoles',
+        actorUserId,
+        afterDiff: { error: 'self_role_change' },
+        reason: input.reason,
+        result: 'denied',
+        targetId: input.userId,
+        targetType: 'user',
+      });
+      throw new AdminUserSelfRoleChangeError();
+    }
 
     // Permanent super_admin policy — reject any finite expiresAt with super_admin.
     if (input.expiresAt && input.roleNames.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {

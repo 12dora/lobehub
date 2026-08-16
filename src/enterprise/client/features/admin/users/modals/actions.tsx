@@ -1,7 +1,7 @@
 'use client';
 
 import { DatePicker, Text } from '@lobehub/ui';
-import { Checkbox, Input, toast } from '@lobehub/ui/base-ui';
+import { Checkbox, Input, Select, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
 import i18n from 'i18next';
@@ -40,7 +40,6 @@ const styles = createStaticStyles(({ css }) => ({
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding-block: 4px;
   `,
   roleDesc: css`
     margin-inline-start: 24px;
@@ -70,9 +69,9 @@ export const getEligibleAssignableRoles = (
 
 // ── Ban ─────────────────────────────────────────────────────────────────────
 
-type BanMode = 'permanent' | 'temporary';
+export type BanMode = 'permanent' | 'temporary';
 
-const BanExtraFields = memo<{
+export const BanExtraFields = memo<{
   expiresAt: Dayjs | null;
   locked: boolean;
   mode: BanMode;
@@ -82,32 +81,25 @@ const BanExtraFields = memo<{
   const { t: tr } = useTranslation('admin');
   return (
     <div className={styles.field}>
-      <label className={styles.option}>
-        <Checkbox
-          checked={mode === 'permanent'}
-          disabled={locked}
-          onChange={(checked) => {
-            if (checked) onModeChange('permanent');
-          }}
-        />
-        <span>{tr('users.modals.ban.permanent')}</span>
-      </label>
-      <label className={styles.option}>
-        <Checkbox
-          checked={mode === 'temporary'}
-          disabled={locked}
-          onChange={(checked) => {
-            if (checked) onModeChange('temporary');
-          }}
-        />
-        <span>{tr('users.modals.ban.temporary')}</span>
-      </label>
+      <Text>{tr('users.modals.ban.duration')}</Text>
+      <Select
+        disabled={locked}
+        value={mode}
+        options={[
+          { label: tr('users.modals.ban.permanent'), value: 'permanent' },
+          { label: tr('users.modals.ban.temporary'), value: 'temporary' },
+        ]}
+        onChange={(value) => {
+          onModeChange(value === 'temporary' ? 'temporary' : 'permanent');
+        }}
+      />
       {mode === 'temporary' ? (
         <DatePicker
           showTime
           aria-label={tr('users.modals.ban.expiryLabel')}
           disabled={locked}
           disabledDate={(d) => d.isBefore(dayjs(), 'day')}
+          size="small"
           value={expiresAt}
           onChange={(v) => onExpiresAtChange(v as Dayjs | null)}
         />
@@ -119,7 +111,7 @@ BanExtraFields.displayName = 'BanExtraFields';
 
 export const openBanUserModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: AdminUsersBanInput) => Promise<void>;
+  onConfirm: (input: AdminUsersBanInput) => Promise<unknown>;
   targetLabel: string;
   userId: string;
 }) => {
@@ -193,7 +185,7 @@ export const openBanUserModal = (params: {
 
 export const openUnbanUserModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: AdminUsersUnbanInput) => Promise<void>;
+  onConfirm: (input: AdminUsersUnbanInput) => Promise<unknown>;
   targetLabel: string;
   userId: string;
 }) => {
@@ -243,7 +235,7 @@ RevokeSelfExtra.displayName = 'RevokeSelfExtra';
 export const openRevokeSessionsModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   isSelf: boolean;
-  onConfirm: (input: AdminUsersRevokeSessionsInput) => Promise<void>;
+  onConfirm: (input: AdminUsersRevokeSessionsInput) => Promise<unknown>;
   targetLabel: string;
   userId: string;
 }) => {
@@ -293,7 +285,7 @@ export const openRevokeSessionsModal = (params: {
 export const openRevokeSingleSessionModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   isSelf?: boolean;
-  onConfirm: (input: AdminUsersRevokeSessionsInput) => Promise<void>;
+  onConfirm: (input: AdminUsersRevokeSessionsInput) => Promise<unknown>;
   sessionId: string;
   targetLabel: string;
   userId: string;
@@ -458,7 +450,7 @@ export const openReplaceRolesModal = (params: {
   authMethod?: AdminReauthAuthMethod;
   /** Full current grants — inaccessible roles are preserved, not dropped. */
   currentRoles: readonly AdminUserRoleGrant[] | readonly string[];
-  onConfirm: (input: AdminUsersReplaceGlobalRolesInput) => Promise<void>;
+  onConfirm: (input: AdminUsersReplaceGlobalRolesInput) => Promise<unknown>;
   targetLabel: string;
   userId: string;
 }) => {
@@ -561,7 +553,7 @@ export const openReplaceRolesModal = (params: {
  */
 export const openRevokeRoleModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: AdminUsersReplaceGlobalRolesInput) => Promise<void>;
+  onConfirm: (input: AdminUsersReplaceGlobalRolesInput) => Promise<unknown>;
   remainingRoleNames: PlatformSystemRoleName[];
   revokedRoleLabel: string;
   targetLabel: string;
@@ -594,7 +586,7 @@ export const openRevokeRoleModal = (params: {
 /** Irreversible hard delete of a user and all owned data (confirm-only + type-to-confirm). */
 export const openDeleteUserModal = (params: {
   authMethod?: AdminReauthAuthMethod;
-  onConfirm: (input: AdminUsersDeleteInput) => Promise<void>;
+  onConfirm: (input: AdminUsersDeleteInput) => Promise<unknown>;
   targetLabel: string;
   userId: string;
 }) => {

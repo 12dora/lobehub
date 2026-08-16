@@ -17,8 +17,10 @@ export class AdminUserReadService extends AdminUserSupport {
       createdTo: input.createdTo,
       cursor: input.cursor,
       limit: input.limit,
+      offset: input.offset,
       query: input.query,
       role: input.role,
+      source: input.source,
       status: input.status,
     });
 
@@ -30,12 +32,15 @@ export class AdminUserReadService extends AdminUserSupport {
         filterClasses: {
           hasCreatedRange: Boolean(input.createdFrom || input.createdTo),
           hasCursor: Boolean(input.cursor),
+          hasOffset: Boolean(input.offset),
           hasQuery: Boolean(input.query),
           hasRole: Boolean(input.role),
+          hasSource: Boolean(input.source),
           hasStatus: Boolean(input.status),
           queryFingerprint: fingerprintQuery(input.query),
         },
         itemCount: result.items.length,
+        total: result.total,
       },
       result: 'success',
       targetType: 'user_list',

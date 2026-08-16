@@ -26,7 +26,13 @@ export const getAdminUsersMutationErrorKey = (error: unknown): string => {
     return 'users.errors.permissionDenied';
   }
   if (mapped?.code === 'PLATFORM_NOT_FOUND') return 'users.errors.notFound';
-  if (mapped?.code === 'PLATFORM_INVALID_INPUT') return 'users.errors.invalidInput';
+  if (mapped?.code === 'PLATFORM_INVALID_INPUT') {
+    const reason = mapped.details?.reason;
+    if (reason === 'self_ban' || reason === 'self_delete' || reason === 'self_role_change') {
+      return 'users.errors.selfAction';
+    }
+    return 'users.errors.invalidInput';
+  }
   // Shared CAS / optimistic-lock conflict (settings, branding, audit policy, …).
   if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') return 'errors.revisionConflict';
   // Prefer domain-specific i18nKey from the mapper (e.g. legal-hold purge contention)

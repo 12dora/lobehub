@@ -2,12 +2,18 @@
  * Admin user repository (M04).
  *
  * Safe projections only — never selects account password/token/scope or session tokens.
- * Keyset pagination on (createdAt, id) DESC. Search uses escaped prefix patterns on
- * normalized email / email / username (no unbounded leading-wildcard scans).
+ * Offset pagination with a matching count(*) plus optional keyset cursor for
+ * backward compatibility. Search uses escaped prefix patterns on
+ * normalized email / email / username / full name (no unbounded leading-wildcard
+ * scans). Page + count + role/provider projections run in one REPEATABLE READ
+ * transaction so they share a snapshot.
  *
  * Index evidence:
  * - users_created_at_idx (createdAt) — list order / keyset
  * - users_*_lower_pattern_idx — lower(field) text_pattern_ops for prefix LIKE
+ *   (email / username / normalizedEmail). fullName uses the same prefix LIKE
+ *   without a dedicated pattern index — schema/migrations are out of this
+ *   slice's ownership.
  * - users_banned_true_created_at_idx — partial banned filter
  * - auth_session_userId_idx / account_userId_idx — aggregates by user
  */
@@ -38,18 +44,25 @@ import {
 } from '../utils/userBan';
 
 export type AdminUserStatus = 'active' | 'banned';
+export type AdminUserSource = 'local' | 'sso';
+
+/** Better Auth email/password provider id — local source. */
+export const ADMIN_USER_CREDENTIAL_PROVIDER_ID = 'credential';
 
 export interface AdminUserListFilters {
   createdFrom?: Date;
   createdTo?: Date;
   cursor?: string;
   limit?: number;
+  offset?: number;
   /**
    * Already-normalized (trim/lower) search term without LIKE wildcards escaped yet.
    * Repository escapes and applies as prefix-only patterns.
    */
   query?: string;
   role?: string;
+  /** Local (credential) vs any non-credential SSO provider. */
+  source?: AdminUserSource;
   status?: AdminUserStatus;
 }
 
@@ -143,8 +156,9 @@ export const escapeAdminUserLikePattern = (value: string): string =>
 
 export const isEffectivelyBanned = isEffectivelyBannedShared;
 
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+const MAX_OFFSET = 100_000;
 const MAX_SESSION_PREVIEW = 20;
 
 const maskAccountId = (accountId: string | null | undefined): string | null => {
@@ -161,44 +175,39 @@ export class AdminUserModel {
   }
 
   /**
-   * Keyset-paginated admin user list with safe projection + global role names.
+   * Offset-paginated admin user list with a matching count(*) and optional
+   * keyset cursor (backward compatible). Safe projection + global role names.
+   * Page, count, and projections share one REPEATABLE READ snapshot when the
+   * model holds a root connection (not an already-open transaction).
    */
   list = async (
     filters: AdminUserListFilters = {},
-  ): Promise<{ items: AdminUserListItem[]; nextCursor: string | null }> => {
+  ): Promise<{ items: AdminUserListItem[]; nextCursor: string | null; total: number }> => {
     const limit = Math.min(Math.max(filters.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
-    const conditions: SQL[] = [];
+    const offset = Math.min(Math.max(filters.offset ?? 0, 0), MAX_OFFSET);
+    const conn = this.db as LobeChatDatabase;
+    if (typeof conn.transaction === 'function') {
+      return conn.transaction(async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+        return new AdminUserModel(tx).listFromSnapshot(filters, limit, offset);
+      });
+    }
+    return this.listFromSnapshot(filters, limit, offset);
+  };
+
+  private listFromSnapshot = async (
+    filters: AdminUserListFilters,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: AdminUserListItem[]; nextCursor: string | null; total: number }> => {
     const now = new Date();
 
-    if (filters.status === 'banned') {
-      conditions.push(effectivelyBannedSql());
-    } else if (filters.status === 'active') {
-      conditions.push(effectivelyActiveSql());
-    }
-
-    if (filters.createdFrom) {
-      conditions.push(gte(users.createdAt, filters.createdFrom));
-    }
-    if (filters.createdTo) {
-      conditions.push(lte(users.createdAt, filters.createdTo));
-    }
-
-    if (filters.query) {
-      const escaped = escapeAdminUserLikePattern(filters.query);
-      // lower(field) LIKE 'prefix%' — uses users_*_lower_pattern_idx (text_pattern_ops).
-      const prefix = `${escaped}%`;
-      conditions.push(
-        or(
-          sql`lower(${users.normalizedEmail}) LIKE ${prefix} ESCAPE '\\'`,
-          sql`lower(${users.email}) LIKE ${prefix} ESCAPE '\\'`,
-          sql`lower(${users.username}) LIKE ${prefix} ESCAPE '\\'`,
-        )!,
-      );
-    }
+    const filterConditions = this.buildListFilterConditions(filters);
+    const listConditions: SQL[] = [...filterConditions];
 
     const parsed = parseAdminUserCursor(filters.cursor);
     if (parsed) {
-      conditions.push(
+      listConditions.push(
         or(
           lt(users.createdAt, parsed.createdAt),
           and(eq(users.createdAt, parsed.createdAt), lt(users.id, parsed.id)),
@@ -206,42 +215,32 @@ export class AdminUserModel {
       );
     }
 
-    // Role filter: EXISTS global grant with matching role name (non-expired).
-    if (filters.role) {
-      conditions.push(
-        sql`EXISTS (
-          SELECT 1 FROM ${userRoles}
-          INNER JOIN ${roles} ON ${roles.id} = ${userRoles.roleId}
-          WHERE ${userRoles.userId} = ${users.id}
-            AND ${userRoles.workspaceId} IS NULL
-            AND ${roles.workspaceId} IS NULL
-            AND ${roles.name} = ${filters.role}
-            AND ${roles.isActive} = true
-            AND (${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())
-        )`,
-      );
-    }
+    const filterWhere = filterConditions.length > 0 ? and(...filterConditions) : undefined;
+    const listWhere = listConditions.length > 0 ? and(...listConditions) : undefined;
 
-    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const [rows, countRows] = await Promise.all([
+      this.db
+        .select({
+          avatar: users.avatar,
+          banExpires: users.banExpires,
+          banned: users.banned,
+          createdAt: users.createdAt,
+          dingtalkTitle: users.dingtalkTitle,
+          email: users.email,
+          fullName: users.fullName,
+          id: users.id,
+          lastActiveAt: users.lastActiveAt,
+          username: users.username,
+        })
+        .from(users)
+        .where(listWhere)
+        .orderBy(desc(users.createdAt), desc(users.id))
+        .limit(limit + 1)
+        .offset(offset),
+      this.db.select({ value: count() }).from(users).where(filterWhere),
+    ]);
 
-    const rows = await this.db
-      .select({
-        avatar: users.avatar,
-        banExpires: users.banExpires,
-        banned: users.banned,
-        createdAt: users.createdAt,
-        dingtalkTitle: users.dingtalkTitle,
-        email: users.email,
-        fullName: users.fullName,
-        id: users.id,
-        lastActiveAt: users.lastActiveAt,
-        username: users.username,
-      })
-      .from(users)
-      .where(where)
-      .orderBy(desc(users.createdAt), desc(users.id))
-      .limit(limit + 1);
-
+    const total = Number(countRows[0]?.value ?? 0);
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
 
@@ -268,7 +267,7 @@ export class AdminUserModel {
     const last = items.at(-1);
     const nextCursor = hasMore && last ? encodeAdminUserCursor(last) : null;
 
-    return { items, nextCursor };
+    return { items, nextCursor, total };
   };
 
   findDetailById = async (userId: string): Promise<AdminUserDetail | null> => {
@@ -648,6 +647,76 @@ export class AdminUserModel {
         updatedAt: at,
       })
       .where(eq(users.id, params.userId));
+  };
+
+  /**
+   * Shared WHERE for list + count — filters only (no cursor / offset).
+   */
+  private buildListFilterConditions = (filters: AdminUserListFilters): SQL[] => {
+    const conditions: SQL[] = [];
+
+    if (filters.status === 'banned') {
+      conditions.push(effectivelyBannedSql());
+    } else if (filters.status === 'active') {
+      conditions.push(effectivelyActiveSql());
+    }
+
+    if (filters.createdFrom) {
+      conditions.push(gte(users.createdAt, filters.createdFrom));
+    }
+    if (filters.createdTo) {
+      conditions.push(lte(users.createdAt, filters.createdTo));
+    }
+
+    if (filters.query) {
+      const escaped = escapeAdminUserLikePattern(filters.query.toLowerCase());
+      // lower(field) LIKE 'prefix%' — uses users_*_lower_pattern_idx (text_pattern_ops).
+      const prefix = `${escaped}%`;
+      conditions.push(
+        or(
+          sql`lower(${users.normalizedEmail}) LIKE ${prefix} ESCAPE '\\'`,
+          sql`lower(${users.email}) LIKE ${prefix} ESCAPE '\\'`,
+          sql`lower(${users.username}) LIKE ${prefix} ESCAPE '\\'`,
+          sql`lower(${users.fullName}) LIKE ${prefix} ESCAPE '\\'`,
+        )!,
+      );
+    }
+
+    // Role filter: EXISTS global grant with matching role name (non-expired).
+    if (filters.role) {
+      conditions.push(
+        sql`EXISTS (
+          SELECT 1 FROM ${userRoles}
+          INNER JOIN ${roles} ON ${roles.id} = ${userRoles.roleId}
+          WHERE ${userRoles.userId} = ${users.id}
+            AND ${userRoles.workspaceId} IS NULL
+            AND ${roles.workspaceId} IS NULL
+            AND ${roles.name} = ${filters.role}
+            AND ${roles.isActive} = true
+            AND (${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())
+        )`,
+      );
+    }
+
+    if (filters.source === 'local') {
+      conditions.push(
+        sql`EXISTS (
+          SELECT 1 FROM ${account}
+          WHERE ${account.userId} = ${users.id}
+            AND ${account.providerId} = ${ADMIN_USER_CREDENTIAL_PROVIDER_ID}
+        )`,
+      );
+    } else if (filters.source === 'sso') {
+      conditions.push(
+        sql`EXISTS (
+          SELECT 1 FROM ${account}
+          WHERE ${account.userId} = ${users.id}
+            AND ${account.providerId} <> ${ADMIN_USER_CREDENTIAL_PROVIDER_ID}
+        )`,
+      );
+    }
+
+    return conditions;
   };
 
   private loadGlobalRoleNames = async (userIds: string[]): Promise<Map<string, string[]>> => {

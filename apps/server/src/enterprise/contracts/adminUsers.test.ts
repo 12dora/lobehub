@@ -7,8 +7,10 @@ import { describe, expect, it } from 'vitest';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 
 import {
+  ADMIN_USERS_AUDIT_DEFAULT_LIMIT,
   ADMIN_USERS_LIST_DEFAULT_LIMIT,
   ADMIN_USERS_LIST_MAX_LIMIT,
+  ADMIN_USERS_LIST_MAX_OFFSET,
   adminUsersBanInputSchema,
   adminUsersCreateInputSchema,
   adminUsersCreateOutputSchema,
@@ -48,9 +50,11 @@ describe('escapeLikePattern', () => {
 });
 
 describe('adminUsersListInputSchema', () => {
-  it('defaults limit to 50 and normalizes query', () => {
+  it('defaults limit to 20, offset to 0, and normalizes query', () => {
     const parsed = adminUsersListInputSchema.parse({ query: '  Alice  ' });
     expect(parsed.limit).toBe(ADMIN_USERS_LIST_DEFAULT_LIMIT);
+    expect(parsed.limit).toBe(20);
+    expect(parsed.offset).toBe(0);
     expect(parsed.query).toBe('alice');
   });
 
@@ -60,7 +64,7 @@ describe('adminUsersListInputSchema', () => {
     ).toThrow();
   });
 
-  it('accepts status, role, date range, cursor', () => {
+  it('accepts status, role, source, date range, cursor, and offset', () => {
     const from = new Date('2024-01-01T00:00:00.000Z');
     const to = new Date('2024-12-31T00:00:00.000Z');
     const parsed = adminUsersListInputSchema.parse({
@@ -68,12 +72,22 @@ describe('adminUsersListInputSchema', () => {
       createdTo: to,
       cursor: '2024-06-01T00:00:00.000Z|user_abc',
       limit: 10,
+      offset: 40,
       role: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
+      source: 'sso',
       status: 'banned',
     });
     expect(parsed.status).toBe('banned');
+    expect(parsed.source).toBe('sso');
     expect(parsed.createdFrom).toEqual(from);
     expect(parsed.limit).toBe(10);
+    expect(parsed.offset).toBe(40);
+  });
+
+  it('rejects offset above max', () => {
+    expect(() =>
+      adminUsersListInputSchema.parse({ offset: ADMIN_USERS_LIST_MAX_OFFSET + 1 }),
+    ).toThrow();
   });
 
   it('rejects boolean/null/number/string date coercion traps', () => {
@@ -86,7 +100,7 @@ describe('adminUsersListInputSchema', () => {
   });
 
   it('rejects unknown keys (strict)', () => {
-    expect(() => adminUsersListInputSchema.parse({ offset: 10 } as never)).toThrow();
+    expect(() => adminUsersListInputSchema.parse({ unknownFilter: 'x' } as never)).toThrow();
   });
 });
 
@@ -109,8 +123,10 @@ describe('adminUsersListOutputSchema', () => {
         },
       ],
       nextCursor: null,
+      total: 1,
     });
     expect(ok.items).toHaveLength(1);
+    expect(ok.total).toBe(1);
     expect(ok.items[0]!.providerIds).toEqual(['credential', 'google']);
   });
 
@@ -424,6 +440,7 @@ describe('adminUsersReplaceGlobalRolesInputSchema', () => {
 describe('adminUsersGetAuditTrailInputSchema', () => {
   it('defaults limit and requires userId', () => {
     const parsed = adminUsersGetAuditTrailInputSchema.parse({ userId: 'u1' });
-    expect(parsed.limit).toBe(ADMIN_USERS_LIST_DEFAULT_LIMIT);
+    expect(parsed.limit).toBe(ADMIN_USERS_AUDIT_DEFAULT_LIMIT);
+    expect(parsed.limit).toBe(50);
   });
 });

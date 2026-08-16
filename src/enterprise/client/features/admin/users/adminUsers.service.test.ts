@@ -32,7 +32,7 @@ describe('adminUsersService', () => {
   it('wraps all procedures without client-side Zod', async () => {
     const { adminUsersService } = await import('@/enterprise/client/services/adminUsers');
 
-    await adminUsersService.list({ limit: 20, query: 'alice' });
+    await adminUsersService.list({ limit: 20, offset: 0, query: 'alice', source: 'local' });
     await adminUsersService.create({
       email: 'new@example.com',
       fullName: 'New User',
@@ -51,7 +51,12 @@ describe('adminUsersService', () => {
       roleNames: ['user_admin'],
     });
 
-    expect(query).toHaveBeenCalledWith('list', { limit: 20, query: 'alice' });
+    expect(query).toHaveBeenCalledWith('list', {
+      limit: 20,
+      offset: 0,
+      query: 'alice',
+      source: 'local',
+    });
     expect(query).toHaveBeenCalledWith('get', { userId: 'u1' });
     expect(query).toHaveBeenCalledWith('audit', { userId: 'u1', limit: 10 });
     expect(mutate).toHaveBeenCalledWith('create', {

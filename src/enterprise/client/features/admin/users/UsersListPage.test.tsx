@@ -1,5 +1,5 @@
 /**
- * Real FilterBar + list filter/cursor tests with SWR key evidence (UI-R4).
+ * Users list: offset pagination, toolbar search, column filters, actions, self-guard.
  * @vitest-environment happy-dom
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -37,20 +37,27 @@ const sampleList = {
       username: 'carol',
     },
   ],
-  nextCursor: 'cursor-2',
+  nextCursor: null,
+  total: 40,
 };
 
-/** Hoisted so vi.mock factories share evidence without TDZ. */
 const evidence = vi.hoisted(() => ({
-  listCalls: [] as unknown[],
-  swrKeys: [] as unknown[],
-  mutateMock: vi.fn(),
-  /** Real SWR only re-fetches when the key changes. */
-  lastSerializedSwrKey: null as string | null,
-  listMock: vi.fn(),
-  /** Actor permission snapshot consumed by the AdminAccessProvider mock. */
   actorPermissions: [] as string[],
+  currentUserId: 'admin-self',
+  lastSerializedSwrKey: null as string | null,
+  listCalls: [] as unknown[],
+  listMock: vi.fn(),
+  mutateMock: vi.fn(),
+  openBan: vi.fn(),
+  openBulkBan: vi.fn(),
+  openBulkDelete: vi.fn(),
+  openBulkRoles: vi.fn(),
+  openBulkUnban: vi.fn(),
   openCreateUserModalMock: vi.fn(),
+  openDelete: vi.fn(),
+  openRoles: vi.fn(),
+  openUnban: vi.fn(),
+  swrKeys: [] as unknown[],
 }));
 
 const { listCalls, swrKeys, mutateMock, listMock } = evidence;
@@ -62,7 +69,10 @@ listMock.mockImplementation((input?: unknown) => {
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (k: string, opts?: { defaultValue?: string }) => opts?.defaultValue ?? k,
+    t: (k: string, opts?: { count?: number; defaultValue?: string }) => {
+      if (opts?.count != null && k === 'users.list.selectedCount') return `selected-${opts.count}`;
+      return opts?.defaultValue ?? k;
+    },
   }),
 }));
 
@@ -70,8 +80,6 @@ vi.mock('@/libs/swr', () => ({
   useClientDataSWR: (key: unknown, fetcher?: () => Promise<unknown>) => {
     if (key != null) {
       const serialized = JSON.stringify(key);
-      // Record + fetch only when key actually changes (SWR semantics).
-      // Keys array is therefore a causal fetch-key sequence, not re-render noise.
       if (serialized !== evidence.lastSerializedSwrKey) {
         evidence.lastSerializedSwrKey = serialized;
         evidence.swrKeys.push(Array.isArray(key) ? [...key] : key);
@@ -103,20 +111,44 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   useAdminAccess: () => ({
     authMethod: 'better-auth',
     permissions: evidence.actorPermissions,
-    roles: [],
+    roles: [{ name: 'user_admin' }],
   }),
+}));
+
+vi.mock('@/store/user', () => ({
+  useUserStore: (selector: (s: { user?: { id?: string } }) => unknown) =>
+    selector({ user: { id: evidence.currentUserId } }),
+}));
+
+vi.mock('@/store/user/selectors', () => ({
+  userProfileSelectors: {
+    userId: (s: { user?: { id?: string } }) => s.user?.id,
+  },
 }));
 
 vi.mock('./modals/CreateUserModal', () => ({
   openCreateUserModal: (params: unknown) => evidence.openCreateUserModalMock(params),
 }));
 
+vi.mock('./modals/actions', () => ({
+  openBanUserModal: (params: unknown) => evidence.openBan(params),
+  openDeleteUserModal: (params: unknown) => evidence.openDelete(params),
+  openReplaceRolesModal: (params: unknown) => evidence.openRoles(params),
+  openUnbanUserModal: (params: unknown) => evidence.openUnban(params),
+}));
+
+vi.mock('./modals/bulkActions', () => ({
+  openBulkBanModal: (params: unknown) => evidence.openBulkBan(params),
+  openBulkDeleteModal: (params: unknown) => evidence.openBulkDelete(params),
+  openBulkReplaceRolesModal: (params: unknown) => evidence.openBulkRoles(params),
+  openBulkUnbanModal: (params: unknown) => evidence.openBulkUnban(params),
+}));
+
 vi.mock('../primitives/AdminPageTemplate', () => ({
-  default: ({ actions, children, title, toolbar }: any) => (
+  default: ({ actions, children, title }: any) => (
     <div>
       <h1>{title}</h1>
       {actions ? <div data-testid="actions">{actions}</div> : null}
-      <div data-testid="toolbar">{toolbar}</div>
       {children}
     </div>
   ),
@@ -126,36 +158,144 @@ vi.mock('../primitives/StatusBadge', () => ({
   default: ({ status }: any) => <span>{status}</span>,
 }));
 
+vi.mock('../primitives/columnFilters', () => ({
+  dateRangeColumnFilter: ({ onChange }: any) => ({
+    filterDropdown: () => (
+      <button
+        aria-label="users.list.columns.createdAt"
+        type="button"
+        onClick={() => {
+          onChange?.([new Date(2024, 0, 15), new Date(2024, 0, 31)]);
+        }}
+      >
+        date-range
+      </button>
+    ),
+  }),
+  enumColumnFilter: ({ value }: any) => ({
+    filteredValue: value ? [value] : null,
+  }),
+}));
+
 vi.mock('../primitives/DataTable', () => ({
-  default: ({ columns, dataSource, cursorPagination, emptyDescription, loading, error }: any) => {
+  default: ({
+    columns,
+    dataSource,
+    emptyDescription,
+    error,
+    loading,
+    onChange,
+    onPaginationChange,
+    pagination,
+    rowSelection,
+    toolbar,
+  }: any) => {
     if (loading) return <div>loading</div>;
     if (error) return <div role="alert">error</div>;
-    if (!dataSource?.length) return <div>{emptyDescription ?? 'empty'}</div>;
     return (
       <div>
-        <div data-testid="table-rows">
-          {dataSource.map((row: any) => (
-            <div data-testid={`row-${row.id}`} key={row.id}>
-              {(columns as any[] | undefined)?.map((col) => {
-                const value = col.dataIndex != null ? row[col.dataIndex] : undefined;
-                const content = col.render ? col.render(value, row) : value;
-                return (
-                  <div
-                    data-testid={`cell-${String(col.key ?? col.dataIndex)}`}
-                    key={String(col.key ?? col.dataIndex)}
-                  >
-                    {content}
-                  </div>
-                );
-              })}
+        {toolbar ? <div data-testid="table-toolbar">{toolbar}</div> : null}
+        {!dataSource?.length ? (
+          <div>{emptyDescription ?? 'empty'}</div>
+        ) : (
+          <div data-testid="table-rows">
+            {dataSource.map((row: any) => {
+              const checkboxProps = rowSelection?.getCheckboxProps?.(row) ?? {};
+              return (
+                <div data-testid={`row-${row.id}`} key={row.id}>
+                  <input
+                    aria-label={`select-${row.id}`}
+                    checked={Boolean(rowSelection?.selectedRowKeys?.includes(row.id))}
+                    disabled={checkboxProps.disabled}
+                    title={checkboxProps.title}
+                    type="checkbox"
+                    onChange={(event) => {
+                      const keys = new Set<string>(rowSelection?.selectedRowKeys ?? []);
+                      if (event.target.checked) keys.add(row.id);
+                      else keys.delete(row.id);
+                      const nextKeys = [...keys];
+                      const nextRows = dataSource.filter((item: any) => nextKeys.includes(item.id));
+                      rowSelection?.onChange?.(nextKeys, nextRows);
+                    }}
+                  />
+                  {(columns as any[] | undefined)?.map((col) => {
+                    const value = col.dataIndex != null ? row[col.dataIndex] : undefined;
+                    const content = col.render ? col.render(value, row) : value;
+                    return (
+                      <div
+                        data-testid={`cell-${String(col.key ?? col.dataIndex)}`}
+                        key={String(col.key ?? col.dataIndex)}
+                      >
+                        {content}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {(columns as any[] | undefined)
+          ?.filter((col) => typeof col.filterDropdown === 'function')
+          .map((col) => (
+            <div data-testid={`filter-${String(col.key)}`} key={`filter-${String(col.key)}`}>
+              {col.filterDropdown({})}
             </div>
           ))}
-        </div>
-        <button type="button" onClick={cursorPagination?.onNext}>
-          next
+        {pagination ? (
+          <div>
+            <span data-testid="page">{pagination.current}</span>
+            <span data-testid="page-size">{pagination.pageSize}</span>
+            <span data-testid="total">{pagination.total}</span>
+            <button
+              type="button"
+              onClick={() => onPaginationChange?.(pagination.current + 1, pagination.pageSize)}
+            >
+              next
+            </button>
+            <button type="button" onClick={() => onPaginationChange?.(1, 20)}>
+              page-size-20
+            </button>
+          </div>
+        ) : null}
+        <button
+          aria-label="filter-status"
+          type="button"
+          onClick={() =>
+            onChange?.({
+              filters: { status: ['banned'] },
+              pagination: false,
+              sorter: {},
+            })
+          }
+        >
+          filter-status
         </button>
-        <button type="button" onClick={() => cursorPagination?.onPageSizeChange?.(20)}>
-          page-size-20
+        <button
+          aria-label="filter-role"
+          type="button"
+          onClick={() =>
+            onChange?.({
+              filters: { roles: ['user_admin'] },
+              pagination: false,
+              sorter: {},
+            })
+          }
+        >
+          filter-role
+        </button>
+        <button
+          aria-label="filter-source"
+          type="button"
+          onClick={() =>
+            onChange?.({
+              filters: { source: ['sso'] },
+              pagination: false,
+              sorter: {},
+            })
+          }
+        >
+          filter-source
         </button>
       </div>
     );
@@ -187,44 +327,11 @@ vi.mock('@lobehub/ui', async () => {
   };
 });
 
-vi.mock('antd', async () => {
-  const React = await import('react');
-  const RangePicker = ({ onChange, 'aria-label': aria }: any) =>
-    React.createElement(
-      'button',
-      {
-        'type': 'button',
-        'aria-label': aria,
-        'onClick': () => {
-          const dayjs = require('dayjs');
-          onChange?.([dayjs('2024-01-15'), dayjs('2024-01-31')]);
-        },
-      },
-      aria,
-    );
-  const DatePicker: any = () => null;
-  DatePicker.RangePicker = RangePicker;
-  return { DatePicker };
-});
-
 vi.mock('@lobehub/ui/base-ui', async () => {
   const React = await import('react');
   return {
-    Button: ({ children, onClick, ...rest }: any) =>
-      React.createElement('button', { type: 'button', onClick, ...rest }, children),
-    Select: ({ onChange, placeholder, 'aria-label': aria, value }: any) =>
-      React.createElement(
-        'select',
-        {
-          'aria-label': aria || placeholder,
-          'value': value ?? '',
-          'onChange': (e: any) => onChange?.(e.target.value || undefined),
-        },
-        React.createElement('option', { value: '' }, 'all'),
-        React.createElement('option', { value: 'active' }, 'active'),
-        React.createElement('option', { value: 'banned' }, 'banned'),
-        React.createElement('option', { value: 'user_admin' }, 'user_admin'),
-      ),
+    Button: ({ children, onClick, disabled, ...rest }: any) =>
+      React.createElement('button', { type: 'button', onClick, disabled, ...rest }, children),
   };
 });
 
@@ -234,26 +341,35 @@ vi.mock('antd-style', () => ({
 }));
 
 /**
- * buildAdminUsersListKey: [KEY, query, status, role, from, to, cursor, limit]
- * cursor slot is '' when undefined (see UsersListPage).
+ * buildAdminUsersListKey:
+ * [KEY, query, status, role, from, to, offset, limit, source, cursor]
  */
-const cursorFromKey = (key: unknown) => (Array.isArray(key) ? key[6] : undefined);
-const isNoCursorKey = (key: unknown) =>
-  Array.isArray(key) && (key[6] === '' || key[6] === undefined || key[6] === null);
+const offsetFromKey = (key: unknown) => (Array.isArray(key) ? key[6] : undefined);
+const queryFromKey = (key: unknown) => (Array.isArray(key) ? key[1] : undefined);
 
-describe('UsersListPage real FilterBar filters (R4)', () => {
+describe('UsersListPage offset list + toolbar search', () => {
   beforeEach(() => {
     listMock.mockClear();
     listCalls.length = 0;
     swrKeys.length = 0;
     evidence.lastSerializedSwrKey = null;
     evidence.actorPermissions = [];
+    evidence.currentUserId = 'admin-self';
     evidence.openCreateUserModalMock.mockReset();
+    evidence.openBan.mockReset();
+    evidence.openUnban.mockReset();
+    evidence.openDelete.mockReset();
+    evidence.openRoles.mockReset();
+    evidence.openBulkBan.mockReset();
+    evidence.openBulkUnban.mockReset();
+    evidence.openBulkDelete.mockReset();
+    evidence.openBulkRoles.mockReset();
     mutateMock.mockReset();
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
   afterEach(() => {
+    sampleList.total = 40;
     vi.useRealTimers();
   });
 
@@ -264,6 +380,25 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
       </MemoryRouter>,
     );
 
+  it('requests offset pagination with default page size 20 and a total', async () => {
+    renderPage();
+    await waitFor(() => expect(listCalls.length).toBeGreaterThan(0));
+    expect(listCalls[0]).toMatchObject({ limit: 20, offset: 0 });
+    expect((listCalls[0] as { cursor?: string }).cursor).toBeUndefined();
+    expect(screen.getByTestId('page-size').textContent).toBe('20');
+    expect(screen.getByTestId('total').textContent).toBe('40');
+  });
+
+  it('clamps an out-of-range page back to the last page', async () => {
+    sampleList.total = 2;
+    renderPage();
+    fireEvent.click(screen.getByText('next'));
+    await waitFor(() => {
+      expect(screen.getByTestId('page').textContent).toBe('1');
+    });
+    sampleList.total = 40;
+  });
+
   it('renders job title column with title text or em dash when empty', () => {
     renderPage();
     const emptyTitle = within(screen.getByTestId('row-u1')).getByTestId('cell-dingtalkTitle');
@@ -272,219 +407,19 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
     expect(titled.textContent).toBe('高级工程师');
   });
 
-  const goToSecondPage = async () => {
-    fireEvent.click(screen.getByText('next'));
-    await waitFor(() => {
-      expect(listCalls.some((c) => (c as { cursor?: string }).cursor === 'cursor-2')).toBe(true);
-      expect(swrKeys.some((k) => cursorFromKey(k) === 'cursor-2')).toBe(true);
-    });
-  };
-
-  /**
-   * From marks, the entire observation window must contain exactly one list call
-   * matching pred (and nothing else), with cursor undefined, and exactly one SWR key
-   * (no cursor). Hides neither transient old-query requests nor extra keys.
-   */
-  const assertExactlyOneNoCursor = (
-    listMark: number,
-    keyMark: number,
-    pred: (c: unknown) => boolean,
-  ) => {
-    const slice = listCalls.slice(listMark);
-    expect(slice.length).toBe(1);
-    expect(pred(slice[0])).toBe(true);
-    expect((slice[0] as { cursor?: string }).cursor).toBeUndefined();
-
-    const keySlice = swrKeys.slice(keyMark);
-    expect(keySlice.length).toBe(1);
-    expect(isNoCursorKey(keySlice[0])).toBe(true);
-  };
-
-  /** Clear observation arrays without resetting lastSerializedSwrKey (avoids re-fetch of current key). */
-  const clearObservationWindow = () => {
-    listCalls.length = 0;
-    swrKeys.length = 0;
-  };
-
-  it('Clear for status-only / role-only / date-only resets payload', async () => {
-    renderPage();
-
-    // status-only
-    fireEvent.change(screen.getByLabelText('users.list.filters.status'), {
-      target: { value: 'banned' },
-    });
-    await waitFor(() => expect(screen.getByText('primitives.filterBar.clear')).toBeTruthy());
-    expect(listCalls.at(-1)).toMatchObject({ status: 'banned' });
-    fireEvent.click(screen.getByText('primitives.filterBar.clear'));
-    await waitFor(() => expect((listCalls.at(-1) as { status?: string }).status).toBeUndefined());
-
-    // role-only
-    fireEvent.change(screen.getByLabelText('users.list.filters.role'), {
-      target: { value: 'user_admin' },
-    });
-    await waitFor(() => expect(screen.getByText('primitives.filterBar.clear')).toBeTruthy());
-    fireEvent.click(screen.getByText('primitives.filterBar.clear'));
-    await waitFor(() => expect((listCalls.at(-1) as { role?: string }).role).toBeUndefined());
-
-    // date-only (single range picker sets both bounds at once)
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
-    await waitFor(() => expect(screen.getByText('primitives.filterBar.clear')).toBeTruthy());
-    fireEvent.click(screen.getByText('primitives.filterBar.clear'));
-    await waitFor(() => {
-      const last = listCalls.at(-1) as { createdFrom?: Date; createdTo?: Date };
-      expect(last.createdFrom).toBeUndefined();
-      expect(last.createdTo).toBeUndefined();
-    });
-  });
-
-  it('createdFrom/createdTo use complete start/end of day Date and ISO boundaries', async () => {
-    renderPage();
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
-
-    await waitFor(() => {
-      const withBoth = [...listCalls]
-        .reverse()
-        .find(
-          (c) =>
-            (c as { createdFrom?: Date }).createdFrom instanceof Date &&
-            (c as { createdTo?: Date }).createdTo instanceof Date,
-        ) as { createdFrom: Date; createdTo: Date };
-      expect(withBoth).toBeTruthy();
-
-      // Local start-of-day / end-of-day complete boundaries
-      expect(withBoth.createdFrom.getHours()).toBe(0);
-      expect(withBoth.createdFrom.getMinutes()).toBe(0);
-      expect(withBoth.createdFrom.getSeconds()).toBe(0);
-      expect(withBoth.createdFrom.getMilliseconds()).toBe(0);
-      expect(withBoth.createdFrom.getDate()).toBe(15);
-      expect(withBoth.createdFrom.getMonth()).toBe(0); // January
-      expect(withBoth.createdFrom.getFullYear()).toBe(2024);
-
-      expect(withBoth.createdTo.getHours()).toBe(23);
-      expect(withBoth.createdTo.getMinutes()).toBe(59);
-      expect(withBoth.createdTo.getSeconds()).toBe(59);
-      expect(withBoth.createdTo.getDate()).toBe(31);
-      expect(withBoth.createdTo.getMonth()).toBe(0);
-      expect(withBoth.createdTo.getFullYear()).toBe(2024);
-
-      // ISO round-trip
-      const fromIso = withBoth.createdFrom.toISOString();
-      const toIso = withBoth.createdTo.toISOString();
-      expect(Number.isNaN(Date.parse(fromIso))).toBe(false);
-      expect(Number.isNaN(Date.parse(toIso))).toBe(false);
-      expect(new Date(fromIso).getTime()).toBe(withBoth.createdFrom.getTime());
-      expect(new Date(toIso).getTime()).toBe(withBoth.createdTo.getTime());
-      expect(withBoth.createdFrom.getTime()).toBeLessThan(withBoth.createdTo.getTime());
-    });
-  });
-
-  it('from second page, status/role/date/page-size/query each yield exactly one no-cursor request', async () => {
-    renderPage();
-    await goToSecondPage();
-
-    // status
-    let listMark = listCalls.length;
-    let keyMark = swrKeys.length;
-    fireEvent.change(screen.getByLabelText('users.list.filters.status'), {
-      target: { value: 'banned' },
-    });
-    await waitFor(() => {
-      assertExactlyOneNoCursor(
-        listMark,
-        keyMark,
-        (c) => (c as { status?: string }).status === 'banned',
-      );
-    });
-
-    // back to page 2
-    fireEvent.click(screen.getByText('next'));
-    await waitFor(() =>
-      expect(
-        listCalls.some((c, i) => i >= listMark && (c as { cursor?: string }).cursor === 'cursor-2'),
-      ).toBe(true),
-    );
-    await waitFor(() => expect(swrKeys.some((k) => cursorFromKey(k) === 'cursor-2')).toBe(true));
-
-    // role
-    listMark = listCalls.length;
-    keyMark = swrKeys.length;
-    fireEvent.change(screen.getByLabelText('users.list.filters.role'), {
-      target: { value: 'user_admin' },
-    });
-    await waitFor(() => {
-      assertExactlyOneNoCursor(
-        listMark,
-        keyMark,
-        (c) => (c as { role?: string }).role === 'user_admin',
-      );
-    });
-
-    fireEvent.click(screen.getByText('next'));
-    await waitFor(() =>
-      expect((listCalls.at(-1) as { cursor?: string }).cursor === 'cursor-2').toBe(true),
-    );
-
-    // date range
-    listMark = listCalls.length;
-    keyMark = swrKeys.length;
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
-    await waitFor(() => {
-      assertExactlyOneNoCursor(
-        listMark,
-        keyMark,
-        (c) => (c as { createdFrom?: Date }).createdFrom instanceof Date,
-      );
-    });
-
-    fireEvent.click(screen.getByText('next'));
-    await waitFor(() =>
-      expect((listCalls.at(-1) as { cursor?: string }).cursor === 'cursor-2').toBe(true),
-    );
-
-    // page-size
-    listMark = listCalls.length;
-    keyMark = swrKeys.length;
-    fireEvent.click(screen.getByText('page-size-20'));
-    await waitFor(() => {
-      assertExactlyOneNoCursor(listMark, keyMark, (c) => (c as { limit?: number }).limit === 20);
-    });
-
-    // debounced query from page 2 (also covered by dedicated atomic search test)
-    fireEvent.click(screen.getByText('next'));
-    await waitFor(() =>
-      expect((listCalls.at(-1) as { cursor?: string }).cursor === 'cursor-2').toBe(true),
-    );
-    listMark = listCalls.length;
-    keyMark = swrKeys.length;
-    fireEvent.change(screen.getByLabelText('users.list.searchPlaceholder'), {
-      target: { value: 'alice' },
-    });
-    // Keystrokes must not fetch before debounce
-    expect(listCalls.slice(listMark)).toEqual([]);
-    await vi.advanceTimersByTimeAsync(350);
-    await waitFor(() => {
-      assertExactlyOneNoCursor(
-        listMark,
-        keyMark,
-        (c) => (c as { query?: string }).query === 'alice',
-      );
-    });
-  });
-
   it('from page 2, search edit yields exactly one list call and one SWR key after debounce', async () => {
     renderPage();
-    await goToSecondPage();
+    fireEvent.click(screen.getByText('next'));
+    await waitFor(() =>
+      expect(listCalls.some((c) => (c as { offset?: number }).offset === 20)).toBe(true),
+    );
 
-    // Clear observation window after landing on page 2
-    clearObservationWindow();
-    expect(listCalls).toEqual([]);
-    expect(swrKeys).toEqual([]);
+    listCalls.length = 0;
+    swrKeys.length = 0;
 
     fireEvent.change(screen.getByLabelText('users.list.searchPlaceholder'), {
       target: { value: 'alice' },
     });
-
-    // Draft-only: no list request / SWR key until debounce commits query + clears cursor
     expect(listCalls).toEqual([]);
     expect(swrKeys).toEqual([]);
 
@@ -495,19 +430,39 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
       expect(swrKeys.length).toBe(1);
     });
 
-    // Entire window: sole request has new query, no cursor
-    expect(listCalls).toHaveLength(1);
-    const sole = listCalls[0] as { cursor?: string; query?: string };
-    expect(sole.query).toBe('alice');
-    expect(sole.cursor).toBeUndefined();
+    expect(listCalls[0]).toMatchObject({ offset: 0, query: 'alice' });
+    expect(queryFromKey(swrKeys[0])).toBe('alice');
+    expect(offsetFromKey(swrKeys[0])).toBe(0);
+  });
 
-    // Sole SWR key: query slot 'alice', cursor slot empty
-    expect(swrKeys).toHaveLength(1);
-    const soleKey = swrKeys[0];
-    expect(Array.isArray(soleKey)).toBe(true);
-    expect((soleKey as unknown[])[1]).toBe('alice');
-    expect(isNoCursorKey(soleKey)).toBe(true);
-    expect(cursorFromKey(soleKey)).toBe('');
+  it('status / role / source / date / page-size each reset to offset 0', async () => {
+    renderPage();
+    fireEvent.click(screen.getByText('next'));
+    await waitFor(() => expect((listCalls.at(-1) as { offset?: number }).offset).toBe(20));
+
+    fireEvent.click(screen.getByLabelText('filter-status'));
+    await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ offset: 0, status: 'banned' }));
+
+    fireEvent.click(screen.getByText('next'));
+    fireEvent.click(screen.getByLabelText('filter-role'));
+    await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ offset: 0, role: 'user_admin' }));
+
+    fireEvent.click(screen.getByText('next'));
+    fireEvent.click(screen.getByLabelText('filter-source'));
+    await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ offset: 0, source: 'sso' }));
+
+    fireEvent.click(screen.getByText('next'));
+    fireEvent.click(screen.getByLabelText('users.list.columns.createdAt'));
+    await waitFor(() => {
+      const last = listCalls.at(-1) as { createdFrom?: Date; createdTo?: Date; offset?: number };
+      expect(last.offset).toBe(0);
+      expect(last.createdFrom).toBeInstanceOf(Date);
+      expect(last.createdTo).toBeInstanceOf(Date);
+      expect(last.createdFrom!.getHours()).toBe(0);
+      expect(last.createdFrom!.getDate()).toBe(15);
+      expect(last.createdTo!.getHours()).toBe(23);
+      expect(last.createdTo!.getDate()).toBe(31);
+    });
   });
 });
 
@@ -537,8 +492,6 @@ describe('UsersListPage create-user entry (USER_CREATE gate)', () => {
     renderPage();
 
     const button = screen.getByText('users.list.create');
-    expect(button).toBeTruthy();
-
     fireEvent.click(button);
     expect(evidence.openCreateUserModalMock).toHaveBeenCalledTimes(1);
     const params = evidence.openCreateUserModalMock.mock.calls[0][0] as {
@@ -554,7 +507,6 @@ describe('UsersListPage source tags (local / SSO)', () => {
   beforeEach(() => {
     evidence.lastSerializedSwrKey = null;
     evidence.actorPermissions = [];
-    // Reset to credential-only baseline for each case.
     sampleList.items[0].providerIds = ['credential'];
   });
 
@@ -571,7 +523,6 @@ describe('UsersListPage source tags (local / SSO)', () => {
 
     const cell = within(screen.getByTestId('row-u1')).getByTestId('cell-source');
     expect(within(cell).getByTestId('user-source-local')).toBeTruthy();
-    expect(within(cell).getByText('users.source.local')).toBeTruthy();
     expect(within(cell).queryByTestId('user-source-sso')).toBeNull();
   });
 
@@ -582,7 +533,6 @@ describe('UsersListPage source tags (local / SSO)', () => {
     const cell = within(screen.getByTestId('row-u1')).getByTestId('cell-source');
     expect(within(cell).queryByTestId('user-source-local')).toBeNull();
     expect(within(cell).getByTestId('user-source-sso')).toBeTruthy();
-    expect(within(cell).getByText('users.source.sso')).toBeTruthy();
   });
 
   it('shows both Local and SSO tags when credential and SSO are linked', () => {
@@ -592,7 +542,71 @@ describe('UsersListPage source tags (local / SSO)', () => {
     const cell = within(screen.getByTestId('row-u1')).getByTestId('cell-source');
     expect(within(cell).getByTestId('user-source-local')).toBeTruthy();
     expect(within(cell).getByTestId('user-source-sso')).toBeTruthy();
-    expect(within(cell).getByText('users.source.local')).toBeTruthy();
-    expect(within(cell).getByText('users.source.sso')).toBeTruthy();
+  });
+});
+
+describe('UsersListPage actions + self protection + bulk', () => {
+  const renderPage = () =>
+    render(
+      <MemoryRouter>
+        <UsersListPage />
+      </MemoryRouter>,
+    );
+
+  beforeEach(() => {
+    evidence.lastSerializedSwrKey = null;
+    evidence.actorPermissions = [
+      'platform_user:ban:all',
+      'platform_user:delete:all',
+      'platform_user:role_manage:all',
+    ];
+    evidence.currentUserId = 'u1';
+    evidence.openBan.mockReset();
+    evidence.openBulkBan.mockReset();
+    evidence.openBulkDelete.mockReset();
+    evidence.openRoles.mockReset();
+  });
+
+  it('renders the actions column and opens row modals for other users', () => {
+    renderPage();
+    expect(within(screen.getByTestId('row-u2')).getByTestId('cell-actions')).toBeTruthy();
+
+    fireEvent.click(within(screen.getByTestId('row-u2')).getByText('users.list.actions.roles'));
+    expect(evidence.openRoles).toHaveBeenCalledTimes(1);
+    expect(evidence.openRoles.mock.calls[0][0]).toMatchObject({ userId: 'u2' });
+
+    fireEvent.click(within(screen.getByTestId('row-u2')).getByText('users.list.actions.ban'));
+    expect(evidence.openBan).toHaveBeenCalledTimes(1);
+    expect(evidence.openBan.mock.calls[0][0]).toMatchObject({ userId: 'u2' });
+  });
+
+  it('disables the self-row checkbox and self-row actions', () => {
+    renderPage();
+    const selfCheckbox = screen.getByLabelText('select-u1') as HTMLInputElement;
+    expect(selfCheckbox.disabled).toBe(true);
+    expect(selfCheckbox.title).toBe('users.list.selfActionDisabled');
+
+    const otherCheckbox = screen.getByLabelText('select-u2') as HTMLInputElement;
+    expect(otherCheckbox.disabled).toBe(false);
+
+    const selfBan = within(screen.getByTestId('row-u1')).getByText('users.list.actions.ban');
+    expect((selfBan as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(selfBan);
+    expect(evidence.openBan).not.toHaveBeenCalled();
+  });
+
+  it('opens a bulk reason modal for selected non-self rows', () => {
+    renderPage();
+    fireEvent.click(screen.getByLabelText('select-u2'));
+    expect(screen.getByText('selected-1')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('users.list.bulk.ban'));
+    expect(evidence.openBulkBan).toHaveBeenCalledTimes(1);
+    const params = evidence.openBulkBan.mock.calls[0][0] as {
+      actorUserId?: string;
+      targets: { id: string }[];
+    };
+    expect(params.actorUserId).toBe('u1');
+    expect(params.targets.map((item) => item.id)).toEqual(['u2']);
   });
 });

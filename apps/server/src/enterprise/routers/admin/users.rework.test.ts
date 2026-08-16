@@ -206,6 +206,17 @@ describe('M04 R1 — output schemas reject secrets', () => {
   });
 });
 
+describe('M04 list identity search', () => {
+  it('matches fullName prefix case-insensitively', async () => {
+    const { eq } = await import('drizzle-orm');
+    await db.update(users).set({ fullName: 'Zelda Target' }).where(eq(users.id, IDS.target));
+    const caller = createAdminCaller(await ctx(IDS.userAdmin));
+    const result = await caller.users.list({ limit: 10, query: 'ZELDA' });
+    expect(result.items.some((item) => item.id === IDS.target)).toBe(true);
+    expect(result.total).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('M04 R1 — audit on list and reauth denial', () => {
   it('list writes access audit without full query', async () => {
     const caller = createAdminCaller(await ctx(IDS.userAdmin));
@@ -300,6 +311,28 @@ describe('M04 R1 — replaceGlobalRoles audit atomicity', () => {
     );
     expect(
       rows.some((r) => r.action === 'admin.users.replaceGlobalRoles' && r.result === 'success'),
+    ).toBe(true);
+  });
+
+  it('blocks replacing roles on self with a denied audit', async () => {
+    const caller = createAdminCaller(await ctx(IDS.userAdmin));
+    await expect(
+      caller.users.replaceGlobalRoles({
+        reason: 'self',
+        roleNames: [PLATFORM_SYSTEM_ROLES.USER_ADMIN],
+        userId: IDS.userAdmin,
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      cause: { data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'self_role_change' } } },
+    });
+    const denied = (
+      await db.query.platformAuditLogs.findMany({
+        where: (t, { eq }) => eq(t.action, 'admin.users.replaceGlobalRoles'),
+      })
+    ).filter((a) => a.result === 'denied' && a.targetId === IDS.userAdmin);
+    expect(
+      denied.some((a) => (a.afterDiff as { error?: string })?.error === 'self_role_change'),
     ).toBe(true);
   });
 });

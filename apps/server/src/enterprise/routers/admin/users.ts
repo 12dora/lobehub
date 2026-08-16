@@ -38,6 +38,7 @@ import {
   AdminUserPasswordAuthDisabledError,
   AdminUserSelfBanError,
   AdminUserSelfDeleteError,
+  AdminUserSelfRoleChangeError,
   AdminUserService,
   InvalidRetainedSessionError,
 } from '../../services/adminUserService';
@@ -67,6 +68,13 @@ const mapServiceError = (error: unknown): never => {
     throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
       details: { reason: 'self_delete' },
+      httpCode: 'BAD_REQUEST',
+    });
+  }
+  if (error instanceof AdminUserSelfRoleChangeError) {
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: 'self_role_change' },
       httpCode: 'BAD_REQUEST',
     });
   }

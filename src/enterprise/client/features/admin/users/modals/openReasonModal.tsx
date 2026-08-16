@@ -19,7 +19,7 @@ const styles = createStaticStyles(({ css }) => ({
   body: css`
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
   `,
   error: css`
     color: ${cssVar.colorError};

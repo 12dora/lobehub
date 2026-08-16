@@ -13,10 +13,14 @@ import { PLATFORM_SYSTEM_ROLES, type PlatformSystemRoleName } from '@/const/plat
 
 import { secretSafeAuditReasonSchema, strictDateSchema } from './shared';
 
-/** Default page size for list / audit trail. */
-export const ADMIN_USERS_LIST_DEFAULT_LIMIT = 50;
+/** Default page size for the users list (offset pagination). */
+export const ADMIN_USERS_LIST_DEFAULT_LIMIT = 20;
 /** Hard cap for list / audit trail limit. */
 export const ADMIN_USERS_LIST_MAX_LIMIT = 100;
+/** Hard cap for list offset (jump-to-page). */
+export const ADMIN_USERS_LIST_MAX_OFFSET = 100_000;
+/** Default page size for the user-detail audit trail (still keyset). */
+export const ADMIN_USERS_AUDIT_DEFAULT_LIMIT = 50;
 
 /**
  * Provisional recent-reauth window for high-risk mutations (M04).
@@ -39,6 +43,10 @@ export const adminUserAssignableRoleNameSchema = z.enum(ADMIN_USER_ASSIGNABLE_RO
 
 export const adminUserStatusSchema = z.enum(['active', 'banned']);
 export type AdminUserStatus = z.infer<typeof adminUserStatusSchema>;
+
+/** Account source: local credential vs any non-credential (SSO) provider. */
+export const adminUserSourceSchema = z.enum(['local', 'sso']);
+export type AdminUserSource = z.infer<typeof adminUserSourceSchema>;
 
 /** Opaque keyset cursor string: `${createdAt.toISOString()}|${id}`. */
 export const adminUserCursorSchema = z.string().min(1).max(128);
@@ -71,17 +79,21 @@ export const adminUsersListInputSchema = z
   .object({
     createdFrom: strictDateSchema.optional(),
     createdTo: strictDateSchema.optional(),
+    /** Kept for backward compatibility; new callers should use `offset`. */
     cursor: adminUserCursorSchema.optional(),
     limit: z.number().int().min(1).max(ADMIN_USERS_LIST_MAX_LIMIT).optional(),
+    offset: z.number().int().min(0).max(ADMIN_USERS_LIST_MAX_OFFSET).optional(),
     /** Free-text search; server trims/normalizes. Never log the full value. */
     query: z.string().max(200).optional(),
     role: z.string().min(1).max(64).optional(),
+    source: adminUserSourceSchema.optional(),
     status: adminUserStatusSchema.optional(),
   })
   .strict()
   .transform((input) => ({
     ...input,
     limit: input.limit ?? ADMIN_USERS_LIST_DEFAULT_LIMIT,
+    offset: input.offset ?? 0,
     query: normalizeAdminUserQuery(input.query),
   }));
 
@@ -114,7 +126,10 @@ export type AdminUserListItem = z.infer<typeof adminUserListItemSchema>;
 export const adminUsersListOutputSchema = z
   .object({
     items: z.array(adminUserListItemSchema),
+    /** Keyset cursor for older callers; new UI uses `offset` + `total`. */
     nextCursor: z.string().nullable(),
+    /** Count of rows matching the same WHERE (filters only — not offset/cursor). */
+    total: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -416,7 +431,7 @@ export const adminUsersGetAuditTrailInputSchema = z
   .strict()
   .transform((input) => ({
     ...input,
-    limit: input.limit ?? ADMIN_USERS_LIST_DEFAULT_LIMIT,
+    limit: input.limit ?? ADMIN_USERS_AUDIT_DEFAULT_LIMIT,
   }));
 
 export type AdminUsersGetAuditTrailInput = z.input<typeof adminUsersGetAuditTrailInputSchema>;

@@ -29,6 +29,7 @@ export {
   AdminUserPasswordAuthDisabledError,
   AdminUserSelfBanError,
   AdminUserSelfDeleteError,
+  AdminUserSelfRoleChangeError,
   fingerprintQuery,
   InvalidRetainedSessionError,
 } from './adminUser/errors';

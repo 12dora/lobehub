@@ -6,9 +6,10 @@ export const ADMIN_USERS_AUDIT_KEY = 'admin.users.getAuditTrail' as const;
 
 /** Normalized list key — stable for SWR dedupe; never logs full query. */
 export const buildAdminUsersListKey = (
-  filters: AdminUsersListInput & { cursor?: string | null },
+  filters: AdminUsersListInput & { cursor?: string | null; offset?: number },
 ) => {
-  const limit = filters.limit ?? 50;
+  const limit = filters.limit ?? 20;
+  const offset = filters.offset ?? 0;
   return [
     ADMIN_USERS_LIST_KEY,
     filters.query ?? '',
@@ -17,8 +18,10 @@ export const buildAdminUsersListKey = (
     filters.createdFrom?.toISOString?.() ??
       (filters.createdFrom ? String(filters.createdFrom) : ''),
     filters.createdTo?.toISOString?.() ?? (filters.createdTo ? String(filters.createdTo) : ''),
-    filters.cursor ?? '',
+    offset,
     limit,
+    filters.source ?? '',
+    filters.cursor ?? '',
   ] as const;
 };
 
