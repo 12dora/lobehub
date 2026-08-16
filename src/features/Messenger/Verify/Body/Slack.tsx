@@ -3,6 +3,8 @@
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+
 import { buildSlackOpenBotUrl } from '../../constants';
 import {
   ConfirmCard,
@@ -27,6 +29,7 @@ interface SlackBodyProps {
 const SlackBody = memo<SlackBodyProps>(
   ({ existingLink, lobeAccount, platformMeta, randomId, signInUrl, tokenData, userAvatar }) => {
     const { t } = useTranslation('messenger');
+    const { name: appName } = useBranding();
     const [done, setDone] = useState(false);
 
     const platformLabel = platformMeta?.name ?? 'Slack';
@@ -49,7 +52,7 @@ const SlackBody = memo<SlackBodyProps>(
 
     const handle = tokenData.platformUsername ?? `ID ${tokenData.platformUserId}`;
     const infoRows: InfoRow[] = [
-      { label: t('verify.confirm.fields.lobeHubAccount'), value: lobeAccount },
+      { label: t('verify.confirm.fields.lobeHubAccount', { appName }), value: lobeAccount },
       {
         label: t('verify.confirm.fields.platformAccount', { platform: platformLabel }),
         value: handle,
@@ -73,6 +76,7 @@ const SlackBody = memo<SlackBodyProps>(
                 description: t('verify.confirm.relink.description', {
                   account:
                     existingLink?.platformUsername ?? `ID ${existingLink?.platformUserId ?? ''}`,
+                  appName,
                   platform: platformLabel,
                 }),
                 title: t('verify.confirm.relink.title', { platform: platformLabel }),
@@ -82,6 +86,7 @@ const SlackBody = memo<SlackBodyProps>(
                   ctaHref: signInUrl,
                   ctaLabel: t('verify.confirm.conflict.switchAccount'),
                   description: t('verify.confirm.conflict.description', {
+                    appName,
                     email: tokenData.linkedToEmail,
                     platform: platformLabel,
                   }),

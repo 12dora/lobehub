@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { matchRouteMeta } from '@/features/Electron/titlebar/TabBar/resolveRouteMeta';
 import { normalizeTabUrl } from '@/features/Electron/titlebar/TabBar/url';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
@@ -13,6 +14,7 @@ import { useElectronStore } from '@/store/electron';
 
 export const useNavigationHistory = () => {
   const { t } = useTranslation('electron');
+  const { name: appName } = useBranding();
   const navigate = useWorkspaceAwareNavigate();
   const location = useLocation();
 
@@ -69,8 +71,8 @@ export const useNavigationHistory = () => {
 
     const staticMeta = matchRouteMeta(desktopRoutes, currentUrl).static;
     const presetTitle = staticMeta.titleKey
-      ? (t(staticMeta.titleKey as never) as string)
-      : (t('navigation.lobehub') as string);
+      ? (t(staticMeta.titleKey as never, { appName }) as string)
+      : (t('navigation.lobehub', { appName }) as string);
 
     pushHistory({
       metadata: { timestamp: Date.now() },

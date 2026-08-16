@@ -1,6 +1,5 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import type { FormGroupItemType } from '@lobehub/ui';
 import { Button, Form, Icon } from '@lobehub/ui';
 import { Switch } from 'antd';
@@ -10,16 +9,18 @@ import { useTranslation } from 'react-i18next';
 
 import { useTransferAgentsFormItem } from '@/business/client/hooks/useTransferAgentsFormItem';
 import { FORM_STYLE } from '@/const/layoutTokens';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 
 const WorkspaceStorageContent = memo(() => {
   const { t } = useTranslation('setting');
+  const branding = useBranding();
   const transferAgentsFormItems = useTransferAgentsFormItem();
 
   const analytics: FormGroupItemType = {
     children: [
       {
         children: <Switch disabled />,
-        desc: t('workspaceSetting.storage.telemetry.desc', { appName: BRANDING_NAME }),
+        desc: t('workspaceSetting.storage.telemetry.desc', { appName: branding.name }),
         label: t('workspaceSetting.storage.telemetry.title'),
         minWidth: undefined,
         valuePropName: 'checked',

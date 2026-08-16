@@ -1,4 +1,3 @@
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { copyImageToClipboard, sanitizeSVGContent } from '@lobechat/utils/client';
 import { Button, Center, DropdownMenu, Flexbox, Tooltip } from '@lobehub/ui';
 import { snapdom } from '@zumer/snapdom';
@@ -8,6 +7,7 @@ import { CopyIcon, DownloadIcon } from 'lucide-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useChatStore } from '@/store/chat';
 import { chatPortalSelectors } from '@/store/chat/selectors';
 
@@ -34,6 +34,7 @@ interface SVGRendererProps {
 
 const SVGRenderer = ({ content }: SVGRendererProps) => {
   const { t } = useTranslation('portal');
+  const branding = useBranding();
   const { message } = App.useApp();
 
   // Sanitize SVG content to prevent XSS attacks
@@ -78,7 +79,7 @@ const SVGRenderer = ({ content }: SVGRendererProps) => {
     const title = chatPortalSelectors.artifactTitle(useChatStore.getState());
 
     const link = document.createElement('a');
-    link.download = `${BRANDING_NAME}_${title}.${type}`;
+    link.download = `${branding.name}_${title}.${type}`;
     link.href = dataUrl;
     link.click();
     link.remove();

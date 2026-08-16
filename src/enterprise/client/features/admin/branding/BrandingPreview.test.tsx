@@ -34,7 +34,14 @@ describe('BrandingPreview isolation', () => {
         copy={{
           defaultAgent: 'Default agent',
           defaultName: 'Example',
+          emailFrom: 'From',
+          home: 'Home',
+          links: 'Links',
+          primaryColor: 'Primary color',
+          privacy: 'Privacy',
           signIn: 'Sign in',
+          support: 'Support',
+          terms: 'Terms',
           workspace: 'Workspace',
         }}
       />,
@@ -47,5 +54,75 @@ describe('BrandingPreview isolation', () => {
     expect(source).not.toContain('allow-same-origin');
     expect(source).not.toContain('allow-scripts');
     expect(source).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+
+  it('previews the primary color, public links, and email From line', () => {
+    const { getByTitle } = render(
+      <BrandingPreview
+        title="preview"
+        branding={{
+          ...branding,
+          emailFrom: 'noreply@brand.example',
+          emailSenderName: 'Acme Mailer',
+          homeUrl: 'https://brand.example.com',
+          name: 'Acme',
+          privacyUrl: 'https://brand.example.com/privacy',
+          supportUrl: 'https://brand.example.com/support',
+          termsUrl: 'https://brand.example.com/terms',
+          themeDefaults: { primaryColor: '#1677FF' },
+        }}
+        copy={{
+          defaultAgent: 'Default agent',
+          defaultName: 'Example',
+          emailFrom: 'From',
+          home: 'Home',
+          links: 'Links',
+          primaryColor: 'Primary color',
+          privacy: 'Privacy',
+          signIn: 'Sign in',
+          support: 'Support',
+          terms: 'Terms',
+          workspace: 'Workspace',
+        }}
+      />,
+    );
+    const source = getByTitle('preview').getAttribute('srcdoc') ?? '';
+
+    expect(source).toContain('background:#1677FF');
+    expect(source).toContain('#1677FF');
+    expect(source).toContain('https://brand.example.com/support');
+    expect(source).toContain('https://brand.example.com/privacy');
+    expect(source).toContain('https://brand.example.com/terms');
+    expect(source).toContain('Acme Mailer &lt;noreply@brand.example&gt;');
+  });
+
+  it('does not interpolate an unsafe primary color into CSS', () => {
+    const { getByTitle } = render(
+      <BrandingPreview
+        title="preview"
+        branding={{
+          ...branding,
+          name: 'Acme',
+          themeDefaults: { primaryColor: 'red;background:url(https://evil)' as never },
+        }}
+        copy={{
+          defaultAgent: 'Default agent',
+          defaultName: 'Example',
+          emailFrom: 'From',
+          home: 'Home',
+          links: 'Links',
+          primaryColor: 'Primary color',
+          privacy: 'Privacy',
+          signIn: 'Sign in',
+          support: 'Support',
+          terms: 'Terms',
+          workspace: 'Workspace',
+        }}
+      />,
+    );
+    const source = getByTitle('preview').getAttribute('srcdoc') ?? '';
+
+    expect(source).not.toContain('background:red');
+    expect(source).not.toContain('url(https://evil)');
   });
 });

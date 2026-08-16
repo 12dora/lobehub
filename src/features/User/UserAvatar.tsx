@@ -1,6 +1,5 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { type AvatarProps } from '@lobehub/ui';
 import { Avatar } from '@lobehub/ui';
 import { createStaticStyles, cssVar } from 'antd-style';
@@ -8,6 +7,7 @@ import { useMemo } from 'react';
 
 import { DEFAULT_USER_AVATAR_URL } from '@/const/meta';
 import { isDesktop } from '@/const/version';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useElectronStore } from '@/store/electron';
 import { electronSyncSelectors } from '@/store/electron/selectors';
 import { useUserStore } from '@/store/user';
@@ -75,6 +75,7 @@ const UserAvatar = ({
   ]);
 
   const isSignedIn = useUserStore(authSelectors.isLogin);
+  const branding = useBranding();
   const remoteServerUrl = useElectronStore(electronSyncSelectors.remoteServerUrl);
 
   // Process avatar URL for desktop environment
@@ -97,7 +98,7 @@ const UserAvatar = ({
   const avatarValue = nameOverride
     ? avatarOverride || nameOverride
     : avatarOverride || userAvatarUrl || nickName || username;
-  const altText = nameOverride || (isSignedIn ? nickName || username || 'User' : BRANDING_NAME);
+  const altText = nameOverride || (isSignedIn ? nickName || username || 'User' : branding.name);
 
   return (
     <Avatar

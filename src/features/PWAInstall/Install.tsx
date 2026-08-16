@@ -1,10 +1,10 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { memo, useEffect, useLayoutEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { PWA_INSTALL_ID } from '@/const/layoutTokens';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { usePWAInstall } from '@/hooks/usePWAInstall';
 import dynamic from '@/libs/next/dynamic';
 import { useGlobalStore } from '@/store/global';
@@ -18,6 +18,7 @@ const PWA: any = dynamic(() => import('@khmyznikov/pwa-install/dist/pwa-install.
 
 const PWAInstall = memo(() => {
   const { t } = useTranslation('metadata');
+  const branding = useBranding();
 
   const { install, canInstall } = usePWAInstall();
 
@@ -66,7 +67,7 @@ const PWAInstall = memo(() => {
 
   return (
     <PWA
-      description={t('chat.description', { appName: BRANDING_NAME })}
+      description={t('chat.description', { appName: branding.name })}
       id={PWA_INSTALL_ID}
       manifest-url={'/manifest.webmanifest'}
     />

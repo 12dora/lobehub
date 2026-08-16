@@ -1,6 +1,5 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { Block, Text } from '@lobehub/ui';
 import { createStaticStyles, cx } from 'antd-style';
 import { memo } from 'react';
@@ -8,6 +7,7 @@ import { Trans, useTranslation } from 'react-i18next';
 
 import ImperativeModal from '@/components/ImperativeModal';
 import { PRIVACY_URL, TERMS_URL } from '@/const/url';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import AuthCard from '@/features/AuthCard';
 import { useIsDark } from '@/hooks/useIsDark';
 
@@ -39,6 +39,7 @@ interface MarketAuthConfirmModalProps {
 const MarketAuthConfirmModal = memo<MarketAuthConfirmModalProps>(
   ({ open, onConfirm, onCancel, scene = 'default' }) => {
     const { t } = useTranslation('marketAuth');
+    const branding = useBranding();
     const isDarkMode = useIsDark();
 
     // Resolve scene-specific copy, falling back to the generic community-profile
@@ -106,7 +107,7 @@ const MarketAuthConfirmModal = memo<MarketAuthConfirmModalProps>(
           width={'100%'}
         >
           <Block padding={16} variant={'filled'}>
-            <Text align={'center'}>{ts('description', { appName: BRANDING_NAME })}</Text>
+            <Text align={'center'}>{ts('description', { appName: branding.name })}</Text>
           </Block>
         </AuthCard>
       </ImperativeModal>

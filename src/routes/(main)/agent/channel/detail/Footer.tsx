@@ -8,6 +8,7 @@ import { RefreshCw, Save, Trash2 } from 'lucide-react';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useAppOrigin } from '@/hooks/useAppOrigin';
 import type { SerializedPlatformDefinition } from '@/server/services/bot/platforms/types';
 
@@ -87,6 +88,7 @@ const Footer = memo<FooterProps>(
     onCopied,
   }) => {
     const { t } = useTranslation('agent');
+    const { name: appName } = useBranding();
     const origin = useAppOrigin();
     const platformId = platformDef.id;
     const applicationId = AntdForm.useWatch('applicationId', form);
@@ -267,7 +269,11 @@ const Footer = memo<FooterProps>(
                   components={{ bold: <strong /> }}
                   i18nKey="channel.endpointUrlHint"
                   ns="agent"
-                  values={{ fieldName: 'Event Subscription URL', name: platformDef.name }}
+                  values={{
+                    appName,
+                    fieldName: 'Event Subscription URL',
+                    name: platformDef.name,
+                  }}
                 />
               }
             />

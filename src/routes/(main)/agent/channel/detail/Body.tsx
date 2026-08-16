@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 
 import { FormInput, FormPassword } from '@/components/FormInput';
 import InfoTooltip from '@/components/InfoTooltip';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import type {
   FieldSchema,
   SerializedPlatformDefinition,
@@ -72,7 +73,8 @@ interface SchemaFieldProps {
 
 const SchemaField = memo<SchemaFieldProps>(({ field, parentKey, divider, disabled }) => {
   const { t: _t } = useTranslation('agent');
-  const t = _t as (key: string) => string;
+  const { name: appName } = useBranding();
+  const t = ((key: string) => _t(key, { appName, defaultValue: key })) as (key: string) => string;
 
   // Conditional visibility: watch the sibling field specified by visibleWhen
   const watchedValue = AntdForm.useWatch(
@@ -361,7 +363,8 @@ function getFields(schema: FieldSchema[], sectionKey: string): FieldSchema[] {
 
 const SettingsTitle = memo<{ schema: FieldSchema[] }>(({ schema }) => {
   const { t: _t } = useTranslation('agent');
-  const t = _t as (key: string) => string;
+  const { name: appName } = useBranding();
+  const t = ((key: string) => _t(key, { appName, defaultValue: key })) as (key: string) => string;
   const settingsSchema = schema.find((f) => f.key === 'settings');
   return <>{settingsSchema ? t(settingsSchema.label) : null}</>;
 });

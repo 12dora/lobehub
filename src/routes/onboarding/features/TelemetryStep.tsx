@@ -1,6 +1,5 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { type IconProps } from '@lobehub/ui';
 import { Block, Button, Flexbox, Icon, Text } from '@lobehub/ui';
 import { TypewriterEffect } from '@lobehub/ui/awesome';
@@ -13,6 +12,7 @@ import { Trans, useTranslation } from 'react-i18next';
 
 import { ProductLogo } from '@/components/Branding';
 import { PRIVACY_URL, TERMS_URL } from '@/const/url';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useUserStore } from '@/store/user';
 
@@ -23,6 +23,7 @@ interface TelemetryStepProps {
 const TelemetryStep = memo<TelemetryStepProps>(({ onNext }) => {
   const { t, i18n } = useTranslation('onboarding');
   const locale = i18n.language;
+  const branding = useBranding();
   const [check, setCheck] = useState(true);
   const [isNavigating, setIsNavigating] = useState(false);
   const inboxDisplayName = useDefaultInboxDisplayName();
@@ -127,12 +128,12 @@ const TelemetryStep = memo<TelemetryStepProps>(({ onNext }) => {
       />
       <Flexbox gap={8}>
         <Text as={'p'} color={cssVar.colorTextSecondary}>
-          {t('telemetry.rows.privacy.desc', { appName: BRANDING_NAME })}
+          {t('telemetry.rows.privacy.desc', { appName: branding.name })}
         </Text>
         <Flexbox horizontal align="center" gap={8}>
           <Switch checked={check} size={'small'} onChange={(v) => setCheck(v)} />
           <Text fontSize={12} type={check ? undefined : 'secondary'}>
-            {t('telemetry.rows.privacy.title', { appName: BRANDING_NAME })}
+            {t('telemetry.rows.privacy.title', { appName: branding.name })}
           </Text>
         </Flexbox>
       </Flexbox>

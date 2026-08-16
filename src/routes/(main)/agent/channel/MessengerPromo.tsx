@@ -7,6 +7,7 @@ import { X } from 'lucide-react';
 import React, { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
@@ -66,6 +67,7 @@ const ICON_SIZE = 16;
 
 const MessengerPromo = memo(() => {
   const { t } = useTranslation('agent');
+  const { name: appName } = useBranding();
   const navigate = useWorkspaceAwareNavigate();
 
   const isDismissed = useGlobalStore(systemStatusSelectors.isBannerDismissed(MESSENGER_PROMO_ID));
@@ -105,7 +107,7 @@ const MessengerPromo = memo(() => {
         <Telegram.Color size={ICON_SIZE} />
       </div>
       <div className={styles.title}>{t('channel.messengerPromo.title')}</div>
-      <div className={styles.desc}>{t('channel.messengerPromo.desc')}</div>
+      <div className={styles.desc}>{t('channel.messengerPromo.desc', { appName })}</div>
     </div>
   );
 });

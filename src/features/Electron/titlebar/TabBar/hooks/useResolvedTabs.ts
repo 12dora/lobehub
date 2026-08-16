@@ -1,9 +1,11 @@
 'use client';
 
+import type { ParseKeys } from 'i18next';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type RouteObject } from 'react-router';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { desktopRoutes } from '@/spa/router/desktopRouter.config';
 import { type DynamicRouteMeta, type ResolvedRouteMeta } from '@/spa/router/routeMeta';
 import { useElectronStore } from '@/store/electron';
@@ -64,13 +66,17 @@ export const resolveTab = (
 
 export const useResolvedTabs = (): UseResolvedTabsResult => {
   const { t } = useTranslation('electron');
+  const { name: appName } = useBranding();
 
   const tabRefs = useElectronStore((s) => s.tabs);
   const activeTabId = useElectronStore((s) => s.activeTabId);
   const currentRouteMeta = useElectronStore((s) => s.currentRouteMeta);
   const currentRouteMetaUrl = useElectronStore((s) => s.currentRouteMetaUrl);
 
-  const translate = t as unknown as Translate;
+  const translate: Translate = useMemo(
+    () => (key, options) => t(key as ParseKeys<'electron'>, { appName, ...options }),
+    [appName, t],
+  );
 
   const tabs = useMemo(
     () =>

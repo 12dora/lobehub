@@ -3,6 +3,7 @@ import { createStaticStyles, cx } from 'antd-style';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import DefaultFooter from '@/features/Setting/Footer';
 import { useIsDark } from '@/hooks/useIsDark';
 import { useMarketAuth } from '@/layout/AuthProvider/MarketAuth';
@@ -28,6 +29,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 const Footer = memo(() => {
   const { t } = useTranslation('discover');
+  const { name: appName } = useBranding();
   const isDarkMode = useIsDark();
   const { isAuthenticated, signIn } = useMarketAuth();
   const [loading, setLoading] = useState(false);
@@ -51,10 +53,10 @@ const Footer = memo(() => {
       gap={4}
     >
       <Text strong align={'center'} as={'h2'} fontSize={22}>
-        {t('footer.title')}
+        {t('footer.title', { appName })}
       </Text>
       <Text align={'center'} fontSize={16} type={'secondary'}>
-        {t('footer.desc')}
+        {t('footer.desc', { appName })}
       </Text>
       <Button
         loading={loading}

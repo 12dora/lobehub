@@ -18,6 +18,7 @@ export {
   type RuntimeBranding,
 } from './runtimeBranding';
 export {
+  getRuntimeBranding,
   RuntimeBrandingProvider,
   type RuntimeBrandingProviderProps,
   useBranding,

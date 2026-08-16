@@ -1,6 +1,5 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import type { FormGroupItemType } from '@lobehub/ui';
 import { Button, Form, Icon } from '@lobehub/ui';
 import { confirmModal, Switch } from '@lobehub/ui/base-ui';
@@ -12,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import AccountDeletion from '@/business/client/features/AccountDeletion';
 import { useTransferAgentsFormItem } from '@/business/client/hooks/useTransferAgentsFormItem';
 import { FORM_STYLE } from '@/const/layoutTokens';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import DataImporter from '@/features/DataImporter';
 import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
 import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
@@ -23,6 +23,7 @@ import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
 const AdvancedActions = () => {
   const { t } = useTranslation(['setting', 'common']);
+  const branding = useBranding();
   const { message } = App.useApp();
   const { hideDocs } = useServerConfigStore(featureFlagsSelectors);
   const enableBusinessFeatures = useServerConfigStore(serverConfigSelectors.enableBusinessFeatures);
@@ -115,7 +116,7 @@ const AdvancedActions = () => {
             )}
           </ManagedSettingFieldContent>
         ),
-        desc: t('analytics.telemetry.desc', { appName: BRANDING_NAME }),
+        desc: t('analytics.telemetry.desc', { appName: branding.name }),
         label: t('analytics.telemetry.title'),
         minWidth: undefined,
         valuePropName: 'checked',

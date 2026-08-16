@@ -1,8 +1,9 @@
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { type TabsItem } from '@lobehub/ui/base-ui';
 import { snapdom } from '@zumer/snapdom';
 import dayjs from 'dayjs';
 import { useCallback, useState } from 'react';
+
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 
 export enum ImageType {
   JPG = 'jpg',
@@ -98,13 +99,14 @@ export const useScreenshot = ({
   width?: number;
 }) => {
   const [loading, setLoading] = useState(false);
+  const branding = useBranding();
 
   const handleDownload = useCallback(async () => {
     setLoading(true);
     try {
       const dataUrl = await getImageUrl({ id, imageType, width });
       const link = document.createElement('a');
-      link.download = `${BRANDING_NAME}_${title}_${dayjs().format('YYYY-MM-DD')}.${imageType}`;
+      link.download = `${branding.name}_${title}_${dayjs().format('YYYY-MM-DD')}.${imageType}`;
       link.href = dataUrl;
       link.click();
       setLoading(false);
@@ -112,7 +114,7 @@ export const useScreenshot = ({
       console.error('Failed to download image', error);
       setLoading(false);
     }
-  }, [imageType, title]);
+  }, [branding.name, id, imageType, title, width]);
 
   return {
     loading,

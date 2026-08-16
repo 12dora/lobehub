@@ -4,6 +4,8 @@ import { Button, Flexbox, Text } from '@lobehub/ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+
 import { PlatformAvatar } from '../constants';
 
 interface SlackLinkBodyProps {
@@ -12,6 +14,7 @@ interface SlackLinkBodyProps {
 
 const SlackLinkBody = memo<SlackLinkBodyProps>(({ disabled }) => {
   const { t } = useTranslation('messenger');
+  const { name: appName } = useBranding();
 
   return (
     <>
@@ -21,7 +24,7 @@ const SlackLinkBody = memo<SlackLinkBodyProps>(({ disabled }) => {
           {t('messenger.slack.connectModal.title')}
         </Text>
         <Text style={{ textAlign: 'center' }} type="secondary">
-          {t('messenger.slack.connectModal.description')}
+          {t('messenger.slack.connectModal.description', { appName })}
         </Text>
       </Flexbox>
       <Button

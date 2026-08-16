@@ -10,6 +10,7 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { usePermission } from '@/hooks/usePermission';
 import { messengerKeys } from '@/libs/swr/keys';
 import { messengerService } from '@/services/messenger';
@@ -180,6 +181,7 @@ interface DetailLayoutProps {
 export const DetailLayout = memo<DetailLayoutProps>(
   ({ children, headerAction, hasConnections, name, onBack, platform }) => {
     const { t } = useTranslation('messenger');
+    const { name: appName } = useBranding();
 
     return (
       <Flexbox gap={20}>
@@ -200,7 +202,7 @@ export const DetailLayout = memo<DetailLayoutProps>(
                 {name}
               </Text>
               <Text style={{ fontSize: 13 }} type="secondary">
-                {t(`messenger.list.${platform}.description` as any)}
+                {t(`messenger.list.${platform}.description` as any, { appName })}
               </Text>
             </Flexbox>
             {headerAction}
@@ -422,6 +424,7 @@ interface UseLinkActionsArgs {
 
 export const useLinkActions = ({ linksMutate, name, platform }: UseLinkActionsArgs) => {
   const { t } = useTranslation('messenger');
+  const { name: appName } = useBranding();
   const { message } = App.useApp();
   const { allowed: canEdit } = usePermission('edit_own_content');
 
@@ -449,7 +452,7 @@ export const useLinkActions = ({ linksMutate, name, platform }: UseLinkActionsAr
     if (!canEdit) return;
 
     confirmModal({
-      content: t('messenger.unlinkConfirm', { platform: name }),
+      content: t('messenger.unlinkConfirm', { appName, platform: name }),
       okButtonProps: { danger: true },
       onOk: async () => {
         try {

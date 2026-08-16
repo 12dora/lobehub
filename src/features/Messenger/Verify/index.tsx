@@ -7,6 +7,7 @@ import { useSearchParams } from 'react-router';
 import useSWR from 'swr';
 
 import Loading from '@/components/Loading/BrandTextLoading';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useSession } from '@/libs/better-auth/auth-client';
 import { messengerKeys } from '@/libs/swr/keys';
 import { messengerService } from '@/services/messenger';
@@ -21,6 +22,7 @@ const isSupportedPlatform = (value: string): value is MessengerPlatform =>
 
 const MessengerVerifyPage = memo(() => {
   const { t } = useTranslation('messenger');
+  const { name: appName } = useBranding();
   const [searchParams] = useSearchParams();
 
   const randomId = searchParams.get('random_id') ?? '';
@@ -94,7 +96,10 @@ const MessengerVerifyPage = memo(() => {
     return (
       <Flexbox align="center" className={styles.card} gap={32}>
         {platform && <IconRow platform={platform} />}
-        <Heading subtitle={t('verify.signInRequired')} title={t('verify.confirm.title')} />
+        <Heading
+          subtitle={t('verify.signInRequired', { appName })}
+          title={t('verify.confirm.title')}
+        />
         <Button block href={signInUrl} size="large" type="primary">
           {t('verify.signInCta')}
         </Button>
@@ -123,8 +128,10 @@ const MessengerVerifyPage = memo(() => {
       return (
         <Flexbox align="center" className={styles.card} gap={24}>
           <Heading
-            subtitle={getMessengerErrorMessage(tokenSWR.error, t, 'verify.error.expired')}
             title={t('verify.error.title')}
+            subtitle={getMessengerErrorMessage(tokenSWR.error, t, 'verify.error.expired', {
+              appName,
+            })}
           />
         </Flexbox>
       );
@@ -134,7 +141,7 @@ const MessengerVerifyPage = memo(() => {
       return (
         <Flexbox align="center" className={styles.card} gap={24}>
           <Heading
-            subtitle={t('verify.error.alreadyConsumed')}
+            subtitle={t('verify.error.alreadyConsumed', { appName })}
             title={t('verify.error.alreadyConsumedTitle')}
           />
         </Flexbox>

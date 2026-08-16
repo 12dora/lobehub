@@ -34,6 +34,11 @@ vi.mock('@/server/featureFlags', () => ({
     mockGetServerFeatureFlagsStateFromRuntimeConfig(...args),
 }));
 
+const mockResolveServerRuntimeBranding = vi.fn();
+vi.mock('@/server/enterprise/services/branding/runtimeBranding', () => ({
+  resolveServerRuntimeBranding: (...args: any[]) => mockResolveServerRuntimeBranding(...args),
+}));
+
 vi.mock('@/config/messenger', () => ({
   getEnabledMessengerPlatforms: vi.fn().mockReturnValue(['slack', 'telegram']),
   getMessengerSlackConfig: vi.fn().mockReturnValue({
@@ -140,6 +145,7 @@ vi.mock('@/server/services/bot/replyTemplate', () => ({
 // without hitting any platform SDK. `mockSlackBinder` is a single shared
 // instance so tests can both pull capture-able mocks off it and observe
 // what the registered chat-sdk handlers do with it.
+const mockRegisterBotCommands = vi.fn().mockResolvedValue(undefined);
 const mockSlackBinder = {
   createClient: () => ({
     createAdapter: () => ({}),
@@ -147,7 +153,7 @@ const mockSlackBinder = {
     // to the bare channel id so the router's `chatId` matches what the
     // real client returns.
     extractChatId: (id: string) => id.split(':')[1] ?? id,
-    registerBotCommands: undefined,
+    registerBotCommands: mockRegisterBotCommands,
   }),
   extractCallbackAction: undefined,
   handleUnlinkedMessage: vi.fn(),
@@ -228,6 +234,10 @@ beforeEach(() => {
   mockSlackBinder.replyPrivately.mockReset();
   mockSlackBinder.sendAgentPicker.mockReset();
   mockSlackBinder.sendDmText.mockReset();
+  mockRegisterBotCommands.mockReset();
+  mockRegisterBotCommands.mockResolvedValue(undefined);
+  mockResolveServerRuntimeBranding.mockReset();
+  mockResolveServerRuntimeBranding.mockResolvedValue({ name: 'LobeHub' });
 });
 
 afterEach(() => {
@@ -568,6 +578,29 @@ describe('MessengerRouter member_joined_channel welcome', () => {
     expect(mockSlackBinder.sendDmText).toHaveBeenCalledTimes(1);
     expect(mockSlackBinder.sendDmText.mock.calls[0][0]).toBe('C_GENERAL');
     expect(mockSlackBinder.sendDmText.mock.calls[0][1]).toMatch(/LobeHub/);
+    expect(mockSlackBinder.sendDmText.mock.calls[0][1]).toContain('Mention the bot');
+    expect(mockSlackBinder.sendDmText.mock.calls[0][1]).not.toMatch(/@LobeHub/);
+  });
+
+  it('keeps join mention copy bot-neutral when the published product name differs', async () => {
+    mockResolveServerRuntimeBranding.mockResolvedValue({ name: 'Acme Workspace' });
+    await loadSlackBot();
+
+    const handler = mockChatBot.onMemberJoinedChannel.mock.calls[0][0] as (
+      event: any,
+    ) => Promise<void>;
+    await handler({
+      adapter: { botUserId: 'U_BOT' },
+      channelId: 'slack:C_GENERAL:',
+      inviterId: 'U_ALICE',
+      userId: 'U_BOT',
+    });
+
+    const text = mockSlackBinder.sendDmText.mock.calls[0][1] as string;
+    expect(text).toContain('link your Acme Workspace account');
+    expect(text).toContain('Mention the bot');
+    expect(text).not.toContain('@Acme Workspace');
+    expect(text).not.toContain('@LobeHub');
   });
 
   it('does nothing when a regular user (not the bot) joins the channel', async () => {
@@ -854,6 +887,51 @@ describe('MessengerRouter slash command dispatch', () => {
       chatId: 'D_DM',
       channelMentionThreadId: undefined,
     });
+  });
+
+  it('interpolates the published brand name into the already-linked /start reply', async () => {
+    mockResolveServerRuntimeBranding.mockResolvedValue({ name: 'AIHub' });
+    await loadSlackBot();
+    mockFindLink.mockResolvedValue({
+      activeAgentId: 'agt_main',
+      id: 'link_1',
+      platformUserId: 'U_ALICE',
+      tenantId: 'T_ACME',
+      userId: 'user_alice',
+    });
+
+    const handler = mockChatBot.onSlashCommand.mock.calls[0][1] as (event: any) => Promise<void>;
+    await handler(fakeSlashEvent({ command: '/start' }));
+
+    expect(mockSlackBinder.replyPrivately).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.stringContaining('already linked to AIHub'),
+    );
+    expect(mockSlackBinder.replyPrivately.mock.calls.at(-1)?.[2]).not.toContain('LobeHub');
+  });
+
+  it('registers slash-command descriptions with the published brand name', async () => {
+    mockResolveServerRuntimeBranding.mockResolvedValue({ name: 'AIHub' });
+    await loadSlackBot();
+
+    await vi.waitFor(() => {
+      expect(mockRegisterBotCommands).toHaveBeenCalled();
+    });
+
+    const registered = mockRegisterBotCommands.mock.calls[0]?.[0] as Array<{
+      command: string;
+      description: string;
+    }>;
+    const descriptions = registered.map((item) => item.description);
+    expect(descriptions.some((description) => description.includes('AIHub'))).toBe(true);
+    expect(descriptions.join('\n')).not.toContain('LobeHub');
+    expect(registered.find((item) => item.command === 'start')?.description).toBe(
+      'Bind your account to AIHub',
+    );
+    expect(registered.find((item) => item.command === 'feedback')?.description).toBe(
+      'Send feedback directly to the AIHub team (no AI reply)',
+    );
   });
 });
 

@@ -1,4 +1,5 @@
 import { render } from '@testing-library/react';
+import i18n from 'i18next';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -8,7 +9,7 @@ import {
 import type { PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
 import { DISABLED_PLATFORM_PUBLIC_SNAPSHOT } from '@/types/platform/publicSnapshot';
 
-import { RuntimeBrandingProvider } from './RuntimeBrandingProvider';
+import { getRuntimeBranding, RuntimeBrandingProvider } from './RuntimeBrandingProvider';
 
 const snapshotWithPrimaryColor = (primaryColor: string | null): PlatformPublicSnapshot => ({
   ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
@@ -36,7 +37,12 @@ const snapshotWithPrimaryColor = (primaryColor: string | null): PlatformPublicSn
   platformName: 'AIHub',
 });
 
-afterEach(() => setPlatformDefaultPrimaryColor(null));
+afterEach(() => {
+  setPlatformDefaultPrimaryColor(null);
+  if (i18n.options.interpolation) {
+    delete i18n.options.interpolation.defaultVariables;
+  }
+});
 
 describe('RuntimeBrandingProvider', () => {
   it('publishes the platform primary colour to the app shell theme', () => {
@@ -67,5 +73,19 @@ describe('RuntimeBrandingProvider', () => {
     );
 
     expect(getPlatformDefaultPrimaryColor()).toBeNull();
+  });
+
+  it('publishes the resolved name to i18n defaultVariables and the non-hook snapshot', () => {
+    render(
+      <RuntimeBrandingProvider publicSnapshot={snapshotWithPrimaryColor('#E4002B')}>
+        <div />
+      </RuntimeBrandingProvider>,
+    );
+
+    expect(getRuntimeBranding().name).toBe('AIHub');
+    expect(i18n.options.interpolation?.defaultVariables).toEqual({
+      appName: 'AIHub',
+      platformName: 'AIHub',
+    });
   });
 });

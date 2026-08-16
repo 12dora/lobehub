@@ -3,6 +3,8 @@
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+
 import { buildTelegramBotUrl } from '../../constants';
 import {
   ConfirmCard,
@@ -27,6 +29,7 @@ interface TelegramBodyProps {
 const TelegramBody = memo<TelegramBodyProps>(
   ({ existingLink, lobeAccount, platformMeta, randomId, signInUrl, tokenData, userAvatar }) => {
     const { t } = useTranslation('messenger');
+    const { name: appName } = useBranding();
     const [done, setDone] = useState(false);
 
     const platformLabel = platformMeta?.name ?? 'Telegram';
@@ -47,7 +50,7 @@ const TelegramBody = memo<TelegramBodyProps>(
     // Telegram has no workspace/tenant concept — skip the workspace row entirely.
     const handle = tokenData.platformUsername ?? `ID ${tokenData.platformUserId}`;
     const infoRows: InfoRow[] = [
-      { label: t('verify.confirm.fields.lobeHubAccount'), value: lobeAccount },
+      { label: t('verify.confirm.fields.lobeHubAccount', { appName }), value: lobeAccount },
       {
         label: t('verify.confirm.fields.platformAccount', { platform: platformLabel }),
         value: handle,
@@ -68,6 +71,7 @@ const TelegramBody = memo<TelegramBodyProps>(
                 description: t('verify.confirm.relink.description', {
                   account:
                     existingLink?.platformUsername ?? `ID ${existingLink?.platformUserId ?? ''}`,
+                  appName,
                   platform: platformLabel,
                 }),
                 title: t('verify.confirm.relink.title', { platform: platformLabel }),
@@ -77,6 +81,7 @@ const TelegramBody = memo<TelegramBodyProps>(
                   ctaHref: signInUrl,
                   ctaLabel: t('verify.confirm.conflict.switchAccount'),
                   description: t('verify.confirm.conflict.description', {
+                    appName,
                     email: tokenData.linkedToEmail,
                     platform: platformLabel,
                   }),

@@ -1,4 +1,3 @@
-import { BRANDING_NAME } from '@lobechat/business-const';
 import {
   getElectronIpc,
   type UpdaterState,
@@ -10,14 +9,16 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ProductLogo } from '@/components/Branding';
-import { CHANGELOG_URL, MANUAL_UPGRADE_URL, OFFICIAL_SITE } from '@/const/url';
+import { CHANGELOG_URL, MANUAL_UPGRADE_URL } from '@/const/url';
 import { CURRENT_VERSION } from '@/const/version';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useNewVersion } from '@/features/User/UserPanel/useNewVersion';
 import { autoUpdateService } from '@/services/electron/autoUpdate';
 import { useGlobalStore } from '@/store/global';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 
 import { APP_VERSION } from './appVersion';
+import { resolveAboutLinks } from './resolveAboutLinks';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   logo: css`
@@ -26,6 +27,8 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 }));
 
 const Version = memo<{ mobile?: boolean }>(({ mobile }) => {
+  const branding = useBranding();
+  const officialSite = resolveAboutLinks(branding).officialSite;
   const hasNewVersion = useNewVersion();
   const [latestVersion, serverVersion, useCheckServerVersion, useCheckLatestVersion] =
     useGlobalStore((s) => [
@@ -141,7 +144,7 @@ const Version = memo<{ mobile?: boolean }>(({ mobile }) => {
       width={'100%'}
     >
       <Flexbox horizontal align={'center'} flex={'none'} gap={16}>
-        <a href={OFFICIAL_SITE} rel="noreferrer" target="_blank">
+        <a href={officialSite} rel="noreferrer" target="_blank">
           <Block
             clickable
             align={'center'}
@@ -154,7 +157,7 @@ const Version = memo<{ mobile?: boolean }>(({ mobile }) => {
           </Block>
         </a>
         <Flexbox align={'flex-start'} gap={6}>
-          <div style={{ fontSize: 18, fontWeight: 'bolder' }}>{BRANDING_NAME}</div>
+          <div style={{ fontSize: 18, fontWeight: 'bolder' }}>{branding.name}</div>
           <Flexbox gap={6} horizontal={!mobile}>
             <Tag>v{APP_VERSION}</Tag>
 

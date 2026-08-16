@@ -5,11 +5,14 @@ import { ExternalLink } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+
 import { useDetailContext } from './DetailContext';
 import { styles } from './styles';
 
 const Overview = memo(() => {
   const { t } = useTranslation(['plugin']);
+  const { name: appName } = useBranding();
   const { author, authorUrl, localizedReadme } = useDetailContext();
 
   const handleAuthorClick = () => {
@@ -37,7 +40,7 @@ const Overview = memo(() => {
           </span>
         </Flexbox>
         <Text className={styles.trustWarning} type="secondary">
-          {t('skillDetail.trustWarning')}
+          {t('skillDetail.trustWarning', { appName })}
         </Text>
       </Flexbox>
 

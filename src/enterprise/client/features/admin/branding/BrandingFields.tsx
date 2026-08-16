@@ -11,6 +11,7 @@ import type {
   AdminBrandingUploadAssetInput,
 } from '@/enterprise/client/services/adminBranding';
 
+import { downloadDesktopBrandingExport } from './exportDesktopBranding';
 import { FieldHint, fieldStyles } from './fieldPrimitives';
 import { PrimaryColorField } from './PrimaryColorField';
 
@@ -201,7 +202,6 @@ export const BrandingFields = memo<BrandingFieldsProps>(
         disabled={disabled}
         effectiveLabel={labels.effectiveCurrent}
         effectiveUrl={effective?.[key] ?? DEFAULT_ASSET_PREVIEW[key]}
-        hint={labels.immediate}
         kind={kind}
         label={labels[key]}
         storageConfigured={storageConfigured}
@@ -257,6 +257,11 @@ export const BrandingFields = memo<BrandingFieldsProps>(
               onChange={(value) => onPatch({ desktop: { ...branding.desktop, iconUrl: value } })}
               onUpload={onUpload}
             />
+          </div>
+          <div>
+            <Button onClick={() => downloadDesktopBrandingExport(branding.desktop)}>
+              {labels.exportDesktop}
+            </Button>
           </div>
         </section>
         <section className={styles.group}>

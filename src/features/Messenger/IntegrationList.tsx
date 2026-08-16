@@ -6,6 +6,7 @@ import { ChevronRightIcon } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import type { SerializedMessengerPlatformDefinition } from '@/server/services/messenger/platforms/types';
 
 import { type MessengerPlatform, PlatformAvatar } from './constants';
@@ -42,6 +43,7 @@ interface IntegrationListProps {
 
 const IntegrationList = memo<IntegrationListProps>(({ onSelect, platforms }) => {
   const { t } = useTranslation('messenger');
+  const { name: appName } = useBranding();
 
   return (
     <div className={styles.grid}>
@@ -54,7 +56,7 @@ const IntegrationList = memo<IntegrationListProps>(({ onSelect, platforms }) => 
                 {platform.name}
               </Text>
               <Text style={{ fontSize: 13 }} type="secondary">
-                {t(`messenger.list.${platform.id}.description` as any)}
+                {t(`messenger.list.${platform.id}.description` as any, { appName })}
               </Text>
             </Flexbox>
             <Icon icon={ChevronRightIcon} />

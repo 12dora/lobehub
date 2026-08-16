@@ -11,6 +11,7 @@ import useSWR from 'swr';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import ImperativeModal from '@/components/ImperativeModal';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { messengerKeys } from '@/libs/swr/keys';
 import { messengerService } from '@/services/messenger';
@@ -49,6 +50,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 const MessengerSettings = memo(() => {
   const { t, ready } = useTranslation('messenger');
+  const { name: appName } = useBranding();
   const { message } = App.useApp();
   const navigate = useWorkspaceAwareNavigate();
   const params = useParams<{ sub?: string }>();
@@ -134,7 +136,7 @@ const MessengerSettings = memo(() => {
           />
         ) : (
           <>
-            <Text type="secondary">{t('messenger.subtitle')}</Text>
+            <Text type="secondary">{t('messenger.subtitle', { appName })}</Text>
             <AsyncBoundary
               data={platformsSWR.data}
               error={platformsSWR.error}
@@ -172,12 +174,15 @@ const MessengerSettings = memo(() => {
               <Text strong style={{ fontSize: 16, textAlign: 'center' }}>
                 {blocked.name
                   ? t(`messenger.${blocked.platform}.installBlocked.withName` as const, {
+                      appName,
                       workspace: blocked.name,
                     })
-                  : t(`messenger.${blocked.platform}.installBlocked.withoutName` as const)}
+                  : t(`messenger.${blocked.platform}.installBlocked.withoutName` as const, {
+                      appName,
+                    })}
               </Text>
               <Text style={{ textAlign: 'center' }} type="secondary">
-                {t(`messenger.${blocked.platform}.installBlocked.suggestion` as const)}
+                {t(`messenger.${blocked.platform}.installBlocked.suggestion` as const, { appName })}
               </Text>
             </Flexbox>
             <Button block size="large" type="primary" onClick={() => setBlocked(null)}>

@@ -1,15 +1,27 @@
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { act, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_USER_AVATAR_URL } from '@/const/meta';
 import { useUserStore } from '@/store/user';
 
 import UserAvatar from '../UserAvatar';
 
+const mocks = vi.hoisted(() => ({
+  brandingName: 'LobeHub',
+}));
+
 vi.mock('zustand/traditional');
 
+vi.mock('@/enterprise/client/providers/RuntimeBrandingProvider', () => ({
+  useBranding: () => ({ name: mocks.brandingName }),
+}));
+
 describe('UserAvatar', () => {
+  afterEach(() => {
+    mocks.brandingName = BRANDING_NAME;
+  });
+
   it('should show the username and avatar are displayed when the user is logged in', async () => {
     const mockAvatar = 'https://example.com/avatar.png';
     const mockUsername = 'teeeeeestuser';
@@ -50,5 +62,16 @@ describe('UserAvatar', () => {
     render(<UserAvatar />);
     expect(screen.getByAltText(BRANDING_NAME)).toBeInTheDocument();
     expect(screen.getByAltText(BRANDING_NAME)).toHaveAttribute('src', DEFAULT_USER_AVATAR_URL);
+  });
+
+  it('uses the published runtime brand name for the unsigned avatar alt text', () => {
+    mocks.brandingName = 'AIHub';
+    act(() => {
+      useUserStore.setState({ isSignedIn: false, user: undefined });
+    });
+
+    render(<UserAvatar />);
+    expect(screen.getByAltText('AIHub')).toBeInTheDocument();
+    expect(screen.queryByAltText(BRANDING_NAME)).not.toBeInTheDocument();
   });
 });

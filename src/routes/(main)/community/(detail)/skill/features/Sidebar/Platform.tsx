@@ -20,6 +20,7 @@ import { BotIcon, UserRoundIcon } from 'lucide-react';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useAgentStore } from '@/store/agent';
 import { builtinAgentSelectors } from '@/store/agent/selectors';
@@ -116,6 +117,7 @@ const genLayout = (
 const Platform = memo<PlatformProps>(
   ({ lite, identifier, mobile, expandCodeByDefault, downloadUrl }) => {
     const { t } = useTranslation('discover');
+    const { name: appName } = useBranding();
     const navigate = useWorkspaceAwareNavigate();
     const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
     const sendMessage = useChatStore((s) => s.sendMessage);
@@ -323,7 +325,7 @@ const Platform = memo<PlatformProps>(
               variant={lite ? 'borderless' : 'outlined'}
             >
               {genLayout(identifier, active, {
-                lobehub: t('skills.details.sidebar.platform.layout.lobehub'),
+                lobehub: t('skills.details.sidebar.platform.layout.lobehub', { appName }),
                 resourcesHint: t('skills.details.sidebar.platform.layout.resourcesHint'),
               })}
             </Highlighter>

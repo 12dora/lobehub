@@ -6,6 +6,7 @@ import { HeartHandshake, Undo2Icon } from 'lucide-react';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
@@ -21,6 +22,7 @@ interface DataModeStepProps {
 
 const DataModeStep = memo<DataModeStepProps>(({ onBack, onNext }) => {
   const { t } = useTranslation('desktop-onboarding');
+  const { name: appName } = useBranding();
   const telemetryEnabled = useUserStore(userGeneralSettingsSelectors.telemetry);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
   const [selectedMode, setSelectedMode] = useState<DataMode>(
@@ -67,10 +69,10 @@ const DataModeStep = memo<DataModeStepProps>(({ onBack, onNext }) => {
         >
           {selectedMode === 'share' && checkIcon}
           <Empty
-            description={t('screen4.share.description')}
+            description={t('screen4.share.description', { appName })}
             icon={HeartHandshake}
             padding={0}
-            title={t('screen4.share.title')}
+            title={t('screen4.share.title', { appName })}
             type={'page'}
             descriptionProps={{
               fontSize: 14,

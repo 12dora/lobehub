@@ -5,6 +5,8 @@ import { LinkIcon } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+
 import { PlatformAvatar } from '../constants';
 
 interface DiscordLinkBodyProps {
@@ -16,6 +18,7 @@ interface DiscordLinkBodyProps {
 
 const DiscordLinkBody = memo<DiscordLinkBodyProps>(({ appId, disabled, name }) => {
   const { t } = useTranslation('messenger');
+  const { name: appName } = useBranding();
 
   // Route Discord installs through the LobeHub install endpoint so the OAuth
   // redirect lands at our callback — we read `guild_id` straight off the
@@ -41,7 +44,7 @@ const DiscordLinkBody = memo<DiscordLinkBodyProps>(({ appId, disabled, name }) =
           {t('messenger.discord.connectModal.title')}
         </Text>
         <Text style={{ textAlign: 'center' }} type="secondary">
-          {t('messenger.discord.connectModal.description')}
+          {t('messenger.discord.connectModal.description', { appName })}
         </Text>
       </Flexbox>
       <Button

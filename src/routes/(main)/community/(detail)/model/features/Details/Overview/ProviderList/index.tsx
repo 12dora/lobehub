@@ -11,6 +11,7 @@ import urlJoin from 'url-join';
 import InlineTable from '@/components/InlineTable';
 import { ModelInfoTags } from '@/components/ModelSelect';
 import { BASE_PROVIDER_DOC_URL } from '@/const/url';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
 import { formatPriceByCurrency, formatTokenNumber } from '@/utils/format';
 import { getTextInputUnitRate, getTextOutputUnitRate } from '@/utils/pricing';
@@ -20,6 +21,7 @@ import { useDetailContext } from '../../../DetailProvider';
 const ProviderList = memo(() => {
   const { providers = [] } = useDetailContext();
   const { t } = useTranslation('discover');
+  const { name: appName } = useBranding();
 
   return (
     <TooltipGroup>
@@ -146,7 +148,7 @@ const ProviderList = memo(() => {
                 return (
                   <Flexbox horizontal align="center" gap={4} justify={'flex-end'}>
                     {isLobeHub && (
-                      <Tooltip title={t('models.providerInfo.officialTooltip')}>
+                      <Tooltip title={t('models.providerInfo.officialTooltip', { appName })}>
                         <ActionIcon
                           color={cssVar.colorSuccess}
                           icon={BadgeCheck}
@@ -156,7 +158,7 @@ const ProviderList = memo(() => {
                       </Tooltip>
                     )}
                     {!isLobeHub && (
-                      <Tooltip title={t('models.providerInfo.apiTooltip')}>
+                      <Tooltip title={t('models.providerInfo.apiTooltip', { appName })}>
                         <ActionIcon
                           icon={<Icon icon={KeyIcon} />}
                           size={'small'}

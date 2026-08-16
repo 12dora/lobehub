@@ -6,6 +6,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { usePermission } from '@/hooks/usePermission';
 
 import { createMessengerLinkModal } from '../LinkModal';
@@ -29,6 +30,7 @@ interface SlackDetailProps {
 
 const SlackDetail = memo<SlackDetailProps>(({ appId, botUsername, name, onBack }) => {
   const { t } = useTranslation('messenger');
+  const { name: appName } = useBranding();
   const { allowed: canCreate } = usePermission('create_content');
   const { allowed: canEdit } = usePermission('edit_own_content');
 
@@ -50,7 +52,7 @@ const SlackDetail = memo<SlackDetailProps>(({ appId, botUsername, name, onBack }
   const handleDisconnectInstallation = (id: string) =>
     canEdit &&
     disconnectInstallation(id, {
-      confirm: t('messenger.slack.connections.disconnectConfirm'),
+      confirm: t('messenger.slack.connections.disconnectConfirm', { appName }),
       failedKey: 'messenger.slack.connections.disconnectFailed',
       success: t('messenger.slack.connections.disconnectSuccess'),
       title: t('messenger.slack.connections.disconnectTitle'),

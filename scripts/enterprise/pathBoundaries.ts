@@ -237,6 +237,326 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
   },
   {
+    file: 'src/routes/(main)/settings/about/features/About.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/settings/about/features/Version.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/layout/AuthProvider/MarketAuth/MarketAuthConfirmModal.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Portal/Artifacts/Body/Renderer/SVG.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/PWAInstall/Install.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/User/UserAvatar.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/WorkspaceSetting/Storage/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/hooks/useScreenshot.ts',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/settings/chat-appearance/features/ChatAppearance/ChatPreview.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/settings/about/features/Analytics.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/settings/storage/features/Advanced.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/settings/stats/features/overview/Welcome.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/group/features/TelemetryNotification.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/agent/features/TelemetryNotification.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/community/(detail)/agent/features/Details/Overview/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/community/(detail)/group_agent/features/Details/Overview/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/onboarding/features/TelemetryStep.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/services/config.ts',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/agent/channel/detail/ComingSoon.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/agent/channel/MessengerPromo.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/agent/channel/platform/imessage/CredentialExtras.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/agent/channel/detail/Body.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/agent/channel/detail/Footer.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(desktop)/desktop-onboarding/features/DataModeStep.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(desktop)/desktop-onboarding/features/LoginStep.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/community/(list)/_layout/Footer.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/community/features/CreateButton/Inner.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/community/(detail)/model/features/Details/Overview/ProviderList/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/community/(detail)/skill/features/Sidebar/Platform.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/MCPPluginDetail/Score/GithubBadge/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/SkillStore/SkillDetail/Overview.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/ProtocolUrlHandler/InstallPlugin/CustomPluginInstallModal.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/settings/advanced/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Electron/navigation/useNavigationHistory.ts',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Electron/titlebar/TabBar/hooks/useResolvedTabs.ts',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/LinkModal/Slack.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/LinkModal/Discord.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/IntegrationList.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/IntegrationDetail/Slack.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/IntegrationDetail/shared.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/Verify/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/Verify/Body/Slack.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/Verify/Body/Discord.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/Verify/Body/Telegram.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
+    file: 'src/features/Messenger/Verify/Body/shared.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason:
+      'Ordinary UI consumer of runtime branding name (brand-leak fix); not a whole-file mount',
+  },
+  {
     file: 'src/business/client/DefaultInboxBrandingSync.tsx',
     importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
     owner: 'M12',
@@ -342,6 +662,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason:
       'getOAuthService factory resolves the authorization-code paste flow service for ChatGPT Web',
   },
+  {
+    file: 'apps/server/src/services/messenger/MessengerRouter.ts',
+    importSpecifier: '@/server/enterprise/services/branding/runtimeBranding',
+    owner: 'M12',
+    reason:
+      'Bot reply copy interpolates the published brand name instead of the compile-time constant',
+  },
 ] as const satisfies readonly EnterpriseImportAllowance[];
 
 /**
@@ -354,6 +681,24 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
 export type EnterpriseTestImportAllowance = EnterpriseImportAllowance;
 
 export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
+  {
+    file: 'src/features/User/__tests__/UserAvatar.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'vi.mock target for runtime branding in the brand-leak regression test',
+  },
+  {
+    file: 'src/routes/(main)/settings/stats/features/overview/Welcome.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'vi.mock target for runtime branding in the brand-leak regression test',
+  },
+  {
+    file: 'apps/server/src/services/messenger/MessengerRouter.test.ts',
+    importSpecifier: '@/server/enterprise/services/branding/runtimeBranding',
+    owner: 'M12',
+    reason: 'vi.mock target for runtime branding in the brand-leak regression test',
+  },
   {
     file: 'src/features/RecommendTaskTemplates/useDailyBriefRecommendationsUI.test.ts',
     importSpecifier: '@/enterprise/client/hooks/usePlatformTaskTemplates',

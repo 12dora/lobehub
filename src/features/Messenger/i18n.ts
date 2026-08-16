@@ -1,7 +1,9 @@
-import type { TFunction } from 'i18next';
+import type { ParseKeys, TFunction } from 'i18next';
 
 type MessengerT = TFunction<'messenger'>;
 export type MessengerTranslationKey = `messenger.${string}` | `verify.${string}`;
+type MessengerKey = ParseKeys<'messenger'>;
+type MessengerValues = { appName?: string };
 
 const SLACK_INSTALL_ERROR_REASON_KEYS = {
   access_denied: 'messenger.slack.installResult.reasons.accessDenied',
@@ -40,10 +42,11 @@ export const getMessengerErrorMessage = (
   error: unknown,
   t: MessengerT,
   fallbackKey: MessengerTranslationKey,
+  interpolation?: MessengerValues,
 ): string => {
-  const key = getMessengerTranslationKey(error);
+  const key = (getMessengerTranslationKey(error) ?? fallbackKey) as MessengerKey;
 
-  return key ? t(key as any) : t(fallbackKey as any);
+  return interpolation ? t(key, interpolation) : t(key);
 };
 
 export const getSlackInstallErrorReason = (t: MessengerT, reason?: string | null) => {

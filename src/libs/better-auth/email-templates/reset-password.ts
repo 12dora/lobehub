@@ -6,7 +6,7 @@ import { type EmailBrandingParams, resolveEmailBranding } from './branding';
 
 export const getResetPasswordEmailTemplate = (params: EmailBrandingParams & { url: string }) => {
   const { url } = params;
-  const { htmlPlatformName, platformName } = resolveEmailBranding(params.platformName);
+  const { htmlFooter, htmlLogo, htmlPlatformName, platformName } = resolveEmailBranding(params);
 
   return {
     html: `
@@ -22,12 +22,7 @@ export const getResetPasswordEmailTemplate = (params: EmailBrandingParams & { ur
   <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px;">
     
     <!-- Logo -->
-    <div style="text-align: center; margin-bottom: 32px;">
-      <div style="display: inline-flex; align-items: center; justify-content: center; background-color: #ffffff; border-radius: 12px; padding: 8px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
-        <span style="font-size: 24px; line-height: 1; margin-right: 10px;">🤯</span>
-        <span style="font-size: 18px; font-weight: 700; color: #000000; letter-spacing: -0.5px;">${htmlPlatformName}</span>
-      </div>
-    </div>
+    ${htmlLogo}
 
     <!-- Card -->
     <div style="background: #ffffff; border-radius: 20px; padding: 40px; box-shadow: 0 8px 30px rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.02);">
@@ -81,7 +76,7 @@ export const getResetPasswordEmailTemplate = (params: EmailBrandingParams & { ur
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
-        © ${new Date().getFullYear()} ${htmlPlatformName}. All rights reserved.
+        ${htmlFooter}
       </p>
     </div>
   </div>

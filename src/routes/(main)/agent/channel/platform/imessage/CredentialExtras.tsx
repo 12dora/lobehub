@@ -11,6 +11,7 @@ import { memo, use, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { FormInput, FormPassword } from '@/components/FormInput';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useClientDataSWR } from '@/libs/swr';
 import { imessageKeys } from '@/libs/swr/keys';
 import { gatewayConnectionService } from '@/services/electron/gatewayConnection';
@@ -72,7 +73,8 @@ const getErrorMessage = (error: unknown) =>
 
 const CredentialExtras = memo(() => {
   const { t: _t } = useTranslation('agent');
-  const t = _t as (key: string) => string;
+  const { name: appName } = useBranding();
+  const t = useCallback((key: string) => _t(key, { appName, defaultValue: key }), [_t, appName]);
   const { message } = App.useApp();
   const form = AntdForm.useFormInstance();
   const applicationId = AntdForm.useWatch('applicationId', form) as string | undefined;

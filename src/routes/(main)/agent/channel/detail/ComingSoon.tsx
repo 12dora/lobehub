@@ -5,6 +5,8 @@ import { createStaticStyles } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+
 import type { ChannelPlatformDefinition } from '../const';
 import { getPlatformIcon } from '../const';
 
@@ -61,6 +63,7 @@ interface ComingSoonDetailProps {
 
 const ComingSoonDetail = memo<ComingSoonDetailProps>(({ platformDef }) => {
   const { t } = useTranslation('agent');
+  const { name: appName } = useBranding();
   const PlatformIcon = getPlatformIcon(platformDef.name);
   const ColorIcon =
     PlatformIcon && 'Color' in PlatformIcon ? (PlatformIcon as any).Color : PlatformIcon;
@@ -77,7 +80,7 @@ const ComingSoonDetail = memo<ComingSoonDetailProps>(({ platformDef }) => {
         <div className={styles.title}>
           {t('channel.comingSoonTitle', { name: platformDef.name })}
         </div>
-        <div className={styles.desc}>{t('channel.comingSoonDesc')}</div>
+        <div className={styles.desc}>{t('channel.comingSoonDesc', { appName })}</div>
       </div>
     </main>
   );

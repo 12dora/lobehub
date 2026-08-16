@@ -160,8 +160,8 @@ const BrandingPage = memo(() => {
   );
 
   const labels = useMemo(
-    () =>
-      Object.fromEntries(
+    () => ({
+      ...Object.fromEntries(
         [
           'assets',
           'defaultAgentDisplayName',
@@ -176,7 +176,6 @@ const BrandingPage = memo(() => {
           'homeUrl',
           'iconUrl',
           'identity',
-          'immediate',
           'legalName',
           'links',
           'logoUrl',
@@ -194,6 +193,8 @@ const BrandingPage = memo(() => {
           'upload',
         ].map((key) => [key, t(`branding.fields.${key}` as never)]),
       ),
+      exportDesktop: t('branding.actions.exportDesktop'),
+    }),
     [t],
   );
 
@@ -461,7 +462,14 @@ const BrandingPage = memo(() => {
             copy={{
               defaultAgent: t('branding.preview.defaultAgent'),
               defaultName: t('branding.preview.defaultName'),
+              emailFrom: t('branding.preview.emailFrom'),
+              home: t('branding.fields.homeUrl'),
+              links: t('branding.preview.links'),
+              primaryColor: t('branding.fields.primaryColor'),
+              privacy: t('branding.fields.privacyUrl'),
               signIn: t('branding.preview.signIn'),
+              support: t('branding.fields.supportUrl'),
+              terms: t('branding.fields.termsUrl'),
               workspace: t('branding.preview.workspace'),
             }}
           />

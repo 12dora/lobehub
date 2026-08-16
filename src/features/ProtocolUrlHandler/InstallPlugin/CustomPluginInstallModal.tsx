@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import ImperativeModal from '@/components/ImperativeModal';
 import PluginAvatar from '@/components/Plugins/PluginAvatar';
 import PluginTag from '@/components/Plugins/PluginTag';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
 import { useToolStore } from '@/store/tool';
@@ -28,6 +29,7 @@ const CustomPluginInstallModal = memo<CustomPluginInstallModalProps>(
   ({ installRequest, isMarketplace = false, onComplete }) => {
     const { message } = App.useApp();
     const { t } = useTranslation('plugin');
+    const { name: appName } = useBranding();
     const [loading, setLoading] = useState(false);
     const { allowed: canCreate } = usePermission('create_content');
     const { allowed: canEdit } = usePermission('edit_own_content');
@@ -160,7 +162,7 @@ const CustomPluginInstallModal = memo<CustomPluginInstallModalProps>(
           {isStdioMcp && (
             <Alert
               showIcon
-              description={t('protocolInstall.stdio.commandExecution.description')}
+              description={t('protocolInstall.stdio.commandExecution.description', { appName })}
               title={t('protocolInstall.stdio.commandExecution.title')}
               type="warning"
               variant={'borderless'}

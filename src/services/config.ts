@@ -1,7 +1,7 @@
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { downloadFile, exportJSONFile } from '@lobechat/utils/client';
 import dayjs from 'dayjs';
 
+import { getRuntimeBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { type ImportPgDataStructure } from '@/types/export';
 
 import { exportService } from './export';
@@ -9,7 +9,7 @@ import { exportService } from './export';
 class ConfigService {
   exportAll = async () => {
     const { data, url, schemaHash } = await exportService.exportData();
-    const filename = `${dayjs().format('YYYY-MM-DD-hh-mm')}_${BRANDING_NAME}-data.json`;
+    const filename = `${dayjs().format('YYYY-MM-DD-hh-mm')}_${getRuntimeBranding().name}-data.json`;
 
     // if url exists, means export data from server and upload the data to S3
     // just need to download the file

@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
 import { FORM_STYLE } from '@/const/layoutTokens';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import SettingHeader from '@/routes/(main)/settings/features/SettingHeader';
 import { autoUpdateService } from '@/services/electron/autoUpdate';
 import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
@@ -31,6 +32,7 @@ const styles = createStaticStyles(({ css }) => ({
 const Page = memo(() => {
   const { t } = useTranslation('setting');
   const { t: tLabs } = useTranslation('labs');
+  const { name: appName } = useBranding();
 
   const general = useUserStore((s) => settingsSelectors.currentSettings(s).general, isEqual);
   const defaultAgentGatewayModeEnabled = useUserStore(
@@ -222,7 +224,7 @@ const Page = memo(() => {
               />
             ),
             className: styles.labItem,
-            desc: tLabs('features.imessage.desc'),
+            desc: tLabs('features.imessage.desc', { appName }),
             label: tLabs('features.imessage.title'),
             minWidth: undefined,
           } satisfies FormItemProps,
@@ -252,7 +254,7 @@ const Page = memo(() => {
               />
             ),
             className: styles.labItem,
-            desc: tLabs('features.platformAgent.desc'),
+            desc: tLabs('features.platformAgent.desc', { appName }),
             label: tLabs('features.platformAgent.title'),
             minWidth: undefined,
           } satisfies FormItemProps,

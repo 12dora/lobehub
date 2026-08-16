@@ -1,4 +1,3 @@
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { Block, Collapse, Flexbox } from '@lobehub/ui';
 import { ChatList } from '@lobehub/ui/chat';
 import { useTheme } from 'antd-style';
@@ -6,6 +5,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DEFAULT_USER_AVATAR_URL } from '@/const/meta';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useUserStore } from '@/store/user';
 import { authSelectors, userProfileSelectors } from '@/store/user/selectors';
 
@@ -19,6 +19,7 @@ const Overview = memo(() => {
   ]);
 
   const isSignedIn = useUserStore(authSelectors.isLogin);
+  const branding = useBranding();
   const { t } = useTranslation('discover');
   const theme = useTheme();
   const {
@@ -47,7 +48,7 @@ const Overview = memo(() => {
       meta = {
         avatar: isSignedIn && !!userAvatar ? userAvatar : DEFAULT_USER_AVATAR_URL,
         backgroundColor: 'transparent',
-        title: isSignedIn && !!username ? username : BRANDING_NAME,
+        title: isSignedIn && !!username ? username : branding.name,
       };
     }
 

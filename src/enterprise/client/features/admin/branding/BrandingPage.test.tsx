@@ -638,6 +638,32 @@ describe('BrandingPage interactions', () => {
     expect(screen.getByText('branding.errors.generic')).toBeInTheDocument();
   });
 
+  it('exports the desktop package fields as JSON', async () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockReturnValue('blob:desktop-branding');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      renderPage();
+      fireEvent.change(await screen.findByLabelText('branding.fields.desktopProductName'), {
+        target: { value: 'Acme Desktop' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'branding.actions.exportDesktop' }));
+      });
+
+      expect(createObjectURL).toHaveBeenCalledOnce();
+      expect(click).toHaveBeenCalledOnce();
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:desktop-branding');
+    } finally {
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
+      click.mockRestore();
+    }
+  });
+
   it('hangs field guidance off a keyboard-reachable help icon instead of a text block', async () => {
     renderPage();
     await screen.findByLabelText('branding.fields.name');

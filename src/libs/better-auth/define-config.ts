@@ -205,7 +205,13 @@ export function defineConfig(
         const emailService = new EmailService();
         await emailService.sendBrandedMail(({ branding }) => ({
           to: user.email,
-          ...getResetPasswordEmailTemplate({ platformName: branding.name, url }),
+          ...getResetPasswordEmailTemplate({
+            appUrl: appEnv.APP_URL,
+            legalName: branding.legalName,
+            logoUrl: branding.logoUrl,
+            platformName: branding.name,
+            url,
+          }),
         }));
       },
     },
@@ -226,13 +232,19 @@ export function defineConfig(
           to: user.email,
           ...(isChangeEmail
             ? getChangeEmailVerificationTemplate({
+                appUrl: appEnv.APP_URL,
                 expiresInSeconds: VERIFICATION_LINK_EXPIRES_IN,
+                legalName: branding.legalName,
+                logoUrl: branding.logoUrl,
                 platformName: branding.name,
                 url,
                 userName: user.name,
               })
             : getVerificationEmailTemplate({
+                appUrl: appEnv.APP_URL,
                 expiresInSeconds: VERIFICATION_LINK_EXPIRES_IN,
+                legalName: branding.legalName,
+                logoUrl: branding.logoUrl,
                 platformName: branding.name,
                 url,
                 userName: user.name,
@@ -418,7 +430,10 @@ export function defineConfig(
           await emailService.sendBrandedMail(({ branding }) => ({
             to: email,
             ...getVerificationOTPEmailTemplate({
+              appUrl: appEnv.APP_URL,
               expiresInSeconds: OTP_EXPIRES_IN,
+              legalName: branding.legalName,
+              logoUrl: branding.logoUrl,
               otp,
               platformName: branding.name,
               userName: null,
@@ -456,7 +471,10 @@ export function defineConfig(
                 await emailService.sendBrandedMail(({ branding }) => ({
                   to: email,
                   ...getMagicLinkEmailTemplate({
+                    appUrl: appEnv.APP_URL,
                     expiresInSeconds: MAGIC_LINK_EXPIRES_IN,
+                    legalName: branding.legalName,
+                    logoUrl: branding.logoUrl,
                     platformName: branding.name,
                     url,
                   }),

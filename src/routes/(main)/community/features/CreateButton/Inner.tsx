@@ -6,10 +6,12 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { AGENTS_INDEX_GITHUB, imageUrl } from '@/const/url';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import Image from '@/libs/next/Image';
 
 const Inner = memo(() => {
   const { t } = useTranslation('discover');
+  const { name: appName } = useBranding();
   return (
     <Typography fontSize={14} headerMultiple={0.5} marginMultiple={0.4}>
       <Image
@@ -21,7 +23,7 @@ const Inner = memo(() => {
       />
       <h3>
         <Tag color={'cyan'}>{t('createGuide.func1.tag')}</Tag>
-        <span>{t('createGuide.func1.title')}</span>
+        <span>{t('createGuide.func1.title', { appName })}</span>
       </h3>
       <p>
         <kbd>

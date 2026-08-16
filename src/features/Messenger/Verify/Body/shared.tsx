@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
 import { ProductLogo } from '@/components/Branding';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { messengerKeys } from '@/libs/swr/keys';
 import { messengerService } from '@/services/messenger';
 import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
@@ -163,6 +164,7 @@ export interface ConfirmCardProps {
 export const ConfirmCard = memo<ConfirmCardProps>(
   ({ blockingNotice, infoRows, onSuccess, platform, randomId, userAvatar }) => {
     const { t } = useTranslation('messenger');
+    const { name: appName } = useBranding();
     const { message } = App.useApp();
     const enableWorkspaceScopes = useServerConfigStore(
       (s) =>
@@ -232,7 +234,7 @@ export const ConfirmCard = memo<ConfirmCardProps>(
         await messengerService.confirmLink({ initialAgentId: selectedAgentId, randomId });
         onSuccess();
       } catch (error) {
-        message.error(getMessengerErrorMessage(error, t, 'verify.error.generic'));
+        message.error(getMessengerErrorMessage(error, t, 'verify.error.generic', { appName }));
       } finally {
         setConfirming(false);
       }
@@ -294,7 +296,7 @@ export const ConfirmCard = memo<ConfirmCardProps>(
             <Flexbox gap={8}>
               <Text strong>{t('verify.confirm.defaultAgent')}</Text>
               {agentsSWR.data?.length === 0 ? (
-                <Text type="warning">{t('verify.confirm.noAgents')}</Text>
+                <Text type="warning">{t('verify.confirm.noAgents', { appName })}</Text>
               ) : (
                 <AgentSelect
                   placeholder={t('verify.confirm.defaultAgentPlaceholder')}
