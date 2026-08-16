@@ -63,6 +63,11 @@ describe('assessRegexSafety', () => {
     expect(assessRegexSafety('(?:abc)?').ok).toBe(true);
   });
 
+  it('skips complete bracket classes when matching parentheses', () => {
+    expect(assessRegexSafety('([)]+)+$').ok).toBe(false);
+    expect(assessRegexSafety('[)(]+').ok).toBe(true);
+  });
+
   it('accepts a safe pattern', () => {
     expect(assessRegexSafety('caf[eé]').ok).toBe(true);
     expect(assessRegexSafety('foo|bar').ok).toBe(true);

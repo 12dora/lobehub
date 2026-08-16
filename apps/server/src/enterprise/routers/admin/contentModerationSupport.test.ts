@@ -19,6 +19,7 @@ import {
   buildLlmJudgeDryRunParams,
   collectOverviewWarnings,
   logModerationFailure,
+  MAX_REGEX_PROBES_PER_SAVE,
   normalizeModerationBaseUrl,
   runClassifierDryRun,
   sanitizeClassifierError,
@@ -152,6 +153,81 @@ describe('contentModerationSupport', () => {
         previous: [regexRule('foo.*bar')],
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it('probes a regex that was previously disabled with the same pattern', async () => {
+    const regexRule = (pattern: string, enabled = true): KeywordRule => ({
+      action: 'block',
+      category: 'other',
+      enabled,
+      id: '11111111-1111-4111-8111-111111111111',
+      isRegex: true,
+      pattern,
+    });
+
+    let probed = 0;
+    await assertKeywordRegexesSafe({
+      next: [regexRule('foo.*bar', true)],
+      previous: [regexRule('foo.*bar', false)],
+      probe: async () => {
+        probed += 1;
+        return { ok: true };
+      },
+    });
+    expect(probed).toBe(1);
+
+    probed = 0;
+    await assertKeywordRegexesSafe({
+      next: [regexRule('foo.*bar', true)],
+      previous: [regexRule('foo.*bar', true)],
+      probe: async () => {
+        probed += 1;
+        return { ok: true };
+      },
+    });
+    expect(probed).toBe(0);
+  });
+
+  it('rejects more than 100 changed regexes and an exceeded aggregate probe deadline', async () => {
+    const regexRule = (pattern: string, index: number): KeywordRule => ({
+      action: 'block',
+      category: 'other',
+      enabled: true,
+      id: `11111111-1111-4111-8111-${String(index).padStart(12, '0')}`,
+      isRegex: true,
+      pattern,
+    });
+
+    const tooMany = await assertKeywordRegexesSafe({
+      next: Array.from({ length: MAX_REGEX_PROBES_PER_SAVE + 1 }, (_, index) =>
+        regexRule(`foo${index}.*bar`, index),
+      ),
+      probe: async () => ({ ok: true }),
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(getEnterpriseErrorBody(tooMany)).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+      details: { field: 'keywords', reason: 'too_many_regex_changes' },
+    });
+
+    let clock = 0;
+    const deadline = await assertKeywordRegexesSafe({
+      next: [regexRule('aa.*bb', 0), regexRule('cc.*dd', 1)],
+      now: () => clock,
+      probe: async () => {
+        clock += 5001;
+        return { ok: true };
+      },
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(getEnterpriseErrorBody(deadline)).toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+      details: { field: 'keywords', reason: 'too_many_regex_changes' },
+    });
   });
 
   it('maps classifier failures to finite sanitized codes', () => {

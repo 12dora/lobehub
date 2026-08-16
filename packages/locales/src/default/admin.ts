@@ -3674,5 +3674,5 @@ export default {
     'Regex rule #{{n}} risks catastrophic backtracking — simplify it.',
   'contentModeration.errors.reason.regexSlow': 'Regex rule #{{n}} runs too slowly — simplify it.',
   'contentModeration.errors.reason.tooManyRegexChanges':
-    'At most 500 new or edited regex rules can be checked per save — save them in batches.',
+    'At most 100 new or edited regex rules can be checked per save (5 s total) — save them in batches.',
 };

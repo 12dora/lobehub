@@ -1245,7 +1245,7 @@
   "contentModeration.errors.reason.regexSlow": "第 {{n}} 条正则执行过慢，请简化。",
   "contentModeration.errors.reason.regexUnsafe": "第 {{n}} 条正则存在灾难性回溯风险，请简化。",
   "contentModeration.errors.reason.tooManyApiKeys": "API 密钥数量超出上限。",
-  "contentModeration.errors.reason.tooManyRegexChanges": "单次保存最多校验 500 条新增或修改的正则，请分批保存。",
+  "contentModeration.errors.reason.tooManyRegexChanges": "单次保存最多校验 100 条新增或修改的正则（总耗时上限 5 秒），请分批保存。",
   "contentModeration.errors.reason.unknownTimezone": "无法识别该时区。",
   "contentModeration.errors.requestKindsRequired": "请至少选择一种请求类型。",
   "contentModeration.errors.sampleRateRange": "采样率必须在 0 到 100 之间。",

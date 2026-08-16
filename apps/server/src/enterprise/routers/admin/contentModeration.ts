@@ -458,24 +458,25 @@ export const adminContentModerationRouter = router({
         validateCatalogBoundModels({ catalog, config: input.config });
 
         const secretService = obtainPlatformSecretService();
+        const current = await new PlatformContentModerationSettingsModel(ctx.serverDB).get();
+        await assertKeywordRegexesSafe({
+          next: input.config.keywords,
+          previous: current?.config.keywords ?? null,
+        });
 
         return await ctx.serverDB
           .transaction(async (tx) => {
             const settingsModel = new PlatformContentModerationSettingsModel(
               tx as unknown as LobeChatDatabase,
             );
-            const current = await settingsModel.get();
+            const latest = await settingsModel.get();
             const persisted = await toPersistedConfig({
-              persistedBaseUrl: current?.config.classifier.moderationsApi?.baseUrl,
+              persistedBaseUrl: latest?.config.classifier.moderationsApi?.baseUrl,
               secretService,
-              storedRefs: current ? storedRefsOf(current.config) : [],
+              storedRefs: latest ? storedRefsOf(latest.config) : [],
               update: input.config,
             });
             validateCatalogBoundModels({ catalog, config: persisted });
-            await assertKeywordRegexesSafe({
-              next: persisted.keywords,
-              previous: current?.config.keywords ?? null,
-            });
 
             const next = await settingsModel.update({
               config: persisted,
@@ -485,7 +486,7 @@ export const adminContentModerationRouter = router({
 
             const diff = summarizeSettingsDiff({
               next: persisted,
-              previous: current?.config ?? null,
+              previous: latest?.config ?? null,
             });
 
             await new PlatformAuditService(tx).append({

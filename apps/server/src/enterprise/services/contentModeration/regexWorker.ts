@@ -5,6 +5,7 @@ import { assessRegexSafety, type RegexSafetyResult } from '@/types/platform/cont
 export const REGEX_MATCH_TIMEOUT_MS = 50;
 export const REGEX_PROBE_TIMEOUT_MS = 200;
 export const REGEX_WORKER_MAX_IN_FLIGHT = 32;
+export const REGEX_WORKER_DIGEST_LRU = 8;
 
 export interface RegexWorkerRule {
   id: string;
@@ -39,17 +40,24 @@ interface PendingJob {
 const WORKER_SOURCE = [
   "const { parentPort } = require('node:worker_threads');",
   'const compiledByDigest = new Map();',
-  'const WINDOW = 4000;',
-  'const OVERLAP = 64;',
+  'const DIGEST_LRU = 8;',
   'const PROBE_N = 4000;',
-  'const windowsOf = (text) => {',
-  '  if (text.length <= WINDOW) return [text];',
-  '  const out = [];',
-  '  for (let start = 0; start < text.length; start += WINDOW - OVERLAP) {',
-  '    out.push(text.slice(start, start + WINDOW));',
-  '    if (start + WINDOW >= text.length) break;',
+  'const remember = (digest, rules) => {',
+  '  if (!digest) return;',
+  '  if (compiledByDigest.has(digest)) compiledByDigest.delete(digest);',
+  '  compiledByDigest.set(digest, rules);',
+  '  while (compiledByDigest.size > DIGEST_LRU) {',
+  '    const first = compiledByDigest.keys().next().value;',
+  '    compiledByDigest.delete(first);',
   '  }',
-  '  return out;',
+  '};',
+  'const recall = (digest) => {',
+  '  if (!digest) return undefined;',
+  '  const rules = compiledByDigest.get(digest);',
+  '  if (!rules) return undefined;',
+  '  compiledByDigest.delete(digest);',
+  '  compiledByDigest.set(digest, rules);',
+  '  return rules;',
   '};',
   'const compileRules = (patterns) => {',
   '  const compiled = [];',
@@ -87,7 +95,13 @@ const WORKER_SOURCE = [
   '  }',
   '  const literals = extractLiterals(pattern);',
   '  const padded = literals.repeat(Math.ceil(PROBE_N / literals.length)).slice(0, PROBE_N);',
-  "  const samples = [padded, 'a'.repeat(PROBE_N) + '!', '1'.repeat(PROBE_N)];",
+  '  const samples = [',
+  '    padded,',
+  "    'a'.repeat(PROBE_N) + '!',",
+  "    '1'.repeat(PROBE_N),",
+  "    ')'.repeat(PROBE_N) + '!',",
+  "    '('.repeat(PROBE_N) + '!',",
+  '  ];',
   '  for (const sample of samples) {',
   '    compiled.lastIndex = 0;',
   '    compiled.test(sample);',
@@ -99,28 +113,22 @@ const WORKER_SOURCE = [
   '  const id = msg && msg.id;',
   '  try {',
   '    if (msg.kind === "compile") {',
-  '      compiledByDigest.set(msg.digest, compileRules(msg.patterns));',
+  '      remember(msg.digest, compileRules(msg.patterns));',
   '      parentPort.postMessage({ id, ok: true });',
   '      return;',
   '    }',
   '    if (msg.kind === "match") {',
-  '      let rules = msg.digest ? compiledByDigest.get(msg.digest) : undefined;',
+  '      let rules = recall(msg.digest);',
   '      if (!rules) {',
   '        rules = compileRules(msg.patterns);',
-  '        if (msg.digest) compiledByDigest.set(msg.digest, rules);',
+  '        remember(msg.digest, rules);',
   '      }',
   '      const matchedRuleIds = [];',
-  '      const seen = new Set();',
-  "      for (const window of windowsOf(String(msg.text || ''))) {",
-  '        for (const rule of rules) {',
-  '          if (seen.has(rule.id)) continue;',
-  '          rule.regex.lastIndex = 0;',
-  '          if (rule.regex.test(window)) {',
-  '            seen.add(rule.id);',
-  '            matchedRuleIds.push(rule.id);',
-  '          }',
-  '          rule.regex.lastIndex = 0;',
-  '        }',
+  "      const text = String(msg.text || '');",
+  '      for (const rule of rules) {',
+  '        rule.regex.lastIndex = 0;',
+  '        if (rule.regex.test(text)) matchedRuleIds.push(rule.id);',
+  '        rule.regex.lastIndex = 0;',
   '      }',
   '      parentPort.postMessage({ id, matchedRuleIds });',
   '      return;',
@@ -154,23 +162,30 @@ const settleAll = (value: MatchRegexRulesResult | RegexSafetyResult) => {
   }
 };
 
+const bindDeathHandlers = (instance: Worker) => {
+  const onDeath = () => {
+    if (worker !== instance) return;
+    instance.removeAllListeners();
+    worker = null;
+    settleAll({ timedOut: true });
+  };
+  instance.on('error', onDeath);
+  instance.on('exit', onDeath);
+};
+
 const killWorker = () => {
   const dying = worker;
   worker = null;
   if (!dying) return;
   dying.removeAllListeners();
-  void dying.terminate();
-};
-
-const onWorkerDeath = () => {
-  worker = null;
-  settleAll({ timedOut: true });
+  void dying.terminate().catch(() => undefined);
 };
 
 const ensureWorker = (): Worker => {
   if (worker) return worker;
   const next = new Worker(WORKER_SOURCE, { eval: true });
   next.on('message', (reply: WorkerReply) => {
+    if (worker !== next) return;
     const job = pending.get(reply.id);
     if (!job) return;
     pending.delete(reply.id);
@@ -185,8 +200,7 @@ const ensureWorker = (): Worker => {
     }
     job.resolve({ timedOut: true });
   });
-  next.on('error', onWorkerDeath);
-  next.on('exit', onWorkerDeath);
+  bindDeathHandlers(next);
   worker = next;
   return next;
 };
@@ -204,7 +218,6 @@ const runOnWorker = (
 
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
-      // Drop listeners before terminate so the `exit` handler cannot settle twice.
       killWorker();
       settleAll({ timedOut: true });
     }, timeoutMs);
@@ -266,6 +279,8 @@ export const validateKeywordRegex = async (pattern: string): Promise<RegexSafety
   if (!staticResult.ok) return staticResult;
   return probeRegexPattern(pattern);
 };
+
+export const getRegexWorkerForTest = (): Worker | null => worker;
 
 export const resetRegexWorkerForTest = async (): Promise<void> => {
   settleAll({ timedOut: true });

@@ -24,8 +24,31 @@ export interface CompiledKeywordMatcher {
 }
 
 const REGEX_FUSE_MS = 60_000;
+const MAX_FUSED_DIGESTS = 8;
 
 const fusedDigests = new Map<string, number>();
+
+const evictExpiredFuses = (now: number) => {
+  for (const [digest, until] of fusedDigests) {
+    if (until <= now) fusedDigests.delete(digest);
+  }
+};
+
+const isDigestFused = (digest: string, now: number): boolean => {
+  evictExpiredFuses(now);
+  const until = fusedDigests.get(digest);
+  return typeof until === 'number' && until > now;
+};
+
+const rememberFuse = (digest: string, until: number) => {
+  evictExpiredFuses(Date.now());
+  if (fusedDigests.has(digest)) fusedDigests.delete(digest);
+  fusedDigests.set(digest, until);
+  while (fusedDigests.size > MAX_FUSED_DIGESTS) {
+    const oldest = fusedDigests.keys().next().value;
+    if (oldest) fusedDigests.delete(oldest);
+  }
+};
 
 export const resetKeywordMatcherFuseForTest = () => {
   fusedDigests.clear();
@@ -140,8 +163,7 @@ export const compileKeywordMatcher = (rules: readonly KeywordRule[]): CompiledKe
     if (!text || enabled.length === 0) return null;
     const literalHits = collectLiteralHits(text);
 
-    const fusedUntil = fusedDigests.get(digest) ?? 0;
-    const regexFused = fusedUntil > Date.now();
+    const regexFused = isDigestFused(digest, Date.now());
     let regexHits: KeywordRule[] = [];
 
     if (!regexFused && regexRules.length > 0) {
@@ -151,7 +173,7 @@ export const compileKeywordMatcher = (rules: readonly KeywordRule[]): CompiledKe
         text,
       });
       if ('timedOut' in result && result.timedOut) {
-        fusedDigests.set(digest, Date.now() + REGEX_FUSE_MS);
+        rememberFuse(digest, Date.now() + REGEX_FUSE_MS);
         console.error('[content-moderation] regex layer fused after worker timeout', {
           code: 'regex_fused',
         });

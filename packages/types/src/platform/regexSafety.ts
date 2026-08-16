@@ -16,23 +16,6 @@ const CLASS_ESCAPES = new Set(['d', 'D', 's', 'S', 'w', 'W']);
 const MAX_BOUNDED_REPEAT = 200;
 const MAX_UNBOUNDED_QUANTIFIERS = 2;
 
-const findMatchingParen = (pattern: string, open: number): number => {
-  let depth = 1;
-  for (let index = open + 1; index < pattern.length; index += 1) {
-    const char = pattern[index];
-    if (char === '\\') {
-      index += 1;
-      continue;
-    }
-    if (char === '(') depth += 1;
-    else if (char === ')') {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-};
-
 const findMatchingBracket = (pattern: string, open: number): number => {
   let index = open + 1;
   if (pattern[index] === '^') index += 1;
@@ -45,6 +28,29 @@ const findMatchingBracket = (pattern: string, open: number): number => {
       continue;
     }
     if (char === ']') return index;
+  }
+  return -1;
+};
+
+const findMatchingParen = (pattern: string, open: number): number => {
+  let depth = 1;
+  for (let index = open + 1; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (char === '[') {
+      const close = findMatchingBracket(pattern, index);
+      if (close < 0) return -1;
+      index = close;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    else if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
   }
   return -1;
 };
