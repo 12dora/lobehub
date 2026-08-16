@@ -6,6 +6,7 @@ import {
   adminBrandingSaveInputSchema,
   adminBrandingUploadAssetInputSchema,
   adminBrandingUploadAssetOutputSchema,
+  projectAdminBrandingPublished,
 } from './adminBranding';
 
 const payload = {
@@ -169,6 +170,21 @@ describe('adminBranding contracts', () => {
         requestId: crypto.randomUUID(),
       }).success,
     ).toBe(false);
+  });
+
+  it('forwards the primary colour into the published projection', () => {
+    expect(
+      projectAdminBrandingPublished(
+        adminBrandingPayloadSchema.parse({
+          ...payload,
+          themeDefaults: { primaryColor: '#E4002B' },
+        }),
+        7,
+      ),
+    ).toMatchObject({ revision: '7', themeDefaults: { primaryColor: '#E4002B' } });
+    expect(
+      projectAdminBrandingPublished(adminBrandingPayloadSchema.parse(payload), 7).themeDefaults,
+    ).toEqual({ primaryColor: null });
   });
 
   it('does not advertise ICO in the first-version upload result contract', () => {

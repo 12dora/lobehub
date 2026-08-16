@@ -985,7 +985,7 @@
   "branding.fields.pageTitleTemplate": "页面标题模板（需包含 %s）",
   "branding.fields.primaryColor": "主色",
   "branding.fields.primaryColorCustom": "自定义",
-  "branding.fields.primaryColorHint": "预留给后续主题定制。",
+  "branding.fields.primaryColorHint": "保存后作为全站默认主色，成员仍可在个人设置中覆盖。",
   "branding.fields.primaryColorInvalid": "请输入 6 位十六进制颜色，例如 #1677FF。",
   "branding.fields.primaryColorPresets": "预设",
   "branding.fields.privacyUrl": "隐私政策 URL",

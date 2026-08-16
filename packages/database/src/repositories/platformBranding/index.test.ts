@@ -28,7 +28,7 @@ describe('PlatformBrandingRepository', () => {
         logoUrl: '/brand.png',
         revision: 3,
         status: 'published',
-        themeDefaults: { shouldNotLeaveTheDatabase: true },
+        themeDefaults: { primaryColor: '#e4002b', shouldNotLeaveTheDatabase: true },
       },
     ]);
 
@@ -36,7 +36,12 @@ describe('PlatformBrandingRepository', () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ displayName: 'Published Brand', revision: 3 });
-    expect(rows[0]).not.toHaveProperty('themeDefaults');
+    // The platform primary colour ships with the published row; anything else stored
+    // under theme defaults is stripped by the published read service's schema, not here.
+    expect(rows[0].themeDefaults).toEqual({
+      primaryColor: '#e4002b',
+      shouldNotLeaveTheDatabase: true,
+    });
     expect(rows[0]).not.toHaveProperty('desktop');
     expect(rows[0]).not.toHaveProperty('createdBy');
   });

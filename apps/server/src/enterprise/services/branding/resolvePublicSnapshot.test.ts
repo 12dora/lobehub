@@ -28,6 +28,7 @@ const publishedBranding: PlatformBrandingPublished = {
   shortName: null,
   supportUrl: null,
   termsUrl: null,
+  themeDefaults: { primaryColor: '#E4002B' },
 };
 
 const authSettings =

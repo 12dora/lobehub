@@ -36,6 +36,7 @@ describe('resolveRuntimeBranding', () => {
         shortName: null,
         supportUrl: null,
         termsUrl: null,
+        themeDefaults: { primaryColor: '#E4002B' },
       },
       brandingRevision: '12',
       logoUrl: '/aihub.png',
@@ -49,6 +50,7 @@ describe('resolveRuntimeBranding', () => {
       pageTitleTemplate: '%s · AIHub',
       publishedRevision: '12',
       shortName: 'AIHub',
+      themeDefaults: { primaryColor: '#E4002B' },
     });
     expect(branding.emailFrom).toBe(BUILT_IN_RUNTIME_BRANDING.emailFrom);
     expect(branding.pageTitleTemplate).toBe('%s · AIHub');

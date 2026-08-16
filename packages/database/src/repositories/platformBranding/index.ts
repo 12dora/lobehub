@@ -21,6 +21,7 @@ export interface PlatformBrandingPublishedRow {
   shortName: string | null;
   supportUrl: string | null;
   termsUrl: string | null;
+  themeDefaults: Record<string, unknown> | null;
 }
 
 /** Persistence projection for the anonymous branding read path. */
@@ -51,6 +52,7 @@ export class PlatformBrandingRepository {
         shortName: platformBranding.shortName,
         supportUrl: platformBranding.supportUrl,
         termsUrl: platformBranding.termsUrl,
+        themeDefaults: platformBranding.themeDefaults,
       })
       .from(platformBranding)
       .where(eq(platformBranding.status, 'published'))

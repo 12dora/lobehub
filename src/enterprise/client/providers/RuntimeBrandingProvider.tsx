@@ -1,7 +1,8 @@
 'use client';
 
-import { createContext, type ReactNode, use, useMemo } from 'react';
+import { createContext, type ReactNode, use, useEffect, useMemo } from 'react';
 
+import { setPlatformDefaultPrimaryColor } from '@/layout/GlobalProvider/platformThemeDefaults';
 import type { PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
 
 import {
@@ -22,6 +23,12 @@ export const RuntimeBrandingProvider = ({
   publicSnapshot,
 }: RuntimeBrandingProviderProps) => {
   const branding = useMemo(() => resolveRuntimeBranding(publicSnapshot), [publicSnapshot]);
+  const primaryColor = branding.themeDefaults?.primaryColor ?? null;
+
+  // The theme lives above this provider, so the platform default colour is pushed to it.
+  useEffect(() => {
+    setPlatformDefaultPrimaryColor(primaryColor);
+  }, [primaryColor]);
 
   return <RuntimeBrandingContext value={branding}>{children}</RuntimeBrandingContext>;
 };

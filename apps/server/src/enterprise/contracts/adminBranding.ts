@@ -75,6 +75,7 @@ export const projectAdminBrandingPublished = (branding: AdminBrandingPayload, re
     shortName: branding.shortName,
     supportUrl: branding.supportUrl,
     termsUrl: branding.termsUrl,
+    themeDefaults: branding.themeDefaults,
   });
 
 /** Branding has no draft lane: what the editor loads is what the runtime serves. */

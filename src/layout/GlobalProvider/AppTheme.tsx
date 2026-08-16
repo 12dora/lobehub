@@ -28,6 +28,9 @@ import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 import { GlobalStyle } from '@/styles';
 import { setCookie } from '@/utils/client/cookie';
 
+import { type BrandPrimaryTheme, resolveBrandPrimaryTheme } from './brandPrimaryTheme';
+import { usePlatformDefaultPrimaryColor } from './platformThemeDefaults';
+
 const styles = createStaticStyles(({ css, cssVar }) => ({
   app: css`
     position: relative;
@@ -111,6 +114,13 @@ const AppTheme = memo<AppThemeProps>(
       userGeneralSettingsSelectors.neutralColor(s),
       userGeneralSettingsSelectors.animationMode(s),
     ]);
+    // Admin-configured platform default; a personal choice always wins over it.
+    const platformPrimaryColor = usePlatformDefaultPrimaryColor();
+    const brandPrimary = useMemo<BrandPrimaryTheme>(
+      () => (primaryColor ? {} : resolveBrandPrimaryTheme(platformPrimaryColor, isDark)),
+      [primaryColor, platformPrimaryColor, isDark],
+    );
+
     const messageTop = isDesktop ? TITLE_BAR_HEIGHT + 8 : undefined;
     const appConfig = useMemo(
       () => (messageTop === undefined ? {} : { message: { top: messageTop } }),
@@ -162,9 +172,10 @@ const AppTheme = memo<AppThemeProps>(
           defaultThemeMode={currentAppearence}
           customTheme={{
             neutralColor: neutralColor ?? defaultNeutralColor,
-            primaryColor: primaryColor ?? defaultPrimaryColor,
+            primaryColor: primaryColor ?? brandPrimary.primaryColor ?? defaultPrimaryColor,
           }}
           theme={{
+            algorithm: brandPrimary.algorithm,
             cssVar: { key: 'lobe-vars' },
             token: {
               fontFamily: customFontFamily

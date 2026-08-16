@@ -1,6 +1,7 @@
 import { BUILT_IN_RUNTIME_BRANDING as BUILT_IN_BRANDING } from '@lobechat/business-const';
 
 import {
+  NO_PLATFORM_BRANDING_THEME_DEFAULTS,
   resolveRuntimeBranding as resolveBranding,
   type RuntimeBranding,
 } from '@/types/platform/branding';
@@ -9,7 +10,10 @@ import { resolveSafePlatformPublicSnapshot } from '@/types/platform/publicSnapsh
 
 export type { RuntimeBranding } from '@/types/platform/branding';
 
-export const BUILT_IN_RUNTIME_BRANDING: RuntimeBranding = { ...BUILT_IN_BRANDING };
+export const BUILT_IN_RUNTIME_BRANDING: RuntimeBranding = {
+  ...BUILT_IN_BRANDING,
+  themeDefaults: { ...NO_PLATFORM_BRANDING_THEME_DEFAULTS },
+};
 
 /** Field-by-field fallback prevents partial Published values from creating blank branding. */
 export const resolveRuntimeBranding = (snapshot: PlatformPublicSnapshot): RuntimeBranding => {

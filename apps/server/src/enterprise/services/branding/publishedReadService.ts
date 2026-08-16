@@ -2,8 +2,11 @@ import { PlatformBrandingModel } from '@/database/models/platform';
 import type { PlatformBrandingPublishedRow } from '@/database/repositories/platformBranding';
 import type { LobeChatDatabase } from '@/database/type';
 import {
+  NO_PLATFORM_BRANDING_THEME_DEFAULTS,
   type PlatformBrandingPublished,
   platformBrandingPublishedSchema,
+  type PlatformBrandingThemeDefaults,
+  platformBrandingThemeDefaultsSchema,
 } from '@/types/platform/branding';
 
 import { DomainConfigCache, invalidateDomainConfigCacheNamespace } from '../../runtimeConfig';
@@ -36,7 +39,25 @@ const clonePublishedBranding = (
   branding: PlatformBrandingPublished,
 ): PlatformBrandingPublished => ({
   ...branding,
+  themeDefaults: branding.themeDefaults && { ...branding.themeDefaults },
 });
+
+/**
+ * Theme defaults live in a free-form jsonb column, so a corrupt payload must degrade to
+ * "no platform default colour" instead of taking the whole published branding down.
+ */
+const projectThemeDefaults = (value: unknown): PlatformBrandingThemeDefaults => {
+  // Only the known key is projected: whatever else the admin editor stored alongside it
+  // must neither reach the anonymous snapshot nor invalidate a perfectly good colour.
+  const primaryColor =
+    value && typeof value === 'object' && 'primaryColor' in value
+      ? (value as { primaryColor: unknown }).primaryColor
+      : null;
+  const parsed = platformBrandingThemeDefaultsSchema.safeParse({
+    primaryColor: primaryColor ?? null,
+  });
+  return parsed.success ? parsed.data : { ...NO_PLATFORM_BRANDING_THEME_DEFAULTS };
+};
 
 const projectPublishedBranding = (row: PlatformBrandingPublishedRow): PlatformBrandingPublished => {
   if (!Number.isSafeInteger(row.revision) || row.revision <= 0) {
@@ -60,6 +81,7 @@ const projectPublishedBranding = (row: PlatformBrandingPublishedRow): PlatformBr
     shortName: row.shortName,
     supportUrl: row.supportUrl,
     termsUrl: row.termsUrl,
+    themeDefaults: projectThemeDefaults(row.themeDefaults),
   });
 };
 

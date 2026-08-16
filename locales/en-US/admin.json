@@ -985,7 +985,7 @@
   "branding.fields.pageTitleTemplate": "Page title template (include %s)",
   "branding.fields.primaryColor": "Primary color",
   "branding.fields.primaryColorCustom": "Custom",
-  "branding.fields.primaryColorHint": "Reserved for upcoming theme customization.",
+  "branding.fields.primaryColorHint": "Applied as the platform default primary colour after saving; members can still override it in their own settings.",
   "branding.fields.primaryColorInvalid": "Enter a 6-digit hex color, for example #1677FF.",
   "branding.fields.primaryColorPresets": "Presets",
   "branding.fields.privacyUrl": "Privacy URL",

@@ -5,6 +5,8 @@ import {
   platformBrandingDraftSchema,
   platformBrandingLinkUrlSchema,
   platformBrandingPublishedSchema,
+  resolveRuntimeBranding,
+  type RuntimeBranding,
 } from './branding';
 import { platformPublicSnapshotSchema } from './publicSnapshot';
 
@@ -147,6 +149,54 @@ describe('platform branding contracts', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('carries the published primary colour into runtime branding', () => {
+    const fallback: RuntimeBranding = {
+      defaultAgentDisplayName: 'Lobe AI',
+      emailFrom: null,
+      emailSenderName: 'Lobe',
+      faviconUrl: null,
+      homeUrl: null,
+      iconUrl: null,
+      legalName: null,
+      logoUrl: null,
+      name: 'Lobe',
+      ogImageUrl: null,
+      pageTitleTemplate: null,
+      privacyUrl: null,
+      publishedRevision: null,
+      shortName: 'Lobe',
+      supportUrl: null,
+      termsUrl: null,
+    };
+    const published = platformBrandingPublishedSchema.parse({
+      ...publishedBranding,
+      themeDefaults: { primaryColor: '#E4002B' },
+    });
+
+    expect(resolveRuntimeBranding(published, fallback).themeDefaults).toEqual({
+      primaryColor: '#E4002B',
+    });
+    // The product fallback never carries a platform colour of its own.
+    expect(resolveRuntimeBranding(null, fallback).themeDefaults).toEqual({ primaryColor: null });
+    // Snapshots published before theme defaults existed resolve to "no platform colour".
+    expect(
+      resolveRuntimeBranding(platformBrandingPublishedSchema.parse(publishedBranding), fallback)
+        .themeDefaults,
+    ).toEqual({ primaryColor: null });
+  });
+
+  it.each(['#fff', 'red', 'rgb(1,2,3)', '#12345g'])(
+    'rejects a theme default that is not a 6-digit hex: %s',
+    (primaryColor) => {
+      expect(
+        platformBrandingPublishedSchema.safeParse({
+          ...publishedBranding,
+          themeDefaults: { primaryColor },
+        }).success,
+      ).toBe(false);
+    },
+  );
 
   it.each([
     { logoUrl: 'javascript:alert(1)', platformName: null },

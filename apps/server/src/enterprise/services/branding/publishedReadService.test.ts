@@ -31,6 +31,7 @@ const publishedRow = (revision: number): PlatformBrandingPublishedRow => ({
   shortName: null,
   supportUrl: null,
   termsUrl: null,
+  themeDefaults: null,
 });
 
 const deferred = <T>() => {
@@ -59,7 +60,7 @@ describe('BrandingPublishedReadService', () => {
       logoUrl: '/aihub.png',
       revision: 7,
       status: 'published',
-      themeDefaults: { privateAdminValue: true },
+      themeDefaults: { primaryColor: '#e4002b', privateAdminValue: true },
     });
 
     const branding = await new BrandingPublishedReadService(serverDB, {
@@ -73,11 +74,35 @@ describe('BrandingPublishedReadService', () => {
       name: 'AIHub',
       revision: '7',
     });
-    expect(branding).not.toHaveProperty('themeDefaults');
+    // Only the theme keys the public contract knows about survive the jsonb column — an
+    // unknown key beside a good colour is dropped, never allowed to void the colour.
+    expect(branding?.themeDefaults).toEqual({ primaryColor: '#e4002b' });
     expect(branding).not.toHaveProperty('desktop');
     expect(branding).not.toHaveProperty('audit');
     expect(branding).not.toHaveProperty('admin');
     expect(branding).not.toHaveProperty('id');
+  });
+
+  it('publishes the stored primary colour and drops an unusable one', async () => {
+    const getPublished = vi
+      .fn<() => Promise<PlatformBrandingPublishedRow | undefined>>()
+      .mockResolvedValueOnce({ ...publishedRow(1), themeDefaults: { primaryColor: '#E4002B' } })
+      .mockResolvedValueOnce({ ...publishedRow(2), themeDefaults: { primaryColor: 'red' } });
+    let epoch = '0';
+    const service = new BrandingPublishedReadService(serverDB, {
+      cacheKey: {},
+      getCacheEpoch: async () => epoch,
+      model: { getPublished },
+    });
+
+    await expect(service.getPublished()).resolves.toMatchObject({
+      themeDefaults: { primaryColor: '#E4002B' },
+    });
+
+    epoch = '1';
+    await expect(service.getPublished()).resolves.toMatchObject({
+      themeDefaults: { primaryColor: null },
+    });
   });
 
   it('rejects a malicious Published row instead of returning an unsafe snapshot', async () => {

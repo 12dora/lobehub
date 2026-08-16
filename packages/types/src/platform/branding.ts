@@ -125,6 +125,19 @@ const platformBrandingFieldsSchema = z
   })
   .strict();
 
+/** Platform-wide theme defaults. `null` means "no platform default; keep the product default". */
+export const platformBrandingThemeDefaultsSchema = z
+  .object({
+    primaryColor: z
+      .string()
+      .trim()
+      .regex(/^#[\dA-F]{6}$/i)
+      .nullable(),
+  })
+  .strict();
+
+export const NO_PLATFORM_BRANDING_THEME_DEFAULTS = { primaryColor: null } as const;
+
 /** Editable values. Publication metadata remains outside the public payload. */
 export const platformBrandingDraftSchema = platformBrandingFieldsSchema.extend({
   revision: z.number().int().nonnegative(),
@@ -134,10 +147,13 @@ export const platformBrandingDraftSchema = platformBrandingFieldsSchema.extend({
 export const platformBrandingPublishedSchema = platformBrandingFieldsSchema.extend({
   name: platformBrandingNameSchema,
   revision: z.string().trim().min(1).max(64),
+  // Optional so snapshots serialized before theme defaults existed still parse.
+  themeDefaults: platformBrandingThemeDefaultsSchema.optional(),
 });
 
 export type PlatformBrandingDraft = z.infer<typeof platformBrandingDraftSchema>;
 export type PlatformBrandingPublished = z.infer<typeof platformBrandingPublishedSchema>;
+export type PlatformBrandingThemeDefaults = z.infer<typeof platformBrandingThemeDefaultsSchema>;
 
 export interface RuntimeBranding extends Omit<PlatformBrandingPublished, 'revision'> {
   publishedRevision: string | null;
@@ -148,7 +164,7 @@ export const resolveRuntimeBranding = (
   published: PlatformBrandingPublished | null,
   fallback: RuntimeBranding,
 ): RuntimeBranding => {
-  if (!published) return { ...fallback };
+  if (!published) return { ...fallback, themeDefaults: { ...NO_PLATFORM_BRANDING_THEME_DEFAULTS } };
 
   return {
     defaultAgentDisplayName: published.defaultAgentDisplayName ?? `${published.name} AI`,
@@ -169,6 +185,7 @@ export const resolveRuntimeBranding = (
     shortName: published.shortName ?? published.name,
     supportUrl: published.supportUrl ?? fallback.supportUrl,
     termsUrl: published.termsUrl ?? fallback.termsUrl,
+    themeDefaults: { primaryColor: published.themeDefaults?.primaryColor ?? null },
   };
 };
 
