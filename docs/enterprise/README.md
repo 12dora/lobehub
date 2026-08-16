@@ -32,6 +32,8 @@ AIHub 是基于 LobeHub 的企业内部版二次开发。本目录是这套二�
 - **[reference/permission-matrix.md](./reference/permission-matrix.md)** — RBAC 角色 → 权限矩阵与不变式。
 - **[authentik-setup.md](./authentik-setup.md)** — Authentik / 钉钉 OIDC 从零接入手册。
 - **[dingtalk-login.md](./dingtalk-login.md)** — 钉钉登录方式（`dingtalk` kind）：不经 Authentik 直连钉钉开放平台的接入手册与协议差异说明。
+- **[content-moderation.md](./content-moderation.md)** — 内容审计：提示词阻断 / 降级 / 仅记录的分层判定（关键词 → 决策缓存 → LLM 裁判或 Moderations 端点）、按类别处置、管理面板三 Tab。
+- **[network-proxy.md](./network-proxy.md)** — 网络代理：后装 mihomo 引擎（订阅 / 多协议节点 / 全局单出口）+ 按 AI 服务商 / 网站功能的作用域开关、失败兜底策略、通用设置「网络代理」Tab。
 - **[chatgpt-web-provider.md](./chatgpt-web-provider.md)** — ChatGPT Web (`chatgptweb`) 服务商：curl-impersonate 传输层环境变量、开发机 / 镜像准备、共享账号接入、能力范围与已知限制。
 - **[runbooks/](./runbooks/)** — 运维手册：回滚、灾难恢复、Prometheus 告警、上线预检、安全验收。
 - **[../security/](../security/)** — 企业威胁模型与 Vault 密钥提供方设计。
