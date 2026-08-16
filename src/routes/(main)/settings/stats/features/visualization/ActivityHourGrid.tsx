@@ -157,11 +157,16 @@ const ActivityHourGrid = memo<ActivityHourGridProps>(
     // the layout does not jump once the series lands.
     const placeholder = rows.length === 0;
 
+    // Hours the window does not cover ("today" past the current hour) keep their place
+    // as faint empty squares, so the strip always reads as a whole day under its axis.
     const renderBlock = (cell: ActivityHourCell | undefined, hour: number) => {
       if (!cell)
         return (
           <div className={styles.slot} key={hour}>
-            <div className={styles.blockEmpty} />
+            <div
+              className={styles.blockEmpty}
+              style={{ background: levelColors[0], opacity: 0.35 }}
+            />
           </div>
         );
 
