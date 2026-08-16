@@ -10,6 +10,8 @@ import {
 } from '@/server/modules/ModelRuntime';
 import { OAUTH_RENEWAL_KINDS, parseOAuthRenewalKind } from '@/server/services/oauthDeviceFlow';
 
+import type { CredentialEnv } from './credentialRequirements';
+import { requireApiKey, REQUIRED_CREDENTIALS } from './credentialRequirements';
 import { AiCatalogValidationError } from './errors';
 
 export interface AiCatalogCredentialVault {
@@ -180,10 +182,6 @@ export const validateAiCatalogRuntimeProvider = (
   return runtimeProvider;
 };
 
-const hasText = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
-
-type CredentialEnv = Record<string, string | undefined>;
-
 export const hasAiCatalogEnvironmentFallback = (
   runtimeProvider: string,
   env: CredentialEnv = process.env,
@@ -195,111 +193,7 @@ const assertRequiredCredentials = (
   env: CredentialEnv,
 ): void => {
   if (hasAiCatalogEnvironmentFallback(runtimeProvider, env)) return;
-  switch (runtimeProvider) {
-    case ModelProvider.Ollama: {
-      if (!hasText(keyVaults.baseURL)) {
-        throw new AiCatalogValidationError(['Ollama requires an explicit platform endpoint']);
-      }
-      return;
-    }
-    case ModelProvider.Bedrock: {
-      const accessPair = hasText(keyVaults.accessKeyId) && hasText(keyVaults.secretAccessKey);
-      if ((!accessPair && !hasText(keyVaults.apiKey)) || !hasText(keyVaults.region)) {
-        throw new AiCatalogValidationError(['Bedrock credentials are incomplete']);
-      }
-      return;
-    }
-    case ModelProvider.Cloudflare: {
-      if (!hasText(keyVaults.apiKey) || !hasText(keyVaults.baseURLOrAccountID)) {
-        throw new AiCatalogValidationError(['Cloudflare credentials are incomplete']);
-      }
-      return;
-    }
-    case ModelProvider.ComfyUI: {
-      if (!hasText(keyVaults.baseURL)) {
-        throw new AiCatalogValidationError(['ComfyUI requires an explicit platform endpoint']);
-      }
-      const authType = keyVaults.authType ?? 'none';
-      if (authType === 'basic' && (!hasText(keyVaults.username) || !hasText(keyVaults.password))) {
-        throw new AiCatalogValidationError(['ComfyUI basic credentials are incomplete']);
-      }
-      if (authType === 'bearer' && !hasText(keyVaults.apiKey)) {
-        throw new AiCatalogValidationError(['ComfyUI bearer credential is missing']);
-      }
-      if (
-        authType === 'custom' &&
-        (!keyVaults.customHeaders || Object.keys(keyVaults.customHeaders).length === 0)
-      ) {
-        throw new AiCatalogValidationError(['ComfyUI custom headers are missing']);
-      }
-      return;
-    }
-    case ModelProvider.ChatGPT: {
-      // Shared platform OAuth connection: rotating refresh token + Codex account id.
-      if (
-        !hasText(keyVaults.oauthAccessToken) ||
-        !hasText(keyVaults.oauthRefreshToken) ||
-        !hasText(keyVaults.oauthAccountId)
-      ) {
-        throw new AiCatalogValidationError(['ChatGPT shared OAuth connection is incomplete']);
-      }
-      return;
-    }
-    case ModelProvider.ChatGPTWeb: {
-      /**
-       * Only the access token is required. Unlike the Codex `chatgpt` provider, this one
-       * ALSO supports pasting a bare access token (no refresh grant, no account id from
-       * an id_token), and a connection that can chat must not be rejected as incomplete
-       * just because it cannot auto-renew — the UI states that plainly instead.
-       */
-      if (!hasText(keyVaults.oauthAccessToken)) {
-        throw new AiCatalogValidationError(['ChatGPT Web shared OAuth connection is incomplete']);
-      }
-      return;
-    }
-    case ModelProvider.GithubCopilot: {
-      if (
-        !hasText(keyVaults.apiKey) &&
-        !hasText(keyVaults.bearerToken) &&
-        !hasText(keyVaults.oauthAccessToken)
-      ) {
-        throw new AiCatalogValidationError(['GitHub Copilot credential is missing']);
-      }
-      return;
-    }
-    case ModelProvider.SuperGrok: {
-      // Shared platform OAuth connection: rotating refresh token.
-      if (!hasText(keyVaults.oauthAccessToken) || !hasText(keyVaults.oauthRefreshToken)) {
-        throw new AiCatalogValidationError(['SuperGrok shared OAuth connection is incomplete']);
-      }
-      return;
-    }
-    case ModelProvider.VertexAI: {
-      if (!hasText(keyVaults.apiKey)) {
-        throw new AiCatalogValidationError(['Vertex AI service account is missing']);
-      }
-      try {
-        const credentials: unknown = JSON.parse(keyVaults.apiKey);
-        if (
-          !credentials ||
-          typeof credentials !== 'object' ||
-          !('client_email' in credentials) ||
-          !('private_key' in credentials) ||
-          !('project_id' in credentials)
-        ) {
-          throw new Error('invalid service account');
-        }
-      } catch {
-        throw new AiCatalogValidationError(['Vertex AI service account is invalid']);
-      }
-      return;
-    }
-    default: {
-      if (!hasText(keyVaults.apiKey)) {
-        throw new AiCatalogValidationError(['Provider API key is missing']);
-      }
-    }
-  }
+  (REQUIRED_CREDENTIALS[runtimeProvider] ?? requireApiKey)(keyVaults);
 };
 
 export const normalizeAiCatalogExecutionCredentials = (params: {

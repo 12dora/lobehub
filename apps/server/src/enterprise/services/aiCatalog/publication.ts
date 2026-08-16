@@ -10,17 +10,7 @@ import {
   type ResourcePointerAdapter,
 } from '@/database/models/platform';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
-import {
-  type NewPlatformAiModel,
-  type PlatformAiModelAbilities,
-  type PlatformAiModelConfig,
-  type PlatformAiModelParameters,
-  type PlatformAiModelPricing,
-  platformAiModels,
-  type PlatformAiModelSettings,
-  type PlatformAiProviderConfig,
-  type PlatformAiProviderSettings,
-} from '@/database/schemas/platform';
+import { platformAiModels } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import {
   isCredentialBearingUrl,
@@ -33,6 +23,7 @@ import {
   type adminAiProviderRollbackInputSchema,
   aiModelDraftSchema,
 } from '../../contracts/aiCatalog';
+import type { AuditAction } from '../audit/auditActionCatalog';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { invalidateAiCatalogAuthorityToken } from '../platformInstance/catalogTokens';
@@ -49,6 +40,7 @@ import {
   AiCatalogValidationError,
 } from './errors';
 import { sanitizeAiCatalogPersistedText } from './persistentText';
+import { coercePublishedProviderColumns, toPublishedModelRows } from './publicationCoercion';
 import type { AiCatalogSecretManager } from './secretManager';
 import { aiCatalogDraftToken, appendAiCatalogFailureAudit } from './shared';
 
@@ -305,15 +297,8 @@ export class AiCatalogPublicationService {
           if (removed) await this.lifecycle.afterModelDependencyCheck?.();
         }
         await repository.updateProvider(providerId, {
-          checkModel: typeof provider.checkModel === 'string' ? provider.checkModel : null,
-          config: isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {},
-          description: typeof provider.description === 'string' ? provider.description : null,
-          displayName:
-            typeof provider.displayName === 'string' ? provider.displayName : 'Unnamed provider',
-          enabled: provider.enabled === true,
+          ...coercePublishedProviderColumns(provider),
           encryptedKeyVaults: secretVersion?.ciphertext ?? null,
-          fetchOnClient: provider.fetchOnClient === true,
-          logo: typeof provider.logo === 'string' ? provider.logo : null,
           revision,
           secretFingerprint: secretVersion?.fingerprint ?? null,
           secretKeyId: isDeactivatingPublished
@@ -327,29 +312,17 @@ export class AiCatalogPublicationService {
           secretUpdatedAt: isDeactivatingPublished
             ? storedProvider.secretUpdatedAt
             : (secretVersion?.createdAt ?? null),
-          settings: isRecord(provider.settings)
-            ? (provider.settings as PlatformAiProviderSettings)
-            : {},
-          sort: typeof provider.sort === 'number' ? provider.sort : 0,
-          source: typeof provider.source === 'string' ? provider.source : 'custom',
           status: status === 'archived' ? 'archived' : 'published',
           updatedBy: actorUserId,
         });
         await tx.delete(platformAiModels).where(eq(platformAiModels.providerId, providerId));
         if (models.length > 0) {
-          const rows: NewPlatformAiModel[] = models.map((model) => ({
-            ...model,
-            abilities: model.abilities as PlatformAiModelAbilities,
-            config: model.config as PlatformAiModelConfig | null,
-            parameters: model.parameters as PlatformAiModelParameters,
-            pricing: model.pricing as PlatformAiModelPricing | null,
+          const rows = toPublishedModelRows(models, {
+            actorUserId,
             providerId,
-            publishedAt: status === 'published' ? new Date() : null,
             revision,
-            settings: model.settings as PlatformAiModelSettings,
-            status: status === 'archived' ? 'archived' : 'published',
-            updatedBy: actorUserId,
-          }));
+            status,
+          });
           await tx.insert(platformAiModels).values(rows);
         }
         if (operation === 'publish' && status === 'published') {
@@ -410,102 +383,116 @@ export class AiCatalogPublicationService {
     };
   };
 
-  publishProvider = async (actorUserId: string, input: PublishProviderInput) => {
-    const reason = await this.sanitizeReason(input.id, input.reason);
+  private withPublicationAudit = async <T>(
+    action: AuditAction,
+    actorUserId: string,
+    id: string,
+    reason: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
     try {
-      const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
-      if (!draft) throw new AiCatalogNotFoundError();
-      const result = await this.publisher.publish({
-        actorUserId,
-        deferInvalidation: this.deferInvalidation,
-        expectedRevision: input.expectedRevision,
-        invalidationScopes: ['ai-catalog', 'model-runtime'],
-        payload: {},
-        pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
-        reason,
-        redactionOptions: M07_REDACTION_OPTIONS,
-        resourceId: input.id,
-        resourceType: 'provider',
-        secretFingerprint: draft.secret.fingerprint,
-      });
-      this.invalidateAuthorityToken();
-      return { auditId: result.auditId, revision: result.revision.revision };
+      return await run();
     } catch (error) {
       await appendAiCatalogFailureAudit(this.db, {
-        action: 'admin.aiProviders.publish',
+        action,
         actorUserId,
         reason,
-        targetId: input.id,
+        targetId: id,
       });
       throw error;
     }
+  };
+
+  publishProvider = async (actorUserId: string, input: PublishProviderInput) => {
+    const reason = await this.sanitizeReason(input.id, input.reason);
+    return this.withPublicationAudit(
+      'admin.aiProviders.publish',
+      actorUserId,
+      input.id,
+      reason,
+      async () => {
+        const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
+        if (!draft) throw new AiCatalogNotFoundError();
+        const result = await this.publisher.publish({
+          actorUserId,
+          deferInvalidation: this.deferInvalidation,
+          expectedRevision: input.expectedRevision,
+          invalidationScopes: ['ai-catalog', 'model-runtime'],
+          payload: {},
+          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
+          reason,
+          redactionOptions: M07_REDACTION_OPTIONS,
+          resourceId: input.id,
+          resourceType: 'provider',
+          secretFingerprint: draft.secret.fingerprint,
+        });
+        this.invalidateAuthorityToken();
+        return { auditId: result.auditId, revision: result.revision.revision };
+      },
+    );
   };
 
   archiveProvider = async (actorUserId: string, input: ArchiveProviderInput) => {
     const reason = await this.sanitizeReason(input.id, input.reason);
-    try {
-      const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
-      if (!draft) throw new AiCatalogNotFoundError();
-      const result = await this.publisher.publish({
-        actorUserId,
-        deferInvalidation: this.deferInvalidation,
-        expectedRevision: input.expectedRevision,
-        invalidationScopes: ['ai-catalog', 'model-runtime'],
-        payload: {},
-        pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, false, true),
-        reason,
-        redactionOptions: M07_REDACTION_OPTIONS,
-        resourceId: input.id,
-        resourceType: 'provider',
-        secretFingerprint: draft.secret.fingerprint,
-        status: 'archived',
-      });
-      this.invalidateAuthorityToken();
-      return { auditId: result.auditId, revision: result.revision.revision };
-    } catch (error) {
-      await appendAiCatalogFailureAudit(this.db, {
-        action: 'admin.aiProviders.archive',
-        actorUserId,
-        reason,
-        targetId: input.id,
-      });
-      throw error;
-    }
+    return this.withPublicationAudit(
+      'admin.aiProviders.archive',
+      actorUserId,
+      input.id,
+      reason,
+      async () => {
+        const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
+        if (!draft) throw new AiCatalogNotFoundError();
+        const result = await this.publisher.publish({
+          actorUserId,
+          deferInvalidation: this.deferInvalidation,
+          expectedRevision: input.expectedRevision,
+          invalidationScopes: ['ai-catalog', 'model-runtime'],
+          payload: {},
+          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, false, true),
+          reason,
+          redactionOptions: M07_REDACTION_OPTIONS,
+          resourceId: input.id,
+          resourceType: 'provider',
+          secretFingerprint: draft.secret.fingerprint,
+          status: 'archived',
+        });
+        this.invalidateAuthorityToken();
+        return { auditId: result.auditId, revision: result.revision.revision };
+      },
+    );
   };
 
   rollbackProvider = async (actorUserId: string, input: RollbackProviderInput) => {
     const reason = await this.sanitizeReason(input.id, input.reason);
-    try {
-      const target = await new PlatformAiCatalogRepository(this.db).getProviderRevision(
-        input.id,
-        input.targetRevision,
-      );
-      if (!target || target.status !== 'published') {
-        throw new AiCatalogValidationError([
-          'Rollback target must be a published provider revision',
-        ]);
-      }
-      const result = await this.publisher.rollback({
-        actorUserId,
-        deferInvalidation: this.deferInvalidation,
-        expectedRevision: input.expectedRevision,
-        invalidationScopes: ['ai-catalog', 'model-runtime'],
-        pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
-        reason,
-        resourceId: input.id,
-        resourceType: 'provider',
-        targetRevision: input.targetRevision,
-      });
-      this.invalidateAuthorityToken();
-      return { auditId: result.auditId, revision: result.revision.revision };
-    } catch (error) {
-      await appendAiCatalogFailureAudit(this.db, {
-        action: 'admin.aiProviders.rollback',
-        actorUserId,
-        reason,
-        targetId: input.id,
-      });
-      throw error;
-    }
+    return this.withPublicationAudit(
+      'admin.aiProviders.rollback',
+      actorUserId,
+      input.id,
+      reason,
+      async () => {
+        const target = await new PlatformAiCatalogRepository(this.db).getProviderRevision(
+          input.id,
+          input.targetRevision,
+        );
+        if (!target || target.status !== 'published') {
+          throw new AiCatalogValidationError([
+            'Rollback target must be a published provider revision',
+          ]);
+        }
+        const result = await this.publisher.rollback({
+          actorUserId,
+          deferInvalidation: this.deferInvalidation,
+          expectedRevision: input.expectedRevision,
+          invalidationScopes: ['ai-catalog', 'model-runtime'],
+          pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
+          reason,
+          resourceId: input.id,
+          resourceType: 'provider',
+          targetRevision: input.targetRevision,
+        });
+        this.invalidateAuthorityToken();
+        return { auditId: result.auditId, revision: result.revision.revision };
+      },
+    );
   };
 }

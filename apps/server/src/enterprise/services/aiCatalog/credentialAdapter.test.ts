@@ -1,6 +1,7 @@
 import { ModelProvider } from 'model-bank';
 import { describe, expect, it } from 'vitest';
 
+import type { AiCatalogCredentialVault } from './credentialAdapter';
 import {
   credentialStringLeaves,
   normalizeAiCatalogExecutionCredentials,
@@ -9,6 +10,17 @@ import {
   validateAiCatalogRuntimeProvider,
 } from './credentialAdapter';
 import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
+import { AiCatalogValidationError } from './errors';
+
+const expectValidationIssues = (fn: () => unknown, issues: string[]) => {
+  expect(fn).toThrow(AiCatalogValidationError);
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toMatchObject({ issues });
+    return;
+  }
+};
 
 describe('AI catalog credential adapter', () => {
   it('does not treat structural authType/region fields as credential leaves', () => {
@@ -442,5 +454,95 @@ describe('AI catalog credential adapter', () => {
     expect(providerCredentialKeys(ModelProvider.SuperGrok).has('oauthAccountEmail')).toBe(false);
     // Unknown providers fall back to the OpenAI-compatible shape.
     expect([...providerCredentialKeys('some-custom-provider')]).toEqual(['apiKey', 'baseURL']);
+  });
+
+  it('requires a ComfyUI platform endpoint and per-auth-mode credentials', () => {
+    const normalize = (keyVaults: AiCatalogCredentialVault) =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults,
+        providerKey: ModelProvider.ComfyUI,
+        settings: {},
+        source: 'builtin',
+      });
+
+    expectValidationIssues(() => normalize({}), ['ComfyUI requires an explicit platform endpoint']);
+    expectValidationIssues(
+      () =>
+        normalize({
+          authType: 'basic',
+          baseURL: 'https://comfy.example.test',
+          username: 'admin',
+        }),
+      ['ComfyUI basic credentials are incomplete'],
+    );
+    expectValidationIssues(
+      () =>
+        normalize({
+          authType: 'bearer',
+          baseURL: 'https://comfy.example.test',
+        }),
+      ['ComfyUI bearer credential is missing'],
+    );
+    expectValidationIssues(
+      () =>
+        normalize({
+          authType: 'custom',
+          baseURL: 'https://comfy.example.test',
+          customHeaders: {},
+        }),
+      ['ComfyUI custom headers are missing'],
+    );
+    // `authType` defaults to `'none'` — an explicit endpoint with no auth is complete.
+    expect(() => normalize({ baseURL: 'https://comfy.example.test' })).not.toThrow();
+  });
+
+  it('requires a parseable Vertex AI service-account JSON blob', () => {
+    const normalize = (keyVaults: AiCatalogCredentialVault) =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults,
+        providerKey: ModelProvider.VertexAI,
+        settings: {},
+        source: 'builtin',
+      });
+
+    expectValidationIssues(() => normalize({}), ['Vertex AI service account is missing']);
+    expectValidationIssues(
+      () => normalize({ apiKey: '{}' }),
+      ['Vertex AI service account is invalid'],
+    );
+    expectValidationIssues(
+      () => normalize({ apiKey: 'not json' }),
+      ['Vertex AI service account is invalid'],
+    );
+    expect(() =>
+      normalize({
+        apiKey: JSON.stringify({
+          client_email: 'sa@example.test',
+          private_key: '-----BEGIN PRIVATE KEY-----',
+          project_id: 'proj-1',
+        }),
+      }),
+    ).not.toThrow();
+  });
+
+  it('requires any one GitHub Copilot credential leaf', () => {
+    const normalize = (keyVaults: AiCatalogCredentialVault) =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: {},
+        keyVaults,
+        providerKey: ModelProvider.GithubCopilot,
+        settings: {},
+        source: 'builtin',
+      });
+
+    expectValidationIssues(() => normalize({}), ['GitHub Copilot credential is missing']);
+    expect(() => normalize({ apiKey: 'ghp-1' })).not.toThrow();
+    expect(() => normalize({ bearerToken: 'ghu-1' })).not.toThrow();
+    expect(() => normalize({ oauthAccessToken: 'gho-1' })).not.toThrow();
   });
 });
