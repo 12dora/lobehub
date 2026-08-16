@@ -38,14 +38,14 @@
 | `/admin/audit/retention`                             | `RetentionPage`              | `AUDIT_RETENTION_OPERATE` | 审计组                                                                                                                       |
 | **`/admin/system`**                                  | `SystemIndexRedirect`        | —                         | **系统组父路径**：`indexRedirectTo: 'system-status'`，优先重定向到「状态监控」（老书签兼容），无权限则退回首个有权访问的子项 |
 | `/admin/system/general`                              | `SystemGeneralPage`          | `SYSTEM_READ`             | 系统组・「通用设置」占位页（后续版本填充）                                                                                   |
-| `/admin/system/status`                               | `SystemPage`                 | `SYSTEM_READ`             | 系统组・「状态监控」（原 `/admin/system`）                                                                                   |
-| `/admin/identity-providers`                          | `SecurityAuthPage`           | `IDENTITY_READ`           | 系统组・「安全与认证」：承载「登录方式」与「通用设置」Tab；路径为深链兼容保留                                                |
-| `/admin/branding`                                    | `BrandingPage`               | `BRANDING_READ`           | 系统组                                                                                                                       |
-| `/admin/users`                                       | `UsersListPage`              | `USER_READ`               | 系统组                                                                                                                       |
+| `/admin/users`                                       | `UsersListPage`              | `USER_READ`               | 系统组・「用户管理」                                                                                                         |
 | `/admin/users/:id`                                   | `UserDetailPage`             | `USER_READ`               | 系统组・隐藏・详情                                                                                                           |
 | `/admin/unified`                                     | `UnifiedManagementPage`      | —                         | 系统组・仅 shell 门禁；页内各 Tab 自守 `SETTINGS_READ` / `POLICY_READ` / `CONNECTOR_READ`                                    |
 | `/admin/settings`                                    | `SettingsPolicyPage`         | `SETTINGS_READ`           | 系统组・隐藏・深链兼容（可见入口为 `/admin/unified`）                                                                        |
 | `/admin/managed-resources`                           | `ManagedResourcesPolicyPage` | `POLICY_READ`             | 系统组・隐藏・深链兼容（可见入口为 `/admin/unified`）                                                                        |
+| `/admin/system/status`                               | `SystemPage`                 | `SYSTEM_READ`             | 系统组・「状态监控」（原 `/admin/system`）                                                                                   |
+| `/admin/identity-providers`                          | `SecurityAuthPage`           | `IDENTITY_READ`           | 系统组・「安全与认证」：承载「登录方式」与「通用设置」Tab；路径为深链兼容保留                                                |
+| `/admin/branding`                                    | `BrandingPage`               | `BRANDING_READ`           | 系统组                                                                                                                       |
 
 组父路径（`/admin/ai`、`/admin/audit`、`/admin/system`）不是 placeholder，而是索引重定向：进入后落到当前身份首个可访问的子项（`GroupIndexRedirect` 用 `ADMIN_NAV_ITEMS` + `hasAllPermissions` 选择）。`/admin` 索引即概览页。
 

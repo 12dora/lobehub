@@ -17,6 +17,20 @@ import { isModifierClick } from '@/utils/navigation';
 
 import { adminShellStyles } from './style';
 
+/**
+ * Single vertical rhythm for the whole side nav.
+ *
+ * Every adjacent pair of rows must be separated by exactly this much, whatever the group
+ * boundaries are. Three places have to agree, because the Accordion contributes its own gap
+ * *between* top-level entries while an expanded group's content box sits inside one of them:
+ * - `Accordion gap` — top-level item ↔ top-level item, and group's last child ↔ the next
+ *   top-level row (the content box adds nothing below it, see `paddingBlockEnd: 0`);
+ * - the group content `Flexbox gap` — child ↔ child;
+ * - the group content `paddingBlockStart` — group header ↔ its first child (`.accordion-item`
+ *   is a plain flex column with no gap of its own).
+ */
+const NAV_ROW_GAP = 2;
+
 const isActivePath = (pathname: string, itemPath: string) => {
   if (itemPath === '/admin') return pathname === '/admin' || pathname === '/admin/';
   if (itemPath.includes(':')) return false;
@@ -62,8 +76,8 @@ const AdminSideNav = memo(() => {
 
   return (
     <nav aria-label={t('nav.aria')} className={adminShellStyles.sideNav}>
-      <Flexbox gap={4} paddingInline={2}>
-        <Accordion defaultExpandedKeys={defaultExpandedKeys} gap={8}>
+      <Flexbox gap={NAV_ROW_GAP} paddingInline={2}>
+        <Accordion defaultExpandedKeys={defaultExpandedKeys} gap={NAV_ROW_GAP}>
           {items.map((item) => {
             if (item.children?.length) {
               return (
@@ -83,7 +97,7 @@ const AdminSideNav = memo(() => {
                     </Flexbox>
                   }
                 >
-                  <Flexbox gap={1} paddingBlock={1}>
+                  <Flexbox gap={NAV_ROW_GAP} style={{ paddingBlockStart: NAV_ROW_GAP }}>
                     {item.children.map((child) => (
                       <AdminNavLink item={child} key={child.id} />
                     ))}

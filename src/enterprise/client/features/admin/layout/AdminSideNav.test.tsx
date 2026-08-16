@@ -32,12 +32,28 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   }),
 }));
 
+// Spacing props are surfaced as data-* so the vertical-rhythm invariant can be asserted.
 vi.mock('@lobehub/ui', async () => {
   const React = await import('react');
   return {
-    Accordion: ({ children }: any) => React.createElement('div', null, children),
+    Accordion: ({ children, gap }: any) =>
+      React.createElement(
+        'div',
+        { 'data-gap': String(gap), 'data-testid': 'nav-accordion' },
+        children,
+      ),
     AccordionItem: ({ children, title }: any) => React.createElement('div', null, title, children),
-    Flexbox: ({ children }: any) => React.createElement('div', null, children),
+    Flexbox: ({ children, gap, style }: any) =>
+      React.createElement(
+        'div',
+        {
+          'data-gap': gap === undefined ? undefined : String(gap),
+          'data-padding-block-start':
+            style?.paddingBlockStart === undefined ? undefined : String(style.paddingBlockStart),
+          'data-testid': 'nav-flexbox',
+        },
+        children,
+      ),
     Icon: () => null,
     Text: ({ children }: any) => React.createElement('span', null, children),
   };
@@ -95,6 +111,32 @@ describe('AdminSideNav (canonical NavItem)', () => {
 
     fireEvent.click(usersLink!);
     expect(navigate).toHaveBeenCalledWith('/admin/users');
+  });
+
+  it('keeps one vertical rhythm across group boundaries', () => {
+    render(
+      <MemoryRouter initialEntries={['/admin/users']}>
+        <AdminSideNav />
+      </MemoryRouter>,
+    );
+
+    // The Accordion gap separates top-level rows AND a group's last child from the next
+    // top-level row, so every in-group gap must match it exactly — otherwise group
+    // boundaries read as extra whitespace.
+    const rowGap = screen.getByTestId('nav-accordion').dataset.gap;
+    expect(rowGap).toBeTruthy();
+
+    const groupContents = screen
+      .getAllByTestId('nav-flexbox')
+      .filter((node) => node.dataset.paddingBlockStart !== undefined);
+    expect(groupContents.length).toBeGreaterThan(0);
+
+    for (const content of groupContents) {
+      // child ↔ child
+      expect(content.dataset.gap).toBe(rowGap);
+      // group header ↔ its first child (`.accordion-item` has no gap of its own)
+      expect(content.dataset.paddingBlockStart).toBe(rowGap);
+    }
   });
 
   it('marks the active page with aria-current', () => {

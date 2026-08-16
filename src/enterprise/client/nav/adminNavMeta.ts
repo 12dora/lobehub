@@ -275,28 +275,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
       },
       {
-        // Former `/admin/system` leaf. `/admin/system` is now the group index redirect,
-        // so old deep links still land on a real page.
-        id: 'system-status',
-        labelKey: 'nav.systemStatus',
-        path: '/admin/system/status',
-        requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
-      },
-      {
-        // "安全与认证" surface: hosts the identity-provider ("登录方式") tab and the
-        // registration/login policy ("通用设置") tab. Path kept for deep-link back-compat.
-        id: 'identity-providers',
-        labelKey: 'nav.securityAuth',
-        path: '/admin/identity-providers',
-        requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],
-      },
-      {
-        id: 'branding',
-        labelKey: 'nav.branding',
-        path: '/admin/branding',
-        requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
-      },
-      {
         id: 'users',
         labelKey: 'nav.users',
         path: '/admin/users',
@@ -337,6 +315,28 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         labelKey: 'nav.managedResources',
         path: '/admin/managed-resources',
         requiredPermissions: [PLATFORM_PERMISSIONS.POLICY_READ],
+      },
+      {
+        // Former `/admin/system` leaf. `/admin/system` is now the group index redirect
+        // (pinned back to this child), so old deep links still land on a real page.
+        id: 'system-status',
+        labelKey: 'nav.systemStatus',
+        path: '/admin/system/status',
+        requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
+      },
+      {
+        // "安全与认证" surface: hosts the identity-provider ("登录方式") tab and the
+        // registration/login policy ("通用设置") tab. Path kept for deep-link back-compat.
+        id: 'identity-providers',
+        labelKey: 'nav.securityAuth',
+        path: '/admin/identity-providers',
+        requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],
+      },
+      {
+        id: 'branding',
+        labelKey: 'nav.branding',
+        path: '/admin/branding',
+        requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
       },
     ],
     id: 'system',

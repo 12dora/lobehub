@@ -729,7 +729,7 @@ export default {
   'creds.page.desc':
     'Platform-owned global credentials shared by all users. Secrets are envelope-encrypted and never revealed after save.',
   'nav.userDetail': 'User detail',
-  'nav.users': 'Users',
+  'nav.users': 'User management',
   'groupRedirect.noAccess': 'You do not have access to any page in this section.',
   'groupRedirect.redirecting': 'Opening the first page you can access…',
   'notFound.desc': 'This admin page does not exist or is not available.',
@@ -755,7 +755,7 @@ export default {
   'overview.quickLinks.statsTitle': 'Full statistics',
   'overview.quickLinks.title': 'Quick links',
   'overview.quickLinks.usersDesc': 'Manage platform users, roles, and access.',
-  'overview.quickLinks.usersTitle': 'Users',
+  'overview.quickLinks.usersTitle': 'User management',
   'overview.rank.agentFallback': 'Untitled agent',
   'overview.rank.agentsLeft': 'Agent',
   'overview.rank.agentsRight': 'Topics',
@@ -1014,7 +1014,7 @@ export default {
   'skillCatalog.version.formInvalid':
     'Provide valid SemVer, content, manifest JSON, resources JSON, and a reason.',
   'skillCatalog.version.title': 'Create Skill version',
-  'users.list.title': 'Users',
+  'users.list.title': 'User management',
   'users.list.desc': 'Search and manage platform users, bans, sessions, and global roles.',
   'users.list.searchPlaceholder': 'Search email or username…',
   'users.list.empty': 'No users yet',

@@ -53,4 +53,5 @@
 - **基础准入**：首次建号（Better Auth `user.create.after`）经 `ensureDefaultPlatformUserRole` 授予 `platform_user`；该角色权限包为空 `[]`，无任何 admin API，仅代表已登录准入。
 - **单闸校验**：admin procedure 用 `withPlatformPermission(code)` 单个权限把关；需多权限时用 `withAllPlatformPermissions([...])` 单一中间件，禁止叠加多个 gate（reconcile 断言每条路由恰好一个平台权限闸）。中间件先校验登录与 `ENABLE_PLATFORM_ADMIN` 特性开关，拒绝时写 `admin.permission.denied` 审计。
 - **写操作按最小动作分权**：mutation 校验各自的 `create/update/delete/test/publish`，不以粗粒度 `update` 代偿；`list/get` 仅要求对应 `:read:`。
-- **超管引导**：`super_admin` 不自动授予任何注册用户。仅通过运维一次性 CLI `apps/server/src/enterprise/bootstrap/superAdmin.ts`（`BOOTSTRAP_SUPER_ADMIN_USER_ID` / `_EMAIL` 提升已有用户；`BOOTSTRAP_ALLOW_CREATE=1` 创建本地 break-glass 凭据账号，一次性口令仅打印一次）。幂等，需 DB 访问，非 Web 端点；`AUTH_DISABLE_EMAIL_PASSWORD` 开启时拒绝创建 break-glass 账号。
+- **超管引导**：`super_admin` 不自动授予任何注册用户。两条等价路径，共用同一份逻辑（`apps/server/src/enterprise/bootstrap/superAdmin.ts`）：①服务端启动时按 `BOOTSTRAP_*` 环境变量自动执行（`apps/server/src/enterprise/bootstrap/startupBootstrap.ts`，纯 Docker 部署无需仓库检出）；②运维一次性 CLI 直接运行该脚本。`BOOTSTRAP_SUPER_ADMIN_USER_ID` / `_EMAIL` 提升已有用户；`BOOTSTRAP_ALLOW_CREATE=1` 创建本地 break-glass 凭据账号，一次性口令仅打印一次。幂等；`AUTH_DISABLE_EMAIL_PASSWORD` 开启时拒绝创建 break-glass 账号。
+- **特性开关默认全开**：LobeHub Enhanced 的所有 `ENABLE_*` 增强能力默认开启，显式设为 `0`/`false`/`no`/`off` 才关闭。开关只决定「功能面是否挂载」，不授予任何权限 ——admin API 一律仍需通过 `withPlatformPermission` 的 RBAC 闸。

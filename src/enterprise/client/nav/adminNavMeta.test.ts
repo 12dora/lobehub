@@ -71,11 +71,11 @@ describe('adminNavMeta', () => {
     expect(system?.children?.some((c) => c.id === system.indexRedirectTo)).toBe(true);
     expect(system?.children?.filter((c) => !c.hideFromNav).map((c) => c.id)).toEqual([
       'system-general',
+      'users',
+      'unified-management',
       'system-status',
       'identity-providers',
       'branding',
-      'users',
-      'unified-management',
     ]);
     // Paths are unchanged so existing deep links / bookmarks keep working.
     expect(findAdminNavItemByPath('/admin/users')?.id).toBe('users');
@@ -86,8 +86,8 @@ describe('adminNavMeta', () => {
     // The group is visible as soon as a single child is allowed.
     const nav = filterAdminNavByPermissions(ADMIN_NAV_ITEMS, [PLATFORM_PERMISSIONS.BRANDING_READ]);
     expect(nav.find((item) => item.id === 'system')?.children?.map((c) => c.id)).toEqual([
-      'branding',
       'unified-management',
+      'branding',
     ]);
   });
 
