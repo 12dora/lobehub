@@ -12,7 +12,7 @@ import { useAdminSystemInstances } from './useAdminSystem';
 type InstancesKeyLoader = (
   index: number,
   previous: AdminSystemInstanceRevisions | null,
-) => readonly [string, { cursor?: string; limit?: number } | undefined] | null;
+) => readonly [string, { cursor?: string; limit?: number; state?: string } | undefined] | null;
 
 const mocks = vi.hoisted(() => ({
   getKey: null as InstancesKeyLoader | null,
@@ -65,6 +65,7 @@ const page = (
   nextCursor: string | null,
   targetRevision = 'a'.repeat(32),
 ): AdminSystemInstanceRevisions => ({
+  counts: { live: items.length, offline: 0 },
   domains: [],
   items,
   nextCursor,
@@ -98,13 +99,41 @@ describe('useAdminSystemInstances', () => {
 
     expect(mocks.getKey?.(0, null)).toEqual([
       'admin.system.getInstanceRevisions',
-      { cursor: undefined, limit: 20 },
+      { cursor: undefined, limit: 20, state: 'live' },
     ]);
     expect(mocks.getKey?.(1, first)).toEqual([
       'admin.system.getInstanceRevisions',
-      { cursor: 'next-page', limit: 20 },
+      { cursor: 'next-page', limit: 20, state: 'live' },
     ]);
     expect(mocks.getKey?.(2, last)).toBeNull();
+  });
+
+  it('defaults to live rows and carries an explicit state into every page key', () => {
+    renderHook(() => useAdminSystemInstances(true, service, { limit: 20, state: 'all' }));
+    const first = page([instance(`pinst_${'a'.repeat(48)}`)], 'next-page');
+
+    expect(mocks.getKey?.(0, null)).toEqual([
+      'admin.system.getInstanceRevisions',
+      { cursor: undefined, limit: 20, state: 'all' },
+    ]);
+    expect(mocks.getKey?.(1, first)).toEqual([
+      'admin.system.getInstanceRevisions',
+      { cursor: 'next-page', limit: 20, state: 'all' },
+    ]);
+  });
+
+  it('exposes the registry totals from the first page alongside accumulated rows', () => {
+    const first = instance(`pinst_${'a'.repeat(48)}`);
+    mocks.infinite.data = [
+      { ...page([first], 'next-page'), counts: { live: 1, offline: 37 } },
+      { ...page([instance(`pinst_${'b'.repeat(48)}`)], null), counts: null },
+    ];
+    mocks.infinite.size = 2;
+
+    const { result } = renderHook(() => useAdminSystemInstances(true, service));
+
+    expect(result.current.data?.counts).toEqual({ live: 1, offline: 37 });
+    expect(result.current.data?.items).toHaveLength(2);
   });
 
   it('deduplicates accumulated rows and exposes a later-page failure separately', () => {

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getTestDB } from '../../core/getTestDB';
 import {
   platformIdentityProviderInstances,
+  platformIdentityProviderRestartRequests,
   platformInstanceHeartbeats,
   platformInstanceRevisionStates,
 } from '../../schemas/platform';
@@ -19,8 +20,57 @@ import {
 const db: LobeChatDatabase = await getTestDB();
 const repository = new PlatformInstanceRepository(db);
 const instanceId = (digit: string) => `pinst_${digit.repeat(48)}`;
+const identityId = (digit: string) => `oidci_${digit.repeat(48)}`;
+
+const seedRegistry = async (input: {
+  identity: Array<{ id: string; lastHeartbeat: Date }>;
+  platform: Array<{ id: string; lastHeartbeatAt: Date }>;
+}) => {
+  if (input.platform.length > 0) {
+    await db.insert(platformInstanceHeartbeats).values(
+      input.platform.map(({ id, lastHeartbeatAt }) => ({
+        instanceId: id,
+        lastHeartbeatAt,
+        startedAt: new Date(lastHeartbeatAt.getTime() - 60_000),
+      })),
+    );
+  }
+  if (input.identity.length > 0) {
+    await db.insert(platformIdentityProviderInstances).values(
+      input.identity.map(({ id, lastHeartbeat }) => ({
+        activeIdentityRevision: null,
+        health: 'healthy' as const,
+        hostnameHash: 'c'.repeat(64),
+        instanceId: id,
+        lastHeartbeat,
+        loadedAt: new Date(lastHeartbeat.getTime() - 60_000),
+        startedAt: new Date(lastHeartbeat.getTime() - 60_000),
+        startupSource: 'database' as const,
+      })),
+    );
+  }
+};
+
+const insertRestartRequest = async (input: {
+  createdAt: Date;
+  requestId: string;
+  targetInstanceId: string;
+}) =>
+  db.insert(platformIdentityProviderRestartRequests).values({
+    actorId: 'purge-test-actor',
+    createdAt: input.createdAt,
+    expectedIdentityRevision: 'a'.repeat(64),
+    expiresAt: new Date(input.createdAt.getTime() + 5 * 60 * 1000),
+    intentTokenHash: 'b'.repeat(64),
+    ownerFence: 'c'.repeat(64),
+    payloadHash: 'd'.repeat(64),
+    requestId: input.requestId,
+    status: 'prepared',
+    targetInstanceId: input.targetInstanceId,
+  });
 
 const cleanup = async () => {
+  await db.delete(platformIdentityProviderRestartRequests);
   await db.delete(platformIdentityProviderInstances);
   await db.delete(platformInstanceRevisionStates);
   await db.delete(platformInstanceHeartbeats);
@@ -715,5 +765,150 @@ describe('PlatformInstanceRepository', () => {
     expect(new Set(collected).size).toBe(expected.length);
     expect(collected.at(0)).toBe(identityFreshIds[0]);
     expect(collected.at(-1)).toBe(platformStaleIds.at(-1));
+  });
+
+  it('filters the inventory page by freshness against the supplied snapshot clock', async () => {
+    const snapshotAt = new Date('2030-01-01T00:10:00.000Z');
+    const cutoff = new Date(snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+    await seedRegistry({
+      identity: [
+        { id: identityId('1'), lastHeartbeat: snapshotAt },
+        { id: identityId('2'), lastHeartbeat: new Date(cutoff.getTime() - 1) },
+      ],
+      platform: [
+        { id: instanceId('a'), lastHeartbeatAt: snapshotAt },
+        { id: instanceId('b'), lastHeartbeatAt: new Date(cutoff.getTime() - 1) },
+      ],
+    });
+
+    const read = async (freshness: 'all' | 'live' | 'offline') =>
+      (await repository.listRevisionInventoryPage({ freshness, snapshotAt })).items
+        .map(({ instance }) => instance.instanceId)
+        .sort();
+
+    await expect(read('live')).resolves.toEqual([identityId('1'), instanceId('a')].sort());
+    await expect(read('offline')).resolves.toEqual([identityId('2'), instanceId('b')].sort());
+    await expect(read('all')).resolves.toHaveLength(4);
+  });
+
+  it('counts live and offline registrations across both process registries', async () => {
+    const snapshotAt = new Date('2030-01-01T00:10:00.000Z');
+    const cutoff = new Date(snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+    await seedRegistry({
+      identity: [
+        { id: identityId('1'), lastHeartbeat: snapshotAt },
+        { id: identityId('2'), lastHeartbeat: new Date(cutoff.getTime() - 1) },
+        { id: identityId('3'), lastHeartbeat: new Date(cutoff.getTime() - 60_000) },
+      ],
+      platform: [
+        { id: instanceId('a'), lastHeartbeatAt: cutoff },
+        { id: instanceId('b'), lastHeartbeatAt: new Date(cutoff.getTime() - 1) },
+      ],
+    });
+
+    await expect(repository.countInstancesByFreshness(snapshotAt)).resolves.toEqual({
+      live: 2,
+      offline: 3,
+    });
+  });
+
+  it('purges expired restart intents before their instances and never local or live rows', async () => {
+    const now = new Date('2030-01-01T00:00:00.000Z');
+    const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const localIdentity = identityId('1');
+    const localPlatform = instanceId('a');
+    const expiredIdentity = identityId('2');
+    const expiredPlatform = instanceId('b');
+    await seedRegistry({
+      identity: [
+        { id: localIdentity, lastHeartbeat: new Date(cutoff.getTime() - 60_000) },
+        { id: expiredIdentity, lastHeartbeat: new Date(cutoff.getTime() - 60_000) },
+        { id: identityId('3'), lastHeartbeat: now },
+      ],
+      platform: [
+        { id: localPlatform, lastHeartbeatAt: new Date(cutoff.getTime() - 60_000) },
+        { id: expiredPlatform, lastHeartbeatAt: new Date(cutoff.getTime() - 60_000) },
+        { id: instanceId('c'), lastHeartbeatAt: now },
+      ],
+    });
+    await db.insert(platformInstanceRevisionStates).values({
+      domain: 'settings',
+      health: 'healthy',
+      instanceId: expiredPlatform,
+      loadedRevision: 1,
+      loadMode: 'process_cached',
+      source: 'database',
+    });
+    // Intent older than the cutoff: blocks the FK until it is deleted first.
+    await insertRestartRequest({
+      createdAt: new Date(cutoff.getTime() - 120_000),
+      requestId: '550e8400-e29b-41d4-a716-446655440001',
+      targetInstanceId: expiredIdentity,
+    });
+
+    const result = await repository.purgeOfflineInstances({
+      cutoff,
+      keepInstanceIds: [localIdentity, localPlatform],
+    });
+
+    expect(result).toEqual({ identityInstances: 1, platformInstances: 1, restartRequests: 1 });
+    expect(
+      (await db.select().from(platformIdentityProviderInstances))
+        .map(({ instanceId }) => instanceId)
+        .sort(),
+    ).toEqual([localIdentity, identityId('3')].sort());
+    expect(
+      (await db.select().from(platformInstanceHeartbeats))
+        .map(({ instanceId }) => instanceId)
+        .sort(),
+    ).toEqual([localPlatform, instanceId('c')].sort());
+    // platform_instance_revision_states is ON DELETE CASCADE.
+    expect(await db.select().from(platformInstanceRevisionStates)).toEqual([]);
+    expect(await db.select().from(platformIdentityProviderRestartRequests)).toEqual([]);
+  });
+
+  it('skips an offline instance still referenced by a retained restart request', async () => {
+    const now = new Date('2030-01-01T00:00:00.000Z');
+    const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const referenced = identityId('2');
+    await seedRegistry({
+      identity: [
+        { id: referenced, lastHeartbeat: new Date(cutoff.getTime() - 60_000) },
+        { id: identityId('3'), lastHeartbeat: new Date(cutoff.getTime() - 60_000) },
+      ],
+      platform: [],
+    });
+    // Newer than the cutoff, so the intent survives and its target must survive with it.
+    await insertRestartRequest({
+      createdAt: new Date(now.getTime() - 60_000),
+      requestId: '550e8400-e29b-41d4-a716-446655440002',
+      targetInstanceId: referenced,
+    });
+
+    const result = await repository.purgeOfflineInstances({ cutoff });
+
+    expect(result).toMatchObject({ identityInstances: 1, restartRequests: 0 });
+    expect(
+      (await db.select().from(platformIdentityProviderInstances)).map(
+        ({ instanceId }) => instanceId,
+      ),
+    ).toEqual([referenced]);
+  });
+
+  it('bounds one purge pass by the requested batch size', async () => {
+    const now = new Date('2030-01-01T00:00:00.000Z');
+    const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    await seedRegistry({
+      identity: [],
+      platform: Array.from({ length: 5 }, (_, index) => ({
+        id: `pinst_${index.toString(16).padStart(48, '0')}`,
+        lastHeartbeatAt: new Date(cutoff.getTime() - (index + 1) * 1000),
+      })),
+    });
+
+    await expect(repository.purgeOfflineInstances({ cutoff, limit: 2 })).resolves.toMatchObject({
+      platformInstances: 2,
+    });
+    expect(await db.select().from(platformInstanceHeartbeats)).toHaveLength(3);
   });
 });

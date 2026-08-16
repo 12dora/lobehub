@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adminSystemCancelJobInputSchema,
+  adminSystemGetInstanceRevisionsInputSchema,
   adminSystemGetJobsOutputSchema,
   adminSystemGetStatusOutputSchema,
+  adminSystemJobKindSchema,
   adminSystemRequestRestartOutputSchema,
 } from './adminSystem';
 
@@ -121,6 +123,7 @@ describe('admin system operational contracts', () => {
       revision: 2,
       startedAt: new Date('2026-07-20T00:01:00Z'),
       status: 'failed',
+      typeId: 'platform.agent.rollout.v1',
       updatedAt: new Date('2026-07-20T00:02:00Z'),
     };
 
@@ -145,6 +148,31 @@ describe('admin system operational contracts', () => {
         }).success,
       ).toBe(false);
     }
+    // Every published kind must round-trip, and a malformed raw type degrades to null.
+    for (const kind of adminSystemJobKindSchema.options) {
+      expect(
+        adminSystemGetJobsOutputSchema.safeParse({
+          items: [{ ...job, kind, typeId: null }],
+          nextCursor: null,
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      adminSystemGetJobsOutputSchema.safeParse({
+        items: [{ ...job, typeId: 'Platform.Job WITH spaces' }],
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('defaults instance listing to a bounded state filter and rejects unknown states', () => {
+    expect(adminSystemGetInstanceRevisionsInputSchema.parse(undefined)).toBeUndefined();
+    expect(
+      adminSystemGetInstanceRevisionsInputSchema.parse({ limit: 50, state: 'offline' }),
+    ).toEqual({ limit: 50, state: 'offline' });
+    expect(adminSystemGetInstanceRevisionsInputSchema.safeParse({ state: 'stale' }).success).toBe(
+      false,
+    );
   });
 
   it('requires bounded intent evidence for job mutation inputs', () => {

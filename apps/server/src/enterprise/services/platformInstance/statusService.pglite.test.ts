@@ -162,6 +162,46 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
     expect(inventory.domains).toEqual(status.domains);
   });
 
+  it('filters inventory rows by state and reports registry totals on the first page', async () => {
+    const now = new Date();
+    await db.insert(platformInstanceHeartbeats).values([
+      {
+        instanceId: platformId('1'),
+        lastHeartbeatAt: now,
+        startedAt: new Date(now.getTime() - 300_000),
+      },
+      {
+        instanceId: platformId('2'),
+        lastHeartbeatAt: new Date(now.getTime() - 120_000),
+        startedAt: new Date(now.getTime() - 300_000),
+      },
+      {
+        instanceId: platformId('3'),
+        lastHeartbeatAt: new Date(now.getTime() - 240_000),
+        startedAt: new Date(now.getTime() - 300_000),
+      },
+    ]);
+
+    const service = new PlatformInstanceStatusService(db, { env: {} });
+    const live = await service.getRevisionInventoryPage({
+      includeCounts: true,
+      limit: 10,
+      state: 'live',
+    });
+    const offline = await service.getRevisionInventoryPage({ limit: 10, state: 'offline' });
+
+    expect(live.counts).toEqual({ live: 1, offline: 2 });
+    expect(live.items.map(({ item }) => item.instanceId)).toEqual([platformId('1')]);
+    expect(live.items.every(({ fresh }) => fresh)).toBe(true);
+    // Counts are first-page only; cursor pages must not re-aggregate.
+    expect(offline.counts).toBeNull();
+    expect(offline.items.map(({ item }) => item.instanceId)).toEqual([
+      platformId('2'),
+      platformId('3'),
+    ]);
+    expect(offline.items.some(({ fresh }) => fresh)).toBe(false);
+  });
+
   it('projects OIDC startup state read-only and always degrades LKG fallback', async () => {
     const now = new Date();
     const target = checksum('b');

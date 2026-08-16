@@ -1,8 +1,24 @@
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  notExists,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import {
   type PlatformIdentityProviderInstanceItem,
   platformIdentityProviderInstances,
+  platformIdentityProviderRestartRequests,
   type PlatformInstanceDomain,
   type PlatformInstanceHeartbeatItem,
   platformInstanceHeartbeats,
@@ -123,6 +139,29 @@ export interface PlatformInstanceInventorySnapshot {
 export interface PlatformInstanceRevisionInventoryCursor {
   instanceId: string;
   lastHeartbeatAt: Date;
+}
+
+/** Registry rows are process-registration history; `live` keeps only rows inside the stale window. */
+export type PlatformInstanceFreshness = 'all' | 'live' | 'offline';
+
+export interface PlatformInstanceFreshnessCounts {
+  live: number;
+  offline: number;
+}
+
+export interface PurgePlatformInstanceRegistryInput {
+  /** Rows with a heartbeat strictly older than this instant are eligible. */
+  cutoff: Date;
+  /** Instance ids owned by the calling process; never deleted regardless of the cutoff. */
+  keepInstanceIds?: string[];
+  /** Rows deleted per table in this pass. Callers loop until a pass deletes nothing. */
+  limit?: number;
+}
+
+export interface PurgePlatformInstanceRegistryResult {
+  identityInstances: number;
+  platformInstances: number;
+  restartRequests: number;
 }
 
 export type PlatformInstanceRevisionInventoryItem =
@@ -430,12 +469,28 @@ export class PlatformInstanceRepository {
   listRevisionInventoryPage = async (
     params: {
       cursor?: PlatformInstanceRevisionInventoryCursor;
+      /** Defaults to `all`; freshness is evaluated against the page snapshot clock. */
+      freshness?: PlatformInstanceFreshness;
       limit?: number;
       snapshotAt?: Date;
     } = {},
   ): Promise<PlatformInstanceRevisionInventoryPage> => {
     const limit = Math.min(Math.max(Math.floor(params.limit ?? 50), 1), 50);
     const snapshotAt = params.snapshotAt ?? (await this.readSnapshotAt());
+    const cutoff = new Date(snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+    const freshness = params.freshness ?? 'all';
+    const platformFreshness =
+      freshness === 'live'
+        ? gte(platformInstanceHeartbeats.lastHeartbeatAt, cutoff)
+        : freshness === 'offline'
+          ? lt(platformInstanceHeartbeats.lastHeartbeatAt, cutoff)
+          : undefined;
+    const identityFreshness =
+      freshness === 'live'
+        ? gte(platformIdentityProviderInstances.lastHeartbeat, cutoff)
+        : freshness === 'offline'
+          ? lt(platformIdentityProviderInstances.lastHeartbeat, cutoff)
+          : undefined;
     const platformCursor = params.cursor
       ? or(
           lt(platformInstanceHeartbeats.lastHeartbeatAt, params.cursor.lastHeartbeatAt),
@@ -458,7 +513,7 @@ export class PlatformInstanceRepository {
     const platformRows = await this.db
       .select()
       .from(platformInstanceHeartbeats)
-      .where(platformCursor)
+      .where(and(platformFreshness, platformCursor))
       .orderBy(
         desc(platformInstanceHeartbeats.lastHeartbeatAt),
         asc(platformInstanceHeartbeats.instanceId),
@@ -467,7 +522,7 @@ export class PlatformInstanceRepository {
     const identityRows = await this.db
       .select()
       .from(platformIdentityProviderInstances)
-      .where(identityCursor)
+      .where(and(identityFreshness, identityCursor))
       .orderBy(
         desc(platformIdentityProviderInstances.lastHeartbeat),
         asc(platformIdentityProviderInstances.instanceId),
@@ -524,6 +579,141 @@ export class PlatformInstanceRepository {
       nextCursor:
         hasMore && last ? { instanceId: last.instanceId, lastHeartbeatAt: last.heartbeat } : null,
       snapshotAt,
+    };
+  };
+
+  /**
+   * Live / offline registry totals across both process registries, evaluated against one
+   * snapshot clock. Backed by the existing heartbeat indexes; never returns instance ids.
+   */
+  countInstancesByFreshness = async (
+    snapshotAt?: Date,
+  ): Promise<PlatformInstanceFreshnessCounts> => {
+    const clock = snapshotAt ?? (await this.readSnapshotAt());
+    const cutoff = new Date(clock.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+    const [platform] = await this.db
+      .select({
+        live: sql<number>`count(*) filter (where ${platformInstanceHeartbeats.lastHeartbeatAt} >= ${cutoff})::int`,
+        offline: sql<number>`count(*) filter (where ${platformInstanceHeartbeats.lastHeartbeatAt} < ${cutoff})::int`,
+      })
+      .from(platformInstanceHeartbeats);
+    const [identity] = await this.db
+      .select({
+        live: sql<number>`count(*) filter (where ${platformIdentityProviderInstances.lastHeartbeat} >= ${cutoff})::int`,
+        offline: sql<number>`count(*) filter (where ${platformIdentityProviderInstances.lastHeartbeat} < ${cutoff})::int`,
+      })
+      .from(platformIdentityProviderInstances);
+    return {
+      live: Number(platform?.live ?? 0) + Number(identity?.live ?? 0),
+      offline: Number(platform?.offline ?? 0) + Number(identity?.offline ?? 0),
+    };
+  };
+
+  /**
+   * One bounded retention pass over the process-registration history.
+   *
+   * Order is mandatory: `platform_identity_provider_restart_requests` references
+   * `platform_identity_provider_instances` with ON DELETE RESTRICT, so expired intent rows are
+   * removed first and any instance still referenced by a surviving request is skipped rather than
+   * aborting the transaction. `platform_instance_revision_states` cascades with its heartbeat row.
+   *
+   * Every eligibility predicate is repeated on the DELETE itself, and the bounding sub-select takes
+   * `FOR UPDATE SKIP LOCKED`: heartbeats are refreshed outside this job's locks, so a row that turns
+   * fresh (or gains a restart intent) while the pass runs is re-checked out of the batch instead of
+   * being deleted from a stale candidate list. Rows owned by the calling process are never touched.
+   */
+  purgeOfflineInstances = async (
+    input: PurgePlatformInstanceRegistryInput,
+  ): Promise<PurgePlatformInstanceRegistryResult> => {
+    const limit = Math.min(Math.max(Math.floor(input.limit ?? 500), 1), 5000);
+    const keep = input.keepInstanceIds ?? [];
+    const expiredRequest = () =>
+      lt(platformIdentityProviderRestartRequests.createdAt, input.cutoff);
+    const purgeableIdentity = () =>
+      and(
+        lt(platformIdentityProviderInstances.lastHeartbeat, input.cutoff),
+        keep.length > 0
+          ? notInArray(platformIdentityProviderInstances.instanceId, keep)
+          : undefined,
+        notExists(
+          this.db
+            .select({ referenced: sql`1` })
+            .from(platformIdentityProviderRestartRequests)
+            .where(
+              eq(
+                platformIdentityProviderRestartRequests.targetInstanceId,
+                platformIdentityProviderInstances.instanceId,
+              ),
+            ),
+        ),
+      );
+    const purgeablePlatform = () =>
+      and(
+        lt(platformInstanceHeartbeats.lastHeartbeatAt, input.cutoff),
+        keep.length > 0 ? notInArray(platformInstanceHeartbeats.instanceId, keep) : undefined,
+      );
+
+    const expiredRequests = await this.db
+      .delete(platformIdentityProviderRestartRequests)
+      .where(
+        and(
+          inArray(
+            platformIdentityProviderRestartRequests.requestId,
+            this.db
+              .select({ requestId: platformIdentityProviderRestartRequests.requestId })
+              .from(platformIdentityProviderRestartRequests)
+              .where(expiredRequest())
+              .orderBy(asc(platformIdentityProviderRestartRequests.createdAt))
+              .limit(limit)
+              .for('update', { skipLocked: true }),
+          ),
+          expiredRequest(),
+        ),
+      )
+      .returning({ requestId: platformIdentityProviderRestartRequests.requestId });
+
+    const identityInstances = await this.db
+      .delete(platformIdentityProviderInstances)
+      .where(
+        and(
+          inArray(
+            platformIdentityProviderInstances.instanceId,
+            this.db
+              .select({ instanceId: platformIdentityProviderInstances.instanceId })
+              .from(platformIdentityProviderInstances)
+              .where(purgeableIdentity())
+              .orderBy(asc(platformIdentityProviderInstances.lastHeartbeat))
+              .limit(limit)
+              .for('update', { skipLocked: true }),
+          ),
+          purgeableIdentity(),
+        ),
+      )
+      .returning({ instanceId: platformIdentityProviderInstances.instanceId });
+
+    const platformInstances = await this.db
+      .delete(platformInstanceHeartbeats)
+      .where(
+        and(
+          inArray(
+            platformInstanceHeartbeats.instanceId,
+            this.db
+              .select({ instanceId: platformInstanceHeartbeats.instanceId })
+              .from(platformInstanceHeartbeats)
+              .where(purgeablePlatform())
+              .orderBy(asc(platformInstanceHeartbeats.lastHeartbeatAt))
+              .limit(limit)
+              .for('update', { skipLocked: true }),
+          ),
+          purgeablePlatform(),
+        ),
+      )
+      .returning({ instanceId: platformInstanceHeartbeats.instanceId });
+
+    return {
+      identityInstances: identityInstances.length,
+      platformInstances: platformInstances.length,
+      restartRequests: expiredRequests.length,
     };
   };
 

@@ -35,6 +35,11 @@ const styles = createStaticStyles(({ css }) => ({
     font-family: ${cssVar.fontFamilyCode};
     font-variant-numeric: tabular-nums;
   `,
+  typeId: css`
+    font-family: ${cssVar.fontFamilyCode};
+    font-size: ${cssVar.fontSizeSM};
+    overflow-wrap: anywhere;
+  `,
 }));
 
 export interface JobsPanelProps {
@@ -79,9 +84,19 @@ export const JobsPanel = memo<JobsPanelProps>(({ canOperate, mutations, state })
   const columns = useMemo<TableColumnsType<AdminSystemJob>>(
     () => [
       {
-        dataIndex: 'kind',
         key: 'kind',
-        render: (kind: string) => <Text>{t(`system.values.jobKind.${kind}` as never)}</Text>,
+        // The raw queue name stays visible so a job type that outran the label table is still
+        // self-explanatory to an operator.
+        render: (_, job) => (
+          <Flexbox gap={2}>
+            <Text>{t(`system.values.jobKind.${job.kind}` as never)}</Text>
+            {job.typeId ? (
+              <Text className={styles.typeId} type="secondary">
+                {job.typeId}
+              </Text>
+            ) : null}
+          </Flexbox>
+        ),
         title: t('system.jobs.columns.job'),
         width: 220,
       },

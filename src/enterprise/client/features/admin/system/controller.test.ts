@@ -31,6 +31,7 @@ const job = (overrides: Partial<AdminSystemJob> = {}): AdminSystemJob => ({
   revision: 1,
   startedAt: new Date('2026-07-20T00:00:01.000Z'),
   status: 'running',
+  typeId: 'platform.agent.rollout.v1',
   updatedAt: new Date('2026-07-20T00:00:02.000Z'),
   ...overrides,
 });

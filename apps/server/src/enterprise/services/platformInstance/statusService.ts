@@ -6,6 +6,7 @@ import {
   PLATFORM_INSTANCE_FRESH_DIAGNOSTIC_CANDIDATE_LIMIT,
   PLATFORM_INSTANCE_STALE_AFTER_MS,
   PLATFORM_INSTANCE_STALE_DIAGNOSTIC_CANDIDATE_LIMIT,
+  type PlatformInstanceFreshness,
   type PlatformInstanceInventoryCounts,
   type PlatformInstanceInventoryDiagnostic,
   type PlatformInstanceInventoryTarget,
@@ -489,9 +490,13 @@ export class PlatformInstanceStatusService {
 
   getRevisionInventoryPage = async (input: {
     cursor?: PlatformInstanceRevisionInventoryBoundCursor;
+    /** When true (first page), attach registry live/offline totals from the same snapshot. */
+    includeCounts?: boolean;
     /** When true (first page), attach domain summary from the same transaction. */
     includeDomains?: boolean;
     limit?: number;
+    /** Row filter; defaults to the complete registry history. */
+    state?: PlatformInstanceFreshness;
   }) =>
     this.db.transaction(async (tx) => {
       const targets = await new PlatformDomainTargetResolver(tx, {
@@ -503,19 +508,28 @@ export class PlatformInstanceStatusService {
         throw new PlatformInstanceTargetRevisionMismatchError();
       }
       const repository = new PlatformInstanceRepository(tx);
+      // One clock for the rows, the freshness filter and the totals.
+      const snapshotAt = await repository.readSnapshotAt();
       const page = await repository.listRevisionInventoryPage({
         cursor: input.cursor
           ? { instanceId: input.cursor.instanceId, lastHeartbeatAt: input.cursor.lastHeartbeatAt }
           : undefined,
+        freshness: input.state ?? 'all',
         limit: input.limit,
+        snapshotAt,
       });
       const identityTarget = targets.find(({ domain }) => domain === 'identity')!;
       const cutoff = new Date(page.snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+      const counts =
+        input.includeCounts === true
+          ? await repository.countInstancesByFreshness(page.snapshotAt)
+          : null;
       const domains =
         input.includeDomains === true
           ? await this.buildDomainConvergence(tx, targets, page.snapshotAt)
           : [];
       return {
+        counts,
         domains,
         items: page.items.map((item) => {
           const diagnostic =

@@ -16,12 +16,15 @@ describe('Admin System SWR permission gates', () => {
     expect(buildAdminSystemJobsKey({ limit: 50 }, false)).toBeNull();
   });
 
-  it('keeps cursor inputs in enabled keys', () => {
+  it('keeps cursor and state inputs in enabled keys', () => {
     expect(buildAdminSystemStatusKey(true)).toEqual([ADMIN_SYSTEM_STATUS_KEY]);
-    expect(buildAdminSystemInstancesKey({ cursor: 'instance-next', limit: 20 }, true)).toEqual([
-      ADMIN_SYSTEM_INSTANCES_KEY,
-      { cursor: 'instance-next', limit: 20 },
-    ]);
+    expect(
+      buildAdminSystemInstancesKey({ cursor: 'instance-next', limit: 20, state: 'all' }, true),
+    ).toEqual([ADMIN_SYSTEM_INSTANCES_KEY, { cursor: 'instance-next', limit: 20, state: 'all' }]);
+    // Filter changes must produce a distinct key so pages are never mixed across row sets.
+    expect(buildAdminSystemInstancesKey({ limit: 20, state: 'live' }, true)).not.toEqual(
+      buildAdminSystemInstancesKey({ limit: 20, state: 'all' }, true),
+    );
     expect(buildAdminSystemJobsKey({ cursor: 'job-next', limit: 20 }, true)).toEqual([
       ADMIN_SYSTEM_JOBS_KEY,
       { cursor: 'job-next', limit: 20 },

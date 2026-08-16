@@ -18,6 +18,7 @@ import type {
   AdminSystemCancelJobInput,
   AdminSystemGetInstanceRevisionsInput,
   AdminSystemGetJobsInput,
+  AdminSystemInstanceState,
   AdminSystemJob,
   AdminSystemRetryJobInput,
 } from '@/server/enterprise/contracts/adminSystem';
@@ -34,7 +35,14 @@ import {
   parsePlatformAgentRolloutInput,
   PLATFORM_AGENT_ROLLOUT_JOB_TYPE,
 } from '../agentCatalog/rolloutService';
+import { SHARED_OAUTH_KEEPALIVE_JOB_TYPE } from '../aiCatalog/sharedOAuthKeepalive';
+import { SHARED_OAUTH_REFRESH_JOB_TYPE } from '../aiCatalog/sharedOAuthRefresh';
 import { AUDIT_ACTION, type AuditAction } from '../audit/auditActionCatalog';
+import { PLATFORM_AUDIT_EXPORT_JOB_TYPE } from '../audit/exportConstants';
+import { PLATFORM_AUDIT_RETENTION_JOB_TYPE } from '../audit/retentionConstants';
+import { OAUTH_REFRESH_JOB_TYPE } from '../connectorCatalog/connectorOAuthRefreshCoordinator';
+import { CONNECTOR_RUNTIME_JOB_TYPE } from '../connectorCatalog/runtimeExecutionJournal';
+import { CONNECTOR_SECRET_CLEANUP_JOB_TYPE } from '../connectorCatalog/secretCleanup';
 import { getIdentityProviderStartupArtifactHealth } from '../identityProvider/startupArtifact';
 import { IdentityProviderSystemService } from '../identityProvider/systemService';
 import { PlatformAuditService } from '../platformAudit';
@@ -57,8 +65,8 @@ import {
   PlatformSystemJobNotFoundError,
 } from './errors';
 
-const CONNECTOR_RUNTIME_JOB_TYPE = 'connector.runtime.shared-call.v1';
 const DEFAULT_PAGE_SIZE = 50;
+const DEFAULT_INSTANCE_STATE: AdminSystemInstanceState = 'live';
 /** Operator health treats publication failures in the last 24 hours as recent. */
 export const RECENT_PUBLISH_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -204,12 +212,27 @@ const parseJobCursor = (cursor: string | undefined) => {
   return { createdAt, id: value.id };
 };
 
-const jobKind = (type: string): AdminSystemJob['kind'] => {
-  if (type === PLATFORM_AGENT_ROLLOUT_JOB_TYPE) return 'agent_rollout';
-  if (type === PLATFORM_SECRET_REWRAP_JOB_TYPE) return 'secret_rewrap';
-  if (type === CONNECTOR_RUNTIME_JOB_TYPE) return 'connector_runtime';
-  return 'unknown';
+/**
+ * Every queue type an operator can see in 近期任务. Missing entries render as
+ * `unknown`, so `jobKindCoverage.test.ts` fails when a new queue forgets to register here.
+ */
+export const JOB_KIND_BY_TYPE: Readonly<Record<string, AdminSystemJob['kind']>> = {
+  [CONNECTOR_RUNTIME_JOB_TYPE]: 'connector_runtime',
+  [CONNECTOR_SECRET_CLEANUP_JOB_TYPE]: 'connector_secret_cleanup',
+  [OAUTH_REFRESH_JOB_TYPE]: 'connector_oauth_refresh',
+  [PLATFORM_AGENT_ROLLOUT_JOB_TYPE]: 'agent_rollout',
+  [PLATFORM_AUDIT_EXPORT_JOB_TYPE]: 'audit_export',
+  [PLATFORM_AUDIT_RETENTION_JOB_TYPE]: 'audit_retention',
+  [PLATFORM_SECRET_REWRAP_JOB_TYPE]: 'secret_rewrap',
+  [SHARED_OAUTH_KEEPALIVE_JOB_TYPE]: 'ai_oauth_keepalive',
+  [SHARED_OAUTH_REFRESH_JOB_TYPE]: 'ai_oauth_refresh',
 };
+
+export const jobKind = (type: string): AdminSystemJob['kind'] =>
+  JOB_KIND_BY_TYPE[type] ?? 'unknown';
+
+/** Operational metadata only; a malformed stored type degrades to null instead of failing the page. */
+const jobTypeId = (type: string): string | null => (/^[a-z0-9.-]{1,64}$/.test(type) ? type : null);
 
 const projectJob = (job: {
   attempt: number;
@@ -228,6 +251,8 @@ const projectJob = (job: {
   updatedAt: Date;
 }): AdminSystemJob => {
   const kind = jobKind(job.type);
+  // Security invariant: only these two queues expose cancel / retry / revision. Adding a kind
+  // to JOB_KIND_BY_TYPE must never widen the mutable surface.
   const supported = kind === 'agent_rollout' || kind === 'secret_rewrap';
   return {
     attempt: job.attempt,
@@ -247,6 +272,7 @@ const projectJob = (job: {
     revision: supported ? job.revision : null,
     startedAt: job.startedAt,
     status: job.status,
+    typeId: jobTypeId(job.type),
     updatedAt: job.updatedAt,
   };
 };
@@ -467,6 +493,7 @@ export class PlatformSystemAdminService {
 
   getInstanceRevisions = async (input: AdminSystemGetInstanceRevisionsInput) => {
     const limit = Math.min(Math.max(Math.floor(input?.limit ?? DEFAULT_PAGE_SIZE), 1), 50);
+    const state = input?.state ?? DEFAULT_INSTANCE_STATE;
     const cursor = decodeCursor(input?.cursor);
     const cursorHeartbeat =
       typeof cursor?.lastHeartbeatAt === 'string' ? new Date(cursor.lastHeartbeatAt) : null;
@@ -480,7 +507,10 @@ export class PlatformSystemAdminService {
         !cursorHeartbeat ||
         Number.isNaN(cursorHeartbeat.getTime()) ||
         !cursorTargetRevision ||
-        !/^[a-f0-9]{32}$/.test(cursorTargetRevision))
+        !/^[a-f0-9]{32}$/.test(cursorTargetRevision) ||
+        // The cursor is bound to the filter it was issued for; switching filters mid-pagination
+        // would otherwise splice rows from two different row sets into one list.
+        cursor.state !== state)
     ) {
       throw new PlatformSystemJobInvalidError();
     }
@@ -501,8 +531,10 @@ export class PlatformSystemAdminService {
                 targetRevision: cursorTargetRevision,
               }
             : undefined,
+        includeCounts: !cursor,
         includeDomains: !cursor,
         limit,
+        state,
       });
     } catch (error) {
       if (error instanceof PlatformInstanceTargetRevisionMismatchError) {
@@ -511,6 +543,7 @@ export class PlatformSystemAdminService {
       throw error;
     }
     return {
+      counts: page.counts,
       domains: page.domains,
       items: page.items.map(({ fresh, item }) => ({
         domains: item.domains.map(({ errorCategory, ...domain }) => ({
@@ -532,6 +565,7 @@ export class PlatformSystemAdminService {
         ? encodeCursor({
             id: page.nextCursor.instanceId,
             lastHeartbeatAt: page.nextCursor.lastHeartbeatAt.toISOString(),
+            state,
             targetRevision: page.nextCursor.targetRevision,
           })
         : null,

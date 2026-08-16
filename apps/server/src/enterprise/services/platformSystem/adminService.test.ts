@@ -132,7 +132,7 @@ describe('PlatformSystemAdminService instance revisions', () => {
     const collected: Awaited<ReturnType<typeof service.getInstanceRevisions>>['items'] = [];
     let cursor: string | undefined;
     do {
-      const page = await service.getInstanceRevisions({ cursor, limit: 17 });
+      const page = await service.getInstanceRevisions({ cursor, limit: 17, state: 'all' });
       expect(() => adminSystemGetInstanceRevisionsOutputSchema.parse(page)).not.toThrow();
       collected.push(...page.items);
       cursor = page.nextCursor ?? undefined;
@@ -150,6 +150,37 @@ describe('PlatformSystemAdminService instance revisions', () => {
     expect(collected.filter(({ fresh }) => !fresh)).toHaveLength(14);
     expect(collected.at(0)?.instanceId).toBe(identityFreshIds[0]);
     expect(collected.at(-1)?.instanceId).toBe(platformStaleIds.at(-1));
+
+    // Registry rows are process-start history: the default view is live-only with honest totals.
+    const live = await service.getInstanceRevisions({ limit: 50 });
+    expect(() => adminSystemGetInstanceRevisionsOutputSchema.parse(live)).not.toThrow();
+    expect(live.counts).toEqual({ live: 106, offline: 14 });
+    expect(live.items.every(({ fresh }) => fresh)).toBe(true);
+
+    const offline = await service.getInstanceRevisions({ limit: 50, state: 'offline' });
+    expect(offline.items).toHaveLength(14);
+    expect(offline.items.some(({ fresh }) => fresh)).toBe(false);
+  });
+
+  it('rejects a cursor issued for a different instance-state filter', async () => {
+    const startedAt = new Date(Date.now() - 300_000);
+    await db.insert(platformInstanceHeartbeats).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        instanceId: `pinst_${index.toString(16).padStart(48, '0')}`,
+        lastHeartbeatAt: new Date(Date.now() - 1_000),
+        startedAt,
+      })),
+    );
+    const service = new PlatformSystemAdminService(db, { env: {} });
+    const first = await service.getInstanceRevisions({ limit: 1, state: 'live' });
+    expect(first.nextCursor).toBeTruthy();
+
+    await expect(
+      service.getInstanceRevisions({ cursor: first.nextCursor!, limit: 1, state: 'all' }),
+    ).rejects.toBeInstanceOf(PlatformSystemJobInvalidError);
+    await expect(
+      service.getInstanceRevisions({ cursor: first.nextCursor!, limit: 1, state: 'live' }),
+    ).resolves.toMatchObject({ counts: null });
   });
 
   it('returnsOneConsistentInstanceSnapshotAcrossPublishRace', async () => {
@@ -245,6 +276,7 @@ describe('PlatformSystemAdminService jobs', () => {
       canCancel: false,
       canRetry: false,
       revision: null,
+      typeId: 'future.platform.job.v1',
     });
     const serialized = JSON.stringify(result);
     for (const forbidden of [
@@ -337,29 +369,77 @@ describe('PlatformSystemAdminService jobs', () => {
     ).rejects.toBeInstanceOf(PlatformSystemJobConflictError);
   });
 
+  it('labels every registered queue type without widening the mutable surface', async () => {
+    const types = [
+      ['connector.oauth.refresh.v1', 'connector_oauth_refresh'],
+      ['connector.runtime.shared-call.v1', 'connector_runtime'],
+      ['connector.secret.cleanup.v1', 'connector_secret_cleanup'],
+      ['platform.ai.oauth.keepalive.v1', 'ai_oauth_keepalive'],
+      ['platform.ai.oauth.refresh.v1', 'ai_oauth_refresh'],
+      ['platform.audit.export.v1', 'audit_export'],
+      ['platform.audit.retention.v1', 'audit_retention'],
+    ] as const;
+    await db.insert(platformJobs).values(
+      types.map(([type], index) => ({
+        id: `pjob_000000000000004${index}`,
+        idempotencyKey: `system-kind-${index}`,
+        status: 'pending' as const,
+        type,
+      })),
+    );
+
+    const result = await new PlatformSystemAdminService(db).getJobs({ limit: 50 });
+
+    for (const [type, kind] of types) {
+      const job = result.items.find((item) => item.typeId === type);
+      expect(job, `missing job for ${type}`).toMatchObject({
+        canCancel: false,
+        canRetry: false,
+        kind,
+        revision: null,
+      });
+    }
+  });
+
   it('does not expose connector, ledger, or unknown jobs as mutable', async () => {
     for (const [index, type] of [
       'connector.runtime.shared-call.v1',
       'future.platform.job.v1',
       'legacy.unknown.job.v1',
+      'connector.oauth.refresh.v1',
+      'connector.secret.cleanup.v1',
+      'platform.ai.oauth.keepalive.v1',
+      'platform.ai.oauth.refresh.v1',
+      'platform.audit.export.v1',
+      'platform.audit.retention.v1',
     ].entries()) {
       await db.insert(platformJobs).values({
-        id: `pjob_000000000000003${index}`,
+        id: `pjob_00000000000000${(30 + index).toString().padStart(2, '0')}`,
         idempotencyKey: `system-read-only-${index}`,
         status: 'pending',
         type,
       });
     }
     const service = new PlatformSystemAdminService(db);
-    await expect(
-      service.cancelJob('admin-1', {
-        expectedRevision: 0,
-        expectedStatus: 'pending',
-        jobId: 'pjob_0000000000000030',
-        reason: 'must remain read only',
-        requestId: '550e8400-e29b-41d4-a716-446655440060',
-      }),
-    ).rejects.toBeInstanceOf(PlatformSystemJobInvalidError);
+    const listed = await service.getJobs({ limit: 50 });
+    expect(listed.items).toHaveLength(9);
+    expect(
+      listed.items.every(
+        ({ canCancel, canRetry, revision }) => !canCancel && !canRetry && revision === null,
+      ),
+    ).toBe(true);
+
+    for (const job of listed.items) {
+      await expect(
+        service.cancelJob('admin-1', {
+          expectedRevision: 0,
+          expectedStatus: 'pending',
+          jobId: job.jobId,
+          reason: 'must remain read only',
+          requestId: '550e8400-e29b-41d4-a716-446655440060',
+        }),
+      ).rejects.toBeInstanceOf(PlatformSystemJobInvalidError);
+    }
   });
 });
 

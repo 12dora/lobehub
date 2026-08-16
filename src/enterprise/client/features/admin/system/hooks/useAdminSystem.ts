@@ -60,14 +60,17 @@ export interface AdminSystemInstancesState {
 export const useAdminSystemInstances = (
   enabled: boolean,
   service: AdminSystemService,
-  input: AdminSystemGetInstanceRevisionsInput = { limit: 50 },
+  input: AdminSystemGetInstanceRevisionsInput = { limit: DEFAULT_PAGE_SIZE },
 ): AdminSystemInstancesState => {
+  // The registry keeps one row per past process start, so the default view is live-only.
+  // `state` is part of the key (and of the server cursor) — switching filters restarts paging.
+  const state = input?.state ?? 'live';
   const swr = useSWRInfinite<AdminSystemInstanceRevisions>(
     (index, previous: AdminSystemInstanceRevisions | null) => {
       if (!enabled) return null;
       if (previous && previous.nextCursor === null) return null;
       const cursor = index === 0 ? input?.cursor : (previous?.nextCursor ?? undefined);
-      return buildAdminSystemInstancesKey({ ...input, cursor }, enabled);
+      return buildAdminSystemInstancesKey({ ...input, cursor, state }, enabled);
     },
     ([, pageInput]: readonly [string, AdminSystemGetInstanceRevisionsInput]) =>
       service.getInstanceRevisions(pageInput),

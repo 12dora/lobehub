@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { deriveAdminSystemPermissions } from '@/enterprise/client/features/admin/system/controller';
 import {
@@ -19,8 +19,13 @@ const SystemPage = () => {
   const { canOperate, canRead } = deriveAdminSystemPermissions(permissions);
   const enabled = accessStatus === 'allowed' && canRead;
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showOfflineInstances, setShowOfflineInstances] = useState(false);
   const status = useAdminSystemStatus(enabled, adminSystemService);
-  const instances = useAdminSystemInstances(enabled, adminSystemService);
+  const instancesInput = useMemo(
+    () => ({ limit: 50, state: showOfflineInstances ? ('all' as const) : ('live' as const) }),
+    [showOfflineInstances],
+  );
+  const instances = useAdminSystemInstances(enabled, adminSystemService, instancesInput);
   const mutateStatus = status.mutate;
   const refreshInstances = instances.refresh;
   const refreshAuthority = useCallback(async () => {
@@ -68,6 +73,7 @@ const SystemPage = () => {
       isRefreshing={isRefreshing}
       jobs={jobs}
       mutations={mutations}
+      showOfflineInstances={showOfflineInstances}
       status={{
         data: status.data,
         error: status.error,
@@ -75,6 +81,7 @@ const SystemPage = () => {
         retry: () => void status.mutate(),
       }}
       onRefresh={() => void refreshAll()}
+      onShowOfflineInstancesChange={setShowOfflineInstances}
     />
   );
 };

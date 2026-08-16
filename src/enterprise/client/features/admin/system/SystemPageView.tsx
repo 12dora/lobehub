@@ -55,6 +55,8 @@ export interface SystemPageViewProps {
   jobs: AdminSystemJobsState;
   mutations: AdminSystemJobMutations;
   onRefresh: () => void;
+  onShowOfflineInstancesChange: (showOffline: boolean) => void;
+  showOfflineInstances: boolean;
   status: AsyncSnapshot<AdminSystemStatus> & { retry: () => void };
 }
 
@@ -65,7 +67,17 @@ const SectionTitle = ({ children }: { children: ReactNode }) => (
 );
 
 export const SystemPageView = memo<SystemPageViewProps>(
-  ({ canOperate, instances, isRefreshing, jobs, mutations, onRefresh, status }) => {
+  ({
+    canOperate,
+    instances,
+    isRefreshing,
+    jobs,
+    mutations,
+    onRefresh,
+    onShowOfflineInstancesChange,
+    showOfflineInstances,
+    status,
+  }) => {
     const { t } = useTranslation('admin');
 
     return (
@@ -118,7 +130,11 @@ export const SystemPageView = memo<SystemPageViewProps>(
         <div className={styles.section}>
           <SectionTitle>{t('system.instances.title')}</SectionTitle>
           <Text type="secondary">{t('system.instances.description')}</Text>
-          <InstancesTable state={instances} />
+          <InstancesTable
+            showOffline={showOfflineInstances}
+            state={instances}
+            onShowOfflineChange={onShowOfflineInstancesChange}
+          />
         </div>
 
         <div className={styles.section}>

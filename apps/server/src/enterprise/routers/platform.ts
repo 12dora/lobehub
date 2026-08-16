@@ -17,6 +17,7 @@ import { ensurePlatformAuditExportWorkerStarted } from '../jobs/auditExport';
 import { ensurePlatformAuditRetentionWorkerStarted } from '../jobs/auditRetention';
 import { ensureBrandingAssetCleanupWorkerStarted } from '../jobs/brandingAssetCleanup';
 import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identityProviderTestAttemptCleanup';
+import { ensurePlatformInstanceRegistryCleanupStarted } from '../jobs/platformInstanceRegistryCleanup';
 import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
 import { ensureSharedOAuthKeepaliveWorkerStarted } from '../jobs/sharedOAuthKeepalive';
 import { assertPlatformMasterKeyIfEnterprise } from '../security/secret';
@@ -55,6 +56,8 @@ ensureConnectorSecretCleanupWorkerStarted();
 ensurePlatformAgentRolloutWorkerStarted();
 
 ensureIdentityProviderTestAttemptCleanupStarted();
+
+ensurePlatformInstanceRegistryCleanupStarted();
 
 ensurePlatformSecretRewrapWorkerStarted();
 

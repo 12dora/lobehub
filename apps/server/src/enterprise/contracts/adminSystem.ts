@@ -82,10 +82,23 @@ const adminSystemJobStatusSchema = z.enum([
 
 export const adminSystemJobKindSchema = z.enum([
   'agent_rollout',
+  'ai_oauth_keepalive',
+  'ai_oauth_refresh',
+  'audit_export',
+  'audit_retention',
+  'connector_oauth_refresh',
   'connector_runtime',
+  'connector_secret_cleanup',
   'secret_rewrap',
   'unknown',
 ]);
+
+/**
+ * Raw queue type behind the operator-facing `kind` label. Purely operational metadata
+ * (no identifiers, no payload); `null` when the stored type is not a well-formed queue name,
+ * so an unexpected row can never fail the whole page.
+ */
+const adminSystemJobTypeIdSchema = z.string().regex(/^[a-z0-9.-]{1,64}$/);
 
 export const adminSystemJobSchema = z
   .object({
@@ -108,6 +121,7 @@ export const adminSystemJobSchema = z
     revision: platformJobRevisionSchema.nullable(),
     startedAt: z.date().nullable(),
     status: adminSystemJobStatusSchema,
+    typeId: adminSystemJobTypeIdSchema.nullable(),
     updatedAt: z.date(),
   })
   .strict();
@@ -195,10 +209,17 @@ export const adminSystemGetStatusOutputSchema = z
   })
   .strict();
 
+/**
+ * Registry rows are process-registration history, not a live service list. `live` (the default)
+ * hides processes whose heartbeat is older than the staleness window.
+ */
+export const adminSystemInstanceStateSchema = z.enum(['all', 'live', 'offline']);
+
 export const adminSystemGetInstanceRevisionsInputSchema = z
   .object({
     cursor: paginationCursorSchema.optional(),
     limit: paginationLimitSchema.optional(),
+    state: adminSystemInstanceStateSchema.optional(),
   })
   .strict()
   .optional();
@@ -235,6 +256,17 @@ export const adminSystemInstanceRevisionSchema = z
 
 export const adminSystemGetInstanceRevisionsOutputSchema = z
   .object({
+    /**
+     * Registry totals evaluated against this page's snapshot clock, independent of the
+     * `state` filter. Attached to the first page only (`null` on cursor pages).
+     */
+    counts: z
+      .object({
+        live: z.number().int().nonnegative(),
+        offline: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
     domains: z.array(platformDomainConvergenceSchema).max(8),
     items: z.array(adminSystemInstanceRevisionSchema).max(50),
     nextCursor: paginationCursorSchema.nullable(),
@@ -411,5 +443,6 @@ export type AdminSystemGetInstanceRevisionsInput = z.input<
   typeof adminSystemGetInstanceRevisionsInputSchema
 >;
 export type AdminSystemGetJobsInput = z.input<typeof adminSystemGetJobsInputSchema>;
+export type AdminSystemInstanceState = z.infer<typeof adminSystemInstanceStateSchema>;
 export type AdminSystemJob = z.infer<typeof adminSystemJobSchema>;
 export type AdminSystemRetryJobInput = z.input<typeof adminSystemRetryJobInputSchema>;

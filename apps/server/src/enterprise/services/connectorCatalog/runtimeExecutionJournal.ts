@@ -7,7 +7,8 @@ import { PlatformJobModel } from '@/database/models/platform/job';
 import { platformJobs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
-const JOURNAL_TYPE = 'connector.runtime.shared-call.v1';
+/** Queue type of the shared connector-call journal; operator-visible in the admin system page. */
+export const CONNECTOR_RUNTIME_JOB_TYPE = 'connector.runtime.shared-call.v1';
 const AUDIT_LEASE_MS = 30_000;
 const databaseNow = sql<Date>`statement_timestamp()`;
 const databaseAuditLeaseUntil = sql<Date>`statement_timestamp() + (${AUDIT_LEASE_MS} * interval '1 millisecond')`;
@@ -121,7 +122,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         leaseUntil: databaseAuditLeaseUntil,
         requestedBy: params.userId,
         status: 'reserved',
-        type: JOURNAL_TYPE,
+        type: CONNECTOR_RUNTIME_JOB_TYPE,
       })
       .onConflictDoNothing({ target: [platformJobs.type, platformJobs.idempotencyKey] })
       .returning({ id: platformJobs.id });
@@ -129,7 +130,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
 
     const existing = await this.db.query.platformJobs.findFirst({
       where: and(
-        eq(platformJobs.type, JOURNAL_TYPE),
+        eq(platformJobs.type, CONNECTOR_RUNTIME_JOB_TYPE),
         eq(platformJobs.idempotencyKey, idempotencyKey),
       ),
     });
@@ -288,7 +289,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
       .delete(platformJobs)
       .where(
         and(
-          eq(platformJobs.type, JOURNAL_TYPE),
+          eq(platformJobs.type, CONNECTOR_RUNTIME_JOB_TYPE),
           eq(platformJobs.status, 'reserved'),
           lte(platformJobs.leaseUntil, databaseNow),
         ),
@@ -296,7 +297,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
       .returning({ id: platformJobs.id });
     if (cleanedReservation) return true;
     const workerId = randomUUID();
-    const claimed = await this.jobs.claimNext({ types: [JOURNAL_TYPE], workerId });
+    const claimed = await this.jobs.claimNext({ types: [CONNECTOR_RUNTIME_JOB_TYPE], workerId });
     return claimed ? this.deliverClaimed(claimed, workerId, delivery) : false;
   };
 }
