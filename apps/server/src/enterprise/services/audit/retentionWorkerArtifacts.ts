@@ -5,7 +5,6 @@
 import {
   type PlatformAuditExportFilterSnapshot,
   type PlatformAuditExportKind,
-  type PlatformAuditLegalHoldItem,
   type PlatformAuditLegalHoldModel,
   type PlatformAuditRetentionCounts,
   PlatformAuditRetentionRunModel,
@@ -19,8 +18,8 @@ import {
 } from './exportStorage';
 import { AUDIT_RETENTION_BATCH_LIMIT } from './retentionConstants';
 import {
+  collectExportFilterHoldScopes,
   exportArtifactHeld,
-  isHoldTargetType,
   loadHoldIndexForScopes,
 } from './retentionWorkerHolds';
 import { keysetAfterPage, mergeCounts, type ScopeProcessorParams } from './retentionWorkerShared';
@@ -42,24 +41,7 @@ export const resolveExportArtifactHeldIds = async (
     kind: PlatformAuditExportKind;
   }>,
 ): Promise<Set<string>> => {
-  const scopeRefs: Array<{
-    scopeId: string | null;
-    scopeType: PlatformAuditLegalHoldItem['scopeType'];
-  }> = [];
-  for (const row of rows) {
-    const snap = row.filterSnapshot;
-    if (snap?.userId) scopeRefs.push({ scopeId: snap.userId, scopeType: 'user' });
-    if (snap?.actorUserId) scopeRefs.push({ scopeId: snap.actorUserId, scopeType: 'user' });
-    if (snap?.topicId) scopeRefs.push({ scopeId: snap.topicId, scopeType: 'topic' });
-    if (snap?.sessionId) scopeRefs.push({ scopeId: snap.sessionId, scopeType: 'session' });
-    if (snap?.workspaceId) scopeRefs.push({ scopeId: snap.workspaceId, scopeType: 'workspace' });
-    if (snap?.targetId && snap.targetType && isHoldTargetType(snap.targetType)) {
-      scopeRefs.push({
-        scopeId: snap.targetId,
-        scopeType: snap.targetType as PlatformAuditLegalHoldItem['scopeType'],
-      });
-    }
-  }
+  const scopeRefs = collectExportFilterHoldScopes(rows);
   const index = await loadHoldIndexForScopes(tx, scopeRefs);
   const held = new Set<string>();
   for (const row of rows) {
@@ -149,6 +131,78 @@ export const deleteAuthorizedExportArtifacts = async (params: {
   }
 };
 
+type ArtifactScopeProcessorParams = ScopeProcessorParams & {
+  afterArtifactAuthorize?: ArtifactPurgeSeams['afterArtifactAuthorize'];
+  afterArtifactClaim?: ArtifactPurgeSeams['afterArtifactClaim'];
+  storage?: AuditExportArtifactStorage;
+};
+
+type ExportArtifactCandidate = {
+  filterSnapshot: PlatformAuditExportFilterSnapshot | null | undefined;
+  id: string;
+  kind: PlatformAuditExportKind;
+};
+
+const drainStrandedArtifactPurges = async (params: ArtifactScopeProcessorParams): Promise<void> => {
+  if (!params.storage) {
+    throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
+  }
+  // F6: claimNext may dead-letter a final-attempt export without worker cleanup.
+  // Promote running+dead-job rows into failed + purge outbox before draining.
+  await params.repo.reconcileDeadLetterExportArtifacts({
+    buildStorageKey: buildAuditExportStorageKey,
+    limit: AUDIT_RETENTION_BATCH_LIMIT,
+  });
+  for (;;) {
+    await params.renewLease();
+    const pending = await params.repo.listPendingExportArtifactPurges({
+      limit: AUDIT_RETENTION_BATCH_LIMIT,
+    });
+    if (pending.length === 0) break;
+
+    let drainedDeleted = 0;
+    let drainedSkippedHold = 0;
+    const grouped = new Map<string | null, string[]>();
+    for (const item of pending) {
+      const ids = grouped.get(item.purgeRunId) ?? [];
+      ids.push(item.id);
+      grouped.set(item.purgeRunId, ids);
+    }
+    for (const [purgeRunId, ids] of grouped) {
+      const drained = await deleteAuthorizedExportArtifacts({
+        afterArtifactAuthorize: params.afterArtifactAuthorize,
+        ids,
+        repo: params.repo,
+        runId: purgeRunId ?? undefined,
+        storage: params.storage,
+      });
+      drainedDeleted += drained.deleted;
+      drainedSkippedHold += drained.skippedHold;
+    }
+    if (drainedDeleted === 0 && drainedSkippedHold === pending.length) break;
+    if (pending.length < AUDIT_RETENTION_BATCH_LIMIT) break;
+  }
+};
+
+const countPostClaimHoldSkips = async (args: {
+  claimedIds: string[];
+  db: ScopeProcessorParams['db'];
+  delta: PlatformAuditRetentionCounts;
+  freeIds: string[];
+  items: ExportArtifactCandidate[];
+  scopeRefs: ReturnType<typeof collectExportFilterHoldScopes>;
+}): Promise<void> => {
+  const claimedSet = new Set(args.claimedIds);
+  const holdsNow = await loadHoldIndexForScopes(args.db, args.scopeRefs);
+  for (const id of args.freeIds) {
+    if (claimedSet.has(id)) continue;
+    const art = args.items.find((r) => r.id === id);
+    if (art && exportArtifactHeld(holdsNow, art.kind, art.filterSnapshot)) {
+      args.delta.skippedLegalHold = (args.delta.skippedLegalHold ?? 0) + 1;
+    }
+  }
+};
+
 /**
  * Export-artifact retention: claim (durable purge outbox) → authorize
  * (hold recheck) → external object delete → complete outbox.
@@ -156,57 +210,14 @@ export const deleteAuthorizedExportArtifacts = async (params: {
  * Also drains stranded purge outboxes left by prior crashes (storageKey null).
  */
 export const processExportArtifacts = async (
-  params: ScopeProcessorParams & {
-    afterArtifactAuthorize?: ArtifactPurgeSeams['afterArtifactAuthorize'];
-    afterArtifactClaim?: ArtifactPurgeSeams['afterArtifactClaim'];
-    storage?: AuditExportArtifactStorage;
-  },
+  params: ArtifactScopeProcessorParams,
 ): Promise<PlatformAuditRetentionCounts> => {
   let counts = params.counts;
 
   // Crash recovery: claim clears storageKey, so candidates never re-scan pending
   // outboxes. Each intent carries its originating run id; finalize and count credit
   // therefore remain atomic even after a crash between checkpoint and deletion.
-  if (params.execute) {
-    if (!params.storage) {
-      throw new Error('AUDIT_RETENTION_ARTIFACT_STORAGE_REQUIRED');
-    }
-    // F6: claimNext may dead-letter a final-attempt export without worker cleanup.
-    // Promote running+dead-job rows into failed + purge outbox before draining.
-    await params.repo.reconcileDeadLetterExportArtifacts({
-      buildStorageKey: buildAuditExportStorageKey,
-      limit: AUDIT_RETENTION_BATCH_LIMIT,
-    });
-    for (;;) {
-      await params.renewLease();
-      const pending = await params.repo.listPendingExportArtifactPurges({
-        limit: AUDIT_RETENTION_BATCH_LIMIT,
-      });
-      if (pending.length === 0) break;
-
-      let drainedDeleted = 0;
-      let drainedSkippedHold = 0;
-      const grouped = new Map<string | null, string[]>();
-      for (const item of pending) {
-        const ids = grouped.get(item.purgeRunId) ?? [];
-        ids.push(item.id);
-        grouped.set(item.purgeRunId, ids);
-      }
-      for (const [purgeRunId, ids] of grouped) {
-        const drained = await deleteAuthorizedExportArtifacts({
-          afterArtifactAuthorize: params.afterArtifactAuthorize,
-          ids,
-          repo: params.repo,
-          runId: purgeRunId ?? undefined,
-          storage: params.storage,
-        });
-        drainedDeleted += drained.deleted;
-        drainedSkippedHold += drained.skippedHold;
-      }
-      if (drainedDeleted === 0 && drainedSkippedHold === pending.length) break;
-      if (pending.length < AUDIT_RETENTION_BATCH_LIMIT) break;
-    }
-  }
+  if (params.execute) await drainStrandedArtifactPurges(params);
 
   for (;;) {
     await params.renewLease();
@@ -219,24 +230,7 @@ export const processExportArtifacts = async (
     if (page.items.length === 0) break;
 
     // Targeted hold scopes from frozen filter snapshots (F11).
-    const scopeRefs: Array<{
-      scopeId: string | null;
-      scopeType: PlatformAuditLegalHoldItem['scopeType'];
-    }> = [];
-    for (const art of page.items) {
-      const snap = art.filterSnapshot;
-      if (snap?.userId) scopeRefs.push({ scopeId: snap.userId, scopeType: 'user' });
-      if (snap?.actorUserId) scopeRefs.push({ scopeId: snap.actorUserId, scopeType: 'user' });
-      if (snap?.topicId) scopeRefs.push({ scopeId: snap.topicId, scopeType: 'topic' });
-      if (snap?.sessionId) scopeRefs.push({ scopeId: snap.sessionId, scopeType: 'session' });
-      if (snap?.workspaceId) scopeRefs.push({ scopeId: snap.workspaceId, scopeType: 'workspace' });
-      if (snap?.targetId && snap.targetType && isHoldTargetType(snap.targetType)) {
-        scopeRefs.push({
-          scopeId: snap.targetId,
-          scopeType: snap.targetType as PlatformAuditLegalHoldItem['scopeType'],
-        });
-      }
-    }
+    const scopeRefs = collectExportFilterHoldScopes(page.items);
     const holds = await loadHoldIndexForScopes(params.db, scopeRefs);
 
     const delta: PlatformAuditRetentionCounts = {
@@ -274,15 +268,14 @@ export const processExportArtifacts = async (
       if (claimed.length < freeIds.length) {
         // Pre-filter free → claim skipped: count only those still held (not
         // concurrent eligibility races).
-        const claimedSet = new Set(claimedIds);
-        const holdsNow = await loadHoldIndexForScopes(params.db, scopeRefs);
-        for (const id of freeIds) {
-          if (claimedSet.has(id)) continue;
-          const art = page.items.find((r) => r.id === id);
-          if (art && exportArtifactHeld(holdsNow, art.kind, art.filterSnapshot)) {
-            delta.skippedLegalHold = (delta.skippedLegalHold ?? 0) + 1;
-          }
-        }
+        await countPostClaimHoldSkips({
+          claimedIds,
+          db: params.db,
+          delta,
+          freeIds,
+          items: page.items,
+          scopeRefs,
+        });
       }
 
       if (params.afterArtifactClaim) {
@@ -343,5 +336,3 @@ export const processExportArtifacts = async (
 
   return counts;
 };
-
-/** Process up to `batchLimit` retention jobs (for poller / tests). */

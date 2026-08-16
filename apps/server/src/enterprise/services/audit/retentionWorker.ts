@@ -19,7 +19,6 @@ import {
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { type AuditExportArtifactStorage, AuditExportPrivateS3Storage } from './exportStorage';
-import { mapRetentionFailureCode } from './jobError';
 import {
   AUDIT_RETENTION_DEFAULT_LEASE_MS,
   type AuditRetentionJobCursor,
@@ -28,15 +27,16 @@ import {
   PLATFORM_AUDIT_RETENTION_JOB_TYPE,
 } from './retentionConstants';
 import { processExportArtifacts } from './retentionWorkerArtifacts';
+import { assertRunnableRun, settleNonRunnableRun } from './retentionWorkerClaim';
 import {
   AuditRetentionCancelledError,
   AuditRetentionInvalidDataError,
   AuditRetentionLeaseLostError,
-  isTerminalContractError,
 } from './retentionWorkerErrors';
+import { settleRetentionJobError } from './retentionWorkerFailure';
 import { processConversations, processOperationLogs } from './retentionWorkerScopes';
 import { progressFromCounts } from './retentionWorkerShared';
-import { appendWorkerOutcome, failRetentionAttempt } from './retentionWorkerTerminal';
+import { appendWorkerOutcome } from './retentionWorkerTerminal';
 
 export interface ProcessNextAuditRetentionOptions {
   /**
@@ -127,43 +127,16 @@ export const processNextAuditRetentionJob = async (
       return { claimed: true, jobId: claimed.id, outcome: 'failed', runId };
     }
 
-    if (run.status === 'cancelled') {
-      await jobs.cancel(claimed.id);
-      return { claimed: true, jobId: claimed.id, outcome: 'cancelled', runId };
-    }
+    const settled = await settleNonRunnableRun({
+      jobId: claimed.id,
+      jobs,
+      run,
+      runId,
+      workerId: options.workerId,
+    });
+    if (settled) return settled;
 
-    if (run.status === 'completed') {
-      await jobs.complete({
-        jobId: claimed.id,
-        resultSummary: { runId, counts: run.counts },
-        workerId: options.workerId,
-      });
-      return { claimed: true, jobId: claimed.id, outcome: 'skipped', runId };
-    }
-
-    if (run.status === 'failed') {
-      await jobs.fail({
-        error: { code: 'RUN_TERMINAL' },
-        jobId: claimed.id,
-        terminal: true,
-        workerId: options.workerId,
-      });
-      return { claimed: true, jobId: claimed.id, outcome: 'skipped', runId };
-    }
-
-    if (!run.cutoffAt || Number.isNaN(run.cutoffAt.getTime())) {
-      throw new AuditRetentionInvalidDataError('Invalid cutoffAt on retention run');
-    }
-    if (
-      run.scope !== 'operation_logs' &&
-      run.scope !== 'conversations' &&
-      run.scope !== 'export_artifacts'
-    ) {
-      throw new AuditRetentionInvalidDataError(`Invalid retention scope: ${String(run.scope)}`);
-    }
-    if (run.mode !== 'dry_run' && run.mode !== 'execute') {
-      throw new AuditRetentionInvalidDataError(`Invalid retention mode: ${String(run.mode)}`);
-    }
+    assertRunnableRun(run);
 
     // pending → running (or re-enter running after lease recovery / retry)
     if (run.status === 'pending') {
@@ -385,65 +358,13 @@ export const processNextAuditRetentionJob = async (
 
     return { claimed: true, jobId: claimed.id, outcome: 'completed', runId };
   } catch (error) {
-    if (error instanceof AuditRetentionLeaseLostError) {
-      // Lease loss is NOT user cancellation — leave domain + platform job as-is for reclaim.
-      return { claimed: true, jobId: claimed.id, outcome: 'skipped', runId };
-    }
-
-    if (error instanceof AuditRetentionCancelledError) {
-      await db.transaction(async (tx) => {
-        const runsTx = new PlatformAuditRetentionRunModel(tx);
-        const jobsTx = new PlatformJobModel(tx as LobeChatDatabase);
-        await runsTx.cancel(runId);
-        await jobsTx.cancel(claimed.id);
-        const cancelledRun = await runsTx.get(runId);
-        if (cancelledRun) {
-          await appendWorkerOutcome(tx, {
-            counts: cancelledRun.counts,
-            mode: cancelledRun.mode,
-            outcome: 'cancelled',
-            requestedBy: cancelledRun.requestedBy,
-            required: true,
-            result: 'success',
-            runId,
-            scope: cancelledRun.scope,
-          });
-        }
-      });
-      return { claimed: true, jobId: claimed.id, outcome: 'cancelled', runId };
-    }
-
-    // Bounded enum only — never Error.name / free-form message as public code (F3).
-    const code =
-      error instanceof AuditRetentionInvalidDataError
-        ? 'INVALID_INPUT'
-        : mapRetentionFailureCode(error);
-
-    if (isTerminalContractError(error)) {
-      await failRetentionAttempt(db, {
-        code,
-        jobId: claimed.id,
-        runId,
-        terminal: true,
-        workerId: options.workerId,
-      });
-      return { claimed: true, jobId: claimed.id, outcome: 'failed', runId };
-    }
-
-    // Transient: requeue, or atomically terminalize all evidence when exhausted.
-    const terminal = await failRetentionAttempt(db, {
-      code,
+    return settleRetentionJobError({
+      db,
+      error,
       jobId: claimed.id,
       runId,
-      terminal: false,
       workerId: options.workerId,
     });
-
-    if (terminal) {
-      return { claimed: true, jobId: claimed.id, outcome: 'failed', runId };
-    }
-
-    return { claimed: true, jobId: claimed.id, outcome: 'retry', runId };
   }
 };
 

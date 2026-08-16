@@ -184,9 +184,3 @@ export const processConversations = async (
 
   return { ...counts, sessionsDeleted: 0 };
 };
-
-/**
- * Resolve held export ids under the retention/hold advisory lock TX.
- * Always re-query holds on the locked connection so claim and authorize see
- * holds activated after the pre-filter scan.
- */
