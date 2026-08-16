@@ -91,6 +91,9 @@ const ExportsPage = lazy(
 const LegalHoldsPage = lazy(
   () => import('@/enterprise/client/features/admin/audit/holds/LegalHoldsPage'),
 );
+const ContentModerationPage = lazy(
+  () => import('@/enterprise/client/features/admin/contentModeration/ContentModerationPage'),
+);
 const RetentionPage = lazy(
   () => import('@/enterprise/client/features/admin/audit/retention/RetentionPage'),
 );
@@ -215,6 +218,10 @@ export const ADMIN_PAGE_BY_ID: Readonly<
     element: withLazy(<ConversationTopicPage />),
   },
   'audit-exports': { componentId: 'ExportsPage', element: withLazy(<ExportsPage />) },
+  'content-moderation': {
+    componentId: 'ContentModerationPage',
+    element: withLazy(<ContentModerationPage />),
+  },
   'audit-legal-holds': {
     componentId: 'LegalHoldsPage',
     element: withLazy(<LegalHoldsPage />),

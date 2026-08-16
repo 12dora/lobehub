@@ -34,6 +34,7 @@ export type AdminNavLabelKey =
   | 'nav.auditLogs'
   | 'nav.auditLive'
   | 'nav.auditConversations'
+  | 'nav.contentModeration'
   | 'nav.auditConversationUser'
   | 'nav.auditConversationTopic'
   | 'nav.auditExports'
@@ -240,6 +241,12 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         labelKey: 'nav.auditConversationTopic',
         path: '/admin/audit/conversations/:userId/topics/:topicId',
         requiredPermissions: [PLATFORM_PERMISSIONS.AUDIT_CONVERSATION_READ],
+      },
+      {
+        id: 'content-moderation',
+        labelKey: 'nav.contentModeration',
+        path: '/admin/audit/content-moderation',
+        requiredPermissions: [PLATFORM_PERMISSIONS.MODERATION_READ],
       },
       {
         id: 'audit-exports',
