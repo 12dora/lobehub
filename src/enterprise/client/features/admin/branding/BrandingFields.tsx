@@ -3,18 +3,21 @@
 import { Input, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { type ChangeEvent, memo, useEffect, useRef, useState } from 'react';
+import { type ChangeEvent, memo, useEffect, useId, useRef, useState } from 'react';
 
 import type { RuntimeBranding } from '@/enterprise/client/providers/runtimeBranding';
 import type {
-  AdminBrandingDraft,
+  AdminBrandingPayload,
   AdminBrandingUploadAssetInput,
-} from '@/server/enterprise/contracts/adminBranding';
+} from '@/enterprise/client/services/adminBranding';
+
+import { FieldHint, fieldStyles } from './fieldPrimitives';
+import { PrimaryColorField } from './PrimaryColorField';
 
 /**
- * Product-default assets shown as the effective preview when neither the draft
- * nor the published runtime branding provides a URL (built-ins ship as static
- * files, not runtime URLs).
+ * Product-default assets shown as the effective preview when neither the edited values
+ * nor the published runtime branding provide a URL (built-ins ship as static files,
+ * not runtime URLs).
  */
 const DEFAULT_ASSET_PREVIEW: Record<'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogImageUrl', string> = {
   faviconUrl: '/favicon.ico',
@@ -24,12 +27,6 @@ const DEFAULT_ASSET_PREVIEW: Record<'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogIm
 };
 
 const styles = createStaticStyles(({ css }) => ({
-  field: css`
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  `,
   grid: css`
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -50,12 +47,10 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgContainer};
   `,
-  label: css`
-    font-weight: 600;
-  `,
-  meta: css`
-    font-size: 12px;
-    color: ${cssVar.colorTextSecondary};
+  heading: css`
+    display: flex;
+    gap: 6px;
+    align-items: center;
   `,
   thumbnail: css`
     flex-shrink: 0;
@@ -79,8 +74,11 @@ type AssetKind = AdminBrandingUploadAssetInput['kind'];
 
 interface TextFieldProps {
   disabled: boolean;
+  /** Blocking validation message rendered under the control. */
+  error?: string;
+  /** Static guidance, shown through the label's help icon. */
+  hint?: string;
   label: string;
-  meta?: string;
   onChange: (value: string | null) => void;
   placeholder?: string;
   type?: 'email' | 'text' | 'url';
@@ -88,25 +86,35 @@ interface TextFieldProps {
 }
 
 const TextField = memo<TextFieldProps>(
-  ({ disabled, label, meta, onChange, placeholder, type, value }) => (
-    <label className={styles.field}>
-      <span className={styles.label}>{label}</span>
-      {meta ? <span className={styles.meta}>{meta}</span> : null}
-      <Input
-        disabled={disabled}
-        placeholder={placeholder}
-        type={type}
-        value={value ?? ''}
-        onChange={(event) => onChange(event.target.value || null)}
-      />
-    </label>
-  ),
+  ({ disabled, error, hint, label, onChange, placeholder, type, value }) => {
+    const id = useId();
+    return (
+      <div className={fieldStyles.field}>
+        <div className={fieldStyles.labelRow}>
+          <label className={fieldStyles.label} htmlFor={id}>
+            {label}
+          </label>
+          {hint ? <FieldHint field={label} title={hint} /> : null}
+        </div>
+        <Input
+          disabled={disabled}
+          id={id}
+          placeholder={placeholder}
+          status={error ? 'error' : undefined}
+          type={type}
+          value={value ?? ''}
+          onChange={(event) => onChange(event.target.value || null)}
+        />
+        {error ? <span className={fieldStyles.error}>{error}</span> : null}
+      </div>
+    );
+  },
 );
 
 TextField.displayName = 'BrandingTextField';
 
 interface AssetFieldProps extends Omit<TextFieldProps, 'onChange' | 'type'> {
-  /** Effective runtime/default URL shown as preview while the draft is empty. */
+  /** Effective runtime/default URL shown as preview while the field is empty. */
   effectiveLabel?: string;
   effectiveUrl?: string;
   kind: AssetKind;
@@ -130,7 +138,7 @@ const AssetField = memo<AssetFieldProps>((props) => {
     if (file) props.onUpload(props.kind, file);
   };
   return (
-    <div className={styles.field}>
+    <div className={fieldStyles.field}>
       <TextField {...props} placeholder={props.placeholder ?? props.effectiveUrl} />
       <div className={styles.upload}>
         {previewUrl && !previewFailed ? (
@@ -142,7 +150,7 @@ const AssetField = memo<AssetFieldProps>((props) => {
           />
         ) : null}
         {previewUrl && !previewFailed && isEffectivePreview && props.effectiveLabel ? (
-          <span className={styles.meta}>{props.effectiveLabel}</span>
+          <span className={fieldStyles.meta}>{props.effectiveLabel}</span>
         ) : null}
         <Button
           disabled={props.disabled || !props.storageConfigured}
@@ -165,25 +173,26 @@ const AssetField = memo<AssetFieldProps>((props) => {
 AssetField.displayName = 'BrandingAssetField';
 
 export interface BrandingFieldsProps {
+  branding: AdminBrandingPayload;
   disabled: boolean;
-  draft: AdminBrandingDraft;
-  /** Effective runtime branding — prefiled as placeholder/preview so empty draft fields still show current values. */
+  /** Effective runtime branding — prefilled as placeholder/preview so empty fields still show current values. */
   effective?: RuntimeBranding;
   labels: Record<string, string>;
-  onPatch: (patch: Partial<AdminBrandingDraft>) => void;
+  onPatch: (patch: Partial<AdminBrandingPayload>) => void;
   onUpload: (kind: AssetKind, file: File) => void;
   storageConfigured: boolean;
 }
 
 export const BrandingFields = memo<BrandingFieldsProps>(
-  ({ disabled, draft, effective, labels, onPatch, onUpload, storageConfigured }) => {
-    const field = (key: keyof AdminBrandingDraft, type?: TextFieldProps['type']) => (
+  ({ branding, disabled, effective, labels, onPatch, onUpload, storageConfigured }) => {
+    const field = (key: keyof AdminBrandingPayload, type?: TextFieldProps['type']) => (
       <TextField
         disabled={disabled}
+        error={key === 'name' && !branding.name ? labels.nameRequired : undefined}
         label={labels[key]}
         placeholder={(effective?.[key as keyof RuntimeBranding] as string | null) ?? undefined}
         type={type}
-        value={draft[key] as string | null}
+        value={branding[key] as string | null}
         onChange={(value) => onPatch({ [key]: value })}
       />
     );
@@ -192,12 +201,12 @@ export const BrandingFields = memo<BrandingFieldsProps>(
         disabled={disabled}
         effectiveLabel={labels.effectiveCurrent}
         effectiveUrl={effective?.[key] ?? DEFAULT_ASSET_PREVIEW[key]}
+        hint={labels.immediate}
         kind={kind}
         label={labels[key]}
-        meta={labels.immediate}
         storageConfigured={storageConfigured}
         uploadLabel={labels.upload}
-        value={draft[key]}
+        value={branding[key]}
         onChange={(value) => onPatch({ [key]: value })}
         onUpload={onUpload}
       />
@@ -225,24 +234,27 @@ export const BrandingFields = memo<BrandingFieldsProps>(
           </div>
         </section>
         <section className={styles.group}>
-          <Text as="h2">{labels.desktop}</Text>
-          <span className={styles.meta}>{labels.rebuildRequired}</span>
+          <div className={styles.heading}>
+            <Text as="h2">{labels.desktop}</Text>
+            <FieldHint field={labels.desktop} title={labels.rebuildRequired} />
+          </div>
           <div className={styles.grid}>
             <TextField
               disabled={disabled}
               label={labels.desktopProductName}
-              value={draft.desktop.productName}
-              onChange={(value) => onPatch({ desktop: { ...draft.desktop, productName: value } })}
+              value={branding.desktop.productName}
+              onChange={(value) =>
+                onPatch({ desktop: { ...branding.desktop, productName: value } })
+              }
             />
             <AssetField
               disabled={disabled}
               kind="desktopIcon"
               label={labels.desktopIcon}
-              meta={labels.rebuildRequired}
               storageConfigured={storageConfigured}
               uploadLabel={labels.upload}
-              value={draft.desktop.iconUrl}
-              onChange={(value) => onPatch({ desktop: { ...draft.desktop, iconUrl: value } })}
+              value={branding.desktop.iconUrl}
+              onChange={(value) => onPatch({ desktop: { ...branding.desktop, iconUrl: value } })}
               onUpload={onUpload}
             />
           </div>
@@ -250,13 +262,12 @@ export const BrandingFields = memo<BrandingFieldsProps>(
         <section className={styles.group}>
           <Text as="h2">{labels.theme}</Text>
           <div className={styles.grid}>
-            <TextField
+            <PrimaryColorField
               disabled={disabled}
               label={labels.primaryColor}
-              placeholder="#1677ff"
-              value={draft.themeDefaults.primaryColor}
+              value={branding.themeDefaults.primaryColor}
               onChange={(value) =>
-                onPatch({ themeDefaults: { ...draft.themeDefaults, primaryColor: value } })
+                onPatch({ themeDefaults: { ...branding.themeDefaults, primaryColor: value } })
               }
             />
           </div>

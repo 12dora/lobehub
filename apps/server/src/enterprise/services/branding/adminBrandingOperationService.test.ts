@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { platformBrandingOperations } from '@/database/schemas/platform';
+import type { PlatformBrandingOperationPayloadResult } from '@/database/schemas/platform/branding';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
@@ -14,8 +15,28 @@ import {
 
 const db: LobeChatDatabase = await getTestDB();
 const actorId = 'branding-operation-admin';
-const operation = 'admin.branding.saveDraft' as const;
+const operation = 'admin.branding.save' as const;
 const resource = 'branding:global';
+
+const savedBranding: PlatformBrandingOperationPayloadResult = {
+  defaultAgentDisplayName: null,
+  desktop: { iconUrl: null, productName: null },
+  emailFrom: null,
+  emailSenderName: null,
+  faviconUrl: null,
+  homeUrl: null,
+  iconUrl: null,
+  legalName: null,
+  logoUrl: null,
+  name: 'Operation Brand',
+  ogImageUrl: null,
+  pageTitleTemplate: null,
+  privacyUrl: null,
+  shortName: null,
+  supportUrl: null,
+  termsUrl: null,
+  themeDefaults: { primaryColor: null },
+};
 
 const request = (requestId = crypto.randomUUID(), fingerprint = 'a'.repeat(64)) => ({
   actorId,
@@ -42,10 +63,12 @@ describe('AdminBrandingOperationService', () => {
     expect(acquired.state).toBe('acquired');
     if (acquired.state !== 'acquired') throw new Error('expected operation claim');
     const result = {
-      baseRevision: 2,
-      draftToken: 'b'.repeat(64),
-      kind: 'saveDraft' as const,
-      ok: true as const,
+      branding: savedBranding,
+      kind: 'save' as const,
+      revision: 2,
+      token: 'b'.repeat(64),
+      updatedAt: '2026-08-16T00:00:00.000Z',
+      updatedBy: actorId,
     };
     await db.transaction((tx) => service.succeed(tx, acquired.claim, result));
 
@@ -96,19 +119,23 @@ describe('AdminBrandingOperationService', () => {
     await expect(
       db.transaction((tx) =>
         service.succeed(tx, crashed.claim, {
-          baseRevision: 1,
-          draftToken: 'e'.repeat(64),
-          kind: 'saveDraft',
-          ok: true,
+          branding: savedBranding,
+          kind: 'save',
+          revision: 1,
+          token: 'e'.repeat(64),
+          updatedAt: '2026-08-16T00:00:00.000Z',
+          updatedBy: actorId,
         }),
       ),
     ).rejects.toBeInstanceOf(BrandingOperationOwnershipLostError);
     await db.transaction((tx) =>
       service.succeed(tx, recovered.claim, {
-        baseRevision: 1,
-        draftToken: 'f'.repeat(64),
-        kind: 'saveDraft',
-        ok: true,
+        branding: savedBranding,
+        kind: 'save',
+        revision: 1,
+        token: 'f'.repeat(64),
+        updatedAt: '2026-08-16T00:00:00.000Z',
+        updatedBy: actorId,
       }),
     );
     await expect(service.claim(params)).resolves.toMatchObject({ state: 'succeeded' });

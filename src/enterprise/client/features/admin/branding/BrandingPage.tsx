@@ -12,28 +12,21 @@ import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseErro
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
-import { adminBrandingService } from '@/enterprise/client/services/adminBranding';
-import type {
-  AdminBrandingDraft,
-  AdminBrandingPublishInput,
-  AdminBrandingRollbackInput,
-  AdminBrandingSaveDraftInput,
-  AdminBrandingUploadAssetInput,
-} from '@/server/enterprise/contracts/adminBranding';
+import {
+  type AdminBrandingSaveInput,
+  adminBrandingService,
+  type AdminBrandingUploadAssetInput,
+} from '@/enterprise/client/services/adminBranding';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { readFileBase64 } from '../primitives/readFileBase64';
-import RevisionBanner from '../primitives/RevisionBanner';
 import { useUnsavedChangesGuard } from '../primitives/useUnsavedChangesGuard';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { BrandingFields } from './BrandingFields';
 import { BrandingPreview } from './BrandingPreview';
-import {
-  clearBrandingLocalDraft,
-  loadBrandingLocalDraft,
-  saveBrandingLocalDraft,
-} from './localDraftStorage';
-import { useBrandingEditorStore } from './store';
+import { isValidPrimaryColor } from './PrimaryColorField';
+import { usePruneLegacyBrandingDrafts } from './pruneLegacyBrandingDrafts';
+import { hasBrandingChanges, useBrandingEditorStore } from './store';
 import { useFetchAdminBranding } from './useAdminBranding';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -58,26 +51,6 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 14px;
     min-width: 0;
   `,
-  history: css`
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-
-    padding: 16px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadiusLG};
-
-    background: ${cssVar.colorBgContainer};
-  `,
-  historyRow: css`
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    justify-content: space-between;
-
-    padding-block: 8px;
-    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
-  `,
   preview: css`
     position: sticky;
     inset-block-start: 16px;
@@ -94,7 +67,7 @@ const styles = createStaticStyles(({ css }) => ({
 const BrandingPage = memo(() => {
   const { t } = useTranslation('admin');
   const reduceMotion = useReducedMotion();
-  const branding = useBranding();
+  const runtimeBranding = useBranding();
   const formatError = useCallback(
     (cause: unknown): string => {
       const mapped = mapEnterpriseError(cause);
@@ -107,103 +80,61 @@ const BrandingPage = memo(() => {
   const canRead = admin.permissions.includes(PLATFORM_PERMISSIONS.BRANDING_READ);
   const canUpdate = admin.permissions.includes(PLATFORM_PERMISSIONS.BRANDING_UPDATE);
   const canPublish = admin.permissions.includes(PLATFORM_PERMISSIONS.BRANDING_PUBLISH);
+  /** Saving is publishing now — both write permissions are required to change anything. */
+  const canSave = canUpdate && canPublish;
+  usePruneLegacyBrandingDrafts();
   const { data, error, isLoading, mutate } = useFetchAdminBranding({
     adminAllowed: admin.status === 'allowed',
     canRead,
   });
   const {
-    baseRevision,
-    draft,
-    draftMatchesPublished,
-    draftToken,
+    adopt,
+    baseline,
+    branding,
     editorState,
-    hydrate,
-    markCommittedRefresh,
     markConflict,
     patch,
+    patchDesktop,
     reset,
+    revision,
     setEditorState,
-    syncServer,
+    token,
   } = useBrandingEditorStore();
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [runtimeRefreshPending, setRuntimeRefreshPending] = useState(false);
-  const [recoveryOffer, setRecoveryOffer] = useState<AdminBrandingDraft | null>(null);
-  const committedPublishRevisionRef = useRef<number | null>(null);
+  const [reloadFailed, setReloadFailed] = useState(false);
+  const [retryingLoad, setRetryingLoad] = useState(false);
+  const [retryingRefresh, setRetryingRefresh] = useState(false);
   const observedServerSnapshot = useRef<string | null>(null);
-  const recoveryCheckedRevisionRef = useRef<number | null>(null);
-  const dirty = editorState === 'dirty';
   const conflict = editorState === 'conflict';
-  const committedRefresh = editorState === 'committedRefresh';
-  /** Mutations stay locked on CAS conflict and after a committed publish whose refresh failed. */
-  const mutationLocked = conflict || committedRefresh || runtimeRefreshPending;
+  const busy = editorState === 'saving';
+  const changed = hasBrandingChanges(branding, baseline);
+  const dirty = editorState === 'dirty' && changed;
+  const valid =
+    Boolean(branding?.name) && isValidPrimaryColor(branding?.themeDefaults.primaryColor ?? null);
 
   useEffect(() => {
     if (!data) return;
-    const snapshotKey = `${data.baseRevision}:${data.draftToken}:${data.published?.revision ?? ''}`;
-    if (draft && observedServerSnapshot.current === snapshotKey) return;
-    const committedPublishRevision = committedPublishRevisionRef.current;
-    if (
-      committedPublishRevision !== null &&
-      (data.baseRevision < committedPublishRevision ||
-        (data.published?.revision ?? 0) < committedPublishRevision)
-    ) {
-      // A fulfilled SWR update can still be an older cached snapshot. Keep the editor
-      // locked until both authoritative pointers have reached the committed publish.
+    const snapshotKey = `${data.revision}:${data.token}`;
+    // After unmount/StrictMode cleanup the store is reset while this ref can still hold the
+    // same snapshot key. Always rehydrate when the form is empty so inputs refill.
+    if (!branding) {
       observedServerSnapshot.current = snapshotKey;
-      if (editorState !== 'committedRefresh') markCommittedRefresh();
+      adopt(data);
       return;
     }
-    // After unmount/StrictMode cleanup the store is reset but this ref can still hold the
-    // same snapshot key (mark-before-hydrate). Always rehydrate when draft is empty so
-    // Inputs refill after leave→re-enter, HMR, or StrictMode double-invoke.
-    if (!draft) {
-      observedServerSnapshot.current = snapshotKey;
-      hydrate(data);
-      if (recoveryCheckedRevisionRef.current !== data.baseRevision) {
-        recoveryCheckedRevisionRef.current = data.baseRevision;
-        const local = loadBrandingLocalDraft(data.baseRevision);
-        if (
-          local &&
-          local.draftToken === data.draftToken &&
-          JSON.stringify(local.draft) !== JSON.stringify(data.draft)
-        ) {
-          setRecoveryOffer(local.draft);
-        } else {
-          setRecoveryOffer(null);
-        }
-      }
-      return;
-    }
+    if (observedServerSnapshot.current === snapshotKey) return;
     observedServerSnapshot.current = snapshotKey;
-    if (data.draftToken !== draftToken || data.baseRevision !== baseRevision) {
-      if (editorState === 'idle' || editorState === 'committedRefresh') {
-        hydrate(data);
-        setRecoveryOffer(null);
-      } else if (editorState !== 'conflict') markConflict();
-    }
-  }, [
-    baseRevision,
-    data,
-    draft,
-    draftToken,
-    editorState,
-    hydrate,
-    markCommittedRefresh,
-    markConflict,
-  ]);
-
-  // Persist non-secret dirty drafts for crash/reload recovery (store resets on unmount).
-  useEffect(() => {
-    if (!dirty || !draft || mutationLocked) return;
-    saveBrandingLocalDraft({
-      baseRevision,
-      draft,
-      draftToken,
-      savedAt: new Date().toISOString(),
-    });
-  }, [baseRevision, dirty, draft, draftToken, mutationLocked]);
+    if (data.token === token && data.revision === revision) return;
+    // Revisions only ever move forward: a fulfilled read that is older than what we already
+    // hold is a stale cache, never an authority to roll the editor back.
+    if (data.revision < revision) return;
+    // Someone else saved. An editor with nothing of its own simply follows; unsaved edits and
+    // in-flight saves are never overwritten.
+    if (!changed && editorState !== 'saving') adopt(data);
+    else if (editorState !== 'conflict') markConflict(data.revision);
+  }, [adopt, branding, changed, data, editorState, markConflict, revision, token]);
 
   const unsavedMessages = useMemo(
     () => ({
@@ -214,7 +145,9 @@ const BrandingPage = memo(() => {
     }),
     [t],
   );
-  useUnsavedChangesGuard({ enabled: dirty, messages: unsavedMessages });
+  // Armed by the values themselves, not by save eligibility: edits are just as losable while
+  // a save is in flight or the editor is conflicted.
+  useUnsavedChangesGuard({ enabled: changed, messages: unsavedMessages });
 
   useEffect(
     () => () => {
@@ -226,291 +159,162 @@ const BrandingPage = memo(() => {
     [reset],
   );
 
-  const labels = useMemo(() => {
-    // English fallbacks for keys not yet in the locale pack (i18n batch fills zh-CN / en-US).
-    const defaults: Record<string, string> = {
-      theme: 'Theme',
-    };
-    return Object.fromEntries(
-      [
-        'assets',
-        'defaultAgentDisplayName',
-        'desktop',
-        'desktopIcon',
-        'desktopProductName',
-        'effectiveCurrent',
-        'email',
-        'emailFrom',
-        'emailSenderName',
-        'faviconUrl',
-        'homeUrl',
-        'iconUrl',
-        'identity',
-        'immediate',
-        'legalName',
-        'links',
-        'logoUrl',
-        'name',
-        'ogImageUrl',
-        'pageTitleTemplate',
-        'primaryColor',
-        'privacyUrl',
-        'rebuildRequired',
-        'shortName',
-        'supportUrl',
-        'termsUrl',
-        'theme',
-        'upload',
-      ].map((key) => [
-        key,
-        t(`branding.fields.${key}` as never, {
-          defaultValue: defaults[key],
-        }),
-      ]),
-    );
-  }, [t]);
+  const labels = useMemo(
+    () =>
+      Object.fromEntries(
+        [
+          'assets',
+          'defaultAgentDisplayName',
+          'desktop',
+          'desktopIcon',
+          'desktopProductName',
+          'effectiveCurrent',
+          'email',
+          'emailFrom',
+          'emailSenderName',
+          'faviconUrl',
+          'homeUrl',
+          'iconUrl',
+          'identity',
+          'immediate',
+          'legalName',
+          'links',
+          'logoUrl',
+          'name',
+          'nameRequired',
+          'ogImageUrl',
+          'pageTitleTemplate',
+          'primaryColor',
+          'privacyUrl',
+          'rebuildRequired',
+          'shortName',
+          'supportUrl',
+          'termsUrl',
+          'theme',
+          'upload',
+        ].map((key) => [key, t(`branding.fields.${key}` as never)]),
+      ),
+    [t],
+  );
 
-  const refreshAuthoritative = useCallback(async () => {
+  /**
+   * Someone else saved first — nothing of ours committed. Load the live values and only then
+   * drop the local edits: on a failed reload the old values are all we have, so keep them
+   * (and the retry) instead of claiming the latest ones loaded.
+   */
+  const reload = useCallback(async () => {
     setActionError(null);
     setActionNotice(null);
-    const [adminRefresh, runtimeRefresh] = await Promise.allSettled([mutate(), platform.refresh()]);
-    const committedPublishRevision = committedPublishRevisionRef.current;
-    const refreshed = adminRefresh.status === 'fulfilled' ? adminRefresh.value : undefined;
-    const adminRefreshAuthoritative =
-      refreshed !== undefined &&
-      (committedPublishRevision === null ||
-        (refreshed.baseRevision >= committedPublishRevision &&
-          (refreshed.published?.revision ?? 0) >= committedPublishRevision));
-    if (adminRefreshAuthoritative) {
-      hydrate(refreshed);
-    } else {
-      markCommittedRefresh();
+    try {
+      const latest = await mutate();
+      if (!latest) throw new Error('BRANDING_LATEST_UNAVAILABLE');
+      // A cached read older than what we already observed is not the live state either.
+      if (!adopt(latest)) throw new Error('BRANDING_LATEST_STALE');
+      observedServerSnapshot.current = `${latest.revision}:${latest.token}`;
+      setReloadFailed(false);
+    } catch {
+      setReloadFailed(true);
     }
-    if (!adminRefreshAuthoritative || runtimeRefresh.status === 'rejected') {
-      if (runtimeRefresh.status === 'rejected') setRuntimeRefreshPending(true);
-      setRefreshWarning(
-        committedPublishRevision !== null && !adminRefreshAuthoritative
-          ? t('branding.refresh.committedFailed')
-          : t('branding.refresh.postCommitFailed'),
-      );
-      return;
+  }, [adopt, mutate]);
+
+  const retryLoad = useCallback(async () => {
+    setRetryingLoad(true);
+    try {
+      await mutate();
+    } catch {
+      // The load error alert already carries the failure; a rejected retry must not escape.
+    } finally {
+      setRetryingLoad(false);
     }
-    committedPublishRevisionRef.current = null;
-    setRuntimeRefreshPending(false);
-    setRefreshWarning(null);
-  }, [hydrate, markCommittedRefresh, mutate, platform, t]);
+  }, [mutate]);
+
+  const retryRefresh = useCallback(async () => {
+    setRetryingRefresh(true);
+    try {
+      await platform.refresh();
+      setRefreshWarning(null);
+    } catch {
+      setRefreshWarning(t('branding.refresh.postCommitFailed'));
+    } finally {
+      setRetryingRefresh(false);
+    }
+  }, [platform, t]);
 
   const save = useCallback(() => {
-    if (!draft || !canUpdate || !dirty || mutationLocked) return;
+    if (!branding || !canSave || !dirty || !valid || busy || conflict) return;
     openReasonModal({
+      authMethod: admin.authMethod,
       buildPayload: (reason) => ({
-        draft,
-        expectedDraftToken: draftToken,
+        branding,
+        expectedRevision: revision,
+        expectedToken: token,
         reason,
         requestId: crypto.randomUUID(),
       }),
       description: t('branding.save.description'),
+      impact: t('branding.save.impact'),
       onSubmit: async (payload) => {
         setEditorState('saving');
         try {
-          const result = await adminBrandingService.saveDraft(
-            payload as AdminBrandingSaveDraftInput,
-          );
-          clearBrandingLocalDraft(baseRevision);
-          syncServer(result);
-          setRecoveryOffer(null);
+          const result = await adminBrandingService.save(payload as AdminBrandingSaveInput);
+          // A response that lands after a newer revision was already observed is history:
+          // it committed, but it must not roll the editor or the cache back over the newer one.
+          const adopted = adopt(result);
+          if (adopted) observedServerSnapshot.current = `${result.revision}:${result.token}`;
+          else markConflict(result.revision);
           setActionError(null);
-          setActionNotice(t('branding.status.draftSaved'));
-          try {
-            const refreshed = await mutate();
-            if (!refreshed) throw new Error('BRANDING_REFRESH_EMPTY');
-            if (
-              refreshed.baseRevision < result.baseRevision ||
-              refreshed.draftToken !== result.draftToken
-            ) {
-              throw new Error('BRANDING_REFRESH_STALE');
-            }
-            hydrate(refreshed);
-            setRefreshWarning(null);
-          } catch (refreshError) {
-            console.error('Branding post-save refresh failed', refreshError);
-            setRefreshWarning(t('branding.refresh.postCommitFailed'));
-          }
+          setActionNotice(t('branding.status.saved'));
+          // The save response is authoritative — only the runtime snapshot still needs a refresh.
+          const [runtimeRefresh] = await Promise.allSettled([
+            platform.refresh(),
+            adopted
+              ? mutate(
+                  (current) =>
+                    !current || current.revision > result.revision
+                      ? current
+                      : { ...current, ...result },
+                  { revalidate: false },
+                )
+              : Promise.resolve(),
+          ]);
+          setRefreshWarning(
+            runtimeRefresh.status === 'rejected' ? t('branding.refresh.postCommitFailed') : null,
+          );
         } catch (cause) {
           const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
           if (isConflict) markConflict();
+          else setEditorState('dirty');
           setActionError(formatError(cause));
-          if (!isConflict) setEditorState('dirty');
           throw cause;
         }
       },
       submitLabel: t('branding.actions.save'),
-      targetLabel: t('branding.title'),
+      targetLabel: branding.name ?? t('branding.title', { platformName: runtimeBranding.name }),
       title: t('branding.save.title'),
     });
   }, [
-    baseRevision,
-    canUpdate,
-    dirty,
-    draft,
-    draftToken,
-    formatError,
-    hydrate,
-    markConflict,
-    mutate,
-    mutationLocked,
-    setEditorState,
-    syncServer,
-    t,
-  ]);
-
-  const publish = useCallback(() => {
-    if (!draft || !canPublish || dirty || mutationLocked) return;
-    openReasonModal({
-      authMethod: admin.authMethod,
-      buildPayload: (reason) => ({
-        expectedDraftToken: draftToken,
-        expectedRevision: baseRevision,
-        reason,
-        requestId: crypto.randomUUID(),
-      }),
-      description: t('branding.publish.description'),
-      impact: t('branding.publish.impact'),
-      onSubmit: async (payload) => {
-        setEditorState('publishing');
-        try {
-          const result = await adminBrandingService.publish(payload as AdminBrandingPublishInput);
-          committedPublishRevisionRef.current = result.revision;
-          clearBrandingLocalDraft(baseRevision);
-          setRecoveryOffer(null);
-          setActionError(null);
-          setActionNotice(t('branding.status.published'));
-          const [brandingRefresh, runtimeRefresh] = await Promise.allSettled([
-            mutate(),
-            platform.refresh(),
-          ]);
-          const refreshed =
-            brandingRefresh.status === 'fulfilled' ? brandingRefresh.value : undefined;
-          const adminRefreshAuthoritative =
-            refreshed !== undefined &&
-            refreshed.baseRevision >= result.revision &&
-            (refreshed.published?.revision ?? 0) >= result.revision;
-          if (adminRefreshAuthoritative) {
-            hydrate(refreshed);
-          } else {
-            // Publish already committed — lock mutations until an authoritative refresh lands.
-            markCommittedRefresh();
-          }
-          if (!adminRefreshAuthoritative || runtimeRefresh.status === 'rejected') {
-            if (runtimeRefresh.status === 'rejected') setRuntimeRefreshPending(true);
-            setRefreshWarning(
-              !adminRefreshAuthoritative
-                ? t('branding.refresh.committedFailed')
-                : t('branding.refresh.postCommitFailed'),
-            );
-          } else {
-            committedPublishRevisionRef.current = null;
-            setRuntimeRefreshPending(false);
-            setRefreshWarning(null);
-          }
-        } catch (cause) {
-          const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
-          if (isConflict) markConflict();
-          else setEditorState('idle');
-          setActionError(formatError(cause));
-          throw cause;
-        }
-      },
-      submitLabel: t('branding.actions.publish'),
-      targetLabel: draft.name ?? t('branding.title'),
-      title: t('branding.publish.title'),
-    });
-  }, [
     admin.authMethod,
-    baseRevision,
-    canPublish,
+    adopt,
+    branding,
+    busy,
+    canSave,
+    conflict,
     dirty,
-    draft,
-    draftToken,
     formatError,
-    hydrate,
-    markCommittedRefresh,
     markConflict,
     mutate,
-    mutationLocked,
     platform,
+    revision,
+    runtimeBranding.name,
     setEditorState,
     t,
+    token,
+    valid,
   ]);
-
-  const rollback = useCallback(
-    (targetRevision: number) => {
-      if (!canPublish || !draft || dirty || mutationLocked) return;
-      openReasonModal({
-        authMethod: admin.authMethod,
-        buildPayload: (reason) => ({
-          expectedDraftToken: draftToken,
-          expectedRevision: baseRevision,
-          reason,
-          requestId: crypto.randomUUID(),
-          targetRevision,
-        }),
-        danger: true,
-        description: t('branding.rollback.description', { revision: targetRevision }),
-        impact: t('branding.rollback.impact'),
-        onSubmit: async (payload) => {
-          try {
-            const result = await adminBrandingService.rollback(
-              payload as AdminBrandingRollbackInput,
-            );
-            hydrate({ ...result, draftMatchesPublished: false });
-            setActionError(null);
-            setActionNotice(t('branding.status.restoredDraft'));
-            try {
-              const refreshed = await mutate();
-              if (!refreshed) throw new Error('BRANDING_REFRESH_EMPTY');
-              if (
-                refreshed.baseRevision < result.baseRevision ||
-                refreshed.draftToken !== result.draftToken
-              ) {
-                throw new Error('BRANDING_REFRESH_STALE');
-              }
-              hydrate(refreshed);
-              setRefreshWarning(null);
-            } catch (refreshError) {
-              console.error('Branding post-rollback refresh failed', refreshError);
-              setRefreshWarning(t('branding.refresh.postCommitFailed'));
-            }
-          } catch (cause) {
-            if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') markConflict();
-            setActionError(formatError(cause));
-            throw cause;
-          }
-        },
-        submitLabel: t('branding.actions.restoreDraft'),
-        targetLabel: `#${targetRevision}`,
-        title: t('branding.rollback.title'),
-      });
-    },
-    [
-      admin.authMethod,
-      baseRevision,
-      canPublish,
-      dirty,
-      draft,
-      draftToken,
-      formatError,
-      hydrate,
-      markConflict,
-      mutate,
-      mutationLocked,
-      t,
-    ],
-  );
 
   const upload = useCallback(
     async (kind: AdminBrandingUploadAssetInput['kind'], file: File) => {
-      if (!canUpdate || mutationLocked || !data?.storageConfigured) return;
+      if (!canSave || conflict || busy || !data?.storageConfigured) return;
       try {
         const bytesBase64 = await readFileBase64(file);
         openReasonModal({
@@ -527,8 +331,10 @@ const BrandingPage = memo(() => {
               const result = await adminBrandingService.uploadAsset(
                 payload as AdminBrandingUploadAssetInput,
               );
+              // Merge against the current values: a newer snapshot may have hydrated during
+              // the file read, the reason modal and the upload itself.
               if (kind === 'desktopIcon') {
-                patch({ desktop: { ...draft!.desktop, iconUrl: result.url } });
+                patchDesktop({ iconUrl: result.url });
               } else {
                 const field = {
                   favicon: 'faviconUrl',
@@ -553,7 +359,7 @@ const BrandingPage = memo(() => {
         setActionError(formatError(cause));
       }
     },
-    [canUpdate, data?.storageConfigured, draft, formatError, mutationLocked, patch, t],
+    [busy, canSave, conflict, data?.storageConfigured, formatError, patch, patchDesktop, t],
   );
 
   if (isLoading || (!data && !error)) {
@@ -566,154 +372,97 @@ const BrandingPage = memo(() => {
   if (error) {
     return (
       <Alert
+        extraIsolate
         showIcon
-        extra={<Button onClick={() => void mutate()}>{t('branding.actions.retry')}</Button>}
         message={formatError(error)}
         type="error"
+        extra={
+          <Button loading={retryingLoad} onClick={() => void retryLoad()}>
+            {t('branding.actions.retry')}
+          </Button>
+        }
       />
     );
   }
-  if (!data || !draft) return <Text>{t('branding.empty')}</Text>;
+  if (!data || !branding) return <Text>{t('branding.empty')}</Text>;
 
-  const busy = editorState === 'saving' || editorState === 'publishing';
-  const pendingPublish = !dirty && !mutationLocked && !draftMatchesPublished && Boolean(draft.name);
   return (
     <AdminPageTemplate
-      description={t('branding.description', { platformName: branding.name })}
-      title={t('branding.title', { platformName: branding.name })}
+      description={t('branding.description', { platformName: runtimeBranding.name })}
+      title={t('branding.title', { platformName: runtimeBranding.name })}
       actions={
         <div className={styles.actions}>
-          <Button disabled={!canUpdate || !dirty || mutationLocked || busy} onClick={save}>
-            {t('branding.actions.save')}
-          </Button>
           <Button
-            disabled={!canPublish || dirty || mutationLocked || busy || !draft.name}
+            disabled={!canSave || !dirty || !valid || busy || conflict}
+            loading={busy}
             type="primary"
-            onClick={publish}
+            onClick={save}
           >
-            {t('branding.actions.publish')}
+            {t('branding.actions.save')}
           </Button>
         </div>
       }
       banner={
-        <RevisionBanner
-          conflict={conflict || committedRefresh}
-          draftRevision={baseRevision}
-          publishedRevision={data.published?.revision ?? null}
-          status={
-            dirty ? 'draft' : pendingPublish ? 'pending' : data.published ? 'published' : 'draft'
-          }
-          onRefresh={() => void refreshAuthoritative()}
-        />
+        conflict ? (
+          <Alert
+            extraIsolate
+            showIcon
+            extra={<Button onClick={() => void reload()}>{t('branding.conflict.reload')}</Button>}
+            message={t('branding.conflict.title')}
+            type="warning"
+            description={
+              reloadFailed
+                ? t('branding.conflict.reloadFailed')
+                : t('branding.conflict.description')
+            }
+          />
+        ) : null
+      }
+      notice={
+        data.updatedAt ? (
+          <span className={styles.status}>
+            {t('branding.lastSaved', { time: new Date(data.updatedAt).toLocaleString() })}
+          </span>
+        ) : null
       }
     >
       {!data.storageConfigured ? (
         <Alert showIcon message={t('branding.storageUnavailable')} type="warning" />
       ) : null}
-      {recoveryOffer && !mutationLocked ? (
-        <Alert
-          showIcon
-          description={t('branding.recovery.description')}
-          message={t('branding.recovery.title')}
-          type="info"
-          extra={
-            <div className={styles.actions}>
-              <Button
-                type="primary"
-                onClick={() => {
-                  if (!recoveryOffer) return;
-                  hydrate({
-                    baseRevision,
-                    draft: recoveryOffer,
-                    draftMatchesPublished: false,
-                    draftToken,
-                  });
-                  setEditorState('dirty');
-                  setRecoveryOffer(null);
-                }}
-              >
-                {t('branding.recovery.restore')}
-              </Button>
-              <Button
-                onClick={() => {
-                  clearBrandingLocalDraft(baseRevision);
-                  setRecoveryOffer(null);
-                }}
-              >
-                {t('branding.recovery.discard')}
-              </Button>
-            </div>
-          }
-        />
-      ) : null}
-      {!canUpdate ? <Alert showIcon message={t('branding.readOnly')} type="info" /> : null}
-      {committedRefresh || refreshWarning ? (
+      {!canSave ? <Alert showIcon message={t('branding.readOnly')} type="info" /> : null}
+      {refreshWarning ? (
         <Alert
           extraIsolate
           showIcon
-          description={refreshWarning}
-          message={t('branding.refresh.committedTitle')}
+          message={refreshWarning}
           type="warning"
           extra={
-            <Button onClick={() => void refreshAuthoritative()}>
-              {t('branding.refresh.retry', { defaultValue: 'Retry refresh' })}
+            <Button loading={retryingRefresh} onClick={() => void retryRefresh()}>
+              {t('branding.refresh.retry')}
             </Button>
           }
         />
-      ) : null}
-      {pendingPublish ? (
-        <Alert showIcon message={t('branding.status.pendingPublish')} type="info" />
       ) : null}
       {actionNotice ? <Alert showIcon message={actionNotice} type="success" /> : null}
       {actionError ? <Alert showIcon message={actionError} type="error" /> : null}
       <div className={styles.content}>
         <div className={styles.editor}>
           <BrandingFields
-            disabled={!canUpdate || mutationLocked || busy}
-            draft={draft}
-            effective={branding}
+            branding={branding}
+            disabled={!canSave || conflict || busy}
+            effective={runtimeBranding}
             labels={labels}
             storageConfigured={data.storageConfigured}
             onPatch={patch}
             onUpload={(kind, file) => void upload(kind, file)}
           />
-          <section className={styles.history}>
-            <Text as="h2">{t('branding.history.title')}</Text>
-            {data.revisions.length === 0 ? (
-              <Text type="secondary">{t('branding.history.empty')}</Text>
-            ) : null}
-            {data.revisions.map((revision) => (
-              <div className={styles.historyRow} key={revision.revision}>
-                <div>
-                  <Text>#{revision.revision}</Text>
-                  <div className={styles.status}>
-                    {revision.reason ?? t('branding.history.noReason')}
-                  </div>
-                </div>
-                <Button
-                  danger
-                  size="small"
-                  disabled={
-                    !canPublish ||
-                    dirty ||
-                    mutationLocked ||
-                    busy ||
-                    revision.revision === baseRevision
-                  }
-                  onClick={() => rollback(revision.revision)}
-                >
-                  {t('branding.actions.restoreDraft')}
-                </Button>
-              </div>
-            ))}
-          </section>
         </div>
         <aside className={styles.preview}>
           <Text as="h2">{t('branding.preview.title')}</Text>
           <Text type="secondary">{t('branding.preview.description')}</Text>
           <BrandingPreview
-            draft={draft}
-            effective={branding}
+            branding={branding}
+            effective={runtimeBranding}
             title={t('branding.preview.frameTitle')}
             copy={{
               defaultAgent: t('branding.preview.defaultAgent'),

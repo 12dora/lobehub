@@ -305,7 +305,10 @@ const publicationDomains = {
   'admin.agents.publish': 'agent_catalog',
   'admin.agents.save': 'agent_catalog',
   'admin.aiProviders.publish': 'ai_catalog',
+  // 品牌自定义 de-drafted: `.save` is the live write, `.publish` is kept so historical
+  // failures still roll up into publish health.
   'admin.branding.publish': 'branding',
+  'admin.branding.save': 'branding',
   'admin.connectors.publish': 'connector_catalog',
   'admin.identityProviders.publish': 'identity',
   // 统一管理 de-drafted: `.save` is the live write, `.publish` is kept so historical

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq, inArray } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -26,8 +26,12 @@ import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlat
 import { adminBrandingRouter } from './branding';
 
 const db: LobeChatDatabase = await getTestDB();
-const ids = { publisher: 'branding-router-publisher', reader: 'branding-router-reader' };
-const roleNames = ['branding_router_reader', 'branding_router_publisher'];
+const ids = {
+  publisher: 'branding-router-publisher',
+  reader: 'branding-router-reader',
+  writer: 'branding-router-writer',
+};
+const roleNames = ['branding_router_reader', 'branding_router_publisher', 'branding_router_writer'];
 
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db) }));
 
@@ -89,6 +93,11 @@ beforeEach(async () => {
     PLATFORM_PERMISSIONS.BRANDING_READ,
     PLATFORM_PERMISSIONS.BRANDING_PUBLISH,
   ]);
+  await grant(ids.writer, roleNames[2], [
+    PLATFORM_PERMISSIONS.BRANDING_READ,
+    PLATFORM_PERMISSIONS.BRANDING_PUBLISH,
+    PLATFORM_PERMISSIONS.BRANDING_UPDATE,
+  ]);
 });
 
 afterEach(async () => {
@@ -99,21 +108,20 @@ afterEach(async () => {
 describe('admin.branding router gates', () => {
   it('keeps read/update/publish permissions precise', async () => {
     const reader = await callerFor(ids.reader);
-    const snapshot = await reader.getDraft();
+    const snapshot = await reader.get();
+    const saveInput = {
+      branding: snapshot.branding,
+      expectedRevision: snapshot.revision,
+      expectedToken: snapshot.token,
+    };
     await expect(
-      reader.saveDraft({
-        draft: snapshot.draft,
-        expectedDraftToken: snapshot.draftToken,
-        reason: 'must be denied',
-        requestId: crypto.randomUUID(),
-      }),
+      reader.save({ ...saveInput, reason: 'must be denied', requestId: crypto.randomUUID() }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const publisher = await callerFor(ids.publisher);
     await expect(
-      publisher.saveDraft({
-        draft: snapshot.draft,
-        expectedDraftToken: snapshot.draftToken,
+      publisher.save({
+        ...saveInput,
         reason: 'publish does not imply update',
         requestId: crypto.randomUUID(),
       }),
@@ -139,7 +147,7 @@ describe('admin.branding router gates', () => {
       },
     });
 
-    await expect(reader.getDraft()).rejects.toMatchObject({
+    await expect(reader.get()).rejects.toMatchObject({
       code: 'FORBIDDEN',
       message: 'PLATFORM_FEATURE_DISABLED',
     });
@@ -152,28 +160,23 @@ describe('admin.branding router gates', () => {
     select.mockRestore();
   });
 
-  it('requires recent reauthentication before publish and records a denied audit', async () => {
+  it('requires recent reauthentication before save and records a denied audit', async () => {
     const service = new AdminBrandingService(db);
-    const initial = await service.getDraft();
-    const draft = { ...initial.draft, name: 'Acme', pageTitleTemplate: '%s · Acme' };
-    await db
-      .update(platformBranding)
-      .set({ displayName: draft.name, pageTitleTemplate: draft.pageTitleTemplate })
-      .where(eq(platformBranding.id, 'branding:draft'));
-    const saved = await service.getDraft();
-    const publisher = await callerFor(ids.publisher, new Date(0));
+    const initial = await service.get();
+    const writer = await callerFor(ids.writer, new Date(0));
 
     await expect(
-      publisher.publish({
-        expectedDraftToken: saved.draftToken,
-        expectedRevision: 0,
+      writer.save({
+        branding: { ...initial.branding, name: 'Acme', pageTitleTemplate: '%s · Acme' },
+        expectedRevision: initial.revision,
+        expectedToken: initial.token,
         reason: 'stale reauth denied',
         requestId: crypto.randomUUID(),
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    expect((await service.getDraft()).published).toBeNull();
+    expect((await service.get()).revision).toBe(0);
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
-      expect.objectContaining({ action: 'admin.branding.publish', result: 'denied' }),
+      expect.objectContaining({ action: 'admin.branding.save', result: 'denied' }),
     );
   });
 });

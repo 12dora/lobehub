@@ -1,5 +1,4 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -14,7 +13,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
-import type { AdminBrandingDraft } from '../../contracts/adminBranding';
+import type { AdminBrandingPayload } from '../../contracts/adminBranding';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
@@ -29,7 +28,7 @@ const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABA
 const INTERLEAVING_PROBE_MS = 100;
 const assetId = 'pba_77777777-7777-4777-8777-777777777777';
 
-const draft = (): AdminBrandingDraft => ({
+const payload = (): AdminBrandingPayload => ({
   defaultAgentDisplayName: null,
   desktop: { iconUrl: null, productName: null },
   emailFrom: null,
@@ -120,14 +119,15 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
       const service = new AdminBrandingService(firstDb, {
         assetService: new AdminBrandingAssetService(firstDb, { storage }),
       });
-      const initial = await service.getDraft();
+      const initial = await service.get();
       const sweep = new AdminBrandingAssetService(secondDb, { storage }).sweep({ limit: 1 });
       await deleteEntered.promise;
 
       await expect(
-        service.saveDraft('admin-cleanup-race', {
-          draft: draft(),
-          expectedDraftToken: initial.draftToken,
+        service.save('admin-cleanup-race', {
+          branding: payload(),
+          expectedRevision: initial.revision,
+          expectedToken: initial.token,
           reason: 'save after cleanup claim',
           requestId: crypto.randomUUID(),
         }),
@@ -136,10 +136,11 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
       await expect(sweep).resolves.toEqual({ deleted: 1, failed: 0, scanned: 1 });
       const [asset] = await firstDb.select().from(platformBrandingAssets);
       expect(asset).toMatchObject({ draftPinned: false, objectDeletedAt: expect.any(Date) });
+      expect(await firstDb.select().from(platformResourceRevisions)).toHaveLength(0);
     });
   });
 
-  it('makes cleanup lose when save pins first', async () => {
+  it('makes cleanup lose when save pins the draft first', async () => {
     await withDatabases(async ({ firstDb, secondDb }) => {
       const pinEntered = createGate();
       const allowPinCommit = createGate();
@@ -155,11 +156,15 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
         pinEntered.open();
         await allowPinCommit.promise;
       };
-      const service = new AdminBrandingService(firstDb, { assetService: assets });
-      const initial = await service.getDraft();
-      const save = service.saveDraft('admin-cleanup-race', {
-        draft: draft(),
-        expectedDraftToken: initial.draftToken,
+      const service = new AdminBrandingService(firstDb, {
+        assetService: assets,
+        invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
+      });
+      const initial = await service.get();
+      const save = service.save('admin-cleanup-race', {
+        branding: payload(),
+        expectedRevision: initial.revision,
+        expectedToken: initial.token,
         reason: 'pin before cleanup',
         requestId: crypto.randomUUID(),
       });
@@ -173,7 +178,7 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
       ).resolves.toBe('blocked');
       allowPinCommit.open();
 
-      await expect(save).resolves.toMatchObject({ ok: true });
+      await expect(save).resolves.toMatchObject({ revision: 1 });
       await expect(sweep).resolves.toEqual({ deleted: 0, failed: 0, scanned: 0 });
       expect(storage.delete).not.toHaveBeenCalled();
       expect(await firstDb.select().from(platformBrandingAssets)).toEqual([
@@ -182,7 +187,7 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
     });
   });
 
-  it('makes cleanup lose when publish pins first', async () => {
+  it('makes cleanup lose when save pins the published revision first', async () => {
     await withDatabases(async ({ firstDb, secondDb }) => {
       const pinEntered = createGate();
       const allowPinCommit = createGate();
@@ -196,26 +201,17 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
         assetService: assets,
         invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
       });
-      const initial = await service.getDraft();
-      const saved = await service.saveDraft('admin-cleanup-race', {
-        draft: draft(),
-        expectedDraftToken: initial.draftToken,
-        reason: 'prepare publish race',
-        requestId: crypto.randomUUID(),
-      });
-      await firstDb
-        .update(platformBrandingAssets)
-        .set({ cleanupAfter: new Date('2000-01-01T00:00:00.000Z'), draftPinned: false })
-        .where(eq(platformBrandingAssets.id, assetId));
+      const initial = await service.get();
       const originalPin = assets.pinPublished;
       assets.pinPublished = async (tx, ids, revision) => {
         await originalPin(tx, ids, revision);
         pinEntered.open();
         await allowPinCommit.promise;
       };
-      const publish = service.publish('admin-cleanup-race', {
-        expectedDraftToken: saved.draftToken,
-        expectedRevision: 0,
+      const save = service.save('admin-cleanup-race', {
+        branding: payload(),
+        expectedRevision: initial.revision,
+        expectedToken: initial.token,
         reason: 'publish before cleanup',
         requestId: crypto.randomUUID(),
       });
@@ -229,56 +225,10 @@ describe.skipIf(!enabled)('Branding cleanup/pin interleavings (PostgreSQL)', () 
       ).resolves.toBe('blocked');
       allowPinCommit.open();
 
-      await expect(publish).resolves.toMatchObject({ revision: 1 });
+      await expect(save).resolves.toMatchObject({ revision: 1 });
       await expect(sweep).resolves.toEqual({ deleted: 0, failed: 0, scanned: 0 });
       expect(await firstDb.select().from(platformBrandingAssets)).toEqual([
         expect.objectContaining({ draftPinned: true, firstPublishedRevision: 1 }),
-      ]);
-    });
-  });
-
-  it('rejects publish when cleanup claims first', async () => {
-    await withDatabases(async ({ firstDb, secondDb }) => {
-      const deleteEntered = createGate();
-      const allowDelete = createGate();
-      const storage = {
-        delete: vi.fn(async () => {
-          deleteEntered.open();
-          await allowDelete.promise;
-        }),
-        isConfigured: () => true,
-        upload: vi.fn(async () => {}),
-      };
-      const service = new AdminBrandingService(firstDb, {
-        assetService: new AdminBrandingAssetService(firstDb, { storage }),
-      });
-      const initial = await service.getDraft();
-      const saved = await service.saveDraft('admin-cleanup-race', {
-        draft: draft(),
-        expectedDraftToken: initial.draftToken,
-        reason: 'prepare claimed publish',
-        requestId: crypto.randomUUID(),
-      });
-      await firstDb
-        .update(platformBrandingAssets)
-        .set({ cleanupAfter: new Date('2000-01-01T00:00:00.000Z'), draftPinned: false })
-        .where(eq(platformBrandingAssets.id, assetId));
-      const sweep = new AdminBrandingAssetService(secondDb, { storage }).sweep({ limit: 1 });
-      await deleteEntered.promise;
-
-      await expect(
-        service.publish('admin-cleanup-race', {
-          expectedDraftToken: saved.draftToken,
-          expectedRevision: 0,
-          reason: 'publish after cleanup',
-          requestId: crypto.randomUUID(),
-        }),
-      ).rejects.toBeInstanceOf(BrandingDraftValidationError);
-      allowDelete.open();
-      await sweep;
-      expect(await firstDb.select().from(platformResourceRevisions)).toHaveLength(0);
-      expect(await firstDb.select().from(platformBrandingAssets)).toEqual([
-        expect.objectContaining({ draftPinned: false, objectDeletedAt: expect.any(Date) }),
       ]);
     });
   });

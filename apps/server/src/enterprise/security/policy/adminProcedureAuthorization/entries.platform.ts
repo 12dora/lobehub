@@ -6,23 +6,17 @@ import type { AdminProcedureAuthorization } from './types';
 export const ADMIN_PROCEDURE_AUTHORIZATION_PLATFORM = [
   {
     kind: 'query',
-    path: 'admin.branding.getDraft',
+    path: 'admin.branding.get',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.BRANDING_READ] },
   },
   {
     kind: 'mutation',
-    path: 'admin.branding.publish',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.BRANDING_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.branding.rollback',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.BRANDING_PUBLISH] },
-  },
-  {
-    kind: 'mutation',
-    path: 'admin.branding.saveDraft',
-    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.BRANDING_UPDATE] },
+    // save always publishes — both UPDATE and PUBLISH are required.
+    path: 'admin.branding.save',
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.BRANDING_UPDATE, PLATFORM_PERMISSIONS.BRANDING_PUBLISH],
+    },
   },
   {
     kind: 'mutation',

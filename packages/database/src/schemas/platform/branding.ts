@@ -29,7 +29,7 @@ export type PlatformBrandingOperationErrorCategory =
   | 'revision_conflict'
   | 'upload_in_progress';
 
-export interface PlatformBrandingOperationDraftResult {
+export interface PlatformBrandingOperationPayloadResult {
   defaultAgentDisplayName: string | null;
   desktop: { iconUrl: string | null; productName: string | null };
   emailFrom: string | null;
@@ -51,22 +51,12 @@ export interface PlatformBrandingOperationDraftResult {
 
 export type PlatformBrandingOperationResult =
   | {
-      baseRevision: number;
-      draftToken: string;
-      kind: 'saveDraft';
-      ok: true;
-    }
-  | {
-      auditId: string;
-      kind: 'publish';
+      branding: PlatformBrandingOperationPayloadResult;
+      kind: 'save';
       revision: number;
-    }
-  | {
-      baseRevision: number;
-      draft: PlatformBrandingOperationDraftResult;
-      draftToken: string;
-      kind: 'rollback';
-      restoredFromRevision: number;
+      token: string;
+      updatedAt: string;
+      updatedBy: string | null;
     }
   | {
       height: number;

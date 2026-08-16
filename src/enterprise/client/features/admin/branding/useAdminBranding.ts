@@ -4,7 +4,7 @@ import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterpriseP
 import { adminBrandingService } from '@/enterprise/client/services/adminBranding';
 import { useClientDataSWR } from '@/libs/swr';
 
-export const ADMIN_BRANDING_DRAFT_KEY = 'admin.branding.getDraft';
+export const ADMIN_BRANDING_KEY = 'admin.branding.get';
 
 export const shouldFetchAdminBranding = (params: {
   adminAllowed: boolean;
@@ -19,7 +19,5 @@ export const useFetchAdminBranding = (params: { adminAllowed: boolean; canRead: 
     brandingEnabled: platform.capabilities.features.runtimeBranding === true,
     canRead: params.canRead,
   });
-  return useClientDataSWR(enabled ? [ADMIN_BRANDING_DRAFT_KEY] : null, () =>
-    adminBrandingService.getDraft(),
-  );
+  return useClientDataSWR(enabled ? [ADMIN_BRANDING_KEY] : null, () => adminBrandingService.get());
 };

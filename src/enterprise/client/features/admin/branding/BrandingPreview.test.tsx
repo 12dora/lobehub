@@ -1,11 +1,11 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import type { AdminBrandingDraft } from '@/server/enterprise/contracts/adminBranding';
+import type { AdminBrandingPayload } from '@/enterprise/client/services/adminBranding';
 
 import { BrandingPreview } from './BrandingPreview';
 
-const draft: AdminBrandingDraft = {
+const branding: AdminBrandingPayload = {
   defaultAgentDisplayName: null,
   desktop: { iconUrl: null, productName: null },
   emailFrom: null,
@@ -29,7 +29,7 @@ describe('BrandingPreview isolation', () => {
   it('uses a scriptless unique-origin sandbox and escapes interpolated text', () => {
     const { getByTitle } = render(
       <BrandingPreview
-        draft={draft}
+        branding={branding}
         title="preview"
         copy={{
           defaultAgent: 'Default agent',

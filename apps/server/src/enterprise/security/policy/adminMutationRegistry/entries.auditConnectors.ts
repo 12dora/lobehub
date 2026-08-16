@@ -140,22 +140,11 @@ export const ADMIN_MUTATION_ENTRIES_AUDIT_CONNECTORS = {
     'Change a connector draft.',
     { reauth: conditionalReauth },
   ),
-  'admin.branding.publish': dangerousMutation(
-    'admin.branding.publish',
+  'admin.branding.save': dangerousMutation(
+    'admin.branding.save',
     'high',
-    'Publish global product branding.',
+    'Apply global product branding site-wide immediately (the only branding write).',
     { reauth: recentReauth },
-  ),
-  'admin.branding.rollback': dangerousMutation(
-    'admin.branding.rollback',
-    'high',
-    'Restore an earlier branding revision.',
-    { reauth: recentReauth },
-  ),
-  'admin.branding.saveDraft': regularMutation(
-    'admin.branding.saveDraft',
-    'medium',
-    'Change the global branding draft.',
   ),
   'admin.branding.uploadAsset': regularMutation(
     'admin.branding.uploadAsset',

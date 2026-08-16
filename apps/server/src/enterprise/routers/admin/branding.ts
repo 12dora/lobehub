@@ -6,13 +6,9 @@ import { preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
-  adminBrandingGetDraftOutputSchema,
-  adminBrandingPublishInputSchema,
-  adminBrandingPublishOutputSchema,
-  adminBrandingRollbackInputSchema,
-  adminBrandingRollbackOutputSchema,
-  adminBrandingSaveDraftInputSchema,
-  adminBrandingSaveDraftOutputSchema,
+  adminBrandingGetOutputSchema,
+  adminBrandingSaveInputSchema,
+  adminBrandingSaveOutputSchema,
   adminBrandingUploadAssetInputSchema,
   adminBrandingUploadAssetOutputSchema,
 } from '../../contracts/adminBranding';
@@ -20,7 +16,10 @@ import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
-import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  withAllPlatformPermissions,
+  withPlatformPermission,
+} from '../../guards/platformPermission';
 import { assertDangerousReauthWithAudit } from '../../guards/reauth';
 import type { AuditAction } from '../../services/audit/auditActionCatalog';
 import {
@@ -161,24 +160,34 @@ const assertDangerousReauth = async (params: {
   });
 
 export const adminBrandingRouter = router({
-  getDraft: brandingProcedure
+  get: brandingProcedure
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.BRANDING_READ))
-    .output(adminBrandingGetDraftOutputSchema)
+    .output(adminBrandingGetOutputSchema)
     .query(async ({ ctx }) => {
       try {
-        return await new AdminBrandingService(ctx.serverDB).getDraft();
+        return await new AdminBrandingService(ctx.serverDB).get();
       } catch (error) {
         return mapBrandingError(error);
       }
     }),
 
-  publish: brandingProcedure
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.BRANDING_PUBLISH))
-    .input(adminBrandingPublishInputSchema)
-    .output(adminBrandingPublishOutputSchema)
+  /**
+   * The single de-drafted branding write: saving publishes the payload site-wide.
+   * Requires both BRANDING_UPDATE and BRANDING_PUBLISH (single middleware gate) plus
+   * dangerous-mutation reauth.
+   */
+  save: brandingProcedure
+    .use(
+      withAllPlatformPermissions([
+        PLATFORM_PERMISSIONS.BRANDING_UPDATE,
+        PLATFORM_PERMISSIONS.BRANDING_PUBLISH,
+      ]),
+    )
+    .input(adminBrandingSaveInputSchema)
+    .output(adminBrandingSaveOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await assertDangerousReauth({
-        action: 'admin.branding.publish',
+        action: 'admin.branding.save',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
         authMethod: ctx.authMethod,
@@ -187,40 +196,7 @@ export const adminBrandingRouter = router({
         serverDB: ctx.serverDB,
       });
       try {
-        return await new AdminBrandingService(ctx.serverDB).publish(ctx.userId!, input);
-      } catch (error) {
-        return mapBrandingError(error);
-      }
-    }),
-
-  rollback: brandingProcedure
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.BRANDING_PUBLISH))
-    .input(adminBrandingRollbackInputSchema)
-    .output(adminBrandingRollbackOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      await assertDangerousReauth({
-        action: 'admin.branding.rollback',
-        actorUserId: ctx.userId!,
-        authenticatedAt: ctx.authenticatedAt,
-        authMethod: ctx.authMethod,
-        reason: input.reason,
-        requestId: input.requestId,
-        serverDB: ctx.serverDB,
-      });
-      try {
-        return await new AdminBrandingService(ctx.serverDB).rollback(ctx.userId!, input);
-      } catch (error) {
-        return mapBrandingError(error);
-      }
-    }),
-
-  saveDraft: brandingProcedure
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.BRANDING_UPDATE))
-    .input(adminBrandingSaveDraftInputSchema)
-    .output(adminBrandingSaveDraftOutputSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        return await new AdminBrandingService(ctx.serverDB).saveDraft(ctx.userId!, input);
+        return await new AdminBrandingService(ctx.serverDB).save(ctx.userId!, input);
       } catch (error) {
         return mapBrandingError(error);
       }

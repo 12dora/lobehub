@@ -45,7 +45,7 @@ export const adminBrandingDesktopSchema = z
   })
   .strict();
 
-export const adminBrandingDraftSchema = platformBrandingDraftSchema
+export const adminBrandingPayloadSchema = platformBrandingDraftSchema
   .omit({ revision: true })
   .extend({
     desktop: adminBrandingDesktopSchema,
@@ -57,49 +57,35 @@ export const adminBrandingDraftSchema = platformBrandingDraftSchema
   })
   .strict();
 
-export const projectAdminBrandingPublished = (draft: AdminBrandingDraft, revision: number) =>
+export const projectAdminBrandingPublished = (branding: AdminBrandingPayload, revision: number) =>
   platformBrandingPublishedSchema.parse({
-    defaultAgentDisplayName: draft.defaultAgentDisplayName,
-    emailFrom: draft.emailFrom,
-    emailSenderName: draft.emailSenderName,
-    faviconUrl: draft.faviconUrl,
-    homeUrl: draft.homeUrl,
-    iconUrl: draft.iconUrl,
-    legalName: draft.legalName,
-    logoUrl: draft.logoUrl,
-    name: draft.name,
-    ogImageUrl: draft.ogImageUrl,
-    pageTitleTemplate: draft.pageTitleTemplate,
-    privacyUrl: draft.privacyUrl,
+    defaultAgentDisplayName: branding.defaultAgentDisplayName,
+    emailFrom: branding.emailFrom,
+    emailSenderName: branding.emailSenderName,
+    faviconUrl: branding.faviconUrl,
+    homeUrl: branding.homeUrl,
+    iconUrl: branding.iconUrl,
+    legalName: branding.legalName,
+    logoUrl: branding.logoUrl,
+    name: branding.name,
+    ogImageUrl: branding.ogImageUrl,
+    pageTitleTemplate: branding.pageTitleTemplate,
+    privacyUrl: branding.privacyUrl,
     revision: String(revision),
-    shortName: draft.shortName,
-    supportUrl: draft.supportUrl,
-    termsUrl: draft.termsUrl,
+    shortName: branding.shortName,
+    supportUrl: branding.supportUrl,
+    termsUrl: branding.termsUrl,
   });
 
-const publishedSnapshotSchema = adminBrandingDraftSchema.extend({
-  name: platformBrandingNameSchema,
-  revision: z.number().int().positive(),
-});
-
-const brandingRevisionSummarySchema = z
+/** Branding has no draft lane: what the editor loads is what the runtime serves. */
+export const adminBrandingGetOutputSchema = z
   .object({
-    createdAt: z.date(),
-    createdBy: z.string().nullable(),
-    reason: z.string().nullable(),
-    revision: z.number().int().positive(),
-  })
-  .strict();
-
-export const adminBrandingGetDraftOutputSchema = z
-  .object({
-    baseRevision: z.number().int().nonnegative(),
-    draft: adminBrandingDraftSchema,
-    draftToken: z.string().length(64),
-    published: publishedSnapshotSchema.nullable(),
-    revisions: z.array(brandingRevisionSummarySchema),
-    draftMatchesPublished: z.boolean(),
+    branding: adminBrandingPayloadSchema,
+    revision: z.number().int().nonnegative(),
     storageConfigured: z.boolean(),
+    token: z.string().length(64),
+    updatedAt: z.string().nullable(),
+    updatedBy: z.string().nullable(),
   })
   .strict();
 
@@ -110,51 +96,15 @@ const mutationContextSchema = z
   })
   .strict();
 
-export const adminBrandingSaveDraftInputSchema = mutationContextSchema
+export const adminBrandingSaveInputSchema = mutationContextSchema
   .extend({
-    draft: adminBrandingDraftSchema,
-    expectedDraftToken: z.string().length(64),
-  })
-  .strict();
-
-export const adminBrandingSaveDraftOutputSchema = z
-  .object({
-    baseRevision: z.number().int().nonnegative(),
-    draftToken: z.string().length(64),
-    ok: z.literal(true),
-  })
-  .strict();
-
-export const adminBrandingPublishInputSchema = mutationContextSchema
-  .extend({
-    expectedDraftToken: z.string().length(64),
+    branding: adminBrandingPayloadSchema,
     expectedRevision: z.number().int().nonnegative(),
+    expectedToken: z.string().length(64),
   })
   .strict();
 
-export const adminBrandingPublishOutputSchema = z
-  .object({
-    auditId: z.string(),
-    revision: z.number().int().positive(),
-  })
-  .strict();
-
-export const adminBrandingRollbackInputSchema = mutationContextSchema
-  .extend({
-    expectedDraftToken: z.string().length(64),
-    expectedRevision: z.number().int().nonnegative(),
-    targetRevision: z.number().int().positive(),
-  })
-  .strict();
-
-export const adminBrandingRollbackOutputSchema = z
-  .object({
-    baseRevision: z.number().int().nonnegative(),
-    draft: adminBrandingDraftSchema,
-    draftToken: z.string().length(64),
-    restoredFromRevision: z.number().int().positive(),
-  })
-  .strict();
+export const adminBrandingSaveOutputSchema = adminBrandingGetOutputSchema;
 
 export const adminBrandingAssetKindSchema = z.enum([
   'desktopIcon',
@@ -184,9 +134,7 @@ export const adminBrandingUploadAssetOutputSchema = z
   })
   .strict();
 
-export type AdminBrandingDraft = z.infer<typeof adminBrandingDraftSchema>;
-export type AdminBrandingGetDraftOutput = z.infer<typeof adminBrandingGetDraftOutputSchema>;
-export type AdminBrandingPublishInput = z.infer<typeof adminBrandingPublishInputSchema>;
-export type AdminBrandingRollbackInput = z.infer<typeof adminBrandingRollbackInputSchema>;
-export type AdminBrandingSaveDraftInput = z.infer<typeof adminBrandingSaveDraftInputSchema>;
+export type AdminBrandingPayload = z.infer<typeof adminBrandingPayloadSchema>;
+export type AdminBrandingGetOutput = z.infer<typeof adminBrandingGetOutputSchema>;
+export type AdminBrandingSaveInput = z.infer<typeof adminBrandingSaveInputSchema>;
 export type AdminBrandingUploadAssetInput = z.infer<typeof adminBrandingUploadAssetInputSchema>;

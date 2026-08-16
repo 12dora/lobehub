@@ -1,12 +1,11 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 
 import {
   checksumPayload,
   PlatformRevisionConflictError,
-  PlatformRevisionModel,
   type ResourcePointerAdapter,
 } from '@/database/models/platform';
-import { platformBranding, platformResourceRevisions } from '@/database/schemas/platform';
+import { platformBranding } from '@/database/schemas/platform';
 import type {
   PlatformBrandingItem,
   PlatformBrandingOperationErrorCategory,
@@ -15,29 +14,24 @@ import type {
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
-  type AdminBrandingDraft,
-  adminBrandingDraftSchema,
-  type AdminBrandingPublishInput,
-  adminBrandingPublishInputSchema,
-  adminBrandingPublishOutputSchema,
-  type AdminBrandingRollbackInput,
-  adminBrandingRollbackInputSchema,
-  adminBrandingRollbackOutputSchema,
-  type AdminBrandingSaveDraftInput,
-  adminBrandingSaveDraftInputSchema,
-  adminBrandingSaveDraftOutputSchema,
+  type AdminBrandingGetOutput,
+  type AdminBrandingPayload,
+  adminBrandingPayloadSchema,
+  type AdminBrandingSaveInput,
+  adminBrandingSaveInputSchema,
+  adminBrandingSaveOutputSchema,
   type AdminBrandingUploadAssetInput,
   adminBrandingUploadAssetInputSchema,
   adminBrandingUploadAssetOutputSchema,
   projectAdminBrandingPublished,
 } from '../../contracts/adminBranding';
-import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import {
   getPlatformConfigInvalidationPublisher,
   type PlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
+import { PlatformPublisherService } from '../platformPublisher';
 import {
   AdminBrandingAssetService,
   type AdminBrandingAssetServiceOptions,
@@ -66,19 +60,19 @@ export {
 export { PlatformRevisionConflictError };
 
 export const BRANDING_RESOURCE_ID = 'global';
-export const BRANDING_DRAFT_ROW_ID = 'branding:draft';
+export const BRANDING_MIRROR_ROW_ID = 'branding:draft';
 export const BRANDING_PUBLISHED_ROW_ID = 'branding:published';
 
 const BRANDING_LOCK_NAMESPACE = 'aihub:platform-branding:global';
 const BRANDING_OPERATION_RESOURCE = 'branding:global';
-const BRANDING_ROW_IDS = [BRANDING_DRAFT_ROW_ID, BRANDING_PUBLISHED_ROW_ID] as const;
+const BRANDING_ROW_IDS = [BRANDING_MIRROR_ROW_ID, BRANDING_PUBLISHED_ROW_ID] as const;
 
 const mutationFingerprint = <T extends { requestId: string }>(input: T): string => {
   const { requestId: _requestId, ...payload } = input;
   return checksumPayload(payload);
 };
 
-const emptyDraft = (): AdminBrandingDraft => ({
+const emptyBranding = (): AdminBrandingPayload => ({
   defaultAgentDisplayName: null,
   desktop: { iconUrl: null, productName: null },
   emailFrom: null,
@@ -98,8 +92,8 @@ const emptyDraft = (): AdminBrandingDraft => ({
   themeDefaults: { primaryColor: null },
 });
 
-const rowToDraft = (row: PlatformBrandingItem): AdminBrandingDraft =>
-  adminBrandingDraftSchema.parse({
+const rowToBranding = (row: PlatformBrandingItem): AdminBrandingPayload =>
+  adminBrandingPayloadSchema.parse({
     defaultAgentDisplayName: row.defaultAgentDisplayName,
     desktop: row.desktop ?? {},
     emailFrom: row.emailFrom,
@@ -119,42 +113,42 @@ const rowToDraft = (row: PlatformBrandingItem): AdminBrandingDraft =>
     themeDefaults: row.themeDefaults ?? {},
   });
 
-const draftToColumns = (draft: AdminBrandingDraft) => ({
-  defaultAgentDisplayName: draft.defaultAgentDisplayName,
-  desktop: draft.desktop,
-  displayName: draft.name,
-  emailFrom: draft.emailFrom,
-  emailSenderName: draft.emailSenderName,
-  faviconUrl: draft.faviconUrl,
-  homeUrl: draft.homeUrl,
-  iconUrl: draft.iconUrl,
-  legalName: draft.legalName,
-  logoUrl: draft.logoUrl,
-  ogImageUrl: draft.ogImageUrl,
-  pageTitleTemplate: draft.pageTitleTemplate,
-  privacyUrl: draft.privacyUrl,
-  shortName: draft.shortName,
-  supportUrl: draft.supportUrl,
-  termsUrl: draft.termsUrl,
-  themeDefaults: draft.themeDefaults,
+const brandingToColumns = (branding: AdminBrandingPayload) => ({
+  defaultAgentDisplayName: branding.defaultAgentDisplayName,
+  desktop: branding.desktop,
+  displayName: branding.name,
+  emailFrom: branding.emailFrom,
+  emailSenderName: branding.emailSenderName,
+  faviconUrl: branding.faviconUrl,
+  homeUrl: branding.homeUrl,
+  iconUrl: branding.iconUrl,
+  legalName: branding.legalName,
+  logoUrl: branding.logoUrl,
+  ogImageUrl: branding.ogImageUrl,
+  pageTitleTemplate: branding.pageTitleTemplate,
+  privacyUrl: branding.privacyUrl,
+  shortName: branding.shortName,
+  supportUrl: branding.supportUrl,
+  termsUrl: branding.termsUrl,
+  themeDefaults: branding.themeDefaults,
 });
 
-const draftToken = (draft: AdminBrandingDraft, revision: number): string =>
-  checksumPayload({ draft, revision });
+const brandingToken = (branding: AdminBrandingPayload, revision: number): string =>
+  checksumPayload({ branding, revision });
 
-const summarizeDraft = (draft: AdminBrandingDraft) => ({
+const summarizeBranding = (branding: AdminBrandingPayload) => ({
   configuredAssets: ['desktop.iconUrl', 'faviconUrl', 'iconUrl', 'logoUrl', 'ogImageUrl'].filter(
     (field) => {
-      if (field === 'desktop.iconUrl') return Boolean(draft.desktop.iconUrl);
-      return Boolean(draft[field as keyof AdminBrandingDraft]);
+      if (field === 'desktop.iconUrl') return Boolean(branding.desktop.iconUrl);
+      return Boolean(branding[field as keyof AdminBrandingPayload]);
     },
   ),
-  configuredFieldCount: Object.values(draft).filter((value) => value !== null).length,
-  hasName: Boolean(draft.name),
+  configuredFieldCount: Object.values(branding).filter((value) => value !== null).length,
+  hasName: Boolean(branding.name),
 });
 
-const validatePublishableDraft = (draft: AdminBrandingDraft): AdminBrandingDraft => {
-  const result = adminBrandingDraftSchema.safeParse(draft);
+const validatePublishableBranding = (branding: AdminBrandingPayload): AdminBrandingPayload => {
+  const result = adminBrandingPayloadSchema.safeParse(branding);
   if (!result.success || !result.data.name) throw new BrandingDraftValidationError();
   const parsed = result.data;
   if (parsed.pageTitleTemplate && !parsed.pageTitleTemplate.includes('%s')) {
@@ -205,6 +199,12 @@ const assertOperationKind = <TKind extends PlatformBrandingOperationResult['kind
   return result as Extract<PlatformBrandingOperationResult, { kind: TKind }>;
 };
 
+interface BrandingSaveState {
+  branding: AdminBrandingPayload;
+  previous: AdminBrandingPayload;
+  savedAt: Date;
+}
+
 export interface AdminBrandingServiceOptions {
   assetService?: AdminBrandingAssetService;
   assetServiceOptions?: AdminBrandingAssetServiceOptions;
@@ -215,17 +215,18 @@ export interface AdminBrandingServiceOptions {
 export class AdminBrandingService {
   private readonly assets: AdminBrandingAssetService;
   private readonly db: LobeChatDatabase;
-  private readonly invalidation: PlatformConfigInvalidationPublisher;
   private readonly operations: AdminBrandingOperationService;
-  private readonly revisions: PlatformRevisionModel;
+  private readonly publisher: PlatformPublisherService;
 
   constructor(db: LobeChatDatabase, options: AdminBrandingServiceOptions = {}) {
     this.db = db;
     this.assets =
       options.assetService ?? new AdminBrandingAssetService(db, options.assetServiceOptions);
-    this.invalidation = options.invalidation ?? getPlatformConfigInvalidationPublisher();
     this.operations = options.operationService ?? new AdminBrandingOperationService(db);
-    this.revisions = new PlatformRevisionModel(db);
+    this.publisher = new PlatformPublisherService(
+      db,
+      options.invalidation ?? getPlatformConfigInvalidationPublisher(),
+    );
   }
 
   private acquireLock = async (tx: Transaction): Promise<void> => {
@@ -248,7 +249,11 @@ export class AdminBrandingService {
     }
   };
 
-  private ensureDraft = async (): Promise<void> => {
+  /**
+   * The `branding:draft` row is a mirror of the published row: it carries the revision pointer the
+   * shared publish path updates and is never edited on its own.
+   */
+  private ensureMirrorRow = async (): Promise<void> => {
     await this.db.transaction(async (tx) => {
       await this.acquireLock(tx);
       await this.assertNoLegacyActiveRows(tx);
@@ -257,12 +262,12 @@ export class AdminBrandingService {
         .from(platformBranding)
         .where(eq(platformBranding.id, BRANDING_PUBLISHED_ROW_ID))
         .limit(1);
-      const seed = published[0] ? rowToDraft(published[0]) : emptyDraft();
+      const seed = published[0] ? rowToBranding(published[0]) : emptyBranding();
       await tx
         .insert(platformBranding)
         .values({
-          ...draftToColumns(seed),
-          id: BRANDING_DRAFT_ROW_ID,
+          ...brandingToColumns(seed),
+          id: BRANDING_MIRROR_ROW_ID,
           revision: published[0]?.revision ?? 0,
           status: 'draft',
         })
@@ -276,17 +281,17 @@ export class AdminBrandingService {
       .from(platformBranding)
       .where(inArray(platformBranding.id, [...BRANDING_ROW_IDS]));
     return {
-      draft: rows.find((row) => row.id === BRANDING_DRAFT_ROW_ID),
+      mirror: rows.find((row) => row.id === BRANDING_MIRROR_ROW_ID),
       published: rows.find((row) => row.id === BRANDING_PUBLISHED_ROW_ID),
     };
   };
 
   private assertControlledAssets = async (
     db: LobeChatDatabase | Transaction,
-    draft: AdminBrandingDraft,
+    branding: AdminBrandingPayload,
   ): Promise<string[]> => {
     try {
-      return await this.assets.assertControlledReferences(db, draft);
+      return await this.assets.assertControlledReferences(db, branding);
     } catch {
       throw new BrandingDraftValidationError();
     }
@@ -304,207 +309,129 @@ export class AdminBrandingService {
     await this.appendFailureAudit(action, actorUserId, input, errorCategory);
   };
 
-  private observePublish = (startedAt: number, error?: unknown): void => {
-    const conflict = error instanceof PlatformRevisionConflictError;
-    observeEnterprisePlatformEvent({
-      domain: 'branding',
-      durationMs: Date.now() - startedAt,
-      ...(error
-        ? {
-            errorClass: conflict ? ('ConflictError' as const) : classifyEnterpriseError(error),
-          }
-        : {}),
-      operation: 'publish',
-      outcome: error ? (conflict ? 'conflict' : 'failure') : 'success',
-      type: 'config_publish',
-    });
-  };
-
-  getDraft = async () => {
-    await this.ensureDraft();
+  get = async (): Promise<AdminBrandingGetOutput> => {
+    await this.ensureMirrorRow();
     await this.assertNoLegacyActiveRows(this.db);
     const rows = await this.getFixedRows(this.db);
-    if (!rows.draft || rows.draft.status !== 'draft') throw new BrandingPersistenceInvariantError();
+    if (!rows.mirror || rows.mirror.status !== 'draft') {
+      throw new BrandingPersistenceInvariantError();
+    }
     if (rows.published && rows.published.status !== 'published') {
       throw new BrandingPersistenceInvariantError();
     }
-    const draft = rowToDraft(rows.draft);
-    const revisionRows = await this.revisions.listRevisions('branding', BRANDING_RESOURCE_ID, 50);
+    const branding = rows.published ? rowToBranding(rows.published) : emptyBranding();
+    const revision = rows.published?.revision ?? 0;
 
     return {
-      baseRevision: rows.draft.revision,
-      draft,
-      draftMatchesPublished: rows.published
-        ? checksumPayload(draft) === checksumPayload(rowToDraft(rows.published))
-        : false,
-      draftToken: draftToken(draft, rows.draft.revision),
-      published: rows.published
-        ? {
-            ...rowToDraft(rows.published),
-            name: rows.published.displayName!,
-            revision: rows.published.revision,
-          }
-        : null,
-      revisions: revisionRows.map((revision) => ({
-        createdAt: revision.createdAt,
-        createdBy: revision.createdBy,
-        reason: revision.comment,
-        revision: revision.revision,
-      })),
+      branding,
+      revision,
       storageConfigured: this.assets.isStorageConfigured(),
+      token: brandingToken(branding, revision),
+      updatedAt: rows.published?.updatedAt?.toISOString() ?? null,
+      updatedBy: rows.published?.updatedBy ?? null,
     };
   };
 
-  saveDraft = async (actorUserId: string, rawInput: AdminBrandingSaveDraftInput) => {
-    const parsed = adminBrandingSaveDraftInputSchema.safeParse(rawInput);
-    if (!parsed.success) throw new BrandingDraftValidationError();
-    const input = parsed.data;
-    const nextDraft = input.draft;
-    const fingerprint = mutationFingerprint(input);
-    const operation = await this.operations.claim({
-      actorId: actorUserId,
-      fingerprint,
-      operation: 'admin.branding.saveDraft',
-      requestId: input.requestId,
-      resource: BRANDING_OPERATION_RESOURCE,
-    });
-    if (operation.state === 'pending') throw new BrandingOperationInProgressError();
-    if (operation.state === 'failed') {
-      throw new BrandingOperationFailedReplayError(operation.errorCategory);
-    }
-    if (operation.state === 'succeeded') {
-      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'saveDraft');
-      return adminBrandingSaveDraftOutputSchema.parse(result);
-    }
-    const { claim } = operation;
-    try {
-      await this.ensureDraft();
-      const saved = await this.db.transaction(async (tx) => {
-        await this.acquireLock(tx);
-        await this.assertNoLegacyActiveRows(tx);
-        const rows = await this.getFixedRows(tx);
-        if (!rows.draft) throw new BrandingPersistenceInvariantError();
-        const currentDraft = rowToDraft(rows.draft);
-        if (draftToken(currentDraft, rows.draft.revision) !== input.expectedDraftToken) {
-          throw new PlatformRevisionConflictError('Branding draft conflict');
-        }
-        const assetIds = await this.assertControlledAssets(tx, nextDraft);
-
-        await tx
-          .update(platformBranding)
-          .set({ ...draftToColumns(nextDraft), updatedAt: new Date(), updatedBy: actorUserId })
-          .where(eq(platformBranding.id, BRANDING_DRAFT_ROW_ID));
-        await this.assets.updateDraftPins(tx, assetIds);
-        const token = draftToken(nextDraft, rows.draft.revision);
-        await new PlatformAuditService(tx).append({
-          action: 'admin.branding.saveDraft',
-          actorUserId,
-          afterDiff: {
-            ...summarizeDraft(nextDraft),
-            draftChecksum: token,
-            requestFingerprint: fingerprint,
-          },
-          beforeDiff: summarizeDraft(currentDraft),
-          configRevision: rows.draft.revision,
-          reason: input.reason,
-          requestId: input.requestId,
-          result: 'success',
-          targetId: BRANDING_RESOURCE_ID,
-          targetType: 'branding',
-        });
-        const result = { baseRevision: rows.draft.revision, draftToken: token, ok: true as const };
-        await this.operations.succeed(tx, claim, { kind: 'saveDraft', ...result });
-        return result;
-      });
-      return saved;
-    } catch (error) {
-      await this.recordOperationFailure(
-        claim,
-        error,
-        'admin.branding.saveDraft',
-        actorUserId,
-        input,
-      );
-      throw error;
-    }
-  };
-
-  private publishPointer = (params: {
+  private savePointer = (params: {
     actorUserId: string;
-    expectedDraftToken: string;
+    branding: AdminBrandingPayload;
+    expectedToken: string;
     fingerprint: string;
+    onSaved: (state: BrandingSaveState) => void;
   }): ResourcePointerAdapter => {
-    let lockedDraft: AdminBrandingDraft | null = null;
-    let lockedAssetIds: string[] = [];
+    let previous: AdminBrandingPayload = emptyBranding();
+    let prepared: AdminBrandingPayload | null = null;
+    let preparedAssetIds: string[] = [];
+    let savedAt = new Date();
     return {
       lockAndGetRevision: async (tx) => {
         await this.acquireLock(tx);
         await this.assertNoLegacyActiveRows(tx);
         const rows = await this.getFixedRows(tx);
-        if (!rows.draft) throw new BrandingPersistenceInvariantError();
-        lockedDraft = rowToDraft(rows.draft);
-        if (draftToken(lockedDraft, rows.draft.revision) !== params.expectedDraftToken) {
-          throw new PlatformRevisionConflictError('Branding draft conflict');
+        if (!rows.mirror) throw new BrandingPersistenceInvariantError();
+        previous = rows.published ? rowToBranding(rows.published) : emptyBranding();
+        const revision = rows.published?.revision ?? 0;
+        if (brandingToken(previous, revision) !== params.expectedToken) {
+          throw new PlatformRevisionConflictError('Branding revision conflict');
         }
-        return rows.draft.revision;
+        return revision;
       },
       materializePublished: async (tx, { payload, revision }) => {
-        const draft = validatePublishableDraft(adminBrandingDraftSchema.parse(payload));
-        const { revision: _publicRevision, ...publicFields } = projectAdminBrandingPublished(
-          draft,
-          revision,
-        );
-        const normalizedDraft = adminBrandingDraftSchema.parse({ ...draft, ...publicFields });
+        const branding = adminBrandingPayloadSchema.parse(payload);
         await tx
           .insert(platformBranding)
           .values({
-            ...draftToColumns(normalizedDraft),
+            ...brandingToColumns(branding),
             createdBy: params.actorUserId,
             id: BRANDING_PUBLISHED_ROW_ID,
             revision,
             status: 'published',
+            updatedAt: savedAt,
             updatedBy: params.actorUserId,
           })
           .onConflictDoUpdate({
             set: {
-              ...draftToColumns(normalizedDraft),
+              ...brandingToColumns(branding),
               revision,
               status: 'published',
-              updatedAt: new Date(),
+              updatedAt: savedAt,
               updatedBy: params.actorUserId,
             },
             target: platformBranding.id,
           });
-        await this.assets.pinPublished(tx, lockedAssetIds, revision);
+        await this.assets.pinPublished(tx, preparedAssetIds, revision);
+        params.onSaved({ branding, previous, savedAt });
       },
-      prepareLockedPublish: async (tx) => {
-        if (!lockedDraft) throw new BrandingPersistenceInvariantError();
-        const draft = validatePublishableDraft(lockedDraft);
-        lockedAssetIds = await this.assertControlledAssets(tx, draft);
+      prepareLockedPublish: async (tx, { currentRevision }) => {
+        const validated = validatePublishableBranding(params.branding);
+        const { revision: _publicRevision, ...publicFields } = projectAdminBrandingPublished(
+          validated,
+          currentRevision + 1,
+        );
+        const branding = adminBrandingPayloadSchema.parse({ ...validated, ...publicFields });
+        preparedAssetIds = await this.assertControlledAssets(tx, branding);
+        // Releases assets the previous payload referenced but never published, then re-pins
+        // the ones this payload keeps; `pinPublished` stamps them right after.
+        await this.assets.updateDraftPins(tx, preparedAssetIds);
+        prepared = branding;
+        savedAt = new Date();
         return {
-          afterDiff: { ...summarizeDraft(draft), requestFingerprint: params.fingerprint },
-          payload: draft,
+          afterDiff: { ...summarizeBranding(branding), requestFingerprint: params.fingerprint },
+          payload: branding,
         };
       },
       updatePointer: async (tx, { revision }) => {
+        if (!prepared) throw new BrandingPersistenceInvariantError();
         await tx
           .update(platformBranding)
-          .set({ revision, status: 'draft', updatedAt: new Date(), updatedBy: params.actorUserId })
-          .where(eq(platformBranding.id, BRANDING_DRAFT_ROW_ID));
+          .set({
+            ...brandingToColumns(prepared),
+            revision,
+            status: 'draft',
+            updatedAt: savedAt,
+            updatedBy: params.actorUserId,
+          })
+          .where(eq(platformBranding.id, BRANDING_MIRROR_ROW_ID));
       },
     };
   };
 
-  publish = async (actorUserId: string, rawInput: AdminBrandingPublishInput) => {
-    const startedAt = Date.now();
-    const parsed = adminBrandingPublishInputSchema.safeParse(rawInput);
+  /**
+   * The single de-drafted branding write: one transaction publishes the payload live, appends the
+   * immutable revision head and mirrors the pointer row.
+   */
+  save = async (
+    actorUserId: string,
+    rawInput: AdminBrandingSaveInput,
+  ): Promise<AdminBrandingGetOutput> => {
+    const parsed = adminBrandingSaveInputSchema.safeParse(rawInput);
     if (!parsed.success) throw new BrandingDraftValidationError();
     const input = parsed.data;
     const fingerprint = mutationFingerprint(input);
     const operation = await this.operations.claim({
       actorId: actorUserId,
       fingerprint,
-      operation: 'admin.branding.publish',
+      operation: 'admin.branding.save',
       requestId: input.requestId,
       resource: BRANDING_OPERATION_RESOURCE,
     });
@@ -513,140 +440,78 @@ export class AdminBrandingService {
       throw new BrandingOperationFailedReplayError(operation.errorCategory);
     }
     if (operation.state === 'succeeded') {
-      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'publish');
-      return adminBrandingPublishOutputSchema.parse(result);
+      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'save');
+      return adminBrandingSaveOutputSchema.parse({
+        ...result,
+        storageConfigured: this.assets.isStorageConfigured(),
+      });
     }
     const { claim } = operation;
+    const saveState: { current: BrandingSaveState | null } = { current: null };
+    /** The committed state is computed inside the publish transaction and returned verbatim. */
+    const committed: { current: Omit<AdminBrandingGetOutput, 'storageConfigured'> | null } = {
+      current: null,
+    };
     try {
-      await this.ensureDraft();
-      const result = await this.revisions.publishDraft({
+      await this.ensureMirrorRow();
+      await this.publisher.publish({
         actorUserId,
         beforeDiff: { revision: input.expectedRevision },
         comment: input.reason,
         expectedRevision: input.expectedRevision,
-        finalizeSuccess: (tx, published) =>
-          this.operations.succeed(tx, claim, { kind: 'publish', ...published }),
+        finalizeSuccess: async (tx, { revision }) => {
+          const state = saveState.current;
+          if (!state) throw new BrandingPersistenceInvariantError();
+          const result = {
+            branding: state.branding,
+            revision,
+            token: brandingToken(state.branding, revision),
+            updatedAt: state.savedAt.toISOString(),
+            updatedBy: actorUserId,
+          };
+          await new PlatformAuditService(tx).append({
+            action: 'admin.branding.save',
+            actorUserId,
+            afterDiff: {
+              ...summarizeBranding(result.branding),
+              brandingChecksum: result.token,
+              requestFingerprint: fingerprint,
+            },
+            beforeDiff: summarizeBranding(state.previous),
+            configRevision: revision,
+            reason: input.reason,
+            requestId: input.requestId,
+            result: 'success',
+            targetId: BRANDING_RESOURCE_ID,
+            targetType: 'branding',
+          });
+          await this.operations.succeed(tx, claim, { kind: 'save', ...result });
+          committed.current = result;
+        },
+        invalidationScopes: ['branding'],
         payload: {},
-        pointer: this.publishPointer({
+        pointer: this.savePointer({
           actorUserId,
-          expectedDraftToken: input.expectedDraftToken,
+          branding: input.branding,
+          expectedToken: input.expectedToken,
           fingerprint,
+          onSaved: (state) => {
+            saveState.current = state;
+          },
         }),
         reason: input.reason,
         requestId: input.requestId,
         resourceId: BRANDING_RESOURCE_ID,
         resourceType: 'branding',
-        sanitizePayload: (payload) => adminBrandingDraftSchema.parse(payload),
+        sanitizePayload: (payload) => adminBrandingPayloadSchema.parse(payload),
       });
-      await this.publishInvalidation(result.revision.revision);
-      this.observePublish(startedAt);
-      return { auditId: result.auditId, revision: result.revision.revision };
-    } catch (error) {
-      try {
-        await this.recordOperationFailure(
-          claim,
-          error,
-          'admin.branding.publish',
-          actorUserId,
-          input,
-        );
-      } finally {
-        this.observePublish(startedAt, error);
-      }
-      throw error;
-    }
-  };
-
-  rollback = async (actorUserId: string, rawInput: AdminBrandingRollbackInput) => {
-    const parsed = adminBrandingRollbackInputSchema.safeParse(rawInput);
-    if (!parsed.success) throw new BrandingDraftValidationError();
-    const input = parsed.data;
-    const fingerprint = mutationFingerprint(input);
-    const operation = await this.operations.claim({
-      actorId: actorUserId,
-      fingerprint,
-      operation: 'admin.branding.rollback',
-      requestId: input.requestId,
-      resource: BRANDING_OPERATION_RESOURCE,
-    });
-    if (operation.state === 'pending') throw new BrandingOperationInProgressError();
-    if (operation.state === 'failed') {
-      throw new BrandingOperationFailedReplayError(operation.errorCategory);
-    }
-    if (operation.state === 'succeeded') {
-      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'rollback');
-      return adminBrandingRollbackOutputSchema.parse(result);
-    }
-    const { claim } = operation;
-    try {
-      await this.ensureDraft();
-      return await this.db.transaction(async (tx) => {
-        await this.acquireLock(tx);
-        await this.assertNoLegacyActiveRows(tx);
-        const rows = await this.getFixedRows(tx);
-        if (!rows.draft) throw new BrandingPersistenceInvariantError();
-        const currentDraft = rowToDraft(rows.draft);
-        if (
-          rows.draft.revision !== input.expectedRevision ||
-          draftToken(currentDraft, rows.draft.revision) !== input.expectedDraftToken
-        ) {
-          throw new PlatformRevisionConflictError('Branding rollback conflict');
-        }
-        const targets = await tx
-          .select()
-          .from(platformResourceRevisions)
-          .where(
-            and(
-              eq(platformResourceRevisions.resourceType, 'branding'),
-              eq(platformResourceRevisions.resourceId, BRANDING_RESOURCE_ID),
-              eq(platformResourceRevisions.revision, input.targetRevision),
-            ),
-          )
-          .limit(1);
-        if (!targets[0]) throw new BrandingDraftValidationError();
-        const restored = validatePublishableDraft(
-          adminBrandingDraftSchema.parse(targets[0].payload),
-        );
-        const assetIds = await this.assertControlledAssets(tx, restored);
-        const token = draftToken(restored, input.expectedRevision);
-        await tx
-          .update(platformBranding)
-          .set({ ...draftToColumns(restored), updatedAt: new Date(), updatedBy: actorUserId })
-          .where(eq(platformBranding.id, BRANDING_DRAFT_ROW_ID));
-        await this.assets.updateDraftPins(tx, assetIds);
-        await new PlatformAuditService(tx).append({
-          action: 'admin.branding.rollback',
-          actorUserId,
-          afterDiff: {
-            draftChecksum: token,
-            requestFingerprint: fingerprint,
-            restoredFromRevision: input.targetRevision,
-          },
-          beforeDiff: { revision: input.expectedRevision },
-          configRevision: input.expectedRevision,
-          reason: input.reason,
-          requestId: input.requestId,
-          result: 'success',
-          targetId: BRANDING_RESOURCE_ID,
-          targetType: 'branding',
-        });
-        const result = {
-          baseRevision: input.expectedRevision,
-          draft: restored,
-          draftToken: token,
-          restoredFromRevision: input.targetRevision,
-        };
-        await this.operations.succeed(tx, claim, { kind: 'rollback', ...result });
-        return result;
+      if (!committed.current) throw new BrandingPersistenceInvariantError();
+      return adminBrandingSaveOutputSchema.parse({
+        ...committed.current,
+        storageConfigured: this.assets.isStorageConfigured(),
       });
     } catch (error) {
-      await this.recordOperationFailure(
-        claim,
-        error,
-        'admin.branding.rollback',
-        actorUserId,
-        input,
-      );
+      await this.recordOperationFailure(claim, error, 'admin.branding.save', actorUserId, input);
       throw error;
     }
   };
@@ -699,7 +564,7 @@ export class AdminBrandingService {
       await new PlatformAuditService(this.db).append({
         action,
         actorUserId,
-        // Bounded secret-safe category only — never raw exceptions or draft values.
+        // Bounded secret-safe category only — never raw exceptions or branding values.
         afterDiff: errorCategory ? { error: errorCategory } : null,
         beforeDiff: null,
         reason: input.reason,
@@ -712,23 +577,6 @@ export class AdminBrandingService {
       console.error('[admin.branding:auditFailure]', {
         action,
         errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
-    }
-  };
-
-  private publishInvalidation = async (revision: number): Promise<void> => {
-    try {
-      await this.invalidation.publish({
-        at: new Date().toISOString(),
-        resourceId: BRANDING_RESOURCE_ID,
-        resourceType: 'branding',
-        revision,
-        scopes: ['branding'],
-      });
-    } catch (error) {
-      console.error('[admin.branding:invalidationFailure]', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-        revision,
       });
     }
   };

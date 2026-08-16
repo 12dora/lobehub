@@ -14,7 +14,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
-import type { AdminBrandingDraft } from '../../contracts/adminBranding';
+import type { AdminBrandingPayload } from '../../contracts/adminBranding';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
@@ -27,7 +27,7 @@ import {
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 
-const draft: AdminBrandingDraft = {
+const payload: AdminBrandingPayload = {
   defaultAgentDisplayName: null,
   desktop: { iconUrl: null, productName: null },
   emailFrom: null,
@@ -48,7 +48,7 @@ const draft: AdminBrandingDraft = {
 };
 
 describe.skipIf(!enabled)('AdminBrandingService advisory lock (PostgreSQL)', () => {
-  it('serializes two publishers into one immutable revision and fixed Published row', async () => {
+  it('serializes two savers into one immutable revision and fixed Published row', async () => {
     await getTestDB();
     const connectionString = serverDBEnv.DATABASE_TEST_URL;
     if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
@@ -78,23 +78,19 @@ describe.skipIf(!enabled)('AdminBrandingService advisory lock (PostgreSQL)', () 
 
     try {
       await cleanup();
-      const initial = await first.getDraft();
-      const saved = await first.saveDraft('admin', {
-        draft,
-        expectedDraftToken: initial.draftToken,
-        reason: 'prepare concurrent publication',
-        requestId: crypto.randomUUID(),
-      });
+      const initial = await first.get();
       const results = await Promise.allSettled([
-        first.publish('admin', {
-          expectedDraftToken: saved.draftToken,
-          expectedRevision: 0,
+        first.save('admin', {
+          branding: payload,
+          expectedRevision: initial.revision,
+          expectedToken: initial.token,
           reason: 'first contender',
           requestId: crypto.randomUUID(),
         }),
-        second.publish('admin', {
-          expectedDraftToken: saved.draftToken,
-          expectedRevision: 0,
+        second.save('admin', {
+          branding: payload,
+          expectedRevision: initial.revision,
+          expectedToken: initial.token,
           reason: 'second contender',
           requestId: crypto.randomUUID(),
         }),

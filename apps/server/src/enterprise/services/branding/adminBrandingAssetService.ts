@@ -8,7 +8,7 @@ import type { PlatformBrandingAssetItem } from '@/database/schemas/platform/bran
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
-  type AdminBrandingDraft,
+  type AdminBrandingPayload,
   type AdminBrandingUploadAssetInput,
   adminBrandingUploadAssetInputSchema,
   platformBrandingAssetIdFromUrl,
@@ -98,13 +98,13 @@ export class BrandingAssetCleanupClaimedError extends Error {
 const defaultSleep = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-const referencesForDraft = (draft: AdminBrandingDraft): BrandingAssetReference[] =>
+const referencesForBranding = (branding: AdminBrandingPayload): BrandingAssetReference[] =>
   [
-    { kind: 'desktopIcon', url: draft.desktop.iconUrl },
-    { kind: 'favicon', url: draft.faviconUrl },
-    { kind: 'icon', url: draft.iconUrl },
-    { kind: 'logo', url: draft.logoUrl },
-    { kind: 'ogImage', url: draft.ogImageUrl },
+    { kind: 'desktopIcon', url: branding.desktop.iconUrl },
+    { kind: 'favicon', url: branding.faviconUrl },
+    { kind: 'icon', url: branding.iconUrl },
+    { kind: 'logo', url: branding.logoUrl },
+    { kind: 'ogImage', url: branding.ogImageUrl },
   ].filter((reference): reference is BrandingAssetReference => Boolean(reference.url));
 
 const uploadResult = (asset: PlatformBrandingAssetItem) => ({
@@ -420,9 +420,9 @@ export class AdminBrandingAssetService {
 
   assertControlledReferences = async (
     db: LobeChatDatabase | Transaction,
-    draft: AdminBrandingDraft,
+    branding: AdminBrandingPayload,
   ): Promise<string[]> => {
-    const references = referencesForDraft(draft);
+    const references = referencesForBranding(branding);
     if (references.length === 0) return [];
     const ids = references.map(({ url }) => platformBrandingAssetIdFromUrl(url));
     if (ids.some((id) => !id)) throw new Error('BRANDING_DRAFT_INVALID');

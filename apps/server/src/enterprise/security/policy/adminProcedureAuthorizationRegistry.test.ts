@@ -74,14 +74,17 @@ describe('admin procedure authorization registry', () => {
     // admin.agents.{updateDraft,appendVersion,publish} with admin.agents.save.
     // +1 query since: admin.stats.rankUsers (用户排行 on the admin overview / statistics pages).
     // +1 query since: admin.stats.activitySeries (range-aware 活跃度 chart).
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(180);
+    // −3/+1 mutations since: 品牌自定义 de-draft replaced
+    // admin.branding.{saveDraft,publish,rollback} with admin.branding.save, and
+    // admin.branding.getDraft became admin.branding.get.
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(178);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(88);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(92);
-    expect(mutationPaths).toHaveLength(92);
+    ).toHaveLength(90);
+    expect(mutationPaths).toHaveLength(90);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

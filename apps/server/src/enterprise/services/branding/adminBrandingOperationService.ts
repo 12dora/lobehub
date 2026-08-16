@@ -12,11 +12,7 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 const OPERATION_LEASE_MS = 5 * 60 * 1000;
 
-export type BrandingOperationName =
-  | 'admin.branding.publish'
-  | 'admin.branding.rollback'
-  | 'admin.branding.saveDraft'
-  | 'admin.branding.uploadAsset';
+export type BrandingOperationName = 'admin.branding.save' | 'admin.branding.uploadAsset';
 
 export interface BrandingOperationClaim {
   fingerprint: string;

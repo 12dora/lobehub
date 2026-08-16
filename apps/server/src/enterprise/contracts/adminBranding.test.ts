@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  adminBrandingDraftSchema,
-  adminBrandingPublishInputSchema,
+  adminBrandingGetOutputSchema,
+  adminBrandingPayloadSchema,
+  adminBrandingSaveInputSchema,
   adminBrandingUploadAssetInputSchema,
   adminBrandingUploadAssetOutputSchema,
 } from './adminBranding';
 
-const emptyDraft = {
+const payload = {
   defaultAgentDisplayName: null,
   desktop: { iconUrl: null, productName: null },
   emailFrom: null,
@@ -30,8 +31,8 @@ const emptyDraft = {
 describe('adminBranding contracts', () => {
   it('accepts only controlled uploaded asset URLs', () => {
     expect(
-      adminBrandingDraftSchema.safeParse({
-        ...emptyDraft,
+      adminBrandingPayloadSchema.safeParse({
+        ...payload,
         logoUrl: '/f/pba_11111111-1111-4111-8111-111111111111',
       }).success,
     ).toBe(true);
@@ -45,7 +46,7 @@ describe('adminBranding contracts', () => {
       '/f/pba_11111111-1111-4111-7111-111111111111',
       '/f/pba_11111111-1111-4111-8111-11111111111A',
     ]) {
-      expect(adminBrandingDraftSchema.safeParse({ ...emptyDraft, logoUrl }).success).toBe(false);
+      expect(adminBrandingPayloadSchema.safeParse({ ...payload, logoUrl }).success).toBe(false);
     }
   });
 
@@ -56,14 +57,14 @@ describe('adminBranding contracts', () => {
     ['pageTitleTemplate', '<b>%s</b>'],
     ['emailSenderName', 'Acme\u2066Mail'],
   ])('reuses shared safe-text validation for %s', (field, value) => {
-    expect(adminBrandingDraftSchema.safeParse({ ...emptyDraft, [field]: value }).success).toBe(
+    expect(adminBrandingPayloadSchema.safeParse({ ...payload, [field]: value }).success).toBe(
       false,
     );
   });
 
   it('normalizes shared public text and desktop productName identically', () => {
-    const parsed = adminBrandingDraftSchema.parse({
-      ...emptyDraft,
+    const parsed = adminBrandingPayloadSchema.parse({
+      ...payload,
       desktop: { iconUrl: null, productName: '  Cafe\u0301 Desktop  ' },
       shortName: '  Cafe\u0301  ',
     });
@@ -71,32 +72,78 @@ describe('adminBranding contracts', () => {
     expect(parsed.desktop.productName).toBe('Café Desktop');
   });
 
-  it('rejects unknown mutation fields and requires reason plus UUID idempotency key', () => {
+  it('carries both CAS handles and rejects unknown fields or a non-UUID idempotency key', () => {
     expect(
-      adminBrandingPublishInputSchema.safeParse({
-        expectedDraftToken: '0'.repeat(64),
+      adminBrandingSaveInputSchema.safeParse({
+        branding: payload,
         expectedRevision: 0,
-        reason: 'publish',
+        expectedToken: '0'.repeat(64),
+        reason: 'save',
+        requestId: crypto.randomUUID(),
+      }).success,
+    ).toBe(true);
+    expect(
+      adminBrandingSaveInputSchema.safeParse({
+        branding: payload,
+        expectedRevision: 0,
+        expectedToken: '0'.repeat(64),
+        reason: 'save',
         requestId: crypto.randomUUID(),
         secret: 'must not pass',
       }).success,
     ).toBe(false);
-    expect(
-      adminBrandingPublishInputSchema.safeParse({
-        expectedDraftToken: '0'.repeat(64),
+    for (const missing of ['expectedRevision', 'expectedToken'] as const) {
+      const input: Record<string, unknown> = {
+        branding: payload,
         expectedRevision: 0,
+        expectedToken: '0'.repeat(64),
+        reason: 'save',
+        requestId: crypto.randomUUID(),
+      };
+      delete input[missing];
+      expect(adminBrandingSaveInputSchema.safeParse(input).success).toBe(false);
+    }
+    expect(
+      adminBrandingSaveInputSchema.safeParse({
+        branding: payload,
+        expectedRevision: 0,
+        expectedToken: '0'.repeat(64),
         reason: '',
         requestId: 'not-uuid',
       }).success,
     ).toBe(false);
   });
 
-  it('rejects secret material in publication and upload reasons', () => {
+  it('serves the live payload with its revision, CAS token and audit trailer', () => {
+    const parsed = adminBrandingGetOutputSchema.safeParse({
+      branding: payload,
+      revision: 3,
+      storageConfigured: true,
+      token: '0'.repeat(64),
+      updatedAt: '2026-08-16T00:00:00.000Z',
+      updatedBy: null,
+    });
+    expect(parsed.success).toBe(true);
+    expect(
+      adminBrandingGetOutputSchema.safeParse({
+        branding: payload,
+        revision: 3,
+        revisions: [],
+        storageConfigured: true,
+        token: '0'.repeat(64),
+        updatedAt: null,
+        updatedBy: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects secret material in save and upload reasons', () => {
     const secretReason = 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz012345';
     expect(
-      adminBrandingPublishInputSchema.safeParse({
-        expectedDraftToken: '0'.repeat(64),
+      adminBrandingSaveInputSchema.safeParse({
+        branding: payload,
         expectedRevision: 0,
+        expectedToken: '0'.repeat(64),
         reason: secretReason,
         requestId: crypto.randomUUID(),
       }).success,

@@ -48,6 +48,7 @@ export const AUDIT_ACTIONS = [
   'admin.aiProviders.updateDraft',
   'admin.branding.publish',
   'admin.branding.rollback',
+  'admin.branding.save',
   'admin.branding.saveDraft',
   'admin.branding.uploadAsset',
   'admin.creds.createFile',
