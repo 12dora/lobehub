@@ -7,5 +7,7 @@ npm-debug.log
 .github
 *.md
 .env.example
+audit
+docs
 **/node_modules
 **/.next

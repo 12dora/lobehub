@@ -75,7 +75,11 @@ export const DEFAULT_FEATURE_FLAGS: IFeatureFlags = {
 
   ai_image: true,
 
-  check_updates: true,
+  // LobeHub Enhanced: OFF by default. The upstream checker compares this fork's
+  // version against the `@lobehub/chat` npm registry entry, which always reports a
+  // newer release and would show a bogus "update available" banner. Deployers who
+  // still want it can re-enable via FEATURE_FLAGS=+check_updates.
+  check_updates: false,
   welcome_suggest: true,
   token_counter: true,
 

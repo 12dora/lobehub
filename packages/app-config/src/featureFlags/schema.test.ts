@@ -107,6 +107,13 @@ describe('mapFeatureFlagsEnvToState', () => {
     expect(mappedState.enableAuthCaptcha).toBe(true);
   });
 
+  it('should disable the upstream version check by default', () => {
+    // The fork's version is unrelated to the `@lobehub/chat` npm release line.
+    const mappedState = mapFeatureFlagsEnvToState(DEFAULT_FEATURE_FLAGS);
+
+    expect(mappedState.enableCheckUpdates).toBe(false);
+  });
+
   it('should enable storage overage by default', () => {
     const mappedState = mapFeatureFlagsEnvToState(DEFAULT_FEATURE_FLAGS);
 

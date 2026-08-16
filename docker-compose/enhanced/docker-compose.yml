@@ -1,0 +1,190 @@
+name: lobehub-enhanced
+services:
+  lobehub:
+    image: ghcr.io/12dora/lobehub-enhanced:latest
+    container_name: lobehub-enhanced
+    ports:
+      - '${LOBE_PORT:-3210}:3210'
+    depends_on:
+      platform-oidc-lkg-init:
+        condition: service_completed_successfully
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    environment:
+      # --- core ---
+      - 'APP_URL=${APP_URL}'
+      # Server-to-server origin; keep it pointing at the container itself.
+      - 'INTERNAL_APP_URL=http://localhost:3210'
+      - 'DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${LOBE_DB_NAME:-lobechat}'
+      - 'KEY_VAULTS_SECRET=${KEY_VAULTS_SECRET}'
+      - 'AUTH_SECRET=${AUTH_SECRET}'
+      # Namespaces session cookies — required when several instances share a host/domain.
+      - 'AUTH_COOKIE_PREFIX=${AUTH_COOKIE_PREFIX:-lobehub-enhanced}'
+      # Leave blank when identity providers are configured in the admin console;
+      # a non-empty value shadows the database-driven providers.
+      - 'AUTH_SSO_PROVIDERS=${AUTH_SSO_PROVIDERS:-}'
+
+      # --- platform secret envelope (AES-256 KEK, base64 of exactly 32 bytes) ---
+      - 'PLATFORM_MASTER_KEY=${PLATFORM_MASTER_KEY}'
+
+      # --- enterprise feature flags ---
+      - 'ENABLE_PLATFORM_ADMIN=${ENABLE_PLATFORM_ADMIN:-1}'
+      - 'ENABLE_PLATFORM_MANAGED_AI=${ENABLE_PLATFORM_MANAGED_AI:-1}'
+      - 'ENABLE_PLATFORM_MANAGED_SKILLS=${ENABLE_PLATFORM_MANAGED_SKILLS:-1}'
+      - 'ENABLE_PLATFORM_MANAGED_CONNECTORS=${ENABLE_PLATFORM_MANAGED_CONNECTORS:-1}'
+      - 'ENABLE_PLATFORM_MANAGED_AGENTS=${ENABLE_PLATFORM_MANAGED_AGENTS:-1}'
+      - 'ENABLE_PLATFORM_SETTINGS_POLICY=${ENABLE_PLATFORM_SETTINGS_POLICY:-1}'
+      - 'ENABLE_RUNTIME_BRANDING=${ENABLE_RUNTIME_BRANDING:-1}'
+      - 'ENABLE_DATABASE_OIDC=${ENABLE_DATABASE_OIDC:-1}'
+
+      # --- database-driven OIDC activation ---
+      # `supervisor` enables the admin "restart to activate" button; the last-known-good
+      # snapshot below must live on a persistent volume.
+      - 'PLATFORM_OIDC_RESTART_MODE=${PLATFORM_OIDC_RESTART_MODE:-supervisor}'
+      - 'PLATFORM_OIDC_LKG_PATH=${PLATFORM_OIDC_LKG_PATH:-/app/.lobe/platform-oidc-lkg.v1.json}'
+
+      # --- first-run super admin bootstrap (idempotent, safe to leave set) ---
+      - 'BOOTSTRAP_SUPER_ADMIN_EMAIL=${BOOTSTRAP_SUPER_ADMIN_EMAIL:-}'
+      - 'BOOTSTRAP_ALLOW_CREATE=${BOOTSTRAP_ALLOW_CREATE:-1}'
+      - 'BOOTSTRAP_SUPER_ADMIN_PASSWORD=${BOOTSTRAP_SUPER_ADMIN_PASSWORD:-}'
+
+      # --- object storage (S3 compatible) ---
+      # S3_ENDPOINT is used for BOTH the server-side SDK calls and the presigned URLs
+      # handed to the browser (S3_SET_ACL=0 means every read is presigned), so it must
+      # resolve from inside this container AND from the user's browser. Use the host
+      # address that publishes the rustfs port below — never `localhost`, which inside
+      # the app container points at the app itself.
+      - 'S3_ENDPOINT=${S3_ENDPOINT:?set S3_ENDPOINT to http://<your-server-ip-or-domain>:9000 — localhost will not work}'
+      - 'S3_PUBLIC_DOMAIN=${S3_PUBLIC_DOMAIN:?set S3_PUBLIC_DOMAIN to the same host address as S3_ENDPOINT}'
+      - 'S3_BUCKET=lobe'
+      - 'S3_ACCESS_KEY=${RUSTFS_ACCESS_KEY}'
+      - 'S3_ACCESS_KEY_ID=${RUSTFS_ACCESS_KEY}'
+      - 'S3_SECRET_ACCESS_KEY=${RUSTFS_SECRET_KEY}'
+      - 'S3_ENABLE_PATH_STYLE=1'
+      - 'S3_SET_ACL=0'
+      - 'LLM_VISION_IMAGE_USE_BASE64=1'
+
+      # --- cache ---
+      - 'REDIS_URL=redis://redis:6379'
+      - 'REDIS_PREFIX=lobehub'
+      - 'REDIS_TLS=0'
+    env_file:
+      # Anything extra you put in .env (proxies, CHATGPT_WEB_*, …) reaches the container.
+      - path: .env
+        required: false
+    volumes:
+      # Persists the last-known-good OIDC snapshot across restarts.
+      - 'platform-oidc-lkg:/app/.lobe'
+    restart: always
+    networks:
+      - lobe-network
+
+  postgresql:
+    # ParadeDB bundles pgvector + BM25 search; plain `postgres` cannot run the migrations.
+    image: paradedb/paradedb:latest-pg17
+    container_name: lobehub-enhanced-postgres
+    # Remove the published port if you do not need external database access.
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - 'postgres-data:/var/lib/postgresql/data'
+    command: ['postgres', '-c', 'shared_preload_libraries=pg_search']
+    environment:
+      - 'POSTGRES_DB=${LOBE_DB_NAME:-lobechat}'
+      - 'POSTGRES_PASSWORD=${POSTGRES_PASSWORD}'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - lobe-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: lobehub-enhanced-redis
+    command: redis-server --save 60 1000 --appendonly yes
+    volumes:
+      - 'redis-data:/data'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: always
+    networks:
+      - lobe-network
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: lobehub-enhanced-rustfs
+    ports:
+      # This published port is what S3_ENDPOINT / S3_PUBLIC_DOMAIN must point at: it is
+      # reachable both from the browser and, via the host address, from the app container.
+      - '${RUSTFS_PORT:-9000}:9000'
+      - '${RUSTFS_ADMIN_PORT:-9001}:9001'
+    environment:
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY}
+    volumes:
+      - 'rustfs-data:/data'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:9000/health >/dev/null 2>&1 || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    command:
+      ['--access-key', '${RUSTFS_ACCESS_KEY}', '--secret-key', '${RUSTFS_SECRET_KEY}', '/data']
+    restart: always
+    networks:
+      - lobe-network
+
+  rustfs-init:
+    image: minio/mc:latest
+    container_name: lobehub-enhanced-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    volumes:
+      - ./bucket.config.json:/bucket.config.json:ro
+    entrypoint: /bin/sh
+    # The bucket name is fixed at `lobe` so it always matches the ARN in bucket.config.json.
+    command: -c ' set -eu; mc alias set rustfs "http://rustfs:9000" "${RUSTFS_ACCESS_KEY}" "${RUSTFS_SECRET_KEY}"; mc mb "rustfs/lobe" --ignore-existing; mc anonymous set-json "/bucket.config.json" "rustfs/lobe"; '
+    restart: 'no'
+    networks:
+      - lobe-network
+
+  platform-oidc-lkg-init:
+    # The app image runs as UID 1001, and the identity last-known-good store refuses any
+    # directory it does not own with mode exactly 0700. A fresh named volume is root-owned,
+    # so hand it over before the app boots.
+    image: busybox:latest
+    container_name: lobehub-enhanced-lkg-init
+    command: sh -c 'chown 1001:1001 /lkg && chmod 0700 /lkg'
+    volumes:
+      - 'platform-oidc-lkg:/lkg'
+    restart: 'no'
+    networks:
+      - lobe-network
+
+networks:
+  lobe-network:
+    driver: bridge
+
+volumes:
+  platform-oidc-lkg:
+    driver: local
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  rustfs-data:
+    driver: local

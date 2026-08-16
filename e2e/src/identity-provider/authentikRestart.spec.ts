@@ -623,22 +623,28 @@ test('activates a published Authentik provider across a real supervised restart'
   if (flowError !== undefined) throw flowError;
 });
 
+/**
+ * Real-tenant lane. Point it at your own Authentik deployment with
+ * `E2E_REAL_AUTHENTIK_ISSUER=https://auth.example.com/application/o/<slug>/`
+ * plus the client id/secret. Skipped otherwise — QR/2FA is never bypassed.
+ */
+const REAL_AUTHENTIK_ISSUER = process.env.E2E_REAL_AUTHENTIK_ISSUER;
+
 test.describe('external Authentik tenant lane', () => {
   test.skip(
-    !process.env.E2E_REAL_AUTHENTIK_CLIENT_ID || !process.env.E2E_REAL_AUTHENTIK_CLIENT_SECRET,
-    'BLOCKED: real auth.jiefakj.com client credentials are not available; QR/2FA is never bypassed',
+    !REAL_AUTHENTIK_ISSUER ||
+      !process.env.E2E_REAL_AUTHENTIK_CLIENT_ID ||
+      !process.env.E2E_REAL_AUTHENTIK_CLIENT_SECRET,
+    'BLOCKED: real Authentik tenant credentials are not available; QR/2FA is never bypassed',
   );
 
   test('keeps real-tenant evidence separate from the deterministic fixture', async ({
     request,
   }) => {
-    const discovery = await request.get(
-      'https://auth.jiefakj.com/application/o/aihub/.well-known/openid-configuration',
-    );
+    const issuer = REAL_AUTHENTIK_ISSUER!.replace(/\/?$/, '/');
+    const discovery = await request.get(`${issuer}.well-known/openid-configuration`);
     expect(discovery.ok()).toBe(true);
-    expect(await discovery.json()).toMatchObject({
-      issuer: 'https://auth.jiefakj.com/application/o/aihub/',
-    });
+    expect(await discovery.json()).toMatchObject({ issuer });
     test.info().annotations.push({
       description: 'Any QR or 2FA challenge remains a human-authentication blocker.',
       type: 'external-auth',

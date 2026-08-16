@@ -93,8 +93,10 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   // M11: Better Auth + instrumentation identity / observability runtime seams
   'src/auth.ts',
   'src/instrumentation.ts',
+  'src/libs/better-auth/sso/platformDingTalkProvider.ts',
   'src/libs/better-auth/sso/platformIdentityProvider.ts',
   'src/libs/better-auth/sso/platformIdentityProviderObservation.ts',
+  'src/libs/better-auth/sso/platformIdentityProviderProfile.ts',
   // M11 / M12: SPA + auth HTML shells resolve branding / identity bootstrap
   'src/app/spa/[variants]/[[...path]]/route.ts',
   'src/app/spa-auth/[locale]/[[...path]]/route.ts',
@@ -312,6 +314,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
     reason: 'Ordinary UI consumer of the managed sidebar-layout policy hook',
   },
   {
+    file: 'src/features/RecommendTaskTemplates/useDailyBriefRecommendationsUI.ts',
+    importSpecifier: '@/enterprise/client/hooks/usePlatformTaskTemplates',
+    owner: 'M06',
+    reason:
+      'Ordinary consumer of the platform task-template policy hook; fails open to the market recommendations',
+  },
+  {
     file: 'apps/server/src/services/toolExecution/builtin.ts',
     importSpecifier: '@/server/enterprise/services/connectorGovernance/resolve',
     owner: 'M09',
@@ -343,6 +352,13 @@ export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
 export type EnterpriseTestImportAllowance = EnterpriseImportAllowance;
 
 export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
+  {
+    file: 'src/features/RecommendTaskTemplates/useDailyBriefRecommendationsUI.test.ts',
+    importSpecifier: '@/enterprise/client/hooks/usePlatformTaskTemplates',
+    owner: 'M06',
+    reason:
+      'vi.mock target for the platform task-template policy hook the recommendation hook consults',
+  },
   {
     file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',
     importSpecifier: '@/server/enterprise/testing/deletePlatformResourceRevisions',
@@ -714,6 +730,12 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
   },
   {
     file: 'src/instrumentation.test.ts',
+    importSpecifier: '@/server/enterprise/bootstrap/startupBootstrap',
+    owner: 'M11',
+    reason: 'Mocks the platform RBAC / super-admin startup bootstrap seam',
+  },
+  {
+    file: 'src/instrumentation.test.ts',
     importSpecifier: '@/server/enterprise/services/identityProvider/bootstrap',
     owner: 'M11',
     reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
@@ -729,6 +751,30 @@ export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
     importSpecifier: '@/server/enterprise/services/platformObservability/operationalMetricsRuntime',
     owner: 'M11',
     reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformDingTalkProvider.route.test.ts',
+    importSpecifier: '@/server/enterprise/security/outboundHttp',
+    owner: 'M11',
+    reason: 'DingTalk handler-level regression drives the pinned outbound HTTP client',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformDingTalkProvider.route.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/kinds',
+    owner: 'M11',
+    reason: 'DingTalk handler-level regression builds the static per-kind discovery metadata',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformDingTalkProvider.test.ts',
+    importSpecifier: '@/server/enterprise/security/outboundHttp',
+    owner: 'M11',
+    reason: 'DingTalk login-method adapter test drives the pinned outbound HTTP client',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformDingTalkProvider.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/kinds',
+    owner: 'M11',
+    reason: 'DingTalk login-method adapter test builds the static per-kind discovery metadata',
   },
   {
     file: 'src/libs/better-auth/sso/platformIdentityProvider.secureProfile.test.ts',

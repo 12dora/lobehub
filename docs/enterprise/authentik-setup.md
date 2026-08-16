@@ -6,11 +6,11 @@
 
 ## 0. 前提
 
-- Authentik 为定制镜像 `authentik-dingtalk:local`(内置钉钉 OAuth 源类型、目录同步与允入名单能力；源码 `/Users/konata/code/Authentik`, 部署 `~/.local/share/easyauth/authentik/`)。
+- Authentik 为定制镜像 `authentik-dingtalk:local`(内置钉钉 OAuth 源类型、目录同步与允入名单能力)。
 - Authentik 中的**钉钉源实例**(slug `dingtalk`) 已存在并正常运作 (全公司共用，一般不需重建；如需从零建源：管理界面 → 目录 → 联邦与社交登录 → 创建 → DingTalk, 填钉钉应用 AppKey/AppSecret)。
 - 钉钉用户资料存于 Authentik 用户的 `attributes["dingtalk"]`(含 `name`/`avatar`/`title`/`user_id` 等), 由钉钉源在登录与目录同步时写入。
 
-## 1. Authentik 侧 (auth.jiefakj.com, 超管登录管理界面)
+## 1. Authentik 侧 (auth.example.com, 超管登录管理界面)
 
 ### 1.1 新建两个 Scope 属性映射
 
@@ -42,7 +42,7 @@ email = request.user.email
 if not email:
     dingtalk = request.user.attributes.get("dingtalk", {}) or {}
     uid = dingtalk.get("user_id") or request.user.username
-    email = f"{uid}@dingtalk.jiefakj.com"
+    email = f"{uid}@dingtalk.example.com"
 return {"email": email, "email_verified": True}
 ```
 
@@ -52,32 +52,32 @@ return {"email": email, "email_verified": True}
 
 路径:**应用程序 → 提供程序 → 创建 → OAuth2/OpenID Provider**
 
-| 配置项                     | 值                                                                                                                                                                                                                                                                 |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 名称                       | `AIHub OIDC`                                                                                                                                                                                                                                                       |
-| 授权流程                   | `default-provider-authorization-implicit-consent`                                                                                                                                                                                                                  |
-| 客户端类型                 | 机密 (confidential)                                                                                                                                                                                                                                                |
-| Client ID                  | `aihub`                                                                                                                                                                                                                                                            |
-| Client Secret              | 保留生成值，**立即抄录**(存 `~/.local/share/aihub/secrets/authentik-aihub-client-secret.txt`,600 权限)                                                                                                                                                             |
-| **授权类型 (grant types)** | **必须勾选 `authorization_code` + `refresh_token`**。本 fork 新增字段，默认为空 = 拒绝所有授权请求，漏配的症状是登录跳回 `error=invalid_request`("The request is otherwise malformed")                                                                             |
-| 重定向 URI (严格)          | `http://localhost:3010/api/auth/oauth2/callback/authentik`<br>`http://localhost:3010/oauth/identity-provider/test/callback`<br>`https://aihub.jiefakj.com/api/auth/oauth2/callback/authentik`<br>`https://aihub.jiefakj.com/oauth/identity-provider/test/callback` |
-| 签名密钥                   | 选现有证书 (与 easytrade Provider 同一把即可)                                                                                                                                                                                                                      |
-| Scope 映射                 | 勾选：默认 `openid`、默认 `profile`、**AIHub email with DingTalk fallback**(勿选默认 email)、**AIHub DingTalk profile claims**                                                                                                                                     |
-| 主题模式 (sub)             | 基于用户 UUID (`user_uuid`)                                                                                                                                                                                                                                        |
-| 在 ID Token 中包含 claims  | 开                                                                                                                                                                                                                                                                 |
+| 配置项                     | 值                                                                                                                                                                                                                                                               |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 名称                       | `AIHub OIDC`                                                                                                                                                                                                                                                     |
+| 授权流程                   | `default-provider-authorization-implicit-consent`                                                                                                                                                                                                                |
+| 客户端类型                 | 机密 (confidential)                                                                                                                                                                                                                                              |
+| Client ID                  | `aihub`                                                                                                                                                                                                                                                          |
+| Client Secret              | 保留生成值，**立即抄录**(存放到部署机的密钥目录，权限 600)                                                                                                                                                                                                       |
+| **授权类型 (grant types)** | **必须勾选 `authorization_code` + `refresh_token`**。本 fork 新增字段，默认为空 = 拒绝所有授权请求，漏配的症状是登录跳回 `error=invalid_request`("The request is otherwise malformed")                                                                           |
+| 重定向 URI (严格)          | `http://localhost:3010/api/auth/oauth2/callback/authentik`<br>`http://localhost:3010/oauth/identity-provider/test/callback`<br>`https://chat.example.com/api/auth/oauth2/callback/authentik`<br>`https://chat.example.com/oauth/identity-provider/test/callback` |
+| 签名密钥                   | 选现有证书 (与 easytrade Provider 同一把即可)                                                                                                                                                                                                                    |
+| Scope 映射                 | 勾选：默认 `openid`、默认 `profile`、**AIHub email with DingTalk fallback**(勿选默认 email)、**AIHub DingTalk profile claims**                                                                                                                                   |
+| 主题模式 (sub)             | 基于用户 UUID (`user_uuid`)                                                                                                                                                                                                                                      |
+| 在 ID Token 中包含 claims  | 开                                                                                                                                                                                                                                                               |
 
 ### 1.3 新建 Application
 
 路径:**应用程序 → 应用程序 → 创建**: 名称 `AIHub`,Slug `aihub`, 提供程序选 `AIHub OIDC`。
 
-完成后验证 Discovery:`https://auth.jiefakj.com/application/o/aihub/.well-known/openid-configuration` 返回 200,issuer 为 `https://auth.jiefakj.com/application/o/aihub/`。
+完成后验证 Discovery:`https://auth.example.com/application/o/aihub/.well-known/openid-configuration` 返回 200,issuer 为 `https://auth.example.com/application/o/aihub/`。
 
 > 2026-07-23 从零重建实录：旧 Provider (pk=4) 与 Application 已删除，按上述步骤重建为 Provider pk=6, 新 client secret 已换存。
 
 ## 2. AIHub 侧 ([http://localhost:3010/admin, 本地超管登录](http://localhost:3010/admin,本地超管登录))
 
 1. **安全与认证 → 登录与权限 → 新建身份提供方**, 类型选 **Authentik**(模板自带 `dingtalk` scope 与 claim 映射:`picture→头像`、`dingtalk_title→职位`、`dingtalk_user_id`, 一般无需改):
-   - Issuer:`https://auth.jiefakj.com/application/o/aihub/`
+   - Issuer:`https://auth.example.com/application/o/aihub/`
    - Client ID:`aihub`;Client Secret:1.2 抄录值
    - 按钮文案:`使用工作账号登录`; 自动建号 (JIT): 开
 2. **安全登录测试**: 点 "测试登录", 用 Authentik 账号完成一次回调 (发布的硬前置：同 revision + 同 secret 指纹必须有成功测试)。

@@ -1,88 +1,49 @@
-# LobeHub - Contributing Guide 🌟
+# Contributing to LobeHub Enhanced
 
-We're thrilled that you want to contribute to LobeHub, the future of communication! 😄
+Thanks for helping out! This repository is a community fork of
+[lobehub/lobehub](https://github.com/lobehub/lobehub) that adds an enterprise admin console and
+platform governance. Contributions are welcome as pull requests against `main`.
 
-LobeHub is an open-source project, and we welcome your collaboration. Before you jump in, let's make sure you're all set to contribute effectively and have loads of fun along the way!
+## Where a change belongs
 
-## Table of Contents
+- **Fork-specific behaviour** (admin console, platform RBAC, managed resources, audit, identity
+  providers, branding, ChatGPT Web provider) — send it here.
+- **Upstream behaviour** that is not part of the enterprise additions — please send it to
+  [lobehub/lobehub](https://github.com/lobehub/lobehub) first. We pick up upstream changes by
+  explicit, reviewed merges rather than an automatic sync.
 
-- [Fork the Repository](#fork-the-repository)
-- [Clone Your Fork](#clone-your-fork)
-- [Create a New Branch](#create-a-new-branch)
-- [Code Like a Wizard](#code-like-a-wizard)
-- [Committing Your Work](#committing-your-work)
-- [Sync with Upstream](#sync-with-upstream)
-- [Open a Pull Request](#open-a-pull-request)
-- [Review and Collaboration](#review-and-collaboration)
-- [Celebrate 🎉](#celebrate-)
-
-## Fork the Repository
-
-🍴 Fork this repository to your GitHub account by clicking the "Fork" button at the top right. This creates a personal copy of the project you can work on.
-
-## Clone Your Fork
-
-📦 Clone your forked repository to your local machine using the `git clone` command:
+## Workflow
 
 ```bash
-git clone https://github.com/YourUsername/lobehub.git
+git clone https://github.com/12dora/lobehub-enhanced.git
+cd lobehub-enhanced
+pnpm install
 ```
 
-## Create a New Branch
+1. Branch off `main` using `<type>/<short-name>` (e.g. `feat/admin-usage-export`).
 
-🌿 Create a new branch for your contribution. This helps keep your work organized and separate from the main codebase.
+2. Make your change. Read [`AGENTS.md`](./AGENTS.md) for the tech stack and code conventions, and
+   [`DESIGN.md`](./DESIGN.md) for the product design values that user-facing flows must follow.
 
-```bash
-git checkout -b your-branch-name
-```
+3. Add tests wherever the surrounding code has them, and localise every user-facing string
+   (`packages/locales/src/default/`, mirrored to `locales/en-US` and `locales/zh-CN`).
 
-Choose a meaningful branch name related to your work. It makes collaboration easier!
+4. Run the checks on the files you touched:
 
-## Code Like a Wizard
+   ```bash
+   bun run check <changed files>   # lint + related tests
+   bun run check --type            # full type check
+   ```
 
-🧙‍♀️ Time to work your magic! Write your code, fix bugs, or add new features. Be sure to follow our project's coding style. You can check if your code adheres to our style using:
+5. Commit with a gitmoji prefix and a clear message, then open a pull request against `main`
+   describing what changed and how you verified it.
 
-```bash
-pnpm lint
-```
+## Reporting problems
 
-This adds a bit of enchantment to your coding experience! ✨
+Open an [issue](https://github.com/12dora/lobehub-enhanced/issues) for bugs and feature requests.
+For security problems, follow [`SECURITY.md`](./SECURITY.md) instead — never a public issue.
 
-## Committing Your Work
+## Licence
 
-📝 Ready to save your progress? Commit your changes to your branch.
-
-```bash
-git add .
-git commit -m "Your meaningful commit message"
-```
-
-Please keep your commits focused and clear. And remember to be kind to your fellow contributors; keep your commits concise.
-
-## Sync with Upstream
-
-⚙️ Periodically, sync your forked repository with the original (upstream) repository to stay up-to-date with the latest changes.
-
-```bash
-git remote add upstream https://github.com/lobehub/lobehub.git
-git fetch upstream
-git merge upstream/main
-```
-
-This ensures you're working on the most current version of LobeHub. Stay fresh! 💨
-
-## Open a Pull Request
-
-🚀 Time to share your contribution! Head over to the original LobeHub repository and open a Pull Request (PR). Our maintainers will review your work.
-
-## Review and Collaboration
-
-👓 Your PR will undergo thorough review and testing. The maintainers will provide feedback, and you can collaborate to make your contribution even better. We value teamwork!
-
-## Celebrate 🎉
-
-🎈 Congratulations! Your contribution is now part of LobeHub. 🥳
-
-Thank you for making LobeHub even more magical. We can't wait to see what you create! 🌠
-
-Happy Coding! 🚀🦄
+By contributing you agree that your contribution is licensed under the terms in
+[`LICENSE`](./LICENSE) (the LobeHub Community License).

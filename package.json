@@ -1,7 +1,7 @@
 {
-  "name": "@lobehub/lobehub",
-  "version": "2.2.10",
-  "description": "LobeHub - an open-source,comprehensive AI Agent framework that supports speech synthesis, multimodal, and extensible Function Call plugin system. Supports one-click free deployment of your private ChatGPT/LLM web application.",
+  "name": "lobehub-enhanced",
+  "version": "1.0.0",
+  "description": "LobeHub Enhanced — an enterprise-enhanced fork of LobeHub with an admin console, SSO/DingTalk login, ChatGPT Web provider, audit and platform governance",
   "keywords": [
     "framework",
     "chatbot",
@@ -14,16 +14,16 @@
     "tts",
     "stt"
   ],
-  "homepage": "https://github.com/lobehub/lobehub",
+  "homepage": "https://github.com/12dora/lobehub-enhanced",
   "bugs": {
-    "url": "https://github.com/lobehub/lobehub/issues/new/choose"
+    "url": "https://github.com/12dora/lobehub-enhanced/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/lobehub/lobehub.git"
+    "url": "https://github.com/12dora/lobehub-enhanced.git"
   },
-  "license": "MIT",
-  "author": "LobeHub <i@lobehub.com>",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "LobeHub Enhanced contributors",
   "sideEffects": [
     "./src/const/brandIcons.tsx",
     "./src/initialize.ts",
@@ -114,7 +114,6 @@
     "qstash": "pnpx @upstash/qstash-cli@latest dev",
     "reinstall": "rm -rf .next && rm -rf node_modules && rm -rf ./packages/*/node_modules && pnpm -r exec rm -rf node_modules && pnpm install",
     "reinstall:desktop": "rm -rf pnpm-lock.yaml && rm -rf node_modules && pnpm -r exec rm -rf node_modules && pnpm install --node-linker=hoisted",
-    "release": "semantic-release",
     "release:branch": "tsx ./scripts/releaseWorkflow/index.ts",
     "self-hosting:docker": "docker build -t lobehub:local .",
     "self-hosting:docker-cn": "docker build -t lobehub-local --build-arg USE_CN_MIRROR=true .",
@@ -485,7 +484,6 @@
     "@peculiar/webcrypto": "^1.7.1",
     "@playwright/test": "^1.61.1",
     "@prettier/sync": "^0.6.1",
-    "@semantic-release/exec": "^6.0.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -556,7 +554,6 @@
     "remark-mdx": "^3.1.1",
     "remark-parse": "^11.0.0",
     "require-in-the-middle": "^8.0.1",
-    "semantic-release": "^21.1.2",
     "stylelint": "^16.26.1",
     "tsx": "^4.22.4",
     "type-fest": "^5.7.0",
