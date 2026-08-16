@@ -181,9 +181,10 @@ export class PlatformContentModerationRecordModel {
     to: Date;
   }): Promise<ContentModerationTopUser[]> => {
     const table = platformContentModerationRecords;
+    const total = sql<number>`COUNT(*)`.mapWith(Number);
     const rows = await this.db
       .select({
-        count: sql<number>`COUNT(*)`.mapWith(Number),
+        count: total,
         email: users.email,
         fullName: users.fullName,
         userId: table.userId,
@@ -200,7 +201,7 @@ export class PlatformContentModerationRecordModel {
         ),
       )
       .groupBy(table.userId, users.email, users.username, users.fullName)
-      .orderBy(desc(sql`count`))
+      .orderBy(desc(total))
       .limit(params.limit);
 
     return rows

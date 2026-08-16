@@ -227,10 +227,13 @@ export class PlatformContentModerationHourlyStatsModel {
     to: Date;
   }): Promise<Array<{ category: string; count: number }>> => {
     const table = platformContentModerationHourlyStats;
+    // Order by the aggregate expression itself: a bare `count` in ORDER BY resolves to the
+    // table column on real PostgreSQL (GROUP BY violation) even though PGlite accepted it.
+    const total = sql<number>`COALESCE(SUM(${table.count}), 0)`.mapWith(Number);
     const rows = await this.db
       .select({
         category: table.topCategory,
-        count: sql<number>`COALESCE(SUM(${table.count}), 0)`.mapWith(Number),
+        count: total,
       })
       .from(table)
       .where(
@@ -241,7 +244,7 @@ export class PlatformContentModerationHourlyStatsModel {
         ),
       )
       .groupBy(table.topCategory)
-      .orderBy(desc(sql`count`));
+      .orderBy(desc(total));
     return rows;
   };
 
@@ -250,15 +253,16 @@ export class PlatformContentModerationHourlyStatsModel {
     to: Date;
   }): Promise<Array<{ count: number; source: string }>> => {
     const table = platformContentModerationHourlyStats;
+    const total = sql<number>`COALESCE(SUM(${table.count}), 0)`.mapWith(Number);
     const rows = await this.db
       .select({
-        count: sql<number>`COALESCE(SUM(${table.count}), 0)`.mapWith(Number),
+        count: total,
         source: table.source,
       })
       .from(table)
       .where(and(gte(table.bucketStart, params.from), lt(table.bucketStart, params.to)))
       .groupBy(table.source)
-      .orderBy(desc(sql`count`));
+      .orderBy(desc(total));
     return rows;
   };
 
@@ -267,15 +271,16 @@ export class PlatformContentModerationHourlyStatsModel {
     to: Date;
   }): Promise<Array<{ count: number; kind: string }>> => {
     const table = platformContentModerationHourlyStats;
+    const total = sql<number>`COALESCE(SUM(${table.count}), 0)`.mapWith(Number);
     const rows = await this.db
       .select({
-        count: sql<number>`COALESCE(SUM(${table.count}), 0)`.mapWith(Number),
+        count: total,
         kind: table.requestKind,
       })
       .from(table)
       .where(and(gte(table.bucketStart, params.from), lt(table.bucketStart, params.to)))
       .groupBy(table.requestKind)
-      .orderBy(desc(sql`count`));
+      .orderBy(desc(total));
     return rows;
   };
 
