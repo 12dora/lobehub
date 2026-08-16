@@ -109,6 +109,29 @@ const ConnectorListPage = memo(() => {
     [patchFilter],
   );
 
+  const onColumnFiltersChange = useCallback(
+    (next: { credentialMode?: string; enabled?: string; status?: string }) => {
+      const params = new URLSearchParams(searchParams);
+      let changed = false;
+      const assign = (key: 'credentialMode' | 'enabled' | 'status') => {
+        if (!(key in next)) return;
+        const value = next[key];
+        const current = params.get(key) ?? undefined;
+        if (value === current) return;
+        if (value) params.set(key, value);
+        else params.delete(key);
+        changed = true;
+      };
+      assign('credentialMode');
+      assign('enabled');
+      assign('status');
+      if (!changed) return;
+      setSearchParams(params, { replace: true });
+      setCursorState({ fingerprint: '', stack: [] });
+    },
+    [searchParams, setSearchParams],
+  );
+
   return (
     <ConnectorListView
       data={data?.items}
@@ -136,6 +159,7 @@ const ConnectorListPage = memo(() => {
         query: queryDraft || undefined,
         status,
       }}
+      onColumnFiltersChange={onColumnFiltersChange}
       onFilterChange={onFilterChange}
       onOpen={(id) => navigate(`/admin/connectors/${encodeURIComponent(id)}`)}
       onRetry={() => void mutate()}

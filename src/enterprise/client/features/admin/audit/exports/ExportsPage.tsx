@@ -1,8 +1,9 @@
 'use client';
 
 import { Flexbox, Text } from '@lobehub/ui';
-import { Button, Switch, toast } from '@lobehub/ui/base-ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { Drawer, type TableColumnsType } from 'antd';
+import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles, cssVar } from 'antd-style';
 import type { TFunction } from 'i18next';
 import { memo, useCallback, useMemo, useState } from 'react';
@@ -14,7 +15,8 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import type { AdminAuditExportItem } from '@/enterprise/client/services/adminAudit';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
-import DataTable from '../../primitives/DataTable';
+import { enumColumnFilter } from '../../primitives/columnFilters';
+import DataTable, { type AdminTableChangeMeta } from '../../primitives/DataTable';
 import { useAdminAuditMutations, useFetchAuditExportsList } from '../hooks/useAdminAudit';
 import AuditStatusTag from '../shared/AuditStatusTag';
 import { formatAdminDateTime, hasPermission, humanizeAuditToken } from '../shared/format';
@@ -36,6 +38,12 @@ const styles = createStaticStyles(({ css }) => ({
     margin-block-end: 8px;
   `,
 }));
+
+const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw == null || raw === '') return undefined;
+  return String(raw);
+};
 
 const triggerBrowserDownload = (url: string) => {
   const a = document.createElement('a');
@@ -103,6 +111,17 @@ const ExportsPage = memo(() => {
     // Single SWR key: poll only while any row is still in flight.
     refreshInterval: pollWhileInFlight(),
   });
+
+  const handleTableChange = useCallback(
+    ({ filters }: AdminTableChangeMeta) => {
+      if (!Object.hasOwn(filters, 'requestedBy')) return;
+      const nextMine = firstFilterValue(filters.requestedBy) === 'mine';
+      if (nextMine === mine) return;
+      setMine(nextMine);
+      resetCursor();
+    },
+    [mine, resetCursor],
+  );
 
   const data = list.data;
   const rows = data?.items ?? [];
@@ -174,6 +193,13 @@ const ExportsPage = memo(() => {
         key: 'requestedBy',
         title: t('audit.exports.columns.requestedBy'),
         width: 140,
+        ...enumColumnFilter({
+          options: [
+            { label: t('audit.exports.filters.requester.all'), value: 'all' },
+            { label: t('audit.exports.filters.requester.mine'), value: 'mine' },
+          ],
+          value: mine ? 'mine' : 'all',
+        }),
       },
       {
         dataIndex: 'rowCount',
@@ -235,7 +261,7 @@ const ExportsPage = memo(() => {
         ),
       },
     ],
-    [onCancel, onDownload, t],
+    [mine, onCancel, onDownload, t],
   );
 
   return (
@@ -248,18 +274,6 @@ const ExportsPage = memo(() => {
             {t('audit.exports.actions.create')}
           </Button>
         ) : undefined
-      }
-      toolbar={
-        <Flexbox horizontal align="center" gap={8}>
-          <Text type="secondary">{t('audit.exports.filters.mine')}</Text>
-          <Switch
-            checked={mine}
-            onChange={(v) => {
-              setMine(Boolean(v));
-              resetCursor();
-            }}
-          />
-        </Flexbox>
       }
     >
       <DataTable<AdminAuditExportItem>
@@ -279,6 +293,7 @@ const ExportsPage = memo(() => {
           pageSize: limit,
           onPageSizeChange,
         }}
+        onChange={handleTableChange}
         onRetry={() => void mutate()}
         onRowActivate={(row) => setDetail(row)}
       />

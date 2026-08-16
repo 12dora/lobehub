@@ -4,7 +4,22 @@ import { describe, expect, it, vi } from 'vitest';
 import DataTable from './DataTable';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (k: string) => k }),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) => {
+      const catalog: Record<string, string> = {
+        'primitives.dataTable.itemsPerPage': '/ page',
+        'primitives.dataTable.pageSizeOption': '{{count}} / page',
+        'primitives.dataTable.showTotal': '{{total}} items',
+      };
+      let text = catalog[key] ?? key;
+      if (options) {
+        for (const [name, value] of Object.entries(options)) {
+          text = text.replaceAll(`{{${name}}}`, String(value));
+        }
+      }
+      return text;
+    },
+  }),
 }));
 
 vi.mock('@lobehub/ui', async () => {
@@ -158,5 +173,117 @@ describe('DataTable server-driven list', () => {
       />,
     );
     expect(container.querySelector('.ant-table')).toBeTruthy();
+  });
+
+  it('renders a right-aligned toolbar above the table', () => {
+    render(
+      <DataTable
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        rowKey="id"
+        toolbar={<button type="button">bulk-disable</button>}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'bulk-disable' })).toBeTruthy();
+  });
+
+  it('keeps the toolbar mounted while loading and on error so search does not blink out', () => {
+    const { rerender } = render(
+      <DataTable
+        loading
+        columns={columns}
+        pagination={false}
+        rowKey="id"
+        toolbar={<input aria-label="search" />}
+      />,
+    );
+    expect(screen.getByLabelText('search')).toBeTruthy();
+    expect(screen.getByRole('status')).toBeTruthy();
+
+    rerender(
+      <DataTable
+        error
+        columns={columns}
+        pagination={false}
+        rowKey="id"
+        toolbar={<input aria-label="search" />}
+      />,
+    );
+    expect(screen.getByLabelText('search')).toBeTruthy();
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
+  it('shows total, jump-to-page, and i18n page-size suffix when total is known', () => {
+    const { container } = render(
+      <DataTable
+        columns={columns}
+        dataSource={rows}
+        pagination={{ current: 1, pageSize: 20, total: 10_000 }}
+        rowKey="id"
+      />,
+    );
+
+    expect(screen.getByText('10000 items')).toBeTruthy();
+    expect(container.querySelector('.ant-pagination-options-quick-jumper')).toBeTruthy();
+    expect(container.querySelector('.ant-pagination-end, .ant-table-pagination')).toBeTruthy();
+
+    const sizeChanger =
+      container.querySelector('.ant-pagination-options-size-changer .ant-select-content') ||
+      container.querySelector('.ant-pagination-options-size-changer');
+    expect(sizeChanger).toBeTruthy();
+    fireEvent.mouseDown(sizeChanger!);
+
+    const option20 = [...document.querySelectorAll('.ant-select-item')].find((el) =>
+      el.textContent?.includes('20 / page'),
+    );
+    expect(option20).toBeTruthy();
+  });
+
+  it('does not show a total line when showTotal is opted out', () => {
+    render(
+      <DataTable
+        columns={columns}
+        dataSource={rows}
+        pagination={{ current: 1, pageSize: 20, showTotal: false, total: 10_000 }}
+        rowKey="id"
+      />,
+    );
+
+    expect(screen.queryByText('10000 items')).toBeNull();
+  });
+
+  it('keeps numeric pagination when the current page is empty but total is nonzero', () => {
+    const onPaginationChange = vi.fn();
+
+    render(
+      <DataTable
+        columns={columns}
+        dataSource={[]}
+        pagination={{ current: 2, pageSize: 20, total: 40 }}
+        rowKey="id"
+        onPaginationChange={onPaginationChange}
+      />,
+    );
+
+    expect(screen.getByText('primitives.dataTable.empty')).toBeTruthy();
+    expect(screen.getByText('40 items')).toBeTruthy();
+    fireEvent.click(screen.getByTitle('1'));
+    expect(onPaginationChange).toHaveBeenCalledWith(1, 20);
+  });
+
+  it('does not keep numeric pagination when the list is truly empty', () => {
+    const { container } = render(
+      <DataTable
+        columns={columns}
+        dataSource={[]}
+        pagination={{ current: 1, pageSize: 20, total: 0 }}
+        rowKey="id"
+      />,
+    );
+
+    expect(screen.getByText('primitives.dataTable.empty')).toBeTruthy();
+    expect(container.querySelector('.ant-pagination')).toBeNull();
   });
 });

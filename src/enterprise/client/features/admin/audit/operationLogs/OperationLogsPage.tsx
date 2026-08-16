@@ -1,10 +1,12 @@
 'use client';
 
-import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Popover, Select, toast } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, Text } from '@lobehub/ui';
+import { Button, Input, Select, toast } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
+import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
+import { UserIcon } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,6 +15,8 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import type { AdminAuditEventListItem } from '@/enterprise/client/services/adminAudit';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
+import { enumColumnFilter, searchColumnFilter } from '../../primitives/columnFilters';
+import type { AdminTableChangeMeta } from '../../primitives/DataTable';
 import DataTable from '../../primitives/DataTable';
 import {
   useFetchAuditEventFacets,
@@ -30,16 +34,34 @@ import {
 } from '../shared/format';
 import { getDefaultAuditTimeWindow } from '../shared/timeWindow';
 import { AUDIT_DEFAULT_LIST_LIMIT, useCursorPagination } from '../shared/useCursorPagination';
+import ActionFacetChips from './ActionFacetChips';
 import EventDetailDrawer from './EventDetailDrawer';
+import { AUDIT_LOG_TARGET_TYPES } from './targetTypes';
 
-const DEBOUNCE_MS = 300;
+const RESULT_VALUES = ['success', 'failure', 'denied'] as const;
+type AuditResult = (typeof RESULT_VALUES)[number];
 
 const styles = createStaticStyles(({ css }) => ({
-  facetRow: css`
+  dropdown: css`
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: center;
+    flex-direction: column;
+    gap: 8px;
+
+    min-width: 240px;
+    padding: 8px;
+  `,
+  filterActions: css`
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  `,
+  filterIcon: css`
+    display: inline-flex;
+    color: ${cssVar.colorTextTertiary};
+  `,
+  filterIconActive: css`
+    display: inline-flex;
+    color: ${cssVar.colorPrimary};
   `,
   statCard: css`
     cursor: pointer;
@@ -57,15 +79,24 @@ const styles = createStaticStyles(({ css }) => ({
 
     background: ${cssVar.colorBgContainer};
 
-    transition: border-color 0.15s ease;
+    transition:
+      background 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease;
 
     &:hover {
-      border-color: ${cssVar.colorPrimary};
+      background: ${cssVar.colorFillQuaternary};
+    }
+
+    &:focus-visible {
+      outline: 2px solid ${cssVar.colorPrimaryBorder};
+      outline-offset: 2px;
     }
 
     &[data-active='true'] {
-      border-color: ${cssVar.colorPrimary};
-      box-shadow: 0 0 0 1px ${cssVar.colorPrimary};
+      border-color: ${cssVar.colorPrimaryBorder};
+      color: ${cssVar.colorPrimary};
+      background: ${cssVar.colorPrimaryBg};
     }
   `,
   statValue: css`
@@ -79,28 +110,21 @@ const styles = createStaticStyles(({ css }) => ({
     flex-wrap: wrap;
     gap: 12px;
   `,
-  filterRow: css`
+  tableToolbar: css`
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+    justify-content: space-between;
 
-    @media (width <= 1200px) {
-      align-items: stretch;
+    width: 100%;
+  `,
+  timeRange: css`
+    width: min(360px, 100%);
+
+    &&.ant-picker {
+      height: 36px;
     }
-  `,
-  moreBody: css`
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-
-    min-width: 260px;
-    padding: 4px;
-  `,
-  moreField: css`
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
   `,
 }));
 
@@ -109,7 +133,7 @@ interface ListFilters {
   actorUserId?: string;
   from: Date;
   requestId?: string;
-  results: Array<'success' | 'failure' | 'denied'>;
+  results: AuditResult[];
   targetId?: string;
   targetType?: string;
   to: Date;
@@ -123,6 +147,129 @@ const emptyFilters = (): ListFilters => {
     results: [],
     to: window.to,
   };
+};
+
+const toStringList = (value: FilterValue | null | undefined): string[] => {
+  if (!value) return [];
+  return value.map(String).filter((item) => item !== '');
+};
+
+const firstNonEmpty = (value: FilterValue | null | undefined): string | undefined => {
+  const [first] = toStringList(value);
+  return first;
+};
+
+const toResultList = (value: FilterValue | null | undefined): AuditResult[] =>
+  toStringList(value).filter((item): item is AuditResult =>
+    RESULT_VALUES.includes(item as AuditResult),
+  );
+
+const sameStringList = (left: readonly string[], right: readonly string[]): boolean =>
+  left.length === right.length && left.every((item, index) => item === right[index]);
+
+const listFiltersEqual = (left: ListFilters, right: ListFilters): boolean =>
+  sameStringList(left.actions, right.actions) &&
+  sameStringList(left.results, right.results) &&
+  left.actorUserId === right.actorUserId &&
+  left.requestId === right.requestId &&
+  left.targetId === right.targetId &&
+  left.targetType === right.targetType &&
+  left.from.getTime() === right.from.getTime() &&
+  left.to.getTime() === right.to.getTime();
+
+const ActorFilterDropdown = ({
+  confirm,
+  enabled,
+  onChange,
+  value,
+}: FilterDropdownProps & {
+  enabled: boolean;
+  onChange: (userId: string | undefined) => void;
+  value?: string;
+}) => {
+  const { t } = useTranslation('admin');
+
+  return (
+    <div className={styles.dropdown}>
+      <AuditUserSearchSelect
+        enabled={enabled}
+        placeholder={t('audit.logs.filters.actor')}
+        style={{ minWidth: 0, width: '100%' }}
+        value={value}
+        onChange={(userId) => {
+          onChange(userId);
+          confirm({ closeDropdown: true });
+        }}
+      />
+    </div>
+  );
+};
+
+const TargetFilterDropdown = ({
+  clearFilters,
+  confirm,
+  onApply,
+  targetId,
+  targetType,
+}: FilterDropdownProps & {
+  onApply: (next: { targetId?: string; targetType?: string }) => void;
+  targetId?: string;
+  targetType?: string;
+}) => {
+  const { t } = useTranslation('admin');
+  const [typeDraft, setTypeDraft] = useState(targetType ?? '');
+  const [idDraft, setIdDraft] = useState(targetId ?? '');
+
+  const apply = () => {
+    onApply({
+      targetId: idDraft.trim() || undefined,
+      targetType: typeDraft.trim() || undefined,
+    });
+    confirm({ closeDropdown: true });
+  };
+
+  const reset = () => {
+    setTypeDraft('');
+    setIdDraft('');
+    clearFilters?.();
+    onApply({ targetId: undefined, targetType: undefined });
+    confirm({ closeDropdown: true });
+  };
+
+  return (
+    <div className={styles.dropdown}>
+      <Select
+        allowClear
+        placeholder={t('audit.logs.filters.targetType')}
+        style={{ width: '100%' }}
+        value={typeDraft || undefined}
+        options={AUDIT_LOG_TARGET_TYPES.map((item) => ({
+          label: auditTargetTypeLabel(t, item),
+          value: item,
+        }))}
+        onChange={(value) => setTypeDraft(typeof value === 'string' ? value : '')}
+      />
+      <Input
+        placeholder={t('audit.logs.filters.targetId')}
+        value={idDraft}
+        onChange={(event) => setIdDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          event.stopPropagation();
+          apply();
+        }}
+      />
+      <div className={styles.filterActions}>
+        <Button size="small" type="default" onClick={reset}>
+          {t('primitives.columnFilter.reset')}
+        </Button>
+        <Button size="small" type="primary" onClick={apply}>
+          {t('primitives.columnFilter.apply')}
+        </Button>
+      </div>
+    </div>
+  );
 };
 
 const OperationLogsPage = memo(() => {
@@ -142,27 +289,19 @@ const OperationLogsPage = memo(() => {
     setLimit,
   } = useCursorPagination();
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [requestIdDraft, setRequestIdDraft] = useState('');
-  const [targetTypeDraft, setTargetTypeDraft] = useState('');
-  const [targetIdDraft, setTargetIdDraft] = useState('');
-  const requestIdDebounceRef = useRef<number | null>(null);
   const auxiliaryFailureNotifiedRef = useRef(false);
 
-  // Debounce requestId: draft keystrokes must not fire list/access-audit per key.
-  useEffect(() => {
-    if (requestIdDebounceRef.current) window.clearTimeout(requestIdDebounceRef.current);
-    requestIdDebounceRef.current = window.setTimeout(() => {
-      const next = requestIdDraft.trim() || undefined;
+  const applyFilters = useCallback(
+    (patch: Partial<ListFilters>) => {
       setFilters((prev) => {
-        if (prev.requestId === next) return prev;
+        const next = { ...prev, ...patch };
+        if (listFiltersEqual(prev, next)) return prev;
         resetCursor();
-        return { ...prev, requestId: next };
+        return next;
       });
-    }, DEBOUNCE_MS);
-    return () => {
-      if (requestIdDebounceRef.current) window.clearTimeout(requestIdDebounceRef.current);
-    };
-  }, [requestIdDraft, resetCursor]);
+    },
+    [resetCursor],
+  );
 
   const listInput = useMemo(
     () => ({
@@ -199,46 +338,81 @@ const OperationLogsPage = memo(() => {
   const items = data?.items ?? [];
   const nextCursor = data?.nextCursor ?? null;
 
-  const patchFilters = useCallback(
-    (patch: Partial<ListFilters>) => {
-      setFilters((prev) => ({ ...prev, ...patch }));
-      resetCursor();
-    },
-    [resetCursor],
-  );
-
   const toggleResult = useCallback(
-    (result: 'success' | 'failure' | 'denied' | null) => {
+    (result: AuditResult | null) => {
       if (result === null) {
-        patchFilters({ results: [] });
+        applyFilters({ results: [] });
         return;
       }
       setFilters((prev) => {
         const has = prev.results.includes(result);
-        const next = has ? prev.results.filter((r) => r !== result) : [result];
-        return { ...prev, results: next };
+        const next = {
+          ...prev,
+          results: has ? prev.results.filter((item) => item !== result) : [result],
+        };
+        if (listFiltersEqual(prev, next)) return prev;
+        resetCursor();
+        return next;
       });
-      resetCursor();
     },
-    [patchFilters, resetCursor],
+    [applyFilters, resetCursor],
   );
 
   const toggleActionFacet = useCallback(
     (action: string) => {
       setFilters((prev) => {
         const has = prev.actions.includes(action);
-        const actions = has ? prev.actions.filter((a) => a !== action) : [...prev.actions, action];
-        return { ...prev, actions };
+        const next = {
+          ...prev,
+          actions: has ? prev.actions.filter((item) => item !== action) : [...prev.actions, action],
+        };
+        if (listFiltersEqual(prev, next)) return prev;
+        resetCursor();
+        return next;
       });
-      resetCursor();
     },
     [resetCursor],
+  );
+
+  const handleTableChange = useCallback(
+    ({ filters: next }: AdminTableChangeMeta) => {
+      applyFilters({
+        actions: toStringList(next.action),
+        actorUserId: firstNonEmpty(next.actorUserId),
+        requestId: firstNonEmpty(next.requestId),
+        results: toResultList(next.result),
+      });
+    },
+    [applyFilters],
   );
 
   const rangeValue: [Dayjs, Dayjs] = useMemo(
     () => [dayjs(filters.from), dayjs(filters.to)],
     [filters.from, filters.to],
   );
+
+  const actionOptions = useMemo(() => {
+    const fromFacets = (facets?.actions ?? []).map((item) => ({
+      label: `${auditActionLabel(t, item.value)} (${item.count})`,
+      value: item.value,
+    }));
+    for (const action of filters.actions) {
+      if (!fromFacets.some((option) => option.value === action)) {
+        fromFacets.push({ label: auditActionLabel(t, action), value: action });
+      }
+    }
+    return fromFacets;
+  }, [facets?.actions, filters.actions, t]);
+
+  const resultOptions = useMemo(() => {
+    const counts = new Map((facets?.results ?? []).map((item) => [item.value, item.count]));
+    return RESULT_VALUES.map((value) => ({
+      label: counts.has(value)
+        ? `${t(`audit.status.result.${value}`)} (${counts.get(value)})`
+        : t(`audit.status.result.${value}`),
+      value,
+    }));
+  }, [facets?.results, t]);
 
   const columns: TableColumnsType<AdminAuditEventListItem> = useMemo(
     () => [
@@ -247,75 +421,126 @@ const OperationLogsPage = memo(() => {
         key: 'createdAt',
         title: t('audit.logs.columns.time'),
         width: 170,
-        render: (v: Date) => formatAdminDateTime(v),
+        render: (value: Date) => formatAdminDateTime(value),
       },
       {
         dataIndex: 'action',
         key: 'action',
-        title: t('audit.logs.columns.action'),
         ellipsis: true,
-        render: (v: string) => auditActionLabel(t, v),
+        title: t('audit.logs.columns.action'),
+        ...enumColumnFilter({
+          multiple: true,
+          options: actionOptions,
+          value: filters.actions,
+        }),
+        render: (value: string) => auditActionLabel(t, value),
       },
       {
         dataIndex: 'actorUserId',
         key: 'actorUserId',
         title: t('audit.logs.columns.actor'),
         width: 140,
-        render: (v: string | null) => v ?? '—',
+        filterDropdown: (dropdownProps) => (
+          <ActorFilterDropdown
+            {...dropdownProps}
+            enabled={canRead}
+            value={filters.actorUserId}
+            onChange={(userId) => applyFilters({ actorUserId: userId })}
+          />
+        ),
+        filterIcon: (filtered) => (
+          <span
+            className={
+              filtered || filters.actorUserId ? styles.filterIconActive : styles.filterIcon
+            }
+          >
+            <UserIcon size={14} />
+          </span>
+        ),
+        filterOnClose: false,
+        filteredValue: filters.actorUserId ? [filters.actorUserId] : null,
+        render: (value: string | null) => value ?? '—',
       },
       {
         dataIndex: 'result',
         key: 'result',
         title: t('audit.logs.columns.result'),
         width: 110,
-        render: (v: string) => <AuditStatusTag kind="result" value={v} />,
+        ...enumColumnFilter({
+          multiple: true,
+          options: resultOptions,
+          value: filters.results,
+        }),
+        render: (value: string) => <AuditStatusTag kind="result" value={value} />,
       },
       {
         key: 'target',
         title: t('audit.logs.columns.target'),
-        width: 180,
+        width: 200,
+        filterDropdown: (dropdownProps) => (
+          <TargetFilterDropdown
+            {...dropdownProps}
+            targetId={filters.targetId}
+            targetType={filters.targetType}
+            onApply={(next) => applyFilters(next)}
+          />
+        ),
+        filterOnClose: false,
+        filteredValue:
+          filters.targetType || filters.targetId
+            ? [filters.targetType ?? '', filters.targetId ?? '']
+            : null,
         render: (_, row) => (
           <Text ellipsis style={{ margin: 0 }} type="secondary">
-            {auditTargetTypeLabel(t, row.targetType)}
+            {[auditTargetTypeLabel(t, row.targetType), row.targetId].filter(Boolean).join(' · ')}
           </Text>
         ),
+      },
+      {
+        dataIndex: 'requestId',
+        key: 'requestId',
+        title: t('audit.logs.columns.requestId'),
+        width: 160,
+        ellipsis: true,
+        ...searchColumnFilter({
+          placeholder: t('audit.logs.filters.requestId'),
+          value: filters.requestId,
+          onSearch: (value) => applyFilters({ requestId: value || undefined }),
+        }),
+        render: (value: string | null) => truncateText(value, 24),
       },
       {
         dataIndex: 'reason',
         key: 'reason',
         title: t('audit.logs.columns.reason'),
-        render: (v: string | null) => truncateText(v, 48),
+        render: (value: string | null) => truncateText(value, 48),
       },
     ],
-    [t],
+    [
+      actionOptions,
+      applyFilters,
+      canRead,
+      filters.actions,
+      filters.actorUserId,
+      filters.requestId,
+      filters.results,
+      filters.targetId,
+      filters.targetType,
+      resultOptions,
+      t,
+    ],
   );
 
   const activeResult = filters.results.length === 1 ? filters.results[0] : null;
-
-  const moreFilterCount = [
-    filters.targetType,
-    filters.targetId,
-    filters.requestId || requestIdDraft.trim(),
-  ].filter((v) => Boolean(v && String(v).trim())).length;
-
-  const actionOptions = useMemo(() => {
-    const fromFacets = (facets?.actions ?? []).map((a) => ({
-      label: `${auditActionLabel(t, a.value)} (${a.count})`,
-      value: a.value,
-    }));
-    // Keep selected actions that dropped out of facets.
-    for (const a of filters.actions) {
-      if (!fromFacets.some((o) => o.value === a)) {
-        fromFacets.push({ label: auditActionLabel(t, a), value: a });
-      }
-    }
-    return fromFacets;
-  }, [facets?.actions, filters.actions, t]);
+  const hasActiveFilters =
+    filters.actions.length > 0 ||
+    filters.results.length > 0 ||
+    Boolean(filters.actorUserId) ||
+    Boolean(filters.requestId) ||
+    Boolean(filters.targetId) ||
+    Boolean(filters.targetType);
 
   const clearAllFilters = useCallback(() => {
-    setRequestIdDraft('');
-    setTargetTypeDraft('');
-    setTargetIdDraft('');
     setFilters(emptyFilters());
     setLimit(AUDIT_DEFAULT_LIST_LIMIT);
     resetCursor();
@@ -384,160 +609,44 @@ const OperationLogsPage = memo(() => {
               <button
                 className={styles.statCard}
                 data-active={card.active}
+                data-testid={`stat-${card.key}`}
                 key={card.key}
                 type="button"
                 onClick={card.onClick}
               >
-                <Text style={{ margin: 0 }} type="secondary">
+                <Text
+                  data-testid={`stat-${card.key}-label`}
+                  type={card.active ? undefined : 'secondary'}
+                  style={{
+                    margin: 0,
+                    ...(card.active ? { color: cssVar.colorPrimary } : undefined),
+                  }}
+                >
                   {card.label}
                 </Text>
                 <p
                   className={styles.statValue}
-                  style={card.color ? { color: card.color } : undefined}
+                  data-testid={`stat-${card.key}-value`}
+                  style={
+                    card.active
+                      ? { color: cssVar.colorPrimary }
+                      : card.color
+                        ? { color: card.color }
+                        : undefined
+                  }
                 >
                   {card.value}
                 </p>
               </button>
             ))}
           </div>
-
           {facets?.actions?.length ? (
-            <div className={styles.facetRow}>
-              <Text type="secondary">{t('audit.logs.facets.actions')}</Text>
-              {facets.actions.map((item) => {
-                const selected = filters.actions.includes(item.value);
-                return (
-                  <Tag
-                    key={item.value}
-                    size="small"
-                    style={{
-                      cursor: 'pointer',
-                      opacity: selected ? 1 : 0.75,
-                      outline: selected ? `1px solid ${cssVar.colorPrimary}` : undefined,
-                    }}
-                    onClick={() => toggleActionFacet(item.value)}
-                  >
-                    {auditActionLabel(t, item.value)} ({item.count})
-                  </Tag>
-                );
-              })}
-            </div>
+            <ActionFacetChips
+              actions={facets.actions}
+              selected={filters.actions}
+              onToggle={toggleActionFacet}
+            />
           ) : null}
-
-          <div className={styles.filterRow}>
-            <DatePicker.RangePicker
-              showTime
-              allowClear={false}
-              size="small"
-              style={{ maxWidth: 360 }}
-              value={rangeValue}
-              onChange={(vals) => {
-                if (!vals?.[0] || !vals[1]) return;
-                patchFilters({
-                  from: vals[0].toDate(),
-                  to: vals[1].toDate(),
-                });
-              }}
-            />
-            <Select
-              allowClear
-              mode="multiple"
-              options={actionOptions}
-              placeholder={t('audit.logs.filters.action')}
-              style={{ minWidth: 160, maxWidth: 280 }}
-              value={filters.actions.length ? filters.actions : undefined}
-              onChange={(v) => {
-                const next = (Array.isArray(v) ? v : v ? [v] : []) as string[];
-                patchFilters({ actions: next });
-              }}
-            />
-            <Select
-              allowClear
-              mode="multiple"
-              placeholder={t('audit.logs.filters.result')}
-              style={{ minWidth: 140, maxWidth: 220 }}
-              value={filters.results.length ? filters.results : undefined}
-              options={[
-                { label: t('audit.status.result.success'), value: 'success' },
-                { label: t('audit.status.result.failure'), value: 'failure' },
-                { label: t('audit.status.result.denied'), value: 'denied' },
-              ]}
-              onChange={(v) => {
-                const next = (Array.isArray(v) ? v : v ? [v] : []) as Array<
-                  'success' | 'failure' | 'denied'
-                >;
-                patchFilters({ results: next });
-              }}
-            />
-            <div style={{ minWidth: 180, maxWidth: 240, flex: '1 1 180px' }}>
-              <AuditUserSearchSelect
-                enabled={canRead}
-                placeholder={t('audit.logs.filters.actor')}
-                style={{ width: '100%', minWidth: 0 }}
-                value={filters.actorUserId}
-                onChange={(userId) => patchFilters({ actorUserId: userId })}
-              />
-            </div>
-            <Popover
-              trigger="click"
-              content={
-                <div className={styles.moreBody}>
-                  <div className={styles.moreField}>
-                    <Text type="secondary">{t('audit.logs.filters.targetType')}</Text>
-                    <Input
-                      value={targetTypeDraft}
-                      onChange={(e) => setTargetTypeDraft(e.target.value)}
-                      onBlur={() =>
-                        patchFilters({ targetType: targetTypeDraft.trim() || undefined })
-                      }
-                      onPressEnter={() =>
-                        patchFilters({ targetType: targetTypeDraft.trim() || undefined })
-                      }
-                    />
-                  </div>
-                  <div className={styles.moreField}>
-                    <Text type="secondary">{t('audit.logs.filters.targetId')}</Text>
-                    <Input
-                      value={targetIdDraft}
-                      onBlur={() => patchFilters({ targetId: targetIdDraft.trim() || undefined })}
-                      onChange={(e) => setTargetIdDraft(e.target.value)}
-                      onPressEnter={() =>
-                        patchFilters({ targetId: targetIdDraft.trim() || undefined })
-                      }
-                    />
-                  </div>
-                  <div className={styles.moreField}>
-                    <Text type="secondary">{t('audit.logs.filters.requestId')}</Text>
-                    <Input
-                      value={requestIdDraft}
-                      onChange={(e) => setRequestIdDraft(e.target.value)}
-                      onPressEnter={() => {
-                        const next = requestIdDraft.trim() || undefined;
-                        patchFilters({ requestId: next });
-                      }}
-                    />
-                  </div>
-                </div>
-              }
-            >
-              <Button size="small" type="default">
-                {moreFilterCount > 0
-                  ? t('audit.logs.filters.moreActive', { count: moreFilterCount })
-                  : t('audit.logs.filters.more')}
-              </Button>
-            </Popover>
-            {moreFilterCount > 0 ||
-            filters.actions.length > 0 ||
-            filters.results.length > 0 ||
-            filters.actorUserId ||
-            requestIdDraft.trim() ||
-            targetTypeDraft.trim() ||
-            targetIdDraft.trim() ? (
-              <Button size="small" type="text" onClick={clearAllFilters}>
-                {t('audit.shared.clearFilters')}
-              </Button>
-            ) : null}
-          </div>
         </Flexbox>
       }
     >
@@ -549,7 +658,7 @@ const OperationLogsPage = memo(() => {
         loading={isLoading && !data}
         pagination={false}
         rowKey="id"
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1280 }}
         cursorPagination={{
           hasNext: Boolean(nextCursor),
           hasPrevious,
@@ -559,6 +668,29 @@ const OperationLogsPage = memo(() => {
           pageSizeOptions: ['20', '50', '100'],
           onPageSizeChange,
         }}
+        toolbar={
+          <div className={styles.tableToolbar}>
+            <DatePicker.RangePicker
+              showTime
+              allowClear={false}
+              className={styles.timeRange}
+              value={rangeValue}
+              onChange={(vals) => {
+                if (!vals?.[0] || !vals[1]) return;
+                applyFilters({
+                  from: vals[0].toDate(),
+                  to: vals[1].toDate(),
+                });
+              }}
+            />
+            {hasActiveFilters ? (
+              <Button size="small" type="text" onClick={clearAllFilters}>
+                {t('audit.shared.clearFilters')}
+              </Button>
+            ) : null}
+          </div>
+        }
+        onChange={handleTableChange}
         onRetry={() => void mutate()}
         onRowActivate={(row) => setDetailId(row.id)}
       />

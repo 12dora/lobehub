@@ -1,8 +1,9 @@
 'use client';
 
 import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Select, toast } from '@lobehub/ui/base-ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
+import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -12,7 +13,8 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import DataTable from '../primitives/DataTable';
+import { enumColumnFilter } from '../primitives/columnFilters';
+import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { deriveSkillPermissions } from './controller';
 import { refreshAdminSkillLists, useFetchAdminSkills } from './hooks/useAdminSkills';
@@ -29,7 +31,22 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 2px;
     min-width: 0;
   `,
+  toolbar: css`
+    justify-content: flex-start;
+    width: 100%;
+  `,
+  toolbarSearch: css`
+    flex: 0 1 260px;
+    min-width: 180px;
+    max-width: 320px;
+  `,
 }));
+
+const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
+  const first = Array.isArray(value) ? value[0] : value;
+  if (first === undefined || first === null || first === '') return undefined;
+  return String(first);
+};
 
 const valueFrom = <Value extends string>(
   value: string | null,
@@ -137,6 +154,13 @@ const SkillListPage = memo(() => {
         key: 'status',
         title: t('skillCatalog.list.columns.status'),
         render: (value: string) => <StatusBadge status={value} />,
+        ...enumColumnFilter({
+          options: (['draft', 'published', 'archived'] as const).map((value) => ({
+            label: t(`skillCatalog.status.${value}` as never),
+            value,
+          })),
+          value: status,
+        }),
       },
       {
         dataIndex: 'source',
@@ -151,6 +175,13 @@ const SkillListPage = memo(() => {
         render: (value: AdminSkillListItem['distribution']) => (
           <Tag>{t(`skillCatalog.distribution.${value}` as never)}</Tag>
         ),
+        ...enumColumnFilter({
+          options: (['mandatory', 'default', 'optional'] as const).map((value) => ({
+            label: t(`skillCatalog.distribution.${value}` as never),
+            value,
+          })),
+          value: distribution,
+        }),
       },
       {
         dataIndex: 'enabled',
@@ -161,6 +192,13 @@ const SkillListPage = memo(() => {
             {t(`skillCatalog.boolean.${value}` as never)}
           </Tag>
         ),
+        ...enumColumnFilter({
+          options: [
+            { label: t('skillCatalog.boolean.true'), value: 'true' },
+            { label: t('skillCatalog.boolean.false'), value: 'false' },
+          ],
+          value: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
+        }),
       },
       {
         dataIndex: 'revision',
@@ -168,7 +206,30 @@ const SkillListPage = memo(() => {
         title: t('skillCatalog.list.columns.revision'),
       },
     ],
-    [t],
+    [distribution, enabledParam, status, t],
+  );
+
+  const handleTableChange = useCallback(
+    ({ filters }: AdminTableChangeMeta) => {
+      const next = new URLSearchParams(searchParams);
+      let changed = false;
+      const assign = (key: 'distribution' | 'enabled' | 'status') => {
+        if (!(key in filters)) return;
+        const value = firstFilterValue(filters[key]);
+        const current = next.get(key) ?? undefined;
+        if (value === current) return;
+        if (value) next.set(key, value);
+        else next.delete(key);
+        changed = true;
+      };
+      assign('status');
+      assign('distribution');
+      assign('enabled');
+      if (!changed) return;
+      setSearchParams(next, { replace: true });
+      setCursorState({ fingerprint: '', stack: [] });
+    },
+    [searchParams, setSearchParams],
   );
 
   const filtered = Boolean(
@@ -228,54 +289,6 @@ const SkillListPage = memo(() => {
           </Button>
         ) : null
       }
-      toolbar={
-        <Flexbox horizontal gap={8} wrap="wrap">
-          <Input
-            allowClear
-            aria-label={t('skillCatalog.list.filters.query')}
-            placeholder={t('skillCatalog.list.filters.query')}
-            style={{ minWidth: 240 }}
-            value={queryDraft}
-            onChange={(event) => setQueryDraft(event.target.value)}
-          />
-          <Select
-            allowClear
-            aria-label={t('skillCatalog.list.filters.status')}
-            placeholder={t('skillCatalog.list.filters.status')}
-            style={{ minWidth: 140 }}
-            value={status}
-            options={(['draft', 'published', 'archived'] as const).map((value) => ({
-              label: t(`skillCatalog.status.${value}` as never),
-              value,
-            }))}
-            onChange={(value) => patchFilter('status', value as string | undefined)}
-          />
-          <Select
-            allowClear
-            aria-label={t('skillCatalog.list.filters.distribution')}
-            placeholder={t('skillCatalog.list.filters.distribution')}
-            style={{ minWidth: 150 }}
-            value={distribution}
-            options={(['mandatory', 'default', 'optional'] as const).map((value) => ({
-              label: t(`skillCatalog.distribution.${value}` as never),
-              value,
-            }))}
-            onChange={(value) => patchFilter('distribution', value as string | undefined)}
-          />
-          <Select
-            allowClear
-            aria-label={t('skillCatalog.list.filters.enabled')}
-            placeholder={t('skillCatalog.list.filters.enabled')}
-            style={{ minWidth: 130 }}
-            value={enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined}
-            options={[
-              { label: t('skillCatalog.boolean.true'), value: 'true' },
-              { label: t('skillCatalog.boolean.false'), value: 'false' },
-            ]}
-            onChange={(value) => patchFilter('enabled', value as string | undefined)}
-          />
-        </Flexbox>
-      }
     >
       {createRefreshFailed ? (
         <Alert
@@ -321,6 +334,21 @@ const SkillListPage = memo(() => {
         emptyDescription={
           filtered ? t('skillCatalog.list.empty.filtered') : t('skillCatalog.list.empty.default')
         }
+        toolbar={
+          <Flexbox horizontal className={styles.toolbar} data-testid="skill-list-toolbar">
+            <div className={styles.toolbarSearch}>
+              <Input
+                allowClear
+                aria-label={t('skillCatalog.list.filters.query')}
+                placeholder={t('skillCatalog.list.filters.query')}
+                style={{ width: '100%' }}
+                value={queryDraft}
+                onChange={(event) => setQueryDraft(event.target.value)}
+              />
+            </div>
+          </Flexbox>
+        }
+        onChange={handleTableChange}
         onRetry={() => void mutate()}
         onRowActivate={(item) => navigate(`/admin/skills/${encodeURIComponent(item.id)}`)}
       />

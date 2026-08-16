@@ -113,7 +113,17 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 vi.mock('../primitives/StatusBadge', () => ({ default: () => null }));
 
 vi.mock('../primitives/DataTable', () => ({
-  default: ({ cursorPagination, dataSource, emptyDescription, error, loading, onRetry }: any) => {
+  default: ({
+    columns,
+    cursorPagination,
+    dataSource,
+    emptyDescription,
+    error,
+    loading,
+    onChange,
+    onRetry,
+    toolbar,
+  }: any) => {
     if (loading) return <div role="status">loading</div>;
     if (error)
       return (
@@ -121,9 +131,48 @@ vi.mock('../primitives/DataTable', () => ({
           error<button onClick={onRetry}>retry</button>
         </div>
       );
-    if (!dataSource?.length) return <div>{emptyDescription}</div>;
+    const filters = (columns ?? [])
+      .filter((column: { filters?: unknown[] }) => column.filters)
+      .map(
+        (column: {
+          filters: Array<{ text: string; value: string }>;
+          filteredValue?: Array<string | number> | null;
+          key: string;
+          title: string;
+        }) => (
+          <select
+            aria-label={column.title}
+            key={column.key}
+            value={column.filteredValue?.[0] ?? ''}
+            onChange={(event) =>
+              onChange?.({
+                filters: { [column.key]: event.target.value ? [event.target.value] : null },
+                pagination: false,
+                sorter: {},
+              })
+            }
+          >
+            <option value="">all</option>
+            {column.filters.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.text}
+              </option>
+            ))}
+          </select>
+        ),
+      );
+    if (!dataSource?.length)
+      return (
+        <div>
+          {toolbar}
+          {filters}
+          {emptyDescription}
+        </div>
+      );
     return (
       <div>
+        {toolbar}
+        {filters}
         <button disabled={!cursorPagination.hasNext} onClick={cursorPagination.onNext}>
           next
         </button>
@@ -268,13 +317,13 @@ describe('SkillListPage', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.status'), {
+    fireEvent.change(screen.getByLabelText('skillCatalog.list.columns.status'), {
       target: { value: 'published' },
     });
-    fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.distribution'), {
+    fireEvent.change(screen.getByLabelText('skillCatalog.list.columns.distribution'), {
       target: { value: 'mandatory' },
     });
-    fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.enabled'), {
+    fireEvent.change(screen.getByLabelText('skillCatalog.list.columns.enabled'), {
       target: { value: 'true' },
     });
 
@@ -290,7 +339,7 @@ describe('SkillListPage', () => {
     await waitFor(() => expect(mocks.inputs.at(-1)).toMatchObject({ cursor: 'next-cursor' }));
 
     // Changing status resets cursor stack (filter fingerprint change).
-    fireEvent.change(screen.getByLabelText('skillCatalog.list.filters.status'), {
+    fireEvent.change(screen.getByLabelText('skillCatalog.list.columns.status'), {
       target: { value: 'draft' },
     });
     await waitFor(() => expect((mocks.inputs.at(-1) as any).cursor).toBeUndefined());

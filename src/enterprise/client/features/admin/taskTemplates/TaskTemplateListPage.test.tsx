@@ -32,12 +32,15 @@ const mocks = vi.hoisted(() => ({
   deleteTemplate: vi.fn(),
   importRecommendations: vi.fn(),
   mutate: vi.fn(),
+  listInput: undefined as unknown,
   openEditor: vi.fn(),
   permissions: [] as string[],
   refreshLists: vi.fn(),
   reorder: vi.fn(),
   reorderProps: undefined as { ids: string[]; onReorder: (ids: string[]) => void } | undefined,
   setEnabled: vi.fn(),
+  tableOnChange: undefined as ((meta: { filters: Record<string, unknown> }) => void) | undefined,
+  tablePagination: undefined as { current?: number; pageSize?: number; total?: number } | undefined,
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
@@ -78,12 +81,15 @@ vi.mock('@/enterprise/client/errors/mapEnterpriseError', () => ({
 
 vi.mock('./useAdminTaskTemplates', () => ({
   refreshAdminTaskTemplateLists: () => mocks.refreshLists(),
-  useFetchAdminTaskTemplates: () => ({
-    data: mocks.data,
-    error: undefined,
-    isLoading: false,
-    mutate: mocks.mutate,
-  }),
+  useFetchAdminTaskTemplates: (input: unknown) => {
+    mocks.listInput = input;
+    return {
+      data: mocks.data,
+      error: undefined,
+      isLoading: false,
+      mutate: mocks.mutate,
+    };
+  },
 }));
 
 vi.mock('./SortableRow', () => ({
@@ -160,24 +166,36 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 }));
 
 vi.mock('../primitives/DataTable', () => ({
-  default: ({ columns, dataSource, emptyDescription }: any) => {
-    if (!dataSource?.length) return <div>{emptyDescription}</div>;
+  default: ({ columns, dataSource, emptyDescription, onChange, pagination, toolbar }: any) => {
+    mocks.tableOnChange = onChange;
+    mocks.tablePagination = pagination;
+    if (!dataSource?.length) {
+      return (
+        <div>
+          {toolbar}
+          <div>{emptyDescription}</div>
+        </div>
+      );
+    }
     return (
-      <table>
-        <tbody>
-          {dataSource.map((row: any) => (
-            <tr key={row.id}>
-              {columns.map((column: any) => (
-                <td key={column.key}>
-                  {column.render
-                    ? column.render(column.dataIndex ? row[column.dataIndex] : undefined, row)
-                    : String(row[column.dataIndex])}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div>
+        {toolbar}
+        <table>
+          <tbody>
+            {dataSource.map((row: any) => (
+              <tr key={row.id}>
+                {columns.map((column: any) => (
+                  <td key={column.key}>
+                    {column.render
+                      ? column.render(column.dataIndex ? row[column.dataIndex] : undefined, row)
+                      : String(row[column.dataIndex])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   },
 }));
@@ -192,8 +210,11 @@ const renderPage = () =>
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.data = { items: [item], totalAll: 1, totalFiltered: 1 };
+  mocks.listInput = undefined;
   mocks.refreshLists.mockResolvedValue([item]);
   mocks.reorderProps = undefined;
+  mocks.tableOnChange = undefined;
+  mocks.tablePagination = undefined;
   mocks.permissions = [
     PLATFORM_PERMISSIONS.AGENT_READ,
     PLATFORM_PERMISSIONS.AGENT_CREATE,
@@ -344,6 +365,27 @@ describe('TaskTemplateListPage', () => {
     expect(mocks.importRecommendations).toHaveBeenCalledWith({ locale: 'en-US' });
     expect(mocks.toastSuccess).toHaveBeenCalledWith('taskTemplateCatalog.toast.imported');
     expect(mocks.refreshLists).toHaveBeenCalled();
+  });
+
+  it('keeps search in the table toolbar and applies the enabled header filter', async () => {
+    renderPage();
+
+    expect(screen.getByLabelText('taskTemplateCatalog.list.filters.query')).toBeTruthy();
+    expect(screen.queryByLabelText('taskTemplateCatalog.list.filters.enabled')).toBeNull();
+    expect(mocks.tablePagination).toEqual({
+      current: 1,
+      pageSize: 20,
+      total: 1,
+    });
+    expect(mocks.listInput).toEqual(
+      expect.objectContaining({ enabled: undefined, limit: 20, offset: 0 }),
+    );
+
+    mocks.tableOnChange?.({ filters: { enabled: ['false'] } });
+
+    await waitFor(() => {
+      expect(mocks.listInput).toEqual(expect.objectContaining({ enabled: false, offset: 0 }));
+    });
   });
 
   it('warns instead of claiming success when upstream rows were discarded', async () => {

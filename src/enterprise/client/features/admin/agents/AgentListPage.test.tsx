@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   fetchDetail: vi.fn(),
   get: vi.fn(),
   list: {} as Record<string, unknown>,
+  listInputs: [] as unknown[],
   openDelete: vi.fn(),
   openEditor: vi.fn(),
   permissions: [] as string[],
@@ -29,6 +30,12 @@ vi.mock('antd-style', () => ({
   createStaticStyles: (
     factory: (helpers: { css: (s: TemplateStringsArray) => string }) => Record<string, string>,
   ) => factory({ css: (s) => String(s.join('')) }),
+  cssVar: new Proxy(
+    {},
+    {
+      get: (_target, key) => String(key),
+    },
+  ),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
@@ -36,7 +43,10 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 }));
 vi.mock('./useAdminAgents', () => ({
   fetchAdminAgentDetail: (...args: unknown[]) => mocks.fetchDetail(...args),
-  useAdminAgentListPagination: () => mocks.list,
+  useAdminAgentListPagination: (input: unknown) => {
+    mocks.listInputs.push(structuredClone(input));
+    return mocks.list;
+  },
 }));
 vi.mock('./openAgentEditorModal', () => ({
   openAgentEditorModal: (...args: unknown[]) => mocks.openEditor(...args),
@@ -71,7 +81,9 @@ vi.mock('@lobehub/ui', () => ({
       {action}
     </div>
   ),
-  Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Flexbox: ({ children, ...props }: { children?: ReactNode } & Record<string, unknown>) => (
+    <div data-testid={props['data-testid'] as string | undefined}>{children}</div>
+  ),
   Input: (props: any) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
@@ -111,11 +123,52 @@ vi.mock('../primitives/DataTable', () => ({
   default: ({
     columns,
     dataSource,
+    emptyDescription,
+    onChange,
+    toolbar,
   }: {
-    columns: Array<{ key?: string; render?: (v: unknown, item: AdminAgentListItem) => ReactNode }>;
+    columns: Array<{
+      filters?: Array<{ text: ReactNode; value: string }>;
+      filteredValue?: Array<string | number> | null;
+      key?: string;
+      render?: (v: unknown, item: AdminAgentListItem) => ReactNode;
+      title?: ReactNode;
+    }>;
     dataSource: AdminAgentListItem[];
+    emptyDescription?: ReactNode;
+    onChange?: (meta: {
+      filters: Record<string, Array<string | number> | null>;
+      pagination: false;
+      sorter: Record<string, never>;
+    }) => void;
+    toolbar?: ReactNode;
   }) => (
     <div>
+      {toolbar}
+      {columns.map((column) =>
+        column.filters ? (
+          <select
+            aria-label={typeof column.title === 'string' ? column.title : String(column.key)}
+            key={column.key}
+            value={column.filteredValue?.[0] ?? ''}
+            onChange={(event) =>
+              onChange?.({
+                filters: { [String(column.key)]: event.target.value ? [event.target.value] : null },
+                pagination: false,
+                sorter: {},
+              })
+            }
+          >
+            <option value="">—</option>
+            {column.filters.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.text}
+              </option>
+            ))}
+          </select>
+        ) : null,
+      )}
+      {dataSource.length === 0 ? <div>{emptyDescription}</div> : null}
       <div>rows:{dataSource.length}</div>
       {dataSource.map((item) => (
         <div key={item.identity.id}>
@@ -173,6 +226,7 @@ describe('AgentListPage with the real AsyncBoundary', () => {
   beforeEach(() => {
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ];
     mocks.list = pagination({});
+    mocks.listInputs = [];
     mocks.fetchDetail.mockReset();
     mocks.openEditor.mockReset();
     mocks.openDelete.mockReset();
@@ -240,19 +294,25 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     expect(screen.queryByText('agentCatalog.create.submit')).toBeNull();
   });
 
-  it('keeps search input, status filter, and Search button inside one toolbar', () => {
-    mocks.list = pagination({ boundaryData: [], isEmpty: true });
+  it('keeps search in the table toolbar and status as a column-header filter', () => {
+    mocks.list = pagination({ boundaryData: [], isEmpty: true, items: [] });
     renderPage();
     const toolbar = screen.getByTestId('agent-list-toolbar');
     expect(toolbar.querySelector('input')).toBeTruthy();
-    expect(toolbar.querySelector('select')).toBeTruthy();
-    expect(toolbar).toHaveTextContent('agentCatalog.list.applySearch');
-    // Explicit Search control lives in the toolbar (not a second stacked row outside it).
-    expect(
-      screen
-        .getByText('agentCatalog.list.applySearch')
-        .closest('[data-testid="agent-list-toolbar"]'),
-    ).toBe(toolbar);
+    expect(toolbar.querySelector('select')).toBeNull();
+    expect(screen.queryByText('agentCatalog.list.applySearch')).toBeNull();
+    expect(screen.getByLabelText('agentCatalog.list.columns.status')).toBeTruthy();
+  });
+
+  it('applies the status header filter to the list query', async () => {
+    mocks.list = pagination({ boundaryData: [item('a')], items: [item('a')] });
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText('agentCatalog.list.columns.status'), {
+      target: { value: 'published' },
+    });
+
+    await waitFor(() => expect(mocks.listInputs.at(-1)).toMatchObject({ status: 'published' }));
   });
 
   it('refreshes the bound infinite list after a successful delete via removeItem', async () => {
@@ -466,10 +526,10 @@ describe('AgentListPage with the real AsyncBoundary', () => {
   });
 
   it('drops the removed draft status from the filter options', () => {
-    mocks.list = pagination({ boundaryData: [], isEmpty: true });
+    mocks.list = pagination({ boundaryData: [], isEmpty: true, items: [] });
     renderPage();
     const options = [
-      ...screen.getByLabelText('agentCatalog.list.status').querySelectorAll('option'),
+      ...screen.getByLabelText('agentCatalog.list.columns.status').querySelectorAll('option'),
     ]
       .map((option) => option.getAttribute('value'))
       .filter(Boolean);

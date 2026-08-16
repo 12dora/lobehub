@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -22,9 +22,6 @@ vi.mock('@lobehub/ui', () => ({
 
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  Switch: ({ checked, onChange, ...props }: any) => (
-    <input {...props} checked={checked} type="checkbox" onChange={() => onChange?.(!checked)} />
-  ),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -34,29 +31,36 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+const table = vi.hoisted(() => ({
+  onChange: undefined as ((meta: { filters: Record<string, unknown> }) => void) | undefined,
+}));
+
 vi.mock('@/enterprise/client/features/admin/primitives/DataTable', () => ({
-  default: ({ columns, dataSource, emptyDescription, pagination }: any) => (
-    <div>
-      <div data-testid="pagination">
-        {pagination ? `page ${pagination.current} of ${pagination.total}` : 'unpaginated'}
+  default: ({ columns, dataSource, emptyDescription, onChange, pagination }: any) => {
+    table.onChange = onChange;
+    return (
+      <div>
+        <div data-testid="pagination">
+          {pagination ? `page ${pagination.current} of ${pagination.total}` : 'unpaginated'}
+        </div>
+        {dataSource?.length ? (
+          dataSource.map((row: any) => (
+            <div data-testid="row" key={row.instanceId}>
+              {columns.map((column: any, index: number) => (
+                <div key={column.key ?? index}>
+                  {column.render
+                    ? column.render(column.dataIndex ? row[column.dataIndex] : undefined, row, 0)
+                    : null}
+                </div>
+              ))}
+            </div>
+          ))
+        ) : (
+          <div data-testid="empty">{emptyDescription}</div>
+        )}
       </div>
-      {dataSource?.length ? (
-        dataSource.map((row: any) => (
-          <div data-testid="row" key={row.instanceId}>
-            {columns.map((column: any, index: number) => (
-              <div key={column.key ?? index}>
-                {column.render
-                  ? column.render(column.dataIndex ? row[column.dataIndex] : undefined, row, 0)
-                  : null}
-              </div>
-            ))}
-          </div>
-        ))
-      ) : (
-        <div data-testid="empty">{emptyDescription}</div>
-      )}
-    </div>
-  ),
+    );
+  },
 }));
 
 type Instance = AdminSystemInstanceRevisions['items'][number];
@@ -121,50 +125,43 @@ describe('InstancesTable', () => {
     expect(rows[1].textContent).not.toContain('system.instances.pendingRestart');
   });
 
-  it('shows registry totals and reports the offline toggle', () => {
+  it('shows registry totals and applies the health header filter', () => {
     const onShowOfflineChange = vi.fn();
     render(
       <InstancesTable
         showOffline={false}
-        state={buildState([instance({ instanceId: `oidci_${'0'.repeat(48)}` })])}
+        state={buildState([
+          instance({ instanceId: `oidci_${'ab12cd34'}${'0'.repeat(40)}` }),
+          instance({
+            fresh: false,
+            instanceId: `oidci_${'ff99'}${'0'.repeat(44)}`,
+          }),
+        ])}
         onShowOfflineChange={onShowOfflineChange}
       />,
     );
 
     expect(screen.getByText(/system\.instances\.counts/)).toHaveTextContent('"live":1');
     expect(screen.getByText(/system\.instances\.counts/)).toHaveTextContent('"offline":37');
-    fireEvent.click(screen.getByRole('checkbox'));
-    expect(onShowOfflineChange).toHaveBeenCalledWith(true);
-  });
+    // Default is live-only; the offline row stays hidden until the header filter asks for it.
+    expect(screen.getAllByTestId('row')).toHaveLength(1);
 
-  it('toggles the offline filter when its caption is clicked', () => {
-    const onShowOfflineChange = vi.fn();
-    render(
-      <InstancesTable
-        showOffline={false}
-        state={buildState([instance({ instanceId: `oidci_${'0'.repeat(48)}` })])}
-        onShowOfflineChange={onShowOfflineChange}
-      />,
-    );
-
-    // The caption is a real <label> for the switch, so the whole phrase is the hit area.
-    const caption = screen.getByText('system.instances.filter.showOffline').closest('label');
-    expect(caption?.getAttribute('for')).toBe(screen.getByRole('checkbox').getAttribute('id'));
-
-    fireEvent.click(caption!);
+    act(() => {
+      table.onChange?.({ filters: { health: ['offline'] } });
+    });
     expect(onShowOfflineChange).toHaveBeenCalledWith(true);
   });
 
   it('paginates loaded rows and keeps short lists unpaginated', () => {
-    const many = Array.from({ length: 12 }, (_, index) =>
+    const many = Array.from({ length: 25 }, (_, index) =>
       instance({ instanceId: `pinst_${index.toString(16).padStart(48, '0')}` }),
     );
     const { rerender } = render(
       <InstancesTable showOffline state={buildState(many)} onShowOfflineChange={vi.fn()} />,
     );
 
-    expect(screen.getAllByTestId('row')).toHaveLength(10);
-    expect(screen.getByTestId('pagination')).toHaveTextContent('page 1 of 12');
+    expect(screen.getAllByTestId('row')).toHaveLength(20);
+    expect(screen.getByTestId('pagination')).toHaveTextContent('page 1 of 25');
 
     rerender(
       <InstancesTable
@@ -178,12 +175,19 @@ describe('InstancesTable', () => {
   });
 
   it('explains an empty live view differently from an empty registry', () => {
-    const { rerender } = render(
+    render(
       <InstancesTable showOffline={false} state={buildState([])} onShowOfflineChange={vi.fn()} />,
     );
     expect(screen.getByTestId('empty')).toHaveTextContent('system.instances.empty');
 
-    rerender(<InstancesTable showOffline state={buildState([])} onShowOfflineChange={vi.fn()} />);
+    act(() => {
+      table.onChange?.({ filters: { health: ['all'] } });
+    });
     expect(screen.getByTestId('empty')).toHaveTextContent('system.instances.emptyAll');
+
+    act(() => {
+      table.onChange?.({ filters: { health: ['offline'] } });
+    });
+    expect(screen.getByTestId('empty')).toHaveTextContent('system.instances.emptyOffline');
   });
 });

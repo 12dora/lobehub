@@ -37,7 +37,7 @@ const isInteractiveDescendantTarget = (
 const styles = createStaticStyles(({ css }) => ({
   cursorBar: css`
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 8px;
     align-items: center;
     justify-content: flex-end;
@@ -100,15 +100,42 @@ const styles = createStaticStyles(({ css }) => ({
       outline: 2px solid ${cssVar.colorPrimaryBorder};
       outline-offset: -2px;
     }
+
+    /* Page buttons + page-size select stay on one right-aligned row. */
+    .ant-table-pagination.ant-pagination {
+      flex-wrap: nowrap;
+    }
+  `,
+  toolbar: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+
+    margin-block-end: 12px;
   `,
 }));
+
+const DEFAULT_PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE_OPTIONS = ['20', '50', '100'] as const;
 
 /** Server-driven pagination state for large lists (10k+). */
 export interface AdminTablePagination {
   current: number;
   pageSize: number;
   pageSizeOptions?: string[];
+  /**
+   * Jump-to-page control. Defaults to `true` when `total` is a known number.
+   * Do not enable this for cursor lists — use `cursorPagination` instead.
+   */
+  showQuickJumper?: boolean;
   showSizeChanger?: boolean;
+  /**
+   * Total-count line (`{{total}} items`). Defaults to `true` when `total` is a
+   * finite number. Never invent a total for cursor / keyset lists.
+   */
+  showTotal?: boolean;
   total: number;
 }
 
@@ -175,6 +202,11 @@ export interface DataTableProps<T extends object = Record<string, unknown>> {
   scroll?: TableProps<T>['scroll'];
   /** Optional whitelist pass-through for advanced Table needs. */
   size?: TableProps<T>['size'];
+  /**
+   * Table-local action row rendered above the table, right-aligned.
+   * Use for bulk actions. Pass a Flexbox with left + right content to split the row.
+   */
+  toolbar?: ReactNode;
   virtual?: boolean;
 }
 
@@ -208,6 +240,7 @@ function DataTableInner<T extends object>({
   scroll,
   virtual,
   size = 'middle',
+  toolbar,
 }: DataTableProps<T>) {
   const { t } = useTranslation('admin');
 
@@ -219,14 +252,27 @@ function DataTableInner<T extends object>({
     if (cursorPagination) return false;
     const p = toAdminPagination(pagination);
     if (!p) return false;
+    const totalKnown = typeof p.total === 'number' && Number.isFinite(p.total);
+    const showTotal = p.showTotal ?? totalKnown;
     return {
+      align: 'end',
       current: p.current,
-      pageSize: p.pageSize,
-      pageSizeOptions: p.pageSizeOptions ?? ['20', '50', '100'],
+      locale: {
+        items_per_page: t('primitives.dataTable.itemsPerPage'),
+        jump_to: t('primitives.dataTable.jumpTo'),
+        next_page: t('primitives.dataTable.nextPage'),
+        page: t('primitives.dataTable.page'),
+        prev_page: t('primitives.dataTable.prevPage'),
+      },
+      pageSize: p.pageSize || DEFAULT_PAGE_SIZE,
+      pageSizeOptions: p.pageSizeOptions ?? [...DEFAULT_PAGE_SIZE_OPTIONS],
+      placement: ['bottomEnd'],
+      showQuickJumper: p.showQuickJumper ?? totalKnown,
       showSizeChanger: p.showSizeChanger ?? true,
+      showTotal: showTotal ? (total) => t('primitives.dataTable.showTotal', { total }) : undefined,
       total: p.total,
     };
-  }, [cursorPagination, pagination]);
+  }, [cursorPagination, pagination, t]);
 
   const handleTableChange: TableProps<T>['onChange'] = (
     pag,
@@ -283,11 +329,18 @@ function DataTableInner<T extends object>({
     });
   };
 
+  // The toolbar (search / bulk actions) stays mounted across loading / error / empty so
+  // controls do not blink out of existence while a page refetches.
+  const toolbarNode = toolbar ? <div className={styles.toolbar}>{toolbar}</div> : null;
+
   if (loading) {
     return (
-      <div aria-live="polite" className={cx(styles.root, styles.loading)} role="status">
-        <NeuralNetworkLoading size={28} />
-        <span>{t('primitives.dataTable.loading')}</span>
+      <div className={styles.root}>
+        {toolbarNode}
+        <div aria-live="polite" className={styles.loading} role="status">
+          <NeuralNetworkLoading size={28} />
+          <span>{t('primitives.dataTable.loading')}</span>
+        </div>
       </div>
     );
   }
@@ -295,16 +348,28 @@ function DataTableInner<T extends object>({
   // Error before empty — honest failure surface even if dataSource is empty
   if (error) {
     return (
-      <div className={cx(styles.root, styles.error)} role="alert">
-        <span>{t('primitives.dataTable.error')}</span>
-        {onRetry ? (
-          <Button type="primary" onClick={onRetry}>
-            {t('primitives.dataTable.retry')}
-          </Button>
-        ) : null}
+      <div className={styles.root}>
+        {toolbarNode}
+        <div className={styles.error} role="alert">
+          <span>{t('primitives.dataTable.error')}</span>
+          {onRetry ? (
+            <Button type="primary" onClick={onRetry}>
+              {t('primitives.dataTable.retry')}
+            </Button>
+          ) : null}
+        </div>
       </div>
     );
   }
+
+  const numericPagination = toAdminPagination(pagination);
+  // Keep numeric page controls when this page is empty but a known total remains
+  // (e.g. last row deleted on page 2, or a stale empty page) so the user is not trapped.
+  const keepNumericPaginationOnEmpty =
+    !cursorPagination &&
+    numericPagination !== false &&
+    Number.isFinite(numericPagination.total) &&
+    numericPagination.total > 0;
 
   const cursorNav =
     cursorPagination &&
@@ -319,12 +384,14 @@ function DataTableInner<T extends object>({
         {cursorPagination.onPageSizeChange && cursorPagination.pageSize ? (
           <Select
             aria-label={t('primitives.dataTable.pageSize')}
-            style={{ minWidth: 88 }}
+            style={{ minWidth: 128 }}
             value={String(cursorPagination.pageSize)}
-            options={(cursorPagination.pageSizeOptions ?? ['20', '50', '100']).map((opt) => ({
-              label: opt,
-              value: opt,
-            }))}
+            options={(cursorPagination.pageSizeOptions ?? [...DEFAULT_PAGE_SIZE_OPTIONS]).map(
+              (opt) => ({
+                label: t('primitives.dataTable.pageSizeOption', { count: opt }),
+                value: opt,
+              }),
+            )}
             onChange={(value) => {
               cursorPagination.onPageSizeChange?.(Number(value));
             }}
@@ -349,9 +416,10 @@ function DataTableInner<T extends object>({
       </div>
     ) : null;
 
-  if (!dataSource?.length) {
+  if (!dataSource?.length && !keepNumericPaginationOnEmpty) {
     return (
       <div className={cx(styles.root, styles.empty)}>
+        {toolbarNode}
         <Empty description={emptyDescription ?? t('primitives.dataTable.empty')} />
         {cursorNav}
       </div>
@@ -360,6 +428,7 @@ function DataTableInner<T extends object>({
 
   return (
     <div className={styles.root}>
+      {toolbarNode}
       <Table<T>
         columns={columns}
         components={components}
@@ -370,6 +439,9 @@ function DataTableInner<T extends object>({
         scroll={scroll}
         size={size}
         virtual={virtual}
+        locale={{
+          emptyText: <Empty description={emptyDescription ?? t('primitives.dataTable.empty')} />,
+        }}
         onChange={handleTableChange}
         onRow={
           onRowActivate

@@ -3,7 +3,7 @@
  * Timeline error must not look empty; nextCursor is reachable.
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,7 +12,9 @@ import ConversationUserPage from './ConversationUserPage';
 const evidence = vi.hoisted(() => ({
   actorPermissions: [] as string[],
   listEnabled: [] as boolean[],
+  listInputs: [] as unknown[],
   summaryEnabled: [] as boolean[],
+  tableOnChange: undefined as ((meta: { filters: Record<string, unknown> }) => void) | undefined,
   timelineEnabled: [] as boolean[],
   timelineInputs: [] as unknown[],
   listData: {
@@ -114,8 +116,9 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 }));
 
 vi.mock('../hooks/useAdminAudit', () => ({
-  useFetchAuditConversationsList: (_params: unknown, enabled: boolean) => {
+  useFetchAuditConversationsList: (params: unknown, enabled: boolean) => {
     evidence.listEnabled.push(enabled);
+    if (enabled) evidence.listInputs.push(params);
     return {
       data: enabled ? evidence.listData : undefined,
       error: evidence.listError,
@@ -169,7 +172,16 @@ interface MockColumn {
 }
 
 vi.mock('../../primitives/DataTable', () => ({
-  default: ({ columns, dataSource }: { columns?: MockColumn[]; dataSource?: MockRow[] }) => {
+  default: ({
+    columns,
+    dataSource,
+    onChange,
+  }: {
+    columns?: MockColumn[];
+    dataSource?: MockRow[];
+    onChange?: (meta: { filters: Record<string, unknown> }) => void;
+  }) => {
+    evidence.tableOnChange = onChange;
     const modelColumn = (columns ?? []).find((column) => column.key === 'model');
     return (
       <div data-testid="topics-table">
@@ -203,7 +215,9 @@ describe('ConversationUserPage', () => {
   beforeEach(() => {
     evidence.actorPermissions = ['platform_audit:conversation_read:all'];
     evidence.listEnabled.length = 0;
+    evidence.listInputs.length = 0;
     evidence.summaryEnabled.length = 0;
+    evidence.tableOnChange = undefined;
     evidence.timelineEnabled.length = 0;
     evidence.timelineInputs.length = 0;
     evidence.listError = undefined;
@@ -312,6 +326,31 @@ describe('ConversationUserPage', () => {
 
     const afterPrev = evidence.timelineInputs.at(-1) as { cursor?: string | null };
     expect(afterPrev.cursor == null || afterPrev.cursor === null).toBe(true);
+  });
+
+  it('applies title and date header filters to the conversation list query', async () => {
+    renderPage();
+
+    expect(evidence.listInputs.at(-1)).toEqual(expect.objectContaining({ q: undefined }));
+
+    evidence.tableOnChange?.({
+      filters: { title: ['legal hold'], updatedAt: ['2026-01-01', '2026-01-31'] },
+    });
+
+    await waitFor(() => {
+      const last = evidence.listInputs.at(-1) as {
+        from?: Date;
+        q?: string;
+        to?: Date;
+      };
+      expect(last.q).toBe('legal hold');
+      expect(last.from?.getFullYear()).toBe(2026);
+      expect(last.from?.getMonth()).toBe(0);
+      expect(last.from?.getDate()).toBe(1);
+      expect(last.to?.getFullYear()).toBe(2026);
+      expect(last.to?.getMonth()).toBe(0);
+      expect(last.to?.getDate()).toBe(31);
+    });
   });
 
   it('shows emptyTimeline only after a successful empty response', () => {

@@ -57,8 +57,19 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
   ),
 }));
 vi.mock('../primitives/DataTable', () => ({
-  default: ({ dataSource }: { dataSource: AdminAgentListItem[] }) => (
-    <div>rows:{dataSource.length}</div>
+  default: ({
+    dataSource,
+    emptyDescription,
+    toolbar,
+  }: {
+    dataSource: AdminAgentListItem[];
+    emptyDescription?: ReactNode;
+    toolbar?: ReactNode;
+  }) => (
+    <div>
+      {toolbar}
+      {dataSource.length === 0 ? emptyDescription : `rows:${dataSource.length}`}
+    </div>
   ),
 }));
 vi.mock('../primitives/StatusBadge', () => ({ default: () => <span>status</span> }));

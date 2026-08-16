@@ -1,8 +1,9 @@
 'use client';
 
 import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Select, Switch, toast } from '@lobehub/ui/base-ui';
+import { Button, Switch, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
+import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,8 +14,9 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import { adminTaskTemplatesService } from '@/enterprise/client/services/adminTaskTemplates';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
+import { enumColumnFilter } from '../primitives/columnFilters';
 import { openDangerConfirm } from '../primitives/DangerConfirm';
-import DataTable from '../primitives/DataTable';
+import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
 import { deriveTaskTemplatePermissions } from './controller';
 import { openTaskTemplateEditorModal } from './openTaskTemplateEditorModal';
 import { formatTaskTemplateSchedule } from './schedule';
@@ -38,22 +40,28 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 8px;
     align-items: center;
   `,
-  /** Search grows; the status select keeps a fixed width pinned to the right. */
   toolbar: css`
     display: flex;
+    flex: 1;
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+    justify-content: flex-start;
+
+    width: 100%;
   `,
   toolbarSearch: css`
-    flex: 1 1 240px;
+    flex: 0 1 320px;
     min-width: 200px;
-  `,
-  toolbarStatus: css`
-    flex: 0 0 180px;
-    margin-inline-start: auto;
+    max-width: 320px;
   `,
 }));
+
+const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw == null || raw === '') return undefined;
+  return String(raw);
+};
 
 const TaskTemplateListPage = memo(() => {
   const { t, i18n } = useTranslation('admin');
@@ -113,6 +121,18 @@ const TaskTemplateListPage = memo(() => {
       setPage(1);
     },
     [searchParams, setSearchParams],
+  );
+
+  const handleTableChange = useCallback(
+    ({ filters }: AdminTableChangeMeta) => {
+      if (!Object.hasOwn(filters, 'enabled')) return;
+      const next = firstFilterValue(filters.enabled);
+      const enabledValue = next === 'true' || next === 'false' ? next : undefined;
+      const current =
+        enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined;
+      if (enabledValue !== current) patchFilter('enabled', enabledValue);
+    },
+    [enabledParam, patchFilter],
   );
 
   useEffect(() => setQueryDraft(query), [query]);
@@ -343,6 +363,13 @@ const TaskTemplateListPage = memo(() => {
         dataIndex: 'enabled',
         key: 'enabled',
         title: t('taskTemplateCatalog.list.columns.enabled'),
+        ...enumColumnFilter({
+          options: [
+            { label: t('taskTemplateCatalog.boolean.true'), value: 'true' },
+            { label: t('taskTemplateCatalog.boolean.false'), value: 'false' },
+          ],
+          value: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
+        }),
         render: (value: boolean, item) => (
           <Switch
             aria-label={t('taskTemplateCatalog.list.columns.enabled')}
@@ -387,6 +414,7 @@ const TaskTemplateListPage = memo(() => {
     [
       canDelete,
       canUpdate,
+      enabledParam,
       handleDelete,
       handleToggle,
       i18n.language,
@@ -417,34 +445,6 @@ const TaskTemplateListPage = memo(() => {
       actions={headerActions}
       description={t('taskTemplateCatalog.desc')}
       title={t('taskTemplateCatalog.title')}
-      toolbar={
-        <div className={styles.toolbar}>
-          <div className={styles.toolbarSearch}>
-            <Input
-              allowClear
-              aria-label={t('taskTemplateCatalog.list.filters.query')}
-              placeholder={t('taskTemplateCatalog.list.filters.query')}
-              style={{ width: '100%' }}
-              value={queryDraft}
-              onChange={(event) => setQueryDraft(event.target.value)}
-            />
-          </div>
-          <div className={styles.toolbarStatus}>
-            <Select
-              allowClear
-              aria-label={t('taskTemplateCatalog.list.filters.enabled')}
-              placeholder={t('taskTemplateCatalog.list.filters.enabled')}
-              style={{ width: '100%' }}
-              value={enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined}
-              options={[
-                { label: t('taskTemplateCatalog.boolean.true'), value: 'true' },
-                { label: t('taskTemplateCatalog.boolean.false'), value: 'false' },
-              ]}
-              onChange={(value) => patchFilter('enabled', value as string | undefined)}
-            />
-          </div>
-        </div>
-      }
     >
       {canUpdate && filtered && (data?.items.length ?? 0) > 1 ? (
         <Text type="secondary">{t('taskTemplateCatalog.list.reorderHint')}</Text>
@@ -467,6 +467,21 @@ const TaskTemplateListPage = memo(() => {
             pageSize,
             total: data?.totalFiltered ?? 0,
           }}
+          toolbar={
+            <div className={styles.toolbar}>
+              <div className={styles.toolbarSearch}>
+                <Input
+                  allowClear
+                  aria-label={t('taskTemplateCatalog.list.filters.query')}
+                  placeholder={t('taskTemplateCatalog.list.filters.query')}
+                  style={{ width: '100%' }}
+                  value={queryDraft}
+                  onChange={(event) => setQueryDraft(event.target.value)}
+                />
+              </div>
+            </div>
+          }
+          onChange={handleTableChange}
           onRetry={() => void mutate()}
           onPaginationChange={(nextPage, nextPageSize) => {
             setPage(nextPage);

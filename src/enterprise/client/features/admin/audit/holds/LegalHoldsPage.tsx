@@ -1,8 +1,9 @@
 'use client';
 
-import { Flexbox, Input, Text } from '@lobehub/ui';
+import { Input, Text } from '@lobehub/ui';
 import { Button, Modal, Select } from '@lobehub/ui/base-ui';
 import { DatePicker, type TableColumnsType } from 'antd';
+import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles, cssVar } from 'antd-style';
 import type dayjs from 'dayjs';
 import { memo, useCallback, useMemo, useState } from 'react';
@@ -16,7 +17,8 @@ import type {
 } from '@/enterprise/client/services/adminAudit';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
-import DataTable from '../../primitives/DataTable';
+import { enumColumnFilter } from '../../primitives/columnFilters';
+import DataTable, { type AdminTableChangeMeta } from '../../primitives/DataTable';
 import { useAdminAuditMutations, useFetchAuditHoldsList } from '../hooks/useAdminAudit';
 import AuditStatusTag from '../shared/AuditStatusTag';
 import AuditUserSearchSelect from '../shared/AuditUserSearchSelect';
@@ -44,6 +46,12 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 const SCOPE_TYPES = ['user', 'session', 'topic', 'workspace', 'global'] as const;
+
+const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw == null || raw === '') return undefined;
+  return String(raw);
+};
 
 const LegalHoldsPage = memo(() => {
   const { t } = useTranslation('admin');
@@ -76,6 +84,35 @@ const LegalHoldsPage = memo(() => {
     canManage,
   );
 
+  const handleTableChange = useCallback(
+    ({ filters }: AdminTableChangeMeta) => {
+      const hasStatus = Object.hasOwn(filters, 'status');
+      const hasScope = Object.hasOwn(filters, 'scope');
+      if (!hasStatus && !hasScope) return;
+
+      const nextStatusRaw = firstFilterValue(filters.status);
+      const nextStatus = !hasStatus
+        ? status
+        : nextStatusRaw === 'active' || nextStatusRaw === 'released'
+          ? nextStatusRaw
+          : undefined;
+      const nextScopeRaw = firstFilterValue(filters.scope);
+      const nextScope = !hasScope
+        ? scopeType
+        : SCOPE_TYPES.includes(nextScopeRaw as (typeof SCOPE_TYPES)[number])
+          ? (nextScopeRaw as AdminAuditLegalHoldItem['scopeType'])
+          : undefined;
+
+      const statusChanged = nextStatus !== status;
+      const scopeChanged = nextScope !== scopeType;
+      if (!statusChanged && !scopeChanged) return;
+      if (statusChanged) setStatus(nextStatus);
+      if (scopeChanged) setScopeType(nextScope);
+      setCursorStack([]);
+    },
+    [scopeType, status],
+  );
+
   const onRelease = useCallback(
     (row: AdminAuditLegalHoldItem) => {
       openAuditReasonModal({
@@ -101,6 +138,13 @@ const LegalHoldsPage = memo(() => {
       {
         key: 'scope',
         title: t('audit.holds.columns.scope'),
+        ...enumColumnFilter({
+          options: SCOPE_TYPES.map((scope) => ({
+            label: t(`audit.holds.scopeType.${scope}` as never, { defaultValue: scope }),
+            value: scope,
+          })),
+          value: scopeType,
+        }),
         render: (_, row) => {
           const scopeLabel = t(`audit.holds.scopeType.${row.scopeType}` as never, {
             defaultValue: row.scopeType,
@@ -114,6 +158,13 @@ const LegalHoldsPage = memo(() => {
         key: 'status',
         title: t('audit.holds.columns.status'),
         width: 110,
+        ...enumColumnFilter({
+          options: [
+            { label: t('audit.status.hold.active'), value: 'active' },
+            { label: t('audit.status.hold.released'), value: 'released' },
+          ],
+          value: status,
+        }),
         render: (v: string) => <AuditStatusTag kind="hold" value={v} />,
       },
       {
@@ -162,7 +213,7 @@ const LegalHoldsPage = memo(() => {
           ) : null,
       },
     ],
-    [onRelease, t],
+    [onRelease, scopeType, status, t],
   );
 
   const submitCreate = () => {
@@ -220,38 +271,6 @@ const LegalHoldsPage = memo(() => {
           </Button>
         ) : undefined
       }
-      toolbar={
-        <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
-          <Select
-            allowClear
-            placeholder={t('audit.holds.filters.status')}
-            style={{ width: 140 }}
-            value={status}
-            options={[
-              { label: t('audit.status.hold.active'), value: 'active' },
-              { label: t('audit.status.hold.released'), value: 'released' },
-            ]}
-            onChange={(v) => {
-              setStatus((v as 'active' | 'released' | undefined) || undefined);
-              setCursorStack([]);
-            }}
-          />
-          <Select
-            allowClear
-            placeholder={t('audit.holds.filters.scopeType')}
-            style={{ width: 160 }}
-            value={scopeType}
-            options={SCOPE_TYPES.map((s) => ({
-              label: t(`audit.holds.scopeType.${s}` as never, { defaultValue: s }),
-              value: s,
-            }))}
-            onChange={(v) => {
-              setScopeType((v as AdminAuditLegalHoldItem['scopeType'] | undefined) || undefined);
-              setCursorStack([]);
-            }}
-          />
-        </Flexbox>
-      }
     >
       <DataTable<AdminAuditLegalHoldItem>
         columns={columns}
@@ -276,6 +295,7 @@ const LegalHoldsPage = memo(() => {
             setCursorStack([]);
           },
         }}
+        onChange={handleTableChange}
         onRetry={() => void list.mutate()}
       />
 

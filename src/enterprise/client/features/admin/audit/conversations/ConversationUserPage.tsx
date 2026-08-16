@@ -1,10 +1,10 @@
 'use client';
 
-import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
-import { DatePicker, type TableColumnsType } from 'antd';
+import type { TableColumnsType } from 'antd';
+import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles, cssVar } from 'antd-style';
-import dayjs from 'dayjs';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
@@ -16,7 +16,8 @@ import type { AdminAuditConversationListItem } from '@/enterprise/client/service
 import { getModelDisplayName, useProviderLabel } from '@/utils/modelLabels';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
-import DataTable from '../../primitives/DataTable';
+import { dateRangeColumnFilter, searchColumnFilter } from '../../primitives/columnFilters';
+import DataTable, { type AdminTableChangeMeta } from '../../primitives/DataTable';
 import {
   useFetchAuditConversationsList,
   useFetchAuditUserSummary,
@@ -28,7 +29,36 @@ import ContentAccessDisabledState from './ContentAccessDisabledState';
 
 const DEFAULT_LIST_LIMIT = 50;
 const TIMELINE_PAGE_SIZE = 30;
-const DEBOUNCE_MS = 300;
+
+const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw == null || raw === '') return undefined;
+  return String(raw);
+};
+
+const parseIsoDay = (value: unknown): Date | null => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? ''));
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const startOfDay = (value: Date) => {
+  const next = new Date(value);
+  next.setHours(0, 0, 0, 0);
+  return next;
+};
+
+const endOfDay = (value: Date) => {
+  const next = new Date(value);
+  next.setHours(23, 59, 59, 999);
+  return next;
+};
+
+const sameCalendarDay = (left: Date, right: Date) =>
+  left.getFullYear() === right.getFullYear() &&
+  left.getMonth() === right.getMonth() &&
+  left.getDate() === right.getDate();
 
 const styles = createStaticStyles(({ css }) => ({
   summary: css`
@@ -96,23 +126,62 @@ const ConversationUserPage = memo(() => {
   const window0 = useMemo(() => getDefaultAuditTimeWindow(), []);
   const [from, setFrom] = useState(window0.from);
   const [to, setTo] = useState(window0.to);
-  const [qDraft, setQDraft] = useState('');
   const [q, setQ] = useState('');
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [timelineCursorStack, setTimelineCursorStack] = useState<(string | null)[]>([]);
   const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
-  const debounceRef = useRef<number | null>(null);
   const summaryFailureNotifiedRef = useRef(false);
   const currentCursor = cursorStack.at(-1) ?? null;
   const timelineCursor = timelineCursorStack.at(-1) ?? null;
 
-  useEffect(() => {
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => setQ(qDraft.trim()), DEBOUNCE_MS);
-    return () => {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    };
-  }, [qDraft]);
+  const applyTitleQuery = useCallback(
+    (next: string) => {
+      const trimmed = next.trim();
+      if (trimmed === q) return;
+      setQ(trimmed);
+      setCursorStack([]);
+    },
+    [q],
+  );
+
+  const applyDateRange = useCallback(
+    (range: [Date | null, Date | null] | null) => {
+      if (!range?.[0] || !range[1]) {
+        const fallback = getDefaultAuditTimeWindow();
+        setFrom(fallback.from);
+        setTo(fallback.to);
+        setCursorStack([]);
+        return;
+      }
+      const nextFrom = startOfDay(range[0]);
+      const nextTo = endOfDay(range[1]);
+      if (sameCalendarDay(from, nextFrom) && sameCalendarDay(to, nextTo)) return;
+      setFrom(nextFrom);
+      setTo(nextTo);
+      setCursorStack([]);
+    },
+    [from, to],
+  );
+
+  const handleTableChange = useCallback(
+    ({ filters }: AdminTableChangeMeta) => {
+      if (Object.hasOwn(filters, 'title')) {
+        applyTitleQuery(firstFilterValue(filters.title) ?? '');
+      }
+
+      if (!Object.hasOwn(filters, 'updatedAt')) return;
+      const rawRange = filters.updatedAt;
+      if (!rawRange || (Array.isArray(rawRange) && !rawRange[0] && !rawRange[1])) {
+        applyDateRange(null);
+        return;
+      }
+      const nextFrom = parseIsoDay(rawRange[0]);
+      const nextTo = parseIsoDay(rawRange[1]);
+      if (!nextFrom || !nextTo) return;
+      applyDateRange([nextFrom, nextTo]);
+    },
+    [applyDateRange, applyTitleQuery],
+  );
 
   // Reset timeline pagination when the evidence window or subject changes.
   useEffect(() => {
@@ -157,6 +226,11 @@ const ConversationUserPage = memo(() => {
         dataIndex: 'title',
         key: 'title',
         title: t('audit.conversations.columns.title'),
+        ...searchColumnFilter({
+          placeholder: t('audit.conversations.user.searchTitle'),
+          value: q,
+          onSearch: applyTitleQuery,
+        }),
         render: (v: string | null) => v || t('audit.conversations.untitled'),
       },
       {
@@ -180,10 +254,14 @@ const ConversationUserPage = memo(() => {
         key: 'updatedAt',
         title: t('audit.conversations.columns.updatedAt'),
         width: 170,
+        ...dateRangeColumnFilter({
+          value: [from, to],
+          onChange: applyDateRange,
+        }),
         render: (v: Date) => formatAdminDateTime(v),
       },
     ],
-    [t, providerLabel],
+    [applyDateRange, applyTitleQuery, from, providerLabel, q, t, to],
   );
 
   const goNext = useCallback(() => {
@@ -227,30 +305,6 @@ const ConversationUserPage = memo(() => {
         <Button type="default" onClick={() => navigate('/admin/audit/conversations')}>
           {t('audit.conversations.user.back')}
         </Button>
-      }
-      toolbar={
-        <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
-          <Input
-            placeholder={t('audit.conversations.user.searchTitle')}
-            style={{ minWidth: 200 }}
-            value={qDraft}
-            onChange={(e) => {
-              setQDraft(e.target.value);
-              setCursorStack([]);
-            }}
-          />
-          <DatePicker.RangePicker
-            showTime
-            allowClear={false}
-            value={[dayjs(from), dayjs(to)]}
-            onChange={(vals) => {
-              if (!vals?.[0] || !vals[1]) return;
-              setFrom(vals[0].toDate());
-              setTo(vals[1].toDate());
-              setCursorStack([]);
-            }}
-          />
-        </Flexbox>
       }
     >
       <div className={styles.summary}>
@@ -311,6 +365,7 @@ const ConversationUserPage = memo(() => {
                 setCursorStack([]);
               },
             }}
+            onChange={handleTableChange}
             onRetry={() => void list.mutate()}
             onRowActivate={(row) =>
               navigate(`/admin/audit/conversations/${userId}/topics/${row.id}`)

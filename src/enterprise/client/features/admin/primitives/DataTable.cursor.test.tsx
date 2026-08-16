@@ -7,7 +7,20 @@ import { describe, expect, it, vi } from 'vitest';
 import DataTable from './DataTable';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (k: string) => k }),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) => {
+      const catalog: Record<string, string> = {
+        'primitives.dataTable.pageSizeOption': '{{count}} / page',
+      };
+      let text = catalog[key] ?? key;
+      if (options) {
+        for (const [name, value] of Object.entries(options)) {
+          text = text.replaceAll(`{{${name}}}`, String(value));
+        }
+      }
+      return text;
+    },
+  }),
 }));
 
 vi.mock('@lobehub/ui', async () => {
@@ -95,6 +108,33 @@ describe('DataTable cursor pagination', () => {
     expect(previous).toBeTruthy();
     fireEvent.click(previous);
     expect(onPrevious).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels the page-size select with the i18n suffix, not a bare number', () => {
+    render(
+      <DataTable<Row>
+        columns={[{ dataIndex: 'name', key: 'name', title: 'Name' }]}
+        dataSource={[{ id: '1', name: 'A' }]}
+        pagination={false}
+        rowKey="id"
+        cursorPagination={{
+          hasNext: true,
+          hasPrevious: false,
+          onNext: vi.fn(),
+          onPageSizeChange: vi.fn(),
+          onPrevious: vi.fn(),
+          pageSize: 20,
+        }}
+      />,
+    );
+
+    const select = screen.getByLabelText('primitives.dataTable.pageSize') as HTMLSelectElement;
+    expect([...select.options].map((option) => option.value)).toEqual(['20', '50', '100']);
+    expect([...select.options].map((option) => option.textContent)).toEqual([
+      '20 / page',
+      '50 / page',
+      '100 / page',
+    ]);
   });
 
   it('does not activate the row when a nested button is clicked or keyboard-activated', () => {

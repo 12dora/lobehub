@@ -11,8 +11,10 @@ import LegalHoldsPage from './LegalHoldsPage';
 const releaseLegalHold = vi.fn();
 const openAuditReasonModal = vi.fn();
 const holdsAccess = vi.hoisted(() => ({
+  listInputs: [] as unknown[],
   permissions: ['platform_audit:legal_hold_manage:all'] as string[],
   searchEnabled: [] as boolean[],
+  tableOnChange: undefined as ((meta: { filters: Record<string, unknown> }) => void) | undefined,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -65,26 +67,29 @@ vi.mock('../hooks/useAdminAudit', () => ({
     createLegalHold: vi.fn(),
     releaseLegalHold: (...args: unknown[]) => releaseLegalHold(...args),
   }),
-  useFetchAuditHoldsList: () => ({
-    data: {
-      items: [
-        {
-          createdAt: new Date('2026-01-01T00:00:00.000Z'),
-          expiresAt: null,
-          id: 'hold-9',
-          reason: 'litigation',
-          scopeId: 'user-1',
-          scopeType: 'user',
-          status: 'active',
-        },
-      ],
-      nextCursor: null,
-    },
-    error: undefined,
-    isLoading: false,
-    isValidating: false,
-    mutate: vi.fn(),
-  }),
+  useFetchAuditHoldsList: (params: unknown) => {
+    holdsAccess.listInputs.push(params);
+    return {
+      data: {
+        items: [
+          {
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            expiresAt: null,
+            id: 'hold-9',
+            reason: 'litigation',
+            scopeId: 'user-1',
+            scopeType: 'user',
+            status: 'active',
+          },
+        ],
+        nextCursor: null,
+      },
+      error: undefined,
+      isLoading: false,
+      isValidating: false,
+      mutate: vi.fn(),
+    };
+  },
 }));
 
 vi.mock('../shared/openAuditReasonModal', () => ({
@@ -126,6 +131,7 @@ vi.mock('../../primitives/AdminPageTemplate', () => ({
 vi.mock('../../primitives/DataTable', () => ({
   default: ({
     dataSource,
+    onChange,
     onRowActivate,
     columns,
   }: {
@@ -134,8 +140,10 @@ vi.mock('../../primitives/DataTable', () => ({
       render?: (v: unknown, row: { id: string }) => React.ReactNode;
     }>;
     dataSource?: { id: string }[];
+    onChange?: (meta: { filters: Record<string, unknown> }) => void;
     onRowActivate?: (row: { id: string }) => void;
   }) => {
+    holdsAccess.tableOnChange = onChange;
     const actionCol = columns?.find((c) => c.key === 'actions');
     return (
       <div data-testid="holds-table">
@@ -155,7 +163,9 @@ vi.mock('../../primitives/DataTable', () => ({
 describe('LegalHoldsPage release', () => {
   beforeEach(() => {
     holdsAccess.permissions = ['platform_audit:legal_hold_manage:all'];
+    holdsAccess.listInputs.length = 0;
     holdsAccess.searchEnabled.length = 0;
+    holdsAccess.tableOnChange = undefined;
     releaseLegalHold.mockReset();
     openAuditReasonModal.mockReset();
     releaseLegalHold.mockResolvedValue({ id: 'hold-9', status: 'released' });
@@ -192,6 +202,22 @@ describe('LegalHoldsPage release', () => {
     const search = screen.getByTestId('user-search');
     expect(search.getAttribute('data-enabled')).toBe('0');
     expect(holdsAccess.searchEnabled.every((e) => e === false)).toBe(true);
+  });
+
+  it('applies status and scope header filters to the list query', async () => {
+    render(<LegalHoldsPage />);
+
+    expect(holdsAccess.listInputs.at(-1)).toEqual(
+      expect.objectContaining({ scopeType: undefined, status: undefined }),
+    );
+
+    holdsAccess.tableOnChange?.({ filters: { scope: ['workspace'], status: ['released'] } });
+
+    await waitFor(() => {
+      expect(holdsAccess.listInputs.at(-1)).toEqual(
+        expect.objectContaining({ scopeType: 'workspace', status: 'released' }),
+      );
+    });
   });
 
   it('enables user search when AUDIT_READ is also granted', () => {

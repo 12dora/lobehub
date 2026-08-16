@@ -1,8 +1,9 @@
 'use client';
 
-import { Empty, Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Select, toast } from '@lobehub/ui/base-ui';
+import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
+import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,7 +15,8 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import DataTable from '../primitives/DataTable';
+import { enumColumnFilter } from '../primitives/columnFilters';
+import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { applyAgentSaveOutputToListItem } from './applySaveOutput';
 import { deriveAdminAgentActionAvailability, deriveAdminAgentPermissions } from './controller';
@@ -32,26 +34,21 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 2px;
     min-width: 0;
   `,
-  /**
-   * Keep search + status + Search button on one row at normal desktop widths.
-   * Mirrors FilterBar's flex row (wrap only when the viewport is truly narrow).
-   */
   toolbar: css`
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
+    width: 100%;
   `,
   toolbarSearch: css`
     flex: 0 1 260px;
     min-width: 180px;
     max-width: 320px;
   `,
-  toolbarStatus: css`
-    flex: 0 0 160px;
-    min-width: 140px;
-  `,
 }));
+
+const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
+  const first = Array.isArray(value) ? value[0] : value;
+  if (first === undefined || first === null || first === '') return undefined;
+  return String(first);
+};
 
 /**
  * Only the two live statuses are filterable. A legacy `draft` row can still exist in old
@@ -153,6 +150,13 @@ const AgentListPage = memo(() => {
         key: 'status',
         title: t('agentCatalog.list.columns.status'),
         render: (_, item) => <StatusBadge status={item.identity.status} />,
+        ...enumColumnFilter({
+          options: (['published', 'archived'] as const).map((value) => ({
+            label: t(`agentCatalog.status.${value}` as never),
+            value,
+          })),
+          value: status,
+        }),
       },
       {
         dataIndex: 'publishedVersion',
@@ -218,14 +222,26 @@ const AgentListPage = memo(() => {
           ]
         : []),
     ],
-    [t, agentPermissions.canDelete, availability.canEdit, openDelete, openEditor],
+    [status, t, agentPermissions.canDelete, availability.canEdit, openDelete, openEditor],
   );
-  const patch = (key: 'q' | 'status', value?: string) => {
-    const next = new URLSearchParams(searchParams);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    setSearchParams(next, { replace: true });
-  };
+  const patch = useCallback(
+    (key: 'q' | 'status', value?: string) => {
+      const next = new URLSearchParams(searchParams);
+      if (value) next.set(key, value);
+      else next.delete(key);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+  const handleTableChange = useCallback(
+    ({ filters }: AdminTableChangeMeta) => {
+      if (!('status' in filters)) return;
+      const nextStatus = firstFilterValue(filters.status);
+      if (nextStatus === status) return;
+      patch('status', nextStatus);
+    },
+    [patch, status],
+  );
   const createAgent = () =>
     openAgentEditorModal({
       authMethod,
@@ -257,61 +273,13 @@ const AgentListPage = memo(() => {
           </Button>
         ) : null
       }
-      toolbar={
-        <div className={styles.toolbar} data-testid="agent-list-toolbar">
-          <div className={styles.toolbarSearch}>
-            <Input
-              allowClear
-              aria-label={t('agentCatalog.list.search')}
-              placeholder={t('agentCatalog.list.search')}
-              style={{ width: '100%' }}
-              value={queryDraft}
-              onChange={(event) => setQueryDraft(event.target.value)}
-              onPressEnter={() => patch('q', queryDraft.trim() || undefined)}
-            />
-          </div>
-          <div className={styles.toolbarStatus}>
-            <Select
-              allowClear
-              aria-label={t('agentCatalog.list.status')}
-              placeholder={t('agentCatalog.list.status')}
-              style={{ width: '100%' }}
-              value={status}
-              options={(['published', 'archived'] as const).map((value) => ({
-                label: t(`agentCatalog.status.${value}` as never),
-                value,
-              }))}
-              onChange={(value) => patch('status', value as string | undefined)}
-            />
-          </div>
-          <Button onClick={() => patch('q', queryDraft.trim() || undefined)}>
-            {t('agentCatalog.list.applySearch')}
-          </Button>
-        </div>
-      }
     >
       <AsyncBoundary
         data={list.boundaryData}
         error={list.error}
-        isEmpty={list.isEmpty}
+        isEmpty={false}
         isLoading={list.isLoadingInitial}
         loading={<Loading debugId="AdminAgentList" />}
-        empty={
-          <Empty
-            action={
-              filtered ? (
-                <Button onClick={clearFilters}>{t('primitives.filterBar.clear')}</Button>
-              ) : availability.canCreate ? (
-                <Button type="primary" onClick={createAgent}>
-                  {t('agentCatalog.create.submit')}
-                </Button>
-              ) : undefined
-            }
-            description={t(
-              filtered ? 'agentCatalog.list.empty.filtered' : 'agentCatalog.list.empty.default',
-            )}
-          />
-        }
         onRetry={list.retry}
       >
         <Flexbox gap={12}>
@@ -319,6 +287,35 @@ const AgentListPage = memo(() => {
             columns={columns}
             dataSource={list.items}
             rowKey={(item) => item.identity.id}
+            emptyDescription={t(
+              filtered ? 'agentCatalog.list.empty.filtered' : 'agentCatalog.list.empty.default',
+            )}
+            toolbar={
+              <Flexbox
+                horizontal
+                className={styles.toolbar}
+                data-testid="agent-list-toolbar"
+                justify="space-between"
+              >
+                <div className={styles.toolbarSearch}>
+                  <Input
+                    allowClear
+                    aria-label={t('agentCatalog.list.search')}
+                    placeholder={t('agentCatalog.list.search')}
+                    style={{ width: '100%' }}
+                    value={queryDraft}
+                    onChange={(event) => setQueryDraft(event.target.value)}
+                    onPressEnter={() => patch('q', queryDraft.trim() || undefined)}
+                  />
+                </div>
+                {filtered ? (
+                  <Button size="small" type="text" onClick={clearFilters}>
+                    {t('primitives.filterBar.clear')}
+                  </Button>
+                ) : null}
+              </Flexbox>
+            }
+            onChange={handleTableChange}
             onRowActivate={(item) =>
               navigate(`/admin/agents/${encodeURIComponent(item.identity.id)}`)
             }

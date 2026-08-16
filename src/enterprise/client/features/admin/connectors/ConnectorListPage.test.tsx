@@ -82,7 +82,41 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 }));
 
 vi.mock('../primitives/DataTable', () => ({
-  default: () => <div data-testid="data-table" />,
+  default: ({ columns, onChange, toolbar }: any) => (
+    <div data-testid="data-table">
+      {toolbar}
+      {(columns ?? [])
+        .filter((column: { filters?: unknown[] }) => column.filters)
+        .map(
+          (column: {
+            filters: Array<{ text: string; value: string }>;
+            filteredValue?: Array<string | number> | null;
+            key: string;
+            title: string;
+          }) => (
+            <select
+              aria-label={column.title}
+              key={column.key}
+              value={column.filteredValue?.[0] ?? ''}
+              onChange={(event) =>
+                onChange?.({
+                  filters: { [column.key]: event.target.value ? [event.target.value] : null },
+                  pagination: false,
+                  sorter: {},
+                })
+              }
+            >
+              <option value="">all</option>
+              {column.filters.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.text}
+                </option>
+              ))}
+            </select>
+          ),
+        )}
+    </div>
+  ),
 }));
 
 vi.mock('../primitives/StatusBadge', () => ({
@@ -132,5 +166,21 @@ describe('ConnectorListPage search debounce', () => {
     expect(mocks.setSearchParams).toHaveBeenCalledTimes(1);
     const nextParams = mocks.setSearchParams.mock.calls[0][0] as URLSearchParams;
     expect(nextParams.get('q')).toBe('oauth-prod');
+  });
+
+  it('applies a status header filter to the list query and resets the cursor', () => {
+    render(
+      <MemoryRouter>
+        <ConnectorListPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByLabelText('connectorCatalog.list.columns.status'), {
+      target: { value: 'published' },
+    });
+
+    expect(mocks.setSearchParams).toHaveBeenCalledTimes(1);
+    const nextParams = mocks.setSearchParams.mock.calls[0][0] as URLSearchParams;
+    expect(nextParams.get('status')).toBe('published');
   });
 });

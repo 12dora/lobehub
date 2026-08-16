@@ -1,14 +1,16 @@
 'use client';
 
 import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
+import type { FilterValue } from 'antd/es/table/interface';
 import { createStaticStyles } from 'antd-style';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import DataTable from '../primitives/DataTable';
+import { enumColumnFilter } from '../primitives/columnFilters';
+import DataTable, { type AdminTableChangeMeta } from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import type { AdminConnectorPermissions } from './controller';
 import type { AdminConnectorListInput, AdminConnectorListItem } from './types';
@@ -21,9 +23,21 @@ const styles = createStaticStyles(({ css }) => ({
     min-width: 0;
   `,
   toolbar: css`
-    flex-wrap: wrap;
+    justify-content: flex-start;
+    width: 100%;
+  `,
+  toolbarSearch: css`
+    flex: 0 1 260px;
+    min-width: 180px;
+    max-width: 320px;
   `,
 }));
+
+const firstFilterValue = (value: FilterValue | null | undefined): string | undefined => {
+  const first = Array.isArray(value) ? value[0] : value;
+  if (first === undefined || first === null || first === '') return undefined;
+  return String(first);
+};
 
 interface ConnectorListViewProps {
   cursorPagination: {
@@ -38,6 +52,11 @@ interface ConnectorListViewProps {
   error?: boolean;
   filters: Pick<AdminConnectorListInput, 'credentialMode' | 'enabled' | 'query' | 'status'>;
   loading?: boolean;
+  onColumnFiltersChange: (next: {
+    credentialMode?: string;
+    enabled?: string;
+    status?: string;
+  }) => void;
   onCreate: () => void;
   onFilterChange: (
     key: 'credentialMode' | 'enabled' | 'query' | 'status',
@@ -55,6 +74,7 @@ const ConnectorListView = memo<ConnectorListViewProps>(
     error,
     filters,
     loading,
+    onColumnFiltersChange,
     onCreate,
     onFilterChange,
     onOpen,
@@ -83,6 +103,13 @@ const ConnectorListView = memo<ConnectorListViewProps>(
           key: 'status',
           render: (status: string) => <StatusBadge status={status} />,
           title: t('connectorCatalog.list.columns.status'),
+          ...enumColumnFilter({
+            options: (['draft', 'published', 'archived'] as const).map((value) => ({
+              label: t(`connectorCatalog.status.${value}` as never),
+              value,
+            })),
+            value: filters.status,
+          }),
         },
         {
           dataIndex: 'credentialMode',
@@ -91,6 +118,15 @@ const ConnectorListView = memo<ConnectorListViewProps>(
             <Tag>{t(`connectorCatalog.credentialMode.${mode}` as never)}</Tag>
           ),
           title: t('connectorCatalog.list.columns.credentialMode'),
+          ...enumColumnFilter({
+            options: (['none', 'shared_service_account', 'per_user_oauth'] as const).map(
+              (value) => ({
+                label: t(`connectorCatalog.credentialMode.${value}` as never),
+                value,
+              }),
+            ),
+            value: filters.credentialMode,
+          }),
         },
         {
           dataIndex: 'enabled',
@@ -101,6 +137,13 @@ const ConnectorListView = memo<ConnectorListViewProps>(
             </Tag>
           ),
           title: t('connectorCatalog.list.columns.enabled'),
+          ...enumColumnFilter({
+            options: (['true', 'false'] as const).map((value) => ({
+              label: t(`connectorCatalog.boolean.${value}` as never),
+              value,
+            })),
+            value: filters.enabled === undefined ? undefined : String(filters.enabled),
+          }),
         },
         {
           dataIndex: 'revision',
@@ -108,8 +151,27 @@ const ConnectorListView = memo<ConnectorListViewProps>(
           title: t('connectorCatalog.list.columns.revision'),
         },
       ],
-      [t],
+      [filters.credentialMode, filters.enabled, filters.status, t],
     );
+
+    const handleTableChange = ({ filters: nextFilters }: AdminTableChangeMeta) => {
+      const next: {
+        credentialMode?: string;
+        enabled?: string;
+        status?: string;
+      } = {};
+      if ('credentialMode' in nextFilters) {
+        next.credentialMode = firstFilterValue(nextFilters.credentialMode);
+      }
+      if ('enabled' in nextFilters) {
+        next.enabled = firstFilterValue(nextFilters.enabled);
+      }
+      if ('status' in nextFilters) {
+        next.status = firstFilterValue(nextFilters.status);
+      }
+      if (Object.keys(next).length === 0) return;
+      onColumnFiltersChange(next);
+    };
     const filtered = Boolean(
       filters.query || filters.status || filters.credentialMode || filters.enabled !== undefined,
     );
@@ -125,56 +187,6 @@ const ConnectorListView = memo<ConnectorListViewProps>(
             </Button>
           ) : null
         }
-        toolbar={
-          <Flexbox horizontal className={styles.toolbar} gap={8}>
-            <Input
-              allowClear
-              aria-label={t('connectorCatalog.filters.query')}
-              placeholder={t('connectorCatalog.filters.query')}
-              style={{ minWidth: 240 }}
-              value={filters.query ?? ''}
-              onChange={(event) => onFilterChange('query', event.target.value || undefined)}
-            />
-            <Select
-              allowClear
-              aria-label={t('connectorCatalog.filters.status')}
-              placeholder={t('connectorCatalog.filters.status')}
-              style={{ minWidth: 140 }}
-              value={filters.status}
-              options={(['draft', 'published', 'archived'] as const).map((value) => ({
-                label: t(`connectorCatalog.status.${value}` as never),
-                value,
-              }))}
-              onChange={(value) => onFilterChange('status', value as string | undefined)}
-            />
-            <Select
-              allowClear
-              aria-label={t('connectorCatalog.filters.credentialMode')}
-              placeholder={t('connectorCatalog.filters.credentialMode')}
-              style={{ minWidth: 180 }}
-              value={filters.credentialMode}
-              options={(['none', 'shared_service_account', 'per_user_oauth'] as const).map(
-                (value) => ({
-                  label: t(`connectorCatalog.credentialMode.${value}` as never),
-                  value,
-                }),
-              )}
-              onChange={(value) => onFilterChange('credentialMode', value as string | undefined)}
-            />
-            <Select
-              allowClear
-              aria-label={t('connectorCatalog.filters.enabled')}
-              placeholder={t('connectorCatalog.filters.enabled')}
-              style={{ minWidth: 140 }}
-              value={filters.enabled === undefined ? undefined : String(filters.enabled)}
-              options={(['true', 'false'] as const).map((value) => ({
-                label: t(`connectorCatalog.boolean.${value}` as never),
-                value,
-              }))}
-              onChange={(value) => onFilterChange('enabled', value as string | undefined)}
-            />
-          </Flexbox>
-        }
       >
         <DataTable<AdminConnectorListItem>
           columns={columns}
@@ -189,6 +201,21 @@ const ConnectorListView = memo<ConnectorListViewProps>(
               ? 'connectorCatalog.list.empty.filtered'
               : 'connectorCatalog.list.empty.default',
           )}
+          toolbar={
+            <Flexbox horizontal className={styles.toolbar} data-testid="connector-list-toolbar">
+              <div className={styles.toolbarSearch}>
+                <Input
+                  allowClear
+                  aria-label={t('connectorCatalog.filters.query')}
+                  placeholder={t('connectorCatalog.filters.query')}
+                  style={{ width: '100%' }}
+                  value={filters.query ?? ''}
+                  onChange={(event) => onFilterChange('query', event.target.value || undefined)}
+                />
+              </div>
+            </Flexbox>
+          }
+          onChange={handleTableChange}
           onRetry={onRetry}
           onRowActivate={permissions.canRead ? (item) => onOpen(item.id) : undefined}
         />
