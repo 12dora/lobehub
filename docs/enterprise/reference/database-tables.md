@@ -101,6 +101,15 @@ AIHub 二开的表统一位于**平台域**，以 `platform_` 前缀与上游用
 | `platform_sidebar_layout`            | 首页侧边栏布局策略单例（user/platform 模式）                |
 | `platform_managed_resource_policies` | 受管资源的执行策略（每资源一行）                            |
 
+## 内容审计（`contentModeration.ts`，迁移 0016）
+
+| 表                                         | 用途                                                                                                                                                                                   |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform_content_moderation_settings`     | 内容审计配置单例（`id='default'`，`config` jsonb，CAS revision）；Moderations 密钥仅存密文引用                                                                                         |
+| `platform_content_moderation_records`      | 判定记录：用户快照、请求类型 / 模型、`policy_action`/`effective_action`/`enforced`、类别分数、阈值快照、脱敏摘要（可选原文）、命中规则、耗时、违规计数、自动封禁 / 通知 / 查看原文标记 |
+| `platform_content_moderation_hourly_stats` | 小时聚合（bucket × 请求类型 × 处置 × 拟处置 × 来源 × 类别）`ON CONFLICT` 累加，保证放行量可画趋势图                                                                                    |
+| `platform_content_moderation_decisions`    | 决策缓存：`prompt_hash` → 分类器类别分数（TTL 可配，命中回放后按当前策略重算动作）                                                                                                     |
+
 ## 实例运维（`instances.ts` / `jobs.ts` / `adminMutationRate.ts`）
 
 | 表                                     | 用途                                                                  |

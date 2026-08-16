@@ -15,6 +15,7 @@
 | 准入      | `platform_admin`       | `access`                                                                                    |
 | 用户      | `platform_user`        | `read` `create` `update` `ban` `delete` `session_revoke` `role_manage`                      |
 | 角色      | `platform_role`        | `read` `update`                                                                             |
+| 内容审计  | `platform_moderation`  | `read`（概况 / 记录 / 设置）`manage`（改设置 / 试跑 / 显示原文 / 删记录 / 清缓存）          |
 | 设置      | `platform_settings`    | `read` `update` `publish`                                                                   |
 | 策略      | `platform_policy`      | `read` `update` `publish`                                                                   |
 | AI 服务商 | `platform_ai_provider` | `read` `create` `update` `delete` `test` `publish`                                          |
