@@ -15,6 +15,7 @@ import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { resolveStaticIdentityProviderMetadata } from './kinds';
 import {
   IDENTITY_PROVIDER_LKG_VERSION,
   identityProviderLkgGeneration,
@@ -288,10 +289,15 @@ const enrichRuntimeProviders = async (
   discovery: Pick<IdentityProviderDiscoveryValidator, 'discover'>,
 ): Promise<RuntimeIdentityProvider[]> =>
   Promise.all(
-    providers.map(async (provider) => ({
-      ...provider,
-      oidcMetadata: await discovery.discover(provider.issuer),
-    })),
+    providers.map(async (provider) => {
+      // Kinds without a discovery document (DingTalk) must never make a boot-time network
+      // call: their endpoints are static, so a slow/blocked IdP cannot degrade startup.
+      const staticMetadata = resolveStaticIdentityProviderMetadata(provider.type, provider.issuer);
+      return {
+        ...provider,
+        oidcMetadata: staticMetadata ?? (await discovery.discover(provider.issuer)),
+      };
+    }),
   );
 
 const databasePayloadMatches = (candidate: DatabasePayload, current: DatabasePayload): boolean =>

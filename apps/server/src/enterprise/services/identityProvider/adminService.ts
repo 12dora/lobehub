@@ -1,4 +1,4 @@
-import type { PlatformIdentityProviderDraft } from '@lobechat/types';
+import type { PlatformIdentityProviderDraft, PlatformIdentityProviderType } from '@lobechat/types';
 import { and, eq, inArray } from 'drizzle-orm';
 
 import {
@@ -25,6 +25,7 @@ import type { PlatformSecretService } from '../../security/secret';
 import type { AuditAction } from '../audit/auditActionCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { resolveStaticIdentityProviderMetadata } from './kinds';
 import { IdentityProviderPublicationService } from './publicationService';
 import { IdentityProviderSecretStore } from './secretStore';
 
@@ -36,6 +37,7 @@ const editableValues = (
   buttonLabel: input.buttonLabel,
   claimMapping: input.claimMapping,
   clientId: input.clientId,
+  dingtalkAllowedCorps: input.dingtalkAllowedCorps,
   displayName: input.displayName,
   domainAllowlist: input.domainAllowlist,
   groupRoleMapping: input.groupRoleMapping,
@@ -349,9 +351,18 @@ export class AdminIdentityProviderService {
       targetId: input.id,
     });
 
-  discoverIssuer = async (actorUserId: string, issuer: string) => {
+  discoverIssuer = async (
+    actorUserId: string,
+    issuer: string,
+    type: PlatformIdentityProviderType = 'generic_oidc',
+  ) => {
     try {
-      const metadata = await this.discovery.discover(issuer);
+      // Kinds without a discovery document answer from static endpoints — no outbound call,
+      // so the wizard step still resolves for DingTalk instead of failing on a missing
+      // /.well-known/openid-configuration.
+      const metadata =
+        resolveStaticIdentityProviderMetadata(type, issuer) ??
+        (await this.discovery.discover(issuer));
       try {
         await new PlatformAuditService(this.db).append({
           action: 'admin.identityProviders.discover',

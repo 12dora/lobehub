@@ -1,5 +1,8 @@
 import {
+  DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH,
+  DINGTALK_IDENTITY_PROVIDER_ISSUER,
   PLATFORM_IDENTITY_PROVIDER_TEMPLATES,
+  type PlatformIdentityProviderAllowedCorp,
   type PlatformIdentityProviderTemplate,
   type PlatformIdentityProviderType,
 } from '@lobechat/types';
@@ -16,7 +19,8 @@ export const isIdentityProviderDraftWorkflowReady = (
   provider: { status: string } | null | undefined,
 ): boolean => provider?.status === 'draft';
 
-export type IdentityProviderWorkflowErrorKind = 'draft-required' | 'generic' | 'test-required';
+export type IdentityProviderWorkflowErrorKind =
+  'corp-allowlist-required' | 'draft-required' | 'generic' | 'test-required';
 
 export const classifyIdentityProviderWorkflowError = (
   error: unknown,
@@ -28,6 +32,7 @@ export const classifyIdentityProviderWorkflowError = (
       : undefined;
   if (reason === 'identity_provider_draft_required') return 'draft-required';
   if (reason === 'identity_provider_test_required') return 'test-required';
+  if (reason === 'identity_provider_corp_allowlist_required') return 'corp-allowlist-required';
   return 'generic';
 };
 
@@ -164,6 +169,9 @@ export type IdentityProviderCreateTemplateId = PlatformIdentityProviderType;
 export interface IdentityProviderCreateDraftSeed {
   buttonLabel: string;
   claimMapping: PlatformIdentityProviderTemplate['claimMapping'];
+  icon: string | null;
+  /** Pre-filled for kinds whose issuer is fixed by the protocol (e.g. DingTalk). */
+  issuer: string;
   scopes: string[];
   type: PlatformIdentityProviderType;
   usePkce: true;
@@ -176,14 +184,87 @@ export const createIdentityProviderDraftFromTemplate = (
   return {
     buttonLabel: template.buttonLabel,
     claimMapping: structuredClone(template.claimMapping),
+    icon: template.icon,
+    issuer: type === 'dingtalk' ? DINGTALK_IDENTITY_PROVIDER_ISSUER : '',
     scopes: [...template.scopes],
     type: template.type,
     usePkce: true,
   };
 };
 
+/**
+ * Kinds whose endpoints, claim mapping and issuer are fixed by the protocol. Their wizard
+ * hides the discovery and claims steps and offers an organisation pin instead.
+ */
+export const isFixedProtocolIdentityProviderType = (type: PlatformIdentityProviderType): boolean =>
+  type === 'dingtalk';
+
+/**
+ * Notes are held raw while the administrator types (so a trailing space before the next word is
+ * not eaten on every keystroke) and normalised here, on the way to the API.
+ */
+export const serializeIdentityProviderAllowedCorps = (
+  entries: readonly PlatformIdentityProviderAllowedCorp[],
+): PlatformIdentityProviderAllowedCorp[] =>
+  entries.map(({ label, ...entry }) => {
+    const trimmed = label?.trim();
+    return trimmed ? { ...entry, label: trimmed } : entry;
+  });
+
+/** Keep generated labels inside the persisted `label` limit — `nick` may be far longer. */
+export const boundIdentityProviderCorpLabel = (label: string): string =>
+  label.length <= DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH
+    ? label
+    : `${label.slice(0, DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH - 1)}\u2026`;
+
+/**
+ * Safe-login / organisation-capture failures reported by the server as a stable error code.
+ * Mapped to admin-facing copy so a DingTalk misconfiguration (wrong AppSecret, redirect URL not
+ * registered, `corpid` scope missing) reads as an instruction instead of an opaque code.
+ */
+// A Map, not an object: codes arrive from the server, and an object lookup would
+// resolve inherited members such as `constructor` to a non-key value.
+const IDENTITY_PROVIDER_TEST_ERROR_KEYS = new Map<string, string>(
+  Object.entries({
+    OIDC_TEST_ACCESS_TOKEN_REQUIRED: 'identityProviders.test.errors.accessTokenRequired',
+    OIDC_TEST_AUTHORIZATION_FAILED: 'identityProviders.test.errors.authorizationFailed',
+    OIDC_TEST_CALLBACK_ORIGIN_INVALID: 'identityProviders.test.errors.callbackOriginInvalid',
+    OIDC_TEST_CLAIM_VALIDATION_FAILED: 'identityProviders.test.errors.claimValidationFailed',
+    OIDC_TEST_CONFIG_INCOMPLETE: 'identityProviders.test.errors.configIncomplete',
+    OIDC_TEST_CORP_ID_MISSING: 'identityProviders.test.errors.corpIdMissing',
+    OIDC_TEST_DISCOVERY_INVALID: 'identityProviders.test.errors.discoveryInvalid',
+    OIDC_TEST_DRAFT_REQUIRED: 'identityProviders.workflow.draftRequired',
+    OIDC_TEST_ID_TOKEN_INVALID: 'identityProviders.test.errors.idTokenInvalid',
+    OIDC_TEST_ISSUER_INVALID: 'identityProviders.test.errors.issuerInvalid',
+    OIDC_TEST_NONCE_INVALID: 'identityProviders.test.errors.idTokenInvalid',
+    OIDC_TEST_PROVIDER_CHANGED: 'identityProviders.test.errors.providerChanged',
+    OIDC_TEST_REMOTE_INVALID: 'identityProviders.test.errors.remoteInvalid',
+    OIDC_TEST_REPLAYED: 'identityProviders.test.errors.replayed',
+    OIDC_TEST_RESPONSE_ISSUER_INVALID: 'identityProviders.test.errors.responseIssuerInvalid',
+    OIDC_TEST_SECRET_UNAVAILABLE: 'identityProviders.test.errors.secretUnavailable',
+    OIDC_TEST_SUBJECT_MISMATCH: 'identityProviders.test.errors.subjectMismatch',
+    OIDC_TEST_USERINFO_REQUIRED: 'identityProviders.test.errors.userinfoRequired',
+  }),
+);
+
+/** Stable error code embedded anywhere in an error payload (`OIDC_TEST_*`). */
+export const extractIdentityProviderTestErrorCode = (value: unknown): string | null => {
+  const source =
+    typeof value === 'string'
+      ? value
+      : value && typeof value === 'object'
+        ? JSON.stringify(value)
+        : '';
+  return /\bOIDC_TEST_[A-Z_]+\b/.exec(source)?.[0] ?? null;
+};
+
+/** i18n key describing a failed safe-login / capture attempt. */
+export const identityProviderTestErrorKey = (errorCode: string | null | undefined): string =>
+  (errorCode ? IDENTITY_PROVIDER_TEST_ERROR_KEYS.get(errorCode) : undefined) ??
+  'identityProviders.test.errors.generic';
+
 /** Authentik issuer field placeholder used in the discovery step. */
-export const AUTHENTIK_ISSUER_PLACEHOLDER = 'https://auth.jiefakj.com/application/o/<slug>/';
+export const AUTHENTIK_ISSUER_PLACEHOLDER = 'https://auth.example.com/application/o/<slug>/';
 
 export class IdentityProviderTestPopupBlockedError extends Error {
   constructor() {

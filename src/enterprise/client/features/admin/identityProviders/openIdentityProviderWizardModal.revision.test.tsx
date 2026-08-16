@@ -159,6 +159,7 @@ const page2Provider: PlatformIdentityProviderDraft = {
     subject: ['sub'],
   },
   clientId: 'client-page-2',
+  dingtalkAllowedCorps: [],
   displayName: 'Page 2 Provider',
   domainAllowlist: ['example.test'],
   enabled: true,

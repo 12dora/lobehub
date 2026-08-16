@@ -49,6 +49,7 @@ const baseProvider: Omit<RuntimeIdentityProvider, 'issuer' | 'oidcMetadata'> = {
   },
   clientId,
   clientSecret: 'fake-client-secret',
+  dingtalkAllowedCorps: [],
   displayName: 'Work',
   domainAllowlist: ['example.test'],
   enabled: true,

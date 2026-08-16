@@ -1918,6 +1918,47 @@ export default {
   'identityProviders.errors.invalidJson': 'Enter valid JSON before continuing.',
   'identityProviders.errors.load': 'Identity providers could not be loaded.',
   'identityProviders.errors.networkBlocked':
+  'identityProviders.dingtalk.allowedCorps.add': 'Add organization via DingTalk login',
+  'identityProviders.dingtalk.allowedCorps.added': 'Organization added to the allowlist',
+  'identityProviders.dingtalk.allowedCorps.addedAt': 'Added {{time}}',
+  'identityProviders.dingtalk.allowedCorps.addedBy': 'Added by {{nick}}',
+  'identityProviders.dingtalk.allowedCorps.addHint':
+    'Opens a DingTalk login. Choose the organization there — its id is captured automatically. Save afterwards to apply the change.',
+  'identityProviders.dingtalk.allowedCorps.alreadyAdded':
+    'That organization is already on the allowlist',
+  'identityProviders.dingtalk.allowedCorps.blockedFull':
+    'The maximum of {{max}} organizations has been reached. Remove one before adding another.',
+  'identityProviders.dingtalk.allowedCorps.blockedNoCredentials':
+    'Save the AppKey and AppSecret first — the DingTalk login needs them.',
+  'identityProviders.dingtalk.allowedCorps.blockedNoPermission':
+    'You do not have permission to run a DingTalk login for this provider.',
+  'identityProviders.dingtalk.allowedCorps.blockedNotDraft':
+    'Only a draft can run a DingTalk login. Save your changes first.',
+  'identityProviders.dingtalk.allowedCorps.blockedUnsaved':
+    'Save this login method first, then add organizations.',
+  'identityProviders.dingtalk.allowedCorps.blockedUnsavedChanges':
+    'Save your unsaved changes before adding an organization.',
+  'identityProviders.dingtalk.allowedCorps.blockedPending':
+    'A DingTalk login is already in progress. Finish or close it before starting another.',
+  'identityProviders.dingtalk.allowedCorps.captureTitle': 'Add organization via DingTalk login',
+  'identityProviders.dingtalk.allowedCorps.description':
+    'Only members of the organizations listed here can sign in with DingTalk. Organization ids are captured from a real DingTalk login — they are never typed by hand.',
+  'identityProviders.dingtalk.allowedCorps.empty':
+    'No organization allowed yet, so nobody can sign in with DingTalk. Add one below.',
+  'identityProviders.dingtalk.allowedCorps.label': 'Note',
+  'identityProviders.dingtalk.allowedCorps.publishBlocked':
+    'Add at least one allowed organization before publishing.',
+  'identityProviders.dingtalk.allowedCorps.remove': 'Remove',
+  'identityProviders.dingtalk.allowedCorps.title': 'Allowed organizations',
+  'identityProviders.dingtalk.appKey': 'Client ID (AppKey)',
+  'identityProviders.dingtalk.appSecret': 'Client Secret (AppSecret)',
+  'identityProviders.dingtalk.domainsWarning':
+    'DingTalk rarely exposes a real email address, so members usually get a generated internal one. Leave this empty unless every member has a company email in DingTalk.',
+  'identityProviders.dingtalk.fixedProtocolNotice':
+    'DingTalk publishes no discovery document, so endpoints and claim mapping are fixed: sign-in uses login.dingtalk.com, the profile comes from api.dingtalk.com, the account is identified by unionId, the display name by nick and the avatar by avatarUrl. When DingTalk exposes no email address, a stable internal address is generated.',
+  'identityProviders.dingtalk.fixedProtocolTitle': 'DingTalk uses a fixed configuration',
+  'identityProviders.dingtalk.providerKeyInvalid':
+    "For DingTalk the provider key must be lowercase letters, digits and inner hyphens only (no dots or underscores) — it becomes part of each member's generated internal email address.",
     'The issuer address was blocked by the network policy. It must be a public, resolvable HTTPS endpoint (private and internal addresses are rejected).',
   'identityProviders.errors.required':
     'Display name, provider key, issuer, and client ID are required.',
@@ -2022,6 +2063,9 @@ export default {
   'identityProviders.steps.client': 'Client',
   'identityProviders.steps.discovery': 'Discovery',
   'identityProviders.steps.policy': 'Policy',
+  'identityProviders.templates.dingtalk.description':
+    'Sign in with a DingTalk account using the AppKey and AppSecret of a DingTalk Open Platform app.',
+  'identityProviders.templates.dingtalk.label': 'DingTalk',
   'identityProviders.steps.publish': 'Publish',
   'identityProviders.steps.test': 'Test',
   'identityProviders.test.description':
@@ -2040,6 +2084,39 @@ export default {
   'identityProviders.unsaved.discard': 'Discard local draft',
   'identityProviders.unsaved.stay': 'Keep editing',
   'identityProviders.unsaved.title': 'Discard unsaved identity provider changes?',
+  'identityProviders.test.errors.accessTokenRequired':
+    'The provider returned no access token, so the profile could not be read. Check that the app is allowed to request the configured scopes.',
+  'identityProviders.test.errors.authorizationFailed':
+    "The sign-in was cancelled or rejected on the provider's page. Try again and complete the authorization.",
+  'identityProviders.test.errors.callbackOriginInvalid':
+    'The callback arrived on a different address than this console. Check APP_URL and the redirect URL registered with the provider.',
+  'identityProviders.test.errors.claimValidationFailed':
+    "The account was authenticated, but the returned profile is missing something we require (identifier, name or a usable email). Check the app's permissions and the email domain allowlist.",
+  'identityProviders.test.errors.configIncomplete':
+    'This login method is not complete yet. Save the client id and client secret first.',
+  'identityProviders.test.errors.corpIdMissing':
+    'DingTalk did not report an organization. Grant the app the `corpid` permission in the DingTalk Open Platform, then try again.',
+  'identityProviders.test.errors.discoveryInvalid':
+    "The provider's discovery document could not be used for this test.",
+  'identityProviders.test.errors.generic':
+    'The sign-in test failed. Check the credentials and the registered redirect URL, then try again.',
+  'identityProviders.test.errors.idTokenInvalid':
+    "The provider's ID token failed verification (signature, audience or nonce).",
+  'identityProviders.test.errors.issuerInvalid':
+    "This login method's issuer is not valid for its type. Recreate it from the provider template.",
+  'identityProviders.test.errors.providerChanged':
+    'The login method changed while the test was running. Reload and try again.',
+  'identityProviders.test.errors.remoteInvalid':
+    'The provider rejected the request. Check that the client id and client secret are correct and that the redirect URL below is registered with the provider exactly as shown.',
+  'identityProviders.test.errors.replayed': 'That test link was already used. Start a new test.',
+  'identityProviders.test.errors.responseIssuerInvalid':
+    "The provider's response came from an unexpected issuer.",
+  'identityProviders.test.errors.secretUnavailable':
+    'The stored client secret could not be read. Enter it again and save.',
+  'identityProviders.test.errors.subjectMismatch':
+    'The provider returned two different account identifiers for one sign-in.',
+  'identityProviders.test.errors.userinfoRequired':
+    'The provider exposes no profile endpoint, which this platform requires.',
   'identityProviders.workflow.draftRequired':
     'Save this login method as a draft before testing or publishing it.',
   'identityProviders.workflow.testRequired':

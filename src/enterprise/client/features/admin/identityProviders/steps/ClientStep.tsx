@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Input, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Input, Text } from '@lobehub/ui';
 import { Button, Checkbox } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -35,15 +35,32 @@ export const ClientStep = memo<ClientStepProps>(
     setSecret,
   }) => {
     const { t } = useTranslation('admin');
+    const isDingTalk = draft.type === 'dingtalk';
 
     return (
       <Flexbox gap={12}>
+        {isDingTalk ? (
+          <Alert
+            showIcon
+            description={t('identityProviders.dingtalk.fixedProtocolNotice')}
+            message={t('identityProviders.dingtalk.fixedProtocolTitle')}
+            type="info"
+          />
+        ) : null}
         <label className={styles.field}>
-          <Text>{t('identityProviders.fields.clientId')}</Text>
+          <Text>
+            {isDingTalk
+              ? t('identityProviders.dingtalk.appKey')
+              : t('identityProviders.fields.clientId')}
+          </Text>
           <Input value={draft.clientId} onChange={(e) => patch('clientId', e.target.value)} />
         </label>
         <label className={styles.field}>
-          <Text>{t('identityProviders.fields.clientSecret')}</Text>
+          <Text>
+            {isDingTalk
+              ? t('identityProviders.dingtalk.appSecret')
+              : t('identityProviders.fields.clientSecret')}
+          </Text>
           <Input
             autoComplete="new-password"
             placeholder={secretConfigured ? t('identityProviders.secret.configured') : ''}

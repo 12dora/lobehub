@@ -1,4 +1,11 @@
 import {
+  DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH,
+  DINGTALK_ALLOWED_CORPS_MAX,
+  DINGTALK_CORP_ID_PATTERN,
+  DINGTALK_IDENTITY_PROVIDER_ISSUER,
+  isCanonicalDingTalkIdentityContract,
+  isDingTalkIdentityProviderIssuer,
+  isValidDingTalkProviderKey,
   PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS,
   PLATFORM_IDENTITY_PROVIDER_STATUSES,
   PLATFORM_IDENTITY_PROVIDER_TEST_ATTEMPT_STATUSES,
@@ -68,6 +75,27 @@ export const identityProviderScopesSchema = z
   .refine((scopes) => scopes.includes('openid'), 'openid scope is required')
   .refine((scopes) => new Set(scopes).size === scopes.length, 'scopes must be unique');
 
+/**
+ * DingTalk organisation allowlist. Values are captured by the wizard's DingTalk login flow, so
+ * the charset stays permissive (DingTalk ids are opaque) while length/count are strict.
+ */
+export const identityProviderAllowedCorpsSchema = z
+  .array(
+    z
+      .object({
+        addedAt: z.string().datetime({ offset: true }),
+        addedBy: z.string().min(1).max(128).optional(),
+        corpId: z.string().regex(DINGTALK_CORP_ID_PATTERN),
+        label: z.string().trim().max(DINGTALK_ALLOWED_CORP_LABEL_MAX_LENGTH).optional(),
+      })
+      .strict(),
+  )
+  .max(DINGTALK_ALLOWED_CORPS_MAX)
+  .refine(
+    (entries) => new Set(entries.map((entry) => entry.corpId)).size === entries.length,
+    'organization ids must be unique',
+  );
+
 export const identityProviderTypeSchema = z.enum(PLATFORM_IDENTITY_PROVIDER_TYPES);
 export const identityProviderStatusSchema = z.enum(PLATFORM_IDENTITY_PROVIDER_STATUSES);
 
@@ -108,6 +136,7 @@ export const identityProviderDraftSchema = z
     buttonLabel: z.string().trim().min(1).max(200),
     claimMapping: identityProviderClaimMappingSchema,
     clientId: z.string().trim().min(1).max(1000).nullable(),
+    dingtalkAllowedCorps: identityProviderAllowedCorpsSchema,
     displayName: z.string().trim().min(1).max(200),
     domainAllowlist: z.array(z.string().trim().min(1).max(253)).max(256),
     enabled: z.boolean(),
@@ -171,6 +200,7 @@ const editableIdentityProviderDraftSchema = z
     buttonLabel: z.string().trim().min(1).max(200),
     claimMapping: identityProviderClaimMappingSchema,
     clientId: z.string().trim().min(1).max(1000),
+    dingtalkAllowedCorps: identityProviderAllowedCorpsSchema.default([]),
     displayName: z.string().trim().min(1).max(200),
     domainAllowlist: z.array(z.string().trim().min(1).max(253)).max(256).default([]),
     groupRoleMapping: z.record(z.string().min(1).max(256), z.string().min(1).max(128)).default({}),
@@ -187,6 +217,64 @@ const editableIdentityProviderDraftSchema = z
     usePkce: z.literal(true),
   })
   .strict();
+
+/**
+ * Kinds whose identity contract is fixed by the protocol are not administrator-configurable.
+ *
+ * For `dingtalk` the claim mapping selects the Better Auth account id, so an API caller that
+ * remapped `subject` to `nick`/`email` could impersonate or collide accounts; the issuer
+ * carries the organisation pin, so an arbitrary issuer would silently mean "any organisation".
+ * Both are pinned here at the write boundary and again in `parsePublishedIdentityProviderPayload`
+ * at the read boundary.
+ */
+const assertFixedProtocolIdentityContract = (
+  value: {
+    claimMapping: z.infer<typeof identityProviderClaimMappingSchema>;
+    dingtalkAllowedCorps?: z.infer<typeof identityProviderAllowedCorpsSchema>;
+    issuer: string;
+    providerKey: string;
+    scopes: string[];
+    type: z.infer<typeof identityProviderTypeSchema>;
+  },
+  context: z.RefinementCtx,
+) => {
+  if (value.type !== 'dingtalk') {
+    // An organisation grant on a non-DingTalk kind would be dead — and dangerous if the kind
+    // were ever switched back — so it is rejected rather than silently ignored.
+    if (value.dingtalkAllowedCorps?.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'organization allowlist is only valid for the dingtalk provider kind',
+        path: ['dingtalkAllowedCorps'],
+      });
+    }
+    return;
+  }
+  // The provider key becomes the sub-domain of the synthesized address, so it must be a DNS
+  // label — otherwise every login would fail email validation at runtime instead of here.
+  if (!isValidDingTalkProviderKey(value.providerKey)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'a DingTalk provider key must be a single DNS label (lowercase letters, digits and inner hyphens)',
+      path: ['providerKey'],
+    });
+  }
+  if (!isDingTalkIdentityProviderIssuer(value.issuer)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `DingTalk issuer must be exactly ${DINGTALK_IDENTITY_PROVIDER_ISSUER}`,
+      path: ['issuer'],
+    });
+  }
+  if (!isCanonicalDingTalkIdentityContract(value)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'DingTalk claim mapping and scopes are fixed by the protocol and cannot be edited',
+      path: ['claimMapping'],
+    });
+  }
+};
 
 const rejectSecretMaterial = (value: unknown, context: z.RefinementCtx) => {
   const {
@@ -212,7 +300,8 @@ export const adminIdentityProviderCreateInputSchema = editableIdentityProviderDr
       'a new provider cannot keep an existing secret',
     ),
   })
-  .superRefine(rejectSecretMaterial);
+  .superRefine(rejectSecretMaterial)
+  .superRefine(assertFixedProtocolIdentityContract);
 
 export const adminIdentityProviderUpdateInputSchema = editableIdentityProviderDraftSchema
   .extend({
@@ -221,7 +310,8 @@ export const adminIdentityProviderUpdateInputSchema = editableIdentityProviderDr
     reason: reasonSchema,
     secret: identityProviderSecretMutationSchema,
   })
-  .superRefine(rejectSecretMaterial);
+  .superRefine(rejectSecretMaterial)
+  .superRefine(assertFixedProtocolIdentityContract);
 
 export const adminIdentityProviderGetInputSchema = z
   .object({ id: z.string().min(1).max(128) })
@@ -267,7 +357,15 @@ export const adminIdentityProviderDisableInputSchema = z
 export const adminIdentityProviderDisableOutputSchema = identityProviderDraftSchema;
 
 export const adminIdentityProviderDiscoverInputSchema = z
-  .object({ issuer: identityProviderIssuerSchema })
+  .object({
+    issuer: identityProviderIssuerSchema,
+    /**
+     * Provider kind under configuration. Kinds that publish no discovery document
+     * (DingTalk) answer from static metadata instead of a `.well-known` fetch.
+     * Absent = strict OIDC, preserving the original behaviour for existing callers.
+     */
+    type: identityProviderTypeSchema.optional(),
+  })
   .strict();
 export const adminIdentityProviderDiscoveryOutputSchema = z
   .object({
@@ -340,6 +438,17 @@ export const identityProviderClaimPreviewSchema = z
         >,
       )
       .strict(),
+    /**
+     * DingTalk capture outcome. Present only for `dingtalk` safe-login tests, where reading the
+     * organisation id back is the purpose of the test (the admin never types a corpId).
+     */
+    dingtalk: z
+      .object({
+        corpId: z.string().regex(DINGTALK_CORP_ID_PATTERN),
+        nick: z.string().max(256).optional(),
+      })
+      .strict()
+      .optional(),
     issues: z.array(identityProviderClaimValidationIssueSchema),
     valid: z.boolean(),
   })

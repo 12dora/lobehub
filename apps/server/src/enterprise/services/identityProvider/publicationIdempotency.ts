@@ -192,6 +192,7 @@ const reconstructIdempotentResponse = async (
     buttonLabel: payload.buttonLabel,
     claimMapping: payload.claimMapping,
     clientId: payload.clientId,
+    dingtalkAllowedCorps: payload.dingtalkAllowedCorps,
     displayName: payload.displayName,
     domainAllowlist: payload.domainAllowlist,
     enabled: isPublish,

@@ -11,11 +11,15 @@ type TestResult = Awaited<ReturnType<typeof adminIdentityProvidersService.testRe
 
 interface PublishStepProps {
   attempt: { id: string; startedAt: number } | null;
+  /** Kind-specific precondition that must be resolved before publishing. */
+  blocker?: string;
   busy: string | null;
   canPublish: boolean;
   canTest: boolean;
   dirty: boolean;
   draftWorkflowReady: boolean;
+  /** Admin-facing explanation of a failed attempt (mapped from the server error code). */
+  failureMessage?: string | null;
   hasProvider: boolean;
   onRetryResult: () => void;
   onStartTest: () => void;
@@ -33,11 +37,13 @@ interface PublishStepProps {
 export const PublishStep = memo<PublishStepProps>(
   ({
     attempt,
+    blocker,
     busy,
     canPublish,
     canTest,
     dirty,
     draftWorkflowReady,
+    failureMessage,
     hasProvider,
     onRetryResult,
     onStartTest,
@@ -86,6 +92,9 @@ export const PublishStep = memo<PublishStepProps>(
               }
             />
           ) : null}
+          {testResult?.status === 'failed' && failureMessage ? (
+            <Alert showIcon description={failureMessage} type="error" />
+          ) : null}
           {testResult?.result ? (
             <Flexbox horizontal gap={6} wrap="wrap">
               {Object.entries(testResult.result.claims).map(([claim, summary]) => (
@@ -114,6 +123,7 @@ export const PublishStep = memo<PublishStepProps>(
         <Flexbox gap={8}>
           <Text strong>{t('identityProviders.publish.title')}</Text>
           <Text type="secondary">{t('identityProviders.publish.description')}</Text>
+          {blocker ? <Alert showIcon description={blocker} type="warning" /> : null}
           {hasProvider && draftWorkflowReady && canPublish && !testSucceeded ? (
             <Alert
               showIcon

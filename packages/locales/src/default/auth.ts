@@ -76,6 +76,7 @@ export default {
   'betterAuth.signin.continueWithCasdoor': 'Sign in with Casdoor',
   'betterAuth.signin.continueWithCloudflareZeroTrust': 'Sign in with Cloudflare Zero Trust',
   'betterAuth.signin.continueWithCognito': 'Continue with AWS Cognito',
+  'betterAuth.signin.continueWithDingtalk': 'Continue with DingTalk',
   'betterAuth.signin.continueWithFeishu': 'Sign in with Feishu',
   'betterAuth.signin.continueWithGithub': 'Continue with GitHub',
   'betterAuth.signin.continueWithGoogle': 'Continue with Google',

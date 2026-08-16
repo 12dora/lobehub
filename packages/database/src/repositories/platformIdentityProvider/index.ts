@@ -41,6 +41,7 @@ const safeColumns = {
   clientId: platformIdentityProviders.clientId,
   createdAt: platformIdentityProviders.createdAt,
   createdBy: platformIdentityProviders.createdBy,
+  dingtalkAllowedCorps: platformIdentityProviders.dingtalkAllowedCorps,
   displayName: platformIdentityProviders.displayName,
   domainAllowlist: platformIdentityProviders.domainAllowlist,
   enabled: platformIdentityProviders.enabled,

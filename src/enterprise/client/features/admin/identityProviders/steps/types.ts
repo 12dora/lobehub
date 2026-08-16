@@ -1,10 +1,15 @@
-import type { PlatformIdentityProviderDraft } from '@lobechat/types';
+import type {
+  PlatformIdentityProviderAllowedCorp,
+  PlatformIdentityProviderDraft,
+  PlatformIdentityProviderType,
+} from '@lobechat/types';
 
 export type EditableDraft = {
   autoProvision: boolean;
   buttonLabel: string;
   claimMapping: PlatformIdentityProviderDraft['claimMapping'];
   clientId: string;
+  dingtalkAllowedCorps: PlatformIdentityProviderAllowedCorp[];
   displayName: string;
   domainAllowlist: string[];
   groupRoleMapping: Record<string, string>;
@@ -12,7 +17,7 @@ export type EditableDraft = {
   issuer: string;
   providerKey: string;
   scopes: string[];
-  type: 'authentik' | 'generic_oidc';
+  type: PlatformIdentityProviderType;
   usePkce: true;
 };
 

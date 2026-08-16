@@ -137,6 +137,7 @@ const baseProvider: PlatformIdentityProviderDraft = {
     subject: ['sub'],
   },
   clientId: 'client-1',
+  dingtalkAllowedCorps: [],
   displayName: 'Gate Provider',
   domainAllowlist: ['example.test'],
   enabled: true,

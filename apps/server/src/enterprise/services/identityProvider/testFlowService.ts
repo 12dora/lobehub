@@ -1,6 +1,9 @@
 import {
+  isValidDingTalkCorpId,
   PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS,
   type PlatformIdentityProviderClaimPreview,
+  type PlatformIdentityProviderDingTalkCapture,
+  type PlatformIdentityProviderType,
   type PlatformOidcDiscoveryMetadata,
 } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
@@ -21,6 +24,13 @@ import {
   type IdentityProviderDiscoveryValidator,
 } from './discoveryValidator';
 import { verifyPlatformOidcIdToken } from './idTokenVerifier';
+import {
+  assertDingTalkIssuer,
+  exchangeDingTalkAuthorizationCode,
+  fetchDingTalkUserProfile,
+  resolveStaticIdentityProviderMetadata,
+  toDingTalkClaims,
+} from './kinds';
 import { IdentityProviderSecretStore } from './secretStore';
 import { IdentityProviderTestAttemptStore } from './testAttemptStore';
 import { exchangePlatformOidcAuthorizationCode } from './tokenExchange';
@@ -65,7 +75,15 @@ export const summarizeIdentityProviderClaimPreview = (
   for (const claim of PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS) {
     if (preview.claims[claim] !== undefined) claims[claim] = { present: true, type: 'string' };
   }
-  return { claims, issues: preview.issues, valid: preview.valid };
+  return {
+    claims,
+    // Claim VALUES never leave the server — except the DingTalk capture, which is the entire
+    // point of running the test for that kind (the admin cannot type a corpId by hand) and
+    // carries no credential material.
+    ...(preview.dingtalk ? { dingtalk: preview.dingtalk } : {}),
+    issues: preview.issues,
+    valid: preview.valid,
+  };
 };
 
 const failureCategory = (error: unknown): string => {
@@ -74,7 +92,10 @@ const failureCategory = (error: unknown): string => {
   if (error.message.includes('CALLBACK_ORIGIN')) return 'callback_origin_invalid';
   if (error.message.includes('PROVIDER_CHANGED')) return 'provider_changed';
   if (error.message.includes('CLAIM')) return 'claim_validation_failed';
+  if (error.message.includes('CORP')) return 'corp_mismatch';
+  // Order matters: OIDC_TEST_RESPONSE_ISSUER_INVALID also contains "ISSUER_INVALID".
   if (error.message.includes('RESPONSE_ISSUER')) return 'response_issuer_invalid';
+  if (error.message.includes('ISSUER_INVALID')) return 'issuer_invalid';
   if (error.message.includes('NONCE') || error.message.includes('ID_TOKEN')) {
     return 'id_token_validation_failed';
   }
@@ -211,7 +232,7 @@ export class IdentityProviderTestFlowService {
       if (!provider.issuer || !provider.clientId || !provider.secret.configured) {
         throw new Error('OIDC_TEST_CONFIG_INCOMPLETE');
       }
-      const metadata = await this.discovery.discover(provider.issuer);
+      const metadata = await this.resolveMetadata({ issuer: provider.issuer, type: provider.type });
       const authorizationUrl = new URL(metadata.authorizationEndpoint);
       const reserved = [
         'client_id',
@@ -279,18 +300,24 @@ export class IdentityProviderTestFlowService {
         return issued;
       });
       authorizationUrl.searchParams.set('client_id', provider.clientId);
-      authorizationUrl.searchParams.set('code_challenge', attempt.codeChallenge);
-      authorizationUrl.searchParams.set('code_challenge_method', 'S256');
-      authorizationUrl.searchParams.set('nonce', attempt.nonce);
       authorizationUrl.searchParams.set('redirect_uri', input.redirectUri);
       authorizationUrl.searchParams.set('response_type', 'code');
       authorizationUrl.searchParams.set('scope', provider.scopes.join(' '));
       authorizationUrl.searchParams.set('state', attempt.state);
-      // Force a fresh interactive authentication for the safe-login test so it never silently
-      // rides — or is confused with — the admin's ambient IdP session. The test validates
-      // whoever authenticates here; it must be a deliberate login, not the current operator's.
-      authorizationUrl.searchParams.set('prompt', 'login');
-      authorizationUrl.searchParams.set('max_age', '0');
+      if (provider.type === 'dingtalk') {
+        // DingTalk implements neither PKCE, nonce, nor max_age. `prompt=consent` is its only
+        // way to force the interactive authorization screen for the safe-login test.
+        authorizationUrl.searchParams.set('prompt', 'consent');
+      } else {
+        authorizationUrl.searchParams.set('code_challenge', attempt.codeChallenge);
+        authorizationUrl.searchParams.set('code_challenge_method', 'S256');
+        authorizationUrl.searchParams.set('nonce', attempt.nonce);
+        // Force a fresh interactive authentication for the safe-login test so it never silently
+        // rides — or is confused with — the admin's ambient IdP session. The test validates
+        // whoever authenticates here; it must be a deliberate login, not the current operator's.
+        authorizationUrl.searchParams.set('prompt', 'login');
+        authorizationUrl.searchParams.set('max_age', '0');
+      }
       return {
         attemptId: attempt.attemptId,
         authorizationUrl: authorizationUrl.toString(),
@@ -331,7 +358,7 @@ export class IdentityProviderTestFlowService {
       ) {
         throw new Error('OIDC_TEST_PROVIDER_CHANGED');
       }
-      const metadata = await this.discovery.discover(provider.issuer);
+      const metadata = await this.resolveMetadata({ issuer: provider.issuer, type: provider.type });
       assertAuthorizationResponseIssuer({ iss: input.iss, metadata });
       const [currentBinding] = await this.db
         .select({
@@ -354,49 +381,33 @@ export class IdentityProviderTestFlowService {
         attempt.providerSecretFingerprint,
       );
       if (!secret) throw new Error('OIDC_TEST_SECRET_UNAVAILABLE');
-      const token = await this.exchangeCode({
-        clientId: provider.clientId,
-        clientSecret: secret,
-        code: input.code,
-        metadata,
-        pkceVerifier: attempt.pkceVerifier,
-        redirectUri: attempt.redirectUri,
-      });
-      // Match production login contract (platformIdentityProvider.getUserInfo): both a
-      // non-empty access token and a userinfo endpoint are mandatory. An ID-token-only
-      // response must not mark the attempt successful — publication trusts this gate.
-      if (!token.access_token) {
-        throw new Error('OIDC_TEST_ACCESS_TOKEN_REQUIRED');
-      }
-      if (!metadata.userinfoEndpoint) {
-        throw new Error('OIDC_TEST_USERINFO_REQUIRED');
-      }
-      const idClaims = await verifyIdentityProviderIdToken({
-        clientId: provider.clientId,
-        idToken: token.id_token,
-        metadata,
-        nonceHash: attempt.nonceHash,
-        outbound: this.outbound,
-      });
-      const userinfo = z.record(z.string(), z.unknown()).parse(
-        await safeJson(
-          await this.outbound.fetch(metadata.userinfoEndpoint, {
-            headers: { Authorization: `Bearer ${token.access_token}` },
-            maxRedirects: 0,
-            maxResponseBytes: TOKEN_MAX_BYTES,
-            method: 'GET',
-            secretBearing: true,
-            timeoutMs: TOKEN_TIMEOUT_MS,
-          }),
+      const resolved =
+        provider.type === 'dingtalk'
+          ? await this.resolveDingTalkClaims({
+              clientId: provider.clientId,
+              clientSecret: secret,
+              code: input.code,
+              issuer: provider.issuer,
+              providerKey: provider.providerKey,
+            })
+          : {
+              claims: await this.resolveOidcClaims({
+                attempt,
+                clientId: provider.clientId,
+                clientSecret: secret,
+                code: input.code,
+                metadata,
+              }),
+            };
+      const preview = {
+        ...buildIdentityProviderClaimPreview(
+          resolved.claims,
+          provider.claimMapping,
+          provider.domainAllowlist,
         ),
-      );
-      if (userinfo.sub !== idClaims.sub) throw new Error('OIDC_TEST_SUBJECT_MISMATCH');
-      const claims: Record<string, unknown> = { ...idClaims, ...userinfo };
-      const preview = buildIdentityProviderClaimPreview(
-        claims,
-        provider.claimMapping,
-        provider.domainAllowlist,
-      );
+        // Capture outcome: the admin runs this flow precisely to learn the organisation id.
+        ...(resolved.dingtalk ? { dingtalk: resolved.dingtalk } : {}),
+      };
       await this.db.transaction(async (tx) => {
         const store = new IdentityProviderTestAttemptStore(tx, this.secretService);
         if (preview.valid) {
@@ -482,6 +493,111 @@ export class IdentityProviderTestFlowService {
     const result = await this.attempts.getResult(input);
     if (!result) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
     return { ...result, result: summarizeIdentityProviderClaimPreview(result.result) };
+  };
+
+  /**
+   * Endpoints for the tested draft. Kinds that publish no discovery document (DingTalk)
+   * resolve statically; strict-OIDC kinds still discover over the network exactly as before.
+   */
+  private resolveMetadata = async (provider: {
+    issuer: string;
+    type: PlatformIdentityProviderType;
+  }): Promise<PlatformOidcDiscoveryMetadata> =>
+    resolveStaticIdentityProviderMetadata(provider.type, provider.issuer) ??
+    this.discovery.discover(provider.issuer);
+
+  /**
+   * Strict-OIDC safe-login claims. Matches the production login contract
+   * (platformIdentityProvider.getUserInfo): both a non-empty access token and a userinfo
+   * endpoint are mandatory, and an ID-token-only response must not mark the attempt
+   * successful — publication trusts this gate.
+   */
+  private resolveOidcClaims = async (input: {
+    attempt: { nonceHash: string; pkceVerifier: string; redirectUri: string };
+    clientId: string;
+    clientSecret: string;
+    code: string;
+    metadata: PlatformOidcDiscoveryMetadata;
+  }): Promise<Record<string, unknown>> => {
+    const token = await this.exchangeCode({
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      code: input.code,
+      metadata: input.metadata,
+      pkceVerifier: input.attempt.pkceVerifier,
+      redirectUri: input.attempt.redirectUri,
+    });
+    if (!token.access_token) throw new Error('OIDC_TEST_ACCESS_TOKEN_REQUIRED');
+    if (!input.metadata.userinfoEndpoint) throw new Error('OIDC_TEST_USERINFO_REQUIRED');
+    const idClaims = await verifyIdentityProviderIdToken({
+      clientId: input.clientId,
+      idToken: token.id_token,
+      metadata: input.metadata,
+      nonceHash: input.attempt.nonceHash,
+      outbound: this.outbound,
+    });
+    const userinfo = z.record(z.string(), z.unknown()).parse(
+      await safeJson(
+        await this.outbound.fetch(input.metadata.userinfoEndpoint, {
+          headers: { Authorization: `Bearer ${token.access_token}` },
+          maxRedirects: 0,
+          maxResponseBytes: TOKEN_MAX_BYTES,
+          method: 'GET',
+          secretBearing: true,
+          timeoutMs: TOKEN_TIMEOUT_MS,
+        }),
+      ),
+    );
+    if (userinfo.sub !== idClaims.sub) throw new Error('OIDC_TEST_SUBJECT_MISMATCH');
+    return { ...idClaims, ...userinfo };
+  };
+
+  /**
+   * DingTalk safe-login claims AND organisation capture: JSON token exchange (no id_token, no
+   * PKCE) then the header-authenticated profile read — exactly the sequence the production
+   * adapter runs, so a green test really does gate publication.
+   *
+   * The organisation allowlist is deliberately NOT enforced here: this flow is how an
+   * administrator discovers a corpId in the first place. Nothing about it touches user or
+   * account state, and its result is a claim *preview* only.
+   */
+  private resolveDingTalkClaims = async (input: {
+    clientId: string;
+    clientSecret: string;
+    code: string;
+    issuer: string;
+    providerKey: string;
+  }): Promise<{
+    claims: Record<string, unknown>;
+    dingtalk?: PlatformIdentityProviderDingTalkCapture;
+  }> => {
+    assertDingTalkIssuer(input.issuer, 'OIDC_TEST_ISSUER_INVALID');
+    const token = await exchangeDingTalkAuthorizationCode({
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      code: input.code,
+      errorCode: 'OIDC_TEST_REMOTE_INVALID',
+      outbound: this.outbound,
+    });
+    // Without the `corpid` scope there is nothing to capture and nothing the runtime could
+    // ever match, so the test fails rather than reporting a green result the admin cannot use.
+    if (!isValidDingTalkCorpId(token.corpId)) throw new Error('OIDC_TEST_CORP_ID_MISSING');
+    const profile = await fetchDingTalkUserProfile({
+      accessToken: token.accessToken,
+      errorCode: 'OIDC_TEST_REMOTE_INVALID',
+      outbound: this.outbound,
+    });
+    const claims = toDingTalkClaims(profile, {
+      errorCode: 'OIDC_TEST_CLAIM_VALIDATION_FAILED',
+      providerKey: input.providerKey,
+    });
+    return {
+      claims,
+      dingtalk: {
+        corpId: token.corpId,
+        ...(profile.nick?.trim() ? { nick: profile.nick.trim().slice(0, 256) } : {}),
+      },
+    };
   };
 
   private exchangeCode = async (input: {

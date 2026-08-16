@@ -44,6 +44,7 @@ describe('identity provider startup artifact', () => {
             subject: ['sub'],
           },
           clientId: 'client',
+          dingtalkAllowedCorps: [],
           clientSecret: 'must-not-be-public',
           displayName: 'Work',
           domainAllowlist: [],

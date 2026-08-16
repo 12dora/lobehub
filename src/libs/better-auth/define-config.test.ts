@@ -195,6 +195,31 @@ describe('defineConfig', () => {
     );
   });
 
+  it('keeps kinds that cannot assert a verified email out of trustedProviders', async () => {
+    const { defineConfig } = await import('./define-config');
+
+    await defineConfig(
+      { plugins: [] },
+      {
+        databaseProviders: [
+          { enabled: true, providerKey: 'corp-oidc', type: 'authentik' } as never,
+          { enabled: true, providerKey: 'dingtalk', type: 'dingtalk' } as never,
+        ],
+        providerIds: ['corp-oidc', 'dingtalk'],
+      },
+    );
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    // Visible on the sign-in page…
+    expect(options.plugins).toContainEqual({
+      id: 'platform-identity-provider-state',
+      providerIds: ['corp-oidc', 'dingtalk'],
+    });
+    // …but never trusted for implicit account linking: a trusted provider may attach its
+    // identity to an existing account that merely shares an email address.
+    expect(options.account.accountLinking.trustedProviders).toEqual(['corp-oidc']);
+  });
+
   it('registers platform state binding without changing global verification storage', async () => {
     const { defineConfig } = await import('./define-config');
 

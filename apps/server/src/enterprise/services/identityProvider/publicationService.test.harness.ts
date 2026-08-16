@@ -231,6 +231,7 @@ export const createDraft = async (providerKey?: string) => {
     buttonLabel: 'Sign in with work',
     claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
     clientId: 'client-id',
+    dingtalkAllowedCorps: [],
     displayName: 'Work login',
     domainAllowlist: [],
     groupRoleMapping: {},

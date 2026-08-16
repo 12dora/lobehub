@@ -1,4 +1,5 @@
 import { getCurrentAuthContext } from '@better-auth/core/context';
+import { isReservedSyntheticIdentityEmail } from '@lobechat/types';
 import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { type BetterAuthPlugin } from 'better-auth/types';
 import debug from 'debug';
@@ -78,7 +79,25 @@ export const loadRegistrationSettings = async (): Promise<PlatformAuthSettings> 
  * Enforce open-registration + domain allowlist for a candidate self-service email.
  * Throws APIError with a stable code on denial.
  */
+/**
+ * The synthetic-identity email namespace belongs to the platform, not to self-service sign-up.
+ * Without this a local account could pre-claim `<unionId>@<providerKey>.dingtalk.sso` and wait
+ * for the matching SSO identity to arrive. OAuth/SSO callbacks are exempt from this hook, so
+ * the providers that legitimately mint these addresses are unaffected.
+ *
+ * Unlike the open-registration / allowlist rules this is NOT waived for an existing user.
+ */
+export const assertNonReservedIdentityEmail = (email: string): void => {
+  if (!isReservedSyntheticIdentityEmail(email)) return;
+  throw new APIError('FORBIDDEN', {
+    code: 'EMAIL_NOT_ALLOWED',
+    message: 'EMAIL_NOT_ALLOWED',
+  });
+};
+
 export const enforceRegistrationPolicy = (email: string, settings: PlatformAuthSettings): void => {
+  assertNonReservedIdentityEmail(email);
+
   if (!settings.openRegistration) {
     throw new APIError('FORBIDDEN', {
       code: 'REGISTRATION_CLOSED',
@@ -120,6 +139,8 @@ const allowExistingUserOrEnforce = async (
   settings: PlatformAuthSettings,
   findUserByEmail: ((email: string) => Promise<{ user?: unknown } | null>) | undefined,
 ): Promise<void> => {
+  // Never waived by the existing-user escape hatch below.
+  assertNonReservedIdentityEmail(email);
   try {
     enforceRegistrationPolicy(email, settings);
   } catch (error) {

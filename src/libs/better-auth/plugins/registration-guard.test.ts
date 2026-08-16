@@ -7,6 +7,7 @@ import {
 } from '@/types/platform/authSettings';
 
 import {
+  assertNonReservedIdentityEmail,
   enforceRegistrationPolicy,
   isSelfServiceSignupPath,
   isUserCreatePolicyExemptPath,
@@ -142,6 +143,36 @@ describe('registration-guard helpers', () => {
     expect(() => enforceRegistrationPolicy('a@corp.example', closedDomain)).not.toThrow();
     expect(() => enforceRegistrationPolicy('a@outside.test', closedDomain)).toThrow(APIError);
     expect(() => enforceRegistrationPolicy('malformed-no-at', closedDomain)).toThrow(APIError);
+  });
+});
+
+describe('reserved synthetic-identity email namespace', () => {
+  const openSettings: PlatformAuthSettings = {
+    ...DEFAULT_PLATFORM_AUTH_SETTINGS,
+    openRegistration: true,
+  };
+
+  it('refuses self-service sign-up inside the synthetic identity namespace', () => {
+    for (const email of [
+      'u-1@dingtalk.sso',
+      'u-1@dingtalk.dingtalk.sso',
+      'u-1@my-provider.dingtalk.sso',
+      '  U-1@DingTalk.SSO ',
+    ]) {
+      expect(() => assertNonReservedIdentityEmail(email)).toThrowError(APIError);
+      expect(() => enforceRegistrationPolicy(email, openSettings)).toThrowError(APIError);
+    }
+  });
+
+  it('leaves ordinary addresses — including look-alikes — untouched', () => {
+    for (const email of [
+      'ada@example.test',
+      'ada@dingtalk.example.com',
+      'ada@notdingtalk.sso.example',
+    ]) {
+      expect(() => assertNonReservedIdentityEmail(email)).not.toThrow();
+      expect(() => enforceRegistrationPolicy(email, openSettings)).not.toThrow();
+    }
   });
 });
 

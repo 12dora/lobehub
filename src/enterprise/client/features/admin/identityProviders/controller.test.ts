@@ -1,3 +1,4 @@
+import { DINGTALK_IDENTITY_PROVIDER_ISSUER } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
@@ -5,10 +6,14 @@ import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import {
   acceptIdentityProviderRestart,
   AUTHENTIK_ISSUER_PLACEHOLDER,
+  boundIdentityProviderCorpLabel,
   classifyIdentityProviderWorkflowError,
   createIdentityProviderDraftFromTemplate,
+  extractIdentityProviderTestErrorCode,
   IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+  identityProviderTestErrorKey,
   IdentityProviderTestPopupBlockedError,
+  isFixedProtocolIdentityProviderType,
   isIdentityProviderDeletable,
   isIdentityProviderDisableable,
   isIdentityProviderDraftWorkflowReady,
@@ -20,6 +25,7 @@ import {
   resolveIdentityProviderRevisionRefresh,
   resolveIdentityProviderWizardLiveProvider,
   resolvePublishedHistorySignal,
+  serializeIdentityProviderAllowedCorps,
   toIdentityProviderStatusBadge,
 } from './controller';
 
@@ -150,7 +156,26 @@ describe('identity provider editor controller', () => {
     const generic = createIdentityProviderDraftFromTemplate('generic_oidc');
     expect(generic.type).toBe('generic_oidc');
     expect(generic.scopes).not.toContain('dingtalk');
-    expect(AUTHENTIK_ISSUER_PLACEHOLDER).toContain('auth.jiefakj.com');
+    expect(AUTHENTIK_ISSUER_PLACEHOLDER).toContain('auth.example.com');
+  });
+
+  it('seeds the DingTalk template with its fixed issuer, icon and OAuth scopes', () => {
+    const dingtalk = createIdentityProviderDraftFromTemplate('dingtalk');
+    expect(dingtalk.type).toBe('dingtalk');
+    expect(dingtalk.issuer).toBe(DINGTALK_IDENTITY_PROVIDER_ISSUER);
+    expect(dingtalk.icon).toBe('dingtalk');
+    expect(dingtalk.buttonLabel).toBe('使用钉钉登录');
+    expect(dingtalk.scopes).toEqual(['openid', 'corpid']);
+    // unionId ONLY — openId is app-scoped and would rebind identities after an AppKey change.
+    expect(dingtalk.claimMapping.subject).toEqual(['unionId']);
+    expect(dingtalk.claimMapping.name).toEqual(['nick']);
+    expect(dingtalk.claimMapping.picture).toEqual(['avatarUrl']);
+  });
+
+  it('marks only fixed-protocol kinds as skipping the discovery and claims steps', () => {
+    expect(isFixedProtocolIdentityProviderType('dingtalk')).toBe(true);
+    expect(isFixedProtocolIdentityProviderType('authentik')).toBe(false);
+    expect(isFixedProtocolIdentityProviderType('generic_oidc')).toBe(false);
   });
 
   it('keeps invalid intermediate JSON outside the canonical draft', () => {
@@ -430,5 +455,61 @@ describe('identity provider editor controller', () => {
         propProvider: { id: 'idp-page-2', revision: 4 },
       }),
     ).toEqual({ id: 'idp-page-2', revision: 5 });
+  });
+});
+
+describe('DingTalk organisation allowlist helpers', () => {
+  it('normalises notes only on serialization, so raw typing is preserved upstream', () => {
+    expect(
+      serializeIdentityProviderAllowedCorps([
+        { addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42', label: '  Head office  ' },
+        { addedAt: '2026-01-02T00:00:00.000Z', corpId: 'ding43', label: '   ' },
+        { addedAt: '2026-01-03T00:00:00.000Z', corpId: 'ding44' },
+      ]),
+    ).toEqual([
+      { addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42', label: 'Head office' },
+      { addedAt: '2026-01-02T00:00:00.000Z', corpId: 'ding43' },
+      { addedAt: '2026-01-03T00:00:00.000Z', corpId: 'ding44' },
+    ]);
+  });
+
+  it('bounds a generated label to the persisted 64-character limit', () => {
+    expect(boundIdentityProviderCorpLabel('Added by Ada')).toBe('Added by Ada');
+    const long = boundIdentityProviderCorpLabel(`Added by ${'长'.repeat(250)}`);
+    expect(long.length).toBe(64);
+    expect(long.endsWith('…')).toBe(true);
+    expect(boundIdentityProviderCorpLabel('x'.repeat(64)).length).toBe(64);
+  });
+});
+
+describe('safe-login failure messages', () => {
+  it('maps known codes to actionable copy and falls back for the rest', () => {
+    expect(identityProviderTestErrorKey('OIDC_TEST_REMOTE_INVALID')).toBe(
+      'identityProviders.test.errors.remoteInvalid',
+    );
+    expect(identityProviderTestErrorKey('OIDC_TEST_CORP_ID_MISSING')).toBe(
+      'identityProviders.test.errors.corpIdMissing',
+    );
+    expect(identityProviderTestErrorKey('OIDC_TEST_SOMETHING_NEW')).toBe(
+      'identityProviders.test.errors.generic',
+    );
+    expect(identityProviderTestErrorKey(null)).toBe('identityProviders.test.errors.generic');
+    // Prototype keys must not resolve inherited members.
+    expect(identityProviderTestErrorKey('constructor')).toBe(
+      'identityProviders.test.errors.generic',
+    );
+  });
+
+  it('extracts the stable code from an arbitrary error payload', () => {
+    expect(extractIdentityProviderTestErrorCode('boom OIDC_TEST_REMOTE_INVALID boom')).toBe(
+      'OIDC_TEST_REMOTE_INVALID',
+    );
+    expect(
+      extractIdentityProviderTestErrorCode({
+        data: { errorData: { message: 'OIDC_TEST_CONFIG_INCOMPLETE' } },
+      }),
+    ).toBe('OIDC_TEST_CONFIG_INCOMPLETE');
+    expect(extractIdentityProviderTestErrorCode('PLATFORM_REVISION_CONFLICT')).toBeNull();
+    expect(extractIdentityProviderTestErrorCode(undefined)).toBeNull();
   });
 });

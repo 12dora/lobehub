@@ -100,10 +100,14 @@ export const SignInEmailStep = ({
       configured && (configured.startsWith('https://') || configured.startsWith('data:image/'))
         ? configured
         : null;
+    // A non-URL configured icon is a built-in icon key (e.g. the DingTalk login method seeds
+    // `dingtalk`), so the admin-chosen provider key does not have to double as the icon name.
+    // Unknown keys fall back to the generic user glyph inside AuthIcons.
+    const iconKey = safeConfiguredIcon ? provider : configured?.trim() || provider;
     return safeConfiguredIcon ? (
       <img alt="" height={18} src={safeConfiguredIcon} style={PROVIDER_ICON_STYLE} width={18} />
     ) : (
-      <Icon icon={AuthIcons(provider, 18)} style={PROVIDER_ICON_STYLE} />
+      <Icon icon={AuthIcons(iconKey, 18)} style={PROVIDER_ICON_STYLE} />
     );
   };
 

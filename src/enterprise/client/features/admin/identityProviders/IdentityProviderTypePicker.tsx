@@ -1,6 +1,7 @@
 'use client';
 
 import { Flexbox, Tag, Text } from '@lobehub/ui';
+import { DingTalk } from '@lobehub/ui/icons';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -37,6 +38,18 @@ const IdentityProviderTypePicker = memo<IdentityProviderTypePickerProps>(
               <Tag color="blue">OIDC</Tag>
             </Flexbox>
             <Text type="secondary">{t('identityProviders.templates.authentik.description')}</Text>
+          </button>
+          <button
+            className={styles.templateCard}
+            type="button"
+            onClick={() => onSelect('dingtalk')}
+          >
+            <Flexbox horizontal align="center" gap={8}>
+              <DingTalk.Color size={18} />
+              <Text strong>{t('identityProviders.templates.dingtalk.label')}</Text>
+              <Tag color="blue">OAuth 2.0</Tag>
+            </Flexbox>
+            <Text type="secondary">{t('identityProviders.templates.dingtalk.description')}</Text>
           </button>
           <button
             className={styles.templateCard}

@@ -29,6 +29,7 @@ const provider = {
   },
   clientId: 'client-id',
   clientSecret: 'fake-client-secret',
+  dingtalkAllowedCorps: [],
   displayName: 'Work',
   domainAllowlist: ['example.test'],
   enabled: true,

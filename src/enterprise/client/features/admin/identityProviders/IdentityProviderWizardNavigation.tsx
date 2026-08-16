@@ -32,17 +32,19 @@ export type IdentityProviderStepState = 'complete' | 'current' | 'error' | 'pend
 
 interface IdentityProviderWizardNavigationProps {
   onChange: (step: IdentityProviderStep) => void;
+  /** Visible steps. Kinds with a fixed protocol drop discovery/claims. */
+  steps?: readonly IdentityProviderStep[];
   stepStates: Partial<Record<IdentityProviderStep, IdentityProviderStepState>>;
   value: IdentityProviderStep;
 }
 
 export const IdentityProviderWizardNavigation = memo<IdentityProviderWizardNavigationProps>(
-  ({ onChange, stepStates, value }) => {
+  ({ onChange, steps = IDENTITY_PROVIDER_STEPS, stepStates, value }) => {
     const { t } = useTranslation('admin');
 
     return (
       <div className={styles.navigation} role="tablist">
-        {IDENTITY_PROVIDER_STEPS.map((item, index) => {
+        {steps.map((item, index) => {
           const state = item === value ? 'current' : (stepStates[item] ?? 'pending');
           return (
             <Button

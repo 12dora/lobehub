@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
 import type { EnterpriseOidcFailureCategory } from '@lobechat/observability-otel/modules/enterprise-platform';
-import type { PlatformOidcDiscoveryMetadata } from '@lobechat/types';
 import { getOAuthState } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { z } from 'zod';
@@ -11,24 +10,27 @@ import {
   SafeOutboundHttpClient,
   SafeOutboundHttpError,
 } from '@/server/enterprise/security/outboundHttp';
-import { validatePlatformIdentityProviderClaims } from '@/server/enterprise/services/identityProvider/claimValidation';
-import { extractIdentityProviderGroups } from '@/server/enterprise/services/identityProvider/groupRoleMapping';
 import {
   discardIdentityProviderGroupRoleMapping,
   discardIdentityProviderGroupRoleMappingByFlow,
   reconcileIdentityProviderGroupRoles,
-  stashIdentityProviderGroupRoleMapping,
 } from '@/server/enterprise/services/identityProvider/groupRoleMappingRuntime';
 import { verifyPlatformOidcIdToken } from '@/server/enterprise/services/identityProvider/idTokenVerifier';
 import { resolveIdentityProviderOutboundMode } from '@/server/enterprise/services/identityProvider/outboundMode';
-import type { PublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
 import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/services/identityProvider/tokenExchange';
 
+import { buildPlatformDingTalkProvider } from './platformDingTalkProvider';
 import {
   markPlatformOidcLoginStage,
   observePlatformOidcLoginFailure,
   suppressPlatformOidcLoginObservation,
 } from './platformIdentityProviderObservation';
+import {
+  firstStringClaim,
+  mapPlatformProfileToUser,
+  type RuntimeIdentityProvider,
+  stashPlatformGroupRoleMapping,
+} from './platformIdentityProviderProfile';
 import {
   createPlatformOidcNonceBinding,
   PLATFORM_OIDC_NONCE_HASH_STATE_KEY,
@@ -81,75 +83,11 @@ const stripNonceClaim = (claims: Record<string, unknown>): Record<string, unknow
   return sanitized;
 };
 
-export interface RuntimeIdentityProvider extends PublishedIdentityProviderPayload {
-  clientSecret: string;
-  oidcMetadata: PlatformOidcDiscoveryMetadata;
-  revision: number;
-}
-
-const firstStringClaim = (
-  profile: Record<string, unknown>,
-  candidates: readonly string[],
-): string | undefined => {
-  for (const candidate of candidates) {
-    const value = profile[candidate];
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return undefined;
-};
-
-interface PlatformIdentityProviderUser {
-  dingtalkTitle: string | null;
-  dingtalkUserId: string | null;
-  email: string;
-  id: string;
-  image?: string;
-  name: string;
-}
-
-/**
- * Pure claim→user projection. Does NOT stash group-role mappings — that happens
- * exactly once in getUserInfo with the real OAuth flow id. Better Auth also calls
- * mapProfileToUser after getUserInfo; a second stash without flowId used to leave a
- * subject-only entry that a later password login could re-grant.
- */
-const mapPlatformProfileToUser = (
-  provider: RuntimeIdentityProvider,
-  profile: Record<string, unknown>,
-): PlatformIdentityProviderUser => {
-  const { issues, values } = validatePlatformIdentityProviderClaims({
-    claimMapping: provider.claimMapping,
-    claims: profile,
-    domainAllowlist: provider.domainAllowlist,
-  });
-  if (issues.length > 0 || !values.subject || !values.name || !values.email) {
-    throw new Error('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
-  }
-  return {
-    ...getStableDingTalkClaims(provider, profile),
-    email: values.email,
-    id: values.subject,
-    image: firstStringClaim(profile, provider.claimMapping.picture),
-    name: values.name,
-  };
-};
-
-/** Stash IdP groups once per OAuth flow for session.create role reconciliation. */
-const stashPlatformGroupRoleMapping = (
-  provider: RuntimeIdentityProvider,
-  profile: Record<string, unknown>,
-  subject: string,
-  flowId: string | undefined,
-): void => {
-  if (Object.keys(provider.groupRoleMapping).length === 0) return;
-  stashIdentityProviderGroupRoleMapping({
-    flowId,
-    groupRoleMapping: provider.groupRoleMapping,
-    groups: extractIdentityProviderGroups(profile),
-    providerKey: provider.providerKey,
-    subject,
-  });
-};
+export type {
+  PlatformIdentityProviderUser,
+  RuntimeIdentityProvider,
+} from './platformIdentityProviderProfile';
+export { getStableDingTalkClaims } from './platformIdentityProviderProfile';
 
 /**
  * Resolve OAuth `state` for the current request (better-auth request-scoped state).
@@ -277,6 +215,11 @@ export const buildPlatformIdentityProvider = (
 ): GenericOAuthConfig => {
   if (provider.oidcMetadata.issuer !== provider.issuer) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+  }
+  // Per-kind adapter seam. Kinds that are not strict OIDC own their entire OAuth wiring;
+  // everything below this line stays exactly the OIDC contract it always was.
+  if (provider.type === 'dingtalk') {
+    return buildPlatformDingTalkProvider(provider, appUrl, outbound, readOAuthState);
   }
   const redirectURI = `${appUrl}/api/auth/oauth2/callback/${provider.providerKey}`;
   return {
@@ -473,11 +416,3 @@ export const buildPlatformIdentityProvider = (
     tokenUrl: BETTER_AUTH_UNUSED_TOKEN_ENDPOINT,
   };
 };
-
-export const getStableDingTalkClaims = (
-  provider: RuntimeIdentityProvider,
-  profile: Record<string, unknown>,
-) => ({
-  dingtalkTitle: firstStringClaim(profile, provider.claimMapping.dingtalkTitle) ?? null,
-  dingtalkUserId: firstStringClaim(profile, provider.claimMapping.dingtalkUserId) ?? null,
-});

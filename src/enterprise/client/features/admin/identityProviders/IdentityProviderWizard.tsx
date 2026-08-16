@@ -1,6 +1,11 @@
 'use client';
 
-import { DEFAULT_IDP_BUTTON_LABEL, type PlatformIdentityProviderDraft } from '@lobechat/types';
+import {
+  DEFAULT_IDP_BUTTON_LABEL,
+  DINGTALK_ALLOWED_CORPS_MAX,
+  isValidDingTalkProviderKey,
+  type PlatformIdentityProviderDraft,
+} from '@lobechat/types';
 import { copyToClipboard, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, toast } from '@lobehub/ui/base-ui';
 import { AnimatePresence, m, useReducedMotion } from 'motion/react';
@@ -13,13 +18,18 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
+  boundIdentityProviderCorpLabel,
   classifyIdentityProviderWorkflowError,
+  extractIdentityProviderTestErrorCode,
   type IdentityProviderCreateDraftSeed,
+  identityProviderTestErrorKey,
   IdentityProviderTestPopupBlockedError,
+  isFixedProtocolIdentityProviderType,
   isIdentityProviderDraftWorkflowReady,
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRevisionRefresh,
+  serializeIdentityProviderAllowedCorps,
 } from './controller';
 import { IdentityProviderConflictAlert } from './IdentityProviderConflictAlert';
 import {
@@ -46,11 +56,12 @@ const fromSeed = (seed: IdentityProviderCreateDraftSeed): EditableDraft => ({
   buttonLabel: seed.buttonLabel,
   claimMapping: structuredClone(seed.claimMapping),
   clientId: '',
+  dingtalkAllowedCorps: [],
   displayName: '',
   domainAllowlist: [],
   groupRoleMapping: {},
-  icon: null,
-  issuer: '',
+  icon: seed.icon,
+  issuer: seed.issuer,
   providerKey: '',
   scopes: [...seed.scopes],
   type: seed.type,
@@ -62,6 +73,7 @@ const fromProvider = (provider: PlatformIdentityProviderDraft): EditableDraft =>
   buttonLabel: provider.buttonLabel,
   claimMapping: structuredClone(provider.claimMapping),
   clientId: provider.clientId ?? '',
+  dingtalkAllowedCorps: provider.dingtalkAllowedCorps.map((entry) => ({ ...entry })),
   displayName: provider.displayName,
   domainAllowlist: [...provider.domainAllowlist],
   // Preserve existing mapping across unrelated edits; Policy UI edits remain out of scope
@@ -129,6 +141,8 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
                 picture: ['picture'],
                 subject: ['sub'],
               },
+              icon: null,
+              issuer: '',
               scopes: ['openid', 'profile', 'email'],
               type: 'generic_oidc',
               usePkce: true,
@@ -158,6 +172,11 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const [conflictRefreshFailed, setConflictRefreshFailed] = useState(false);
     const lastProviderRevisionRef = useRef(provider?.revision);
     const preserveDraftOnRefreshRef = useRef(false);
+    // The DingTalk login that captured an organisation is the same server flow as the
+    // pre-publish safe-login test; the attempt id below marks which entry point started it.
+    const capturedAttemptRef = useRef<string | null>(null);
+    /** Attempt id of the in-flight/last organisation capture (vs a plain safe-login test). */
+    const [captureAttemptId, setCaptureAttemptId] = useState<string | null>(null);
     const baseline = useMemo(
       () =>
         JSON.stringify(
@@ -167,6 +186,9 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       [provider, createSeed],
     );
     const invalidJson = jsonErrors.claims;
+    // Kinds with a protocol-fixed issuer, endpoints and claim mapping (DingTalk) have nothing
+    // to discover and nothing to remap, so those two steps are dropped instead of shown empty.
+    const fixedProtocol = isFixedProtocolIdentityProviderType(provider?.type ?? draft.type);
     const dirty = JSON.stringify(draft) !== baseline || Boolean(secret) || clearSecret;
     const draftWorkflowReady = isIdentityProviderDraftWorkflowReady(provider);
     const sessionTestSucceeded =
@@ -176,9 +198,25 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       Boolean(testResult.data.result?.valid);
     // Authoritative readiness: current-revision session success OR server publishTestReady.
     const testSucceeded = sessionTestSucceeded || Boolean(provider?.publishTestReady);
+    // Fail-closed parity with the runtime: an empty organisation allowlist lets nobody sign in,
+    // so publication is blocked (the server refuses it too).
+    const corpAllowlistMissing =
+      (provider?.type ?? draft.type) === 'dingtalk' && draft.dingtalkAllowedCorps.length === 0;
     const publishReady =
-      Boolean(provider) && draftWorkflowReady && !dirty && canPublish && testSucceeded;
-    const isLastStep = step === IDENTITY_PROVIDER_STEPS.at(-1);
+      Boolean(provider) &&
+      draftWorkflowReady &&
+      !dirty &&
+      !corpAllowlistMissing &&
+      canPublish &&
+      testSucceeded;
+    const steps: readonly IdentityProviderStep[] = useMemo(
+      () =>
+        fixedProtocol
+          ? IDENTITY_PROVIDER_STEPS.filter((item) => item !== 'discovery' && item !== 'claims')
+          : IDENTITY_PROVIDER_STEPS,
+      [fixedProtocol],
+    );
+    const isLastStep = step === steps.at(-1);
 
     useEffect(() => {
       const refresh = resolveIdentityProviderRevisionRefresh({
@@ -204,6 +242,50 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       setTestPolling(false);
     }, [provider]);
 
+    // Organisation capture: fold the corpId the DingTalk login reported into the draft
+    // allowlist (dedupe by corpId, keep the first label). Runs once per attempt.
+    useEffect(() => {
+      const captured = testResult.data?.result?.dingtalk;
+      if (
+        !captured ||
+        !attempt ||
+        attempt.id !== captureAttemptId ||
+        capturedAttemptRef.current === attempt.id ||
+        testResult.data?.status !== 'succeeded'
+      ) {
+        return;
+      }
+      capturedAttemptRef.current = attempt.id;
+      setDraft((current) => {
+        if (current.dingtalkAllowedCorps.some((entry) => entry.corpId === captured.corpId)) {
+          toast.success(t('identityProviders.dingtalk.allowedCorps.alreadyAdded'));
+          return current;
+        }
+        toast.success(t('identityProviders.dingtalk.allowedCorps.added'));
+        return {
+          ...current,
+          dingtalkAllowedCorps: [
+            ...current.dingtalkAllowedCorps,
+            {
+              addedAt: new Date().toISOString(),
+              corpId: captured.corpId,
+              // `nick` may be far longer than the persisted label limit — bound it so the
+              // capture never leaves an unsavable draft behind.
+              ...(captured.nick
+                ? {
+                    label: boundIdentityProviderCorpLabel(
+                      t('identityProviders.dingtalk.allowedCorps.addedBy', {
+                        nick: captured.nick,
+                      }),
+                    ),
+                  }
+                : {}),
+            },
+          ],
+        };
+      });
+    }, [attempt, captureAttemptId, testResult.data, t]);
+
     useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
     useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
@@ -218,6 +300,14 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
 
     const patch = <Key extends keyof EditableDraft>(key: Key, value: EditableDraft[Key]) =>
       setDraft((current) => ({ ...current, [key]: value }));
+
+    // The DingTalk provider key becomes the sub-domain of the synthesized login email
+    // (`<unionId>@<providerKey>.dingtalk.sso`), so it must be a DNS label — `_` or a leading /
+    // trailing `-` would produce an address the runtime rejects at claim validation.
+    const providerKeyError =
+      fixedProtocol && draft.providerKey.trim() && !isValidDingTalkProviderKey(draft.providerKey)
+        ? t('identityProviders.dingtalk.providerKeyInvalid')
+        : null;
 
     const friendlyError = (cause: unknown): string => {
       if (cause instanceof IdentityProviderTestPopupBlockedError) {
@@ -240,8 +330,27 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       if (workflowError === 'test-required') {
         return t('identityProviders.workflow.testRequired');
       }
+      if (workflowError === 'corp-allowlist-required') {
+        return t('identityProviders.dingtalk.allowedCorps.publishBlocked');
+      }
+      // Safe-login / capture failures carry a stable OIDC_TEST_* code. Surfacing the mapped
+      // instruction (wrong AppSecret, redirect URL not registered, `corpid` scope missing …)
+      // is the difference between an actionable message and "something went wrong".
+      const testErrorCode = extractIdentityProviderTestErrorCode(cause);
+      if (testErrorCode) return t(identityProviderTestErrorKey(testErrorCode) as never);
       return t('identityProviders.errors.generic');
     };
+
+    /** Admin-facing explanation of a terminal safe-login / capture failure. */
+    const testFailureMessage =
+      testResult.data?.status === 'failed'
+        ? t(identityProviderTestErrorKey(testResult.data.errorCode) as never)
+        : null;
+    /** True while THIS wizard's organisation capture is still waiting on DingTalk. */
+    const capturePending =
+      busy === 'capture' || (testPolling && attempt != null && attempt.id === captureAttemptId);
+    const captureFailureMessage =
+      attempt != null && attempt.id === captureAttemptId ? testFailureMessage : null;
 
     const refreshConflict = async () => {
       setConflictRefreshFailed(false);
@@ -291,6 +400,10 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         toast.error(t('identityProviders.errors.required'));
         return;
       }
+      if (providerKeyError) {
+        toast.error(providerKeyError);
+        return;
+      }
       openReasonModal({
         buildPayload: (reason) => ({ reason }),
         description: t('identityProviders.save.description'),
@@ -303,7 +416,13 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
                 ? ({ operation: 'replace', value: secret } as const)
                 : ({ operation: 'keep' } as const);
             // Preserve persisted groupRoleMapping on edit; new drafts start empty.
-            const policyDraft = { ...draft };
+            // Organisation notes are kept raw while typing and normalised here.
+            const policyDraft = {
+              ...draft,
+              dingtalkAllowedCorps: serializeIdentityProviderAllowedCorps(
+                draft.dingtalkAllowedCorps,
+              ),
+            };
             if (provider) {
               const updated = await adminIdentityProvidersService.update({
                 ...policyDraft,
@@ -343,24 +462,39 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       void run(
         'discover',
         async () => {
-          const metadata = await adminIdentityProvidersService.discover({ issuer: draft.issuer });
+          const metadata = await adminIdentityProvidersService.discover({
+            issuer: draft.issuer,
+            type: draft.type,
+          });
           setDiscovery(metadata);
           setNetworkValid(true);
         },
         false,
       );
 
-    const startTest = () => {
+    /**
+     * One DingTalk/OIDC login round-trip against the isolated test callback.
+     *
+     * `intent: 'capture'` is the DingTalk organisation-capture entry point in the policy step:
+     * the admin authorizes in DingTalk, picks the enterprise there, and the server reports the
+     * resulting corpId back — administrators never type one. `intent: 'test'` is the existing
+     * pre-publish safe-login test. Both are the same server flow and the same attempt record.
+     */
+    const startTest = (intent: 'capture' | 'test' = 'test') => {
       if (!provider) return;
       if (!draftWorkflowReady) {
         toast.error(t('identityProviders.workflow.draftRequired'));
+        return;
+      }
+      if (intent === 'capture' && captureBlockedReason) {
+        toast.error(captureBlockedReason);
         return;
       }
       openReasonModal({
         authMethod,
         buildPayload: (reason) => ({ reason }),
         onSubmit: async (payload) =>
-          run('test', async () => {
+          run(intent === 'capture' ? 'capture' : 'test', async () => {
             const result = await openIdentityProviderTestPopup(() =>
               adminIdentityProvidersService.testStart({
                 expectedRevision: provider.revision,
@@ -373,13 +507,41 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               revision: provider.revision,
               startedAt: Date.now(),
             });
+            setCaptureAttemptId(intent === 'capture' ? result.attemptId : null);
             setTestPolling(true);
           }),
-        submitLabel: t('identityProviders.actions.startTest'),
+        submitLabel:
+          intent === 'capture'
+            ? t('identityProviders.dingtalk.allowedCorps.add')
+            : t('identityProviders.actions.startTest'),
         targetLabel: provider.displayName,
-        title: t('identityProviders.test.title'),
+        title:
+          intent === 'capture'
+            ? t('identityProviders.dingtalk.allowedCorps.captureTitle')
+            : t('identityProviders.test.title'),
       });
     };
+
+    /** Why the capture button is unavailable, or `null` when it can run. */
+    const captureBlockedReason = !provider
+      ? t('identityProviders.dingtalk.allowedCorps.blockedUnsaved')
+      : !draftWorkflowReady
+        ? t('identityProviders.dingtalk.allowedCorps.blockedNotDraft')
+        : !provider.clientId || !provider.secret.configured
+          ? t('identityProviders.dingtalk.allowedCorps.blockedNoCredentials')
+          : dirty
+            ? t('identityProviders.dingtalk.allowedCorps.blockedUnsavedChanges')
+            : !canTest
+              ? t('identityProviders.dingtalk.allowedCorps.blockedNoPermission')
+              : // One attempt at a time: a second launch would overwrite `attempt` and orphan
+                // the first DingTalk window's result.
+                capturePending
+                ? t('identityProviders.dingtalk.allowedCorps.blockedPending')
+                : draft.dingtalkAllowedCorps.length >= DINGTALK_ALLOWED_CORPS_MAX
+                  ? t('identityProviders.dingtalk.allowedCorps.blockedFull', {
+                      max: DINGTALK_ALLOWED_CORPS_MAX,
+                    })
+                  : null;
 
     const publish = () => {
       if (!provider) return;
@@ -417,19 +579,16 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     };
 
     const goToStep = (next: IdentityProviderStep) => {
-      const currentIndex = IDENTITY_PROVIDER_STEPS.indexOf(step);
-      const nextIndex = IDENTITY_PROVIDER_STEPS.indexOf(next);
-      if (nextIndex === currentIndex) return;
+      const currentIndex = steps.indexOf(step);
+      const nextIndex = steps.indexOf(next);
+      if (nextIndex === -1 || nextIndex === currentIndex) return;
       setStepDirection(nextIndex > currentIndex ? 1 : -1);
       setStep(next);
     };
 
     const navigateStep = (offset: -1 | 1) => {
-      const nextIndex = Math.min(
-        IDENTITY_PROVIDER_STEPS.length - 1,
-        Math.max(0, IDENTITY_PROVIDER_STEPS.indexOf(step) + offset),
-      );
-      goToStep(IDENTITY_PROVIDER_STEPS[nextIndex]);
+      const nextIndex = Math.min(steps.length - 1, Math.max(0, steps.indexOf(step) + offset));
+      goToStep(steps[nextIndex]);
     };
 
     const handleClaimJsonChange = (raw: string) => {
@@ -479,7 +638,14 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const renderStep = () => {
       switch (step) {
         case 'basic': {
-          return <BasicStep draft={draft} patch={patch} providerKeyLocked={Boolean(provider)} />;
+          return (
+            <BasicStep
+              draft={draft}
+              patch={patch}
+              providerKeyError={providerKeyError}
+              providerKeyLocked={Boolean(provider)}
+            />
+          );
         }
         case 'discovery': {
           return (
@@ -524,7 +690,16 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           );
         }
         case 'policy': {
-          return <PolicyStep draft={draft} patch={patch} />;
+          return (
+            <PolicyStep
+              captureBlockedReason={captureBlockedReason}
+              captureError={captureFailureMessage}
+              capturing={capturePending}
+              draft={draft}
+              patch={patch}
+              onCaptureCorp={() => startTest('capture')}
+            />
+          );
         }
         case 'publish': {
           return (
@@ -535,22 +710,31 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               canTest={canTest}
               dirty={dirty}
               draftWorkflowReady={draftWorkflowReady}
+              failureMessage={testFailureMessage}
               hasProvider={Boolean(provider)}
               resultError={Boolean(testResult.error)}
               testResult={testResult.data}
               testSucceeded={testSucceeded}
+              blocker={
+                corpAllowlistMissing
+                  ? t('identityProviders.dingtalk.allowedCorps.publishBlocked')
+                  : undefined
+              }
               onRetryResult={() => void testResult.mutate()}
-              onStartTest={startTest}
+              onStartTest={() => startTest('test')}
             />
           );
         }
       }
     };
 
+    const resolvedType = provider?.type ?? draft.type;
     const typeLabel =
-      (provider?.type ?? draft.type) === 'authentik'
+      resolvedType === 'authentik'
         ? 'Authentik'
-        : t('identityProviders.templates.genericOidc.label');
+        : resolvedType === 'dingtalk'
+          ? t('identityProviders.templates.dingtalk.label')
+          : t('identityProviders.templates.genericOidc.label');
 
     return (
       <div
@@ -570,6 +754,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         </Flexbox>
         <IdentityProviderWizardNavigation
           stepStates={stepStates}
+          steps={steps}
           value={step}
           onChange={goToStep}
         />
@@ -592,7 +777,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
           </m.div>
         </AnimatePresence>
         <Flexbox horizontal justify="space-between">
-          <Button disabled={step === IDENTITY_PROVIDER_STEPS[0]} onClick={() => navigateStep(-1)}>
+          <Button disabled={step === steps[0]} onClick={() => navigateStep(-1)}>
             {t('identityProviders.actions.previous')}
           </Button>
           <Flexbox horizontal gap={8}>

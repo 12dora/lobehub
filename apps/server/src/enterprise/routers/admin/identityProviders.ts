@@ -110,6 +110,13 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
         httpCode: 'PRECONDITION_FAILED',
       });
     }
+    if (message.includes('CORP_ALLOWLIST_REQUIRED')) {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+        details: { reason: 'identity_provider_corp_allowlist_required' },
+        httpCode: 'PRECONDITION_FAILED',
+      });
+    }
     if (message.includes('NOT_TESTED')) {
       return throwEnterpriseError({
         code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
@@ -361,7 +368,9 @@ export const adminIdentityProvidersRouter = router({
     .output(adminIdentityProviderDiscoveryOutputSchema)
     .mutation(({ ctx, input }) =>
       execute(() =>
-        ctx.getIdentityProviderRuntime().admin.discoverIssuer(ctx.userId!, input.issuer),
+        ctx
+          .getIdentityProviderRuntime()
+          .admin.discoverIssuer(ctx.userId!, input.issuer, input.type),
       ),
     ),
 

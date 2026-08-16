@@ -3,6 +3,7 @@ import { passkey } from '@better-auth/passkey';
 import { BRANDING_NAME } from '@lobechat/business-const';
 import { createNanoId, idGenerator, serverDB } from '@lobechat/database';
 import * as schema from '@lobechat/database/schemas';
+import { identityProviderAssertsVerifiedEmail } from '@lobechat/types';
 import bcrypt from 'bcryptjs';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { verifyPassword as defaultVerifyPassword } from 'better-auth/crypto';
@@ -137,6 +138,22 @@ export function defineConfig(
   const enabledSSOProviders = identitySnapshot.providerIds.filter(
     (providerId) => !disabledProviderKeys.has(providerId),
   );
+  /**
+   * Visible ≠ trusted-for-linking. A provider in `accountLinking.trustedProviders` may
+   * implicitly attach its identity to an existing account that merely shares an email address
+   * (better-auth `handleOAuthUserInfo`: `!isTrustedProvider && !userInfo.emailVerified` is the
+   * only guard). Kinds that cannot assert a verified email — DingTalk usually returns none and
+   * we synthesize one — must therefore stay out of that list: a DingTalk login always creates
+   * or reuses its own account and can never take over a pre-existing one.
+   */
+  const untrustedForLinkingProviderKeys = new Set(
+    activeDatabaseProviders
+      .filter((provider) => !identityProviderAssertsVerifiedEmail(provider.type))
+      .map((provider) => provider.providerKey),
+  );
+  const linkingTrustedProviders = enabledSSOProviders.filter(
+    (providerId) => !untrustedForLinkingProviderKeys.has(providerId),
+  );
   const databaseProviders = activeDatabaseProviders.map((provider) =>
     buildPlatformIdentityProvider(provider, appEnv.APP_URL ?? ''),
   );
@@ -148,7 +165,7 @@ export function defineConfig(
       accountLinking: {
         allowDifferentEmails: true,
         enabled: true,
-        trustedProviders: enabledSSOProviders,
+        trustedProviders: linkingTrustedProviders,
       },
       // OAuth state carries the per-login OIDC nonce hash. Database strategy makes it
       // shared across instances and consumes the verification row before token exchange.

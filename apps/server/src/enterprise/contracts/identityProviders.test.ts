@@ -1,6 +1,11 @@
+import {
+  DINGTALK_IDENTITY_PROVIDER_ISSUER,
+  DINGTALK_IDENTITY_PROVIDER_TEMPLATE,
+} from '@lobechat/types';
 import { describe, expect, it } from 'vitest';
 
 import {
+  adminIdentityProviderCreateInputSchema,
   adminIdentityProviderGetOutputSchema,
   adminIdentityProviderListOutputSchema,
   adminIdentityProviderMutationOutputSchema,
@@ -22,6 +27,7 @@ const publicDraft = {
     subject: ['sub'],
   },
   clientId: 'client-id',
+  dingtalkAllowedCorps: [],
   displayName: 'Work',
   domainAllowlist: [],
   enabled: false,
@@ -125,5 +131,132 @@ describe('identity provider test result output', () => {
         },
       }),
     ).toThrow();
+  });
+});
+
+/**
+ * The DingTalk identity contract is protocol-fixed: the claim mapping selects the Better Auth
+ * account id and the issuer is a constant, so neither is administrator-configurable. These are
+ * write-boundary regressions — the read boundary is covered in publishedPayload tests.
+ */
+describe('DingTalk fixed identity contract at the write boundary', () => {
+  const dingtalkInput = () => ({
+    autoProvision: true,
+    buttonLabel: DINGTALK_IDENTITY_PROVIDER_TEMPLATE.buttonLabel,
+    claimMapping: structuredClone(DINGTALK_IDENTITY_PROVIDER_TEMPLATE.claimMapping) as Record<
+      keyof typeof DINGTALK_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+      string[]
+    >,
+    clientId: 'app-key',
+    dingtalkAllowedCorps: [{ addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42' }],
+    displayName: 'DingTalk',
+    domainAllowlist: [],
+    groupRoleMapping: {},
+    icon: 'dingtalk',
+    issuer: DINGTALK_IDENTITY_PROVIDER_ISSUER,
+    providerKey: 'dingtalk',
+    reason: 'add dingtalk login',
+    scopes: [...DINGTALK_IDENTITY_PROVIDER_TEMPLATE.scopes],
+    secret: { operation: 'replace' as const, value: 'app-secret' },
+    type: 'dingtalk' as const,
+    usePkce: true as const,
+  });
+
+  it('accepts the canonical DingTalk contract', () => {
+    expect(adminIdentityProviderCreateInputSchema.safeParse(dingtalkInput()).success).toBe(true);
+  });
+
+  it('rejects a remapped subject, altered scopes and a foreign issuer', () => {
+    const remapped = dingtalkInput();
+    remapped.claimMapping.subject = ['nick'];
+    expect(adminIdentityProviderCreateInputSchema.safeParse(remapped).success).toBe(false);
+
+    const emailSubject = dingtalkInput();
+    emailSubject.claimMapping.subject = ['email'];
+    expect(adminIdentityProviderCreateInputSchema.safeParse(emailSubject).success).toBe(false);
+
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse({
+        ...dingtalkInput(),
+        scopes: ['openid'],
+      }).success,
+    ).toBe(false);
+
+    for (const issuer of [
+      'https://evil.example',
+      `${DINGTALK_IDENTITY_PROVIDER_ISSUER}/ding42`,
+      `${DINGTALK_IDENTITY_PROVIDER_ISSUER}/`,
+    ]) {
+      expect(
+        adminIdentityProviderCreateInputSchema.safeParse({ ...dingtalkInput(), issuer }).success,
+        issuer,
+      ).toBe(false);
+    }
+  });
+
+  it('requires a DNS-label provider key so the synthesized address stays valid', () => {
+    for (const providerKey of ['dingtalk', 'ding-talk', 'd', '0ding']) {
+      expect(
+        adminIdentityProviderCreateInputSchema.safeParse({ ...dingtalkInput(), providerKey })
+          .success,
+        providerKey,
+      ).toBe(true);
+    }
+    // `_` / `.` / edge hyphens are allowed by the generic providerKey charset but would make
+    // `<unionId>@<providerKey>.dingtalk.sso` fail email validation at every login.
+    for (const providerKey of ['corp_sso', 'corp.sso', '-ding', 'ding-']) {
+      expect(
+        adminIdentityProviderCreateInputSchema.safeParse({ ...dingtalkInput(), providerKey })
+          .success,
+        providerKey,
+      ).toBe(false);
+    }
+  });
+
+  it('validates organisation allowlist entries and rejects them on other kinds', () => {
+    const withCorp = (corps: unknown) => ({ ...dingtalkInput(), dingtalkAllowedCorps: corps });
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse(
+        withCorp([{ addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding/../evil' }]),
+      ).success,
+    ).toBe(false);
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse(
+        withCorp([{ addedAt: 'not-a-date', corpId: 'ding42' }]),
+      ).success,
+    ).toBe(false);
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse(
+        withCorp([
+          { addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42' },
+          { addedAt: '2026-01-02T00:00:00.000Z', corpId: 'ding42' },
+        ]),
+      ).success,
+    ).toBe(false);
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse(
+        withCorp([
+          { addedAt: '2026-01-01T00:00:00.000Z', corpId: 'ding42', label: 'x'.repeat(65) },
+        ]),
+      ).success,
+    ).toBe(false);
+
+    // A grant on a non-DingTalk kind would be dead config — and dangerous after a kind switch.
+    expect(
+      adminIdentityProviderCreateInputSchema.safeParse({
+        ...dingtalkInput(),
+        claimMapping: {
+          dingtalkTitle: [],
+          dingtalkUserId: [],
+          email: ['email'],
+          name: ['name'],
+          picture: [],
+          subject: ['sub'],
+        },
+        issuer: 'https://login.example.test',
+        scopes: ['openid'],
+        type: 'generic_oidc' as const,
+      }).success,
+    ).toBe(false);
   });
 });

@@ -87,6 +87,7 @@ const payload = (
     subject: ['sub'],
   },
   clientId: 'client-id',
+  dingtalkAllowedCorps: [],
   displayName: 'Work',
   domainAllowlist: [],
   enabled: true,

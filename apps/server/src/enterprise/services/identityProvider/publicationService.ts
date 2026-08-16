@@ -13,7 +13,10 @@ import {
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
-import { parsePlatformIdentityProviderClaimMapping } from '@/types/platform/identityProvider';
+import {
+  parseDingTalkAllowedCorps,
+  parsePlatformIdentityProviderClaimMapping,
+} from '@/types/platform/identityProvider';
 
 import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import { AUDIT_ACTION } from '../audit/auditActionCatalog';
@@ -64,11 +67,20 @@ const toPublishedPayload = (
   ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   }
+  // Distinct from INVALID_SNAPSHOT so the admin UI can say "add an organization first" instead
+  // of a generic validation failure. Runtime is fail-closed on an empty allowlist, so a
+  // DingTalk provider with none would publish a login method nobody could ever use.
+  if (draft.type === 'dingtalk' && draft.dingtalkAllowedCorps.length === 0) {
+    throw new IdentityProviderPublicationError(
+      'PLATFORM_IDENTITY_PROVIDER_CORP_ALLOWLIST_REQUIRED',
+    );
+  }
   const payload = {
     autoProvision: draft.autoProvision,
     buttonLabel: draft.buttonLabel,
     claimMapping: draft.claimMapping,
     clientId: draft.clientId,
+    dingtalkAllowedCorps: draft.dingtalkAllowedCorps,
     displayName: draft.displayName,
     domainAllowlist: draft.domainAllowlist,
     enabled: true,
@@ -87,6 +99,38 @@ const toPublishedPayload = (
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   }
   return { ...parsed, secretUpdatedAt: parsed.secretUpdatedAt };
+};
+
+/**
+ * Every configuration field a rollback restores from the target published revision.
+ *
+ * Derived from the payload by construction (rather than field-by-field at the call site) so a
+ * new published field cannot be silently left at the *current draft's* value — that bug let a
+ * rollback preserve a revoked DingTalk organisation grant.
+ */
+export const restoredConfigFromPublishedPayload = (
+  payload: PublishedIdentityProviderPayload,
+): Pick<
+  PublishedIdentityProviderPayload,
+  | 'autoProvision'
+  | 'buttonLabel'
+  | 'claimMapping'
+  | 'clientId'
+  | 'dingtalkAllowedCorps'
+  | 'displayName'
+  | 'domainAllowlist'
+  | 'groupRoleMapping'
+  | 'icon'
+  | 'issuer'
+  | 'providerKey'
+  | 'scopes'
+  | 'secretFingerprint'
+  | 'type'
+> => {
+  // `enabled` is decided by the caller (rollback always forks back to a disabled draft) and the
+  // secret timestamps come from the stored secret version, so both are excluded here.
+  const { enabled: _enabled, secretUpdatedAt: _secretUpdatedAt, ...config } = payload;
+  return config;
 };
 
 /** Atomic publication and rollback control plane for restart-activated OIDC providers. */
@@ -156,6 +200,11 @@ export class IdentityProviderPublicationService {
           throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
         })(),
       clientId: row.clientId,
+      dingtalkAllowedCorps:
+        parseDingTalkAllowedCorps(row.dingtalkAllowedCorps ?? []) ??
+        (() => {
+          throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+        })(),
       displayName: row.displayName,
       domainAllowlist: row.domainAllowlist,
       enabled: row.enabled,
@@ -469,28 +518,17 @@ export class IdentityProviderPublicationService {
             : secret.createdAt;
         const nextRevision = draft.revision + 1;
         const now = new Date();
+        const restored = restoredConfigFromPublishedPayload(payload);
         const [updated] = await tx
           .update(platformIdentityProviders)
           .set({
+            ...restored,
             activationRevision: null,
-            autoProvision: payload.autoProvision,
-            buttonLabel: payload.buttonLabel,
-            claimMapping: payload.claimMapping,
-            clientId: payload.clientId,
-            displayName: payload.displayName,
-            domainAllowlist: payload.domainAllowlist,
             enabled: false,
-            groupRoleMapping: payload.groupRoleMapping,
-            icon: payload.icon,
-            issuer: payload.issuer,
-            providerKey: payload.providerKey,
             revision: nextRevision,
-            scopes: payload.scopes,
-            secretFingerprint: payload.secretFingerprint,
             secretRef: secret.ref,
             secretUpdatedAt: canonicalSecretUpdatedAt,
             status: 'draft',
-            type: payload.type,
             updatedAt: now,
             updatedBy: actorUserId,
             usePkce: true,
@@ -503,29 +541,19 @@ export class IdentityProviderPublicationService {
           )
           .returning();
         if (!updated) throw new PlatformRevisionConflictError();
+        const { secretFingerprint, ...restoredDraftFields } = restored;
         const result: PlatformIdentityProviderInternalDraft = {
           ...draft,
+          ...restoredDraftFields,
           activationRevision: null,
-          autoProvision: payload.autoProvision,
-          buttonLabel: payload.buttonLabel,
-          claimMapping: payload.claimMapping,
-          clientId: payload.clientId,
-          displayName: payload.displayName,
-          domainAllowlist: payload.domainAllowlist,
           enabled: false,
-          groupRoleMapping: payload.groupRoleMapping,
-          icon: payload.icon,
-          issuer: payload.issuer,
-          providerKey: payload.providerKey,
           revision: nextRevision,
-          scopes: payload.scopes,
           secret: {
             configured: true,
-            fingerprint: payload.secretFingerprint,
+            fingerprint: secretFingerprint,
             updatedAt: canonicalSecretUpdatedAt,
           },
           status: 'draft',
-          type: payload.type,
           usePkce: true,
         };
         return appendSuccessTerminal(tx, request, fence, {

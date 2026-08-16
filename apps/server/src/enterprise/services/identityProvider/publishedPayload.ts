@@ -1,6 +1,12 @@
 import type { PlatformIdentityProviderInternalDraft } from '@/database/models/platform';
 import {
+  isCanonicalDingTalkIdentityContract,
+  isDingTalkIdentityProviderIssuer,
+  isValidDingTalkProviderKey,
+  parseDingTalkAllowedCorps,
   parsePlatformIdentityProviderClaimMapping,
+  PLATFORM_IDENTITY_PROVIDER_TYPES,
+  type PlatformIdentityProviderAllowedCorp,
   type PlatformIdentityProviderType,
 } from '@/types/platform/identityProvider';
 
@@ -11,6 +17,8 @@ export interface PublishedIdentityProviderPayload {
   buttonLabel: string;
   claimMapping: PlatformIdentityProviderInternalDraft['claimMapping'];
   clientId: string;
+  /** Organisations allowed to sign in (kind `dingtalk`); `[]` for every other kind. */
+  dingtalkAllowedCorps: PlatformIdentityProviderAllowedCorp[];
   displayName: string;
   domainAllowlist: string[];
   /**
@@ -33,6 +41,7 @@ export class IdentityProviderPublicationError extends Error {
   constructor(
     public readonly code:
       | 'PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT'
+      | 'PLATFORM_IDENTITY_PROVIDER_CORP_ALLOWLIST_REQUIRED'
       | 'PLATFORM_IDENTITY_PROVIDER_DRAFT_REQUIRED'
       | 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT'
       | 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
@@ -71,6 +80,7 @@ export const parsePublishedIdentityProviderPayload = (
     'buttonLabel',
     'claimMapping',
     'clientId',
+    'dingtalkAllowedCorps',
     'displayName',
     'domainAllowlist',
     'enabled',
@@ -86,6 +96,7 @@ export const parsePublishedIdentityProviderPayload = (
   ]);
   if (Object.keys(row).some((key) => !allowedKeys.has(key))) return null;
   const claimMapping = parsePlatformIdentityProviderClaimMapping(row.claimMapping);
+  const dingtalkAllowedCorps = parseDingTalkAllowedCorps(row.dingtalkAllowedCorps ?? []);
   const scopes = parseStringArray(row.scopes, 32);
   const domainAllowlist =
     Array.isArray(row.domainAllowlist) &&
@@ -104,6 +115,7 @@ export const parsePublishedIdentityProviderPayload = (
       : null;
   if (
     !claimMapping ||
+    !dingtalkAllowedCorps ||
     claimMapping.email.length === 0 ||
     !scopes?.includes('openid') ||
     !domainAllowlist ||
@@ -139,7 +151,7 @@ export const parsePublishedIdentityProviderPayload = (
       (typeof row.secretUpdatedAt !== 'string' ||
         Number.isNaN(Date.parse(row.secretUpdatedAt)) ||
         new Date(row.secretUpdatedAt).toISOString() !== row.secretUpdatedAt)) ||
-    (row.type !== 'authentik' && row.type !== 'generic_oidc') ||
+    !PLATFORM_IDENTITY_PROVIDER_TYPES.includes(row.type as PlatformIdentityProviderType) ||
     row.usePkce !== true ||
     containsEnterpriseSecretMaterial({
       ...row,
@@ -164,11 +176,30 @@ export const parsePublishedIdentityProviderPayload = (
   } catch {
     return null;
   }
+  // Kinds with a protocol-fixed identity contract are re-verified at the read boundary too:
+  // a published revision or an LKG file that was hand-edited (or written by an older/looser
+  // build) must not be materialized into a runtime provider with a remapped subject or an
+  // issuer that silently means "any organisation".
+  if (
+    row.type === 'dingtalk'
+      ? !isDingTalkIdentityProviderIssuer(row.issuer) ||
+        // The key is the sub-domain of the synthesized address; a non-DNS-label key would
+        // produce an address the runtime claim validation rejects.
+        !isValidDingTalkProviderKey(row.providerKey) ||
+        !isCanonicalDingTalkIdentityContract({ claimMapping, scopes }) ||
+        // Fail closed: a live DingTalk provider must name at least one allowed organisation,
+        // otherwise "allowlist empty" would have to be interpreted at login time.
+        dingtalkAllowedCorps.length === 0
+      : dingtalkAllowedCorps.length > 0
+  ) {
+    return null;
+  }
   return {
     autoProvision: row.autoProvision,
     buttonLabel: row.buttonLabel,
     claimMapping,
     clientId: row.clientId,
+    dingtalkAllowedCorps,
     displayName: row.displayName,
     domainAllowlist,
     enabled: row.enabled as boolean,
@@ -179,7 +210,7 @@ export const parsePublishedIdentityProviderPayload = (
     scopes,
     secretFingerprint: row.secretFingerprint,
     secretUpdatedAt: row.secretUpdatedAt as string | undefined,
-    type: row.type,
+    type: row.type as PlatformIdentityProviderType,
     usePkce: true,
   };
 };

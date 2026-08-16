@@ -1,3 +1,5 @@
+import type { PlatformIdentityProviderType } from '@lobechat/types';
+
 import { lambdaClient } from '@/libs/trpc/client';
 import type {
   AdminSystemPrepareRestartInput,
@@ -14,7 +16,7 @@ class AdminIdentityProvidersService {
     lambdaClient.admin.identityProviders.create.mutate(input);
   disable = (input: { expectedRevision: number; id: string; reason: string }) =>
     lambdaClient.admin.identityProviders.disable.mutate(input);
-  discover = (input: { issuer: string }) =>
+  discover = (input: { issuer: string; type?: PlatformIdentityProviderType }) =>
     lambdaClient.admin.identityProviders.discover.mutate(input);
   getCallbackUrls = () => lambdaClient.admin.identityProviders.getCallbackUrls.query();
   list = (input: AdminIdentityProviderListInput) =>
