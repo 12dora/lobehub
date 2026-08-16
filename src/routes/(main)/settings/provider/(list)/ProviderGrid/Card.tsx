@@ -64,7 +64,7 @@ const ProviderCard = memo<ProviderCardProps>(
             <Flexbox gap={12} width={'100%'}>
               <Flexbox horizontal align={'center'} justify={'space-between'}>
                 {source === 'builtin' ? (
-                  <Flexbox horizontal align={'center'} gap={8}>
+                  <Flexbox horizontal align={'center'} gap={8} style={{ height: 24 }}>
                     {localizedTitle ? (
                       <>
                         <ProviderIcon
@@ -73,7 +73,9 @@ const ProviderCard = memo<ProviderCardProps>(
                           style={{ borderRadius: 6 }}
                           type={'avatar'}
                         />
-                        <Text style={{ fontSize: 16, fontWeight: 'bold' }}>{localizedTitle}</Text>
+                        <Text style={{ fontSize: 16, fontWeight: 'bold', lineHeight: '24px' }}>
+                          {localizedTitle}
+                        </Text>
                       </>
                     ) : (
                       <ProviderCombine

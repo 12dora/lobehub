@@ -514,13 +514,13 @@ export default {
   'aiProviderSettings.sharedOAuth.paste.callbackPlaceholder':
     'https://platform.openai.com/auth/callback?code=…',
   'aiProviderSettings.sharedOAuth.paste.cannotAutoRenew':
-    'This connection was made with a pasted access token, so it cannot renew itself and members lose access when it expires. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
+    'This connection cannot renew itself. Reconnect to enable auto-renewal.',
   'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBefore':
-    'This connection was made with a pasted access token, so it cannot renew itself and members lose access on {{time}}. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
+    'This connection cannot renew itself and expires on {{time}}. Reconnect to enable auto-renewal.',
   'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewBeforeSessionOnly':
-    'This connection was made with a pasted access token, so it cannot renew itself and members lose access on {{time}}. Paste a ChatGPT web session to make it renew itself.',
+    'This connection cannot renew itself and expires on {{time}}. Paste a web session to enable auto-renewal.',
   'aiProviderSettings.sharedOAuth.paste.cannotAutoRenewSessionOnly':
-    'This connection was made with a pasted access token, so it cannot renew itself and members lose access when it expires. Paste a ChatGPT web session to make it renew itself.',
+    'This connection cannot renew itself. Paste a web session to enable auto-renewal.',
   'aiProviderSettings.sharedOAuth.paste.detected.accessToken':
     'Detected: access token — this cannot renew itself.',
   'aiProviderSettings.sharedOAuth.paste.detected.session':

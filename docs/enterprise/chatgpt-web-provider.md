@@ -102,7 +102,7 @@ bun run curl-impersonate:install
 - **存量兼容**：卡片里的 `authorizationCode` / `clientId` / `tokenEndpoint` / `scopes` **保留不删**。已经以 `oauthRenewalKind: 'oauth'` 存在的连接照常在 `auth.openai.com/oauth/token` 续期（`refreshAccessToken` 的 `'oauth'` 分支未动），被去掉的只是「新建连接的入口」。
 - `initiateDeviceCode` **仍然保留**：会话路径也要靠它产出信封里的 `deviceId`（`oai-device-id` 的稳定来源）。
 - **粘贴区只有一个多行输入框**，粘什么由客户端识别（`packages/utils/src/chatgptWebPaste.ts`）：原始 Cookie 值、`Cookie: …` 整行、开发者工具「复制为 cURL」的整条命令（bash /cmd/ PowerShell 引号都行，`-b` 与 `-H 'cookie: …'` 都认）、`/api/auth/session` 的 JSON 响应体、`Bearer <jwt>`、裸 access token。next-auth 把超长会话切成 `…session-token.0/.1` 时会按序拼回。输入框下方实时显示「已识别：网页会话（可自动续期）/ 访问令牌（无法自动续期）/ 无法识别」，识别不出就禁用提交。**同时粘到会话和令牌时永远存会话**（能续期的那个）。
-- 已经用访问令牌连上的，连接卡片会出现**告警条**（不是一行灰字）：「此连接使用粘贴的访问令牌建立，无法自动续期…… 粘贴网页会话即可自动续期」（有 `exp` 时带失效时间），告警条上直接给出 \*\*「粘贴网页会话」\*\* 主按钮（点开即落在会话输入框）。管理端与用户端两侧行为一致。
+- 已经用访问令牌连上的，连接卡片会出现**告警条**（不是一行灰字）：「当前连接无法自动续期，将于 … 失效。粘贴网页会话即可自动续期」（有 `exp` 时带失效时间），告警条上直接给出 \*\*「粘贴网页会话」\*\* 主按钮（点开即落在会话输入框）。管理端与用户端两侧行为一致。
 - 反过来，可续期连接的状态行说的是「已连接，自动续期中（网页会话 / 授权登录）」，另起一行「当前访问令牌有效期至 {{time}}」并附「上次续期于 {{time}}」——`expiresAt` 在这里是轮转日期而不是最后期限，不要按告警读。
 - **令牌来源校验**：粘贴的（以及会话签出的）access token 会解 `client_id` 声明，Codex CLI 客户端 `app_EMoamEEZ73f0CkXaXp7hrann` 没有网页版权限，连接时直接拒（`token_not_web`，文案指向改粘网页会话）。已知可用的是网页客户端 `app_X8zY6vW2pQ9tR3dE7nK1jL5gH` 与本仓库 PKCE 用的 `app_2SKx67EdpoN0G6j64rFvigXD`；**其余未知 client\_id 一律放行**（清单不是公开契约，且令牌随后还要过 `/backend-api/me`）。
 - **重复连接会清空上一次未提供的字段**：用访问令牌重连一个原本可续期的账号，会把续期凭据（会话 /refresh token）连同 `oauthRenewalKind` 一起抹掉、退化成不可续期。

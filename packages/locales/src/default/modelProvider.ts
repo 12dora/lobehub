@@ -234,13 +234,13 @@ export default {
   'providerModels.config.oauth.paste.autoRenew': 'This connection renews itself automatically.',
   'providerModels.config.oauth.paste.autoRenewKind': 'Renews itself automatically ({{kind}}).',
   'providerModels.config.oauth.paste.cannotAutoRenew':
-    'This connection was made with a pasted access token, so it cannot renew itself and stops working when it expires. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
+    'This connection cannot renew itself. Reconnect to enable auto-renewal.',
   'providerModels.config.oauth.paste.cannotAutoRenewBefore':
-    'This connection was made with a pasted access token, so it cannot renew itself and stops working on {{time}}. Paste a ChatGPT web session to make it renew itself, or reconnect through the authorization page.',
+    'This connection cannot renew itself and expires on {{time}}. Reconnect to enable auto-renewal.',
   'providerModels.config.oauth.paste.cannotAutoRenewBeforeSessionOnly':
-    'This connection was made with a pasted access token, so it cannot renew itself and stops working on {{time}}. Paste a ChatGPT web session to make it renew itself.',
+    'This connection cannot renew itself and expires on {{time}}. Paste a web session to enable auto-renewal.',
   'providerModels.config.oauth.paste.cannotAutoRenewSessionOnly':
-    'This connection was made with a pasted access token, so it cannot renew itself and stops working when it expires. Paste a ChatGPT web session to make it renew itself.',
+    'This connection cannot renew itself. Paste a web session to enable auto-renewal.',
   'providerModels.config.oauth.paste.connectedEmail': 'Signed in as {{email}}',
   'providerModels.config.oauth.paste.currentTokenUntil': 'Current access token runs to {{time}}',
   'providerModels.config.oauth.paste.detected.accessToken':
