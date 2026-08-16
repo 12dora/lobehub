@@ -5,6 +5,7 @@ import {
   getComposioAppByIdentifier,
   getLobehubConnectorProviderById,
   INTEREST_AREA_KEYS,
+  isSupportedTaskTemplateCronPattern,
   TASK_TEMPLATE_CATEGORIES,
   TASK_TEMPLATE_ICONS,
   TASK_TEMPLATE_RECOMMEND_COUNT,
@@ -29,39 +30,6 @@ export const createTaskTemplateRecommendationSeedKey = (
   createHash('sha256')
     .update(`task-template-recommendation:v1:${instanceSeedScope}:${userId}`)
     .digest('base64url');
-
-const isCronNumber = (value: string, max: number) => {
-  if (!/^\d+$/.test(value)) return false;
-  const parsed = Number.parseInt(value, 10);
-  return parsed >= 0 && parsed <= max;
-};
-
-const isCronStep = (value: string, max: number) => {
-  if (!/^\*\/\d+$/.test(value)) return false;
-  const parsed = Number.parseInt(value.slice(2), 10);
-  return parsed >= 1 && parsed <= max;
-};
-
-const isCronNumberList = (value: string, max: number) =>
-  value.split(',').every((item) => isCronNumber(item, max));
-
-const isSupportedTaskTemplateCronPattern = (value: unknown): value is string => {
-  if (typeof value !== 'string') return false;
-
-  const parts = value.trim().split(/\s+/);
-  if (parts.length !== 5) return false;
-
-  const [minute, hour, dayOfMonth, month, weekday] = parts;
-  if (
-    !(minute === '*' || isCronNumberList(minute, 59) || isCronStep(minute, 59)) ||
-    !(hour === '*' || isCronNumberList(hour, 23) || isCronStep(hour, 24))
-  ) {
-    return false;
-  }
-  if (dayOfMonth !== '*' || month !== '*') return false;
-
-  return weekday === '*' || isCronNumberList(weekday, 6);
-};
 
 const taskTemplateConnectorSchema: z.ZodType<TaskTemplateConnector> = z
   .object({
@@ -110,6 +78,28 @@ const parseTaskTemplateRecommendations = (value: unknown): TaskTemplate[] => {
   return items.data;
 };
 
+export interface TaskTemplateRecommendationOptions {
+  count?: number;
+  excludeIds?: number[];
+  locale?: string;
+  refreshSeed?: string;
+  /** Bounded abort signal for callers (e.g. admin import) that must not hang on a stalled market. */
+  signal?: AbortSignal;
+}
+
+/** Thrown when the outbound market request exceeded the caller's bounded deadline. */
+export class TaskTemplateMarketTimeoutError extends Error {
+  readonly code = 'TASK_TEMPLATE_MARKET_TIMEOUT' as const;
+
+  constructor(message = 'Market recommendations request timed out') {
+    super(message);
+    this.name = 'TaskTemplateMarketTimeoutError';
+  }
+}
+
+const isAbortError = (error: unknown): boolean =>
+  error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+
 export class TaskTemplateService {
   private marketService: MarketService;
 
@@ -117,31 +107,67 @@ export class TaskTemplateService {
     this.marketService = new MarketService({ userInfo: { userId } });
   }
 
+  private async requestRecommendations(
+    interestKeys: string[],
+    options: TaskTemplateRecommendationOptions,
+  ): Promise<unknown> {
+    const params = {
+      count: clampRecommendationCount(options.count),
+      excludeIds: options.excludeIds,
+      interestKeys,
+      locale: options.locale,
+      refreshSeed: options.refreshSeed,
+      ...(isTrustedClientEnabled()
+        ? {}
+        : { seedKey: createTaskTemplateRecommendationSeedKey(this.userId) }),
+    };
+    const recommendations = this.marketService.market.taskTemplates;
+
+    try {
+      // Only pass request options when there is something to say — the user-facing read keeps
+      // its single-argument call shape.
+      return options.signal
+        ? await recommendations.getTaskTemplateRecommendations(params, {
+            signal: options.signal,
+          })
+        : await recommendations.getTaskTemplateRecommendations(params);
+    } catch (error) {
+      if (isAbortError(error)) throw new TaskTemplateMarketTimeoutError();
+      throw error;
+    }
+  }
+
   async listDailyRecommend(
     interestKeys: string[],
-    options: {
-      count?: number;
-      excludeIds?: number[];
-      locale?: string;
-      refreshSeed?: string;
-    } = {},
+    options: TaskTemplateRecommendationOptions = {},
   ): Promise<TaskTemplate[]> {
     try {
-      const result = await this.marketService.market.taskTemplates.getTaskTemplateRecommendations({
-        count: clampRecommendationCount(options.count),
-        excludeIds: options.excludeIds,
-        interestKeys,
-        locale: options.locale,
-        refreshSeed: options.refreshSeed,
-        ...(isTrustedClientEnabled()
-          ? {}
-          : { seedKey: createTaskTemplateRecommendationSeedKey(this.userId) }),
-      });
-
-      return parseTaskTemplateRecommendations(result);
+      return parseTaskTemplateRecommendations(
+        await this.requestRecommendations(interestKeys, options),
+      );
     } catch (error) {
       console.error('[taskTemplate:listDailyRecommend] Market recommendations failed', error);
       throw error;
     }
+  }
+
+  /**
+   * Recommendation items **without** whole-array validation.
+   *
+   * `listDailyRecommend` rejects the entire response when a single row is malformed, which is the
+   * right behaviour for a user-facing render. The admin import instead validates row by row so one
+   * bad upstream row is skipped rather than failing the whole import.
+   */
+  async listDailyRecommendRaw(
+    interestKeys: string[],
+    options: TaskTemplateRecommendationOptions = {},
+  ): Promise<unknown[]> {
+    const envelope = taskTemplateRecommendationEnvelopeSchema.safeParse(
+      await this.requestRecommendations(interestKeys, options),
+    );
+    if (!envelope.success) {
+      throw new Error('Market recommendations returned no items array');
+    }
+    return envelope.data.items;
   }
 }

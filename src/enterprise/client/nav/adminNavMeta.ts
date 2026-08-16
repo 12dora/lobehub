@@ -39,7 +39,10 @@ export type AdminNavLabelKey =
   | 'nav.auditExports'
   | 'nav.auditLegalHolds'
   | 'nav.auditRetention'
-  | 'nav.system';
+  | 'nav.system'
+  | 'nav.systemGeneral'
+  | 'nav.systemStatus'
+  | 'nav.taskTemplates';
 
 /**
  * Single source of truth for admin nav + route permission declarations.
@@ -51,9 +54,6 @@ export interface AdminNavItem {
   /** Hide from side nav while still registering a route (detail pages). */
   hideFromNav?: boolean;
   id: string;
-  /** i18n key under the `admin` namespace. */
-  labelKey: AdminNavLabelKey;
-  /**
   /**
    * Group only: child `id` the group index route should prefer, instead of the first visible
    * child. Used when the group path is a legacy deep link whose historical destination is not
@@ -61,6 +61,9 @@ export interface AdminNavItem {
    * first visible + authorized child when that child is hidden or not permitted.
    */
   indexRedirectTo?: string;
+  /** i18n key under the `admin` namespace. */
+  labelKey: AdminNavLabelKey;
+  /**
    * Absolute path pattern under `/admin` (e.g. `/admin/users` or `/admin/users/:id`).
    * Use React Router path patterns; matching uses `matchPath` (most specific wins).
    */
@@ -147,6 +150,14 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         labelKey: 'nav.aiMemory',
         path: '/admin/ai/memory',
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
+      },
+      {
+        // 任务模板 — authored recommendations that create a scheduled task on the inbox agent,
+        // so they reuse the platform-agent permission codes (no extra RBAC seeding).
+        id: 'task-templates',
+        labelKey: 'nav.taskTemplates',
+        path: '/admin/ai/task-templates',
+        requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
       },
     ],
     id: 'ai',
@@ -256,18 +267,6 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [],
   },
   {
-    id: 'system',
-    labelKey: 'nav.system',
-    path: '/admin/system',
-    // Group shell: visible when any child is allowed (same as `ai` / `audit`).
-    requiredPermissions: [],
-  },
-] as const;
-
-const flattenNav = (items: readonly AdminNavItem[]): AdminNavItem[] => {
-  const out: AdminNavItem[] = [];
-  for (const item of items) {
-    out.push(item);
     children: [
       {
         id: 'system-general',
@@ -340,30 +339,31 @@ const flattenNav = (items: readonly AdminNavItem[]): AdminNavItem[] => {
         requiredPermissions: [PLATFORM_PERMISSIONS.POLICY_READ],
       },
     ],
-    if (item.children?.length) out.push(...flattenNav(item.children));
+    id: 'system',
     // `/admin/system` was the status page before the group existed, so keep old bookmarks
     // landing there rather than on the (first-in-menu) empty general-settings placeholder.
     indexRedirectTo: 'system-status',
-  }
+    labelKey: 'nav.system',
     // Group children keep their historical absolute paths (`/admin/users`, `/admin/branding`, …):
     // routing derives every leaf from its own `path`, so no redirect churn is needed.
+    path: '/admin/system',
+    // Group shell: visible when any child is allowed (same as `ai` / `audit`).
+    requiredPermissions: [],
+  },
+] as const;
+
+const flattenNav = (items: readonly AdminNavItem[]): AdminNavItem[] => {
+  const out: AdminNavItem[] = [];
+  for (const item of items) {
+    out.push(item);
+    if (item.children?.length) out.push(...flattenNav(item.children));
+  }
   return out;
 };
 
 /** Flat catalog of every registered admin path (including nested + hidden details). */
 export const ADMIN_NAV_FLAT: readonly AdminNavItem[] = flattenNav(ADMIN_NAV_ITEMS);
 
-/** Specificity score: more segments + static (non-param) segments rank higher. */
-const pathSpecificity = (pattern: string): number => {
-  const parts = pattern.split('/').filter(Boolean);
-  let score = parts.length * 100;
-  for (const part of parts) {
-    if (!part.startsWith(':')) score += 10;
-  }
-  return score;
-};
-
-/**
 /**
  * Group ancestry by id. Group children are not required to live under the group path
  * (e.g. `users` sits at `/admin/users` inside the `system` group), so breadcrumbs read
@@ -383,6 +383,17 @@ const buildNavParentById = (): ReadonlyMap<string, AdminNavItem> => {
 
 const ADMIN_NAV_PARENT_BY_ID = buildNavParentById();
 
+/** Specificity score: more segments + static (non-param) segments rank higher. */
+const pathSpecificity = (pattern: string): number => {
+  const parts = pattern.split('/').filter(Boolean);
+  let score = parts.length * 100;
+  for (const part of parts) {
+    if (!part.startsWith(':')) score += 10;
+  }
+  return score;
+};
+
+/**
  * Resolve the catalog entry for a pathname using React Router `matchPath`.
  * Most-specific pattern wins (static beats param; longer beats shorter).
  * Never uses unsafe string-prefix matching alone.

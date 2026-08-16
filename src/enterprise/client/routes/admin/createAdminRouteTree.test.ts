@@ -98,15 +98,17 @@ describe('createAdminRouteTree', () => {
     expect(componentIdOf('users/:id')).toBe('UserDetailPage');
     expect(componentIdOf('agents')).toBe('AgentListPage');
     expect(componentIdOf('branding')).toBe('BrandingPage');
-    expect(componentIdOf('system')).toBe('SystemPage');
+    expect(componentIdOf('ai/task-templates')).toBe('TaskTemplateListPage');
+    expect(componentIdOf('system/status')).toBe('SystemPage');
+    expect(componentIdOf('system/general')).toBe('SystemGeneralPage');
 
     // Group parents (/admin/ai, /admin/audit, /admin/system) are index redirects to the first
     // accessible child — never a "coming soon" placeholder surface.
     expect(componentIdOf('ai')).toBe('AiIndexRedirect');
     expect(componentIdOf('audit')).toBe('AuditIndexRedirect');
+    expect(componentIdOf('system')).toBe('SystemIndexRedirect');
 
     // The /admin index route is the Overview dashboard.
-    expect(componentIdOf('system')).toBe('SystemIndexRedirect');
     const index = children.find((c) => c.index);
     expect((index?.handle as { admin?: { componentId?: string } })?.admin?.componentId).toBe(
       'OverviewPage',

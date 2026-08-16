@@ -20,6 +20,7 @@ const {
   mockUseFetchBriefs,
   mockUseFetchLobehubConnectorConnections,
   mockUseFetchUserComposioConnections,
+  mockUsePlatformTaskTemplates,
   mockUseResolvedInterestKeys,
   mockUseSWR,
 } = vi.hoisted(() => ({
@@ -28,8 +29,13 @@ const {
   mockUseFetchBriefs: vi.fn(),
   mockUseFetchLobehubConnectorConnections: vi.fn(),
   mockUseFetchUserComposioConnections: vi.fn(),
+  mockUsePlatformTaskTemplates: vi.fn(),
   mockUseResolvedInterestKeys: vi.fn(),
   mockUseSWR: vi.fn(),
+}));
+
+vi.mock('@/enterprise/client/hooks/usePlatformTaskTemplates', () => ({
+  usePlatformTaskTemplates: mockUsePlatformTaskTemplates,
 }));
 
 vi.mock('ahooks', () => ({
@@ -242,6 +248,11 @@ describe('useDailyBriefRecommendationsUI', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseResolvedInterestKeys.mockReturnValue(['coding']);
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: false,
+      resolved: true,
+      templates: [],
+    });
     mockUseSWR.mockReturnValue({
       data: { data: [template], success: true },
       isLoading: false,
@@ -401,6 +412,98 @@ describe('useDailyBriefRecommendationsUI', () => {
     expect(result.current).toEqual({ mode: 'hidden' });
     expect(mockUseFetchUserComposioConnections).toHaveBeenCalledWith(false);
     expect(mockUseFetchLobehubConnectorConnections).toHaveBeenCalledWith(false);
+  });
+
+  it('serves the platform-managed list instead of the market once the table has rows', () => {
+    const platformTemplate = { ...template, id: 'tpl-1', identifier: 'platform-daily' };
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: [platformTemplate, { ...template, id: 'tpl-2', identifier: 'platform-weekly' }],
+    });
+
+    const { result } = renderHook(() => useDailyBriefRecommendationsUI({ count: 1 }));
+
+    expect(result.current).toMatchObject({ mode: 'cards', templates: [platformTemplate] });
+    // The market request must not even be keyed while the platform list is authoritative.
+    expect(mockUseSWR.mock.calls[0][0]).toBeNull();
+  });
+
+  it('hides the block when every platform-managed template is disabled', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({ managed: true, resolved: true, templates: [] });
+
+    const { result } = renderHook(() => useDailyBriefRecommendationsUI());
+
+    expect(result.current).toEqual({ mode: 'hidden' });
+  });
+
+  it('dismisses a platform template locally without calling the market endpoint', async () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: [{ ...template, id: 'tpl-1', identifier: 'platform-daily' }],
+    });
+
+    const { result } = renderHook(() => useDailyBriefRecommendationsUI());
+    if (result.current.mode !== 'cards') throw new Error('expected cards');
+
+    await result.current.onDismiss('tpl-1');
+
+    expect(taskTemplateService.dismiss).not.toHaveBeenCalled();
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it('holds the skeleton while the platform policy read is still unresolved', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: false,
+      resolved: false,
+      templates: [],
+    });
+    mockUseSWR.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isValidating: false,
+      mutate: mockMutate,
+    });
+
+    const { result } = renderHook(() => useDailyBriefRecommendationsUI({ count: 3 }));
+
+    // Skeleton, not the "no recommendations" hidden state — the answer is not known yet.
+    expect(result.current).toEqual({ mode: 'skeleton', skeletonCount: 3 });
+    expect(mockUseSWR.mock.calls[0][1]).toBeNull();
+  });
+
+  it('does not show cached market cards before the platform policy answers', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: false,
+      resolved: false,
+      templates: [],
+    });
+    // A warm SWR cache from a previous visit — it must not win the race and flash in.
+    mockUseSWR.mockReturnValue({
+      data: { data: [template], success: true },
+      isLoading: false,
+      isValidating: false,
+      mutate: mockMutate,
+    });
+
+    const { result } = renderHook(() => useDailyBriefRecommendationsUI({ count: 3 }));
+
+    expect(result.current).toEqual({ mode: 'skeleton', skeletonCount: 3 });
+  });
+
+  it('offers no refresh control for a platform-managed catalog', () => {
+    mockUsePlatformTaskTemplates.mockReturnValue({
+      managed: true,
+      resolved: true,
+      templates: [{ ...template, id: 'tpl-1', identifier: 'platform-daily' }],
+    });
+
+    const { result } = renderHook(() => useDailyBriefRecommendationsUI());
+    if (result.current.mode !== 'cards') throw new Error('expected cards');
+
+    // The seed-based reshuffle is meaningless here, so the surfaces must hide the button.
+    expect(result.current.onRefresh).toBeUndefined();
   });
 
   it('logs recommendation request errors instead of treating them as normal empty data', async () => {

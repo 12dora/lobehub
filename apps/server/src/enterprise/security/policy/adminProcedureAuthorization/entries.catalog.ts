@@ -312,4 +312,40 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_CATALOG = [
     path: 'admin.skills.validate',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_UPDATE] },
   },
+  // 任务模板 deliberately reuses the platform-agent permission codes so that an already
+  // provisioned deployment does not have to re-seed RBAC for this module.
+  {
+    kind: 'mutation',
+    path: 'admin.taskTemplates.create',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_CREATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.taskTemplates.delete',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_DELETE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.taskTemplates.importRecommendations',
+    // Import creates new rows AND overwrites the content of existing ones — both are required.
+    permission: {
+      mode: 'all',
+      permissions: [PLATFORM_PERMISSIONS.AGENT_CREATE, PLATFORM_PERMISSIONS.AGENT_UPDATE],
+    },
+  },
+  {
+    kind: 'query',
+    path: 'admin.taskTemplates.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.taskTemplates.setEnabled',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.taskTemplates.update',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AGENT_UPDATE] },
+  },
 ] as const satisfies readonly AdminProcedureAuthorization[];

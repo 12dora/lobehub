@@ -1,5 +1,7 @@
+import { TASK_TEMPLATE_RECOMMEND_MAX_COUNT } from '@lobechat/const';
+
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { PlatformSidebarLayoutModel } from '@/database/models/platform';
+import { PlatformSidebarLayoutModel, PlatformTaskTemplateModel } from '@/database/models/platform';
 import { RbacModel } from '@/database/models/rbac';
 import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
@@ -9,6 +11,10 @@ import {
   sidebarLayoutPolicySchema,
 } from '@/types/platform/sidebarLayout';
 
+import {
+  EMPTY_PLATFORM_TASK_TEMPLATE_LIST,
+  platformTaskTemplateListOutputSchema,
+} from '../contracts/adminTaskTemplates';
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
@@ -36,6 +42,7 @@ import {
 } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
+import { isRenderableTaskTemplate, toPlatformTaskTemplate } from './admin/taskTemplatesSupport';
 import { withActiveUserWhenManaged } from './managedActiveUser';
 import { platformAgentsRouter } from './platformAgents';
 import { platformSkillsRouter } from './platformSkills';
@@ -91,6 +98,39 @@ export const platformRouter = router({
   }),
 
   skills: platformSkillsRouter,
+
+  taskTemplates: router({
+    /**
+     * Platform-managed 任务模板 for the current user (home 为你推荐 + agent-task empty state).
+     *
+     * Emptiness is meaningful: `managed: false` (flag off, or zero rows in the table) tells the
+     * client to keep using the remote market recommendations. Once the table holds any row the
+     * platform list is authoritative and only enabled rows are returned.
+     */
+    list: authedProcedure
+      .use(serverDatabase)
+      .output(platformTaskTemplateListOutputSchema)
+      .query(async ({ ctx }) => {
+        const flags = parseEnterpriseFeatureFlags(process.env);
+        if (!flags.ENABLE_PLATFORM_ADMIN) return { ...EMPTY_PLATFORM_TASK_TEMPLATE_LIST };
+
+        const model = new PlatformTaskTemplateModel(ctx.serverDB);
+        const total = await model.count();
+        if (total === 0) return { ...EMPTY_PLATFORM_TASK_TEMPLATE_LIST };
+
+        // Both consumers render at most TASK_TEMPLATE_RECOMMEND_MAX_COUNT cards; cap server-side
+        // so an unbounded catalog can never become an unbounded per-user response.
+        const rows = await model.listEnabled(TASK_TEMPLATE_RECOMMEND_MAX_COUNT);
+        return {
+          managed: true,
+          // A row referencing a since-retired connector cannot render; quarantine it here (it
+          // stays visible in the admin console) rather than failing the whole managed catalog.
+          templates: rows
+            .filter((row) => isRenderableTaskTemplate(row))
+            .map((row) => toPlatformTaskTemplate(row)),
+        };
+      }),
+  }),
 
   /**
    * Read-only capability DTO for client bootstrap.

@@ -19,8 +19,8 @@ import { useTaskTemplateCreate } from './useTaskTemplateCreate';
 import { useVisibleAuthSpecs } from './useVisibleAuthSpecs';
 
 interface TaskTemplateCardProps {
-  onCreated: (templateId: number) => void;
-  onDismiss: (templateId: number) => void;
+  onCreated: (templateId: number | string) => void;
+  onDismiss: (templateId: number | string) => void;
   template: TaskTemplate;
 }
 

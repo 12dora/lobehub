@@ -1,4 +1,5 @@
 import { lambdaClient } from '@/libs/trpc/client';
+import type { PlatformTaskTemplateListOutput } from '@/server/enterprise/contracts/adminTaskTemplates';
 import { type PlatformCapabilities } from '@/types/platform/capabilities';
 import { type PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
 import { platformPublicSnapshotSchema } from '@/types/platform/publicSnapshot';
@@ -21,3 +22,12 @@ export const fetchPlatformPublicSnapshot = async (
 export const fetchPlatformSidebarLayoutPolicy = async (
   query: () => Promise<SidebarLayoutPolicy> = () => lambdaClient.platform.getSidebarLayout.query(),
 ): Promise<SidebarLayoutPolicy> => query();
+
+/**
+ * Platform-managed task templates. `managed: false` means the table is empty (or the flag is
+ * off) and the caller should keep using the built-in market recommendations.
+ */
+export const fetchPlatformTaskTemplates = async (
+  query: () => Promise<PlatformTaskTemplateListOutput> = () =>
+    lambdaClient.platform.taskTemplates.list.query(),
+): Promise<PlatformTaskTemplateListOutput> => query();

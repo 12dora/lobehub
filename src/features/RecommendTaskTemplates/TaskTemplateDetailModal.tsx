@@ -16,7 +16,7 @@ import { useTaskTemplateCreate } from './useTaskTemplateCreate';
 import { useVisibleAuthSpecs } from './useVisibleAuthSpecs';
 
 interface TaskTemplateDetailContentProps {
-  onCreated: (templateId: number) => void;
+  onCreated: (templateId: number | string) => void;
   template: TaskTemplate;
 }
 
@@ -110,7 +110,7 @@ const TaskTemplateDetailContent = memo<TaskTemplateDetailContentProps>(
 TaskTemplateDetailContent.displayName = 'TaskTemplateDetailContent';
 
 interface CreateTaskTemplateDetailModalOptions {
-  onCreated: (templateId: number) => void;
+  onCreated: (templateId: number | string) => void;
   template: TaskTemplate;
 }
 

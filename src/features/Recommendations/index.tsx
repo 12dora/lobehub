@@ -37,7 +37,8 @@ const Recommendations = memo(() => {
         <Text className={styles.subtitle} fontSize={12}>
           {t('recommendations.subtitle')}
         </Text>
-        {taskTemplatesState.mode === 'cards' && (
+        {/* A platform-managed catalog is not reshuffled per user, so it omits onRefresh. */}
+        {taskTemplatesState.mode === 'cards' && taskTemplatesState.onRefresh && (
           <Button
             icon={<RefreshCw size={12} />}
             size={'small'}

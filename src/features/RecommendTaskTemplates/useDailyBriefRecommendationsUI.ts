@@ -7,10 +7,11 @@ import { TASK_TEMPLATE_RECOMMEND_COUNT } from '@lobechat/const';
 import { createNanoId } from '@lobechat/utils';
 import { useSessionStorageState } from 'ahooks';
 import { App } from 'antd';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
+import { usePlatformTaskTemplates } from '@/enterprise/client/hooks/usePlatformTaskTemplates';
 import { taskTemplateKeys } from '@/libs/swr/keys';
 import { taskTemplateService } from '@/services/taskTemplate';
 import { useBriefStore } from '@/store/brief';
@@ -30,9 +31,13 @@ export type DailyBriefRecommendationsUIState =
   | { mode: 'skeleton'; skeletonCount: number }
   | {
       mode: 'cards';
-      onCreated: (templateId: number) => void;
-      onDismiss: (templateId: number) => void;
-      onRefresh: () => void;
+      onCreated: (templateId: number | string) => void;
+      onDismiss: (templateId: number | string) => void;
+      /**
+       * Absent when the list is not refreshable. A platform-managed catalog has no per-user
+       * reshuffle, so the surface must hide its refresh control instead of showing a dead button.
+       */
+      onRefresh?: () => void;
       templates: TaskTemplate[];
     };
 
@@ -64,7 +69,8 @@ const isTaskTemplateRecommendationCandidate = (value: unknown): value is TaskTem
     value.connectors.every(isTaskTemplateConnector) &&
     typeof value.cronPattern === 'string' &&
     typeof value.description === 'string' &&
-    typeof value.id === 'number' &&
+    // Market rows carry a numeric id; platform-managed rows carry their table id (text).
+    (typeof value.id === 'number' || typeof value.id === 'string') &&
     typeof value.identifier === 'string' &&
     typeof value.instruction === 'string' &&
     Array.isArray(value.interests) &&
@@ -172,18 +178,29 @@ export function useDailyBriefRecommendationsUI(
     defaultValue: '',
   });
 
+  /**
+   * When the platform admin manages a task-template catalog, that list is authoritative and the
+   * market is never consulted. An empty table (or a disabled/failed policy read) means
+   * `managed: false`, which keeps the original market recommendations exactly as they were.
+   */
+  const platform = usePlatformTaskTemplates();
+  const [dismissedPlatformIds, setDismissedPlatformIds] = useState<string[]>([]);
+
   const recommendationRequest = useMemo(
     () =>
       resolveDailyBriefRecommendationRequest({
         interestKeys,
-        isLogin,
+        // Platform-managed: never touch the market. Still unresolved: keep the cache key (so the
+        // block renders a skeleton rather than flashing market cards) but hold the fetch below.
+        isLogin: platform.managed ? false : isLogin,
         locale,
         recommendationCount,
         refreshSeed,
       }),
-    [interestKeys, isLogin, locale, recommendationCount, refreshSeed],
+    [interestKeys, isLogin, locale, platform.managed, recommendationCount, refreshSeed],
   );
-  const canFetchRecommendations = recommendationRequest.shouldFetch && interestKeys !== null;
+  const canFetchRecommendations =
+    recommendationRequest.shouldFetch && interestKeys !== null && platform.resolved;
   const recommendationFetcher = canFetchRecommendations
     ? async () =>
         taskTemplateService.listDailyRecommend(interestKeys, {
@@ -231,7 +248,14 @@ export function useDailyBriefRecommendationsUI(
   }, [setRefreshSeed]);
 
   const removeTemplateFromList = useCallback(
-    (templateId: number) => {
+    (templateId: number | string) => {
+      // Platform-managed rows are not backed by the market SWR cache; hide them locally.
+      if (typeof templateId === 'string') {
+        setDismissedPlatformIds((current) =>
+          current.includes(templateId) ? current : [...current, templateId],
+        );
+        return;
+      }
       mutate(
         (current) =>
           current
@@ -249,15 +273,17 @@ export function useDailyBriefRecommendationsUI(
   );
 
   const handleCreated = useCallback(
-    (templateId: number) => {
+    (templateId: number | string) => {
       removeTemplateFromList(templateId);
     },
     [removeTemplateFromList],
   );
 
   const handleDismiss = useCallback(
-    async (templateId: number) => {
+    async (templateId: number | string) => {
       removeTemplateFromList(templateId);
+      // Only market rows have a server-side dismiss endpoint.
+      if (typeof templateId !== 'number') return;
       try {
         await taskTemplateService.dismiss(templateId);
       } catch (error) {
@@ -269,7 +295,18 @@ export function useDailyBriefRecommendationsUI(
     [message, mutate, removeTemplateFromList, t],
   );
 
-  const templates = useMemo(() => normalizeTaskTemplateRecommendations(data?.data ?? []), [data]);
+  const marketTemplates = useMemo(
+    () => normalizeTaskTemplateRecommendations(data?.data ?? []),
+    [data],
+  );
+  const platformTemplates = useMemo(
+    () =>
+      normalizeTaskTemplateRecommendations(platform.templates)
+        .filter((tmpl) => !dismissedPlatformIds.includes(String(tmpl.id)))
+        .slice(0, recommendationCount),
+    [dismissedPlatformIds, platform.templates, recommendationCount],
+  );
+  const templates = platform.managed ? platformTemplates : marketTemplates;
   const requiredSources = useMemo(() => {
     const sources = new Set<TaskTemplateConnectorSource>();
     for (const tmpl of templates) {
@@ -283,6 +320,26 @@ export function useDailyBriefRecommendationsUI(
   );
   useFetchUserComposioConnections(requiredSources.has('composio'));
   useFetchLobehubConnectorConnections(requiredSources.has('lobehub'));
+
+  // Platform-managed: the admin list is the whole answer — no market call, no error path, and no
+  // refresh (the catalog is not reshuffled per user).
+  if (platform.managed) {
+    if (templates.length === 0) return { mode: 'hidden' };
+    return {
+      mode: 'cards',
+      onCreated: handleCreated,
+      onDismiss: handleDismiss,
+      templates,
+    };
+  }
+
+  // Until the platform policy answers, market rows — even cached ones — may be the wrong list.
+  // Show the skeleton rather than cards that could be replaced a tick later.
+  if (!platform.resolved) {
+    return recommendationRequest.key
+      ? { mode: 'skeleton', skeletonCount: recommendationCount }
+      : { mode: 'hidden' };
+  }
 
   const displayMode = resolveDailyBriefRecommendationDisplayMode({
     canFetchRecommendations,

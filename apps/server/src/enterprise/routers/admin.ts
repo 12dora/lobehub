@@ -35,6 +35,7 @@ import { adminSidebarLayoutRouter } from './admin/sidebarLayout';
 import { adminSkillsRouter } from './admin/skills';
 import { adminStatsRouter } from './admin/stats';
 import { adminSystemRouter } from './admin/system';
+import { adminTaskTemplatesRouter } from './admin/taskTemplates';
 import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure
@@ -186,6 +187,7 @@ export const adminRouter = router({
   skills: adminSkillsRouter,
   stats: adminStatsRouter,
   system: adminSystemRouter,
+  taskTemplates: adminTaskTemplatesRouter,
   users: adminUsersRouter,
 });
 

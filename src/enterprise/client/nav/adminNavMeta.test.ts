@@ -40,6 +40,11 @@ describe('adminNavMeta', () => {
     ]);
     expect(findAdminNavItemByPath('/admin/ai/connectors')?.id).toBe('ai-connectors');
     expect(findAdminNavItemByPath('/admin/ai/connectors/c1')?.id).toBe('ai-connector-detail');
+    // 任务模板 reuses the platform-agent permissions so no extra RBAC seeding is needed.
+    expect(findAdminNavItemByPath('/admin/ai/task-templates')?.id).toBe('task-templates');
+    expect(findAdminNavItemByPath('/admin/ai/task-templates')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.AGENT_READ,
+    ]);
     expect(findAdminNavItemByPath('/admin/agents')?.id).toBe('agents');
     expect(findAdminNavItemByPath('/admin/agents/a1')?.id).toBe('agents-detail');
     expect(findAdminNavItemByPath('/admin/agents/a1')?.requiredPermissions).toEqual([
@@ -110,12 +115,12 @@ describe('adminNavMeta', () => {
     // `unified-management` now lives inside the `system` group (paths unchanged).
     const ids = nav.flatMap((item) => [item.id, ...(item.children?.map((c) => c.id) ?? [])]);
     expect(ids).toContain('unified-management');
+    expect(nav.map((item) => item.id)).not.toContain('unified-management');
     expect(ids).not.toContain('managed-resources');
     expect(ids).not.toContain('settings');
   });
 
   it('unknown nested path has no catalog entry (admin 404)', () => {
-    expect(nav.map((item) => item.id)).not.toContain('unified-management');
     expect(findAdminNavItemByPath('/admin/does-not-exist')).toBeUndefined();
     expect(canAccessAdminPath('/admin/does-not-exist', [PLATFORM_PERMISSIONS.ADMIN_ACCESS])).toBe(
       false,
@@ -161,11 +166,6 @@ describe('adminNavMeta', () => {
     );
   });
 
-  it('hasAllPermissions requires every code', () => {
-    expect(hasAllPermissions(['a', 'b'], ['a'])).toBe(true);
-    expect(hasAllPermissions(['a'], ['a', 'b'])).toBe(false);
-    expect(ADMIN_NAV_FLAT.some((i) => i.path.includes(':id'))).toBe(true);
-  });
   it('includes the nav group crumb even when a child keeps a path outside the group prefix', () => {
     expect(getAdminBreadcrumbs('/admin/users').map((c) => c.id)).toEqual([
       'overview',
@@ -191,6 +191,11 @@ describe('adminNavMeta', () => {
     ]);
   });
 
+  it('hasAllPermissions requires every code', () => {
+    expect(hasAllPermissions(['a', 'b'], ['a'])).toBe(true);
+    expect(hasAllPermissions(['a'], ['a', 'b'])).toBe(false);
+    expect(ADMIN_NAV_FLAT.some((i) => i.path.includes(':id'))).toBe(true);
+  });
 
   it('registers audit group children with distinct permissions', () => {
     expect(findAdminNavItemByPath('/admin/audit/logs')?.id).toBe('audit-logs');

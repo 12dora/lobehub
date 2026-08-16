@@ -62,7 +62,8 @@ const EmptyState = memo<EmptyStateProps>(({ agentId }) => {
             <Text fontSize={13} type={'secondary'} weight={500}>
               {t('taskList.emptyHero.templatesTitle')}
             </Text>
-            {templatesState.mode === 'cards' && (
+            {/* A platform-managed catalog is not reshuffled per user, so it omits onRefresh. */}
+            {templatesState.mode === 'cards' && templatesState.onRefresh && (
               <Flexbox
                 horizontal
                 align={'center'}

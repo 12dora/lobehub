@@ -19,7 +19,7 @@ import {
 
 interface UseTaskTemplateCreateOptions {
   description: string;
-  onCreated: (templateId: number) => void;
+  onCreated: (templateId: number | string) => void;
   template: TaskTemplate;
   title: string;
 }
@@ -35,8 +35,7 @@ export interface UseTaskTemplateCreateResult {
 }
 
 type ConnectErrorMessageKey =
-  | 'taskTemplate.action.connect.error'
-  | 'taskTemplate.action.connect.popupBlocked';
+  'taskTemplate.action.connect.error' | 'taskTemplate.action.connect.popupBlocked';
 
 export const resolveTaskTemplateConnectErrorMessageKey = (
   error: unknown,
@@ -81,9 +80,12 @@ export const useTaskTemplateCreate = ({
         schedulePattern: template.cronPattern,
         scheduleTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
-      await taskTemplateService.recordCreated(template.id).catch((recordError) => {
-        console.error('[taskTemplate:recordCreated]', recordError);
-      });
+      // Platform-managed rows carry a text id and have no market telemetry endpoint.
+      if (typeof template.id === 'number') {
+        await taskTemplateService.recordCreated(template.id).catch((recordError) => {
+          console.error('[taskTemplate:recordCreated]', recordError);
+        });
+      }
       setCreated(true);
       onCreated(template.id);
       if (createdTask?.identifier) {

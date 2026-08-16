@@ -3,7 +3,11 @@ import type { TaskTemplate } from '@lobechat/const';
 import { TASK_TEMPLATE_RECOMMEND_MAX_COUNT } from '@lobechat/const';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createTaskTemplateRecommendationSeedKey, TaskTemplateService } from './index';
+import {
+  createTaskTemplateRecommendationSeedKey,
+  TaskTemplateMarketTimeoutError,
+  TaskTemplateService,
+} from './index';
 
 const { mockAppEnv, mockGetTaskTemplateRecommendations, mockMarket } = vi.hoisted(() => {
   const market: {
@@ -271,5 +275,43 @@ describe('TaskTemplateService.listDailyRecommend', () => {
     await expect(service.listDailyRecommend(['coding'])).rejects.toThrow(
       'Market recommendations returned malformed items',
     );
+  });
+});
+
+describe('TaskTemplateService.listDailyRecommendRaw', () => {
+  it('returns items untouched so callers can validate row by row', async () => {
+    const bad = { ...template, cronPattern: '0 9 1 * *', id: 202 };
+    mockGetTaskTemplateRecommendations.mockResolvedValue({ items: [template, bad] });
+    const service = new TaskTemplateService('user-1');
+
+    // The whole-array parser would reject this response; the raw read must not.
+    await expect(service.listDailyRecommend(['coding'])).rejects.toThrow(
+      'Market recommendations returned malformed items',
+    );
+    await expect(service.listDailyRecommendRaw(['coding'])).resolves.toEqual([template, bad]);
+  });
+
+  it('still requires an items envelope', async () => {
+    mockGetTaskTemplateRecommendations.mockResolvedValue({ nope: true });
+    const service = new TaskTemplateService('user-1');
+
+    await expect(service.listDailyRecommendRaw(['coding'])).rejects.toThrow(
+      'Market recommendations returned no items array',
+    );
+  });
+
+  it('forwards a bounded abort signal and maps its abort to a timeout error', async () => {
+    const controller = new AbortController();
+    mockGetTaskTemplateRecommendations.mockRejectedValue(
+      Object.assign(new Error('aborted'), { name: 'TimeoutError' }),
+    );
+    const service = new TaskTemplateService('user-1');
+
+    await expect(
+      service.listDailyRecommendRaw(['coding'], { signal: controller.signal }),
+    ).rejects.toBeInstanceOf(TaskTemplateMarketTimeoutError);
+    expect(mockGetTaskTemplateRecommendations).toHaveBeenCalledWith(expect.any(Object), {
+      signal: controller.signal,
+    });
   });
 });

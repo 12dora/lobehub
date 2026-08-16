@@ -25,6 +25,35 @@ const fixedProviderEndpointOutbound = conditional(
   'These fixed endpoints are not routed through the enterprise outbound policy client.',
 );
 
+/**
+ * Task-template rows are ordinary authored content: the before/after state is fully captured by
+ * the audit diff, so no separate operator justification is collected on every edit or toggle.
+ */
+const taskTemplateContentReason = notApplicable(
+  'Task-template edits are recorded with their own before/after audit diff instead of an operator reason.',
+);
+
+const marketRecommendationOutbound = conditional(
+  'The import calls only the fixed upstream marketplace recommendation endpoint, under a bounded abort deadline, outside the write transaction.',
+  'The shared market client is not routed through the enterprise outbound policy boundary.',
+);
+
+/**
+ * Content writes record a bounded sanitized diff of the row on both sides (before for
+ * update/toggle/delete, after for create/update/toggle) inside the write transaction.
+ */
+const taskTemplateContentAudit = enforced(
+  'Router persists a bounded sanitized before/after row summary in the same transaction as the write.',
+);
+
+/**
+ * The import touches many rows at once, so its evidence is per-identifier: what each row became
+ * and, for an overwrite, the content it replaced. Bounded by the import cap.
+ */
+const taskTemplateImportAudit = enforced(
+  'Router persists per-identifier bounded sanitized before/after row summaries, plus batch counts, in the write transaction.',
+);
+
 export const ADMIN_MUTATION_ENTRIES_CATALOG = {
   'admin.agents.archive': dangerousMutation(
     'admin.agents.archive',
@@ -220,5 +249,39 @@ export const ADMIN_MUTATION_ENTRIES_CATALOG = {
     'admin.skills.validate',
     'low',
     'Validate a stored platform skill version.',
+  ),
+  'admin.taskTemplates.create': regularMutation(
+    'admin.taskTemplates.create',
+    'medium',
+    'Create a platform task template that users see as a recommended scheduled task.',
+    { audit: taskTemplateContentAudit, reason: taskTemplateContentReason },
+  ),
+  'admin.taskTemplates.delete': regularMutation(
+    'admin.taskTemplates.delete',
+    'medium',
+    'Hard delete a platform task template row; the recommendation disappears for every user.',
+    { audit: taskTemplateContentAudit, reason: taskTemplateContentReason },
+  ),
+  'admin.taskTemplates.importRecommendations': regularMutation(
+    'admin.taskTemplates.importRecommendations',
+    'medium',
+    'Import the current upstream marketplace task-template recommendations and upsert them by identifier.',
+    {
+      audit: taskTemplateImportAudit,
+      outbound: marketRecommendationOutbound,
+      reason: taskTemplateContentReason,
+    },
+  ),
+  'admin.taskTemplates.setEnabled': regularMutation(
+    'admin.taskTemplates.setEnabled',
+    'low',
+    'Show or hide a single platform task template without deleting its content.',
+    { audit: taskTemplateContentAudit, reason: taskTemplateContentReason },
+  ),
+  'admin.taskTemplates.update': regularMutation(
+    'admin.taskTemplates.update',
+    'medium',
+    'Change the content, schedule, or ordering of a platform task template.',
+    { audit: taskTemplateContentAudit, reason: taskTemplateContentReason },
   ),
 } as const satisfies Record<`admin.${string}`, AdminMutationDefinition>;
