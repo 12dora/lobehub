@@ -486,4 +486,95 @@ describe('refreshSharedOAuthVault', () => {
       errorType: AgentRuntimeErrorType.OAuthAuthorizationExpired,
     });
   });
+
+  /**
+   * The admin card used to report a dead shared account as healthy: this refresh is a no-op
+   * while the stored access token is not near expiry, and the terminal failure was only ever
+   * logged. The marker is what closes that gap — and it must never cost the vault its evidence.
+   */
+  describe('reauth marker', () => {
+    it('records a dead grant in the vault without clearing it', async () => {
+      mockFetch.mockResolvedValue(tokenResponse({ error: 'invalid_grant' }, false));
+      mockGetVersion.mockResolvedValue({
+        ciphertext: encryptVault(baseVault(EXPIRING_AT())),
+        keyId: 'kek-1',
+      });
+      mockCas.mockResolvedValue(true);
+
+      await expect(refreshSharedOAuthVault(makeParams())).rejects.toMatchObject({
+        errorType: AgentRuntimeErrorType.OAuthAuthorizationExpired,
+      });
+
+      const persisted = decryptVault(mockCas.mock.calls.at(-1)![0].ciphertext);
+      expect(persisted.oauthGrantInvalidReason).toBe('invalidGrant');
+      expect(Number(persisted.oauthGrantInvalidAt)).toBeGreaterThan(Date.now() - 5000);
+      // The credential IS the evidence: the marker never replaces it.
+      expect(persisted.oauthAccessToken).toBe('at-old');
+      expect(persisted.oauthRefreshToken).toBe('rt-old');
+      expect(persisted.baseURL).toBe('https://keep.example.com/v1');
+      // The fingerprint is revision-pinned; a marker may not move it.
+      expect(mockCas.mock.calls.at(-1)![0].fingerprint).toBe('sha256:stable');
+    });
+
+    it('leaves no marker behind when the failure is transient', async () => {
+      // A token endpoint 5xx (like a Cloudflare challenge or a rate limit) says nothing about
+      // whether the grant is still valid.
+      mockFetch.mockResolvedValue(tokenResponse({ error: 'server_error' }, false));
+      mockGetVersion.mockResolvedValue({
+        ciphertext: encryptVault(baseVault(EXPIRING_AT())),
+        keyId: 'kek-1',
+      });
+      mockCas.mockResolvedValue(true);
+
+      await expect(refreshSharedOAuthVault(makeParams())).rejects.toThrow();
+
+      for (const call of mockCas.mock.calls) {
+        expect(decryptVault(call[0].ciphertext)).not.toHaveProperty('oauthGrantInvalidAt');
+      }
+    });
+
+    it('keeps a durable marker when the lock path merely adopts another holder’s tokens', async () => {
+      // No rotation was persisted here, so nothing PROVES the grant recovered. Clearing the
+      // marker in this response would make getConnectionStatus report healthy (and SWR cache
+      // it) while durable state still says the account must be re-authorized.
+      const adopted = {
+        ...baseVault(FRESH_AT()),
+        oauthAccessToken: 'at-rotated-by-other',
+        oauthGrantInvalidAt: String(Date.now() - 60_000),
+        oauthGrantInvalidReason: 'runtimeAuth',
+        oauthRefreshToken: 'rt-rotated-by-other',
+      };
+      mockGetVersion.mockResolvedValue({ ciphertext: encryptVault(adopted), keyId: 'kek-1' });
+
+      const result = await refreshSharedOAuthVault(makeParams());
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockCas).not.toHaveBeenCalled();
+      expect(result.oauthAccessToken).toBe('at-rotated-by-other');
+      expect(result.oauthGrantInvalidReason).toBe('runtimeAuth');
+    });
+
+    it('clears the marker on the next successful rotation', async () => {
+      mockFetch.mockResolvedValueOnce(
+        tokenResponse({ access_token: 'at-new', expires_in: 3600, refresh_token: 'rt-new' }),
+      );
+      mockCas.mockResolvedValueOnce(true);
+      const vault = {
+        ...baseVault(EXPIRING_AT()),
+        oauthGrantInvalidAt: String(Date.now() - 60_000),
+        oauthGrantInvalidReason: 'runtimeAuth',
+      };
+
+      const result = await refreshSharedOAuthVault(
+        makeParams({ ciphertext: encryptVault(vault), keyVaults: vault }),
+      );
+
+      const persisted = decryptVault(mockCas.mock.calls[0][0].ciphertext);
+      // The provider just accepted the renewal credential — that is the recovery proof.
+      expect(persisted).not.toHaveProperty('oauthGrantInvalidAt');
+      expect(persisted).not.toHaveProperty('oauthGrantInvalidReason');
+      expect(result).not.toHaveProperty('oauthGrantInvalidAt');
+      expect(result).not.toHaveProperty('oauthGrantInvalidReason');
+    });
+  });
 });

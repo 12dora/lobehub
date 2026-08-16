@@ -182,6 +182,18 @@ export const adminAiProviderOAuthStatusOutputSchema = z
     /** Which connect flow the panel must render for this provider. */
     flow: adminAiProviderOAuthFlowSchema,
     /**
+     * Epoch millis (as a string, mirroring the vault leaf) of the terminal auth failure behind
+     * `needsReauth`; null when nothing is wrong. Optional so the field can be adopted without a
+     * lockstep contract/router change.
+     */
+    invalidAt: z.string().max(200).nullable().optional(),
+    /**
+     * WHY the credential is considered dead — a stable code, never provider prose:
+     * `invalidGrant` (the renewal was refused) or `runtimeAuth` (a real request through the
+     * shared account was rejected as unauthenticated). Null when unknown.
+     */
+    invalidReason: z.enum(['invalidGrant', 'runtimeAuth']).nullable().optional(),
+    /**
      * Epoch millis (as a string, mirroring the vault leaf) of the last successful token
      * refresh — the anchor the 3-day keepalive is measured from. Lets an operator tell a
      * connection that is quietly renewing itself from one that has not been touched since
@@ -190,6 +202,16 @@ export const adminAiProviderOAuthStatusOutputSchema = z
      * refreshed since connect").
      */
     lastRefreshAt: z.string().max(200).nullable().optional(),
+    /**
+     * true when the shared credential was TERMINALLY rejected and only an administrator can fix
+     * it — either the renewal was refused (`expired`) or a real execution through the account
+     * came back unauthenticated and was recorded in the vault.
+     *
+     * Deliberately separate from `connected`: the vault still holds the account identity and the
+     * dead credential (it is the evidence), so the panel keeps rendering the account while
+     * telling the operator to reconnect it.
+     */
+    needsReauth: z.boolean().optional(),
     /**
      * WHICH credential keeps the connection alive when `canRefresh` is true: `'oauth'` (the
      * PKCE refresh token) or `'web_session'` (the chatgpt.com session cookie, which mints

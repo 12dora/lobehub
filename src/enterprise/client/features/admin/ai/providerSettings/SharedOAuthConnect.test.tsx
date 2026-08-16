@@ -607,7 +607,24 @@ describe('SharedOAuthConnect', () => {
 
     expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionOnlyTitle')).toBeTruthy();
     expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionOnlyDesc')).toBeTruthy();
-    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionHint')).toBeTruthy();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionStep1')).toBeTruthy();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionStep2')).toBeTruthy();
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionStep3')).toBeTruthy();
+    // Step 1 used to name a page with nothing to click; both routes are now one click away.
+    expect(
+      screen
+        .getByText('aiProviderSettings.sharedOAuth.paste.openChatGPT')
+        .closest('a')
+        ?.getAttribute('href'),
+    ).toBe('https://chatgpt.com');
+    expect(
+      screen
+        .getByText('aiProviderSettings.sharedOAuth.paste.openSessionPage')
+        .closest('a')
+        ?.getAttribute('rel'),
+    ).toBe('noopener noreferrer');
+    // The 10-day fallback is offered, and never as a peer of the renewable route.
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.paste.sessionQuickTry')).toBeTruthy();
     // The box is the whole form — never behind a disclosure the operator has to find.
     expect(
       screen.getByPlaceholderText('aiProviderSettings.sharedOAuth.paste.sessionPlaceholder'),
@@ -1085,6 +1102,98 @@ describe('SharedOAuthConnect', () => {
       ).toBe(`aiProviderSettings.sharedOAuth.paste.errors.${submitError}SessionOnly`);
     },
   );
+
+  /**
+   * The desync this state exists for: the vault still holds an unexpired access-token STRING,
+   * so the status refresh is a no-op and the card said 已连接 while every member's chat came
+   * back "需要重新授权". A third badge is the whole point — collapsing it into 未连接 would lose
+   * the difference between "never connected" and "connected, no longer accepted".
+   */
+  it('warns that a stored shared account was rejected and must be re-authorized', () => {
+    mocks.swr.mockReturnValue(
+      swrResult({
+        ...connectedStatus,
+        canRefresh: true,
+        flow: 'authorization_code_paste',
+        invalidAt: String(Date.UTC(2030, 0, 1)),
+        invalidReason: 'runtimeAuth',
+        needsReauth: true,
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgptweb" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.needsReauth')).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.connected')).toBeNull();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.notConnected')).toBeNull();
+    // The account stays on screen: the operator has to know WHICH account to reconnect.
+    expect(screen.getByText(/"account":"ops@example.com"/)).toBeTruthy();
+    expect(screen.getByText(/aiProviderSettings\.sharedOAuth\.reauth\.message/)).toBeTruthy();
+    expect(
+      screen.getByText(/aiProviderSettings\.sharedOAuth\.reauth\.reason\.runtimeAuth/),
+    ).toBeTruthy();
+    // The remedy is one click, and it is the cheap one for a web-session-only provider.
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.paste.pasteSession'));
+    expect(mocks.flow.connect).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText('aiProviderSettings.sharedOAuth.paste.reconnectRenewable'),
+    ).toBeNull();
+    // ONE primary action: the footer must not repeat the alert's remedy in another shape.
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.reconnect')).toBeNull();
+    // Withdrawing must stay possible — the dead credential is still stored.
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.disconnect')).toBeTruthy();
+  });
+
+  it('sends a device-code provider to its own flow instead of a paste box it does not have', () => {
+    // SuperGrok has no pasted-credential route at all; offering "paste a web session" as the
+    // remedy would name a box that never appears.
+    mocks.swr.mockReturnValue(
+      swrResult({ ...connectedStatus, flow: 'device_code', needsReauth: true }),
+    );
+
+    render(<SharedOAuthConnect providerId="supergrok" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.needsReauth')).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.paste.pasteSession')).toBeNull();
+    fireEvent.click(screen.getByText('aiProviderSettings.sharedOAuth.reconnect'));
+    expect(mocks.flow.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads a dead grant reported by the status query itself as the same state', () => {
+    // `expired` is this request's own refresh coming back invalid_grant. It used to be
+    // returned and read by nobody, which left `connected: false` masquerading as 未连接.
+    mocks.swr.mockReturnValue(
+      swrResult({
+        ...connectedStatus,
+        connected: false,
+        expired: true,
+        flow: 'authorization_code_paste',
+        invalidAt: null,
+        invalidReason: 'invalidGrant',
+      }),
+    );
+
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.needsReauth')).toBeTruthy();
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.disconnectedHint/)).toBeNull();
+    // A provider that still HAS an authorization page keeps offering it as the second way out —
+    // as the alert's SECONDARY button, not as a third copy of the same remedy in the footer.
+    expect(
+      screen.getByText('aiProviderSettings.sharedOAuth.paste.reconnectRenewable'),
+    ).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.reconnect')).toBeNull();
+  });
+
+  it('keeps the healthy badge while nothing has reported a rejection', () => {
+    mocks.swr.mockReturnValue(swrResult({ ...connectedStatus, needsReauth: false }));
+
+    render(<SharedOAuthConnect providerId="chatgpt" />);
+
+    expect(screen.getByText('aiProviderSettings.sharedOAuth.connected')).toBeTruthy();
+    expect(screen.queryByText('aiProviderSettings.sharedOAuth.needsReauth')).toBeNull();
+    expect(screen.queryByText(/aiProviderSettings\.sharedOAuth\.reauth\.message/)).toBeNull();
+  });
 
   it('ignores persisted models that belong to a different provider', () => {
     mocks.flow.state = 'success';

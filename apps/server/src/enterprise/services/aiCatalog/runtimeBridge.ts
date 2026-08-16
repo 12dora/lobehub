@@ -12,6 +12,11 @@ import {
   createAiCatalogModelAllowlistHooks,
   resolveAiCatalogRuntimeState,
 } from './runtimeAdapter';
+import { AiCatalogSecretManager } from './secretManager';
+import {
+  classifyExecutionAuthFailure,
+  markSharedOAuthGrantInvalidForProvider,
+} from './sharedOAuthReauthMarker';
 
 let registered = false;
 
@@ -40,6 +45,28 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
       const managed = state.enabledAiProviders.some((provider) => provider.id === providerKey);
       if (!managed) return null;
       return state.enabledAiModels.filter((model) => model.providerId === providerKey);
+    },
+    /**
+     * The runtime half of the shared-account reauth marker: a chat rejected as unauthenticated
+     * is the ONLY signal that a still-unexpired stored access token has stopped being accepted.
+     * Transient rejections (Cloudflare, rate limit, upstream 5xx) are classified out here, and
+     * the write itself is debounced + best-effort, so a broken shared account costs one write
+     * per debounce window rather than one per failing member request.
+     */
+    reportExecutionAuthFailure: async ({ credentialDigest, db, errorType, providerKey }) => {
+      const reason = classifyExecutionAuthFailure(errorType);
+      if (!reason) return;
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
+      if (!secrets) return;
+      await markSharedOAuthGrantInvalidForProvider({
+        // Pins the observation to the credential the execution actually used.
+        credentialDigest,
+        db,
+        providerKey,
+        reason,
+        secrets: new AiCatalogSecretManager(secrets),
+      });
     },
     resolveExecutionConfig: async (db, providerKey) => {
       const flags = parseEnterpriseFeatureFlags(process.env);

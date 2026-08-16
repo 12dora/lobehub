@@ -506,6 +506,7 @@ export default {
     'Authorization succeeded, but the credentials could not be saved. Connect the account again.',
   'aiProviderSettings.sharedOAuth.expiresAt': 'Access token expires {{time}}',
   'aiProviderSettings.sharedOAuth.lastRefreshAt': 'Last renewed {{time}}',
+  'aiProviderSettings.sharedOAuth.needsReauth': 'Needs reauthorization',
   'aiProviderSettings.sharedOAuth.notConnected': 'Not connected',
   'aiProviderSettings.sharedOAuth.openPage': 'Open authorization page',
   'aiProviderSettings.sharedOAuth.paste.callbackLabel': 'Callback URL',
@@ -546,21 +547,36 @@ export default {
   'aiProviderSettings.sharedOAuth.paste.instruction':
     'Sign in with the account the whole platform should use. You will land on a blank page at platform.openai.com/auth/callback — copy that full address from the browser and paste it below.',
   'aiProviderSettings.sharedOAuth.paste.openAuthorizePage': 'Open authorization page',
+  'aiProviderSettings.sharedOAuth.paste.openChatGPT': 'Open chatgpt.com',
+  'aiProviderSettings.sharedOAuth.paste.openSessionPage': 'Open /api/auth/session',
   'aiProviderSettings.sharedOAuth.paste.pasteSession': 'Paste a web session',
   'aiProviderSettings.sharedOAuth.paste.reconnectRenewable': 'Reconnect via authorization page',
   'aiProviderSettings.sharedOAuth.paste.regenerate': 'Generate a new link',
-  'aiProviderSettings.sharedOAuth.paste.sessionHint':
-    '1. Sign in at chatgpt.com in a browser. 2. Open DevTools → Application/Storage → Cookies and copy the value of `__Secure-next-auth.session-token` (or pick any chatgpt.com request in the Network panel and "Copy as cURL"). 3. Paste what you copied into the box and connect.',
   'aiProviderSettings.sharedOAuth.paste.sessionLabel': 'ChatGPT web session',
   'aiProviderSettings.sharedOAuth.paste.sessionOnlyDesc':
     'Just like the web app: sign in once and the platform renews it from then on — nobody has to sign in again.',
   'aiProviderSettings.sharedOAuth.paste.sessionOnlyTitle': 'Connect with a chatgpt.com web session',
   'aiProviderSettings.sharedOAuth.paste.sessionPlaceholder':
     'Paste the cookie, a copied cURL command, or an access token',
+  'aiProviderSettings.sharedOAuth.paste.sessionQuickTry':
+    'Just want a quick trial? Open chatgpt.com/api/auth/session, select all and copy the page, then paste it — valid for about 10 days, and it cannot renew itself.',
+  'aiProviderSettings.sharedOAuth.paste.sessionStep1':
+    '1. Sign in at chatgpt.com in a browser (open it on the right).',
+  'aiProviderSettings.sharedOAuth.paste.sessionStep2':
+    '2. Press F12 → Network → pick any chatgpt.com request → right-click "Copy as cURL" (or copy the `__Secure-next-auth.session-token` cookie under Application → Cookies).',
+  'aiProviderSettings.sharedOAuth.paste.sessionStep3':
+    '3. Paste what you copied into the box and connect.',
   'aiProviderSettings.sharedOAuth.paste.sessionSubmit': 'Connect with what I pasted',
   'aiProviderSettings.sharedOAuth.paste.sessionToggle': 'Paste a web session instead',
   'aiProviderSettings.sharedOAuth.paste.submit': 'Connect shared account',
   'aiProviderSettings.sharedOAuth.polling': 'Waiting for the authorization to complete…',
+  'aiProviderSettings.sharedOAuth.reauth.message':
+    'The shared {{name}} account is no longer accepted, so members cannot use it. Reconnect it — they cannot fix this themselves.',
+  'aiProviderSettings.sharedOAuth.reauth.observedAt': 'Detected {{time}}',
+  'aiProviderSettings.sharedOAuth.reauth.reason.invalidGrant':
+    'The renewal was refused by the provider',
+  'aiProviderSettings.sharedOAuth.reauth.reason.runtimeAuth':
+    'A request made with this account was rejected as unauthenticated',
   'aiProviderSettings.sharedOAuth.reconnect': 'Reconnect',
   'aiProviderSettings.sharedOAuth.renewalKind.oauth': 'authorization sign-in',
   'aiProviderSettings.sharedOAuth.renewalKind.webSession': 'web session',
@@ -689,6 +705,8 @@ export default {
   'nav.skills': 'Skills',
   'nav.skillDetail': 'Skill detail',
   'nav.system': 'System',
+  'nav.systemGeneral': 'General settings',
+  'nav.systemStatus': 'Status monitoring',
   'nav.unifiedManagement': 'Unified management',
   'stats.page.title': 'Data statistics',
   'stats.page.desc': 'Platform-wide usage across all users.',
@@ -705,8 +723,6 @@ export default {
   'timeRange.preset.7d': 'Last 7 days',
   'timeRange.preset.90d': 'Last 90 days',
   'timeRange.preset.custom': 'Custom',
-  'nav.systemGeneral': 'General settings',
-  'nav.systemStatus': 'Status monitoring',
   'timeRange.preset.today': 'Today',
   'timeRange.to': 'End date',
   'creds.page.title': 'Credentials',
@@ -1902,22 +1918,6 @@ export default {
     'The latest server revision could not be loaded. Your local draft is still preserved; retry refresh before saving.',
   'identityProviders.description':
     'Configure, test, publish, and activate controlled work-account sign-in.',
-  'identityProviders.discovery.authorization': 'Authorization',
-  'identityProviders.discovery.endpoints': 'Discovered endpoints',
-  'identityProviders.discovery.jwks': 'JWKS',
-  'identityProviders.discovery.token': 'Token',
-  'identityProviders.discovery.valid': 'Discovery metadata and outbound network policy are valid.',
-  'identityProviders.empty': 'No sign-in methods yet. Click "New" to add one.',
-  'identityProviders.emptyHint':
-    'Choose Authentik or a generic OIDC provider to configure work-account sign-in.',
-  'identityProviders.errors.discoveryFailed':
-    'Could not read the OIDC discovery document from this issuer. Check the issuer URL and that the provider is reachable, then retry.',
-  'identityProviders.errors.forbidden': 'You do not have permission to view identity providers.',
-  'identityProviders.errors.generic':
-    'The identity provider operation could not be completed. Review the current state and retry.',
-  'identityProviders.errors.invalidJson': 'Enter valid JSON before continuing.',
-  'identityProviders.errors.load': 'Identity providers could not be loaded.',
-  'identityProviders.errors.networkBlocked':
   'identityProviders.dingtalk.allowedCorps.add': 'Add organization via DingTalk login',
   'identityProviders.dingtalk.allowedCorps.added': 'Organization added to the allowlist',
   'identityProviders.dingtalk.allowedCorps.addedAt': 'Added {{time}}',
@@ -1959,6 +1959,22 @@ export default {
   'identityProviders.dingtalk.fixedProtocolTitle': 'DingTalk uses a fixed configuration',
   'identityProviders.dingtalk.providerKeyInvalid':
     "For DingTalk the provider key must be lowercase letters, digits and inner hyphens only (no dots or underscores) — it becomes part of each member's generated internal email address.",
+  'identityProviders.discovery.authorization': 'Authorization',
+  'identityProviders.discovery.endpoints': 'Discovered endpoints',
+  'identityProviders.discovery.jwks': 'JWKS',
+  'identityProviders.discovery.token': 'Token',
+  'identityProviders.discovery.valid': 'Discovery metadata and outbound network policy are valid.',
+  'identityProviders.empty': 'No sign-in methods yet. Click "New" to add one.',
+  'identityProviders.emptyHint':
+    'Choose Authentik or a generic OIDC provider to configure work-account sign-in.',
+  'identityProviders.errors.discoveryFailed':
+    'Could not read the OIDC discovery document from this issuer. Check the issuer URL and that the provider is reachable, then retry.',
+  'identityProviders.errors.forbidden': 'You do not have permission to view identity providers.',
+  'identityProviders.errors.generic':
+    'The identity provider operation could not be completed. Review the current state and retry.',
+  'identityProviders.errors.invalidJson': 'Enter valid JSON before continuing.',
+  'identityProviders.errors.load': 'Identity providers could not be loaded.',
+  'identityProviders.errors.networkBlocked':
     'The issuer address was blocked by the network policy. It must be a public, resolvable HTTPS endpoint (private and internal addresses are rejected).',
   'identityProviders.errors.required':
     'Display name, provider key, issuer, and client ID are required.',
@@ -2047,6 +2063,9 @@ export default {
     'Enterprise unified authentication with DingTalk scopes and claim mapping prefilled.',
   'identityProviders.templates.description':
     'Start from a template. You can edit every field after the draft is created.',
+  'identityProviders.templates.dingtalk.description':
+    'Sign in with a DingTalk account using the AppKey and AppSecret of a DingTalk Open Platform app.',
+  'identityProviders.templates.dingtalk.label': 'DingTalk',
   'identityProviders.templates.genericOidc.description':
     'Any standards-compliant OpenID Connect provider.',
   'identityProviders.templates.genericOidc.label': 'Generic OIDC',
@@ -2063,27 +2082,8 @@ export default {
   'identityProviders.steps.client': 'Client',
   'identityProviders.steps.discovery': 'Discovery',
   'identityProviders.steps.policy': 'Policy',
-  'identityProviders.templates.dingtalk.description':
-    'Sign in with a DingTalk account using the AppKey and AppSecret of a DingTalk Open Platform app.',
-  'identityProviders.templates.dingtalk.label': 'DingTalk',
   'identityProviders.steps.publish': 'Publish',
   'identityProviders.steps.test': 'Test',
-  'identityProviders.test.description':
-    'The isolated test callback reports claim presence without exposing claim values or changing production login.',
-  'identityProviders.test.claimPresent': '{{claim}} present ({{type}})',
-  'identityProviders.test.popupBlocked': 'The test popup was blocked. Allow popups and try again.',
-  'identityProviders.test.resultLoadError': 'The isolated test result could not be loaded.',
-  'identityProviders.test.status': 'Test status: {{status}}',
-  'identityProviders.test.timeout':
-    'The test timed out. Close the old popup and start a new attempt.',
-  'identityProviders.test.title': 'Test identity provider login',
-  'identityProviders.title': 'Identity providers',
-  'identityProviders.unsaved': 'Unsaved local changes',
-  'identityProviders.unsaved.description':
-    'Your local draft may include a write-only secret. Leaving or switching providers discards it permanently.',
-  'identityProviders.unsaved.discard': 'Discard local draft',
-  'identityProviders.unsaved.stay': 'Keep editing',
-  'identityProviders.unsaved.title': 'Discard unsaved identity provider changes?',
   'identityProviders.test.errors.accessTokenRequired':
     'The provider returned no access token, so the profile could not be read. Check that the app is allowed to request the configured scopes.',
   'identityProviders.test.errors.authorizationFailed':
@@ -2117,6 +2117,22 @@ export default {
     'The provider returned two different account identifiers for one sign-in.',
   'identityProviders.test.errors.userinfoRequired':
     'The provider exposes no profile endpoint, which this platform requires.',
+  'identityProviders.test.description':
+    'The isolated test callback reports claim presence without exposing claim values or changing production login.',
+  'identityProviders.test.claimPresent': '{{claim}} present ({{type}})',
+  'identityProviders.test.popupBlocked': 'The test popup was blocked. Allow popups and try again.',
+  'identityProviders.test.resultLoadError': 'The isolated test result could not be loaded.',
+  'identityProviders.test.status': 'Test status: {{status}}',
+  'identityProviders.test.timeout':
+    'The test timed out. Close the old popup and start a new attempt.',
+  'identityProviders.test.title': 'Test identity provider login',
+  'identityProviders.title': 'Identity providers',
+  'identityProviders.unsaved': 'Unsaved local changes',
+  'identityProviders.unsaved.description':
+    'Your local draft may include a write-only secret. Leaving or switching providers discards it permanently.',
+  'identityProviders.unsaved.discard': 'Discard local draft',
+  'identityProviders.unsaved.stay': 'Keep editing',
+  'identityProviders.unsaved.title': 'Discard unsaved identity provider changes?',
   'identityProviders.workflow.draftRequired':
     'Save this login method as a draft before testing or publishing it.',
   'identityProviders.workflow.testRequired':
@@ -2352,6 +2368,9 @@ export default {
   'system.values.status.unknown': 'Unknown',
   'system.values.status.unreported': 'Unreported',
   'system.values.unavailable': 'Unavailable',
+  'systemGeneral.title': 'General settings',
+  'systemGeneral.description': 'Platform-wide system preferences.',
+  'systemGeneral.empty': 'General settings will appear here in an upcoming release.',
   'nav.auditLogs': 'Operation logs',
   'nav.auditConversations': 'Conversation history',
   'nav.auditConversationUser': 'User history',
@@ -2445,9 +2464,6 @@ export default {
   'audit.logs.action.admin.aiProviders.updateDraft': 'Update provider draft',
   'audit.logs.action.admin.branding.publish': 'Publish Branding',
   'audit.logs.action.admin.branding.rollback': 'Roll back Branding',
-  'systemGeneral.title': 'General settings',
-  'systemGeneral.description': 'Platform-wide system preferences.',
-  'systemGeneral.empty': 'General settings will appear here in an upcoming release.',
   'audit.logs.action.admin.branding.save': 'Save branding',
   'audit.logs.action.admin.branding.saveDraft': 'Save Branding draft',
   'audit.logs.action.admin.branding.uploadAsset': 'Upload branding asset',
@@ -2941,7 +2957,6 @@ export default {
     'Messages are updating too quickly — some in the middle may be missing. Reload to catch up.',
   'audit.live.messages.reload': 'Reload messages',
   'audit.conversations.topic.openLive': 'Live View',
-};
 
   // 任务模板 (platform task templates)
   'nav.taskTemplates': 'Task templates',
@@ -3105,3 +3120,4 @@ export default {
     'A template can use at most {{max}} connectors.',
   'taskTemplateCatalog.toast.importedWithSkipped':
     'Imported: {{created}} added, {{updated}} refreshed, {{skipped}} skipped.',
+};

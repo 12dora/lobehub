@@ -29,6 +29,16 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     font-weight: 500;
     color: ${cssVar.colorTextSecondary};
   `,
+  /** Inline external link: the connect steps used to name pages with nothing to click. */
+  link: css`
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+
+    font-size: 13px;
+    color: ${cssVar.colorLink};
+    white-space: nowrap;
+  `,
   panel: css`
     width: 100%;
   `,
@@ -73,6 +83,15 @@ export interface PasteFlowPanelProps {
    */
   webSessionOnly?: boolean;
 }
+
+/** Where the user signs in; step 1 named it without offering anything to click. */
+const CHATGPT_HOME_URL = 'https://chatgpt.com';
+/**
+ * The one-click fallback. It answers with the account's ACCESS TOKEN and no session cookie
+ * (next-auth never echoes an HttpOnly cookie in a body), so a paste from here cannot renew
+ * itself — the copy says so, and the live detection repeats it before anything is submitted.
+ */
+const CHATGPT_SESSION_URL = 'https://chatgpt.com/api/auth/session';
 
 /** Submit errors that belong to the pasted-credential box rather than the callback box. */
 const TOKEN_SOURCE_ERRORS = new Set<PasteSubmitError>([
@@ -170,6 +189,46 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
       else if (parsed.accessToken) onSubmitAccessToken(parsed.accessToken);
     }, [onSubmitAccessToken, onSubmitSessionToken, parsed.accessToken, parsed.sessionToken]);
 
+    /**
+     * What to do BEFORE there is anything to paste, as three steps with the pages they name
+     * one click away. The cURL route leads because it is a single right-click; the cookie
+     * route rides along in the same line for people who prefer it.
+     */
+    const sessionSteps = (
+      <Flexbox gap={4}>
+        <Flexbox horizontal align="center" gap={8}>
+          <Text className={styles.hint}>{t('providerModels.config.oauth.paste.sessionStep1')}</Text>
+          <a
+            className={styles.link}
+            href={CHATGPT_HOME_URL}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            {t('providerModels.config.oauth.paste.openChatGPT')}
+            <Icon icon={ExternalLinkIcon} size={12} />
+          </a>
+        </Flexbox>
+        <Text className={styles.hint}>{t('providerModels.config.oauth.paste.sessionStep2')}</Text>
+        <Text className={styles.hint}>{t('providerModels.config.oauth.paste.sessionStep3')}</Text>
+        {/* Secondary on purpose: it trades the whole point of this flow (renewing itself)
+            for one click, so it is stated as the compromise it is — never as an equal path. */}
+        <Flexbox horizontal align="center" gap={8} style={{ flexWrap: 'wrap' }}>
+          <Text className={styles.hint} type="secondary">
+            {t('providerModels.config.oauth.paste.sessionQuickTry')}
+          </Text>
+          <a
+            className={styles.link}
+            href={CHATGPT_SESSION_URL}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            {t('providerModels.config.oauth.paste.openSessionPage')}
+            <Icon icon={ExternalLinkIcon} size={12} />
+          </a>
+        </Flexbox>
+      </Flexbox>
+    );
+
     /** The pasted-credential input itself: same field, label and live detection either way. */
     const sessionFields = (
       <>
@@ -232,7 +291,7 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
             </Text>
           </Flexbox>
           {/* Above the box, because it is what to do BEFORE there is anything to paste. */}
-          <Text className={styles.hint}>{t('providerModels.config.oauth.paste.sessionHint')}</Text>
+          {sessionSteps}
           <Flexbox gap={8}>{sessionFields}</Flexbox>
           <Flexbox gap={12}>
             <Button
@@ -334,9 +393,7 @@ const PasteFlowPanel = memo<PasteFlowPanelProps>(
             {showTokenSection && (
               <Flexbox gap={8} id={tokenSectionId}>
                 {sessionFields}
-                <Text className={styles.hint}>
-                  {t('providerModels.config.oauth.paste.sessionHint')}
-                </Text>
+                {sessionSteps}
                 <Button
                   block
                   disabled={disabled || parsed.kind === 'unknown'}

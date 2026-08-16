@@ -21,8 +21,19 @@ export interface AiCatalogCredentialVault {
  * Non-secret refresh bookkeeping every rotating-refresh OAuth vault carries: the keepalive
  * anchor and the post-failure backoff anchor (both epoch ms, stored as strings because the
  * platform vault only holds string leaves). See `oauthDeviceFlow/refresh.ts`.
+ *
+ * Plus the reauth marker (`oauthGrantInvalidAt` epoch ms + `oauthGrantInvalidReason`, a stable
+ * code from `sharedOAuthReauthMarker.ts`): written when the credential is TERMINALLY rejected —
+ * by the renewal or by a real execution — and cleared by the next successful renewal or
+ * reconnect, so the admin card can say 需要重新授权 instead of reporting a dead account as
+ * healthy. Non-secret, like the stamps above.
  */
-const REFRESH_LIFECYCLE_KEYS = ['oauthLastRefreshAt', 'oauthLastRefreshErrorAt'] as const;
+const REFRESH_LIFECYCLE_KEYS = [
+  'oauthGrantInvalidAt',
+  'oauthGrantInvalidReason',
+  'oauthLastRefreshAt',
+  'oauthLastRefreshErrorAt',
+] as const;
 
 const SPECIAL_KEYS: Partial<Record<string, Set<string>>> = {
   [ModelProvider.Azure]: new Set(['apiKey', 'apiVersion', 'baseURL']),

@@ -1,9 +1,15 @@
 'use client';
 
-import { Alert, CopyButton, Flexbox, Icon, Skeleton, Tag, Text } from '@lobehub/ui';
+import { Alert, CopyButton, Flexbox, Icon, Skeleton, Tag, Text, Tooltip } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { CheckCircle2Icon, ExternalLinkIcon, Loader2Icon, UnplugIcon } from 'lucide-react';
+import {
+  CheckCircle2Icon,
+  ExternalLinkIcon,
+  Loader2Icon,
+  TriangleAlertIcon,
+  UnplugIcon,
+} from 'lucide-react';
 import { isProviderWebSessionOnly } from 'model-bank/modelProviders';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -258,6 +264,28 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   }, [deviceCode?.verificationUri, deviceCode?.verificationUriComplete]);
 
   /**
+   * The shared credential was TERMINALLY rejected and only an operator can fix it. Two
+   * observations feed one state, because they mean the same thing to the person reading this
+   * card: `expired` is this request's own refresh coming back `invalid_grant`, `needsReauth`
+   * is the marker an earlier observation wrote into the vault — including a member's chat
+   * being answered with 401, which is the case the card used to miss entirely (an unexpired
+   * token string sitting in the vault made the refresh a no-op and the badge said 已连接).
+   */
+  const needsReauth = Boolean(status && (status.needsReauth || status.expired));
+  const invalidAt = formatExpiry(status?.invalidAt ?? null);
+  const reauthReason = status?.invalidReason
+    ? t(`aiProviderSettings.sharedOAuth.reauth.reason.${status.invalidReason}` as any)
+    : undefined;
+  /** Reason + when, for the badge tooltip — the badge itself stays one short word. */
+  const reauthDetail =
+    [
+      reauthReason,
+      invalidAt ? t('aiProviderSettings.sharedOAuth.reauth.observedAt', { time: invalidAt }) : '',
+    ]
+      .filter(Boolean)
+      .join(' · ') || t('aiProviderSettings.sharedOAuth.reauth.message', { name });
+
+  /**
    * A connected account is not the same as an account members use. This says so, and points
    * at the one page that changes it. Rendered in BOTH the just-connected view and the idle
    * connected view — the moment right after connecting is exactly when an operator concludes
@@ -416,14 +444,15 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
      * is only the fallback for connections stored before the email was captured.
      */
     const account = status?.accountEmail ?? status?.accountIdMasked ?? null;
+    /** Whether a pasted credential is a route at all — a device-code provider has no box. */
+    const pasteFlow = status?.flow === 'authorization_code_paste';
     /**
      * K3 addition: an access token pasted by hand has no renewal credential, so nothing
      * renews it. Scoped to the paste flow, so the device-code providers that shipped before
      * it keep their previous connected copy verbatim — and only a POSITIVE `false` warns,
      * because silence must never be read as "this credential will die".
      */
-    const cannotAutoRenew =
-      status?.flow === 'authorization_code_paste' && status?.canRefresh === false;
+    const cannotAutoRenew = pasteFlow && status?.canRefresh === false;
     /**
      * The good outcome, and only on a POSITIVE reading: the connection holds a renewal
      * credential (an OAuth refresh token, or a web session that mints tokens the way the web
@@ -440,16 +469,56 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
           ? t('aiProviderSettings.sharedOAuth.renewalKind.oauth')
           : undefined;
 
+    /**
+     * A dead grant still HAS an account (the vault keeps it as the evidence), so the identity
+     * block stays on screen while the card asks for a reconnect — replacing it with the
+     * "nothing is connected yet" line would hide which account has to be re-authorized.
+     */
+    const showAccount = Boolean(status?.connected) || needsReauth;
+
     return (
       <Flexbox gap={12}>
-        {status?.connected ? (
+        {showAccount ? (
           <Flexbox gap={4}>
             <Text className={styles.meta}>
               {account
                 ? t('aiProviderSettings.sharedOAuth.account', { account })
                 : t('aiProviderSettings.sharedOAuth.accountUnknown')}
             </Text>
-            {cannotAutoRenew ? (
+            {needsReauth ? (
+              /**
+               * The one actionable state on this card, so it carries the ONE primary action and
+               * the footer drops its duplicate. Which remedy that is depends on how the provider
+               * connects: pasting a web session is the cheap fix where that route exists (and
+               * the only one for a web-session-only provider), while a device-code provider has
+               * no paste box at all and must be sent to its own authorization flow.
+               */
+              <Alert
+                showIcon
+                message={t('aiProviderSettings.sharedOAuth.reauth.message', { name })}
+                type={'warning'}
+                action={
+                  <Flexbox horizontal gap={8}>
+                    {pasteFlow ? (
+                      <>
+                        <Button size={'small'} type={'primary'} onClick={handleConnectWithSession}>
+                          {t('aiProviderSettings.sharedOAuth.paste.pasteSession')}
+                        </Button>
+                        {!webSessionOnly && (
+                          <Button size={'small'} onClick={handleConnect}>
+                            {t('aiProviderSettings.sharedOAuth.paste.reconnectRenewable')}
+                          </Button>
+                        )}
+                      </>
+                    ) : (
+                      <Button size={'small'} type={'primary'} onClick={handleConnect}>
+                        {t('aiProviderSettings.sharedOAuth.reconnect')}
+                      </Button>
+                    )}
+                  </Flexbox>
+                }
+              />
+            ) : cannotAutoRenew ? (
               /**
                * A dead end stated as a fact is not actionable: there are now TWO ways out and
                * both are one click away, so the warning carries them in the order of effort.
@@ -502,6 +571,7 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
                     : t('aiProviderSettings.sharedOAuth.autoRefresh')}
               </Text>
             )}
+            {needsReauth && <Text className={styles.hint}>{reauthDetail}</Text>}
             {autoRenews && expiry && (
               // The rollover date, stated as what it is — the current token's end, not the
               // connection's.
@@ -523,14 +593,19 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
           </Text>
         )}
         <Flexbox horizontal gap={8}>
-          <Button type={status?.connected ? 'default' : 'primary'} onClick={handleConnect}>
-            {t(
-              status?.connected
-                ? 'aiProviderSettings.sharedOAuth.reconnect'
-                : 'aiProviderSettings.sharedOAuth.connect',
-            )}
-          </Button>
-          {status?.connected && (
+          {/* While the account needs re-authorizing the ONE primary action lives in the alert
+              above; repeating it here would offer the same remedy twice, in two shapes. */}
+          {!needsReauth && (
+            <Button type={showAccount ? 'default' : 'primary'} onClick={handleConnect}>
+              {t(
+                showAccount
+                  ? 'aiProviderSettings.sharedOAuth.reconnect'
+                  : 'aiProviderSettings.sharedOAuth.connect',
+              )}
+            </Button>
+          )}
+          {/* Withdrawing must stay available for a dead credential too — it is still stored. */}
+          {showAccount && (
             <Button danger loading={disconnecting} onClick={handleDisconnect}>
               {t('aiProviderSettings.sharedOAuth.disconnect')}
             </Button>
@@ -543,6 +618,23 @@ const SharedOAuthConnect = memo<SharedOAuthConnectProps>(({ providerId }) => {
   // Never claim a state we have not read yet: no badge until the status resolves.
   const renderBadge = () => {
     if (isLoading || statusError || !status) return null;
+    /**
+     * Three states, not two: "never connected" and "connected but no longer accepted" used to
+     * collapse into one grey 未连接 tag (or, worse, into a green 已连接 one), which is exactly
+     * how an operator ended up looking at a healthy card while members were told to reconnect.
+     * The reason and the time it was observed ride in the tooltip so the tag stays one word.
+     */
+    if (needsReauth)
+      return (
+        <Tooltip title={reauthDetail}>
+          <Tag color={'warning'}>
+            <Flexbox horizontal align={'center'} gap={4}>
+              <Icon icon={TriangleAlertIcon} size={12} />
+              {t('aiProviderSettings.sharedOAuth.needsReauth')}
+            </Flexbox>
+          </Tag>
+        </Tooltip>
+      );
     if (!status.connected) return <Tag>{t('aiProviderSettings.sharedOAuth.notConnected')}</Tag>;
     return (
       <Tag color={'success'}>

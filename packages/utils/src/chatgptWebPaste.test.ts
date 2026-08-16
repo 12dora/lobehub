@@ -138,6 +138,29 @@ describe('parseChatGPTWebPaste', () => {
     expect(result).toEqual({ accessToken: token, kind: 'access_token' });
   });
 
+  /**
+   * The quick-try route the connect UI offers: open `/api/auth/session`, select the whole
+   * page, copy, paste. Browsers hand that over with surrounding whitespace (and, in a JSON
+   * viewer, pretty-printed), so neither may decide whether the paste is understood.
+   */
+  it('reads a whole-page paste of /api/auth/session, raw or pretty-printed', () => {
+    const token = jwt();
+    const body = {
+      accessToken: token,
+      expires: '2026-09-01T00:00:00.000Z',
+      user: { email: 'a@b.com' },
+    };
+
+    expect(parseChatGPTWebPaste(`\n  ${JSON.stringify(body)}  \n`)).toEqual({
+      accessToken: token,
+      kind: 'access_token',
+    });
+    expect(parseChatGPTWebPaste(`\n${JSON.stringify(body, null, 2)}\n`)).toEqual({
+      accessToken: token,
+      kind: 'access_token',
+    });
+  });
+
   it('still finds the access token in a truncated JSON paste', () => {
     const token = jwt();
     expect(parseChatGPTWebPaste(`{"accessToken": "${token}", "expi`)).toEqual({

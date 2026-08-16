@@ -17,6 +17,10 @@ import {
 } from '@/server/services/oauthDeviceFlow/refresh';
 
 import type { AiCatalogSecretManager, PlatformProviderKeyVaults } from './secretManager';
+import {
+  clearSharedOAuthReauthMarker,
+  markSharedOAuthGrantInvalid,
+} from './sharedOAuthReauthMarker';
 
 const log = debug('lobe-server:ai-catalog-shared-oauth');
 
@@ -79,10 +83,17 @@ const toOAuthVault = (vault: PlatformProviderKeyVaults): OAuthTokenKeyVaults => 
  * successful refresh clears `oauthLastRefreshErrorAt` by passing `undefined`, and an
  * additive-only overlay would leave the stale error stamp backing off every future
  * attempt for as long as the vault lives.
+ *
+ * `clearReauthMarker` belongs to the PERSIST path alone. Clearing on every merge would let the
+ * lock path — which can simply adopt another holder's stored tokens without rotating anything —
+ * hand back a vault that looks healthy while the durable one is still marked, and the admin
+ * status read (which returns this vault) would cache that answer. Only the write that actually
+ * rotated the credential has proof the grant recovered.
  */
 const mergeTokens = (
   base: PlatformProviderKeyVaults,
   tokens: OAuthTokenKeyVaults,
+  options?: { clearReauthMarker?: boolean },
 ): PlatformProviderKeyVaults => {
   const merged: PlatformProviderKeyVaults = {
     ...base,
@@ -100,6 +111,7 @@ const mergeTokens = (
     if (value === undefined) delete merged[leaf];
     else merged[leaf] = String(value);
   }
+  if (options?.clearReauthMarker && tokens.oauthAccessToken) clearSharedOAuthReauthMarker(merged);
   return merged;
 };
 
@@ -242,7 +254,9 @@ export const refreshSharedOAuthVault = async (
       for (let attempt = 0; ; attempt += 1) {
         if (foreignRotationDetected) throw new Error('SHARED_OAUTH_ROTATION_CAS_MISS');
         const previousRefreshToken = asString(latestFullVault.oauthRefreshToken);
-        const merged = mergeTokens(latestFullVault, next);
+        // The only write that PROVES the grant recovered, so the only one allowed to drop the
+        // reauth marker (a lifecycle-stamp-only persist carries no access token and keeps it).
+        const merged = mergeTokens(latestFullVault, next, { clearReauthMarker: true });
         const sealed = await params.secrets.encryptVaultForRotation(merged);
         const updated = await repository.casProviderSecretCiphertext({
           ciphertext: sealed.ciphertext,
@@ -320,16 +334,49 @@ export const refreshSharedOAuthVault = async (
     return stored.oauthAccessToken ? stored : tokens;
   };
 
-  const refreshed = await ensureFreshOAuthTokenWithStore({
-    config,
-    flightKey: `platform:${params.providerKey}`,
-    force: params.force,
-    keyVaults: tokens,
-    onInvalidGrant: throwSharedGrantExpired,
-    providerId: params.providerKey,
-    store,
-    withRefreshLock,
-  });
+  let refreshed: OAuthTokenKeyVaults;
+  try {
+    refreshed = await ensureFreshOAuthTokenWithStore({
+      config,
+      flightKey: `platform:${params.providerKey}`,
+      force: params.force,
+      keyVaults: tokens,
+      onInvalidGrant: throwSharedGrantExpired,
+      providerId: params.providerKey,
+      store,
+      withRefreshLock,
+    });
+  } catch (error) {
+    /**
+     * A DEAD grant is the one failure an operator has to act on, and until now nothing wrote
+     * it down: the admin card re-ran this refresh, saw the same throw, and reported the
+     * connection as healthy the moment the stored access token was not yet near expiry.
+     * Stamped here (not inside `throwSharedGrantExpired`, which is a synchronous `never`) so
+     * every caller — runtime execution, keepalive sweep, admin status read — records it once.
+     *
+     * Best-effort by construction: `markSharedOAuthGrantInvalid` never throws, and the
+     * original error is re-thrown unchanged. Transient failures fall straight through.
+     */
+    if (isOAuthAuthorizationExpiredError(error)) {
+      await markSharedOAuthGrantInvalid({
+        // The freshest baseline this flow has seen — `readVault` moves both under the lease.
+        ciphertext: lastCiphertext,
+        db: params.db,
+        fingerprint: params.fingerprint,
+        keyVaults: latestFullVault,
+        providerRowId: params.providerRowId,
+        reason: 'invalidGrant',
+        secrets: params.secrets,
+      });
+    }
+    throw error;
+  }
 
+  /**
+   * No `clearReauthMarker` here: this merge only projects the vault this execution runs on. If a
+   * rotation was persisted, `latestFullVault` IS the cleared write; if the lock path merely
+   * adopted another holder's tokens, durable state may still carry a marker written after that
+   * holder rotated — and this response must not contradict it.
+   */
   return mergeTokens(latestFullVault, refreshed);
 };

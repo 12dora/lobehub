@@ -29,7 +29,9 @@ import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
 import { getChatGPTWebFetch } from '@/server/enterprise/services/chatgptWeb/transport';
 import {
+  createPlatformAiAuthFailureHooks,
   createPlatformAiModelAllowlistHooks,
+  digestPlatformAiCredential,
   isPlatformManagedAiEnabled,
   type PlatformAiExactModelRef,
   resolvePlatformAiExecutionConfig,
@@ -691,11 +693,25 @@ export const initModelRuntimeFromDB = async (
       const requestModeHooks = createManagedRequestModeHooks(
         providerConfig.config?.enableResponseApi,
       );
+      /**
+       * Platform credentials are shared: a rejection on THIS call is the only place the
+       * platform learns that a stored (still unexpired) token stopped being accepted. The
+       * digest pins the observation to the credential this runtime is built with, so a
+       * reconnect between here and the 401 cannot make the new one look dead.
+       */
+      const authFailureHooks = createPlatformAiAuthFailureHooks(
+        db,
+        provider,
+        digestPlatformAiCredential(providerConfig.keyVaults.oauthAccessToken as string | undefined),
+      );
       const hooks = mergeModelRuntimeHooks(
         createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
         mergeModelRuntimeHooks(
           requestModeHooks,
-          mergeModelRuntimeHooks(businessHooks, tracingHooks),
+          mergeModelRuntimeHooks(
+            authFailureHooks,
+            mergeModelRuntimeHooks(businessHooks, tracingHooks),
+          ),
         ),
       );
       return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
@@ -735,9 +751,21 @@ export const initPlatformExactModelRuntime = async (
   const businessHooks = getBusinessModelRuntimeHooks(userId, ref.providerKey, workspaceId);
   const tracingHooks = createLLMGenerationTracingHook(userId, ref.providerKey, workspaceId);
   const requestModeHooks = createManagedRequestModeHooks(providerConfig.config?.enableResponseApi);
+  /**
+   * Pinned to the credential of THIS historical revision: an operation still running on an old
+   * revision must never report the current one as dead (the digests simply will not match).
+   */
+  const authFailureHooks = createPlatformAiAuthFailureHooks(
+    db,
+    ref.providerKey,
+    digestPlatformAiCredential(providerConfig.keyVaults.oauthAccessToken as string | undefined),
+  );
   const hooks = mergeModelRuntimeHooks(
     createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
-    mergeModelRuntimeHooks(requestModeHooks, mergeModelRuntimeHooks(businessHooks, tracingHooks)),
+    mergeModelRuntimeHooks(
+      requestModeHooks,
+      mergeModelRuntimeHooks(authFailureHooks, mergeModelRuntimeHooks(businessHooks, tracingHooks)),
+    ),
   );
   return initModelRuntimeWithUserPayload(ref.providerKey, payload, { userId }, hooks);
 };

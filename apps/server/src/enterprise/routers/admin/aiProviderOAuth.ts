@@ -43,6 +43,7 @@ import {
 import { AiCatalogNotFoundError } from '../../services/aiCatalog/adminService';
 import { providerCredentialKeys } from '../../services/aiCatalog/credentialAdapter';
 import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
+import { readSharedOAuthReauthMarker } from '../../services/aiCatalog/sharedOAuthReauthMarker';
 import {
   isOAuthAuthorizationExpiredError,
   refreshSharedOAuthVault,
@@ -163,6 +164,13 @@ const buildSharedVault = (
    */
   put('oauthLastRefreshAt', String(Date.now()));
   put('oauthLastRefreshErrorAt', undefined);
+  /**
+   * The reauth marker describes the credential that was just replaced, so it is cleared in the
+   * same write — otherwise the card would keep demanding a reconnect the operator has already
+   * performed. Both leaves move as a unit (see `sharedOAuthReauthMarker`).
+   */
+  put('oauthGrantInvalidAt', undefined);
+  put('oauthGrantInvalidReason', undefined);
 
   return { clearedLeaves, vault };
 };
@@ -340,6 +348,9 @@ export const adminAiProviderOAuthRouter = router({
         expired: false,
         expiresAt: null,
         flow: getProviderOAuthGrantFlow(input.id),
+        invalidAt: null,
+        invalidReason: null,
+        needsReauth: false,
         renewalKind: null,
         secretConfigured: false,
       };
@@ -420,6 +431,14 @@ export const adminAiProviderOAuthRouter = router({
         : null;
 
       const refreshCredential = asVaultString(keyVaults.oauthRefreshToken);
+      /**
+       * Terminal auth failures recorded by the refresh path or by a real execution through the
+       * shared account. This is what closes the gap the operator kept hitting: a token string
+       * sitting in the vault, unexpired, that chatgpt.com has already stopped accepting — the
+       * refresh above is a no-op in that state, so presence alone said "已连接" while every
+       * member's chat came back 需要重新授权.
+       */
+      const marker = readSharedOAuthReauthMarker(keyVaults);
 
       return {
         accountEmail,
@@ -432,10 +451,20 @@ export const adminAiProviderOAuthRouter = router({
         expired,
         expiresAt: expiresAt ?? null,
         flow: getProviderOAuthGrantFlow(input.id),
+        // Null unless `needsReauth` — the pair is written and cleared as a unit.
+        invalidAt: expired ? (marker.invalidAt ?? String(Date.now())) : marker.invalidAt,
+        invalidReason: expired ? (marker.invalidReason ?? 'invalidGrant') : marker.invalidReason,
         // Stamped at connect and moved forward by every successful renewal (including the
         // one this query just ran), so an operator can tell a connection that is quietly
         // rolling over from one nothing has touched since it was made.
         lastRefreshAt: lastRefreshAt ?? null,
+        /**
+         * `expired` is this request's own observation (the refresh above threw `invalid_grant`);
+         * the marker is what an EARLIER observation — from any instance, including a member's
+         * failing chat — wrote down. Either one means the same thing to the operator, so they
+         * are surfaced as one state instead of two badges nobody can tell apart.
+         */
+        needsReauth: expired || Boolean(marker.invalidAt),
         /**
          * Names the renewal path so the panel can say WHY the connection keeps working.
          * The stored label wins; connections made before the leaf existed are identified by

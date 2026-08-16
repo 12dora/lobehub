@@ -266,7 +266,21 @@ describe('OAuthDeviceFlowAuth paste flow', () => {
 
     expect(screen.getByText('providerModels.config.oauth.paste.sessionOnlyTitle')).toBeTruthy();
     expect(screen.getByText('providerModels.config.oauth.paste.sessionOnlyDesc')).toBeTruthy();
-    expect(screen.getByText('providerModels.config.oauth.paste.sessionHint')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.paste.sessionStep1')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.paste.sessionStep2')).toBeTruthy();
+    expect(screen.getByText('providerModels.config.oauth.paste.sessionStep3')).toBeTruthy();
+    // Step 1 used to name a page with nothing to click; both routes are now one click away.
+    expect(
+      screen.getByText('providerModels.config.oauth.paste.openChatGPT').closest('a'),
+    ).toMatchObject({ rel: 'noopener noreferrer', target: '_blank' });
+    expect(
+      screen
+        .getByText('providerModels.config.oauth.paste.openSessionPage')
+        .closest('a')
+        ?.getAttribute('href'),
+    ).toBe('https://chatgpt.com/api/auth/session');
+    // The 10-day fallback is offered, and never as a peer of the renewable route.
+    expect(screen.getByText('providerModels.config.oauth.paste.sessionQuickTry')).toBeTruthy();
     // The box is the whole form — never behind a disclosure the user has to find.
     expect(screen.queryByText('providerModels.config.oauth.paste.sessionToggle')).toBeNull();
     // The authorization page signs the user into a different product and the server refuses

@@ -27,7 +27,11 @@ import type { LobeChatDatabase } from '@/database/type';
 import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import { digestPlatformAiCredential } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 
+import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
+import { markSharedOAuthGrantInvalidForProvider } from '../../services/aiCatalog/sharedOAuthReauthMarker';
 import { ChatGPTWebOAuthService } from '../../services/chatgptWeb/oauthService';
 import { deletePlatformAuditLogsForTest } from '../../testing/deletePlatformAuditLogs';
 import { deletePlatformResourceRevisionsForTest } from '../../testing/deletePlatformResourceRevisions';
@@ -580,8 +584,10 @@ describe('admin.aiProviderOAuth.pollAuthStatus', () => {
       secret: {
         operation: 'merge',
         // A reconnect must not inherit the previous grant's refresh backoff, so the error
-        // stamp is explicitly unset rather than left behind by the merge.
-        unset: ['oauthLastRefreshErrorAt'],
+        // stamp is explicitly unset rather than left behind by the merge — and neither may
+        // it inherit the dead grant's reauth marker, which would keep the card demanding a
+        // reconnect the operator has just performed.
+        unset: ['oauthLastRefreshErrorAt', 'oauthGrantInvalidAt', 'oauthGrantInvalidReason'],
         value: {
           oauthAccessToken: ACCESS_TOKEN,
           oauthAccountEmail: ACCOUNT_EMAIL,
@@ -746,6 +752,10 @@ describe('admin.aiProviderOAuth.disconnect', () => {
       expired: false,
       expiresAt: null,
       flow: 'device_code',
+      invalidAt: null,
+      invalidReason: null,
+      // Nothing is stored any more, so there is nothing left to re-authorize either.
+      needsReauth: false,
       renewalKind: null,
       secretConfigured: false,
     });
@@ -906,8 +916,12 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
       expired: false,
       expiresAt: expect.stringMatching(/^\d+$/),
       flow: 'device_code',
+      invalidAt: null,
+      invalidReason: null,
       // Epoch millis as a string, exactly like `expiresAt` — both mirror the vault leaf.
       lastRefreshAt: expect.stringMatching(/^\d+$/),
+      // A freshly connected account carries no reauth marker.
+      needsReauth: false,
       // A device-code grant stores no kind label, so the credential's shape decides — and
       // an opaque refresh token is the OAuth one it can only be.
       renewalKind: 'oauth',
@@ -1042,6 +1056,10 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
       expired: false,
       expiresAt: null,
       flow: 'device_code',
+      invalidAt: null,
+      invalidReason: null,
+      // Nothing is stored any more, so there is nothing left to re-authorize either.
+      needsReauth: false,
       renewalKind: null,
       secretConfigured: false,
     });
@@ -1077,6 +1095,120 @@ describe('admin.aiProviderOAuth.getConnectionStatus', () => {
 
     expect(status).toMatchObject({ accountEmail: null, canRefresh: true, connected: true });
     expect(JSON.stringify(status)).not.toContain('grok-owner@example.test');
+  });
+});
+
+/**
+ * The desync this marker exists for: a stored access token that chatgpt.com has already
+ * stopped accepting is not near expiry, so the status query's refresh is a no-op and presence
+ * alone reported 已连接 while every member's chat came back "需要重新授权". These cases drive the
+ * REAL projection — a marker written into the encrypted vault, read back through the router.
+ */
+describe('admin.aiProviderOAuth.getConnectionStatus — reauth marker', () => {
+  const secretManager = () =>
+    new AiCatalogSecretManager(PlatformSecretService.fromEnvOrThrowIfEnterprise()!);
+
+  /** Records a terminal failure the way the runtime hook does: pinned to the token used. */
+  const observeAuthFailure = async (
+    reason: 'invalidGrant' | 'runtimeAuth',
+    accessToken = ACCESS_TOKEN,
+  ) =>
+    markSharedOAuthGrantInvalidForProvider({
+      credentialDigest: digestPlatformAiCredential(accessToken)!,
+      db,
+      providerKey: 'chatgpt',
+      reason,
+      secrets: secretManager(),
+    });
+
+  const connectShared = async (deviceCode = 'device-code-1', accessToken = ACCESS_TOKEN) => {
+    oauthService.pollForToken.mockResolvedValue({
+      ...successTokens,
+      tokens: { ...successTokens.tokens, accessToken },
+    });
+    const caller = await callerFor();
+    await caller.aiProviderOAuth.pollAuthStatus({
+      deviceCode,
+      id: 'chatgpt',
+      reason: 'connect shared chatgpt account',
+    });
+    return caller;
+  };
+
+  // `runtimeAuth` = a member request rejected as unauthenticated; `invalidGrant` = the renewal
+  // itself refused. Different observers, same answer for the operator.
+  it.each(['runtimeAuth', 'invalidGrant'] as const)(
+    'projects a persisted %s marker as needsReauth',
+    async (reason) => {
+      const caller = await connectShared();
+      expect(await observeAuthFailure(reason)).toBe(true);
+
+      const status = await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' });
+
+      expect(status).toMatchObject({
+        // The credential is still stored — it is the evidence, and the card keeps showing WHICH
+        // account has to be reconnected.
+        accountEmail: ACCOUNT_EMAIL,
+        connected: true,
+        invalidReason: reason,
+        needsReauth: true,
+      });
+      expect(status.invalidAt).toMatch(/^\d+$/);
+      // A stable code and a timestamp only: no token material rides along.
+      const serialized = JSON.stringify(status);
+      expect(serialized).not.toContain(ACCESS_TOKEN);
+      expect(serialized).not.toContain(REFRESH_TOKEN);
+    },
+  );
+
+  it('clears the marker on reconnect, so the card recovers on its own', async () => {
+    await connectShared();
+    await observeAuthFailure('runtimeAuth');
+
+    // Same procedure the operator uses: reconnecting must not leave the dead grant's marker
+    // demanding a fix that has already been made.
+    const caller = await connectShared('device-code-2', 'shared-access-token-v2');
+
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).toMatchObject({
+      connected: true,
+      invalidAt: null,
+      invalidReason: null,
+      needsReauth: false,
+    });
+  });
+
+  it('marks the credential that failed, never the one that replaced it', async () => {
+    await connectShared();
+    const caller = await connectShared('device-code-2', 'shared-access-token-v2');
+
+    // A late 401 from a request that started on the PREVIOUS token must not condemn the new one.
+    expect(await observeAuthFailure('runtimeAuth', ACCESS_TOKEN)).toBe(false);
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).toMatchObject({
+      needsReauth: false,
+    });
+
+    // The new credential failing IS reportable, and lands on the connection that is live now.
+    expect(await observeAuthFailure('runtimeAuth', 'shared-access-token-v2')).toBe(true);
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).toMatchObject({
+      invalidReason: 'runtimeAuth',
+      needsReauth: true,
+    });
+  });
+
+  it('keeps a withdrawn provider at "not connected" rather than "needs reauth"', async () => {
+    const caller = await connectShared();
+    await observeAuthFailure('runtimeAuth');
+    await caller.aiProviderOAuth.disconnect({
+      id: 'chatgpt',
+      reason: 'withdraw the shared account',
+    });
+
+    // Disconnect drops the whole vault, marker included: there is nothing left to re-authorize.
+    expect(await caller.aiProviderOAuth.getConnectionStatus({ id: 'chatgpt' })).toMatchObject({
+      connected: false,
+      needsReauth: false,
+      secretConfigured: false,
+    });
   });
 });
 
