@@ -2,7 +2,15 @@ import { LOBE_CHAT_CLOUD, UTM_SOURCE } from '@lobechat/business-const';
 import { isDesktop } from '@lobechat/const';
 import { Flexbox, Hotkey, Icon, Tag } from '@lobehub/ui';
 import type { ItemType } from 'antd/es/menu/interface';
-import { BrainCircuit, Cloudy, Download, HardDriveDownload, LogOut, Settings2 } from 'lucide-react';
+import {
+  BrainCircuit,
+  Cloudy,
+  Download,
+  HardDriveDownload,
+  LogOut,
+  Settings2,
+  ShieldCheck,
+} from 'lucide-react';
 import type { PropsWithChildren } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -20,6 +28,7 @@ import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfi
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/selectors';
 
+import { useHasAdminEntry } from './useHasAdminEntry';
 import { useNewVersion } from './useNewVersion';
 
 const NewVersionBadge = memo(
@@ -57,6 +66,7 @@ export const useMenu = () => {
   const { userPanel } = useNavLayout();
   const businessMenuItems = useBusinessMenuItems(isLogin);
   const hasActiveWorkspace = useHasActiveWorkspace();
+  const hasAdminEntry = useHasAdminEntry();
 
   const settings: MenuProps['items'] = [
     {
@@ -81,6 +91,15 @@ export const useMenu = () => {
             icon: <Icon icon={BrainCircuit} />,
             key: 'memory',
             label: <Link to="/memory">{t('tab.memory')}</Link>,
+          },
+        ]
+      : []),
+    ...(hasAdminEntry
+      ? [
+          {
+            icon: <Icon icon={ShieldCheck} />,
+            key: 'admin-console',
+            label: <Link to="/admin">{t('userPanel.adminConsole')}</Link>,
           },
         ]
       : []),

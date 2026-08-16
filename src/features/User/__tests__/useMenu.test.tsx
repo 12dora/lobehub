@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ServerConfigStoreProvider } from '@/store/serverConfig/Provider';
 import { useUserStore } from '@/store/user';
@@ -44,7 +44,17 @@ vi.mock('./useNewVersion', () => ({
   useNewVersion: vi.fn(() => false),
 }));
 
+const hasAdminEntry = vi.fn(() => false);
+
+vi.mock('../UserPanel/useHasAdminEntry', () => ({
+  useHasAdminEntry: () => hasAdminEntry(),
+}));
+
 describe('useMenu', () => {
+  beforeEach(() => {
+    hasAdminEntry.mockReturnValue(false);
+  });
+
   it('should provide correct menu items when user is logged in with auth', () => {
     act(() => {
       useUserStore.setState({ isSignedIn: true });
@@ -77,6 +87,32 @@ describe('useMenu', () => {
       expect(mainItems?.some((item) => item?.key === 'memory')).toBe(false);
       expect(logoutItems.some((item) => item?.key === 'logout')).toBe(false);
     });
+  });
+
+  it('should show the admin console entry only for users with admin access', () => {
+    act(() => {
+      useUserStore.setState({ isSignedIn: true });
+    });
+
+    const { result: withoutAccess } = renderHook(() => useMenu(), { wrapper });
+    expect(withoutAccess.current.mainItems?.some((item) => item?.key === 'admin-console')).toBe(
+      false,
+    );
+
+    hasAdminEntry.mockReturnValue(true);
+    const { result: withAccess } = renderHook(() => useMenu(), { wrapper });
+    expect(withAccess.current.mainItems?.some((item) => item?.key === 'admin-console')).toBe(true);
+  });
+
+  it('should not show the admin console entry when the user is not logged in', () => {
+    act(() => {
+      useUserStore.setState({ isSignedIn: false });
+    });
+    hasAdminEntry.mockReturnValue(true);
+
+    const { result } = renderHook(() => useMenu(), { wrapper });
+
+    expect(result.current.mainItems?.some((item) => item?.key === 'admin-console')).toBe(false);
   });
 
   it('should not have consecutive dividers in mainItems', () => {
