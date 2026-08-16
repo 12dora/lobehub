@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activityBucketDay,
-  activitySeriesDays,
   activitySpansDays,
   currentDayInZone,
   formatActivityBucketLabel,
+  isBucketInRange,
   isTerminalDayCurrent,
+  markActivityRange,
+  OUT_OF_RANGE_LEVEL_OFFSET,
   resolveActivityView,
   resolveCalendarBlockMetrics,
+  resolveCalendarWindow,
+  resolveRangeDays,
+  rowsInRange,
   summarizeActivitySeries,
   toActivityHourRows,
   toHeatmapActivities,
@@ -38,110 +43,148 @@ describe('resolveActivityView', () => {
   });
 });
 
-/** The zero-filled day series the ranged endpoint returns for a window. */
-const daySeries = (startDay: string, days: number) =>
-  Array.from({ length: days }, (_, index) => {
-    const day = new Date(`${startDay}T00:00:00.000Z`);
-    day.setUTCDate(day.getUTCDate() + index);
-    return { bucket: day.toISOString().slice(0, 10), count: 0, level: 0 };
-  });
-
-describe('activitySeriesDays', () => {
-  it('counts the calendar days the series covers', () => {
-    expect(activitySeriesDays(daySeries('2026-08-10', 7))).toBe(7);
-    expect(activitySeriesDays(daySeries('2026-07-18', 30))).toBe(30);
-  });
-
-  it('is undefined when there is no series to measure', () => {
-    expect(activitySeriesDays()).toBeUndefined();
-    expect(activitySeriesDays([])).toBeUndefined();
-  });
-
-  it('collapses an hourly series onto the days it straddles', () => {
-    expect(
-      activitySeriesDays([
-        { bucket: '2026-08-15T22:00' },
-        { bucket: '2026-08-15T23:00' },
-        { bucket: '2026-08-16T00:00' },
-      ]),
-    ).toBe(2);
-  });
-
-  it('holds the 14-day step over a fall-back fortnight that lasts 337 hours', () => {
-    // The regression this guards: dividing the elapsed span by 24h rounds the extra
-    // hour up to a 15th day, dropping the blocks to 24px and reserving a month-label
-    // row the grid is far too narrow to print.
-    const elapsedHours =
-      (Date.parse('2026-11-02T00:00:00-08:00') - Date.parse('2026-10-19T00:00:00-07:00')) /
-      3_600_000;
-    expect(elapsedHours).toBe(337);
-
-    const metrics = resolveCalendarBlockMetrics(activitySeriesDays(daySeries('2026-10-19', 14)));
-    expect(metrics.blockSize).toBe(28);
-    expect(metrics.hideMonthLabels).toBe(true);
-  });
-
-  it.each([
-    // America/Los_Angeles falls back on 2026-11-01 and springs forward on 2026-03-08:
-    // each of these windows straddles one of the two switches.
-    ['fall-back', '2026-10-19', 14, 28],
-    ['fall-back', '2026-10-05', 35, 24],
-    ['fall-back', '2026-08-01', 98, 18],
-    ['spring-forward', '2026-02-23', 14, 28],
-    ['spring-forward', '2026-02-09', 35, 24],
-    ['spring-forward', '2025-12-15', 98, 18],
-  ])(
-    'holds the step boundary for a %s window from %s of %i days',
-    (_label, startDay, days, blockSize) => {
-      const metrics = resolveCalendarBlockMetrics(activitySeriesDays(daySeries(startDay, days)));
-      expect(metrics.blockSize).toBe(blockSize);
-    },
-  );
-});
-
 describe('resolveCalendarBlockMetrics', () => {
-  it.each([
-    [7, 28],
-    [14, 28],
-    [30, 24],
-    [35, 24],
-    [90, 18],
-    [98, 18],
-    [366, 14],
-  ])('grows the block so a %s-day window is not a stamp', (days, blockSize) => {
-    expect(resolveCalendarBlockMetrics(days).blockSize).toBe(blockSize);
-  });
-
-  it('keeps the year-view metrics when there is no window to scale to', () => {
-    // The unfiltered card and the in-flight skeleton both draw a full year.
+  it('keeps the year-view metrics without a measured width', () => {
     expect(resolveCalendarBlockMetrics()).toEqual({
       blockMargin: 4,
       blockRadius: 2,
       blockSize: 14,
-      hideMonthLabels: false,
     });
+    expect(resolveCalendarBlockMetrics(0)).toEqual({
+      blockMargin: 4,
+      blockRadius: 2,
+      blockSize: 14,
+    });
+  });
+
+  it('never grows past the year-view block on a wide card', () => {
+    expect(resolveCalendarBlockMetrics(2000).blockSize).toBe(14);
+  });
+
+  it('shrinks the block so all 53 week columns fit a narrower card', () => {
+    // 53 columns × 12px + 52 gaps × 4px = 844px
+    expect(resolveCalendarBlockMetrics(850).blockSize).toBe(12);
+    expect(resolveCalendarBlockMetrics(700).blockSize).toBe(9);
+  });
+
+  it('tightens the gap before giving up on the block, and never below a legible square', () => {
+    // 53 columns × 6px + 52 × 4px = 526px is the last width the roomy gap can hold.
+    expect(resolveCalendarBlockMetrics(526)).toMatchObject({ blockMargin: 4, blockSize: 6 });
+    // Below that the gap drops to 2px: 53 × 5 + 52 × 2 = 369.
+    expect(resolveCalendarBlockMetrics(370)).toMatchObject({ blockMargin: 2, blockSize: 5 });
+    expect(resolveCalendarBlockMetrics(100)).toMatchObject({ blockMargin: 2, blockSize: 4 });
+  });
+
+  it('keeps every column inside the measured width once it is at all possible', () => {
+    for (const width of [320, 400, 526, 600, 760, 900, 1200]) {
+      const { blockMargin, blockSize } = resolveCalendarBlockMetrics(width);
+      expect(53 * blockSize + 52 * blockMargin).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it('scales down on mobile, where the card is a phone wide', () => {
     expect(resolveCalendarBlockMetrics(undefined, true)).toEqual({
       blockMargin: 3,
       blockRadius: 2,
       blockSize: 6,
-      hideMonthLabels: false,
     });
   });
+});
 
-  it('scales down on mobile, where the card is a phone wide', () => {
-    expect(resolveCalendarBlockMetrics(7, true).blockSize).toBeLessThan(
-      resolveCalendarBlockMetrics(7).blockSize,
-    );
-    expect(resolveCalendarBlockMetrics(30, true).blockSize).toBe(10);
+describe('resolveCalendarWindow', () => {
+  it('draws the 52 weeks that end with the selected window, aligned to a Sunday column', () => {
+    // 2026-08-16 is a Sunday; the window ends mid-day (exclusive), so its last day is the 16th.
+    const window = resolveCalendarWindow(new Date(2026, 7, 16, 14, 30).toISOString());
+    const start = new Date(window!.startAt);
+    expect(start.getDay()).toBe(0);
+    expect(start.getHours()).toBe(0);
+    // 51 weeks back from Sunday the 16th lands on a Sunday too, so no further alignment.
+    expect(start.getTime()).toBe(new Date(2026, 7, 16 - 51 * 7).getTime());
+    expect(window!.endAt).toBe(new Date(2026, 7, 16, 14, 30).toISOString());
   });
 
-  it('hides the month labels only where the calendar is too narrow to print one', () => {
-    // Under three week columns the chart drops every month label anyway; keeping the
-    // row would reserve empty space above the grid and show nothing in it.
-    expect(resolveCalendarBlockMetrics(7).hideMonthLabels).toBe(true);
-    expect(resolveCalendarBlockMetrics(14).hideMonthLabels).toBe(true);
-    expect(resolveCalendarBlockMetrics(15).hideMonthLabels).toBe(false);
-    expect(resolveCalendarBlockMetrics(30).hideMonthLabels).toBe(false);
+  it('steps the start back to the Sunday when the last day is mid-week', () => {
+    // 2026-08-19 is a Wednesday.
+    const window = resolveCalendarWindow(new Date(2026, 7, 20).toISOString());
+    const start = new Date(window!.startAt);
+    expect(start.getDay()).toBe(0);
+    const spanDays = (new Date(2026, 7, 20).getTime() - start.getTime()) / 86_400_000;
+    expect(spanDays).toBeLessThanOrEqual(366);
+    expect(spanDays).toBeGreaterThan(357);
+  });
+
+  it('reaches back to the selected start when a custom range is longer than the calendar', () => {
+    const endAt = new Date(2026, 7, 16, 9, 30).toISOString();
+    const startAt = new Date(2025, 7, 16).toISOString();
+    const window = resolveCalendarWindow(endAt, startAt);
+    // Every selected day is fetched; the request stays inside the server's 366-day cap.
+    expect(window.startAt).toBe(startAt);
+    expect((Date.parse(endAt) - Date.parse(window.startAt)) / 86_400_000).toBeLessThanOrEqual(366);
+  });
+
+  it('closes at the start of tomorrow when the filter pins only a user', () => {
+    const window = resolveCalendarWindow();
+    const end = new Date(window.endAt);
+    const tomorrow = new Date();
+    tomorrow.setHours(0, 0, 0, 0);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    expect(end.getTime()).toBe(tomorrow.getTime());
+    expect(new Date(window.startAt).getDay()).toBe(0);
+    expect(resolveCalendarWindow('nope').endAt).toBe(window.endAt);
+  });
+});
+
+describe('resolveRangeDays', () => {
+  it('names the first and last local day a half-open window touches', () => {
+    expect(
+      resolveRangeDays(new Date(2026, 7, 10).toISOString(), new Date(2026, 7, 17).toISOString()),
+    ).toEqual({ firstDay: '2026-08-10', lastDay: '2026-08-16' });
+  });
+
+  it('is undefined for a missing or inverted window', () => {
+    expect(resolveRangeDays(undefined, new Date().toISOString())).toBeUndefined();
+    expect(
+      resolveRangeDays(new Date(2026, 7, 17).toISOString(), new Date(2026, 7, 10).toISOString()),
+    ).toBeUndefined();
+  });
+});
+
+describe('range marking', () => {
+  const range = { firstDay: '2026-08-10', lastDay: '2026-08-16' };
+
+  it('tells the selected days from the rest of the calendar', () => {
+    expect(isBucketInRange('2026-08-10', range)).toBe(true);
+    expect(isBucketInRange('2026-08-16T23:00', range)).toBe(true);
+    expect(isBucketInRange('2026-08-09', range)).toBe(false);
+    expect(isBucketInRange('2026-08-17', range)).toBe(false);
+    expect(isBucketInRange('2026-08-17')).toBe(true);
+  });
+
+  it('keeps only the selected days for the summary strip', () => {
+    expect(
+      rowsInRange(
+        [
+          { bucket: '2026-08-09', count: 1, level: 1 },
+          { bucket: '2026-08-12', count: 2, level: 1 },
+        ],
+        range,
+      ),
+    ).toEqual([{ bucket: '2026-08-12', count: 2, level: 1 }]);
+  });
+
+  it('shifts out-of-range days onto the dimmed half of the palette', () => {
+    expect(
+      markActivityRange(
+        [
+          { bucket: '2026-08-09', count: 5, level: 2 },
+          { bucket: '2026-08-12', count: 9, level: 4 },
+        ],
+        range,
+      ),
+    ).toEqual([
+      { count: 5, date: '2026-08-09', level: 2 + OUT_OF_RANGE_LEVEL_OFFSET },
+      { count: 9, date: '2026-08-12', level: 4 },
+    ]);
   });
 });
 

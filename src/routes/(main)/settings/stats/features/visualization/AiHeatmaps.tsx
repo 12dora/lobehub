@@ -2,18 +2,14 @@ import { type HeatmapsProps } from '@lobehub/charts';
 import { Heatmaps } from '@lobehub/charts';
 import { Flexbox, Icon, Tag } from '@lobehub/ui';
 import { Tabs } from '@lobehub/ui/base-ui';
-import { cssVar } from 'antd-style';
+import { useSize } from 'ahooks';
+import { createStaticStyles, cssVar, cx } from 'antd-style';
 import { CoinsIcon, FlameIcon, MessageSquareIcon } from 'lucide-react';
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
-import {
-  isStatsFilterActive,
-  useStatsDataSource,
-  useStatsFilter,
-  useStatsSwrKey,
-} from '@/features/SettingsStats';
+import { useStatsDataSource, useStatsSwrKey } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatIntergerNumber, formatShortenNumber } from '@/utils/format';
@@ -21,21 +17,42 @@ import { formatIntergerNumber, formatShortenNumber } from '@/utils/format';
 import { HeatmapType } from '../../types';
 import StatsFormGroup from '../components/StatsFormGroup';
 import {
-  activitySeriesDays,
-  resolveActivityView,
+  CALENDAR_MAX_LEVEL,
+  markActivityRange,
+  OUT_OF_RANGE_LEVEL_OFFSET,
   resolveCalendarBlockMetrics,
-  resolveDisplayTimeZone,
-  toHeatmapActivities,
+  rowsInRange,
 } from './activity.utils';
 import ActivityHourGrid from './ActivityHourGrid';
+import ActivityLegend from './ActivityLegend';
 import HeatmapStats from './HeatmapStats';
+import { useActivityLevelColors, useActivitySeries } from './useActivitySeries';
+
+const styles = createStaticStyles(({ css }) => ({
+  // Days outside the selected window keep their shade but recede, so the window
+  // reads as a highlight on the trailing year rather than a few lonely columns.
+  calendar: css`
+    width: 100%;
+
+    rect[data-level='${OUT_OF_RANGE_LEVEL_OFFSET}'],
+    rect[data-level='${OUT_OF_RANGE_LEVEL_OFFSET + 1}'],
+    rect[data-level='${OUT_OF_RANGE_LEVEL_OFFSET + 2}'],
+    rect[data-level='${OUT_OF_RANGE_LEVEL_OFFSET + 3}'],
+    rect[data-level='${OUT_OF_RANGE_LEVEL_OFFSET + 4}'] {
+      opacity: 0.28;
+    }
+  `,
+  measure: css`
+    width: 100%;
+    min-width: 0;
+  `,
+}));
 
 const AiHeatmaps = memo<
   Omit<HeatmapsProps, 'data' | 'ref'> & { inShare?: boolean; mobile?: boolean }
 >(({ inShare, mobile, ...rest }) => {
   const { t } = useTranslation('auth');
-  const { activitySeries, getHeatmaps, getTokenHeatmaps } = useStatsDataSource();
-  const filter = useStatsFilter();
+  const { getHeatmaps, getTokenHeatmaps } = useStatsDataSource();
   const [type, setType] = useState<HeatmapType>(
     inShare ? HeatmapType.Messages : HeatmapType.Tokens,
   );
@@ -43,24 +60,10 @@ const AiHeatmaps = memo<
 
   // The ranged path needs a data source that can answer for an arbitrary window.
   // The personal page and the share card have none, so they keep the year series.
-  const ranged = Boolean(activitySeries) && !inShare && isStatsFilterActive(filter);
-  const view = ranged ? resolveActivityView(filter.startAt, filter.endAt) : 'calendar';
-
-  const timeZone = resolveDisplayTimeZone();
+  const { filter, range, ranged, series, view } = useActivitySeries(type, !inShare);
   const yearKey = useStatsSwrKey(statsKeys.heatmaps(type));
-  const seriesKey = useStatsSwrKey(statsKeys.activitySeries(type, timeZone));
-
   const year = useClientDataSWR(ranged ? null : yearKey, async () =>
     isTokens ? getTokenHeatmaps() : getHeatmaps(),
-  );
-  const series = useClientDataSWR(ranged ? seriesKey : null, async () =>
-    activitySeries!({
-      endAt: filter.endAt,
-      metric: isTokens ? 'tokens' : 'messages',
-      startAt: filter.startAt,
-      timeZone,
-      userId: filter.userId,
-    }),
   );
 
   const active = ranged ? series : year;
@@ -68,12 +71,27 @@ const AiHeatmaps = memo<
   // flight, and calling that "loading" is what freezes the card on a skeleton.
   const isLoading = active.isLoading || (active.data === undefined && !active.error);
   const activities = useMemo(
-    () => (ranged ? toHeatmapActivities(series.data) : (year.data ?? [])),
-    [ranged, series.data, year.data],
+    () => (ranged ? markActivityRange(series.data, range) : (year.data ?? [])),
+    [range, ranged, series.data, year.data],
+  );
+  // The day tags describe the selected window, not the whole calendar behind it.
+  const rangeRows = useMemo(
+    () => (ranged ? rowsInRange(series.data, range) : (year.data ?? [])),
+    [range, ranged, series.data, year.data],
   );
 
-  const days = activities.filter((item) => item.level > 0).length || '--';
-  const hotDays = activities.filter((item) => item.level >= 3).length || '--';
+  const levelColors = useActivityLevelColors();
+  // In-range palette, then the same palette again for out-of-range days (dimmed via CSS).
+  const calendarColors = useMemo(() => [...levelColors, ...levelColors], [levelColors]);
+
+  // The calendar fits itself to the width it is given, so a card that shares its row
+  // with another still shows the full year instead of scrolling.
+  const measureRef = useRef<HTMLDivElement>(null);
+  const width = useSize(measureRef)?.width;
+  const blocks = resolveCalendarBlockMetrics(width, mobile);
+
+  const days = rangeRows.filter((item) => item.level > 0).length || '--';
+  const hotDays = rangeRows.filter((item) => item.level >= 3).length || '--';
 
   const formatCount = (count: number) =>
     isTokens ? formatShortenNumber(count) : formatIntergerNumber(count);
@@ -94,54 +112,57 @@ const AiHeatmaps = memo<
     more: t('heatmaps.legend.more'),
   };
 
-  // A ranged calendar is only a few columns wide, so its blocks grow to fill the card.
-  // Sized off the settled series' own calendar days — the grid's actual columns — and
-  // never off the elapsed span, which counts a DST fortnight as fifteen days. While the
-  // request is in flight the chart draws a year-shaped skeleton, which only reads right
-  // at the year-view size, so the day count is withheld until it settles.
-  const blocks = resolveCalendarBlockMetrics(
-    isLoading || !ranged ? undefined : activitySeriesDays(series.data),
-    mobile,
-  );
-
   const chart =
     view === 'calendar' ? (
-      <Heatmaps
-        blockMargin={blocks.blockMargin}
-        blockRadius={blocks.blockRadius}
-        blockSize={blocks.blockSize}
-        customTooltip={(activity) => calendarTooltip(activity.count, activity.date)}
-        data={activities}
-        hideMonthLabels={blocks.hideMonthLabels}
-        hideTotalCount={isTokens || ranged}
-        loading={isLoading}
-        maxLevel={4}
-        labels={{
-          legend: legendLabels,
-          months: [
-            t('heatmaps.months.jan'),
-            t('heatmaps.months.feb'),
-            t('heatmaps.months.mar'),
-            t('heatmaps.months.apr'),
-            t('heatmaps.months.may'),
-            t('heatmaps.months.jun'),
-            t('heatmaps.months.jul'),
-            t('heatmaps.months.aug'),
-            t('heatmaps.months.sep'),
-            t('heatmaps.months.oct'),
-            t('heatmaps.months.nov'),
-            t('heatmaps.months.dec'),
-          ],
-          tooltip: isTokens ? t('heatmaps.tooltipTokens') : t('heatmaps.tooltip'),
-          totalCount: isTokens ? t('heatmaps.totalCountTokens') : t('heatmaps.totalCount'),
-        }}
-        style={{
-          alignSelf: 'center',
-        }}
-        {...rest}
-      />
+      <div className={styles.measure} ref={measureRef}>
+        <Heatmaps
+          blockMargin={blocks.blockMargin}
+          blockRadius={blocks.blockRadius}
+          blockSize={blocks.blockSize}
+          className={cx(ranged && styles.calendar)}
+          colors={ranged ? calendarColors : undefined}
+          customTooltip={(activity) => calendarTooltip(activity.count, activity.date)}
+          data={activities}
+          hideColorLegend={ranged}
+          hideTotalCount={isTokens || ranged}
+          loading={isLoading}
+          maxLevel={ranged ? CALENDAR_MAX_LEVEL + OUT_OF_RANGE_LEVEL_OFFSET : CALENDAR_MAX_LEVEL}
+          labels={{
+            legend: legendLabels,
+            months: [
+              t('heatmaps.months.jan'),
+              t('heatmaps.months.feb'),
+              t('heatmaps.months.mar'),
+              t('heatmaps.months.apr'),
+              t('heatmaps.months.may'),
+              t('heatmaps.months.jun'),
+              t('heatmaps.months.jul'),
+              t('heatmaps.months.aug'),
+              t('heatmaps.months.sep'),
+              t('heatmaps.months.oct'),
+              t('heatmaps.months.nov'),
+              t('heatmaps.months.dec'),
+            ],
+            tooltip: isTokens ? t('heatmaps.tooltipTokens') : t('heatmaps.tooltip'),
+            totalCount: isTokens ? t('heatmaps.totalCountTokens') : t('heatmaps.totalCount'),
+          }}
+          style={{
+            alignSelf: 'center',
+          }}
+          {...rest}
+        />
+        {ranged && !isLoading ? (
+          <ActivityLegend
+            blockRadius={blocks.blockRadius}
+            blockSize={blocks.blockSize}
+            colors={levelColors}
+            labels={legendLabels}
+          />
+        ) : null}
+      </div>
     ) : (
       <ActivityHourGrid
+        colors={levelColors}
         customTooltip={(cell) => hourTooltip(cell.count, cell.label)}
         data={series.data}
         labels={legendLabels}

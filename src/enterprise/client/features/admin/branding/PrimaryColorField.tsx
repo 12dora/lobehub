@@ -49,7 +49,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   row: css`
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 10px;
     align-items: center;
   `,
@@ -102,8 +102,11 @@ export const PrimaryColorField = memo<PrimaryColorFieldProps>(
             enableColorPicker
             colors={colors}
             size={22}
-            style={disabled ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
             value={value ?? TRANSPARENT}
+            style={{
+              flexWrap: 'nowrap',
+              ...(disabled ? { opacity: 0.5, pointerEvents: 'none' } : undefined),
+            }}
             texts={{
               custom: t('branding.fields.primaryColorCustom'),
               presets: t('branding.fields.primaryColorPresets'),

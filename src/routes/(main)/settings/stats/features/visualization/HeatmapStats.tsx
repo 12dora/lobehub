@@ -5,13 +5,7 @@ import { Fragment, memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
-import {
-  isStatsFilterActive,
-  statsFilterParams,
-  useStatsDataSource,
-  useStatsFilter,
-  useStatsSwrKey,
-} from '@/features/SettingsStats';
+import { statsFilterParams, useStatsDataSource, useStatsSwrKey } from '@/features/SettingsStats';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
 import { formatShortenNumber } from '@/utils/format';
@@ -20,10 +14,10 @@ import { HeatmapType } from '../../types';
 import {
   activityBucketDay,
   isTerminalDayCurrent,
-  resolveActivityView,
-  resolveDisplayTimeZone,
+  rowsInRange,
   summarizeActivitySeries,
 } from './activity.utils';
+import { useActivitySeries } from './useActivitySeries';
 
 /**
  * Render a wall-clock duration in seconds as a compact "1h 15m" / "15m 20s" /
@@ -49,27 +43,12 @@ const formatDuration = (seconds?: number) => {
  */
 const HeatmapStats = memo(() => {
   const { t } = useTranslation('auth');
-  const { activitySeries, getMaxTaskDuration, getTokenHeatmaps } = useStatsDataSource();
-  const filter = useStatsFilter();
-
-  const ranged = Boolean(activitySeries) && isStatsFilterActive(filter);
-  const view = ranged ? resolveActivityView(filter.startAt, filter.endAt) : 'calendar';
-
-  const timeZone = resolveDisplayTimeZone();
+  const { getMaxTaskDuration, getTokenHeatmaps } = useStatsDataSource();
+  const { filter, range, ranged, series, timeZone, view } = useActivitySeries(HeatmapType.Tokens);
   const yearKey = useStatsSwrKey(statsKeys.heatmaps(HeatmapType.Tokens));
-  const seriesKey = useStatsSwrKey(statsKeys.activitySeries(HeatmapType.Tokens, timeZone));
   const durationKey = useStatsSwrKey(statsKeys.maxTaskDuration());
 
   const year = useClientDataSWR(ranged ? null : yearKey, () => getTokenHeatmaps());
-  const series = useClientDataSWR(ranged ? seriesKey : null, () =>
-    activitySeries!({
-      endAt: filter.endAt,
-      metric: 'tokens',
-      startAt: filter.startAt,
-      timeZone,
-      userId: filter.userId,
-    }),
-  );
 
   const active = ranged ? series : year;
   // A terminal failure is neither loading nor settled — treating "no data" as loading
@@ -82,15 +61,19 @@ const HeatmapStats = memo(() => {
   const durationLoading = duration.isLoading || (duration.data === undefined && !duration.error);
 
   const stats = useMemo(() => {
+    // Ranged, the series is the whole trailing calendar; only the selected days count.
     const rows = ranged
-      ? series.data?.map((row) => ({ count: row.count, day: activityBucketDay(row.bucket) }))
+      ? rowsInRange(series.data, range).map((row) => ({
+          count: row.count,
+          day: activityBucketDay(row.bucket),
+        }))
       : year.data?.map((row) => ({ count: row.count, day: row.date }));
     // A zero-valued last day only means "not over yet" when it really is today; a
     // closed historical window ending on an inactive day has no current streak.
     return summarizeActivitySeries(rows, {
       isTerminalDayCurrent: isTerminalDayCurrent(rows, timeZone),
     });
-  }, [ranged, series.data, timeZone, year.data]);
+  }, [range, ranged, series.data, timeZone, year.data]);
 
   const days = (n: number) => [n, t('stats.days')].join(' ');
 

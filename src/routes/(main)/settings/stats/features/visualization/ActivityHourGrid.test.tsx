@@ -31,29 +31,20 @@ vi.mock('antd-style', () => ({
     legend: 'legend',
     row: 'row',
     rows: 'rows',
+    legendBlock: 'legendBlock',
     scrollContainer: 'scrollContainer',
     slot: 'slot',
   }),
   keyframes: () => 'keyframes',
-  useTheme: () => ({
-    colorFillSecondary: '#eee',
-    green2: '#g2',
-    green4: '#g4',
-    green6: '#g6',
-    green8: '#g8',
-    lime2: '#l2',
-    lime4: '#l4',
-    lime6: '#l6',
-    lime8: '#l8',
-  }),
-  useThemeMode: () => ({ isDarkMode: false }),
 }));
 
 const LABELS = { less: 'Less', more: 'More' };
+const COLORS = ['#eee', '#g2', '#g4', '#g6', '#g8'];
 
 const renderGrid = (props: Partial<Parameters<typeof ActivityHourGrid>[0]> = {}) =>
   render(
     <ActivityHourGrid
+      colors={COLORS}
       customTooltip={(cell) => `${cell.label} · ${cell.count}`}
       labels={LABELS}
       {...props}
@@ -116,7 +107,7 @@ describe('ActivityHourGrid', () => {
     expect(screen.getByText('Less')).toBeTruthy();
     expect(screen.getByText('More')).toBeTruthy();
     // One swatch per level, level 0 included.
-    expect(container.querySelectorAll('.legend .block')).toHaveLength(5);
+    expect(container.querySelectorAll('.legend .legendBlock')).toHaveLength(5);
   });
 
   it('drawsAPulsingEmptyStripWithoutALegendWhileLoading', () => {
@@ -136,10 +127,10 @@ describe('ActivityHourGrid', () => {
   });
 
   it('scalesTheBlocksDownOnMobile', () => {
-    renderGrid({ data: [{ bucket: '2026-08-16T09:00', count: 4, level: 2 }], mobile: true });
+    renderGrid({ data: [{ bucket: '2026-08-16T09:00', count: 1, level: 1 }], mobile: true });
 
-    expect(screen.getByTestId('grid-root').style.getPropertyValue('--activity-hour-size')).toBe(
-      '10px',
+    expect(screen.getByTestId('grid-root').style.getPropertyValue('--activity-hour-max-size')).toBe(
+      '24px',
     );
   });
 });

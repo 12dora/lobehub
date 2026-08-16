@@ -39,6 +39,9 @@ export type StatsUsageParams = string | (StatsRangeParams & { mo?: string });
 export const statsUsageMonth = (params?: StatsUsageParams): string | undefined =>
   typeof params === 'string' ? params : params?.mo;
 
+/** Which figure `rankUsers` ranks and truncates by — applied server-side. */
+export type StatsUserRankOrderBy = 'cost' | 'messages' | 'totalTokens';
+
 /** One row of `rankUsers` — admin-only, so it is not part of the personal contract. */
 export interface StatsUserRankItem {
   avatar: string | null;
@@ -119,7 +122,10 @@ export interface StatsDataSource {
    * `userId` is honoured like everywhere else: a page pinned to one user gets that user's
    * row, not a ranking of everybody inside their window.
    */
-  rankUsers?: (limit?: number, params?: StatsRangeParams) => Promise<StatsUserRankItem[]>;
+  rankUsers?: (
+    limit?: number,
+    params?: StatsRangeParams & { orderBy?: StatsUserRankOrderBy },
+  ) => Promise<StatsUserRankItem[]>;
   /**
    * SWR cache scope. `personal` keeps historical key shapes; any other value is
    * appended to keys so admin global never shares the personal cache.

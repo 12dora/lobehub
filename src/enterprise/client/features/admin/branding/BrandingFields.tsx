@@ -261,16 +261,14 @@ export const BrandingFields = memo<BrandingFieldsProps>(
         </section>
         <section className={styles.group}>
           <Text as="h2">{labels.theme}</Text>
-          <div className={styles.grid}>
-            <PrimaryColorField
-              disabled={disabled}
-              label={labels.primaryColor}
-              value={branding.themeDefaults.primaryColor}
-              onChange={(value) =>
-                onPatch({ themeDefaults: { ...branding.themeDefaults, primaryColor: value } })
-              }
-            />
-          </div>
+          <PrimaryColorField
+            disabled={disabled}
+            label={labels.primaryColor}
+            value={branding.themeDefaults.primaryColor}
+            onChange={(value) =>
+              onPatch({ themeDefaults: { ...branding.themeDefaults, primaryColor: value } })
+            }
+          />
         </section>
         <section className={styles.group}>
           <Text as="h2">{labels.links}</Text>

@@ -157,13 +157,35 @@ const StatsSettingBody = memo<StatsSettingBodyProps>(
             <TotalTokens />
           </Grid>
           <Divider dashed />
-          <AiHeatmaps mobile={mobile} />
+          {showUsersRank && !mobile ? (
+            // Admin: the user rank sits beside the activity calendar, which shrinks its
+            // blocks to the width it is left with rather than scrolling.
+            <div
+              style={{
+                display: 'grid',
+                gap: 24,
+                gridTemplateColumns: 'minmax(0, 1fr) minmax(300px, 30%)',
+              }}
+            >
+              <AiHeatmaps mobile={mobile} />
+              <UsersRank />
+            </div>
+          ) : (
+            <>
+              <AiHeatmaps mobile={mobile} />
+              {showUsersRank ? (
+                <>
+                  <Divider dashed />
+                  <UsersRank />
+                </>
+              ) : null}
+            </>
+          )}
           <Divider dashed />
-          <Grid gap={16} rows={showUsersRank ? 4 : 3} style={{ paddingBottom: 12 }}>
+          <Grid gap={16} rows={3} style={{ paddingBottom: 12 }}>
             <ModelsRank />
             <AssistantsRank mobile={mobile} />
             <TopicsRank mobile={mobile} />
-            {showUsersRank ? <UsersRank /> : null}
           </Grid>
         </FormGroup>
         <FormGroup

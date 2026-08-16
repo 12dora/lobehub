@@ -43,87 +43,159 @@ export interface CalendarBlockMetrics {
   blockMargin: number;
   blockRadius: number;
   blockSize: number;
-  /**
-   * The calendar only prints a month label once three week columns follow it, so a
-   * window of a fortnight or less can never draw one and would merely reserve an
-   * empty label strip above the grid.
-   */
-  hideMonthLabels: boolean;
 }
 
-interface CalendarBlockStep extends Omit<CalendarBlockMetrics, 'hideMonthLabels'> {
-  /** Longest window, in calendar days, this step applies to. */
-  maxDays: number;
-}
+/** Week columns the trailing calendar always draws — the year view's own shape. */
+export const CALENDAR_WEEKS = 52;
+
+/** The year view's block metrics; also the ceiling the fluid grid grows to. */
+const DESKTOP_CALENDAR_BLOCK = { blockMargin: 4, blockRadius: 2, blockSize: 14 };
+const MOBILE_CALENDAR_BLOCK = { blockMargin: 3, blockRadius: 2, blockSize: 6 };
+/** Below this the gap gives way first, then the block; nothing smaller stays legible. */
+const TIGHT_BLOCK_MARGIN = 2;
+const MIN_BLOCK_SIZE = 4;
 
 /**
- * Block sizes by window length. The calendar is week-per-column, so a short window is
- * only a handful of columns wide — at the year-view block size a month draws as a
- * stamp marooned in the card. Growing the block keeps the grid legible; the cap stops
- * a week from turning into a wall of tiles.
- */
-const DESKTOP_BLOCK_STEPS: CalendarBlockStep[] = [
-  { blockMargin: 6, blockRadius: 5, blockSize: 28, maxDays: 14 },
-  { blockMargin: 6, blockRadius: 4, blockSize: 24, maxDays: 35 },
-  { blockMargin: 5, blockRadius: 3, blockSize: 18, maxDays: 98 },
-];
-
-const MOBILE_BLOCK_STEPS: CalendarBlockStep[] = [
-  { blockMargin: 3, blockRadius: 3, blockSize: 12, maxDays: 14 },
-  { blockMargin: 3, blockRadius: 2, blockSize: 10, maxDays: 35 },
-  { blockMargin: 3, blockRadius: 2, blockSize: 8, maxDays: 98 },
-];
-
-/** What a full year of columns has always used — also the fallback for no window. */
-const DESKTOP_YEAR_BLOCK = { blockMargin: 4, blockRadius: 2, blockSize: 14 };
-const MOBILE_YEAR_BLOCK = { blockMargin: 3, blockRadius: 2, blockSize: 6 };
-
-/** Shortest window that can print a month label at all. */
-const MONTH_LABEL_MIN_DAYS = 15;
-
-/**
- * Scale the calendar blocks to the selected window, given the *calendar days* it covers
- * (see {@link activitySeriesDays}). Called without a day count — the unfiltered year
- * view, or while the request is still in flight — it returns exactly the year-view
- * metrics, so nothing about that path moves.
+ * Fit the 52-week calendar to the width it has been given: blocks shrink from the
+ * year-view size until every column fits, then the gap tightens, down to a floor that
+ * still reads as squares. Without a measured width (first paint, tests) it is exactly
+ * the year-view metrics.
  */
 export const resolveCalendarBlockMetrics = (
-  days?: number,
+  width?: number,
   mobile = false,
 ): CalendarBlockMetrics => {
-  const dayCount = days !== undefined && days > 0 ? days : undefined;
-  const steps = mobile ? MOBILE_BLOCK_STEPS : DESKTOP_BLOCK_STEPS;
-  const step = dayCount === undefined ? undefined : steps.find((item) => dayCount <= item.maxDays);
-  const { blockMargin, blockRadius, blockSize } =
-    step ?? (mobile ? MOBILE_YEAR_BLOCK : DESKTOP_YEAR_BLOCK);
+  const base = mobile ? MOBILE_CALENDAR_BLOCK : DESKTOP_CALENDAR_BLOCK;
+  if (!width || width <= 0) return base;
+  const columns = CALENDAR_WEEKS + 1;
+  const fit = (margin: number) => Math.floor((width - (columns - 1) * margin) / columns);
 
+  const roomy = fit(base.blockMargin);
+  if (roomy >= MOBILE_CALENDAR_BLOCK.blockSize) {
+    return { ...base, blockSize: Math.min(base.blockSize, roomy) };
+  }
+  const tight = Math.max(MIN_BLOCK_SIZE, Math.min(base.blockSize, fit(TIGHT_BLOCK_MARGIN)));
+  return { ...base, blockMargin: TIGHT_BLOCK_MARGIN, blockRadius: 1, blockSize: tight };
+};
+
+/** Half-open ISO window `[startAt, endAt)`. */
+export interface ActivityWindow {
+  endAt: string;
+  startAt: string;
+}
+
+const DAY_MS = 24 * HOUR_MS;
+
+/** Local midnight on/before `instant`. */
+const startOfLocalDay = (instant: Date): Date => {
+  const day = new Date(instant);
+  day.setHours(0, 0, 0, 0);
+  return day;
+};
+
+/** The server refuses windows wider than this; the calendar must stay inside it. */
+const MAX_WINDOW_DAYS = 366;
+
+/**
+ * The calendar the ranged card draws: the {@link CALENDAR_WEEKS} weeks that end with
+ * the selected window's last day, aligned to a Sunday column so the grid is full
+ * columns edge to edge — the same shape as the unfiltered year view. The window's own
+ * days are then highlighted on it (see {@link markActivityRange}); a short range is
+ * a bright patch on a dense grid instead of a few marooned columns.
+ *
+ * A selected window that reaches back further than those weeks (a full-year custom
+ * range) widens the request to its own start, clamped to what the server allows, so
+ * every selected day is fetched — the chart pads the first week itself.
+ *
+ * Without an end the window closes at the start of tomorrow (local), so a filter that
+ * only pins a user still draws the trailing year.
+ */
+export const resolveCalendarWindow = (endAt?: string, startAt?: string): ActivityWindow => {
+  const parsedEnd = endAt ? new Date(endAt) : undefined;
+  const end =
+    parsedEnd && !Number.isNaN(parsedEnd.getTime())
+      ? parsedEnd
+      : new Date(startOfLocalDay(new Date()).getTime() + DAY_MS);
+  // The last calendar day the half-open window touches.
+  const lastDay = startOfLocalDay(new Date(end.getTime() - 1));
+  const calendarStart = new Date(lastDay.getTime() - (CALENDAR_WEEKS - 1) * 7 * DAY_MS);
+  calendarStart.setDate(calendarStart.getDate() - calendarStart.getDay());
+
+  const selectedStart = startAt ? new Date(startAt) : undefined;
+  const floor = new Date(end.getTime() - MAX_WINDOW_DAYS * DAY_MS);
+  let start = startOfLocalDay(calendarStart);
+  if (selectedStart && !Number.isNaN(selectedStart.getTime()) && selectedStart < start) {
+    start = startOfLocalDay(selectedStart);
+  }
+  if (start < floor) start = floor;
+  return { endAt: end.toISOString(), startAt: start.toISOString() };
+};
+
+/** Levels the calendar draws; the range highlight doubles the palette. */
+export const CALENDAR_MAX_LEVEL = 4;
+/** Out-of-range days carry their level shifted by this, onto the dimmed half of the palette. */
+export const OUT_OF_RANGE_LEVEL_OFFSET = CALENDAR_MAX_LEVEL + 1;
+
+const localDayKey = (instant: Date): string => {
+  const y = instant.getFullYear();
+  const m = String(instant.getMonth() + 1).padStart(2, '0');
+  const d = String(instant.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+/** First and last local calendar day a half-open window touches, as `YYYY-MM-DD`. */
+export const resolveRangeDays = (
+  startAt?: string,
+  endAt?: string,
+): { firstDay: string; lastDay: string } | undefined => {
+  const start = startAt ? new Date(startAt) : undefined;
+  const end = endAt ? new Date(endAt) : undefined;
+  if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return undefined;
+  }
+  if (end.getTime() <= start.getTime()) return undefined;
   return {
-    blockMargin,
-    blockRadius,
-    blockSize,
-    hideMonthLabels: dayCount !== undefined && dayCount < MONTH_LABEL_MIN_DAYS,
+    firstDay: localDayKey(startOfLocalDay(start)),
+    lastDay: localDayKey(startOfLocalDay(new Date(end.getTime() - 1))),
   };
 };
 
-/** The `YYYY-MM-DD` day a bucket belongs to. */
-export const activityBucketDay = (bucket: string): string => bucket.slice(0, 10);
+/** Is a `YYYY-MM-DD…` bucket inside the selected window's days? */
+export const isBucketInRange = (
+  bucket: string,
+  range?: { firstDay: string; lastDay: string },
+): boolean => {
+  if (!range) return true;
+  const day = bucket.slice(0, 10);
+  return day >= range.firstDay && day <= range.lastDay;
+};
+
+/** Just the buckets that fall inside the selected window. */
+export const rowsInRange = <T extends { bucket: string }>(
+  rows: T[] | undefined,
+  range?: { firstDay: string; lastDay: string },
+): T[] => (rows ?? []).filter((row) => isBucketInRange(row.bucket, range));
 
 /**
- * Calendar days a settled series covers, counted from the buckets themselves.
- *
- * The series is zero-filled per bucket on the display zone's calendar, so its distinct
- * days *are* the grid's columns. Dividing the window span by 24h would instead count
- * elapsed periods: a fortnight straddling a fall-back switch lasts 337 hours and would
- * round up to 15 days, dropping the blocks a size and reserving an empty month-label
- * row. `undefined` for an empty or missing series — there is nothing to scale to.
+ * Map the calendar series onto the heatmap's `Activity` shape, shifting days outside
+ * the selected window onto the dimmed half of the palette so the window reads as a
+ * highlight on the trailing year.
  */
-export const activitySeriesDays = (rows?: Array<{ bucket: string }>): number | undefined => {
-  if (!rows?.length) return undefined;
+export const markActivityRange = (
+  rows: StatsActivityBucket[] | undefined,
+  range?: { firstDay: string; lastDay: string },
+): HeatmapsProps['data'] =>
+  (rows ?? []).map((row) => {
+    const level = Math.min(row.level, CALENDAR_MAX_LEVEL);
+    return {
+      count: row.count,
+      date: row.bucket.slice(0, 10),
+      level: isBucketInRange(row.bucket, range) ? level : level + OUT_OF_RANGE_LEVEL_OFFSET,
+    };
+  });
 
-  const days = new Set<string>();
-  for (const row of rows) days.add(activityBucketDay(row.bucket));
-  return days.size;
-};
+/** The `YYYY-MM-DD` day a bucket belongs to. */
+export const activityBucketDay = (bucket: string): string => bucket.slice(0, 10);
 
 /** `M/D` for a `YYYY-MM-DD…` bucket, or `undefined` when it is not that shape. */
 const formatMonthDay = (bucket: string): string | undefined => {

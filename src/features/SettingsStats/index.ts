@@ -9,6 +9,7 @@ export type {
   StatsRangeParams,
   StatsUsageParams,
   StatsUserRankItem,
+  StatsUserRankOrderBy,
   StatsUserTotals,
 } from './StatsDataSource';
 export {

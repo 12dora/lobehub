@@ -11,6 +11,7 @@ import {
   StatsFilterProvider,
 } from '@/features/SettingsStats';
 
+import { CALENDAR_MAX_LEVEL, OUT_OF_RANGE_LEVEL_OFFSET } from './activity.utils';
 import AiHeatmaps from './AiHeatmaps';
 
 const mocks = vi.hoisted(() => ({
@@ -32,19 +33,35 @@ vi.mock('react-i18next', () => ({
 vi.mock('@lobehub/charts', () => ({
   Heatmaps: ({
     blockSize,
+    className,
+    colors,
     data,
-    hideMonthLabels,
+    hideColorLegend,
+    maxLevel,
   }: {
     blockSize?: number;
-    data: Array<{ date: string }>;
-    hideMonthLabels?: boolean;
+    className?: string;
+    colors?: string[];
+    data: Array<{ date: string; level: number }>;
+    hideColorLegend?: boolean;
+    maxLevel?: number;
   }) => (
     <div
+      className={className}
       data-block-size={blockSize}
+      data-colors={colors?.length ?? 0}
       data-dates={data.map((row) => row.date).join(',')}
-      data-hide-month-labels={String(Boolean(hideMonthLabels))}
+      data-hide-legend={String(Boolean(hideColorLegend))}
+      data-levels={data.map((row) => row.level).join(',')}
+      data-max-level={maxLevel}
       data-testid="heatmaps"
     />
+  ),
+}));
+
+vi.mock('./ActivityLegend', () => ({
+  default: ({ colors }: { colors: string[] }) => (
+    <div data-colors={colors.length} data-testid="activity-legend" />
   ),
 }));
 
@@ -163,7 +180,6 @@ describe('AiHeatmaps', () => {
 
     const heatmaps = screen.getByTestId('heatmaps');
     expect(heatmaps.dataset.blockSize).toBe('14');
-    expect(heatmaps.dataset.hideMonthLabels).toBe('false');
     expect(screen.getByTestId('card-title').textContent).toBe('stats.lastYearActivity');
     expect(mocks.getTokenHeatmaps).toHaveBeenCalled();
     expect(mocks.activitySeries).not.toHaveBeenCalled();
@@ -211,54 +227,71 @@ describe('AiHeatmaps', () => {
     );
   });
 
-  it('keepsTheCalendarForAWeekAndGrowsItsBlocksSoItIsNotAStamp', () => {
-    mocks.swrData = daySeries('2026-08-10', 7);
+  it('drawsTheTrailingCalendarAndHighlightsTheSelectedWeekOnIt', () => {
+    // The response is the whole 52-week calendar; the week is a highlight on it.
+    mocks.swrData = [
+      { bucket: '2026-08-08', count: 7, level: 3 },
+      { bucket: '2026-08-09', count: 0, level: 0 },
+      ...daySeries('2026-08-10', 7),
+    ];
     renderCard({
-      endAt: '2026-08-16T09:30:00.000Z',
+      endAt: new Date(2026, 7, 16, 9, 30).toISOString(),
       rangeLabel: 'Last 7 days',
-      startAt: '2026-08-10T00:00:00.000Z',
+      startAt: new Date(2026, 7, 10).toISOString(),
     });
 
     const heatmaps = screen.getByTestId('heatmaps');
-    expect(heatmaps.dataset.dates?.split(',')).toHaveLength(7);
-    expect(heatmaps.dataset.dates?.startsWith('2026-08-10,')).toBe(true);
-    expect(heatmaps.dataset.blockSize).toBe('28');
-    // Two week columns can never print a month label — do not reserve the row.
-    expect(heatmaps.dataset.hideMonthLabels).toBe('true');
+    expect(heatmaps.dataset.dates?.split(',')).toHaveLength(9);
+    // Days before the window carry their level shifted onto the dimmed half of the palette.
+    expect(heatmaps.dataset.levels?.split(',').slice(0, 2)).toEqual([
+      String(3 + OUT_OF_RANGE_LEVEL_OFFSET),
+      String(OUT_OF_RANGE_LEVEL_OFFSET),
+    ]);
+    expect(heatmaps.dataset.levels?.split(',').slice(2)).toEqual([
+      '0',
+      '1',
+      '2',
+      '3',
+      '4',
+      '0',
+      '1',
+    ]);
+    expect(heatmaps.dataset.maxLevel).toBe(String(CALENDAR_MAX_LEVEL + OUT_OF_RANGE_LEVEL_OFFSET));
+    // Same five colours twice: in-range, then out-of-range (dimmed by CSS).
+    expect(heatmaps.dataset.colors).toBe('10');
+    // The chart's own legend would list the dimmed half too — a hand-drawn one replaces it.
+    expect(heatmaps.dataset.hideLegend).toBe('true');
+    expect(screen.getByTestId('activity-legend').dataset.colors).toBe('5');
+    expect(heatmaps.dataset.blockSize).toBe('14');
     expect(screen.queryByTestId('hour-grid')).toBeNull();
-    expect(screen.queryAllByTestId('day-tag')).toHaveLength(2);
+    // The day tags count the selected week only, not the calendar behind it.
+    const tags = screen.getAllByTestId('day-tag').map((tag) => tag.textContent);
+    expect(tags).toEqual(['5 stats.days', '2 stats.days']);
   });
 
-  it('trimsTheCalendarToA30DayWindowAtAReadableBlockSize', () => {
-    // The regression this guards: 30 days at the year-view block size drew a stamp
-    // adrift in a full-width card.
-    mocks.swrData = daySeries('2026-07-18', 30);
-    renderCard({
-      endAt: '2026-08-16T09:30:00.000Z',
-      rangeLabel: 'Last 30 days',
-      startAt: '2026-07-18T00:00:00.000Z',
-    });
+  it('requestsTheCalendarWindowThatEndsWithTheSelectedRange', () => {
+    const endAt = new Date(2026, 7, 16, 9, 30).toISOString();
+    renderCard({ endAt, rangeLabel: 'Last 30 days', startAt: new Date(2026, 6, 18).toISOString() });
 
-    const heatmaps = screen.getByTestId('heatmaps');
-    expect(heatmaps.dataset.dates?.split(',')).toHaveLength(30);
-    expect(heatmaps.dataset.blockSize).toBe('24');
-    expect(heatmaps.dataset.hideMonthLabels).toBe('false');
-    expect(screen.queryByTestId('hour-grid')).toBeNull();
+    const [request] = mocks.activitySeries.mock.calls[0];
+    expect(request).toMatchObject({ endAt, metric: 'tokens' });
+    const start = new Date(request.startAt);
+    expect(start.getDay()).toBe(0);
+    const spanDays = (Date.parse(endAt) - start.getTime()) / 86_400_000;
+    expect(spanDays).toBeGreaterThan(357);
+    expect(spanDays).toBeLessThanOrEqual(366);
   });
 
-  it('sizesTheCalendarByItsOwnDaysSoADstWindowDoesNotGainAPhantomDay', () => {
-    // 2026-10-19 → 2026-11-02 in America/Los_Angeles is fourteen calendar days but 337
-    // elapsed hours: measured by span it would round up to fifteen and drop a step.
-    mocks.swrData = daySeries('2026-10-19', 14);
-    renderCard({
-      endAt: '2026-11-02T00:00:00-08:00',
-      rangeLabel: 'Custom',
-      startAt: '2026-10-19T00:00:00-07:00',
-    });
+  it('keepsTheUnfilteredYearViewOnTheChartsOwnPaletteAndLegend', () => {
+    mocks.getTokenHeatmaps.mockResolvedValue([]);
+    mocks.swrData = [{ count: 3, date: '2026-08-10', level: 2 }];
+    renderCard();
 
     const heatmaps = screen.getByTestId('heatmaps');
-    expect(heatmaps.dataset.blockSize).toBe('28');
-    expect(heatmaps.dataset.hideMonthLabels).toBe('true');
+    expect(heatmaps.dataset.colors).toBe('0');
+    expect(heatmaps.dataset.maxLevel).toBe(String(CALENDAR_MAX_LEVEL));
+    expect(heatmaps.dataset.hideLegend).toBe('false');
+    expect(screen.queryByTestId('activity-legend')).toBeNull();
   });
 
   it('keepsTheYearViewBlockSizeForALongWindow', () => {
@@ -298,9 +331,17 @@ describe('AiHeatmaps', () => {
   });
 
   it('fallsBackToAPlainActivityTitleWhenTheFilterCarriesNoRangeLabel', () => {
+    mocks.swrData = [{ bucket: '2026-08-15', count: 3, level: 1 }];
     renderCard({ userId: 'u-1' });
 
     expect(screen.getByTestId('card-title').textContent).toBe('stats.activity');
+    // A user-only filter still has a calendar to draw: the trailing year to tomorrow.
+    const [request] = mocks.activitySeries.mock.calls[0];
+    expect(request).toMatchObject({ metric: 'tokens', userId: 'u-1' });
+    expect(new Date(request.startAt!).getDay()).toBe(0);
+    const heatmaps = screen.getByTestId('heatmaps');
+    // Nothing is out of range when no range is pinned — no dimmed levels.
+    expect(heatmaps.dataset.levels).toBe('1');
   });
 
   it('keepsTheLegacyYearPathInTheShareCardEvenWhenTheSourceCouldAnswerForAWindow', () => {

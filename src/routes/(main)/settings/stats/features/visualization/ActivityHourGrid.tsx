@@ -1,6 +1,6 @@
 import { Flexbox } from '@lobehub/ui';
 import { Tooltip, TooltipGroup } from '@lobehub/ui/base-ui';
-import { createStaticStyles, keyframes, useTheme, useThemeMode } from 'antd-style';
+import { createStaticStyles, keyframes } from 'antd-style';
 import { type CSSProperties, memo, type ReactNode, useMemo } from 'react';
 
 import type { StatsActivityBucket } from '@/features/SettingsStats';
@@ -15,10 +15,13 @@ const AXIS_STEP = 6;
 
 const HOUR_SLOTS = Array.from({ length: HOURS_PER_DAY }, (_, hour) => hour);
 
-/** Block metrics, mirroring the shortest calendar window on each form factor. */
+/**
+ * The strip fills the width it is given — 24 fluid squares per row — capped so a
+ * wide card does not turn the hours into tiles; the calendar's own gap and radius.
+ */
 const BLOCK = {
-  desktop: { gap: 6, radius: 5, size: 28 },
-  mobile: { gap: 3, radius: 2, size: 10 },
+  desktop: { gap: 4, maxSize: 40, radius: 3 },
+  mobile: { gap: 3, maxSize: 24, radius: 2 },
 };
 
 const pulse = keyframes`
@@ -43,14 +46,17 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     color: ${cssVar.colorTextDescription};
   `,
   block: css`
-    width: var(--activity-hour-size);
-    height: var(--activity-hour-size);
+    aspect-ratio: 1;
+    width: 100%;
+    max-width: var(--activity-hour-max-size);
     border-radius: var(--activity-hour-radius);
+
     box-shadow: inset 0 0 0 1px ${cssVar.colorFillTertiary};
   `,
   blockEmpty: css`
-    width: var(--activity-hour-size);
-    height: var(--activity-hour-size);
+    aspect-ratio: 1;
+    width: 100%;
+    max-width: var(--activity-hour-max-size);
   `,
   blockLoading: css`
     animation: ${pulse} 1.75s ease-in-out infinite;
@@ -60,7 +66,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     }
   `,
   container: css`
-    align-self: center;
+    width: 100%;
     max-width: 100%;
   `,
   dayLabel: css`
@@ -84,6 +90,12 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     font-size: 12px;
     color: ${cssVar.colorTextDescription};
   `,
+  legendBlock: css`
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    box-shadow: inset 0 0 0 1px ${cssVar.colorFillTertiary};
+  `,
   row: css`
     display: flex;
     gap: var(--activity-hour-gap);
@@ -93,25 +105,26 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
     display: flex;
     flex-direction: column;
     gap: var(--activity-hour-gap);
-    width: max-content;
+    width: 100%;
   `,
   scrollContainer: css`
-    overflow: auto hidden;
-    max-width: 100%;
+    width: 100%;
     padding-block: 2px;
   `,
   slot: css`
     display: flex;
-    flex: none;
+    flex: 1 1 0;
     justify-content: center;
 
-    width: var(--activity-hour-size);
+    min-width: 0;
 
     white-space: nowrap;
   `,
 }));
 
 interface ActivityHourGridProps {
+  /** Level 0 first — the calendar's palette, so both windows share one colour scale. */
+  colors: string[];
   /** Same tooltip copy the calendar uses, so both windows read alike. */
   customTooltip: (cell: ActivityHourCell) => ReactNode;
   data?: StatsActivityBucket[];
@@ -129,31 +142,15 @@ interface ActivityHourGridProps {
  * from it, so changing the range never changes what kind of chart the card shows.
  */
 const ActivityHourGrid = memo<ActivityHourGridProps>(
-  ({ customTooltip, data, labels, loading, mobile }) => {
-    const theme = useTheme();
-    const { isDarkMode } = useThemeMode();
-
-    // The chart's own scale: level 0 plus one step per level, so a block of a given
-    // shade means the same thing whichever window the reader picked.
-    const levelColors = useMemo(
-      () => [
-        theme.colorFillSecondary,
-        isDarkMode ? theme.lime2 : theme.green2,
-        isDarkMode ? theme.lime4 : theme.green4,
-        isDarkMode ? theme.lime6 : theme.green6,
-        isDarkMode ? theme.lime8 : theme.green8,
-      ],
-      [isDarkMode, theme],
-    );
-
+  ({ colors: levelColors, customTooltip, data, labels, loading, mobile }) => {
     const rows = useMemo(() => (loading ? [] : toActivityHourRows(data)), [data, loading]);
     const showDayLabels = rows.some((row) => row.dayLabel);
     const block = mobile ? BLOCK.mobile : BLOCK.desktop;
 
     const cssVars = {
       '--activity-hour-gap': `${block.gap}px`,
+      '--activity-hour-max-size': `${block.maxSize}px`,
       '--activity-hour-radius': `${block.radius}px`,
-      '--activity-hour-size': `${block.size}px`,
     } as CSSProperties;
 
     // Nothing settled yet — keep the empty strip rather than collapsing the card, so
@@ -221,7 +218,7 @@ const ActivityHourGrid = memo<ActivityHourGridProps>(
             <div className={styles.legend}>
               <span>{labels.less}</span>
               {levelColors.map((color, level) => (
-                <span className={styles.block} key={level} style={{ background: color }} />
+                <span className={styles.legendBlock} key={level} style={{ background: color }} />
               ))}
               <span>{labels.more}</span>
             </div>

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,7 +18,27 @@ const mocks = vi.hoisted(() => ({
   rankUsers: vi.fn(),
 }));
 
-vi.mock('antd-style', () => ({ cssVar: {} }));
+vi.mock('antd-style', () => ({ createStaticStyles: () => ({}), cssVar: {} }));
+
+vi.mock('@lobehub/ui/base-ui', () => ({
+  Segmented: ({
+    onChange,
+    options,
+    value,
+  }: {
+    onChange?: (value: string) => void;
+    options: Array<{ label: string; value: string }>;
+    value: string;
+  }) => (
+    <div data-testid="metric-switch" data-value={value}>
+      {options.map((option) => (
+        <button key={option.value} type="button" onClick={() => onChange?.(option.value)}>
+          {option.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -48,9 +68,18 @@ vi.mock('@/components/ImperativeModal', () => ({
 }));
 
 vi.mock('../components/StatsFormGroup', () => ({
-  default: ({ children, title }: { children?: ReactNode; title?: ReactNode }) => (
+  default: ({
+    children,
+    extra,
+    title,
+  }: {
+    children?: ReactNode;
+    extra?: ReactNode;
+    title?: ReactNode;
+  }) => (
     <section>
       <h2>{title}</h2>
+      <div>{extra}</div>
       {children}
     </section>
   ),
@@ -97,7 +126,11 @@ describe('UsersRank', () => {
     );
 
     expect(screen.getByTestId('bar-list')).toBeTruthy();
-    expect(mocks.rankUsers).toHaveBeenCalledWith(undefined, { ...RANGE, userId: undefined });
+    expect(mocks.rankUsers).toHaveBeenCalledWith(undefined, {
+      ...RANGE,
+      orderBy: 'totalTokens',
+      userId: undefined,
+    });
     expect(mocks.key).toEqual(
       expect.arrayContaining([ADMIN_GLOBAL_STATS_SCOPE, RANGE.startAt, RANGE.endAt]),
     );
@@ -114,7 +147,34 @@ describe('UsersRank', () => {
 
     // Dropping the userId here would rank the whole platform next to figures that are
     // scoped to one user — the server narrows the ranking to that user's row instead.
-    expect(mocks.rankUsers).toHaveBeenCalledWith(undefined, { ...RANGE, userId: 'u1' });
+    expect(mocks.rankUsers).toHaveBeenCalledWith(undefined, {
+      ...RANGE,
+      orderBy: 'totalTokens',
+      userId: 'u1',
+    });
     expect(mocks.key).toEqual(expect.arrayContaining(['u1']));
+  });
+
+  it('refetchesRankedByTheChosenMetricLikeTheOverviewCard', () => {
+    render(
+      <StatsDataSourceProvider value={adminSource}>
+        <StatsFilterProvider value={RANGE}>
+          <UsersRank />
+        </StatsFilterProvider>
+      </StatsDataSourceProvider>,
+    );
+
+    expect(screen.getByTestId('metric-switch').dataset.value).toBe('totalTokens');
+    fireEvent.click(screen.getByText('stats.usersRank.metric.cost'));
+
+    // The top five by cost are not the top five by tokens: the server re-ranks, and the
+    // cache key carries the metric so the two rankings never overwrite each other.
+    expect(screen.getByTestId('metric-switch').dataset.value).toBe('cost');
+    expect(mocks.rankUsers).toHaveBeenLastCalledWith(undefined, {
+      ...RANGE,
+      orderBy: 'cost',
+      userId: undefined,
+    });
+    expect(mocks.key).toEqual(expect.arrayContaining(['cost']));
   });
 });

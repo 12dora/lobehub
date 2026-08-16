@@ -117,6 +117,9 @@ describe('HeatmapStats', () => {
   it('summarizesTheRangedSeriesAndKeysItByTheSameZoneItRequests', () => {
     mocks.results['stats:activitySeries'] = {
       data: [
+        // Before the window: part of the calendar behind the highlight, not of the summary.
+        { bucket: '2026-08-01', count: 99, level: 4 },
+        { bucket: '2026-08-02', count: 99, level: 4 },
         { bucket: '2026-08-10', count: 5, level: 2 },
         { bucket: '2026-08-11', count: 9, level: 4 },
         { bucket: '2026-08-12', count: 0, level: 0 },
@@ -128,12 +131,18 @@ describe('HeatmapStats', () => {
 
     expect(mocks.getTokenHeatmaps).not.toHaveBeenCalled();
     const [request] = mocks.activitySeries.mock.calls[0];
+    // A day-granularity window fetches the trailing 52-week calendar that ends with it
+    // (the chart highlights the window on that grid), never the bare window.
     expect(request).toMatchObject({
       endAt: WEEK_FILTER.endAt,
       metric: 'tokens',
-      startAt: WEEK_FILTER.startAt,
       userId: 'u-1',
     });
+    const calendarStart = new Date(request.startAt!);
+    expect(calendarStart.getDay()).toBe(0);
+    const spanDays = (Date.parse(WEEK_FILTER.endAt!) - calendarStart.getTime()) / 86_400_000;
+    expect(spanDays).toBeGreaterThan(357);
+    expect(spanDays).toBeLessThanOrEqual(366);
 
     // The zone shapes the response, so the cache key must carry the very value sent.
     expect(keyFor('stats:activitySeries')?.[2]).toBe(request.timeZone ?? null);
